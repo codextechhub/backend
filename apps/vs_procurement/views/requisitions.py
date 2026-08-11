@@ -12,13 +12,14 @@ import datetime
 from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.utils import timezone
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from core.response import success_response
 from vs_finance.constants import BudgetStatus, DocumentStatus
 from vs_finance.models import Budget, BudgetLine, FiscalPeriod
 from vs_finance.views import resolve_entity
 from vs_workflow.models import WorkflowInstance
+from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 
 from .. import approvals
 from ..constants import ProcApprovalState
@@ -362,13 +363,36 @@ class PurchaseOrderSubmitApprovalView(_ProcBase):
     """Submit a draft PO for approval without issuing or posting it."""
     rbac_permission = "procurement.purchase_order.submit"
 
+    @transaction.atomic
     def post(self, request, pk):
         """Hand entity-scoped commitment intent to the workflow engine."""
         entity = resolve_entity(request)
         po = PurchaseOrder.objects.filter(entity=entity, pk=pk).first()
         if po is None:
             raise NotFound("No such purchase order in this entity.")
+        auto_email = request.data.get("auto_email_vendor", False)
+        if not isinstance(auto_email, bool):
+            raise ValidationError({"auto_email_vendor": "Enter true or false."})
+        delivery = None
+        if auto_email:
+            allowed = is_vision_super_admin(request.user) or user_has_rbac_permission(
+                request.user, "procurement.purchase_order.email_vendor",
+                tenant=po.entity.tenant, branch=getattr(request, "branch", None),
+            )
+            if not allowed:
+                raise PermissionDenied("You do not have permission to email purchase orders to vendors.")
+            from ..po_email import PurchaseOrderEmailError, schedule_after_approval
+            try:
+                delivery = schedule_after_approval(
+                    po, actor_user=request.user,
+                    buyer_message=request.data.get("email_message", ""),
+                )
+            except PurchaseOrderEmailError as exc:
+                raise ValidationError({"auto_email_vendor": str(exc)}) from exc
         instance = approvals.submit_for_approval(po, actor_user=request.user)
+        if delivery is not None:
+            delivery.workflow_instance_id = str(instance.id)
+            delivery.save(update_fields=["workflow_instance_id", "updated_at"])
         return _approval_response("Purchase order submitted for approval.",
                                   po, instance, PurchaseOrderSerializer)
 

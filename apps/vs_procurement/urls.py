@@ -10,6 +10,19 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
+    # Public vendor quotation portal. The invitation token plus verified 24-hour
+    # session is the access gate, so these routes never accept entity parameters.
+    path("public/rfqs/<str:token>/", views.PublicRfqPreviewView.as_view(), name="public-rfq-preview"),
+    path("public/rfqs/<str:token>/logo/", views.PublicRfqLogoView.as_view(), name="public-rfq-logo"),
+    path("public/rfqs/<str:token>/request-code/", views.PublicRfqRequestCodeView.as_view(), name="public-rfq-request-code"),
+    path("public/rfqs/<str:token>/verify-code/", views.PublicRfqVerifyCodeView.as_view(), name="public-rfq-verify-code"),
+    path("public/rfqs/<str:token>/form/", views.PublicRfqFormView.as_view(), name="public-rfq-form"),
+    path("public/rfqs/<str:token>/submit/", views.PublicRfqSubmitView.as_view(), name="public-rfq-submit"),
+    path("public/rfqs/<str:token>/revise/", views.PublicRfqReviseView.as_view(), name="public-rfq-revise"),
+    path("public/rfqs/<str:token>/acknowledge/", views.PublicRfqAcknowledgeView.as_view(), name="public-rfq-acknowledge"),
+    path("public/rfqs/<str:token>/decline/", views.PublicRfqDeclineView.as_view(), name="public-rfq-decline"),
+    path("public/rfqs/<str:token>/attachments/", views.PublicRfqAttachmentView.as_view(), name="public-rfq-attachment"),
+    path("public/rfqs/<str:token>/attachments/<int:attachment_id>/", views.PublicRfqAttachmentDownloadView.as_view(), name="public-rfq-attachment-download"),
     path("settings/", views.ProcurementSettingsView.as_view(), name="proc-settings"),
 
     # Master data
@@ -53,6 +66,9 @@ urlpatterns = [
     path("rfqs/<int:pk>/issue/", views.RfqIssueView.as_view(), name="proc-rfq-issue"),
     path("rfqs/<int:pk>/close/", views.RfqCloseView.as_view(), name="proc-rfq-close"),
     path("rfqs/<int:pk>/cancel/", views.RfqCancelView.as_view(), name="proc-rfq-cancel"),
+    path("rfqs/<int:pk>/amendments/", views.RfqAmendmentCreateView.as_view(), name="proc-rfq-amendment"),
+    path("rfqs/<int:pk>/invitations/<int:invitation_id>/resend/", views.RfqInvitationResendView.as_view(), name="proc-rfq-invitation-resend"),
+    path("rfqs/<int:pk>/invitations/<int:invitation_id>/extend/", views.RfqInvitationExtendView.as_view(), name="proc-rfq-invitation-extend"),
 
     # Vendor quotations (sourcing)
     path("quotations/", views.QuotationListCreateView.as_view(), name="proc-quotations"),
@@ -66,6 +82,12 @@ urlpatterns = [
     path("purchase-orders/<int:pk>/", views.PurchaseOrderDetailView.as_view(), name="proc-purchase-order-detail"),
     path("purchase-orders/<int:pk>/submit/", views.PurchaseOrderSubmitApprovalView.as_view(),
          name="proc-purchase-order-submit"),
+    path("purchase-orders/<int:pk>/email-preview/", views.PurchaseOrderEmailPreviewView.as_view(),
+         name="proc-purchase-order-email-preview"),
+    path("purchase-orders/<int:pk>/email/", views.PurchaseOrderEmailView.as_view(),
+         name="proc-purchase-order-email"),
+    path("purchase-orders/<int:pk>/email-deliveries/<int:delivery_id>/retry/",
+         views.PurchaseOrderEmailRetryView.as_view(), name="proc-purchase-order-email-retry"),
 
     # Goods received notes
     path("goods-receipts/", views.GoodsReceiptListCreateView.as_view(), name="proc-goods-receipts"),

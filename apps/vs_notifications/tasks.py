@@ -15,6 +15,7 @@
 import logging
 
 from celery import shared_task
+from django.core.files.storage import default_storage
 from django.db import transaction
 from django.utils import timezone
 
@@ -89,7 +90,12 @@ def deliver_email_notification(self, notification_id: str):
             subject = notif.subject
             body = notif.body
             html_body = notif.html_body
-            from_name = (notif.metadata or {}).get("from_name")
+            metadata = notif.metadata or {}
+            from_name = metadata.get("from_name")
+            raw_cc = metadata.get("cc", [])
+            cc = [str(value).strip() for value in raw_cc if str(value).strip()] \
+                if isinstance(raw_cc, (list, tuple)) else []
+            attachment_refs = metadata.get("attachments", [])
     except Notification.DoesNotExist:
         logger.warning(
             "deliver_email_notification: Notification %s not found. Skipping.",
@@ -118,12 +124,31 @@ def deliver_email_notification(self, notification_id: str):
 
     # ── Attempt delivery (outside any row lock) ────────────────────────────
     try:
+        attachments = []
+        if isinstance(attachment_refs, list):
+            for item in attachment_refs[:10]:
+                if not isinstance(item, dict):
+                    continue
+                storage_name = str(item.get("storage_name") or "").strip()
+                if not storage_name:
+                    continue
+                with default_storage.open(storage_name, "rb") as stored:
+                    content = stored.read(10 * 1024 * 1024 + 1)
+                if len(content) > 10 * 1024 * 1024:
+                    raise ValueError("Email attachment exceeds the 10 MB delivery limit.")
+                attachments.append((
+                    str(item.get("name") or storage_name.rsplit("/", 1)[-1])[:255],
+                    content,
+                    str(item.get("content_type") or "application/octet-stream")[:128],
+                ))
         send_email(
             subject=subject,
             plain_message=body,
             html_message=html_body or None,
             recipient_list=[email_addr],
             from_email=build_from_email(from_name) if from_name else None,
+            cc=cc,
+            attachments=attachments or None,
         )
     except Exception as exc:
         # Record the failed attempt.

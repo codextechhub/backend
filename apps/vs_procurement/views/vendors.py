@@ -24,6 +24,7 @@ from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 from ..constants import PAYMENT_TERM_DAYS, PaymentTerms, VendorKycStatus, VendorRisk
 from ..models import (
     Vendor,
+    VendorContact,
     VendorCategory,
     VendorInvoice,
 )
@@ -46,7 +47,7 @@ from .base import (
 
 _SENSITIVE_VENDOR_FIELDS = {
     "email", "phone", "address", "tax_id",
-    "bank_name", "bank_account_number", "bank_account_name",
+    "bank_name", "bank_account_number", "bank_account_name", "contacts",
 }
 _COMPLIANCE_VENDOR_FIELDS = {"kyc_status", "risk", "on_hold"}
 
@@ -79,6 +80,39 @@ def _validate_email(value):
         except Exception as exc:
             raise ValidationError({"email": "Enter a valid email address."}) from exc
     return value
+
+
+def _replace_vendor_contacts(vendor, raw):
+    """Validate and replace a vendor's active quotation contacts."""
+    if not isinstance(raw, list):
+        raise ValidationError({"contacts": "Expected a list of vendor contacts."})
+    if len(raw) > 20:
+        raise ValidationError({"contacts": "A vendor may have up to 20 contacts."})
+    cleaned = []
+    seen = set()
+    for index, row in enumerate(raw):
+        if not isinstance(row, dict):
+            raise ValidationError({"contacts": "Every contact must be an object."})
+        email = _validate_email(str(row.get("email") or "").strip().lower())
+        if not email or email in seen:
+            raise ValidationError({"contacts": "Every contact needs a unique email address."})
+        seen.add(email)
+        cleaned.append({
+            "name": str(row.get("name") or "").strip()[:160],
+            "email": email,
+            "phone": str(row.get("phone") or "").strip()[:32],
+            "is_primary": bool(row.get("is_primary", index == 0)),
+            "receives_rfqs": bool(row.get("receives_rfqs", True)),
+            "receives_purchase_orders": bool(row.get("receives_purchase_orders", False)),
+            "is_active": bool(row.get("is_active", True)),
+        })
+    if cleaned and not any(row["is_primary"] for row in cleaned):
+        cleaned[0]["is_primary"] = True
+    first_primary = next((i for i, row in enumerate(cleaned) if row["is_primary"]), None)
+    for index, row in enumerate(cleaned):
+        row["is_primary"] = index == first_primary
+    vendor.contacts.all().delete()
+    VendorContact.objects.bulk_create([VendorContact(vendor=vendor, **row) for row in cleaned])
 
 
 def _has_sensitive_access(request):
@@ -525,6 +559,13 @@ class VendorListCreateView(_ProcBase):
             )
         except IntegrityError as exc:
             raise _duplicate_error(exc) from exc
+        if "contacts" in body:
+            _replace_vendor_contacts(vendor, body["contacts"])
+        elif vendor.email:
+            VendorContact.objects.create(
+                vendor=vendor, name=vendor.name, email=vendor.email,
+                is_primary=True, receives_rfqs=True, receives_purchase_orders=True,
+            )
         return success_response(
             "Vendor created.", data=VendorSerializer(vendor, context={"request": request}).data, status=201,
         )
@@ -576,7 +617,7 @@ class VendorDetailView(_ProcBase):
             return vendor
         qs = Vendor.objects.select_related(
             "category", "payable_account", "default_expense_account", "default_wht_tax_code",
-        ).filter(entity=entity, pk=pk)
+        ).prefetch_related("contacts").filter(entity=entity, pk=pk)
         vendor = qs.first()
         if vendor is None:
             raise NotFound("No such vendor in this entity.")
@@ -600,6 +641,7 @@ class VendorDetailView(_ProcBase):
         # narrower authority and are rejected before the vendor row is mutated.
         _require_vendor_manage_access(request, body)
         vendor = self._get(entity, pk, lock=True)
+        previous_email = vendor.email
 
         if "code" in body and _normalise_code(body.get("code")) != vendor.code:
             raise ValidationError({"code": "Vendor code cannot be changed after creation."})
@@ -649,6 +691,22 @@ class VendorDetailView(_ProcBase):
             vendor.save()
         except IntegrityError as exc:
             raise _duplicate_error(exc) from exc
+        if "contacts" in body:
+            _replace_vendor_contacts(vendor, body["contacts"])
+        elif vendor.email:
+            primary = vendor.contacts.filter(is_primary=True).first()
+            if primary and primary.email.lower() == str(previous_email or "").lower():
+                primary.email = vendor.email
+                primary.name = primary.name or vendor.name
+                primary.save(update_fields=["email", "name", "updated_at"])
+            elif primary is None:
+                VendorContact.objects.get_or_create(
+                    vendor=vendor, email=vendor.email,
+                    defaults={
+                        "name": vendor.name, "is_primary": True, "receives_rfqs": True,
+                        "receives_purchase_orders": True,
+                    },
+                )
         return success_response(
             "Vendor updated.", data=VendorSerializer(vendor, context={"request": request}).data,
         )

@@ -223,9 +223,12 @@ def price_quotation(quotation) -> None:
     pricing, preventing an awarded quote from changing value merely through conversion.
     """
     from .models import VendorQuotationLine
+    from .constants import QuotationLineResponse
 
     for line in quotation.lines.all():
-        net = compute_line_net(line.quantity, line.unit_price)
+        net = 0 if line.response_type == QuotationLineResponse.NO_BID else compute_line_net(
+            line.quantity, line.unit_price,
+        )
         rate = line.tax_code.rate_bps if line.tax_code_id else 0
         tax = compute_tax(net, rate)
         if line.net_amount != net or line.tax_amount != tax:
@@ -387,7 +390,9 @@ def award_quotation(
     # originating requisition line when present, then the RFQ header requisition.
     # Assigning the FK id avoids a separate CostCenter lookup for every awarded line.
     header_cost_center_id = rfq.requisition.cost_center_id if rfq.requisition_id else None
-    quotation_lines = quotation.lines.select_related(
+    quotation_lines = quotation.lines.exclude(
+        response_type="NO_BID",
+    ).select_related(
         "expense_account", "tax_code", "rfq_line__requisition_line__requisition",
     ).order_by("line_no", "id")
     for qline in quotation_lines:

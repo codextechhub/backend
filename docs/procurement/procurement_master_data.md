@@ -29,6 +29,7 @@ that document later posts (`contracts.py:1-8`; `models.py:231-240`).
 |---|---|---|
 | `VendorCategory` | `code`, `name`, `parent`, `default_expense_account`, `is_active` | Protected `entity`; case-insensitive unique `(entity, code)`; indexed `(entity, parent)` (`models.py:82-110`) |
 | `Vendor` | contact/bank data; `payable_account`; expense/WHT defaults; `payment_terms`; `kyc_status`; `risk`; `on_hold`; `is_active` | Protected `entity`; case-insensitive unique code; normalized nonblank tax id unique per entity (`models.py:135-209`) |
+| `VendorContact` | name, email, phone, primary flag, active flag, separate RFQ and purchase-order recipient preferences | Cascades with its vendor; case-insensitive unique email per vendor |
 | `CatalogItem` | description/UOM; category; preferred vendor; expense/tax defaults; `standard_unit_price`; `lead_time_days`; `is_active` | Protected `entity`; case-insensitive unique code (`models.py:243-292`) |
 | `VendorContract` | vendor, reference, title, status, dates, value, terms, renewal settings, predecessor | Protected entity/vendor; unique `(entity, reference)`; status/end-date indexes (`models.py:497-539`) |
 | `ContractMilestone` | name, due date, amount, status, completed date, note, line number | Cascades with its contract; indexed by contract and `(status, due_date)` (`models.py:551-572`) |

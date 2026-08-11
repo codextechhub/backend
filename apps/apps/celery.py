@@ -16,6 +16,10 @@ app.autodiscover_tasks()
 # in eager mode (local dev, staging until the worker is live) simply never
 # execute these; the tasks are all idempotent, so a missed window is safe.
 app.conf.beat_schedule = {
+    "dispatch-rfq-reminders": {
+        "task": "vs_procurement.dispatch_rfq_reminders",
+        "schedule": 60 * 60,
+    },
     "dispatch-pending-import-notifications": {
         "task": "vs_import_data.tasks.dispatch_pending_import_notifications_task",
         "schedule": crontab(minute="*/5"),

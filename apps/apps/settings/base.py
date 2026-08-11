@@ -48,6 +48,8 @@ REST_FRAMEWORK = {
         "login":          "5/minute",
         "password_reset": "3/minute",
         "activation":     "10/minute",
+        "rfq_portal":     "120/hour",
+        "rfq_verification": "10/hour",
         # Public barcode-login preview - throttled hard because it confirms
         # whether an email belongs to a known account (enumeration surface).
         "login_preview":  "10/minute",
@@ -150,7 +152,7 @@ CORS_ALLOW_CREDENTIALS = True
 # be present in every environment (including production).
 from corsheaders.defaults import default_headers
 
-CORS_ALLOW_HEADERS = (*default_headers, "x-impersonation-session")
+CORS_ALLOW_HEADERS = (*default_headers, "x-impersonation-session", "idempotency-key")
 IMPERSONATION_IDLE_TIMEOUT_MINUTES = 30  # Proxy sessions idle beyond this are swept to EXPIRED by a cron job.
 
 SESSION_COOKIE_SAMESITE = "Lax"
@@ -217,6 +219,16 @@ DEFAULT_FROM_EMAIL = config(
 EMAIL_CC = [
     addr.strip()
     for addr in config("EMAIL_CC", default="").split(",")
+    if addr.strip()
+]
+# Procurement messages sent to external vendors use a narrower CC list so
+# monitoring does not copy unrelated platform email into the procurement inbox.
+PROCUREMENT_VENDOR_EMAIL_CC = [
+    addr.strip()
+    for addr in config(
+        "PROCUREMENT_VENDOR_EMAIL_CC",
+        default="backend-test@codexng.com",
+    ).split(",")
     if addr.strip()
 ]
 FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="http://localhost:3000")

@@ -60,6 +60,7 @@ ACTIONS: list[tuple[str, str]] = [
 
     # ── Communication ─────────────────────────────────────────────────────────
     ("send",       "Dispatch a message - SMS, email, or push notification."),
+    ("email_vendor", "Email an approved commercial document to its vendor."),
     ("post",       "Publish an announcement or bulletin to a board or feed."),
 
     # ── Tracking & observation ────────────────────────────────────────────────

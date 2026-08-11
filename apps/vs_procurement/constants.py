@@ -88,6 +88,42 @@ class QuotationStatus(models.TextChoices):
     EXPIRED = "EXPIRED", "Expired"
 
 
+class RfqInvitationStatus(models.TextChoices):
+    """Externally visible lifecycle of one vendor invitation."""
+    PENDING = "PENDING", "Pending"
+    SENT = "SENT", "Sent"
+    OPENED = "OPENED", "Opened"
+    DRAFTING = "DRAFTING", "Drafting"
+    SUBMITTED = "SUBMITTED", "Submitted"
+    DECLINED = "DECLINED", "Declined"
+    EXPIRED = "EXPIRED", "Expired"
+    BOUNCED = "BOUNCED", "Bounced"
+    REVOKED = "REVOKED", "Revoked"
+
+
+class PurchaseOrderVendorDeliveryStatus(models.TextChoices):
+    """Lifecycle of one durable purchase-order email request."""
+    AWAITING_APPROVAL = "AWAITING_APPROVAL", "Awaiting approval"
+    PENDING = "PENDING", "Pending"
+    SENT = "SENT", "Sent"
+    FAILED = "FAILED", "Failed"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
+class PurchaseOrderVendorDeliverySource(models.TextChoices):
+    """How a purchase-order vendor email was requested."""
+    AUTOMATIC = "AUTOMATIC", "Automatic after approval"
+    MANUAL = "MANUAL", "Manual"
+    RETRY = "RETRY", "Retry"
+
+
+class QuotationLineResponse(models.TextChoices):
+    """How a vendor answered one requested RFQ line."""
+    QUOTED = "QUOTED", "Quoted"
+    ALTERNATIVE = "ALTERNATIVE", "Alternative offered"
+    NO_BID = "NO_BID", "Not available or no-bid"
+
+
 class ContractStatus(models.TextChoices):
     """Lifecycle of a vendor contract (a master-data overlay - no GL effect).
 

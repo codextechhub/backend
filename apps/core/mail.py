@@ -35,6 +35,7 @@ def send_email(
     recipient_list: list[str],
     from_email: str | None = None,
     cc: list[str] | None = None,
+    attachments: list[tuple[str, bytes, str]] | None = None,
 ) -> None:
     """
     Central email sender for the platform.
@@ -49,7 +50,7 @@ def send_email(
     working unchanged.
     """
     from_email = from_email or build_from_email()
-    cc = cc or getattr(settings, 'EMAIL_CC', [])
+    cc = cc if cc is not None else getattr(settings, 'EMAIL_CC', [])
 
     msg = EmailMultiAlternatives(
         subject=subject,
@@ -60,4 +61,6 @@ def send_email(
     )
     if html_message:
         msg.attach_alternative(html_message, 'text/html')
+    for filename, content, mimetype in attachments or []:
+        msg.attach(filename, content, mimetype)
     msg.send()

@@ -160,6 +160,22 @@ and invoice targets before checking approval and balances (`payables.py:355-442`
 Approval creates **no journal**. The PO remains a commitment with priced lines and
 workflow evidence (`purchasing.py:140-159`).
 
+Approved purchase orders can be emailed to vendors through a separate, audited delivery
+flow. A buyer may schedule the email while raising the draft for approval, but the
+delivery remains `AWAITING_APPROVAL` and is released only after full workflow approval
+commits. Rejection, withdrawal, or workflow cancellation cancels that intent. Email or
+PDF failures do not undo approval; they become a visible `FAILED` delivery that an
+authorised user can retry as a new audit record.
+
+Recipient order is explicit active contacts marked `receives_purchase_orders`, then the
+active primary contact, then the vendor master email. The message includes branded HTML,
+the temporary procurement CC configured by `PROCUREMENT_VENDOR_EMAIL_CC`, and a generated
+PDF containing the delivery address, expected date, payment terms, line summary, totals,
+buyer note, and buyer contact. Manual send and retry require
+`procurement.purchase_order.email_vendor`. Ordinary purchase-order reads expose delivery
+status and counts, while the exact email addresses are returned only by the permission-
+gated preview endpoint.
+
 ### Goods receipt
 
 For each accepted non-stock line, grouped by `(account, cost center)`:

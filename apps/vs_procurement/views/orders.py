@@ -20,10 +20,11 @@ from vs_finance.views import resolve_entity
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 from vs_workflow.models import WorkflowInstance
 
-from .. import purchasing, sourcing
+from .. import po_email, purchasing, sourcing, vendor_portal
 from ..constants import ContractStatus, ProcApprovalState, QuotationStatus, RfqStatus
 from ..models import (
     PurchaseOrder,
+    PurchaseOrderVendorDelivery,
     PurchaseRequisition,
     PurchaseRequisitionLine,
     RequestForQuotation,
@@ -145,6 +146,7 @@ def _purchase_order_queryset(entity):
     """Detail read shape - the full document flow the drawer renders, prefetched once."""
     return _po_base_queryset(entity).prefetch_related(
         "lines", "goods_receipts__lines", "vendor_invoices", "source_quotation",
+        "vendor__contacts", "vendor_deliveries__requested_by",
     )
 
 
@@ -358,6 +360,65 @@ class PurchaseOrderSummaryView(_ProcBase):
         return success_response("Purchase order summary retrieved.", data=purchase_order_summary(entity))
 
 
+class PurchaseOrderEmailPreviewView(_ProcBase):
+    """Return exact vendor recipients only to users allowed to send purchase orders."""
+    rbac_permission = "procurement.purchase_order.email_vendor"
+
+    def get(self, request, pk):
+        entity = resolve_entity(request)
+        po = PurchaseOrder.objects.filter(entity=entity, pk=pk).select_related(
+            "vendor", "entity__tenant",
+        ).prefetch_related("vendor__contacts").first()
+        if po is None:
+            raise NotFound("No such purchase order in this entity.")
+        return success_response("Purchase order email preview retrieved.", data=po_email.preview(po))
+
+
+class PurchaseOrderEmailView(_ProcBase):
+    """Send or resend an approved purchase order as a newly audited delivery."""
+    rbac_permission = "procurement.purchase_order.email_vendor"
+
+    def post(self, request, pk):
+        entity = resolve_entity(request)
+        po = PurchaseOrder.objects.filter(entity=entity, pk=pk).first()
+        if po is None:
+            raise NotFound("No such purchase order in this entity.")
+        try:
+            delivery = po_email.send_approved(
+                po, actor_user=request.user, buyer_message=request.data.get("email_message", ""),
+            )
+        except po_email.PurchaseOrderEmailError as exc:
+            raise ValidationError({"email": str(exc)}) from exc
+        updated = _purchase_order_queryset(entity).get(pk=po.pk)
+        return success_response(
+            "Purchase order email queued.", data=PurchaseOrderSerializer(updated).data, status=202,
+        )
+
+
+class PurchaseOrderEmailRetryView(_ProcBase):
+    """Retry one failed delivery without mutating its historical outcome."""
+    rbac_permission = "procurement.purchase_order.email_vendor"
+
+    def post(self, request, pk, delivery_id):
+        entity = resolve_entity(request)
+        delivery = PurchaseOrderVendorDelivery.objects.select_related("purchase_order").filter(
+            pk=delivery_id, purchase_order_id=pk, purchase_order__entity=entity,
+        ).first()
+        if delivery is None:
+            raise NotFound("No such purchase-order email delivery in this entity.")
+        try:
+            po_email.retry(
+                delivery, actor_user=request.user,
+                buyer_message=request.data.get("email_message") if "email_message" in request.data else None,
+            )
+        except po_email.PurchaseOrderEmailError as exc:
+            raise ValidationError({"email": str(exc)}) from exc
+        updated = _purchase_order_queryset(entity).get(pk=pk)
+        return success_response(
+            "Purchase order email retry queued.", data=PurchaseOrderSerializer(updated).data, status=202,
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Requests for quotation (sourcing)                                           #
 # --------------------------------------------------------------------------- #
@@ -383,22 +444,26 @@ def _rfq_list_queryset(entity):
 def _rfq_detail_queryset(entity):
     """Entity-scoped RFQ prefetched for the detail drawer (lines + invitations + quotes)."""
     return RequestForQuotation.objects.filter(entity=entity).select_related("requisition").prefetch_related(
-        "lines", "lines__expense_account",
+        Prefetch("lines", queryset=RfqLine.objects.filter(is_active=True).select_related("expense_account")),
         # Invited vendors + quotations are joined in Python in the serializer to derive
         # each invitation's "responded" flag without a per-row query.
-        "invitations__vendor",
+        "invitations__vendor", "invitations__recipients", "amendments",
         # Multiple bids from one vendor are retained. Newest-first prefetch order is the
         # canonical response order reused by both invitation summaries and the quote list.
         Prefetch(
             "quotations",
-            queryset=VendorQuotation.objects.select_related("vendor").order_by(
+            queryset=VendorQuotation.objects.select_related("vendor").prefetch_related(
+                "attachments", "submissions",
+            ).exclude(
+                vendor_managed=True, quotation_status=QuotationStatus.DRAFT,
+            ).order_by(
                 "-created_at", "-id",
             ),
         ),
     )
 
 
-def _write_rfq_lines(entity, rfq, lines):
+def _write_rfq_lines(entity, rfq, lines, *, preserve_history=False):
     """Validate and (re)create an RFQ's spec lines - a full replacement on edit.
 
     Shared by create and the draft PATCH so both apply identical validation:
@@ -406,7 +471,10 @@ def _write_rfq_lines(entity, rfq, lines):
     and a requisition line that genuinely lives in this entity. When the RFQ header
     names a requisition, a supplied source line must belong to that exact document.
     """
-    rfq.lines.all().delete()  # Full replace: the payload is the new authoritative line set.
+    if preserve_history:
+        rfq.lines.filter(is_active=True).update(is_active=False)
+    else:
+        rfq.lines.all().delete()  # Draft replacement has no published history yet.
     for i, ln in enumerate(lines, start=1):
         req_line = None
         if ln.get("requisition_line"):
@@ -425,6 +493,7 @@ def _write_rfq_lines(entity, rfq, lines):
                 raise ValidationError({"requisition_line": message})
         RfqLine.objects.create(
             rfq=rfq, line_no=ln.get("line_no", i),
+            version=rfq.version, is_active=True,
             description=_text(ln.get("description"), "description", 255, required=True),
             quantity=_quantity(ln.get("quantity", 1), "quantity"),
             requisition_line=req_line,
@@ -511,6 +580,7 @@ class RfqListCreateView(_ProcBase):
             notes=_text(body.get("notes"), "notes", 255),
             created_by=request.user if request.user.is_authenticated else None,
         )
+        vendor_portal.ensure_exact_deadline(rfq)
         _write_rfq_lines(entity, rfq, lines)
         # Invited vendors may be empty at draft-create (issue is what requires ≥1); still
         # validate + persist any provided so the draft carries its addressee list.
@@ -521,7 +591,7 @@ class RfqListCreateView(_ProcBase):
             )
         rfq = _rfq_detail_queryset(entity).get(pk=rfq.pk)
         return success_response(
-            "RFQ created.", data=RfqDetailSerializer(rfq).data, status=201,
+            "RFQ created.", data=RfqDetailSerializer(rfq, context={"request": request}).data, status=201,
         )
 
 
@@ -543,7 +613,7 @@ class RfqDetailView(_ProcBase):
         rfq = _rfq_detail_queryset(entity).filter(pk=pk).first()
         if rfq is None:
             raise NotFound("No such RFQ in this entity.")
-        return success_response("RFQ retrieved.", data=RfqDetailSerializer(rfq).data)
+        return success_response("RFQ retrieved.", data=RfqDetailSerializer(rfq, context={"request": request}).data)
 
     @transaction.atomic
     def patch(self, request, pk):
@@ -563,14 +633,16 @@ class RfqDetailView(_ProcBase):
             rfq.issue_date = _date(body.get("issue_date"), "issue_date", required=True)
         if "response_due_date" in body:
             rfq.response_due_date = _date(body.get("response_due_date"), "response_due_date")
+            rfq.response_due_at = None
         if "notes" in body:
             rfq.notes = _text(body.get("notes"), "notes", 255)
         if "budget_estimate" in body:
             rfq.budget_estimate = _budget_estimate(body.get("budget_estimate"))
         _validate_rfq_dates(rfq.issue_date, rfq.response_due_date)
         rfq.save(update_fields=[
-            "title", "issue_date", "response_due_date", "budget_estimate", "notes", "updated_at",
+            "title", "issue_date", "response_due_date", "response_due_at", "budget_estimate", "notes", "updated_at",
         ])
+        vendor_portal.ensure_exact_deadline(rfq)
         if "lines" in body:
             _write_rfq_lines(entity, rfq, _require_lines(body))
         # Replacing the invite set is subject to the responded-vendor protection in the service.
@@ -580,7 +652,7 @@ class RfqDetailView(_ProcBase):
                 actor_user=request.user,
             )
         rfq = _rfq_detail_queryset(entity).get(pk=rfq.pk)
-        return success_response("RFQ updated.", data=RfqDetailSerializer(rfq).data)
+        return success_response("RFQ updated.", data=RfqDetailSerializer(rfq, context={"request": request}).data)
 
 
 class RfqIssueView(_ProcBase):
@@ -598,8 +670,9 @@ class RfqIssueView(_ProcBase):
             competition_exception_reason=_competition_exception_reason(request),
             actor_user=request.user,
         )
+        vendor_portal.prepare_rfq_invitations(rfq)
         rfq = _rfq_detail_queryset(entity).get(pk=rfq.pk)
-        return success_response("RFQ issued.", data=RfqDetailSerializer(rfq).data)
+        return success_response("RFQ issued.", data=RfqDetailSerializer(rfq, context={"request": request}).data)
 
 
 class RfqCloseView(_ProcBase):
@@ -617,7 +690,7 @@ class RfqCloseView(_ProcBase):
             raise NotFound("No such RFQ in this entity.")
         sourcing.close_rfq(rfq, reason=request.data.get("reason", ""), actor_user=request.user)
         rfq = _rfq_detail_queryset(entity).get(pk=rfq.pk)
-        return success_response("RFQ closed.", data=RfqDetailSerializer(rfq).data)
+        return success_response("RFQ closed.", data=RfqDetailSerializer(rfq, context={"request": request}).data)
 
 
 class RfqCancelView(_ProcBase):
@@ -632,7 +705,7 @@ class RfqCancelView(_ProcBase):
             raise NotFound("No such RFQ in this entity.")
         sourcing.cancel_rfq(rfq, reason=request.data.get("reason", ""), actor_user=request.user)
         rfq = _rfq_detail_queryset(entity).get(pk=rfq.pk)
-        return success_response("RFQ cancelled.", data=RfqDetailSerializer(rfq).data)
+        return success_response("RFQ cancelled.", data=RfqDetailSerializer(rfq, context={"request": request}).data)
 
 
 class RfqSummaryView(_ProcBase):
@@ -675,9 +748,11 @@ class RfqSummaryView(_ProcBase):
 
 def _quotation_detail_queryset(entity):
     """Build the entity detail shape with vendor, RFQ, award, and priced lines."""
-    return VendorQuotation.objects.filter(entity=entity).select_related(
+    return VendorQuotation.objects.filter(entity=entity).exclude(
+        vendor_managed=True, quotation_status=QuotationStatus.DRAFT,
+    ).select_related(
         "vendor", "rfq", "awarded_po",
-    ).prefetch_related("lines", "lines__expense_account")
+    ).prefetch_related("lines", "lines__expense_account", "attachments", "submissions")
 
 
 def _write_quotation_lines(entity, quotation, rfq, lines):
@@ -730,7 +805,9 @@ class QuotationListCreateView(_ProcBase):
     def get(self, request):
         """List entity quotations with bounded relational filters and search."""
         entity = resolve_entity(request)
-        qs = VendorQuotation.objects.filter(entity=entity).select_related("vendor", "rfq")
+        qs = VendorQuotation.objects.filter(entity=entity).exclude(
+            vendor_managed=True, quotation_status=QuotationStatus.DRAFT,
+        ).select_related("vendor", "rfq")
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(quotation_status=status_)
         if (rfq := request.query_params.get("rfq")):
@@ -751,7 +828,7 @@ class QuotationListCreateView(_ProcBase):
         entity = resolve_entity(request)
         body = request.data
         lines = _require_lines(body)
-        rfq = RequestForQuotation.objects.filter(entity=entity, pk=body.get("rfq")).first()
+        rfq = RequestForQuotation.objects.select_for_update().filter(entity=entity, pk=body.get("rfq")).first()
         if rfq is None:
             raise ValidationError({"rfq": "An RFQ is required."})
         # A quotation is an offer against a *live* invitation - the RFQ must be issued.
@@ -767,6 +844,10 @@ class QuotationListCreateView(_ProcBase):
         if not RfqInvitation.objects.filter(rfq=rfq, vendor=vendor).exists():
             raise ValidationError(
                 {"vendor": f"Vendor {vendor.code} is not invited to RFQ {rfq.document_number}."})
+        if VendorQuotation.objects.filter(rfq=rfq, vendor=vendor).exists():
+            raise ValidationError({
+                "vendor": "This vendor already has a shared quotation workspace for the RFQ.",
+            })
         quote_date = _date(body.get("quote_date"), "quote_date", required=True)
         valid_until = _date(body.get("valid_until"), "valid_until")
         _validate_quote_dates(quote_date, valid_until)

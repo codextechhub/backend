@@ -36,6 +36,8 @@ from vs_procurement.constants import (
     MatchStatus,
     MilestoneStatus,
     ProcApprovalState,
+    PurchaseOrderVendorDeliverySource,
+    PurchaseOrderVendorDeliveryStatus,
     QuotationStatus,
     RfqStatus,
     VendorKycStatus,
@@ -48,6 +50,7 @@ from vs_procurement.models import (
     GoodsReceivedNoteLine,
     PurchaseOrder,
     PurchaseOrderLine,
+    PurchaseOrderVendorDelivery,
     PurchaseRequisition,
     PurchaseRequisitionLine,
     ProcurementSettings,
@@ -57,6 +60,7 @@ from vs_procurement.models import (
     StockItem,
     StockMovement,
     Vendor,
+    VendorContact,
     VendorAssessment,
     VendorContract,
     VendorInvoice,
@@ -197,6 +201,178 @@ class _P2PFixtureMixin:
                 unit_price=price, tax_code=tax, line_no=i,
             )
         return vi
+
+
+class VendorQuotationPortalTests(_P2PFixtureMixin, TestCase):
+    """External vendor drafts remain private while firm revisions stay immutable."""
+
+    def setUp(self):
+        from vs_procurement.models import VendorContact
+
+        self.entity, _, self.vendor, _, _ = self.build_p2p()
+        self.vendor.email = "quotes@acme.test"
+        self.vendor.save(update_fields=["email", "updated_at"])
+        VendorContact.objects.create(
+            vendor=self.vendor, name="Amina Vendor", email=self.vendor.email,
+            is_primary=True, receives_rfqs=True,
+        )
+        self.rfq = RequestForQuotation.objects.create(
+            entity=self.entity, title="Office supplies", rfq_status=RfqStatus.ISSUED,
+            issue_date=timezone.localdate(),
+            response_due_date=timezone.localdate() + datetime.timedelta(days=5),
+            response_due_at=timezone.now() + datetime.timedelta(days=5),
+        )
+        self.line = RfqLine.objects.create(
+            rfq=self.rfq, description="Printer paper", quantity=2,
+            expense_account=self.acc(self.entity, "5300"), line_no=1,
+        )
+        self.invitation = RfqInvitation.objects.create(rfq=self.rfq, vendor=self.vendor)
+
+    def _verified(self):
+        from django.contrib.auth.hashers import make_password
+        from vs_procurement.models import RfqInvitationVerification
+        from vs_procurement.vendor_portal import prepare_invitation, verify_code
+
+        with patch("vs_procurement.vendor_portal._safe_notify"):
+            raw = prepare_invitation(self.invitation)
+        RfqInvitationVerification.objects.create(
+            invitation=self.invitation, email=self.vendor.email,
+            code_hash=make_password("123456"),
+            expires_at=timezone.now() + datetime.timedelta(minutes=10),
+        )
+        session, _ = verify_code(raw, self.vendor.email, "123456")
+        self.invitation.refresh_from_db()
+        return raw, session
+
+    def test_signed_invitation_and_session_are_bound_to_one_vendor(self):
+        from rest_framework.exceptions import NotFound, ValidationError
+        from vs_procurement.models import RfqInvitationSession
+        from vs_procurement.vendor_portal import invitation_from_session, invitation_from_token
+
+        raw, session = self._verified()
+        invitation, email = invitation_from_session(raw, session)
+        self.assertEqual(invitation.pk, self.invitation.pk)
+        self.assertEqual(email, self.vendor.email)
+        with self.assertRaises(NotFound):
+            invitation_from_token(f"{raw}tampered")
+        RfqInvitationSession.objects.filter(invitation=self.invitation).update(
+            expires_at=timezone.now() - datetime.timedelta(seconds=1),
+        )
+        with self.assertRaises(ValidationError):
+            invitation_from_session(raw, session)
+
+    def test_draft_is_private_and_two_submissions_keep_distinct_receipts(self):
+        from vs_procurement.vendor_portal import revise, save_draft, submit
+        from vs_procurement.views.orders import _quotation_detail_queryset
+
+        raw, _ = self._verified()
+        first = save_draft(self.invitation, self.vendor.email, {
+            "reference": "ACME-001",
+            "lines": [{
+                "rfq_line": self.line.pk, "response_type": "QUOTED",
+                "quantity": "2", "unit_price": 100_000,
+            }],
+        })
+        quote_id = first["quotation"]["id"]
+        self.assertFalse(_quotation_detail_queryset(self.entity).filter(pk=quote_id).exists())
+
+        submitted = submit(self.invitation, self.vendor.email, raw)
+        self.assertEqual(submitted["submission_revision"], 1)
+        self.assertTrue(_quotation_detail_queryset(self.entity).filter(pk=quote_id).exists())
+        quote = VendorQuotation.objects.get(pk=quote_id)
+        first_snapshot = quote.submissions.get(revision=1).snapshot
+
+        revise(self.invitation)
+        save_draft(self.invitation, self.vendor.email, {
+            "lines": [{
+                "rfq_line": self.line.pk, "response_type": "ALTERNATIVE",
+                "description": "Recycled printer paper", "quantity": "2",
+                "unit_price": 120_000,
+            }],
+        })
+        submitted = submit(self.invitation, self.vendor.email, raw)
+        self.assertEqual(submitted["submission_revision"], 2)
+        quote.refresh_from_db()
+        self.assertEqual(quote.submissions.count(), 2)
+        self.assertEqual(quote.submissions.get(revision=1).snapshot, first_snapshot)
+        self.assertNotEqual(
+            quote.submissions.get(revision=1).snapshot["total"],
+            quote.submissions.get(revision=2).snapshot["total"],
+        )
+
+    def test_submission_requires_every_current_rfq_line(self):
+        from rest_framework.exceptions import ValidationError
+        from vs_procurement.vendor_portal import save_draft, submit
+
+        raw, _ = self._verified()
+        second = RfqLine.objects.create(
+            rfq=self.rfq, description="Toner", quantity=1,
+            expense_account=self.acc(self.entity, "5300"), line_no=2,
+        )
+        save_draft(self.invitation, self.vendor.email, {
+            "lines": [{
+                "rfq_line": self.line.pk, "response_type": "NO_BID",
+                "quantity": "2", "unit_price": 0,
+            }],
+        })
+        with self.assertRaises(ValidationError):
+            submit(self.invitation, self.vendor.email, raw)
+        self.assertTrue(second.is_active)
+
+    def test_latest_amendment_must_be_acknowledged_before_submission(self):
+        from rest_framework.exceptions import ValidationError
+        from vs_procurement.vendor_portal import acknowledge_amendment, save_draft, submit
+
+        raw, _ = self._verified()
+        self.rfq.version = 2
+        self.rfq.save(update_fields=["version", "updated_at"])
+        self.invitation.refresh_from_db()
+        save_draft(self.invitation, self.vendor.email, {
+            "lines": [{
+                "rfq_line": self.line.pk, "response_type": "QUOTED",
+                "quantity": "2", "unit_price": 100_000,
+            }],
+        })
+        with self.assertRaises(ValidationError):
+            submit(self.invitation, self.vendor.email, raw)
+        acknowledge_amendment(self.invitation)
+        submitted = submit(self.invitation, self.vendor.email, raw)
+        self.assertEqual(submitted["submission_revision"], 1)
+
+    def test_vendor_email_uses_procurement_cc_without_duplicate_invitees(self):
+        from vs_procurement.vendor_portal import _safe_notify
+
+        self._verified()
+        with self.settings(PROCUREMENT_VENDOR_EMAIL_CC=["backend-test@codexng.com"]):
+            with patch("vs_procurement.vendor_portal.send_notification") as send:
+                self.assertTrue(_safe_notify(
+                    event_key="procurement.rfq_invitation",
+                    context={},
+                    invitation=self.invitation,
+                ))
+        self.assertEqual(send.call_args.kwargs["metadata"]["cc"], ["backend-test@codexng.com"])
+
+        self.invitation.recipients.create(
+            name="Backend Test", email="backend-test@codexng.com",
+        )
+        with self.settings(PROCUREMENT_VENDOR_EMAIL_CC=["backend-test@codexng.com"]):
+            with patch("vs_procurement.vendor_portal.send_notification") as send:
+                _safe_notify(
+                    event_key="procurement.rfq_invitation",
+                    context={},
+                    invitation=self.invitation,
+                )
+        self.assertEqual(send.call_args.kwargs["metadata"]["cc"], [])
+
+    def test_expired_invitation_blocks_draft_but_preserves_existing_data(self):
+        from rest_framework.exceptions import ValidationError
+        from vs_procurement.vendor_portal import save_draft
+
+        self.invitation.extended_deadline = timezone.now() - datetime.timedelta(seconds=1)
+        self.invitation.save(update_fields=["extended_deadline", "updated_at"])
+        with self.assertRaises(ValidationError):
+            save_draft(self.invitation, self.vendor.email, {"reference": "LATE"})
+        self.assertFalse(VendorQuotation.objects.filter(rfq=self.rfq, vendor=self.vendor).exists())
 
 
 class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
@@ -5563,6 +5739,127 @@ class PurchaseOrderConsoleDataTests(_P2PFixtureMixin, TestCase):
             f"/v1/procurement/purchase-orders/summary/?entity={entity.code}",
         )
         self.assertEqual(response.status_code, 403)
+
+
+class PurchaseOrderVendorEmailTests(_P2PFixtureMixin, TestCase):
+    """Approved-only vendor delivery remains durable, scoped, and retryable."""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        self.entity, _, self.vendor, _, _ = self.build_p2p()
+        self.vendor.email = "fallback@vendor.test"
+        self.vendor.address = "12 Vendor Road"
+        self.vendor.save(update_fields=["email", "address", "updated_at"])
+        self.user = get_user_model().objects.create_user(
+            email="buyer-po-email@test.com", password="pw", tenant=self.entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Purchase", last_name="Buyer",
+        )
+
+    def _po(self, *, approved=True):
+        po = self.make_po(self.entity, self.vendor, [("5300", 2, 250_000, None)])
+        po.delivery_address = "1 Delivery Avenue"
+        po.payment_terms = "Net 30"
+        po.approval_state = ProcApprovalState.APPROVED if approved else ProcApprovalState.NOT_SUBMITTED
+        po.status = DocumentStatus.APPROVED if approved else DocumentStatus.DRAFT
+        po.save(update_fields=[
+            "delivery_address", "payment_terms", "approval_state", "status", "updated_at",
+        ])
+        return po
+
+    def test_schedule_uses_opted_in_contacts_and_cancels_on_rejection(self):
+        from vs_procurement import po_email
+
+        po = self._po(approved=False)
+        VendorContact.objects.create(
+            vendor=self.vendor, name="Quotes", email="quotes@vendor.test",
+            is_primary=True, receives_rfqs=True, receives_purchase_orders=False,
+        )
+        VendorContact.objects.create(
+            vendor=self.vendor, name="Orders", email="orders@vendor.test",
+            receives_rfqs=False, receives_purchase_orders=True,
+        )
+        delivery = po_email.schedule_after_approval(
+            po, actor_user=self.user, buyer_message="Please confirm receipt.",
+        )
+        self.assertEqual(delivery.status, PurchaseOrderVendorDeliveryStatus.AWAITING_APPROVAL)
+        self.assertEqual(delivery.recipients, ["orders@vendor.test"])
+        self.assertEqual(delivery.cc, ["backend-test@codexng.com"])
+
+        po_email.cancel_awaiting(po, reason="Approval was rejected.", actor_user=self.user)
+        delivery.refresh_from_db()
+        self.assertEqual(delivery.status, PurchaseOrderVendorDeliveryStatus.CANCELLED)
+        self.assertIn("rejected", delivery.failure_reason)
+
+    @patch("vs_procurement.po_email.send_notification", return_value=["notification-id"])
+    def test_manual_send_builds_pdf_and_queues_only_approved_order(self, notify):
+        from vs_procurement import po_email
+
+        po = self._po(approved=True)
+        delivery = po_email.send_approved(
+            po, actor_user=self.user, buyer_message="Deliver to reception.",
+        )
+        self.addCleanup(delivery.pdf_file.delete, False)
+        self.assertEqual(delivery.source, PurchaseOrderVendorDeliverySource.MANUAL)
+        self.assertEqual(delivery.status, PurchaseOrderVendorDeliveryStatus.PENDING)
+        self.assertTrue(delivery.pdf_file.name.endswith(".pdf"))
+        self.assertGreater(delivery.pdf_file.size, 100)
+        metadata = notify.call_args.kwargs["metadata"]
+        self.assertEqual(metadata["cc"], ["backend-test@codexng.com"])
+        self.assertEqual(metadata["attachments"][0]["storage_name"], delivery.pdf_file.name)
+
+        draft = self._po(approved=False)
+        with self.assertRaises(po_email.PurchaseOrderEmailError):
+            po_email.send_approved(draft, actor_user=self.user)
+
+    def test_email_preview_is_permission_gated_and_entity_scoped(self):
+        from core.test_utils import TenantAPIClient
+
+        po = self._po(approved=True)
+        client = TenantAPIClient(user=self.user)
+        denied = client.get(
+            f"/v1/procurement/purchase-orders/{po.pk}/email-preview/?entity={self.entity.code}",
+        )
+        self.assertEqual(denied.status_code, 403)
+
+        with patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True):
+            missing = client.get(
+                f"/v1/procurement/purchase-orders/{po.pk + 9999}/email-preview/?entity={self.entity.code}",
+            )
+        self.assertEqual(missing.status_code, 404)
+
+    def test_full_approval_releases_scheduled_email_after_commit(self):
+        from vs_procurement import approvals, po_email
+
+        po = self._po(approved=False)
+        delivery = po_email.schedule_after_approval(po, actor_user=self.user)
+        with patch("vs_procurement.po_email.release_awaiting") as release:
+            with self.captureOnCommitCallbacks(execute=True):
+                approvals.apply_approved(po, actor_user=self.user)
+
+        po.refresh_from_db()
+        delivery.refresh_from_db()
+        self.assertEqual(po.status, DocumentStatus.APPROVED)
+        self.assertEqual(po.approval_state, ProcApprovalState.APPROVED)
+        self.assertEqual(delivery.status, PurchaseOrderVendorDeliveryStatus.AWAITING_APPROVAL)
+        release.assert_called_once_with(po.pk, actor_user=self.user)
+
+    def test_release_error_becomes_failed_delivery_without_changing_approval(self):
+        from vs_procurement import po_email
+
+        po = self._po(approved=False)
+        delivery = po_email.schedule_after_approval(po, actor_user=self.user)
+        po.status = DocumentStatus.APPROVED
+        po.approval_state = ProcApprovalState.APPROVED
+        po.save(update_fields=["status", "approval_state", "updated_at"])
+
+        po_email._mark_release_failed(po.pk, RuntimeError("PDF renderer unavailable"), actor_user=self.user)
+
+        po.refresh_from_db()
+        delivery.refresh_from_db()
+        self.assertEqual(po.status, DocumentStatus.APPROVED)
+        self.assertEqual(delivery.status, PurchaseOrderVendorDeliveryStatus.FAILED)
+        self.assertIn("PDF renderer unavailable", delivery.failure_reason)
 
 class ProcurementDashboardTests(_P2PFixtureMixin, TestCase):
     def test_dashboard_activity_is_success_only_and_limited_to_five(self):

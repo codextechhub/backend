@@ -467,6 +467,77 @@ def _build_default_templates() -> dict:
 
     return {
 
+        # Procurement external vendor portal
+        ("procurement.purchase_order_issued", C.EMAIL): {
+            "subject": "Purchase order {{ po_number }} from {{ issuer_name }}",
+            "body": (
+                "Hello {{ vendor_name }},\n\n{{ issuer_name }} has issued purchase order "
+                "{{ po_number }} to you. A PDF copy is attached.\n\n"
+                "Order date: {{ order_date }}\nExpected date: {{ expected_date }}\n"
+                "Total: {{ total }}\nDelivery address: {{ delivery_address }}\n"
+                "Payment terms: {{ payment_terms }}\n\n{{ buyer_message }}\n\n"
+                "Contact: {{ buyer_name }} {{ buyer_email }}"
+            ),
+            "html_body": (
+                "<!doctype html><html><body style=\"margin:0;background:#f4f7fb;font-family:Arial,sans-serif;color:#1d2939\">"
+                "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td style=\"padding:28px 12px\">"
+                "<table role=\"presentation\" width=\"620\" align=\"center\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:100%;background:#fff;border:1px solid #d5dfea;border-radius:10px;overflow:hidden\">"
+                "<tr><td style=\"padding:24px 28px;background:#0f2747;color:#fff\"><div style=\"font-size:13px;opacity:.8\">{{ issuer_name|escape }}</div><div style=\"font-size:24px;font-weight:700;margin-top:5px\">Purchase order {{ po_number|escape }}</div></td></tr>"
+                "<tr><td style=\"padding:28px\"><p style=\"margin-top:0\">Hello {{ vendor_name|escape }},</p><p>{{ issuer_name|escape }} has issued this approved purchase order to you. The signed business copy is attached as a PDF.</p>"
+                "<table role=\"presentation\" width=\"100%\" cellpadding=\"8\" cellspacing=\"0\" style=\"margin:20px 0;background:#f8fafc;border-radius:7px;font-size:14px\">"
+                "<tr><td><b>Order date</b><br>{{ order_date|escape }}</td><td><b>Expected date</b><br>{{ expected_date|escape }}</td></tr>"
+                "<tr><td><b>Total</b><br>{{ total|escape }}</td><td><b>Payment terms</b><br>{{ payment_terms|escape }}</td></tr>"
+                "<tr><td colspan=\"2\"><b>Delivery address</b><br>{{ delivery_address|linebreaksbr }}</td></tr></table>"
+                "{% if buyer_message %}<div style=\"padding:14px 16px;border-left:4px solid #2f6fed;background:#f4f7fb\">{{ buyer_message|linebreaksbr }}</div>{% endif %}"
+                "<p style=\"margin-bottom:0;margin-top:22px;font-size:13px;color:#667085\">Questions? Contact {{ buyer_name|escape }}{% if buyer_email %} at {{ buyer_email|escape }}{% endif %}.</p>"
+                "</td></tr></table></td></tr></table></body></html>"
+            ),
+        },
+        ("procurement.rfq_invitation", C.EMAIL): {
+            "subject": "Quotation requested: {{ rfq_number }}",
+            "body": (
+                "Hello {{ recipient_name }},\n\n{{ issuer_name }} has invited {{ vendor_name }} "
+                "to submit a quotation for {{ rfq_number }}: {{ rfq_title }}.\n\n"
+                "Deadline: {{ deadline }}\n\nOpen the secure quotation form:\n{{ invitation_url }}\n"
+            ),
+        },
+        ("procurement.rfq_verification_code", C.EMAIL): {
+            "subject": "Your quotation verification code",
+            "body": (
+                "Your verification code for {{ rfq_number }} is {{ verification_code }}.\n\n"
+                "It expires in {{ expiry_minutes }} minutes. Do not share this code."
+            ),
+        },
+        ("procurement.rfq_reminder", C.EMAIL): {
+            "subject": "Reminder: quotation due for {{ rfq_number }}",
+            "body": (
+                "Hello {{ recipient_name }},\n\nYour quotation for {{ rfq_number }} has not been "
+                "submitted or declined. The deadline is {{ deadline }}.\n\n{{ invitation_url }}"
+            ),
+        },
+        ("procurement.quotation_receipt", C.EMAIL): {
+            "subject": "Quotation received: {{ quotation_number }}",
+            "body": (
+                "Hello {{ recipient_name }},\n\nWe received revision {{ revision }} of your quotation "
+                "for {{ rfq_number }} at {{ submitted_at }}.\n\nView your read-only receipt:\n{{ invitation_url }}"
+            ),
+        },
+        ("procurement.rfq_amended", C.EMAIL): {
+            "subject": "RFQ amended: {{ rfq_number }} version {{ rfq_version }}",
+            "body": (
+                "Hello {{ recipient_name }},\n\n{{ rfq_number }} was amended.\n\n"
+                "Summary: {{ amendment_summary }}\nResponse required: {{ response_required }}\n\n"
+                "{{ invitation_url }}"
+            ),
+        },
+        ("procurement.rfq_deadline_extended", C.EMAIL): {
+            "subject": "Quotation deadline extended: {{ rfq_number }}",
+            "body": (
+                "Hello {{ recipient_name }},\n\nThe deadline for {{ vendor_name }} to respond to "
+                "{{ rfq_number }} is now {{ deadline }}.\n\n{{ invitation_url }}"
+            ),
+        },
+
         # ── support tickets ─────────────────────────────────────────────────
         ("ticket.created", C.IN_APP): {
             "subject": "",

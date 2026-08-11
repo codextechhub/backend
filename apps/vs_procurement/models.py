@@ -43,6 +43,10 @@ from .constants import (
     MilestoneStatus,
     PaymentTerms,
     ProcApprovalState,
+    PurchaseOrderVendorDeliverySource,
+    PurchaseOrderVendorDeliveryStatus,
+    QuotationLineResponse,
+    RfqInvitationStatus,
     VendorPurchaseKycRequirement,
     QuotationStatus,
     RfqStatus,
@@ -319,6 +323,34 @@ class Vendor(_AutoMasterCodeMixin, TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.code} · {self.name}"
+
+
+class VendorContact(TimeStampedModel):
+    """A vendor contact with explicit RFQ and purchase-order delivery preferences."""
+
+    vendor = models.ForeignKey(Vendor, on_delete=models.CASCADE, related_name="contacts")
+    name = models.CharField(max_length=160, blank=True, default="")
+    email = models.EmailField()
+    phone = models.CharField(max_length=32, blank=True, default="")
+    is_primary = models.BooleanField(default=False)
+    receives_rfqs = models.BooleanField(default=True)
+    receives_purchase_orders = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                Lower("email"), "vendor", name="uniq_proc_vendor_contact_email_ci",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["vendor", "is_active", "receives_rfqs"]),
+            models.Index(fields=["vendor", "is_active", "receives_purchase_orders"]),
+        ]
+        ordering = ["vendor", "-is_primary", "name", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.name or self.email} · {self.vendor.code}"
 
 
 # --------------------------------------------------------------------------- #
@@ -799,6 +831,11 @@ class RequestForQuotation(FinanceDocument):
     response_due_date = models.DateField(
         null=True, blank=True, help_text="Closing date for vendor responses.",
     )
+    response_due_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Exact UTC closing instant. Date-only RFQs default to 23:59:59 local time.",
+    )
+    version = models.PositiveSmallIntegerField(default=1)
     budget_estimate = MoneyField(
         null=True, blank=True, help_text="Optional buyer budget ceiling, in kobo.",
     )
@@ -838,6 +875,20 @@ class RfqInvitation(TimeStampedModel):
     vendor = models.ForeignKey(
         Vendor, on_delete=models.PROTECT, related_name="rfq_invitations",
     )
+    status = models.CharField(
+        max_length=10, choices=RfqInvitationStatus.choices,
+        default=RfqInvitationStatus.PENDING,
+    )
+    token_version = models.PositiveSmallIntegerField(default=1)
+    extended_deadline = models.DateTimeField(null=True, blank=True)
+    opened_at = models.DateTimeField(null=True, blank=True)
+    draft_started_at = models.DateTimeField(null=True, blank=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    declined_at = models.DateTimeField(null=True, blank=True)
+    decline_reason = models.CharField(max_length=500, blank=True, default="")
+    last_reminder_at = models.DateTimeField(null=True, blank=True)
+    reminder_stage = models.PositiveSmallIntegerField(default=0)
+    acknowledged_version = models.PositiveSmallIntegerField(default=1)
 
     class Meta:
         # A vendor is either invited to an RFQ or not - never invited twice.
@@ -847,6 +898,86 @@ class RfqInvitation(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"RFQ {self.rfq_id} → {self.vendor_id}"
+
+    @property
+    def deadline(self):
+        return self.extended_deadline or self.rfq.response_due_at
+
+
+class RfqInvitationRecipient(TimeStampedModel):
+    """Snapshot of a vendor contact who received one invitation."""
+
+    invitation = models.ForeignKey(
+        RfqInvitation, on_delete=models.CASCADE, related_name="recipients",
+    )
+    contact = models.ForeignKey(
+        VendorContact, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="invitation_recipients",
+    )
+    name = models.CharField(max_length=160, blank=True, default="")
+    email = models.EmailField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                Lower("email"), "invitation", name="uniq_proc_rfq_invite_recipient_email_ci",
+            ),
+        ]
+        ordering = ["id"]
+
+
+class RfqInvitationVerification(TimeStampedModel):
+    """Short-lived hashed email code for a public invitation."""
+
+    invitation = models.ForeignKey(
+        RfqInvitation, on_delete=models.CASCADE, related_name="verification_codes",
+    )
+    email = models.EmailField()
+    code_hash = models.CharField(max_length=128)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["invitation", "email", "expires_at"])]
+
+
+class RfqInvitationSession(TimeStampedModel):
+    """A 24-hour verified browser session for a vendor invitation."""
+
+    invitation = models.ForeignKey(
+        RfqInvitation, on_delete=models.CASCADE, related_name="sessions",
+    )
+    email = models.EmailField()
+    token_hash = models.CharField(max_length=64, unique=True)
+    expires_at = models.DateTimeField()
+    last_seen_at = models.DateTimeField()
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["invitation", "expires_at"])]
+
+
+class RfqAmendment(TimeStampedModel):
+    """Published change notice preserving the RFQ version a vendor answered."""
+
+    rfq = models.ForeignKey(
+        RequestForQuotation, on_delete=models.PROTECT, related_name="amendments",
+    )
+    version = models.PositiveSmallIntegerField()
+    summary = models.CharField(max_length=500)
+    response_required = models.BooleanField(default=True)
+    published_at = models.DateTimeField()
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="created_rfq_amendments",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["rfq", "version"], name="uniq_proc_rfq_amendment_version"),
+        ]
+        ordering = ["rfq", "version"]
 
 
 class RfqLine(TimeStampedModel):
@@ -868,6 +999,8 @@ class RfqLine(TimeStampedModel):
         related_name="rfq_lines", null=True, blank=True,
     )
     line_no = models.PositiveSmallIntegerField(default=0)
+    version = models.PositiveSmallIntegerField(default=1)
+    is_active = models.BooleanField(default=True)
 
     class Meta:
         ordering = ["rfq", "line_no", "id"]
@@ -894,6 +1027,10 @@ class VendorQuotation(FinanceDocument):
     vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="quotations")
     quotation_status = models.CharField(
         max_length=10, choices=QuotationStatus.choices, default=QuotationStatus.DRAFT,
+    )
+    vendor_managed = models.BooleanField(
+        default=False,
+        help_text="True when the external vendor portal owns the draft content.",
     )
     quote_date = models.DateField()
     valid_until = models.DateField(null=True, blank=True)
@@ -927,7 +1064,12 @@ class VendorQuotation(FinanceDocument):
         """Roll quotation line net/tax values into its denormalized header totals."""
         # Quotation gross is the sum of line net values plus their calculated tax.
         agg = self.lines.aggregate(
-            net=models.Sum("net_amount"), tax=models.Sum("tax_amount"),
+            net=models.Sum(
+                "net_amount", filter=~models.Q(response_type=QuotationLineResponse.NO_BID),
+            ),
+            tax=models.Sum(
+                "tax_amount", filter=~models.Q(response_type=QuotationLineResponse.NO_BID),
+            ),
         )
         self.subtotal = agg["net"] or 0
         self.tax_total = agg["tax"] or 0
@@ -964,6 +1106,14 @@ class VendorQuotationLine(TimeStampedModel):
     net_amount = MoneyField(help_text="quantity × unit_price, in kobo.")
     tax_amount = MoneyField(help_text="Tax on the net, in kobo.")
     line_no = models.PositiveSmallIntegerField(default=0)
+    response_type = models.CharField(
+        max_length=12, choices=QuotationLineResponse.choices,
+        default=QuotationLineResponse.QUOTED,
+    )
+    alternative_for = models.ForeignKey(
+        RfqLine, on_delete=models.PROTECT, related_name="alternative_quotation_lines",
+        null=True, blank=True,
+    )
 
     class Meta:
         ordering = ["quotation", "line_no", "id"]
@@ -971,6 +1121,50 @@ class VendorQuotationLine(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.description}: {self.quantity} @ {self.unit_price}"
+
+
+def quotation_attachment_upload_to(instance, filename: str) -> str:
+    """Keep vendor evidence grouped while storage adds an unguessable suffix."""
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(filename).rsplit("/", 1)[-1])
+    return f"quotation-attachments/{instance.quotation_id}/v{instance.revision}/{safe}"
+
+
+class VendorQuotationAttachment(TimeStampedModel):
+    """A small vendor-supplied PDF or image tied to one quotation revision."""
+
+    quotation = models.ForeignKey(
+        VendorQuotation, on_delete=models.CASCADE, related_name="attachments",
+    )
+    revision = models.PositiveSmallIntegerField(default=1)
+    file = models.FileField(upload_to=quotation_attachment_upload_to)
+    original_name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=120)
+    size = models.PositiveIntegerField()
+    uploaded_by_email = models.EmailField(blank=True, default="")
+
+    class Meta:
+        indexes = [models.Index(fields=["quotation", "revision"])]
+
+
+class VendorQuotationSubmission(TimeStampedModel):
+    """Immutable receipt snapshot for each firm vendor submission."""
+
+    quotation = models.ForeignKey(
+        VendorQuotation, on_delete=models.PROTECT, related_name="submissions",
+    )
+    revision = models.PositiveSmallIntegerField()
+    rfq_version = models.PositiveSmallIntegerField()
+    submitted_at = models.DateTimeField()
+    submitted_by_email = models.EmailField()
+    snapshot = models.JSONField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["quotation", "revision"], name="uniq_proc_quotation_submission_revision",
+            ),
+        ]
+        ordering = ["quotation", "-revision"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1062,6 +1256,60 @@ class PurchaseOrder(FinanceDocument):
     def is_fully_received(self) -> bool:
         # Every line must meet its own ordered quantity; aggregate equality could hide an over-received line.
         return all(Decimal(l.received_qty) >= Decimal(l.quantity) for l in self.lines.all())
+
+
+def purchase_order_vendor_pdf_path(instance, filename):
+    """Keep generated vendor copies grouped by tenant, entity, and purchase order."""
+    po = instance.purchase_order
+    return (
+        f"procurement/po-emails/{po.entity.tenant_id}/{po.entity_id}/"
+        f"{po.pk}/{instance.pk or 'new'}/{filename}"
+    )
+
+
+class PurchaseOrderVendorDelivery(TimeStampedModel):
+    """Durable schedule, attempt, and outcome for a purchase-order vendor email."""
+
+    purchase_order = models.ForeignKey(
+        PurchaseOrder, on_delete=models.PROTECT, related_name="vendor_deliveries",
+    )
+    source = models.CharField(
+        max_length=16, choices=PurchaseOrderVendorDeliverySource.choices,
+    )
+    status = models.CharField(
+        max_length=24, choices=PurchaseOrderVendorDeliveryStatus.choices,
+    )
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="requested_purchase_order_vendor_deliveries",
+    )
+    parent = models.ForeignKey(
+        "self", on_delete=models.SET_NULL, null=True, blank=True, related_name="retries",
+    )
+    workflow_instance_id = models.CharField(max_length=64, blank=True, default="")
+    buyer_message = models.TextField(blank=True, default="")
+    recipients = models.JSONField(default=list)
+    cc = models.JSONField(default=list)
+    notification_ids = models.JSONField(default=list)
+    pdf_file = models.FileField(upload_to=purchase_order_vendor_pdf_path, blank=True)
+    queued_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    failure_reason = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["purchase_order", "-created_at"]),
+            models.Index(fields=["status", "created_at"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["purchase_order"],
+                condition=models.Q(status=PurchaseOrderVendorDeliveryStatus.AWAITING_APPROVAL),
+                name="uniq_proc_po_active_email_intent",
+            ),
+        ]
 
 
 class PurchaseOrderLine(TimeStampedModel):

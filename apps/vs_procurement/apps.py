@@ -14,3 +14,4 @@ class VsProcurementConfig(AppConfig):
         """Load handler decorators after Django's application registry is ready."""
         # Import for side effect: registers the spend-approval handlers with vs_workflow.
         from . import workflow_handlers  # noqa: F401
+        from . import receivers  # noqa: F401

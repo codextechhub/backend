@@ -65,6 +65,42 @@ standard paginated `{pagination, data}` envelope (`views/base.py:281-298`).
 | `POST /quotations/<pk>/submit/` | `procurement.quotation.submit` | Make a DRAFT offer firm | - | Submitted full quotation (`views/orders.py:796-810`; `sourcing.py:222-282`) |
 | `POST /quotations/<pk>/award/` | `procurement.quotation.award` | Select a submitted offer and atomically create its DRAFT PO | `order_date?` | `201` full purchase order (`views/orders.py:813-835`; `serializers.py:776-812`) |
 
+### External vendor quotation portal
+
+Issuing an RFQ now creates one signed invitation per invited vendor and emails every
+active contact on that vendor marked to receive RFQs. The public link contains no
+tenant, entity, vendor, or RFQ identifier that the browser can choose. The signed token
+resolves all four on the server, and the vendor must verify an invited email address
+with a one-time code before quotation data is returned. A successful verification
+creates a vendor and invitation-bound session that expires after 24 hours.
+
+The public endpoints are mounted below `/public/rfqs/<signed-token>/`. They support
+preview, email-code request and verification, authenticated form reads, draft saves,
+submission, revision, decline, amendment acknowledgement, and attachment upload or
+download. Public requests are throttled. Vendor sessions are revoked whenever a buyer
+resends an invitation and rotates its link.
+
+Drafts are shared by the invited contacts for one vendor and stay hidden from buyer
+quotation reads. Every current RFQ line must be answered as `QUOTED`, `ALTERNATIVE`, or
+`NO_BID` before submission. Each submit creates an immutable numbered snapshot, sends a
+receipt, and makes the live form read-only. A vendor may reopen it before the deadline;
+the next submit creates another snapshot without replacing the earlier receipt.
+
+The exact deadline is stored as a timezone-aware timestamp. Draft, upload, revise,
+decline, and submit operations re-check it under the RFQ lock. After it passes, existing
+data and receipts remain readable but writes are rejected and the public screen shows
+the expired state. Buyers may extend one vendor's deadline without changing the other
+invitations.
+
+Attachments are limited to five per revision and 500KB per file. Only PDF, PNG, JPEG,
+and WebP are accepted, and the server verifies the file signature rather than trusting
+the browser MIME type. Buyers can review accepted evidence from the quotation detail.
+
+RFQ amendments increment the RFQ version and preserve replaced specification lines as
+inactive history. A response-required amendment reopens submitted live quotations and
+must be acknowledged before the next submit. Scheduled reminders are sent once at 72
+hours and again at 24 hours before the effective vendor deadline.
+
 ## 4. Lifecycle / state machine
 
 ```text
@@ -201,10 +237,9 @@ same `322500` kobo. There is still no journal (`views/orders.py:699-738,796-835`
   them by `created_at DESC, id DESC`; the newest offer is the invitation's canonical
   response and the quotation list uses the same newest-to-oldest cache without N+1
   queries (`views/orders.py:349-364`; `serializers.py:628-652`).
-- **Justified by design:** response deadlines are informative, not enforced. Create/submit
-  checks that the RFQ is ISSUED but does not reject a quote after `response_due_date`;
-  buyers close the RFQ manually when bidding ends (`views/orders.py:699-723`;
-  `sourcing.py:222-267`).
+- ✅ **External response deadlines are enforced.** Vendor writes re-lock the RFQ and
+  invitation, compare the effective vendor deadline with the server clock, and preserve
+  the existing draft or receipt when the deadline has passed (`vendor_portal.py`).
 - ✅ **Sourcing transitions are serialized.** Issue re-locks/rechecks the RFQ; submit and
   award use the shared `RFQ → quotation → vendor` order; close/cancel lock live bids in
   id order after the RFQ. Concurrent edits and lifecycle actions therefore observe the

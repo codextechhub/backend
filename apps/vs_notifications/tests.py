@@ -17,6 +17,8 @@ from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core import mail
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from django.test import TestCase, override_settings
 
 from vs_schools.models import School
@@ -434,6 +436,39 @@ class DeliveryTaskTests(_NotifFixture):
         self.assertEqual(len(mail.outbox), 1)
         self.assertIn("Ada Admin", mail.outbox[0].from_email)
         self.assertIn("system@codexng.com", mail.outbox[0].from_email)
+
+    def test_metadata_cc_is_passed_to_the_email_backend(self):
+        from .tasks import deliver_email_notification
+        notif = self._pending_email()
+        notif.metadata = {"cc": ["backend-test@codexng.com"]}
+        notif.save(update_fields=["metadata"])
+
+        deliver_email_notification(str(notif.id))
+
+        self.assertEqual(mail.outbox[0].cc, ["backend-test@codexng.com"])
+
+    def test_metadata_attachment_is_loaded_from_storage(self):
+        from .tasks import deliver_email_notification
+        storage_name = default_storage.save(
+            "test-notifications/purchase-order.pdf", ContentFile(b"%PDF-1.4 test"),
+        )
+        self.addCleanup(default_storage.delete, storage_name)
+        notif = self._pending_email()
+        notif.metadata = {
+            "attachments": [{
+                "name": "Purchase-Order-PO-001.pdf",
+                "storage_name": storage_name,
+                "content_type": "application/pdf",
+            }],
+        }
+        notif.save(update_fields=["metadata"])
+
+        deliver_email_notification(str(notif.id))
+
+        self.assertEqual(len(mail.outbox[0].attachments), 1)
+        attachment = mail.outbox[0].attachments[0]
+        self.assertEqual(attachment[0], "Purchase-Order-PO-001.pdf")
+        self.assertEqual(attachment[2], "application/pdf")
 
     def test_eager_mode_first_failure_is_final_no_retry(self):
         from unittest import mock

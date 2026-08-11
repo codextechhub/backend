@@ -195,6 +195,8 @@ def apply_approved(document, *, actor_user=None) -> None:
         approve_requisition(document, actor_user=actor_user)
     elif isinstance(document, PurchaseOrder):
         approve_purchase_order(document, actor_user=actor_user)
+        from .po_email import release_after_commit
+        release_after_commit(document.pk, actor_user=actor_user)
     elif isinstance(document, VendorInvoice):
         record(
             entity=document.entity, action=FinanceAuditAction.VENDOR_INVOICE_APPROVED,
@@ -211,7 +213,7 @@ def apply_rejected(document, *, reason: str = "", actor_user=None) -> None:
     Other document types retain their independent ledger status and only change the
     approval overlay.
     """
-    from .models import PurchaseRequisition
+    from .models import PurchaseOrder, PurchaseRequisition
 
     update_fields = ["approval_state", "updated_at"]
     document.approval_state = ProcApprovalState.REJECTED
@@ -219,6 +221,9 @@ def apply_rejected(document, *, reason: str = "", actor_user=None) -> None:
         document.status = DocumentStatus.CANCELLED
         update_fields.append("status")
     document.save(update_fields=update_fields)
+    if isinstance(document, PurchaseOrder):
+        from .po_email import cancel_awaiting
+        cancel_awaiting(document, reason=reason or "Approval was rejected.", actor_user=actor_user)
 
 
 def reset_pending(document) -> None:
@@ -227,7 +232,7 @@ def reset_pending(document) -> None:
     Reverses the submission bookkeeping: a requisition's ledger status rolls back
     PENDING_APPROVAL → DRAFT so it can be edited and re-submitted.
     """
-    from .models import PurchaseRequisition
+    from .models import PurchaseOrder, PurchaseRequisition
 
     if getattr(document, "approval_state", None) != ProcApprovalState.PENDING:
         return
@@ -237,3 +242,6 @@ def reset_pending(document) -> None:
         document.status = DocumentStatus.DRAFT
         update_fields.append("status")
     document.save(update_fields=update_fields)
+    if isinstance(document, PurchaseOrder):
+        from .po_email import cancel_awaiting
+        cancel_awaiting(document, reason="Approval request was withdrawn or cancelled.")

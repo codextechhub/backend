@@ -125,6 +125,72 @@ class NotificationPermission:
 # Authoritative seed list for NotificationEventType rows.
 EVENT_TYPE_REGISTRY = [
 
+    # Procurement vendor portal. These are must-send external emails, so they
+    # bypass per-tenant channel toggles while still retaining delivery history.
+    {
+        "key": "procurement.purchase_order_issued",
+        "label": "Vendor purchase order",
+        "description": "Sends a fully approved purchase order and its PDF to a vendor.",
+        "source_module": "vs_procurement",
+        "supported_channels": [ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "is_transactional": True,
+    },
+    {
+        "key": "procurement.rfq_invitation",
+        "label": "Vendor RFQ invitation",
+        "description": "Invites a vendor contact to respond to an issued RFQ.",
+        "source_module": "vs_procurement",
+        "supported_channels": [ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "is_transactional": True,
+    },
+    {
+        "key": "procurement.rfq_verification_code",
+        "label": "Vendor RFQ verification code",
+        "description": "Verifies a vendor contact before opening a quotation form.",
+        "source_module": "vs_procurement",
+        "supported_channels": [ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "is_transactional": True,
+    },
+    {
+        "key": "procurement.rfq_reminder",
+        "label": "Vendor RFQ reminder",
+        "description": "Reminds a vendor that an RFQ response is outstanding.",
+        "source_module": "vs_procurement",
+        "supported_channels": [ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "is_transactional": True,
+    },
+    {
+        "key": "procurement.quotation_receipt",
+        "label": "Vendor quotation receipt",
+        "description": "Confirms a firm vendor quotation submission.",
+        "source_module": "vs_procurement",
+        "supported_channels": [ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "is_transactional": True,
+    },
+    {
+        "key": "procurement.rfq_amended",
+        "label": "Vendor RFQ amendment",
+        "description": "Notifies a vendor that an issued RFQ changed.",
+        "source_module": "vs_procurement",
+        "supported_channels": [ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "is_transactional": True,
+    },
+    {
+        "key": "procurement.rfq_deadline_extended",
+        "label": "Vendor RFQ deadline extension",
+        "description": "Notifies a vendor of an invitation-specific deadline extension.",
+        "source_module": "vs_procurement",
+        "supported_channels": [ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "is_transactional": True,
+    },
+
     # ── Support Tickets (vs_tickets) ───────────────────────────────────────
 
     {

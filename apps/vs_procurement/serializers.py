@@ -17,8 +17,9 @@ from django.utils import timezone
 from vs_finance.constants import DocumentStatus
 from vs_finance.money import format_naira
 from vs_rbac.fls import FieldSecurityMixin
+from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 
-from .constants import ProcApprovalState
+from .constants import ProcApprovalState, QuotationStatus
 from .purchasing import po_receipt_stage
 from .models import (
     CatalogItem,
@@ -27,6 +28,7 @@ from .models import (
     GoodsReceivedNoteLine,
     PurchaseOrder,
     PurchaseOrderLine,
+    PurchaseOrderVendorDelivery,
     PurchaseRequisition,
     PurchaseRequisitionLine,
     RequestForQuotation,
@@ -34,6 +36,7 @@ from .models import (
     StockItem,
     StockMovement,
     Vendor,
+    VendorContact,
     VendorCategory,
     VendorContract,
     VendorInvoice,
@@ -82,6 +85,15 @@ class VendorCategorySerializer(serializers.ModelSerializer):
         ]
 
 
+class VendorContactSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VendorContact
+        fields = [
+            "id", "name", "email", "phone", "is_primary", "receives_rfqs",
+            "receives_purchase_orders", "is_active",
+        ]
+
+
 class VendorSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     """Vendor detail shape with account labels and field-level sensitive-data gates.
 
@@ -98,6 +110,7 @@ class VendorSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     default_wht_tax_code_value = serializers.CharField(
         source="default_wht_tax_code.code", read_only=True, default=None,
     )
+    contacts = VendorContactSerializer(many=True, read_only=True)
 
     # FLS: vendor banking details are PII used for disbursement - only holders of
     # the sensitive grant see them; everyone else gets the record with these
@@ -110,6 +123,7 @@ class VendorSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         "bank_name": "procurement.vendor.view_sensitive",
         "bank_account_number": "procurement.vendor.view_sensitive",
         "bank_account_name": "procurement.vendor.view_sensitive",
+        "contacts": "procurement.vendor.view_sensitive",
     }
 
     class Meta:
@@ -122,6 +136,7 @@ class VendorSerializer(FieldSecurityMixin, serializers.ModelSerializer):
             "default_expense_account_id", "default_expense_code",
             "default_wht_tax_code_id", "default_wht_tax_code_value",
             "payment_terms", "kyc_status", "risk", "on_hold", "is_active",
+            "contacts",
         ]
 
 
@@ -550,6 +565,7 @@ class RfqLineSerializer(serializers.ModelSerializer):
         fields = [
             "id", "line_no", "description", "quantity",
             "requisition_line_id", "expense_account_id", "expense_code", "tax_code_id",
+            "version", "is_active",
         ]
 
 
@@ -569,7 +585,7 @@ class RfqListSerializer(serializers.ModelSerializer):
         fields = [
             "id", "document_number", "rfq_status", "title",
             "requisition_id", "requisition_number", "issue_date", "response_due_date",
-            "budget_estimate", "line_count", "response_count", "invited_count",
+            "response_due_at", "version", "budget_estimate", "line_count", "response_count", "invited_count",
         ]
 
 
@@ -611,9 +627,11 @@ class RfqDetailSerializer(serializers.ModelSerializer):
         fields = [
             "id", "document_number", "rfq_status", "title",
             "requisition_id", "requisition_number", "issue_date", "response_due_date",
-            "budget_estimate", "notes", "line_count", "response_count", "invited_count",
-            "lines", "invitations", "quotations", "activity",
+            "response_due_at", "version", "budget_estimate", "notes", "line_count", "response_count", "invited_count",
+            "lines", "invitations", "quotations", "amendments", "activity",
         ]
+
+    amendments = serializers.SerializerMethodField()
 
     def get_line_count(self, obj) -> int:
         return len(obj.lines.all())
@@ -638,19 +656,51 @@ class RfqDetailSerializer(serializers.ModelSerializer):
         for q in obj.quotations.all():
             # The view orders created_at DESC, id DESC, so first is deterministically newest.
             quote_by_vendor.setdefault(q.vendor_id, q)
+        request = self.context.get("request")
+        can_view_contacts = bool(request and (
+            is_vision_super_admin(request.user)
+            or user_has_rbac_permission(
+                request.user, "procurement.vendor.view_sensitive",
+                tenant=getattr(request, "rbac_tenant", None) or getattr(request, "tenant", None),
+                branch=getattr(request, "branch", None),
+            )
+        ))
         rows = []
         for inv in obj.invitations.all():
             quote = quote_by_vendor.get(inv.vendor_id)
+            visible_quote = (
+                quote if quote and not (
+                    quote.vendor_managed and quote.quotation_status == QuotationStatus.DRAFT
+                ) else None
+            )
             rows.append({
+                "id": inv.id,
                 "vendor_id": inv.vendor_id,
                 "vendor_code": inv.vendor.code,
                 "vendor_name": inv.vendor.name,
-                "responded": quote is not None,
-                "quotation_id": quote.id if quote else None,
-                "quotation_status": quote.quotation_status if quote else None,
-                "quotation_total": quote.total if quote else None,
+                "responded": visible_quote is not None,
+                "quotation_id": visible_quote.id if visible_quote else None,
+                "quotation_status": visible_quote.quotation_status if visible_quote else None,
+                "quotation_total": visible_quote.total if visible_quote else None,
+                "status": inv.status,
+                "deadline": inv.deadline,
+                "opened_at": inv.opened_at,
+                "draft_started_at": inv.draft_started_at,
+                "submitted_at": inv.submitted_at,
+                "declined_at": inv.declined_at,
+                "decline_reason": inv.decline_reason,
+                "recipients": [
+                    {"name": row.name, "email": row.email} for row in inv.recipients.all()
+                ] if can_view_contacts else [],
             })
         return rows
+
+    def get_amendments(self, obj):
+        return [
+            {"id": row.id, "version": row.version, "summary": row.summary,
+             "response_required": row.response_required, "published_at": row.published_at}
+            for row in obj.amendments.all()
+        ]
 
     def get_quotations(self, obj):
         # Reuse the view's explicit newest-first prefetch cache; ordering here would re-query.
@@ -675,6 +725,7 @@ class VendorQuotationLineSerializer(serializers.ModelSerializer):
             "id", "line_no", "description", "rfq_line_id",
             "expense_account_id", "expense_code",
             "quantity", "unit_price", "tax_code_id", "net_amount", "tax_amount",
+            "response_type", "alternative_for_id",
         ]
 
 
@@ -716,6 +767,8 @@ class QuotationDetailSerializer(serializers.ModelSerializer):
     is_expired = serializers.SerializerMethodField()
     lines = VendorQuotationLineSerializer(many=True, read_only=True)
     activity = serializers.SerializerMethodField()
+    attachments = serializers.SerializerMethodField()
+    submissions = serializers.SerializerMethodField()
 
     class Meta:
         model = VendorQuotation
@@ -725,7 +778,7 @@ class QuotationDetailSerializer(serializers.ModelSerializer):
             "quote_date", "valid_until", "currency_id", "lead_time_days",
             "reference", "notes", "is_expired",
             "subtotal", "tax_total", "total", "total_naira",
-            "awarded_po_id", "awarded_po_number", "lines", "activity",
+            "awarded_po_id", "awarded_po_number", "lines", "attachments", "submissions", "activity",
         ]
 
     def get_total_naira(self, obj) -> str:
@@ -736,6 +789,20 @@ class QuotationDetailSerializer(serializers.ModelSerializer):
 
     def get_activity(self, obj):
         return _sourcing_activity(obj.entity_id, "VendorQuotation", obj.pk)
+
+    def get_attachments(self, obj):
+        return [
+            {"id": row.id, "name": row.original_name, "content_type": row.content_type,
+             "size": row.size, "revision": row.revision, "url": row.file.url}
+            for row in obj.attachments.all()
+        ]
+
+    def get_submissions(self, obj):
+        return [
+            {"id": row.id, "revision": row.revision, "rfq_version": row.rfq_version,
+             "submitted_at": row.submitted_at, "submitted_by_email": row.submitted_by_email}
+            for row in obj.submissions.all()
+        ]
 
 
 # --------------------------------------------------------------------------- #
@@ -778,6 +845,32 @@ class POInvoiceDocumentSerializer(serializers.ModelSerializer):
         fields = ["id", "document_number", "invoice_date", "total", "status", "match_status"]
 
 
+class PurchaseOrderVendorDeliverySerializer(serializers.ModelSerializer):
+    """Operational history without exposing recipient addresses through ordinary PO reads."""
+
+    requested_by_name = serializers.SerializerMethodField()
+    recipient_count = serializers.SerializerMethodField()
+    cc_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PurchaseOrderVendorDelivery
+        fields = [
+            "id", "source", "status", "requested_by_name", "recipient_count", "cc_count",
+            "buyer_message", "queued_at", "sent_at", "cancelled_at", "failure_reason",
+            "created_at", "parent_id",
+        ]
+
+    def get_requested_by_name(self, obj):
+        user = obj.requested_by
+        return (getattr(user, "full_name", "") or user.email) if user else "System"
+
+    def get_recipient_count(self, obj):
+        return len(obj.recipients or [])
+
+    def get_cc_count(self, obj):
+        return len(obj.cc or [])
+
+
 class PurchaseOrderSerializer(serializers.ModelSerializer):
     """Full PO read model: commercial totals, progress, source, and child documents.
 
@@ -802,6 +895,10 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
     quotation_number = serializers.SerializerMethodField()
     receipt_documents = POReceiptDocumentSerializer(source="goods_receipts", many=True, read_only=True)
     invoice_documents = POInvoiceDocumentSerializer(source="vendor_invoices", many=True, read_only=True)
+    email_deliveries = PurchaseOrderVendorDeliverySerializer(
+        source="vendor_deliveries", many=True, read_only=True,
+    )
+    can_email_vendor = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseOrder
@@ -813,6 +910,7 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
             "payment_terms", "narration",
             "subtotal", "tax_total", "total", "total_naira",
             "received_pct", "invoiced_pct", "lines", "receipt_documents", "invoice_documents",
+            "email_deliveries", "can_email_vendor",
         ]
 
     def get_total_naira(self, obj) -> str:
@@ -836,6 +934,12 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
         quotation = next(iter(obj.source_quotation.all()), None)
         return quotation.document_number if quotation else None
 
+    def get_can_email_vendor(self, obj) -> bool:
+        return (
+            obj.status == DocumentStatus.APPROVED
+            and obj.approval_state == ProcApprovalState.APPROVED
+        )
+
 
 class PurchaseOrderListSerializer(PurchaseOrderSerializer):
     """Lighter list row: the nested line/receipt/invoice documents belong to the
@@ -846,11 +950,12 @@ class PurchaseOrderListSerializer(PurchaseOrderSerializer):
     lines = None
     receipt_documents = None
     invoice_documents = None
+    email_deliveries = None
 
     class Meta(PurchaseOrderSerializer.Meta):
         fields = [
             f for f in PurchaseOrderSerializer.Meta.fields
-            if f not in ("lines", "receipt_documents", "invoice_documents")
+            if f not in ("lines", "receipt_documents", "invoice_documents", "email_deliveries")
         ]
 
 
