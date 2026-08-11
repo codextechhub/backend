@@ -220,13 +220,23 @@ def _current_scope_key(*, tenant=None, branch=None):
 
 
 def resolve_security_settings(*, tenant=None, branch=None):
-    """Return effective security values plus the source of every value."""
+    """Return effective security values plus the source of every value.
+
+    ``settings`` is always the **effective** value: a scoped override that is
+    weaker than its parent baseline is clamped back to that baseline here, at
+    read time. Write-time validation alone cannot hold the baseline, because a
+    tenant override saved while the platform was lax stays in the database when
+    the platform later tightens - and every consumer reads through this
+    function, so clamping here closes that gap for all of them at once. The
+    value as stored is preserved under ``configured`` so administration screens
+    can still show what was chosen and why it is not in force.
+    """
     tenant, branch = normalize_scope(tenant=tenant, branch=branch)
     definitions, values = _scoped_values(SECURITY_FIELDS.values(), tenant=tenant, branch=branch)
     current_scope = _current_scope_key(tenant=tenant, branch=branch)
     result = {
-        "settings": {}, "sources": {}, "source_scopes": {}, "overrides": {},
-        "compliance": {},
+        "settings": {}, "configured": {}, "sources": {}, "source_scopes": {},
+        "overrides": {}, "compliance": {},
         "scope": {
             "type": _scope_label(current_scope),
             "tenant": str(tenant.pk) if tenant is not None else None,
@@ -243,19 +253,32 @@ def resolve_security_settings(*, tenant=None, branch=None):
         else:
             value, source = SECURITY_DEFAULTS[field], "default"
         result["settings"][field] = int(value)
+        result["configured"][field] = int(value)
         result["sources"][field] = source
         result["source_scopes"][field] = _scope_label(row.scope_key if row else None)
         result["overrides"][field] = bool(row and row.scope_key == current_scope)
 
     # A non-platform override is bounded by the effective parent value. Branch
     # values compare with the school layer; school values compare with platform.
+    # The parent is itself resolved through this function, so the clamp is
+    # transitive: a branch can never be weaker than platform via a lax school.
     if tenant is not None:
         parent = resolve_security_settings(tenant=tenant) if branch is not None else resolve_security_settings()
         for field, policy in SECURITY_COMPLIANCE.items():
+            boundary = parent["settings"][field]
+            configured = result["configured"][field]
+            if policy["direction"] == "maximum":
+                effective = min(configured, boundary)
+            else:
+                effective = max(configured, boundary)
+            result["settings"][field] = effective
             result["compliance"][field] = {
                 **policy,
-                "boundary": parent["settings"][field],
+                "boundary": boundary,
                 "parent_scope": "school" if branch is not None else "platform",
+                # True when the stored value is weaker than the baseline and is
+                # therefore not the value actually being enforced.
+                "clamped": effective != configured,
             }
     return result
 

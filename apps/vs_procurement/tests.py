@@ -3932,6 +3932,23 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(rfq.rfq_status, RfqStatus.ISSUED)
         self.assertTrue(rfq.document_number)
 
+    def test_zero_invited_vendors_is_a_hard_floor_no_override_can_clear(self):
+        """The competition exception relaxes the configured minimum, never to zero.
+
+        An RFQ with no addressees cannot be quoted against, so it must stay a draft
+        even for a holder of the competition-override permission with a reason.
+        """
+        entity, _, _, _, _ = self.build_p2p()
+        rfq = self._make_rfq(entity, invite=[])
+
+        with self.assertRaises(SourcingError):
+            issue_rfq(rfq)
+        with self.assertRaises(SourcingError):
+            issue_rfq(rfq, competition_exception_reason="Sole source, board approved")
+
+        rfq.refresh_from_db()
+        self.assertEqual(rfq.rfq_status, RfqStatus.DRAFT)
+
     def test_issue_enforces_competitive_minimum_and_audits_exception(self):
         entity, _, vendor, _, _ = self.build_p2p()
         ProcurementSettings.objects.create(

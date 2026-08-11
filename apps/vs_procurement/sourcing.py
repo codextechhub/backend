@@ -109,6 +109,13 @@ def issue_rfq(rfq, *, competition_exception_reason="", actor_user=None):
     invited_count = rfq.invitations.count()
     required_count = policy.minimum_rfq_invited_vendors
     exception_reason = str(competition_exception_reason or "").strip()
+    # One addressee is a hard floor, not a policy minimum: an RFQ with nobody to
+    # send it to cannot be answered, so no override reason makes it meaningful.
+    # The competition exception only relaxes the *configured* minimum down to one.
+    if not invited_count:
+        raise SourcingError(
+            "An RFQ must invite at least one vendor before it can be issued.",
+        )
     competition_exception = invited_count < required_count
     if competition_exception and not exception_reason:
         raise SourcingError(

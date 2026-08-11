@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import logging
 import tempfile
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.files import File
 from django.core.files.storage import default_storage
 from django.db import transaction
@@ -22,6 +24,20 @@ logger = logging.getLogger(__name__)
 EXPORT_ROW_LIMIT = 250_000
 EXPORT_RETENTION_DAYS = 7
 CONCURRENT_EXPORT_LIMIT = 3
+
+
+def export_size_limit():
+    """Largest export the configured storage will actually accept, in bytes.
+
+    The row limit alone cannot keep an export storable: a row carries two
+    free-form JSON blobs, so byte size per row varies by orders of magnitude and
+    250,000 narrow rows and 250,000 wide ones are nowhere near the same file.
+    The default backend (core.storage.DatabaseStorage) refuses anything over
+    MEDIA_DB_MAX_BYTES, and it refuses it at the very end - after the whole
+    export has been generated - with an error the operator cannot act on. So the
+    same ceiling is checked here, while writing, and reported in its own words.
+    """
+    return getattr(settings, "MEDIA_DB_MAX_BYTES", 25 * 1024 * 1024)
 
 
 def audit_filter_snapshot(validated_filters):
@@ -96,24 +112,44 @@ def execute_configuration_audit_export(job_id):
         ).order_by("-created_at")
         queryset = apply_configuration_audit_filters(queryset, job.filters)
         row_count = 0
-        with tempfile.NamedTemporaryFile(mode="w+", encoding="utf-8", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow([
-                "created_at", "action", "target_type", "target", "actor_name",
-                "actor_email", "reason", "scope", "before", "after",
-            ])
-            chunk = []
-            for event in queryset.iterator(chunk_size=500):
-                row_count += 1
-                if row_count > EXPORT_ROW_LIMIT:
-                    raise ValueError("ROW_LIMIT")
-                chunk.append(event)
-                if len(chunk) == 500:
+        # The temp file is opened in BINARY mode: storage backends read this handle
+        # through django.core.files.File and write the chunks straight to their
+        # destination. A text-mode handle yields str chunks, which the default
+        # DatabaseStorage cannot put in a BinaryField (only FileSystemStorage is
+        # forgiving enough to reopen itself in text mode). csv needs a text
+        # interface, so a TextIOWrapper is layered on and detached before the read.
+        with tempfile.NamedTemporaryFile(suffix=".csv") as handle:
+            text = io.TextIOWrapper(handle, encoding="utf-8", newline="", write_through=True)
+            try:
+                writer = csv.writer(text)
+                writer.writerow([
+                    "created_at", "action", "target_type", "target", "actor_name",
+                    "actor_email", "reason", "scope", "before", "after",
+                ])
+                size_limit = export_size_limit()
+                chunk = []
+                for event in queryset.iterator(chunk_size=500):
+                    row_count += 1
+                    if row_count > EXPORT_ROW_LIMIT:
+                        raise ValueError("ROW_LIMIT")
+                    chunk.append(event)
+                    if len(chunk) == 500:
+                        _write_rows(writer, chunk)
+                        chunk = []
+                        # Stop as soon as the file passes what storage accepts,
+                        # rather than generating the rest and failing at save.
+                        text.flush()
+                        if handle.tell() > size_limit:
+                            raise ValueError("SIZE_LIMIT")
+                if chunk:
                     _write_rows(writer, chunk)
-                    chunk = []
-            if chunk:
-                _write_rows(writer, chunk)
-            handle.flush()
+                text.flush()
+                if handle.tell() > size_limit:
+                    raise ValueError("SIZE_LIMIT")
+            finally:
+                # Detach so closing the wrapper never closes the temp file we
+                # are about to hand to storage.
+                text.detach()
             handle.seek(0)
             file_name = f"configuration-audit-{job.requested_at.date()}-{job.pk}.csv"
             storage_name = default_storage.save(
@@ -146,12 +182,26 @@ def execute_configuration_audit_export(job_id):
         logger.exception("Configuration audit export %s failed", job.pk)
         job.status = job.Status.FAILED
         job.completed_at = timezone.now()
-        job.failure_message = (
-            f"This export exceeds the {EXPORT_ROW_LIMIT:,}-row safety limit. "
-            "Narrow the filters and try again."
-            if str(exc) == "ROW_LIMIT"
-            else "The export could not be generated. Try again or narrow the filters."
-        )
+        if str(exc) == "ROW_LIMIT":
+            job.failure_message = (
+                f"This export exceeds the {EXPORT_ROW_LIMIT:,}-row safety limit. "
+                "Narrow the filters and try again."
+            )
+        elif str(exc) == "SIZE_LIMIT":
+            limit = export_size_limit()
+            # Render sub-megabyte ceilings in bytes; "0 MB" tells the reader nothing.
+            readable = (
+                f"{limit / (1024 * 1024):.0f} MB" if limit >= 1024 * 1024
+                else f"{limit:,} bytes"
+            )
+            job.failure_message = (
+                f"This export is larger than the {readable} file limit. "
+                "Narrow the date range or filters and try again."
+            )
+        else:
+            job.failure_message = (
+                "The export could not be generated. Try again or narrow the filters."
+            )
         job.save(update_fields=["status", "completed_at", "failure_message"])
     return job
 

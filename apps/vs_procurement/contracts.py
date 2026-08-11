@@ -12,7 +12,7 @@ from __future__ import annotations
 import datetime
 
 from django.db import transaction
-from django.db.models import DateField, ExpressionWrapper, F
+from django.db.models import Q
 
 from vs_finance.audit import record
 from vs_finance.constants import FinanceAuditAction
@@ -266,12 +266,26 @@ def expiring_contracts(entity, *, as_of=None, within_days=None):
             end_date__gte=as_of, end_date__lte=horizon,
         ).order_by("end_date", "reference")
 
-    # Per-contract notice window: end_date - renewal_notice_days <= as_of <= end_date.
-    return qs.annotate(
-        effective_renewal_window_start=ExpressionWrapper(
-            F("end_date") - F("renewal_notice_days"), output_field=DateField(),
-        ),
-    ).filter(
-        end_date__gte=as_of,
-        effective_renewal_window_start__lte=as_of,
-    ).order_by("end_date", "reference")
+    # Per-contract notice window: end_date - renewal_notice_days <= as_of <= end_date,
+    # rearranged to end_date <= as_of + renewal_notice_days so every comparison is
+    # against a Python-computed date constant.
+    #
+    # Do NOT express this as F("end_date") - F("renewal_notice_days"): subtracting an
+    # integer column from a date column is PostgreSQL-specific. On SQLite the stored
+    # ISO date is coerced numerically ('2026-03-01' -> 2026), so the window start
+    # lands in the 1990s and the filter silently matches every active contract
+    # instead of erroring. Grouping by the handful of distinct notice periods keeps
+    # this a single indexable query that means the same thing on every backend.
+    qs = qs.filter(end_date__gte=as_of)
+    notice_periods = set(
+        qs.values_list("renewal_notice_days", flat=True).distinct()
+    )
+    if not notice_periods:
+        return qs.none()
+    window = Q()
+    for days in notice_periods:
+        window |= Q(
+            renewal_notice_days=days,
+            end_date__lte=as_of + datetime.timedelta(days=days),
+        )
+    return qs.filter(window).order_by("end_date", "reference")

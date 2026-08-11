@@ -3,7 +3,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from django.core.cache import cache
-from django.core.files.storage import FileSystemStorage
+from django.core.files.storage import FileSystemStorage, default_storage
 from django.core.exceptions import ValidationError
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -617,6 +617,60 @@ class RuntimeSettingsAPITests(TestCase):
         self.assertTrue(allowed.data["data"]["overrides"]["failed_login_threshold"])
         self.assertEqual(rejected.status_code, 400, rejected.data)
 
+    def test_tightening_the_platform_baseline_clamps_an_existing_school_override(self):
+        """A stored override must not survive the platform tightening beneath it.
+
+        Write-time validation only sees the baseline as it stands at save time.
+        The value a consumer actually enforces is resolved here, so a school
+        override saved while platform was lax has to be clamped on read.
+        """
+        from vs_config.runtime_settings import (
+            get_security_value,
+            resolve_security_settings,
+        )
+
+        school = make_school(slug="clamp-school")
+        branch = make_branch(school)
+        admin = make_school_admin(branch, email="clamp-admin@example.com")
+        role = make_role(school, name="Clamp security manager")
+        for key in ("config.security.view", "config.security.manage"):
+            make_role_permission(role, make_permission(key))
+        make_assignment(school, admin, role)
+
+        # Platform starts lax at 10, so a school override of 9 is legal to save.
+        self.grant("config.security.view", "config.security.manage")
+        self.client.force_authenticate(self.user)
+        relaxed = self.client.patch(
+            "/v1/config/security-settings/",
+            {"failed_login_threshold": 10, "reason": "Relax platform baseline"},
+            format="json",
+        )
+        self.assertEqual(relaxed.status_code, 200, relaxed.data)
+
+        self.client.force_authenticate(admin)
+        saved = self.client.patch(
+            "/v1/config/security-settings/",
+            {"failed_login_threshold": 9},
+            format="json",
+        )
+        self.assertEqual(saved.status_code, 200, saved.data)
+        self.assertEqual(get_security_value("failed_login_threshold", tenant=school.tenant), 9)
+
+        # Platform then tightens to 5. The school's stored 9 must stop being enforced.
+        self.client.force_authenticate(self.user)
+        tightened = self.client.patch(
+            "/v1/config/security-settings/",
+            {"failed_login_threshold": 5, "reason": "Tighten platform baseline"},
+            format="json",
+        )
+        self.assertEqual(tightened.status_code, 200, tightened.data)
+
+        resolved = resolve_security_settings(tenant=school.tenant)
+        self.assertEqual(resolved["settings"]["failed_login_threshold"], 5)
+        self.assertEqual(resolved["configured"]["failed_login_threshold"], 9)
+        self.assertTrue(resolved["compliance"]["failed_login_threshold"]["clamped"])
+        self.assertEqual(get_security_value("failed_login_threshold", tenant=school.tenant), 5)
+
     def test_branch_security_override_cannot_weaken_school_override(self):
         school = make_school(slug="runtime-branch-school")
         branch = make_branch(school)
@@ -1055,6 +1109,69 @@ class ConfigurationAuditSavedViewsAndExportsTests(TestCase):
                     f"/v1/config/audit-events/export-jobs/{job.pk}/download/"
                 )
                 self.assertEqual(forbidden.status_code, 404)
+
+    @patch("vs_config.tasks.run_configuration_audit_export_task.delay")
+    def test_export_writes_through_the_real_configured_storage_backend(self, delay):
+        """Generate an export against the REAL default_storage, not a substitute.
+
+        The sibling test swaps in FileSystemStorage, which quietly tolerates the
+        str chunks a text-mode temp file produces. The configured backend is
+        DatabaseStorage, whose column is binary and does not - so an export that
+        passes there can still fail for every real user. This test keeps the
+        production backend in place so that gap cannot reopen.
+        """
+        queued = self.client.post(
+            "/v1/config/audit-events/export-jobs/",
+            {"filters": {"action": "config.value.updated"}},
+            format="json",
+        )
+        self.assertEqual(queued.status_code, 201, queued.data)
+        job = ConfigurationAuditExportJob.objects.get(pk=queued.data["data"]["id"])
+
+        execute_configuration_audit_export(job.pk)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, job.Status.COMPLETED, job.failure_message)
+        self.assertGreaterEqual(job.row_count, 1)
+        self.assertTrue(default_storage.exists(job.storage_name))
+        with default_storage.open(job.storage_name, "rb") as handle:
+            body = handle.read()
+        self.assertIsInstance(body, bytes)
+        self.assertIn(b"created_at,action,target_type", body)
+
+        downloaded = self.client.get(
+            f"/v1/config/audit-events/export-jobs/{job.pk}/download/"
+        )
+        self.assertEqual(downloaded.status_code, 200)
+        self.assertIn(b"config.value.updated", b"".join(downloaded.streaming_content))
+
+    @patch("vs_config.tasks.run_configuration_audit_export_task.delay")
+    def test_oversized_export_fails_with_the_size_limit_in_its_own_words(self, delay):
+        """An export too big for storage must say so, not blame the row limit.
+
+        The 250,000-row ceiling cannot keep a file storable on its own, because
+        row width varies with the JSON payloads. Without its own check the
+        storage backend rejects the finished file and the operator is told to
+        'narrow the filters' with no idea what was actually wrong.
+        """
+        queued = self.client.post(
+            "/v1/config/audit-events/export-jobs/", {}, format="json",
+        )
+        self.assertEqual(queued.status_code, 201, queued.data)
+        job = ConfigurationAuditExportJob.objects.get(pk=queued.data["data"]["id"])
+
+        # A ceiling below even a one-row file forces the size path deterministically.
+        with override_settings(MEDIA_DB_MAX_BYTES=10):
+            execute_configuration_audit_export(job.pk)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, job.Status.FAILED)
+        self.assertIn("larger than the 10 bytes file limit", job.failure_message)
+        # Not the row-limit message, and not the generic catch-all.
+        self.assertNotIn("row safety limit", job.failure_message)
+        self.assertNotIn("could not be generated", job.failure_message)
+        # A rejected export must not leave a partial file behind.
+        self.assertFalse(job.storage_name)
 
     @patch("vs_config.tasks.run_configuration_audit_export_task.delay")
     def test_export_queue_is_idempotent_and_limited_to_three_active_jobs(self, delay):

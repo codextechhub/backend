@@ -1,5 +1,6 @@
 import csv
 import json
+import logging
 from datetime import timedelta
 from math import ceil
 from uuid import UUID
@@ -89,6 +90,9 @@ from .runtime_settings import (
 )
 from vs_schools.models import Currency, OwnershipType, TermStructure
 from vs_tenants.models import Tenant
+
+
+logger = logging.getLogger(__name__)
 
 
 # Base API view that binds RBAC permissions and platform-only method guards.
@@ -530,7 +534,13 @@ class IntegrationConnectionTestView(ConfigAPIView):
             )
         except Exception:
             # Provider and SMTP exceptions may contain endpoints or response bodies.
-            # Keep them in server logs, never in this administrator response.
+            # Keep them in server logs, never in this administrator response - the
+            # response says only that the test failed, so the traceback here is the
+            # single place anyone can find out why.
+            logger.exception(
+                "Integration connection test failed for '%s' (actor %s)",
+                connection, request.user.pk,
+            )
             connected = False
 
         record_configuration_event(
