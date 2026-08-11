@@ -159,6 +159,41 @@ def _reject_live_quotations(rfq, *, actor_user=None):
     return len(live)
 
 
+def supersede_vendor_portal_draft(rfq, vendor, *, actor_user=None):
+    """Retire an abandoned portal workspace when a buyer captures the quote by hand.
+
+    A ``vendor_managed`` DRAFT that has never been submitted is a workspace, not an
+    offer, and it is deliberately hidden from the buyer's quotation lists. Left in
+    place it blocked manual capture with a document the buyer could not open, see, or
+    clear. The manual entry is the authoritative record, so the workspace is rejected
+    rather than deleted - whatever the vendor typed stays auditable, and the portal
+    turns read-only for them instead of running a second competing draft.
+
+    A vendor-managed draft that *does* have submissions is a real bid part-way through
+    a revision, so it is left untouched and both documents stand as separate bids.
+    """
+    # The caller already holds the RFQ lock, preserving the RFQ -> quotation order.
+    drafts = rfq.quotations.select_for_update(of=("self",)).select_related("vendor").filter(
+        vendor=vendor, vendor_managed=True, quotation_status=QuotationStatus.DRAFT,
+    ).order_by("id")
+    superseded = 0
+    for quotation in drafts:
+        if quotation.submissions.exists():
+            continue
+        quotation.quotation_status = QuotationStatus.REJECTED
+        quotation.save(update_fields=["quotation_status", "updated_at"])
+        record(
+            entity=quotation.entity, action=FinanceAuditAction.QUOTATION_REJECTED,
+            actor_user=actor_user, target=quotation,
+            message=f"Unsubmitted vendor-portal draft {quotation.document_number} from "
+                    f"{quotation.vendor.code} superseded by a quotation captured in the "
+                    f"console (RFQ {rfq.document_number}).",
+            rfq_id=rfq.pk,
+        )
+        superseded += 1
+    return superseded
+
+
 @transaction.atomic
 def cancel_rfq(rfq, *, reason="", actor_user=None):
     """Abandon an RFQ. Idempotent on terminal states (AWARDED/CLOSED/CANCELLED)."""

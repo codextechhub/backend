@@ -35,7 +35,7 @@ from .models import (
     VendorQuotationLine,
     VendorQuotationSubmission,
 )
-from .serializers import QuotationDetailSerializer
+from .serializers import VendorPortalQuotationSerializer
 
 logger = logging.getLogger(__name__)
 MAX_ATTACHMENT_BYTES = 500 * 1024
@@ -218,7 +218,7 @@ def is_deadline_passed(invitation: RfqInvitation) -> bool:
 def preview(raw_token: str) -> dict:
     invitation = invitation_from_token(raw_token)
     issuer = _issuer_block(invitation.rfq.entity)
-    quotation = invitation.rfq.quotations.filter(vendor=invitation.vendor).order_by("-id").first()
+    quotation = _quotation(invitation)
     return {
         "issuer_name": issuer["name"],
         "logo_url": f"/v1/procurement/public/rfqs/{raw_token}/logo/" if issuer.get("logo") else "",
@@ -232,11 +232,26 @@ def preview(raw_token: str) -> dict:
     }
 
 
+def is_live_recipient(invitation: RfqInvitation, email: str) -> bool:
+    """Check the vendor's CURRENT contact list, not the invitation snapshot.
+
+    ``RfqInvitationRecipient`` rows are a point-in-time record of who was mailed and
+    only refresh when a buyer resends. Treating them as the authorisation source let a
+    contact who had been deactivated, opted out of RFQs, or deleted outright keep
+    requesting codes and reusing live sessions. Authorisation is therefore always read
+    from :class:`VendorContact`, and the snapshot stays purely a delivery record.
+    """
+    return invitation.vendor.contacts.filter(
+        email__iexact=str(email or "").strip(),
+        is_active=True, receives_rfqs=True,
+    ).exists()
+
+
 def request_verification_code(raw_token: str, email: str) -> None:
     invitation = invitation_from_token(raw_token, mark_opened=True)
     normalized = str(email or "").strip().lower()
     recipient = invitation.recipients.filter(email__iexact=normalized).first()
-    if recipient is None:
+    if recipient is None or not is_live_recipient(invitation, normalized):
         raise ValidationError({"email": "That email is not registered for this invitation."})
     code = f"{secrets.randbelow(1_000_000):06d}"
     RfqInvitationVerification.objects.filter(
@@ -288,15 +303,31 @@ def invitation_from_session(raw_token: str, raw_session: str) -> tuple[RfqInvita
     ).first()
     if session is None:
         raise ValidationError({"session": "Your verification has expired. Request a new email code."})
+    # Revoking a contact must end access already in flight, not just block the next
+    # code request - otherwise a withdrawn contact keeps up to 24 hours of write access.
+    if not is_live_recipient(invitation, session.email):
+        session.revoked_at = timezone.now()
+        session.save(update_fields=["revoked_at", "updated_at"])
+        raise ValidationError(
+            {"session": "Your access to this invitation has been withdrawn by the buyer."},
+        )
     session.last_seen_at = timezone.now()
     session.save(update_fields=["last_seen_at", "updated_at"])
     return invitation, session.email
 
 
 def _quotation(invitation: RfqInvitation, *, create: bool = False) -> VendorQuotation | None:
+    """Resolve the portal's own workspace for this invitation.
+
+    Scoped to ``vendor_managed`` on purpose: a buyer may also key a quotation in by
+    hand for the same vendor and RFQ, and that row is theirs. Without this filter the
+    newest-first pick would hand the buyer's document to the external vendor to edit.
+    """
     if create:
         RfqInvitation.objects.select_for_update().get(pk=invitation.pk)
-    quote = invitation.rfq.quotations.filter(vendor=invitation.vendor).order_by("-id").first()
+    quote = invitation.rfq.quotations.filter(
+        vendor=invitation.vendor, vendor_managed=True,
+    ).order_by("-id").first()
     if quote is None and create:
         quote = VendorQuotation.objects.create(
             entity=invitation.rfq.entity, rfq=invitation.rfq, vendor=invitation.vendor,
@@ -357,7 +388,7 @@ def form_payload(invitation: RfqInvitation) -> dict:
             "acknowledged_version": invitation.acknowledged_version,
             "requires_acknowledgement": invitation.acknowledged_version < invitation.rfq.version,
         },
-        "quotation": QuotationDetailSerializer(quote).data if quote else None,
+        "quotation": VendorPortalQuotationSerializer(quote).data if quote else None,
         "latest_submission": latest_submission.snapshot if latest_submission else None,
         "submission_revision": latest_submission.revision if latest_submission else 0,
         "attachments": [
@@ -452,7 +483,7 @@ def save_draft(invitation: RfqInvitation, email: str, body: dict) -> dict:
 
 
 def _snapshot(quote: VendorQuotation, revision: int, invitation: RfqInvitation) -> dict:
-    data = dict(QuotationDetailSerializer(quote).data)
+    data = dict(VendorPortalQuotationSerializer(quote).data)
     data["revision"] = revision
     data["rfq_version"] = invitation.rfq.version
     data["submitted_at"] = timezone.now().isoformat()

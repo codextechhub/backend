@@ -152,7 +152,15 @@ CORS_ALLOW_CREDENTIALS = True
 # be present in every environment (including production).
 from corsheaders.defaults import default_headers
 
-CORS_ALLOW_HEADERS = (*default_headers, "x-impersonation-session", "idempotency-key")
+CORS_ALLOW_HEADERS = (
+    *default_headers,
+    "x-impersonation-session",
+    "idempotency-key",
+    # The public vendor quotation portal authenticates with its verified session
+    # token in this header, so every portal call after email verification is a
+    # preflighted cross-origin request.
+    "x-rfq-session",
+)
 IMPERSONATION_IDLE_TIMEOUT_MINUTES = 30  # Proxy sessions idle beyond this are swept to EXPIRED by a cron job.
 
 SESSION_COOKIE_SAMESITE = "Lax"

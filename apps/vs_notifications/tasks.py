@@ -92,9 +92,15 @@ def deliver_email_notification(self, notification_id: str):
             html_body = notif.html_body
             metadata = notif.metadata or {}
             from_name = metadata.get("from_name")
-            raw_cc = metadata.get("cc", [])
-            cc = [str(value).strip() for value in raw_cc if str(value).strip()] \
-                if isinstance(raw_cc, (list, tuple)) else []
+            # An absent "cc" key means "no opinion" and must fall through to the
+            # platform EMAIL_CC default. Only an explicit list overrides it - that
+            # is how procurement narrows (or empties) the CC for vendor mail
+            # without silently dropping monitoring from every other notification.
+            raw_cc = metadata.get("cc")
+            cc = (
+                [str(value).strip() for value in raw_cc if str(value).strip()]
+                if isinstance(raw_cc, (list, tuple)) else None
+            )
             attachment_refs = metadata.get("attachments", [])
     except Notification.DoesNotExist:
         logger.warning(

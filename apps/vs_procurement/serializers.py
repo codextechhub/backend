@@ -806,6 +806,50 @@ class QuotationDetailSerializer(serializers.ModelSerializer):
 
 
 # --------------------------------------------------------------------------- #
+# Sourcing - external vendor portal read model                                #
+# --------------------------------------------------------------------------- #
+
+class VendorPortalQuotationLineSerializer(serializers.ModelSerializer):
+    """A vendor's own answer line, without the buyer's GL coding.
+
+    ``expense_account`` and ``tax_code`` are copied onto quotation lines from the RFQ
+    so the buyer can post an award, but they are internal chart-of-accounts data and
+    never belong in a response sent outside the organisation.
+    """
+
+    class Meta:
+        model = VendorQuotationLine
+        fields = [
+            "id", "line_no", "rfq_line_id", "description", "quantity",
+            "unit_price", "net_amount", "tax_amount", "response_type",
+        ]
+
+
+class VendorPortalQuotationSerializer(serializers.ModelSerializer):
+    """Quotation shape returned to the external vendor portal.
+
+    Deliberately not :class:`QuotationDetailSerializer`: that buyer read model carries
+    the internal finance-audit feed (buyer staff names and award/rejection wording),
+    expense-account coding, and ``/media/`` attachment URLs that only an authenticated
+    console user can fetch. This serializer is an allow-list of the vendor's own
+    submission content, so widening the buyer shape can never leak outward by default.
+
+    Attachments are intentionally absent: the portal payload lists them separately and
+    they are only retrievable through the session-gated public download route.
+    """
+
+    lines = VendorPortalQuotationLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = VendorQuotation
+        fields = [
+            "id", "document_number", "quotation_status",
+            "quote_date", "valid_until", "currency_id", "lead_time_days",
+            "reference", "notes", "subtotal", "tax_total", "total", "lines",
+        ]
+
+
+# --------------------------------------------------------------------------- #
 # Purchase order                                                              #
 # --------------------------------------------------------------------------- #
 

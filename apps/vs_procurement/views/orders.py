@@ -844,10 +844,10 @@ class QuotationListCreateView(_ProcBase):
         if not RfqInvitation.objects.filter(rfq=rfq, vendor=vendor).exists():
             raise ValidationError(
                 {"vendor": f"Vendor {vendor.code} is not invited to RFQ {rfq.document_number}."})
-        if VendorQuotation.objects.filter(rfq=rfq, vendor=vendor).exists():
-            raise ValidationError({
-                "vendor": "This vendor already has a shared quotation workspace for the RFQ.",
-            })
+        # Multiple bids from one vendor are retained by design, so manual capture is
+        # never blocked. An abandoned (never-submitted) portal draft is retired here
+        # instead - it is hidden from buyer lists, so blocking on it stranded the buyer.
+        sourcing.supersede_vendor_portal_draft(rfq, vendor, actor_user=request.user)
         quote_date = _date(body.get("quote_date"), "quote_date", required=True)
         valid_until = _date(body.get("valid_until"), "valid_until")
         _validate_quote_dates(quote_date, valid_until)

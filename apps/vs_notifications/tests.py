@@ -447,6 +447,33 @@ class DeliveryTaskTests(_NotifFixture):
 
         self.assertEqual(mail.outbox[0].cc, ["backend-test@codexng.com"])
 
+    @override_settings(EMAIL_CC=["monitor@codexng.com"])
+    def test_notification_without_metadata_cc_keeps_the_platform_default(self):
+        """An absent "cc" key means "no opinion", not "send with no CC".
+
+        Procurement narrows the CC for vendor mail by setting the key explicitly. If
+        that were expressed as an always-present list, every other notification on the
+        platform would silently lose its EMAIL_CC monitoring copy.
+        """
+        from .tasks import deliver_email_notification
+        notif = self._pending_email()
+
+        deliver_email_notification(str(notif.id))
+
+        self.assertEqual(mail.outbox[0].cc, ["monitor@codexng.com"])
+
+    @override_settings(EMAIL_CC=["monitor@codexng.com"])
+    def test_explicit_empty_metadata_cc_suppresses_the_platform_default(self):
+        """An explicit empty list is a real instruction: copy nobody."""
+        from .tasks import deliver_email_notification
+        notif = self._pending_email()
+        notif.metadata = {"cc": []}
+        notif.save(update_fields=["metadata"])
+
+        deliver_email_notification(str(notif.id))
+
+        self.assertEqual(mail.outbox[0].cc, [])
+
     def test_metadata_attachment_is_loaded_from_storage(self):
         from .tasks import deliver_email_notification
         storage_name = default_storage.save(

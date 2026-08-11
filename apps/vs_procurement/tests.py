@@ -374,6 +374,162 @@ class VendorQuotationPortalTests(_P2PFixtureMixin, TestCase):
             save_draft(self.invitation, self.vendor.email, {"reference": "LATE"})
         self.assertFalse(VendorQuotation.objects.filter(rfq=self.rfq, vendor=self.vendor).exists())
 
+    def test_portal_payload_withholds_internal_audit_and_gl_coding(self):
+        """The external payload must never carry buyer-internal data."""
+        from vs_procurement.vendor_portal import save_draft
+
+        self._verified()
+        payload = save_draft(self.invitation, self.vendor.email, {
+            "lines": [{
+                "rfq_line": self.line.pk, "response_type": "QUOTED",
+                "quantity": "2", "unit_price": 100_000,
+            }],
+        })
+        quotation = payload["quotation"]
+        # The buyer read model carries a finance-audit feed naming buyer staff, plus
+        # /media/ URLs only an authenticated console user can fetch.
+        self.assertNotIn("activity", quotation)
+        self.assertNotIn("attachments", quotation)
+        self.assertNotIn("vendor_name", quotation)
+        self.assertNotIn("awarded_po_number", quotation)
+        # Expense accounts and tax codes are the buyer's chart of accounts.
+        for line in quotation["lines"]:
+            self.assertNotIn("expense_account_id", line)
+            self.assertNotIn("expense_code", line)
+            self.assertNotIn("tax_code_id", line)
+        # The fields the portal actually renders are still present.
+        for field in ("id", "document_number", "subtotal", "tax_total", "total"):
+            self.assertIn(field, quotation)
+
+    def test_immutable_receipt_snapshot_also_withholds_internal_data(self):
+        """The stored receipt is replayed to the vendor, so it must be clean too."""
+        from vs_procurement.vendor_portal import save_draft, submit
+
+        raw, _ = self._verified()
+        save_draft(self.invitation, self.vendor.email, {
+            "lines": [{
+                "rfq_line": self.line.pk, "response_type": "QUOTED",
+                "quantity": "2", "unit_price": 100_000,
+            }],
+        })
+        submit(self.invitation, self.vendor.email, raw)
+        snapshot = VendorQuotation.objects.get(
+            rfq=self.rfq, vendor=self.vendor,
+        ).submissions.get(revision=1).snapshot
+        self.assertNotIn("activity", snapshot)
+        self.assertEqual(snapshot["revision"], 1)
+
+    def test_deactivating_a_contact_revokes_codes_and_live_sessions(self):
+        """Authorisation follows the current contact list, not the mail snapshot."""
+        from rest_framework.exceptions import ValidationError
+        from vs_procurement.models import RfqInvitationSession
+        from vs_procurement.vendor_portal import (
+            invitation_from_session, request_verification_code,
+        )
+
+        raw, session = self._verified()
+        invitation_from_session(raw, session)  # Access is live to begin with.
+
+        contact = self.vendor.contacts.get(email=self.vendor.email)
+        contact.is_active = False
+        contact.save(update_fields=["is_active", "updated_at"])
+
+        with self.assertRaises(ValidationError):
+            invitation_from_session(raw, session)
+        self.assertIsNotNone(
+            RfqInvitationSession.objects.get(invitation=self.invitation).revoked_at,
+        )
+        with self.assertRaises(ValidationError):
+            request_verification_code(raw, self.vendor.email)
+
+    def test_opting_a_contact_out_of_rfqs_also_revokes_access(self):
+        from rest_framework.exceptions import ValidationError
+        from vs_procurement.vendor_portal import invitation_from_session
+
+        raw, session = self._verified()
+        self.vendor.contacts.update(receives_rfqs=False)
+        with self.assertRaises(ValidationError):
+            invitation_from_session(raw, session)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_manual_capture_supersedes_an_abandoned_portal_draft(self, _permission):
+        """The buyer must never be stranded by a draft they cannot see."""
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+        from vs_procurement.vendor_portal import form_payload, save_draft
+        from vs_procurement.views.orders import _quotation_detail_queryset
+
+        self._verified()
+        abandoned = save_draft(self.invitation, self.vendor.email, {
+            "lines": [{
+                "rfq_line": self.line.pk, "response_type": "QUOTED",
+                "quantity": "2", "unit_price": 100_000,
+            }],
+        })["quotation"]["id"]
+        # Hidden from the buyer, which is exactly why blocking on it stranded them.
+        self.assertFalse(_quotation_detail_queryset(self.entity).filter(pk=abandoned).exists())
+
+        user = get_user_model().objects.create_user(
+            email="buyer-capture@test.com", password="pw", tenant=self.entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Buyer", last_name="Tester",
+        )
+        response = TenantAPIClient(user=user).post(
+            f"/v1/procurement/quotations/?entity={self.entity.code}",
+            {
+                "rfq": self.rfq.pk, "vendor": self.vendor.pk,
+                "quote_date": str(timezone.localdate()),
+                "lines": [{
+                    "rfq_line": self.line.pk, "description": "Printer paper",
+                    "quantity": "2", "unit_price": 95_000,
+                }],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        manual_id = response.data["data"]["id"]
+        self.assertNotEqual(manual_id, abandoned)
+
+        # The workspace is retired but preserved, and now visible to the buyer.
+        retired = VendorQuotation.objects.get(pk=abandoned)
+        self.assertEqual(retired.quotation_status, QuotationStatus.REJECTED)
+        self.assertTrue(retired.lines.exists())
+        self.assertTrue(_quotation_detail_queryset(self.entity).filter(pk=abandoned).exists())
+
+        # The portal turns read-only and never reaches the buyer's document.
+        payload = form_payload(self.invitation)
+        self.assertEqual(payload["quotation"]["id"], abandoned)
+        self.assertFalse(payload["invitation"]["can_edit"])
+
+    def test_manual_capture_leaves_a_submitted_portal_bid_untouched(self):
+        """A bid mid-revision is a real offer, not an abandoned workspace."""
+        from vs_procurement import sourcing
+        from vs_procurement.vendor_portal import revise, save_draft, submit
+
+        raw, _ = self._verified()
+        save_draft(self.invitation, self.vendor.email, {
+            "lines": [{
+                "rfq_line": self.line.pk, "response_type": "QUOTED",
+                "quantity": "2", "unit_price": 100_000,
+            }],
+        })
+        submit(self.invitation, self.vendor.email, raw)
+        revise(self.invitation)  # Back to DRAFT, but it has a submission on record.
+
+        superseded = sourcing.supersede_vendor_portal_draft(self.rfq, self.vendor)
+        self.assertEqual(superseded, 0)
+        quote = VendorQuotation.objects.get(rfq=self.rfq, vendor=self.vendor)
+        self.assertEqual(quote.quotation_status, QuotationStatus.DRAFT)
+
+
+class VendorPortalTransportTests(TestCase):
+    """The portal's custom auth header must survive a cross-origin preflight."""
+
+    def test_session_header_is_allowed_by_cors(self):
+        from django.conf import settings
+
+        allowed = {str(value).lower() for value in settings.CORS_ALLOW_HEADERS}
+        self.assertIn("x-rfq-session", allowed)
+
 
 class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
     def _client(self, entity, email="vendor-console@test.com"):
