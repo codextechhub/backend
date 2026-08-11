@@ -154,3 +154,48 @@ def register_datasets():
             FilterDef("user", "User", FILTER_TEXT, source="user__email"),
         ),
     ))
+
+
+# --------------------------------------------------------------------------- #
+# Screen bindings                                                             #
+# --------------------------------------------------------------------------- #
+# Translate the user list screen's filters into export filters.
+def _translate_users(params):
+    from vs_exports.catalogue import Unmapped
+
+    filters, unmapped = [], []
+    if value := params.get("user_type"):
+        filters.append({"id": "user_type", "values": [value]})
+    if value := params.get("status"):
+        filters.append({"id": "status", "values": [value]})
+    for key in ("q", "search"):
+        if value := params.get(key):
+            filters.append({"id": "email", "value": value})
+    if (value := params.get("branch")) is not None:
+        unmapped.append(Unmapped(
+            "branch", value,
+            "The user export does not filter by branch yet; the file covers the whole "
+            "organisation.",
+        ))
+    if (value := params.get("role")) is not None:
+        unmapped.append(Unmapped(
+            "role", value,
+            "Export Role assignments instead - that dataset is per grant, so it can "
+            "filter by role.",
+        ))
+    return filters, unmapped
+
+
+# Register the administration screens. Called once from AppConfig.ready().
+def register_screens():
+    from vs_exports.catalogue import ScreenBinding, register_screen
+
+    register_screen(ScreenBinding(
+        key="admin.users",
+        handles=(
+            "user_type", "status", "q", "search", "branch", "role",
+        ),
+        label="Administration - Users",
+        dataset_key="admin.users",
+        translate=_translate_users,
+    ))

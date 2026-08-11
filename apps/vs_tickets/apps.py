@@ -12,4 +12,8 @@ class VsTicketsConfig(AppConfig):
         from .export_datasets import register_datasets
 
         register_datasets()
+        # Screen bindings let a filtered list screen become a one-click export.
+        from .export_datasets import register_screens
+
+        register_screens()
 

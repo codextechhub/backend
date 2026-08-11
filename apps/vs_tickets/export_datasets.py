@@ -77,3 +77,60 @@ def register_datasets():
             FilterDef("title", "Title", FILTER_TEXT),
         ),
     ))
+
+
+# --------------------------------------------------------------------------- #
+# Screen bindings                                                             #
+# --------------------------------------------------------------------------- #
+# Translate the ticket list screen's filters into export filters.
+def _translate_tickets(params):
+    """``/v1/support/tickets/`` → filter specs for ``support.tickets``.
+
+    The screen's ``created_from``/``created_to`` pair becomes one date-range filter,
+    which also satisfies the dataset's required window - so a ticket export started
+    from a date-filtered screen matches the screen exactly.
+    """
+    from vs_exports.catalogue import Unmapped
+
+    filters, unmapped = [], []
+    for param, filter_id in (("status", "status"), ("priority", "priority"),
+                             ("category", "category")):
+        if value := params.get(param):
+            filters.append({"id": filter_id, "values": [value]})
+
+    start, end = params.get("created_from"), params.get("created_to")
+    if start or end:
+        window = {"id": "created_at"}
+        if start:
+            window["start"] = start
+        if end:
+            window["end"] = end
+        filters.append(window)
+
+    if value := params.get("q"):
+        filters.append({"id": "title", "value": value})
+    for param, reason in (
+        ("assignee", "The ticket export does not filter by assignee yet."),
+        ("requester", "The ticket export does not filter by who raised it."),
+        ("assigned_to_me", "This is a per-person view with no export equivalent."),
+        ("school", "The ticket export does not filter by school."),
+    ):
+        if (value := params.get(param)) is not None:
+            unmapped.append(Unmapped(param, value, reason))
+    return filters, unmapped
+
+
+# Register the support screens. Called once from AppConfig.ready().
+def register_screens():
+    from vs_exports.catalogue import ScreenBinding, register_screen
+
+    register_screen(ScreenBinding(
+        key="support.tickets",
+        handles=(
+            "status", "priority", "category", "created_from", "created_to",
+            "q", "assignee", "requester", "assigned_to_me", "school",
+        ),
+        label="Support - Tickets",
+        dataset_key="support.tickets",
+        translate=_translate_tickets,
+    ))

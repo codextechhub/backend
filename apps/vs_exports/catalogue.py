@@ -363,6 +363,167 @@ def modules() -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
+# Screen bindings - "export what this filtered table is showing"              #
+# --------------------------------------------------------------------------- #
+#: Query parameters every list screen carries that are never export filters.
+COMMON_SCREEN_PARAMS = frozenset({
+    "page", "page_size", "ordering", "order", "sort", "entity", "tenant",
+    "format", "screen", "cursor", "limit", "offset",
+})
+
+
+class Unmapped:
+    """One screen filter that could not be carried into the export.
+
+    This class exists because the dangerous failure is *silence*. A screen filter
+    that is quietly dropped produces a file **wider** than the table the user was
+    looking at - they asked for overdue invoices and got every invoice - and nothing
+    on the screen would tell them. Every translator therefore reports what it could
+    not carry, and the endpoint hands that to the UI as a blocking-grade warning.
+    """
+
+    def __init__(self, param: str, value, reason: str):
+        self.param = param
+        self.value = value
+        self.reason = reason
+
+    def as_dict(self) -> dict:
+        return {"param": self.param, "value": str(self.value), "reason": self.reason}
+
+
+@dataclass(frozen=True)
+class ScreenBinding:
+    """Maps one module's list screen onto a dataset and its filters.
+
+    The translator lives in the module that owns the screen, because only that module
+    knows what ``?bucket=overdue`` means. vs_exports supplies the vocabulary and the
+    contract; it never learns a screen's filter names.
+    """
+
+    key: str                    # e.g. "finance.invoices"
+    label: str                  # e.g. "Finance - Invoices"
+    dataset_key: str
+    #: ``(params: dict) -> (filters, unmapped)``.
+    translate: callable
+    #: Every parameter the translator understands, whether it can carry it or not.
+    #: Anything the screen sends that is not listed here is reported as unmapped
+    #: rather than assumed harmless: a filter nobody wrote a rule for is exactly the
+    #: one that silently widens the file. Adding a filter to a list screen without
+    #: adding it here makes the export honest by default instead of wrong.
+    handles: tuple = ()
+    #: Extra params this screen carries that are not filters (tab ids, view modes).
+    ignore: tuple = ()
+    #: When the dataset requires a date filter the screen has no equivalent for, cover
+    #: this many days back. Narrowing is safe; widening is not.
+    default_window_days: int = 365
+
+    @property
+    def dataset(self):
+        return get_dataset(self.dataset_key)
+
+    # Serialise for the catalogue endpoint.
+    def describe(self) -> dict:
+        return {
+            "key": self.key,
+            "label": self.label,
+            "dataset": self.dataset_key,
+            "default_window_days": self.default_window_days,
+        }
+
+
+_SCREENS: dict[str, ScreenBinding] = {}
+
+
+# Register one screen binding.
+def register_screen(binding: ScreenBinding) -> ScreenBinding:
+    _SCREENS[binding.key] = binding
+    return binding
+
+
+# Fetch one screen binding by key.
+def get_screen(key: str) -> ScreenBinding | None:
+    return _SCREENS.get(key)
+
+
+# List every bound screen.
+def all_screens() -> list[ScreenBinding]:
+    return sorted(_SCREENS.values(), key=lambda s: s.key)
+
+
+def resolve_screen(binding: ScreenBinding, params: dict, *, today=None) -> dict:
+    """Turn one screen's query parameters into a runnable export configuration.
+
+    Returns ``{filters, carried, unmapped, added, exact}``:
+
+    ``unmapped``
+        Screen filters that could not be expressed. Their presence means the export
+        is **wider** than the screen, which the UI must say out loud.
+    ``added``
+        Filters the export needed that the screen did not supply - in practice the
+        required date window. These make the export *narrower* than the screen, which
+        is safe but still worth showing.
+    ``exact``
+        True only when nothing was dropped: the file will match the table.
+    """
+    dataset = binding.dataset
+    if dataset is None:
+        raise KeyError(binding.dataset_key)
+
+    skip = COMMON_SCREEN_PARAMS | set(binding.ignore)
+    meaningful = {
+        key: value for key, value in params.items()
+        if key not in skip and value not in (None, "")
+    }
+    filters, unmapped = binding.translate(meaningful)
+
+    # A parameter the translator never heard of is unmapped, not carried. Assuming
+    # otherwise would report "we applied your filter" about a filter nobody applied.
+    known = set(binding.handles)
+    for param, value in sorted(meaningful.items()):
+        if param not in known and not any(u.param == param for u in unmapped):
+            unmapped.append(Unmapped(
+                param, value,
+                "This filter is on the screen but the export does not recognise it, "
+                "so the file is not limited by it.",
+            ))
+
+    reported = {u.param for u in unmapped}
+    carried = sorted(param for param in meaningful if param not in reported)
+
+    # A dataset that requires a date window and did not get one from the screen gets
+    # a bounded default rather than being refused - the drawer says how far back.
+    added = []
+    present = {str(f.get("id")) for f in filters}
+    for filter_id in dataset.required_filter_ids:
+        if filter_id in present:
+            continue
+        spec = dataset.filter_def(filter_id)
+        if spec is not None and spec.kind == FILTER_DATE_RANGE:
+            end = today or datetime.date.today()
+            start = end - datetime.timedelta(days=binding.default_window_days)
+            filters.append({
+                "id": filter_id, "start": start.isoformat(), "end": end.isoformat(),
+            })
+            added.append({
+                "id": filter_id,
+                "label": spec.label,
+                "reason": (
+                    f"{dataset.name} needs a date range. The export covers the last "
+                    f"{binding.default_window_days} days; widen it in the builder if "
+                    f"you need more."
+                ),
+            })
+
+    return {
+        "filters": filters,
+        "carried": carried,
+        "unmapped": [u.as_dict() for u in unmapped],
+        "added": added,
+        "exact": not unmapped,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Filter compilation                                                          #
 # --------------------------------------------------------------------------- #
 class FilterError(ValueError):

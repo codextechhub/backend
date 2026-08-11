@@ -119,7 +119,11 @@ def register_datasets():
                       description="Required so an export can never mean 'every invoice ever'."),
             FilterDef("status", "Status", FILTER_CHOICE, choices=_DOC_STATUS),
             FilterDef("payment_status", "Payment status", FILTER_CHOICE, choices=_PAY_STATUS),
+            FilterDef("due_date", "Due date", FILTER_DATE_RANGE,
+                      description="Used by the invoice screen's Overdue tab."),
             FilterDef("customer", "Customer", FILTER_TEXT, source="customer__name"),
+            FilterDef("customer_code", "Customer code", FILTER_TEXT,
+                      source="customer__code"),
             FilterDef("total", "Total", FILTER_NUMBER_RANGE,
                       description="Amounts are in kobo."),
         ),
@@ -262,4 +266,108 @@ def register_datasets():
             FilterDef("created_at", "Created", FILTER_DATE_RANGE, is_primary_date=True),
             FilterDef("name", "Name", FILTER_TEXT),
         ),
+    ))
+
+
+# --------------------------------------------------------------------------- #
+# Screen bindings                                                             #
+# --------------------------------------------------------------------------- #
+# Translate the invoice list screen's filters into export filters.
+def _translate_invoices(params):
+    """``/v1/finance/invoices/`` → filter specs for ``finance.customer_invoices``.
+
+    The screen's ``bucket`` tabs are derived rather than stored, so each one is
+    rebuilt here from the columns that actually back it. ``search`` spans three
+    columns with an OR and has no single-filter equivalent, so it is reported as
+    unmapped rather than dropped - dropping it would hand back every invoice.
+    """
+    import datetime
+
+    from vs_exports.catalogue import Unmapped
+
+    filters, unmapped = [], []
+    today = datetime.date.today()
+
+    if value := params.get("status"):
+        filters.append({"id": "status", "values": [value]})
+    if value := params.get("payment_status"):
+        filters.append({"id": "payment_status", "values": [value]})
+    if value := params.get("customer"):
+        # The screen accepts a code or a numeric id; only the code is a filter here.
+        if str(value).isdigit():
+            unmapped.append(Unmapped(
+                "customer", value,
+                "The screen filtered by an internal customer id. Pick the customer "
+                "again in the builder to carry it over.",
+            ))
+        else:
+            filters.append({"id": "customer_code", "value": str(value).upper()})
+    if value := params.get("search"):
+        unmapped.append(Unmapped(
+            "search", value,
+            "Search looks across invoice number, customer name and customer code at "
+            "once, which an export filter cannot express. Without it the file covers "
+            "every invoice the other filters allow.",
+        ))
+
+    bucket = (params.get("bucket") or "").lower()
+    if bucket == "draft":
+        filters.append({"id": "status", "values": ["DRAFT"]})
+    elif bucket in ("paid", "overdue", "partial", "open"):
+        filters.append({"id": "status", "values": ["POSTED"]})
+        if bucket == "paid":
+            filters.append({"id": "payment_status", "values": ["PAID"]})
+        elif bucket == "partial":
+            filters.append({"id": "payment_status", "values": ["PARTIAL"]})
+        elif bucket == "open":
+            filters.append({"id": "payment_status", "values": ["UNPAID", "PARTIAL"]})
+        else:  # overdue: posted, not settled, and past its due date
+            filters.append({"id": "payment_status", "values": ["UNPAID", "PARTIAL"]})
+            filters.append({
+                "id": "due_date",
+                "end": (today - datetime.timedelta(days=1)).isoformat(),
+            })
+    elif bucket:
+        unmapped.append(Unmapped("bucket", bucket, "This tab has no export equivalent."))
+
+    return filters, unmapped
+
+
+# Translate the customer list screen's filters into export filters.
+def _translate_customers(params):
+    from vs_exports.catalogue import Unmapped
+
+    filters, unmapped = [], []
+    if value := params.get("search"):
+        filters.append({"id": "name", "value": value})
+    if (value := params.get("is_active")) is not None:
+        unmapped.append(Unmapped(
+            "is_active", value,
+            "The customer export does not filter on the active flag yet; the file "
+            "includes inactive customers too.",
+        ))
+    return filters, unmapped
+
+
+# Register the finance screens. Called once from AppConfig.ready().
+def register_screens():
+    from vs_exports.catalogue import ScreenBinding, register_screen
+
+    register_screen(ScreenBinding(
+        key="finance.invoices",
+        handles=(
+            "status", "payment_status", "bucket", "search", "customer",
+        ),
+        label="Finance - Invoices",
+        dataset_key="finance.customer_invoices",
+        translate=_translate_invoices,
+    ))
+    register_screen(ScreenBinding(
+        key="finance.customers",
+        handles=(
+            "search", "is_active",
+        ),
+        label="Finance - Customers",
+        dataset_key="finance.customers",
+        translate=_translate_customers,
     ))

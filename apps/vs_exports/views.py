@@ -32,12 +32,14 @@ from . import analytics, audit, services
 from .catalogue import all_datasets, get_dataset, modules
 from .constants import (
     AuditAction,
+    ExportFormat,
     DownloadOutcome,
     ExportPermission,
     FORMAT_MEDIA,
     RunTrigger,
     Sharing,
     SUCCESSFUL_RUN_STATUSES,
+    ValuesMode,
 )
 from .engine import ExportError, estimate, may_export_dataset, plain_sentence, sample_rows
 from .models import (
@@ -492,6 +494,84 @@ class DefinitionRunView(_ExportBase):
             else "This export is already running - showing the run in progress.",
             ExportRunDetailSerializer(run, context={"request": request}).data,
             status=201 if created else 200,
+        )
+
+
+class FromScreenView(_ExportBase):
+    """``GET /v1/exports/from-screen/?screen=<key>&<the screen's own filters>``.
+
+    "Export what this table is showing." The caller forwards the list screen's query
+    string unchanged and gets back a runnable configuration, an estimate and a sample,
+    ready to hand straight to ``/quick/``.
+
+    The translation lives in the module that owns the screen, because only Finance
+    knows what ``?bucket=overdue`` means. What this view adds is the honesty:
+    ``unmapped`` names every screen filter that could not be carried, and ``exact``
+    is false whenever the file would be **wider** than the table the user was looking
+    at. Silently dropping a filter is the one outcome worth designing against - the
+    user asked for overdue invoices and would get all of them, with nothing on screen
+    to say so.
+    """
+
+    rbac_permission = ExportPermission.CATALOGUE_VIEW
+
+    def get(self, request):
+        from .catalogue import all_screens, get_screen, resolve_screen
+
+        key = request.query_params.get("screen")
+        binding = get_screen(key) if key else None
+        if binding is None:
+            raise ValidationError({
+                "screen": (
+                    f"'{key}' is not a screen that can start an export."
+                    if key else "A 'screen' parameter is required."
+                ),
+                "available": [s.key for s in all_screens()],
+            })
+
+        dataset = binding.dataset
+        if dataset is None:
+            raise NotFound("The dataset behind this screen is no longer published.")
+        if not may_export_dataset(request.user, dataset, self.tenant):
+            raise PermissionDenied(f"You cannot export the {dataset.name} dataset.")
+        scope = self.resolve_scope(dataset)
+
+        resolved = resolve_screen(binding, request.query_params.dict())
+        config = {
+            "dataset_key": dataset.key,
+            "columns": list(dataset.default_columns or dataset.locked_field_ids),
+            "filters": resolved["filters"],
+            "sort": [],
+            "format": ExportFormat.XLSX,
+            "values_mode": ValuesMode.PEOPLE,
+        }
+
+        try:
+            figures = estimate(request.user, dataset, scope, config, self.tenant)
+            headers, rows = sample_rows(request.user, dataset, scope, config, self.tenant)
+        except ExportError as exc:
+            raise ValidationError({"detail": exc.message, "code": exc.code})
+
+        return success_response(
+            "Export configuration prepared from the screen.",
+            {
+                "screen": binding.describe(),
+                "config": config,
+                "carried": resolved["carried"],
+                "unmapped": resolved["unmapped"],
+                "added": resolved["added"],
+                "exact": resolved["exact"],
+                "warning": None if resolved["exact"] else (
+                    "Some filters on this screen cannot be carried into an export, so "
+                    "the file will contain more rows than the table shows. Check the "
+                    "filters in the builder before running it."
+                ),
+                **figures,
+                "sample": {"headers": headers, "rows": rows},
+                "reads_as": plain_sentence(
+                    dataset, config, scope, rows=figures["matching_rows"],
+                ),
+            },
         )
 
 

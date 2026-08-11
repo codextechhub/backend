@@ -20,6 +20,9 @@ urlpatterns = [
     # Quick export - run a configuration that was never saved
     path("quick/", views.QuickExportView.as_view(), name="export-quick"),
 
+    # "Export what this filtered table is showing" - one screen's filters, translated
+    path("from-screen/", views.FromScreenView.as_view(), name="export-from-screen"),
+
     # Definitions
     path("definitions/", views.DefinitionListView.as_view(), name="export-definitions"),
     path("definitions/<int:pk>/", views.DefinitionDetailView.as_view(), name="export-definition-detail"),

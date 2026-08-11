@@ -121,3 +121,46 @@ def register_datasets():
             FilterDef("status", "Status", FILTER_TEXT),
         ),
     ))
+
+
+# --------------------------------------------------------------------------- #
+# Screen bindings                                                             #
+# --------------------------------------------------------------------------- #
+# Translate the collections list screen's filters into export filters.
+def _translate_collections(params):
+    from vs_exports.catalogue import Unmapped
+
+    filters, unmapped = [], []
+    if value := params.get("status"):
+        filters.append({"id": "status", "values": [value]})
+    if value := params.get("provider"):
+        filters.append({"id": "provider", "values": [value]})
+    if value := params.get("search"):
+        filters.append({"id": "reference", "value": value})
+    if value := params.get("customer"):
+        unmapped.append(Unmapped(
+            "customer", value,
+            "The collections export does not filter by customer yet; the file covers "
+            "every payer the other filters allow.",
+        ))
+    if (value := params.get("succeeded")) is not None:
+        unmapped.append(Unmapped(
+            "succeeded", value,
+            "Use the Status filter in the builder to pick the settled states you want.",
+        ))
+    return filters, unmapped
+
+
+# Register the payments screens. Called once from AppConfig.ready().
+def register_screens():
+    from vs_exports.catalogue import ScreenBinding, register_screen
+
+    register_screen(ScreenBinding(
+        key="payments.collections",
+        handles=(
+            "status", "provider", "search", "customer", "succeeded",
+        ),
+        label="Payments - Collections",
+        dataset_key="payments.collections",
+        translate=_translate_collections,
+    ))

@@ -80,6 +80,64 @@ def register_datasets():
             FilterDef("action_type", "Action", FILTER_CHOICE, choices=_ACTION),
             FilterDef("severity", "Severity", FILTER_CHOICE, choices=_SEVERITY),
             FilterDef("status", "Outcome", FILTER_CHOICE, choices=_STATUS),
+            FilterDef("entity_type", "Object type", FILTER_TEXT),
             FilterDef("entity_label", "Object", FILTER_TEXT),
         ),
+    ))
+
+
+# --------------------------------------------------------------------------- #
+# Screen bindings                                                             #
+# --------------------------------------------------------------------------- #
+# Translate the audit console's filters into export filters.
+def _translate_events(params):
+    from vs_exports.catalogue import Unmapped
+
+    filters, unmapped = [], []
+    for param in ("module_key", "severity", "status"):
+        if value := params.get(param):
+            filters.append({"id": param, "values": [value]})
+    if value := params.get("action_type"):
+        filters.append({"id": "action_type", "values": [value]})
+    if value := params.get("entity_type"):
+        filters.append({"id": "entity_type", "value": value})
+
+    # The console spells its window either way round depending on the screen.
+    window = {}
+    if value := (params.get("start") or params.get("date_from")):
+        window["start"] = value
+    if value := (params.get("end") or params.get("date_to")):
+        window["end"] = value
+    if window:
+        filters.append({"id": "event_at", **window})
+    if value := params.get("search"):
+        unmapped.append(Unmapped(
+            "search", value,
+            "Console search spans the summary, the actor and the object at once, "
+            "which an export filter cannot express.",
+        ))
+    if value := params.get("actor"):
+        unmapped.append(Unmapped(
+            "actor", value,
+            "The audit export does not filter by actor yet; the file covers everyone "
+            "the other filters allow.",
+        ))
+    return filters, unmapped
+
+
+# Register the audit screens. Called once from AppConfig.ready().
+def register_screens():
+    from vs_exports.catalogue import ScreenBinding, register_screen
+
+    register_screen(ScreenBinding(
+        key="audit.events",
+        handles=(
+            "module_key", "severity", "status", "action_type", "entity_type",
+            "start", "end", "date_from", "date_to", "search", "actor",
+        ),
+        label="Audit - Activity",
+        dataset_key="audit.events",
+        translate=_translate_events,
+        # An audit console defaults to the recent past; 90 days matches the console.
+        default_window_days=90,
     ))

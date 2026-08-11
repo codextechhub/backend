@@ -10,6 +10,7 @@ of the ordinary vendor read.
 from __future__ import annotations
 
 from vs_exports.catalogue import (
+    FILTER_BOOLEAN,
     FILTER_CHOICE,
     FILTER_DATE_RANGE,
     FILTER_TEXT,
@@ -178,6 +179,8 @@ def register_datasets():
         filters=(
             FilterDef("created_at", "Created", FILTER_DATE_RANGE, is_primary_date=True),
             FilterDef("kyc_status", "KYC status", FILTER_CHOICE, choices=_KYC_STATUS),
+            FilterDef("is_active", "Active", FILTER_BOOLEAN),
+            FilterDef("on_hold", "On hold", FILTER_BOOLEAN),
             FilterDef("name", "Name", FILTER_TEXT),
         ),
     ))
@@ -211,4 +214,114 @@ def register_datasets():
                       is_primary_date=True),
             FilterDef("status", "Status", FILTER_CHOICE, choices=_DOC_STATUS),
         ),
+    ))
+
+
+# --------------------------------------------------------------------------- #
+# Screen bindings                                                             #
+# --------------------------------------------------------------------------- #
+# Translate the purchase-order list screen's filters into export filters.
+def _translate_purchase_orders(params):
+    from vs_exports.catalogue import Unmapped
+
+    filters, unmapped = [], []
+    if value := params.get("status"):
+        filters.append({"id": "status", "values": [value]})
+    if value := params.get("vendor"):
+        filters.append({"id": "vendor", "value": value})
+    for key in ("q", "search"):
+        if value := params.get(key):
+            unmapped.append(Unmapped(
+                key, value,
+                "Search spans the PO number and the vendor at once, which an export "
+                "filter cannot express.",
+            ))
+    if value := params.get("rfq"):
+        unmapped.append(Unmapped(
+            "rfq", value,
+            "The purchase-order export cannot filter by the RFQ an order came from.",
+        ))
+    return filters, unmapped
+
+
+# Translate the vendor list screen's filters into export filters.
+def _translate_vendors(params):
+    from vs_exports.catalogue import Unmapped
+
+    filters, unmapped = [], []
+    truthy = {"true": True, "1": True, "yes": True, "false": False, "0": False, "no": False}
+
+    if value := params.get("kyc_status"):
+        filters.append({"id": "kyc_status", "values": [value]})
+    for key in ("q", "search"):
+        if value := params.get(key):
+            filters.append({"id": "name", "value": value})
+    for key in ("is_active", "on_hold"):
+        raw = params.get(key)
+        if raw is None:
+            continue
+        parsed = truthy.get(str(raw).lower())
+        if parsed is None:
+            unmapped.append(Unmapped(key, raw, "Not a yes/no value the export understands."))
+        else:
+            filters.append({"id": key, "value": parsed})
+    if value := params.get("purchase_eligible"):
+        unmapped.append(Unmapped(
+            "purchase_eligible", value,
+            "Purchase eligibility is worked out from KYC, hold state and contract "
+            "cover together, so it has no single export filter. Filter on KYC status "
+            "and hold instead.",
+        ))
+    return filters, unmapped
+
+
+# Translate the vendor-invoice list screen's filters into export filters.
+def _translate_vendor_invoices(params):
+    from vs_exports.catalogue import Unmapped
+
+    filters, unmapped = [], []
+    if value := params.get("status"):
+        filters.append({"id": "status", "values": [value]})
+    if value := params.get("match_status"):
+        filters.append({"id": "match_status", "values": [value]})
+    if value := params.get("vendor"):
+        filters.append({"id": "vendor", "value": value})
+    for key in ("q", "search"):
+        if value := params.get(key):
+            unmapped.append(Unmapped(
+                key, value, "Search spans several columns at once.",
+            ))
+    return filters, unmapped
+
+
+# Register the procurement screens. Called once from AppConfig.ready().
+def register_screens():
+    from vs_exports.catalogue import ScreenBinding, register_screen
+
+    register_screen(ScreenBinding(
+        key="procurement.purchase_orders",
+        handles=(
+            "status", "vendor", "q", "search", "rfq",
+        ),
+        label="Procurement - Purchase orders",
+        dataset_key="procurement.purchase_orders",
+        translate=_translate_purchase_orders,
+    ))
+    register_screen(ScreenBinding(
+        key="procurement.vendors",
+        handles=(
+            "kyc_status", "is_active", "on_hold", "purchase_eligible", "q", "search",
+        ),
+        label="Procurement - Vendors",
+        dataset_key="procurement.vendors",
+        translate=_translate_vendors,
+    ))
+    register_screen(ScreenBinding(
+        key="procurement.vendor_invoices",
+        handles=(
+            "status", "match_status", "vendor", "q", "search",
+        ),
+        label="Procurement - Vendor invoices",
+        dataset_key="procurement.vendor_invoices",
+        translate=_translate_vendor_invoices,
     ))

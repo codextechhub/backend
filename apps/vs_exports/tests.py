@@ -1427,3 +1427,179 @@ class CatalogueRegistrationTests(TestCase):
             self.assertTrue(
                 dataset.locked_field_ids, f"{dataset.key} has no locked column",
             )
+
+
+# --------------------------------------------------------------------------- #
+# Export from a filtered table                                                #
+# --------------------------------------------------------------------------- #
+class FromScreenTests(_ExportFixture, TestCase):
+    """"Export what this table is showing", and the honesty that makes it safe.
+
+    The property under test throughout is that a screen filter is never *silently*
+    dropped. Dropping one widens the file beyond the table the user was looking at,
+    and nothing on screen would say so.
+    """
+
+    def setUp(self):
+        self.build()
+        self.client = TenantAPIClient(user=self.admin)
+
+    def _get(self, query):
+        return self.client.get(f"/v1/exports/from-screen/?{query}")
+
+    def test_an_unknown_screen_says_which_ones_exist(self):
+        response = self._get("screen=finance.nonsense")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("finance.invoices", str(response.json()))
+
+    def test_a_screen_with_no_filters_still_prepares_a_runnable_config(self):
+        response = self._get(f"screen=finance.invoices&entity={self.entity.code}")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(data["config"]["dataset_key"], DATASET)
+        self.assertTrue(data["exact"])
+        self.assertEqual(data["unmapped"], [])
+        # The dataset requires a date window the screen never supplied.
+        self.assertEqual([a["id"] for a in data["added"]], ["invoice_date"])
+
+    def test_screen_filters_are_carried_into_the_export(self):
+        response = self._get(
+            f"screen=finance.invoices&entity={self.entity.code}"
+            f"&status=POSTED&payment_status=UNPAID"
+        )
+        data = response.json()["data"]
+        by_id = {f["id"]: f for f in data["config"]["filters"]}
+        self.assertEqual(by_id["status"]["values"], ["POSTED"])
+        self.assertEqual(by_id["payment_status"]["values"], ["UNPAID"])
+        self.assertEqual(sorted(data["carried"]), ["payment_status", "status"])
+        self.assertTrue(data["exact"])
+
+    def test_a_derived_tab_is_rebuilt_from_the_columns_behind_it(self):
+        """The Overdue tab is posted + not settled + past due, not a stored flag."""
+        response = self._get(
+            f"screen=finance.invoices&entity={self.entity.code}&bucket=overdue"
+        )
+        data = response.json()["data"]
+        by_id = {f["id"]: f for f in data["config"]["filters"]}
+        self.assertEqual(by_id["status"]["values"], ["POSTED"])
+        self.assertEqual(sorted(by_id["payment_status"]["values"]), ["PARTIAL", "UNPAID"])
+        self.assertIn("due_date", by_id)
+        self.assertTrue(data["exact"])
+
+    def test_a_filter_that_cannot_be_carried_is_named_not_dropped(self):
+        """The whole point: search spans three columns, so it cannot become a filter
+        spec. Saying so is what stops the user exporting every invoice by accident."""
+        response = self._get(
+            f"screen=finance.invoices&entity={self.entity.code}&search=northgate"
+        )
+        data = response.json()["data"]
+        self.assertFalse(data["exact"])
+        self.assertEqual(data["unmapped"][0]["param"], "search")
+        self.assertEqual(data["unmapped"][0]["value"], "northgate")
+        self.assertIn("more rows than the table shows", data["warning"])
+        self.assertNotIn("search", data["carried"])
+
+    def test_paging_parameters_are_not_treated_as_filters(self):
+        response = self._get(
+            f"screen=finance.invoices&entity={self.entity.code}&page=3&page_size=50"
+            f"&ordering=-invoice_date"
+        )
+        data = response.json()["data"]
+        self.assertTrue(data["exact"])
+        self.assertEqual(data["carried"], [])
+
+    def test_the_prepared_config_is_accepted_by_quick_export(self):
+        """The output of this endpoint has to be runnable as-is, or the drawer needs
+        to know things the screen does not."""
+        prepared = self._get(
+            f"screen=finance.invoices&entity={self.entity.code}&status=DRAFT"
+        ).json()["data"]["config"]
+        prepared["format"] = ExportFormat.CSV
+
+        response = self.client.post(
+            f"/v1/exports/quick/?entity={self.entity.code}", prepared, format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        run = ExportRun.objects.get(reference=response.json()["data"]["reference"])
+        self.assertEqual(run.status, RunStatus.COMPLETED)
+        self.assertEqual(run.trigger, RunTrigger.QUICK)
+
+    def test_the_estimate_reflects_the_screens_filters(self):
+        """A narrowing filter has to actually narrow the count, or the number shown in
+        the drawer is a lie."""
+        everything = self._get(
+            f"screen=finance.invoices&entity={self.entity.code}"
+        ).json()["data"]
+        narrowed = self._get(
+            f"screen=finance.invoices&entity={self.entity.code}&status=POSTED"
+        ).json()["data"]
+        self.assertEqual(everything["matching_rows"], 4)
+        self.assertEqual(narrowed["matching_rows"], 0)   # the fixture posts nothing
+
+    def test_a_tenant_scoped_screen_needs_no_entity(self):
+        response = self._get("screen=audit.events")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["config"]["dataset_key"], "audit.events")
+
+    def test_a_screen_respects_the_datasets_permission(self):
+        """Binding a screen does not widen access: the dataset's own key still gates it."""
+        response = TenantAPIClient(user=self.analyst).get(
+            "/v1/exports/from-screen/?screen=audit.events",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_every_bound_screen_points_at_a_published_dataset(self):
+        from vs_exports.catalogue import all_screens, get_dataset as _get
+
+        for screen in all_screens():
+            self.assertIsNotNone(
+                _get(screen.dataset_key),
+                f"{screen.key} points at missing dataset {screen.dataset_key}",
+            )
+
+    def test_every_bound_screen_translates_without_raising(self):
+        """A translator that blows up on an unfamiliar parameter would take the
+        module's list screen down with it."""
+        from vs_exports.catalogue import all_screens, resolve_screen
+
+        noise = {
+            "status": "X", "q": "abc", "search": "abc", "page": "2",
+            "bucket": "nonsense", "is_active": "maybe", "created_from": "2026-01-01",
+            "unknown_param": "1",
+        }
+        for screen in all_screens():
+            resolved = resolve_screen(screen, dict(noise))
+            self.assertIsInstance(resolved["filters"], list)
+            self.assertIsInstance(resolved["unmapped"], list)
+
+    def test_an_unrecognised_parameter_is_reported_as_unmapped(self):
+        """A param nobody wrote a rule for must not pass silently either."""
+        from vs_exports.catalogue import get_screen, resolve_screen
+
+        resolved = resolve_screen(
+            get_screen("finance.invoices"), {"some_new_filter": "42"},
+        )
+        self.assertNotIn("some_new_filter", resolved["carried"])
+
+    def test_every_handled_param_actually_does_something(self):
+        """``handles`` is the promise that a param was considered. If a screen lists
+        one but the translator has no branch for it, the param is reported as carried
+        while changing nothing - the silent widening this whole design exists to stop.
+        """
+        from vs_exports.catalogue import all_screens
+
+        # Values chosen to be plausible for whichever kind the param turns out to be.
+        probes = {
+            "created_from": "2026-01-01", "created_to": "2026-12-31",
+            "start": "2026-01-01", "end": "2026-12-31",
+            "date_from": "2026-01-01", "date_to": "2026-12-31",
+            "is_active": "true", "on_hold": "false", "assigned_to_me": "true",
+        }
+        silent = []
+        for screen in all_screens():
+            for param in screen.handles:
+                value = probes.get(param, "probe")
+                filters, unmapped = screen.translate({param: value})
+                if not filters and not unmapped:
+                    silent.append(f"{screen.key}.{param}")
+        self.assertEqual(silent, [], "; ".join(silent))
