@@ -743,7 +743,7 @@ def _build_default_templates() -> dict:
 
         # ── workflow.final_approved ─────────────────────────────────────────
         ("workflow.final_approved", C.IN_APP): {
-            "subject": "",
+            "subject": "{{ document_type_title }} Approved",
             "body": (
                 "Fully approved: '{{ document_title }}' has been approved by "
                 "{{ final_approver_name }} and is now complete."

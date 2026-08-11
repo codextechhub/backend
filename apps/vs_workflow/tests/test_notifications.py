@@ -147,6 +147,7 @@ class WorkflowNotificationTests(TestCase):
 
         rows = self._feed_rows(self.requester, "workflow.final_approved")
         self.assertEqual(rows.count(), 1)
+        self.assertEqual(rows.first().subject, "Platform User Creation Approved")
         self.assertEqual(
             rows.first().body,
             "Fully approved: 'Platform user creation: Manuel Ola' has been approved "
@@ -174,6 +175,7 @@ class WorkflowNotificationTests(TestCase):
                 )
 
         row = self._feed_rows(self.requester, "workflow.final_approved").get()
+        self.assertEqual(row.subject, "Purchase Requisition Approved")
         self.assertIn("Purchase requisition: REQ-0042", row.body)
         self.assertIn("approved by Ada Approver", row.body)
 

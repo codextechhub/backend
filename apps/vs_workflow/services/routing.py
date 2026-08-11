@@ -46,9 +46,14 @@ def _notify(instance: WorkflowInstance, event_key: str,
     else:
         document_title = title or f"{instance.document_type} #{str(instance.document_object_id)[:8]}"
     document_type = subtitle or instance.document_type.replace("_", " ").title()
+    document_type_title = " ".join(
+        word if word.isupper() else word.capitalize()
+        for word in document_type.split()
+    )
     context = {
         "document_title": document_title,
         "document_type": document_type,
+        "document_type_title": document_type_title,
         **context,
     }
     transaction.on_commit(lambda: dispatch_notification.delay(
