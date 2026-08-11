@@ -1507,6 +1507,14 @@ class VendorInvoice(FinanceDocument):
     vendor_reference = models.CharField(
         max_length=64, blank=True, default="", help_text="The vendor's own invoice number.",
     )
+    creation_idempotency_key = models.CharField(
+        max_length=128, blank=True, default="", editable=False,
+        help_text="Client retry key used to return the original invoice instead of creating another.",
+    )
+    creation_request_hash = models.CharField(
+        max_length=64, blank=True, default="", editable=False,
+        help_text="SHA-256 of the creation payload bound to the idempotency key.",
+    )
     narration = models.CharField(max_length=255, blank=True, default="")
 
     subtotal = MoneyField(help_text="Net of tax, in kobo.")
@@ -1540,6 +1548,11 @@ class VendorInvoice(FinanceDocument):
                 Lower("vendor_reference"), "entity", "vendor",
                 condition=~models.Q(vendor_reference=""),
                 name="uniq_proc_vinvoice_entity_vendor_ref_ci",
+            ),
+            models.UniqueConstraint(
+                fields=["entity", "creation_idempotency_key"],
+                condition=~models.Q(creation_idempotency_key=""),
+                name="uniq_proc_vinvoice_entity_idempotency_key",
             ),
         ]
         indexes = [

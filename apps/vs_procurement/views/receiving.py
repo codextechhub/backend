@@ -7,6 +7,8 @@ approval or edit from silently becoming an accounting mutation.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from decimal import Decimal
 
 from django.db import IntegrityError, transaction
@@ -328,21 +330,47 @@ def _validate_vendor_reference(entity, vendor, reference, *, exclude_id=None):
     reference = str(reference or "").strip()
     if not reference:
         return reference
-    qs = VendorInvoice.objects.filter(
-        entity=entity, vendor=vendor, vendor_reference__iexact=reference,
-    )
-    if exclude_id:
-        qs = qs.exclude(pk=exclude_id)
+    if len(reference) > 64:
+        raise ValidationError({"vendor_reference": "Must be 64 characters or fewer."})
+    qs = _vendor_reference_matches(entity, reference, exclude_id=exclude_id).filter(vendor=vendor)
     if qs.exists():
         raise ValidationError({"vendor_reference": "This vendor invoice number is already recorded."})
     return reference
 
 
+def _vendor_reference_matches(entity, reference, *, exclude_id=None):
+    """Return exact, case-insensitive reference matches inside one ledger entity."""
+    qs = VendorInvoice.objects.filter(
+        entity=entity, vendor_reference__iexact=str(reference or "").strip(),
+    ).select_related("vendor")
+    if exclude_id:
+        qs = qs.exclude(pk=exclude_id)
+    return qs
+
+
+def _confirm_cross_vendor_reference(entity, vendor, reference, confirmed, *, exclude_id=None):
+    """Require an explicit JSON boolean confirmation for a reference used elsewhere."""
+    if not isinstance(confirmed, bool):
+        raise ValidationError({
+            "confirm_cross_vendor_reference": "Must be true or false.",
+        })
+    if not reference or confirmed:
+        return
+    if _vendor_reference_matches(entity, reference, exclude_id=exclude_id).exclude(vendor=vendor).exists():
+        raise ValidationError({
+            "vendor_reference": (
+                "This invoice number is already used by another vendor. "
+                "Review the warning and confirm before continuing."
+            ),
+        })
+
+
 _VENDOR_REFERENCE_CONSTRAINT = "uniq_proc_vinvoice_entity_vendor_ref_ci"
+_VENDOR_INVOICE_IDEMPOTENCY_CONSTRAINT = "uniq_proc_vinvoice_entity_idempotency_key"
 
 
-def _is_vendor_reference_conflict(exc):
-    """Recognize the named invoice-reference constraint across supported drivers."""
+def _constraint_name(exc):
+    """Read a named constraint across supported database drivers."""
     cause = exc.__cause__
     diag = getattr(cause, "diag", None)
     constraint_name = (
@@ -350,9 +378,18 @@ def _is_vendor_reference_conflict(exc):
         or getattr(cause, "constraint_name", None)
     )
     if constraint_name:
-        return constraint_name == _VENDOR_REFERENCE_CONSTRAINT
+        return constraint_name
     # MySQL and SQLite expose the key/index name only in the error payload.
-    return _VENDOR_REFERENCE_CONSTRAINT in str(cause or exc)
+    message = str(cause or exc)
+    for name in (_VENDOR_REFERENCE_CONSTRAINT, _VENDOR_INVOICE_IDEMPOTENCY_CONSTRAINT):
+        if name in message:
+            return name
+    return ""
+
+
+def _is_vendor_reference_conflict(exc):
+    """Recognize the named invoice-reference constraint across supported drivers."""
+    return _constraint_name(exc) == _VENDOR_REFERENCE_CONSTRAINT
 
 
 def _raise_vendor_reference_conflict(exc):
@@ -362,6 +399,32 @@ def _raise_vendor_reference_conflict(exc):
     raise ValidationError({
         "vendor_reference": "This vendor invoice number is already recorded.",
     }) from exc
+
+
+def _creation_idempotency(request):
+    """Validate and fingerprint the optional standard Idempotency-Key header."""
+    key = str(request.headers.get("Idempotency-Key") or "").strip()
+    if len(key) > 128:
+        raise ValidationError({"idempotency_key": "Must be 128 characters or fewer."})
+    if not key:
+        return "", ""
+    payload = json.dumps(request.data, sort_keys=True, separators=(",", ":"), default=str)
+    return key, hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _idempotent_invoice(entity, key, request_hash, actor):
+    """Return the prior result only when the key, actor, and payload all agree."""
+    if not key:
+        return None
+    invoice = _invoice_queryset(entity).filter(creation_idempotency_key=key).first()
+    if invoice is None:
+        return None
+    actor_id = actor.pk if actor and actor.is_authenticated else None
+    if invoice.created_by_id != actor_id or invoice.creation_request_hash != request_hash:
+        raise ValidationError({
+            "idempotency_key": "This idempotency key was already used for a different request.",
+        })
+    return invoice
 
 
 def _write_invoice_lines(entity, invoice, po, lines):
@@ -488,6 +551,55 @@ def _serialize_invoice_detail(invoice):
     ).select_related("actor").order_by("-created_at")[:20]]
     return data
 
+class VendorInvoiceReferenceCheckView(_ProcBase):
+    """Check an exact supplier reference before a user commits the invoice form."""
+
+    rbac_permission = "procurement.vendor_invoice.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        vendor = _resolve_vendor(entity, request.query_params.get("vendor"))
+        reference = str(request.query_params.get("reference") or "").strip()
+        exclude = request.query_params.get("exclude")
+        if exclude not in (None, "") and not str(exclude).isdigit():
+            raise ValidationError({"exclude": "Must be a vendor invoice id."})
+        if not reference:
+            return success_response("Vendor invoice number checked.", data={
+                "same_vendor_duplicate": None,
+                "other_vendor_matches": [],
+                "other_vendor_match_count": 0,
+            })
+        if len(reference) > 64:
+            raise ValidationError({"reference": "Must be 64 characters or fewer."})
+
+        matches = _vendor_reference_matches(
+            entity, reference, exclude_id=int(exclude) if exclude else None,
+        )
+        same_vendor = matches.filter(vendor=vendor).first()
+        other_vendor_qs = matches.exclude(vendor=vendor).order_by("id")
+        other_vendor_match_count = other_vendor_qs.count()
+
+        def match_data(invoice):
+            if invoice is None:
+                return None
+            serialized = VendorInvoiceListSerializer(invoice).data
+            return {
+                "id": invoice.id,
+                "document_number": invoice.document_number,
+                "vendor_code": invoice.vendor.code,
+                "vendor_name": invoice.vendor.name,
+                "invoice_date": invoice.invoice_date,
+                "total": invoice.total,
+                "status": serialized["display_status"],
+            }
+
+        return success_response("Vendor invoice number checked.", data={
+            "same_vendor_duplicate": match_data(same_vendor),
+            "other_vendor_matches": [match_data(invoice) for invoice in other_vendor_qs[:5]],
+            "other_vendor_match_count": other_vendor_match_count,
+        })
+
+
 class VendorInvoiceListCreateView(_ProcBase):
     """GET (list) / POST (create draft bill + lines).
 
@@ -522,6 +634,15 @@ class VendorInvoiceListCreateView(_ProcBase):
         """Create and price a draft bill from entity-validated PO/GRN references."""
         entity = resolve_entity(request)
         body = request.data
+        idempotency_key, request_hash = _creation_idempotency(request)
+        replay = _idempotent_invoice(
+            entity, idempotency_key, request_hash, request.user,
+        )
+        if replay is not None:
+            return success_response(
+                "Vendor invoice already created.",
+                data=_serialize_invoice_detail(replay),
+            )
         lines = _require_lines(body)
         vendor = _resolve_vendor(entity, body.get("vendor"))
         po = None
@@ -532,6 +653,12 @@ class VendorInvoiceListCreateView(_ProcBase):
             if po.vendor_id != vendor.id:
                 raise ValidationError({"vendor": "The selected vendor must match the purchase order."})
         reference = _validate_vendor_reference(entity, vendor, body.get("vendor_reference"))
+        _confirm_cross_vendor_reference(
+            entity,
+            vendor,
+            reference,
+            body.get("confirm_cross_vendor_reference", False),
+        )
         try:
             # Savepoint keeps the surrounding document transaction usable when a
             # concurrent request wins the case-insensitive reference race.
@@ -542,10 +669,21 @@ class VendorInvoiceListCreateView(_ProcBase):
                     due_date=_date(body.get("due_date"), "due_date"),
                     currency=_resolve_currency(entity, body.get("currency")),
                     vendor_reference=reference,
+                    creation_idempotency_key=idempotency_key,
+                    creation_request_hash=request_hash,
                     narration=body.get("narration", ""),
                     created_by=request.user if request.user.is_authenticated else None,
                 )
         except IntegrityError as exc:
+            if _constraint_name(exc) == _VENDOR_INVOICE_IDEMPOTENCY_CONSTRAINT:
+                replay = _idempotent_invoice(
+                    entity, idempotency_key, request_hash, request.user,
+                )
+                if replay is not None:
+                    return success_response(
+                        "Vendor invoice already created.",
+                        data=_serialize_invoice_detail(replay),
+                    )
             _raise_vendor_reference_conflict(exc)
         _write_invoice_lines(entity, invoice, po, lines)
         return success_response(
@@ -616,9 +754,19 @@ class VendorInvoiceDetailView(_ProcBase):
         for field in ("invoice_date", "due_date"):
             if field in body:
                 setattr(invoice, field, _date(body.get(field), field, required=field == "invoice_date"))
-        if "vendor_reference" in body:
+        if "vendor_reference" in body or vendor.id != invoice.vendor_id:
             invoice.vendor_reference = _validate_vendor_reference(
-                entity, vendor, body.get("vendor_reference"), exclude_id=invoice.id,
+                entity,
+                vendor,
+                body.get("vendor_reference", invoice.vendor_reference),
+                exclude_id=invoice.id,
+            )
+            _confirm_cross_vendor_reference(
+                entity,
+                vendor,
+                invoice.vendor_reference,
+                body.get("confirm_cross_vendor_reference", False),
+                exclude_id=invoice.id,
             )
         if "narration" in body:
             invoice.narration = str(body.get("narration") or "")

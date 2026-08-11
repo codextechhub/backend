@@ -1949,6 +1949,143 @@ class VendorInvoiceConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(response.status_code, 404)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_reference_check_reports_same_and_other_vendor_matches(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        other_vendor = Vendor.objects.create(
+            entity=entity, code="OTHER-CHECK", name="Other Check Vendor",
+        )
+        same = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+        same.vendor_reference = "Inv-Shared"
+        same.save(update_fields=["vendor_reference", "updated_at"])
+        other = self.make_bill(entity, other_vendor, [("5300", 1, 250_000, None, None)])
+        other.vendor_reference = "INV-SHARED"
+        other.subtotal = 250_000
+        other.total = 250_000
+        other.save(update_fields=["vendor_reference", "subtotal", "total", "updated_at"])
+        foreign_entity = LedgerEntity.objects.create(
+            name="Foreign Reference Books",
+            code="FOREIGN-REF",
+            kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant,
+        )
+        foreign_vendor = Vendor.objects.create(
+            entity=foreign_entity, code="FOREIGN-CHECK", name="Foreign Check Vendor",
+        )
+        VendorInvoice.objects.create(
+            entity=foreign_entity,
+            vendor=foreign_vendor,
+            invoice_date=datetime.date(2026, 1, 10),
+            vendor_reference="INV-SHARED",
+        )
+
+        response = self._client(entity).get(
+            f"/v1/procurement/vendor-invoices/reference-check/"
+            f"?entity={entity.code}&vendor={vendor.code}&reference=inv-shared",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.data["data"]
+        self.assertEqual(data["same_vendor_duplicate"]["id"], same.id)
+        self.assertEqual(data["other_vendor_match_count"], 1)
+        match = data["other_vendor_matches"][0]
+        self.assertEqual(match["id"], other.id)
+        self.assertEqual(match["document_number"], other.document_number)
+        self.assertEqual(match["vendor_code"], other_vendor.code)
+        self.assertEqual(match["vendor_name"], other_vendor.name)
+        self.assertEqual(match["invoice_date"], other.invoice_date)
+        self.assertEqual(match["total"], 250_000)
+        self.assertEqual(match["status"], "APPROVED")
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=False)
+    def test_reference_check_requires_vendor_invoice_view_permission(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        response = self._client(entity).get(
+            f"/v1/procurement/vendor-invoices/reference-check/"
+            f"?entity={entity.code}&vendor={vendor.code}&reference=INV-1",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_cross_vendor_reference_requires_confirmation_but_same_vendor_stays_blocked(
+        self, _permission,
+    ):
+        entity, _, vendor, _, _ = self.build_p2p()
+        other_vendor = Vendor.objects.create(
+            entity=entity, code="OTHER-CONFIRM", name="Other Confirm Vendor",
+        )
+        existing = self.make_bill(
+            entity, other_vendor, [("5300", 1, 100_000, None, None)],
+        )
+        existing.vendor_reference = "INV-CONFIRM"
+        existing.save(update_fields=["vendor_reference", "updated_at"])
+        payload = {
+            "vendor": vendor.code,
+            "invoice_date": "2026-01-10",
+            "vendor_reference": "inv-confirm",
+            "lines": [{"expense_account": "5300", "quantity": 1, "unit_price": 100_000}],
+        }
+        client = self._client(entity)
+
+        warning = client.post(
+            f"/v1/procurement/vendor-invoices/?entity={entity.code}", payload, format="json",
+        )
+        self.assertEqual(warning.status_code, 400)
+        self.assertIn("confirm before continuing", str(warning.data))
+
+        confirmed = client.post(
+            f"/v1/procurement/vendor-invoices/?entity={entity.code}",
+            {**payload, "confirm_cross_vendor_reference": True},
+            format="json",
+        )
+        self.assertEqual(confirmed.status_code, 201)
+
+        duplicate = client.post(
+            f"/v1/procurement/vendor-invoices/?entity={entity.code}",
+            {**payload, "confirm_cross_vendor_reference": True},
+            format="json",
+        )
+        self.assertEqual(duplicate.status_code, 400)
+        self.assertIn("already recorded", str(duplicate.data))
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_idempotency_key_replays_original_and_rejects_payload_reuse(
+        self, _permission,
+    ):
+        entity, _, vendor, _, _ = self.build_p2p()
+        payload = {
+            "vendor": vendor.code,
+            "invoice_date": "2026-01-10",
+            "vendor_reference": "INV-IDEMPOTENT",
+            "lines": [{"expense_account": "5300", "quantity": 1, "unit_price": 100_000}],
+        }
+        client = self._client(entity)
+        url = f"/v1/procurement/vendor-invoices/?entity={entity.code}"
+
+        created = client.post(
+            url, payload, format="json", HTTP_IDEMPOTENCY_KEY="invoice-attempt-1",
+        )
+        replayed = client.post(
+            url, payload, format="json", HTTP_IDEMPOTENCY_KEY="invoice-attempt-1",
+        )
+
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(replayed.status_code, 200)
+        self.assertEqual(replayed.data["data"]["id"], created.data["data"]["id"])
+        self.assertEqual(VendorInvoice.objects.filter(entity=entity).count(), 1)
+        self.assertEqual(
+            VendorInvoiceLine.objects.filter(vendor_invoice__entity=entity).count(), 1,
+        )
+
+        changed = client.post(
+            url,
+            {**payload, "narration": "A different request"},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="invoice-attempt-1",
+        )
+        self.assertEqual(changed.status_code, 400)
+        self.assertIn("different request", str(changed.data))
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_create_rejects_nonfinite_oversized_and_overprecision_quantity_atomically(
         self, _permission,
     ):

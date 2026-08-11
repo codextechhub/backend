@@ -96,6 +96,8 @@ urlpatterns = [
 
     # Vendor invoices (bills)
     path("vendor-invoices/", views.VendorInvoiceListCreateView.as_view(), name="proc-vendor-invoices"),
+    path("vendor-invoices/reference-check/", views.VendorInvoiceReferenceCheckView.as_view(),
+         name="proc-vendor-invoice-reference-check"),
     path("vendor-invoices/summary/", views.VendorInvoiceSummaryView.as_view(), name="proc-vendor-invoice-summary"),
     path("vendor-invoices/<int:pk>/", views.VendorInvoiceDetailView.as_view(), name="proc-vendor-invoice-detail"),
     path("vendor-invoices/<int:pk>/match/", views.VendorInvoiceMatchView.as_view(), name="proc-vendor-invoice-match"),
