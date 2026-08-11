@@ -115,71 +115,98 @@ Do not use em dashes (Unicode U+2014) anywhere in source code, comments,
 documentation, tests, or user-facing copy. Use a comma, colon, parentheses, or
 an ordinary hyphen (`-`), whichever reads most naturally.
 
-## XVS feature breakdown maintenance
+## XVS requirements documentation maintenance
 
-The XVS module tracker in `docs/frd/` is a living release artifact, not a static
-reference. For every completed backend change, inspect the latest
-`XVS_Module_FR_Breakdown_v*.docx` before asking to commit. Select the latest
-semantic version, ignore Office lock files such as `~$*.docx`, and read the
-document before deciding what must change.
+The XVS requirements documents in `docs/frd/` are living release artifacts, not
+static references. They have two distinct document families:
+
+- The **Module Requirements Document (MRD)** is the cross-module tracker in
+  `docs/frd/module-requirements/`. New files use
+  `XVS_Module_Requirements_Document_v*.docx`; historical files may use
+  `XVS_Module_FR_Breakdown_v*.docx`.
+- A **Functional Requirements Document (FRD)** is the detailed contract for one
+  module. Each available module FRD lives in its own folder under
+  `docs/frd/functional-requirements/`. New files use
+  `*Functional_Requirements_Document_v*.docx`; historical files may use
+  `*_FRD_v*.docx`.
+
+For every completed backend change that can alter product behaviour, inspect the
+latest MRD before asking to commit. Select the latest semantic version across the
+new and historical filename patterns, ignore Office lock files such as
+`~$*.docx`, and read the document before deciding what must change. Then identify
+every affected module and inspect the latest existing FRD in each affected module
+folder. Do not create a missing module FRD automatically. Report that it is
+missing and wait for the user to request its creation.
 
 ### When an update is required
 
-Create a new document version when the completed work changes any documented
-capability, module status, integration state, application ownership, dependency,
-known limitation, priority gap, or recommended build order. This includes a bug
-fix that resolves or changes an item under **Needs Attention** or **Priority
-Gaps**. Pure refactors, test-only changes, formatting, and internal maintenance
-that do not change product behaviour do not require document churn, but state
-that the latest breakdown was checked and why no update was needed.
+Create a new MRD version when completed work changes a documented capability,
+module status, integration state, application ownership, dependency, known
+limitation, priority gap, or recommended build order. This includes a bug fix
+that resolves or changes an item under **Needs Attention** or **Priority Gaps**.
 
-### How to revise it
+Create a new version of each affected existing FRD when completed work changes
+module behaviour, a functional requirement, acceptance criteria, actor or
+permission rules, tenant or branch scope, workflow or lifecycle behaviour, data
+relationships, API or validation contracts, dependencies, audit or notification
+effects, a known limitation, **Needs Attention**, or MRD traceability.
 
-1. Start from the latest document and preserve its visual system, headers,
-   footer, watermark, module numbers, and prior version file. Never overwrite or
-   rename the previous version.
-2. Recheck the affected code and its adjacent flows. Update the module index,
-   backend and integration states, capability table, code ownership, dependencies,
-   and feature count wherever the evidence changed.
+Pure refactors, test-only changes, formatting, and internal maintenance that do
+not change product behaviour do not require document churn. State that the latest
+MRD and affected existing FRDs were checked and why no version change was needed.
+
+### How to revise the documents
+
+1. Start from the latest document in that family. Preserve its visual system,
+   headers, footer, watermark, module number, and prior version file. Never
+   overwrite or rename a previous version.
+2. Recheck the affected code and adjacent flows. In the MRD, update the module
+   index, backend and integration states, capability table, code ownership,
+   dependencies, and capability count wherever evidence changed. In an FRD,
+   update requirements, acceptance, workflows, data and API contracts,
+   operational evidence, and traceability wherever evidence changed.
 3. Treat **Needs Attention** as current state, not history:
-   - remove an item only when the completed implementation and relevant
-     verification fully resolve it;
+   - remove an item only when implementation and relevant verification fully
+     resolve it;
    - rewrite it when the risk is only partly resolved or has changed shape;
    - add newly discovered material gaps, but do not pad the section with optional
      ideas or speculative features.
-4. Reconcile the global sections after every affected-module edit: document
-   control, contents, module index, priority gaps, recommended build order, and
-   change log must agree with the module tables.
-5. Do not carry revision-specific cleanup sections forward mechanically. For
-   example, `Removed or Relocated v2.2 Claims` belongs to v2.3 history. In a later
-   version, replace it with a delta against the immediately previous version only
-   when that delta is useful; otherwise remove it and rely on the change log.
-6. Do not mark frontend delivery, deployment, production adoption, or data
-   migration complete from backend evidence alone. Keep backend completion and
-   integration readiness separate.
-7. Use the document creation and render workflow for `.docx` files. Render every
+4. Reconcile MRD and affected FRDs, but version them independently. Their module
+   status, capability names, current limitations, and traceability must agree.
+5. Reconcile each document's control page, contents, status summaries, current
+   gaps, traceability or global priorities, and change log after editing.
+6. Do not carry revision-specific cleanup sections forward mechanically. Replace
+   them with a delta against the immediately previous version only when useful;
+   otherwise remove them and rely on the change log.
+7. Do not infer frontend delivery, deployment, production adoption, or data
+   migration from backend evidence. Keep backend completion and integration
+   readiness separate.
+8. Use the document creation and render workflow for `.docx` files. Render every
    page and correct clipping, stale version labels, split headings, orphaned
    notes, broken tables, stale contents, and inconsistent page numbers before
-   presenting the document.
+   presenting the documents.
 
 ### Version selection
 
-- Use a patch version such as `2.3.1` for document-only corrections, wording,
-  presentation, or metadata that does not change roadmap meaning.
-- Use a minor version such as `2.4` when functionality is added or removed, a
-  module or integration status changes, a **Needs Attention** item is resolved or
-  added, ownership moves, or priorities change.
-- Use a major version such as `3.0` only for a deliberate restructuring of the
-  module taxonomy, numbering, status model, or product architecture baseline.
+- For the MRD, use a patch version for document-only corrections, presentation,
+  wording, or metadata that does not change roadmap meaning. Use a minor version
+  when functionality, module or integration status, ownership, a current gap, or
+  priorities change. Use a major version only for a deliberate restructuring of
+  the module taxonomy, numbering, status model, or product architecture baseline.
+- For an FRD, use a patch version for document-only corrections, presentation,
+  wording, or metadata. Use a minor version when behaviour, acceptance, status,
+  contracts, dependencies, traceability, or a current gap changes. Use a major
+  version only for a deliberate rewrite of the module's functional baseline or
+  document structure.
 - Derive the next version from the latest file and its document-control record.
-  Update the filename, cover, document control, contents where relevant, and
-  change log together.
+  Update the filename, cover, document control, contents where relevant, source
+  references, and change log together.
 
 ### Review and commit gate
 
-Generate the revised breakdown after implementation and verification, then give
-the user the code summary and new document for review. Do not stage or commit the
-implementation or generated breakdown until the user approves them, unless the
-user explicitly waives this review gate. After approval, stage only the intended
-files, never use `git add -A`, and never include Office lock files or render
-artifacts in the commit.
+Generate revised MRD and FRD versions after implementation and verification,
+then give the user the code summary and new documents for review. Do not stage or
+commit the implementation or generated documents until the user approves them,
+unless the user explicitly waives this review gate. After approval, stage only
+the intended files, never use `git add -A`, and never include Office lock files,
+rendered PDFs, page images, or other render artifacts in the commit.
