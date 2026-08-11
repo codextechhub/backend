@@ -2,9 +2,10 @@
 
 Registers every ``procurement.<resource>.<action>`` key enforced by the
 vs_procurement views into the RBAC Permission registry and grants newly-created links
-to the platform admin roles. Existing permission rows and explicit role-link decisions
-are never rewritten, which makes the command safe to re-run after administrators have
-customised RBAC data.
+to the platform admin roles - except the break-glass keys in
+:data:`NEVER_GRANTED_BY_DEFAULT`, which are registered but handed to nobody. Existing
+permission rows and explicit role-link decisions are never rewritten, which makes the
+command safe to re-run after administrators have customised RBAC data.
 
 Run order::
 
@@ -25,9 +26,23 @@ _PLATFORM_ROLE_NAMES = {"xvs_super_admin": "XVS Super Admin", "xvs_platform_admi
 # sensitivity → whether the permission must flow through approvals / audit
 _RESTRICTED = {"SENSITIVE", "CRITICAL"}
 
+#: Keys that are **registered but never granted** by seeding, to any role.
+#:
+#: Ordinary seeding is additive: every key is handed to the platform admin roles so the
+#: product works out of the box. A break-glass control must not arrive that way - if
+#: releasing a spend approval without review were granted by default, "granted to nobody"
+#: would be a comment rather than a fact. These keys exist in the registry so an
+#: administrator can assign them deliberately, and until somebody does, nobody holds them.
+NEVER_GRANTED_BY_DEFAULT = frozenset({
+    "procurement.approval.override",
+})
+
 # (resource_name, resource_label, [(action, sensitivity), ...])
 PROCUREMENT_RESOURCES = [
-    ("approval",       "spend approvals",       [("approve", "SENSITIVE"), ("approve_senior", "CRITICAL"), ("manage", "SENSITIVE")]),
+    ("approval",       "spend approvals",       [("approve", "SENSITIVE"), ("approve_senior", "CRITICAL"), ("manage", "SENSITIVE"),
+                                                 # Break-glass: release a parked approval nobody can decide.
+                                                 # Registered here, granted to nobody - see NEVER_GRANTED_BY_DEFAULT.
+                                                 ("override", "CRITICAL")]),
     ("settings",       "procurement settings",  [("view", "NORMAL"), ("update", "SENSITIVE")]),
     ("competition",    "competitive bidding policy", [("override", "CRITICAL")]),
     ("catalog_item",   "catalog items",         [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL")]),
@@ -159,6 +174,10 @@ class Command(BaseCommand):
                 )
                 granted = 0
                 for perm in all_perms:
+                    # A break-glass key is registered but never auto-granted; assigning
+                    # it stays an explicit administrative act.
+                    if perm.key in NEVER_GRANTED_BY_DEFAULT:
+                        continue
                     _, link_created = TenantRolePermission.objects.get_or_create(
                         role=role,
                         permission=perm,

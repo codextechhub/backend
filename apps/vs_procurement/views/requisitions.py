@@ -21,7 +21,7 @@ from vs_finance.views import resolve_entity
 from vs_workflow.models import WorkflowInstance
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 
-from .. import approval_parking, approvals
+from .. import approval_override, approval_parking, approvals
 from ..constants import ProcApprovalState
 from ..models import (
     PurchaseOrder,
@@ -100,6 +100,12 @@ def _filter_requisitions(qs, params):
         # stays bounded however many documents a misconfigured tenant has parked.
         parked_pks = approval_parking.parked_document_id_subquery(PurchaseRequisition)
         qs = qs.filter(pk__in=parked_pks) if parked else qs.exclude(pk__in=parked_pks)
+    overridden = _bool_param(params.get("approved_by_override"))
+    if overridden is not None:
+        # Approved without review: a parked stage released by a permissioned human
+        # instead of decided. Same bounded-subquery shape as the parked filter.
+        override_pks = approval_override.overridden_document_id_subquery(PurchaseRequisition)
+        qs = qs.filter(pk__in=override_pks) if overridden else qs.exclude(pk__in=override_pks)
     if (search := params.get("search", "").strip()):
         qs = qs.filter(
             Q(document_number__icontains=search) | Q(title__icontains=search)
@@ -142,6 +148,7 @@ class RequisitionListCreateView(_ProcBase):
             # still parked. Rows that are not PENDING approval cost nothing.
             page_context=lambda page: {
                 "parked_requisition_ids": approval_parking.parked_document_ids(page),
+                "overridden_requisition_ids": approval_override.overridden_document_ids(page),
             },
         )
 

@@ -15,7 +15,7 @@ from rest_framework.views import APIView
 from core.pagination import XVSPagination
 from core.response import success_response
 from vs_finance.views import resolve_entity
-from vs_rbac.permissions import IsAuthenticatedAndActive
+from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 from vs_workflow.models import (
     WorkflowStageAction,
     WorkflowStageApprover,
@@ -25,9 +25,10 @@ from vs_workflow.serializers import StageActionWriteSerializer
 from vs_workflow.services import actions as workflow_actions
 from vs_workflow.services.routing import preview_next_approval_stage
 
-from .. import approval_parking
+from .. import approval_override, approval_parking
 from ..constants import (
     PROCUREMENT_APPROVAL_TYPES,
+    WF_APPROVAL_OVERRIDE_PERMISSION,
     WF_DOCTYPE_PURCHASE_ORDER,
     WF_DOCTYPE_REQUISITION,
     WF_DOCTYPE_VENDOR_INVOICE,
@@ -234,6 +235,87 @@ def _detail(entity, instance, snapshot, document, object_id):
         } for log in instance.audit_logs.all()],
     })
     return data
+
+
+def _entity_workflow_document(entity, workflow_id):
+    """Resolve one procurement workflow and its document inside ``entity``.
+
+    Deliberately *not* the eligibility lookup :func:`_pending_context` performs: a parked
+    stage has no eligible approver by definition, so the actor releasing it is never in
+    the frozen snapshot. Isolation is therefore carried entirely by the entity: the
+    instance must belong to the entity's tenant, be one of Procurement's own document
+    families, and resolve to a document in *this* entity's books. A foreign tenant, a
+    foreign entity, a finance or payout workflow and a genuinely unknown id all return
+    the same 404, so possession of a workflow id reveals nothing.
+    """
+    instance = (
+        WorkflowInstance.all_objects
+        .filter(
+            pk=workflow_id, tenant=entity.tenant,
+            document_type__in=PROCUREMENT_APPROVAL_TYPES,
+        )
+        .select_related("current_stage")
+        .first()
+    )
+    missing = NotFound("No Procurement approval with this id exists in the selected entity.")
+    if instance is None:
+        raise missing
+    try:
+        object_id = int(instance.document_object_id)
+    except (TypeError, ValueError):
+        raise missing
+    document = DOCUMENT_MODELS[instance.document_type].objects.filter(
+        entity=entity, pk=object_id,
+    ).first()
+    if document is None:
+        raise missing
+    return instance, document
+
+
+class ProcurementApprovalOverrideView(APIView):
+    """Release a **parked** approval without a vote, on a written reason.
+
+    The escape hatch for a document nobody is able to decide (see
+    :mod:`vs_procurement.approval_parking`). Gated on ``procurement.approval.override``,
+    a CRITICAL key granted to no role by default; the service re-checks it against the
+    document's own tenant and refuses anything that is not actually parked, so this view
+    cannot widen the capability. Every release writes an immutable override record, a
+    workflow audit entry naming the actor, and a finance audit row.
+
+    POST body: ``reason`` (required, free text).
+
+    docstring-name: Override a parked approval
+    """
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = WF_APPROVAL_OVERRIDE_PERMISSION
+
+    def post(self, request, workflow_id):
+        """Release the entity-verified parked stage and report where the document landed."""
+        entity = resolve_entity(request)
+        instance, document = _entity_workflow_document(entity, workflow_id)
+        override = approval_override.release_parked_document(
+            document, actor_user=request.user,
+            reason=request.data.get("reason"),
+            branch=getattr(request, "branch", None),
+        )
+        instance.refresh_from_db()
+        return success_response("Parked approval released by override.", data={
+            "id": instance.id,
+            "workflow_status": instance.status,
+            "current_stage_label": getattr(instance.current_stage, "label", None),
+            "document_type": instance.document_type,
+            "document_id": document.pk,
+            "approval_state": getattr(document, "approval_state", ""),
+            "document_status": getattr(document, "status", ""),
+            "override": {
+                "id": override.pk,
+                "stage_code": override.stage_code,
+                "amount": override.amount,
+                "reason": override.reason,
+                "overridden_by": _user_name(request.user),
+                "overridden_at": override.created_at,
+            },
+        })
 
 
 class ProcurementApprovalListView(APIView):

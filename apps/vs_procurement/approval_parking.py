@@ -31,6 +31,10 @@ What it must never do
     * Reach outside procurement. Every query is bounded to
       :data:`~vs_procurement.constants.PROCUREMENT_APPROVAL_TYPES`.
 
+When nobody can be granted the permission in time, the last resort is
+:mod:`vs_procurement.approval_override`, which builds on the same locked "is it parked"
+predicate defined here (:func:`lock_parked_stage`) so the two can never disagree.
+
 Because the repair only ever fires on a snapshot of size zero, it cannot change a
 stage's advance arithmetic retroactively: an ``ANY`` stage with no approvers had no
 possible vote, and a ``UNANIMOUS`` stage requires ``eligible_count > 0`` before it can
@@ -74,6 +78,43 @@ def _empty_active_stages():
             stage_instance=OuterRef("pk"), attempt=OuterRef("attempt"),
         )),
     ).select_related("stage", "instance")
+
+
+def lock_parked_stage(stage_instance_id):
+    """Lock one stage instance and return it only if it is *still* genuinely parked.
+
+    The single in-transaction definition of "parked", shared by the lazy repair below and
+    by the override in :mod:`vs_procurement.approval_override`, so the two can never
+    disagree about what they are allowed to touch. Returns ``None`` when any precondition
+    has moved underneath the caller - a repair staffed the stage, a vote landed, the
+    instance went terminal - which the caller must treat as a refusal, not a retry.
+
+    Must be called inside an open transaction; the lock is held until it commits.
+    """
+    stage_instance = (
+        # ``of="self"`` locks only the stage-instance row: the joined instance and
+        # branch are nullable sides of an outer join, which Postgres refuses to lock.
+        WorkflowStageInstance.objects.select_for_update(of=("self",))
+        .select_related("stage", "instance", "instance__tenant", "instance__branch")
+        .filter(pk=stage_instance_id)
+        .first()
+    )
+    if stage_instance is None:
+        return None
+    instance = stage_instance.instance
+    if stage_instance.status != WorkflowStageStatus.ACTIVE:
+        return None
+    if instance.status != WorkflowInstanceStatus.IN_PROGRESS:
+        return None
+    if instance.document_type not in PROCUREMENT_APPROVAL_TYPES:
+        return None
+    # Emptiness is the whole precondition. A stage with even one eligible approver has a
+    # human who can decide it: nothing to repair, and nothing for an override to release.
+    if WorkflowStageApprover.objects.filter(
+        stage_instance=stage_instance, attempt=stage_instance.attempt,
+    ).exists():
+        return None
+    return stage_instance
 
 
 # --------------------------------------------------------------------------- #
@@ -144,32 +185,15 @@ class _ResolutionCache:
 def _repair_one(stage_instance_id, cache: _ResolutionCache) -> int:
     """Refill one empty approver snapshot under a row lock. Returns rows created."""
     with transaction.atomic():
-        stage_instance = (
-            # ``of="self"`` locks only the stage-instance row: the joined instance and
-            # branch are nullable sides of an outer join, which Postgres refuses to lock.
-            WorkflowStageInstance.objects.select_for_update(of=("self",))
-            .select_related("stage", "instance", "instance__tenant", "instance__branch")
-            .filter(pk=stage_instance_id)
-            .first()
-        )
+        # Re-validate every precondition inside the lock: a concurrent vote, skip or
+        # terminal transition may have landed between detection and here, and the freeze
+        # guarantee (a populated snapshot is never rewritten or added to) is part of it.
+        # Two concurrent callers serialise on that lock, so the loser sees the winner's
+        # rows and does nothing.
+        stage_instance = lock_parked_stage(stage_instance_id)
         if stage_instance is None:
             return 0
         instance = stage_instance.instance
-        # Re-validate every precondition inside the lock. A concurrent vote, skip or
-        # terminal transition may have landed between detection and here.
-        if stage_instance.status != WorkflowStageStatus.ACTIVE:
-            return 0
-        if instance.status != WorkflowInstanceStatus.IN_PROGRESS:
-            return 0
-        if instance.document_type not in PROCUREMENT_APPROVAL_TYPES:
-            return 0
-        # The freeze guarantee: a populated snapshot is never rewritten or added to.
-        # Two concurrent callers serialise on the lock above, so the loser sees the
-        # winner's rows here and does nothing.
-        if WorkflowStageApprover.objects.filter(
-            stage_instance=stage_instance, attempt=stage_instance.attempt,
-        ).exists():
-            return 0
 
         eligible = cache.resolve(stage_instance.stage, instance)
         if not eligible:
@@ -276,6 +300,29 @@ def parked_document_ids(documents) -> set:
 def is_document_parked(document) -> bool:
     """Whether one procurement document is parked, repairing it first if it can be."""
     return document.pk in parked_document_ids([document])
+
+
+def parked_stage_instance(document):
+    """The ACTIVE, unstaffed stage instance blocking ``document``, or ``None``.
+
+    Runs the same repair-then-recheck pass as :func:`is_document_parked`, so a document
+    that only *looked* parked (somebody has since been granted the permission) yields
+    ``None`` here. Callers that intend to act on the stage must still re-assert the
+    precondition under a row lock: see :func:`lock_parked_stage`.
+    """
+    if document.pk not in parked_document_ids([document]):
+        return None
+    return (
+        _empty_active_stages()
+        .filter(
+            instance__document_content_type=_content_type(type(document)),
+            instance__document_object_id=str(document.pk),
+        )
+        .order_by("-attempt")
+        .first()
+    )
+
+
 
 
 def parked_document_id_subquery(model):

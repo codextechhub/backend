@@ -484,19 +484,24 @@ class RequisitionSerializer(serializers.ModelSerializer):
     ``status`` is the shared finance-document lifecycle while ``approval_state`` is the
     spend-workflow overlay. Clients receive both and must not infer one from the other.
     ``is_parked`` is a third, derived signal: PENDING but nobody can act on it.
+    ``approved_by_override`` is a fourth: it was released without a vote, by a named
+    human holding ``procurement.approval.override``. An APPROVED requisition carrying
+    this flag was never reviewed, which is exactly what makes it worth showing.
     """
 
     lines = RequisitionLineSerializer(many=True, read_only=True)
     estimated_total_naira = serializers.SerializerMethodField()
     requested_by_name = serializers.SerializerMethodField()
     is_parked = serializers.SerializerMethodField()
+    approved_by_override = serializers.SerializerMethodField()
     cost_center_code = serializers.CharField(source="cost_center.code", read_only=True, default=None)
     cost_center_name = serializers.CharField(source="cost_center.name", read_only=True, default=None)
 
     class Meta:
         model = PurchaseRequisition
         fields = [
-            "id", "document_number", "status", "approval_state", "is_parked", "title",
+            "id", "document_number", "status", "approval_state", "is_parked",
+            "approved_by_override", "title",
             "request_date", "needed_by", "requested_by_id", "requested_by_name",
             "cost_center_id", "cost_center_code", "cost_center_name",
             "justification", "estimated_total", "estimated_total_naira", "created_at", "lines",
@@ -520,6 +525,20 @@ class RequisitionSerializer(serializers.ModelSerializer):
 
             return is_document_parked(obj)
         return obj.pk in parked_ids
+
+    def get_approved_by_override(self, obj) -> bool:
+        """Released without review by a permissioned human, rather than decided.
+
+        Resolved for the whole page at once through ``overridden_requisition_ids``, the
+        same shape ``is_parked`` uses; a single-document response falls back to one
+        indexed existence check.
+        """
+        overridden_ids = self.context.get("overridden_requisition_ids")
+        if overridden_ids is None:
+            from .approval_override import is_document_overridden
+
+            return is_document_overridden(obj)
+        return obj.pk in overridden_ids
 
     def get_requested_by_name(self, obj) -> str:
         user = obj.requested_by

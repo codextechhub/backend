@@ -29,6 +29,7 @@ import re
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.conf import settings
+from django.contrib.contenttypes.fields import GenericForeignKey
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models, transaction
 from django.db.models.functions import Lower
@@ -1845,3 +1846,97 @@ class VendorAssessment(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.vendor_id} · {self.assessment_date} · {self.grade}"
+
+
+# --------------------------------------------------------------------------- #
+# Parked-approval override - the break-glass record                           #
+# --------------------------------------------------------------------------- #
+
+class ApprovalOverride(TimeStampedModel):
+    """One audited release of a **parked** spend approval, recorded forever.
+
+    A parked document (see :mod:`vs_procurement.approval_parking`) is one whose active
+    approval stage has an empty approver snapshot: nobody is able to decide it. A holder
+    of ``procurement.approval.override`` may release that stage without a vote, and this
+    row is the durable evidence of that act: who, when, which document, what it was worth
+    at the time, and why.
+
+    **Why a dedicated table rather than columns on the documents.**
+    :class:`~vs_procurement.constants.ProcApprovalState` has four values and genuinely
+    cannot express "approved without review", so something new had to be stored. Fields
+    on the documents would mean the same five columns on four models (requisition, PO,
+    vendor invoice, vendor payment), null on virtually every row, four migrations, and no
+    natural home for a *second* release when a two-stage ladder parks twice. A generic
+    side table records one row per release event, keeps the documents' own schemas clean,
+    and is trivially append-only: the whole point of the record is that it can never be
+    tidied away, so :meth:`save` refuses updates outright.
+
+    ``amount`` is the document's workflow amount **at the moment of the override**, copied
+    rather than joined: the released document may legitimately change value afterwards, and
+    the question an auditor asks is "how much did this person wave through?".
+    """
+
+    entity = models.ForeignKey(
+        "vs_finance.LedgerEntity", on_delete=models.PROTECT,
+        related_name="procurement_approval_overrides",
+        help_text="Ledger entity of the released document; the tenant isolation boundary.",
+    )
+    # The released document, generically. Mirrors how vs_workflow points at its own
+    # documents, so one table covers every approvable procurement type without
+    # procurement growing a fifth, sixth, … override table later.
+    document_content_type = models.ForeignKey(
+        "contenttypes.ContentType", on_delete=models.PROTECT, related_name="+",
+    )
+    document_object_id = models.PositiveBigIntegerField()
+    document = GenericForeignKey("document_content_type", "document_object_id")
+    #: Denormalised ``workflow_document_type`` token, for filtering without a join.
+    document_type = models.CharField(max_length=100, db_index=True)
+    document_number = models.CharField(
+        max_length=48, blank=True, default="",
+        help_text="Reference as it read when released; the document may be renumbered.",
+    )
+
+    #: ``WorkflowInstance.id`` as a plain string, matching PurchaseOrderVendorDelivery -
+    #: procurement records the engine's identifier without taking a hard cross-app FK.
+    workflow_instance_id = models.CharField(max_length=64, blank=True, default="")
+    #: Code of the stage that was released; it is the stage that never ran.
+    stage_code = models.CharField(max_length=64, blank=True, default="")
+    stage_attempt = models.PositiveIntegerField(default=1)
+
+    overridden_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="procurement_approval_overrides",
+        help_text="The human accountable for the release. Never null: the override is the human.",
+    )
+    amount = MoneyField(help_text="The document's approval amount when released, in kobo.")
+    reason = models.TextField(
+        help_text="The actor's own words, stored verbatim and never editable.",
+    )
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["entity", "-created_at"]),
+            # Serves the "approved without review" list filter, which looks up by
+            # document family and primary key.
+            models.Index(fields=["document_content_type", "document_object_id"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        """Create-only: an override record is evidence, so it is never rewritten.
+
+        Enforced here rather than by convention because the reason and the actor are the
+        entire value of the row - a later edit would turn the audit trail into a claim.
+        A mistaken override is corrected by a new, separately audited action, exactly as
+        the ledger corrects by reversal rather than by edit.
+        """
+        if self.pk is not None and not self._state.adding:
+            from .exceptions import ApprovalOverrideError
+
+            raise ApprovalOverrideError(
+                "An approval override is an immutable audit record and cannot be edited.",
+            )
+        return super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"{self.document_type} {self.document_object_id} released by {self.overridden_by_id}"

@@ -6636,14 +6636,11 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(req.status, DocumentStatus.CANCELLED)
 
 
-class ParkedApprovalTests(_P2PFixtureMixin, TestCase):
-    """Parked spend: nobody can approve it, and the repair that makes it reachable.
+class _ParkingFixtureMixin(_P2PFixtureMixin):
+    """Users, real RBAC grants, and a requisition that parks on submission.
 
-    ``vs_workflow`` freezes eligibility once, at stage activation. A stage activated
-    with zero eligible approvers is therefore unreachable for that attempt no matter how
-    RBAC changes afterwards, so blocking self-approval without a repair would simply
-    trade one bug for another. These tests pin both halves: the block, and the repair
-    that lets a newly permissioned approver pick the work up with no resubmission.
+    Shared by the parking tests and the override tests: both need a document nobody can
+    decide, and both need grants to travel through the real registry rather than a patch.
     """
 
     # -- fixtures ------------------------------------------------------------ #
@@ -6717,6 +6714,17 @@ class ParkedApprovalTests(_P2PFixtureMixin, TestCase):
         req = self._requisition(entity, requester)
         instance = submit_for_approval(req, actor_user=requester)
         return req, instance, requester
+
+
+class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
+    """Parked spend: nobody can approve it, and the repair that makes it reachable.
+
+    ``vs_workflow`` freezes eligibility once, at stage activation. A stage activated
+    with zero eligible approvers is therefore unreachable for that attempt no matter how
+    RBAC changes afterwards, so blocking self-approval without a repair would simply
+    trade one bug for another. These tests pin both halves: the block, and the repair
+    that lets a newly permissioned approver pick the work up with no resubmission.
+    """
 
     # -- no template is a refusal, not a park -------------------------------- #
 
@@ -7106,6 +7114,492 @@ class ParkedApprovalTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(
             parked_large, parked_small,
             "an all-parked page must not cost more as the page grows: no per-stage lock.",
+        )
+
+
+class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
+    """Releasing a parked approval: who may, when, and what it leaves behind.
+
+    The override is the only way a procurement document can reach APPROVED without a
+    vote, so these tests are mostly refusals. The two that matter most are that it is
+    refused on anything a human could still decide (otherwise it is an approver bypass,
+    not an escape hatch), and that what it produces is permanently distinguishable from
+    a document somebody actually reviewed.
+    """
+
+    OVERRIDE_KEY = "procurement.approval.override"
+
+    # -- fixtures ------------------------------------------------------------ #
+
+    def _overrider(self, entity, email="overrider@t.com"):
+        """A user holding only the override key, in ``entity``'s tenant."""
+        user = self._user(email, tenant=entity.tenant)
+        self._grant(user, self.OVERRIDE_KEY, tenant=entity.tenant, role_key="proc-breakglass")
+        return user
+
+    def _override_url(self, entity, instance):
+        return f"/v1/procurement/approvals/{instance.id}/override/?entity={entity.code}"
+
+    def _post_override(self, user, entity, instance, reason="Vendor cut-off is tomorrow."):
+        from core.test_utils import TenantAPIClient
+
+        return TenantAPIClient(user=user).post(
+            self._override_url(entity, instance), {"reason": reason}, format="json",
+        )
+
+    # -- refusals ------------------------------------------------------------ #
+
+    def test_override_is_refused_without_the_dedicated_permission(self):
+        """Holding every ordinary requisition permission is not enough."""
+        from vs_procurement.models import ApprovalOverride
+
+        entity, _, _, _, _ = self.build_p2p()
+        req, instance, _ = self._park(entity)
+        outsider = self._user("no-override@t.com", tenant=entity.tenant)
+        self._grant(outsider, "procurement.requisition.view", tenant=entity.tenant,
+                    role_key="proc-reader")
+        self._grant(outsider, "procurement.approval.approve", tenant=entity.tenant,
+                    role_key="proc-reader")
+
+        response = self._post_override(outsider, entity, instance)
+
+        self.assertEqual(response.status_code, 403)
+        req.refresh_from_db()
+        self.assertEqual(req.approval_state, ProcApprovalState.PENDING)
+        self.assertFalse(ApprovalOverride.objects.exists())
+
+    def test_override_service_refuses_an_unpermissioned_actor(self):
+        """The permission lives in the service, not only on the view.
+
+        A future caller that forgets the view gate must not thereby acquire the
+        capability, so the check is re-run against the document's own tenant.
+        """
+        from vs_procurement.approval_override import release_parked_document
+        from vs_procurement.exceptions import ApprovalOverrideNotPermittedError
+        from vs_procurement.models import ApprovalOverride
+
+        entity, _, _, _, _ = self.build_p2p()
+        req, _, _ = self._park(entity)
+        outsider = self._user("service-outsider@t.com", tenant=entity.tenant)
+
+        with self.assertRaises(ApprovalOverrideNotPermittedError):
+            release_parked_document(req, actor_user=outsider, reason="Because I said so.")
+        self.assertFalse(ApprovalOverride.objects.exists())
+
+    def test_override_is_refused_without_a_real_reason(self):
+        """Blank, whitespace-only and missing reasons are all refused, and write nothing."""
+        from vs_procurement.models import ApprovalOverride
+
+        entity, _, _, _, _ = self.build_p2p()
+        req, instance, _ = self._park(entity)
+        actor = self._overrider(entity)
+
+        for reason in ("", "   ", "\n\t "):
+            with self.subTest(reason=repr(reason)):
+                response = self._post_override(actor, entity, instance, reason=reason)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(
+                    response.data["error"]["code"], "APPROVAL_OVERRIDE_REASON_INVALID",
+                )
+
+        from core.test_utils import TenantAPIClient
+
+        omitted = TenantAPIClient(user=actor).post(
+            self._override_url(entity, instance), {}, format="json",
+        )
+        self.assertEqual(omitted.status_code, 400)
+
+        req.refresh_from_db()
+        self.assertEqual(req.approval_state, ProcApprovalState.PENDING)
+        self.assertFalse(ApprovalOverride.objects.exists())
+
+    def test_override_is_refused_when_somebody_can_still_decide(self):
+        """The safety property: an override can never be used to bypass an approver.
+
+        Granting the approving permission un-parks the document through Round 1's repair.
+        From that moment the answer is a decision, and the override must refuse - even
+        though the approver has not voted and the stage snapshot was empty a moment ago.
+        """
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_PERMISSION
+        from vs_procurement.models import ApprovalOverride
+
+        entity, _, _, _, _ = self.build_p2p()
+        req, instance, _ = self._park(entity)
+        actor = self._overrider(entity)
+        self._grant(
+            self._user("real-approver@t.com", tenant=entity.tenant),
+            WF_DEFAULT_MANAGER_PERMISSION, tenant=entity.tenant,
+        )
+
+        response = self._post_override(actor, entity, instance)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["error"]["code"], "APPROVAL_NOT_PARKED")
+        req.refresh_from_db()
+        self.assertEqual(req.approval_state, ProcApprovalState.PENDING)
+        self.assertEqual(req.status, DocumentStatus.PENDING_APPROVAL)
+        self.assertFalse(ApprovalOverride.objects.exists())
+
+    def test_override_is_refused_on_an_already_decided_document(self):
+        """Nothing to release once the workflow is terminal."""
+        entity, _, _, _, _ = self.build_p2p()
+        req, instance, _ = self._park(entity)
+        actor = self._overrider(entity)
+        self._post_override(actor, entity, instance)  # releases it
+        req.refresh_from_db()
+        self.assertEqual(req.approval_state, ProcApprovalState.APPROVED)
+
+        again = self._post_override(actor, entity, instance, reason="Once more.")
+
+        self.assertEqual(again.status_code, 409)
+        self.assertEqual(again.data["error"]["code"], "APPROVAL_NOT_PARKED")
+
+    def test_override_is_tenant_and_entity_isolated(self):
+        """A workflow id from elsewhere is a 404, never a release."""
+        from vs_tenants.models import Tenant
+        from vs_procurement.models import ApprovalOverride
+
+        entity, _, _, _, _ = self.build_p2p()
+        other_tenant = Tenant.objects.create(name="Rival Tenant", slug="rival-tenant")
+        other_tenant_entity = LedgerEntity.objects.create(
+            name="Rival Books", code="RIVALBK", kind=LedgerEntity.Kind.TENANT,
+            tenant=other_tenant,
+        )
+        seed_chart_of_accounts(other_tenant_entity)
+        # A second entity inside the *same* tenant: entity is the narrower boundary.
+        sibling = LedgerEntity.objects.create(
+            name="Sibling Books", code="SIBBK", kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant,
+        )
+        seed_chart_of_accounts(sibling)
+
+        _, foreign_instance, _ = self._park(
+            other_tenant_entity, requester_email="rival-requester@t.com",
+        )
+        sibling_req, sibling_instance, _ = self._park(
+            sibling, requester_email="sibling-requester@t.com",
+        )
+        actor = self._overrider(entity)
+        # The actor holds the key in the rival tenant too, so only isolation can refuse.
+        self._grant(actor, self.OVERRIDE_KEY, tenant=other_tenant, role_key="proc-breakglass")
+
+        cross_tenant = self._post_override(actor, entity, foreign_instance)
+        self.assertEqual(cross_tenant.status_code, 404)
+
+        # Same tenant, wrong entity in the query string.
+        cross_entity = self._post_override(actor, entity, sibling_instance)
+        self.assertEqual(cross_entity.status_code, 404)
+
+        sibling_req.refresh_from_db()
+        self.assertEqual(sibling_req.approval_state, ProcApprovalState.PENDING)
+        self.assertFalse(ApprovalOverride.objects.exists())
+
+    # -- the release --------------------------------------------------------- #
+
+    def test_override_releases_a_parked_requisition_and_records_everything(self):
+        """The happy path, and every trace it must leave."""
+        from vs_workflow.constants import WorkflowInstanceStatus, WorkflowStageStatus
+        from vs_workflow.models import WorkflowAuditLog, WorkflowStageAction, WorkflowStageInstance
+        from vs_procurement.constants import WF_OVERRIDE_SKIP_REASON
+        from vs_procurement.models import ApprovalOverride
+
+        entity, _, _, _, _ = self.build_p2p()
+        req, instance, _ = self._park(entity)
+        actor = self._overrider(entity)
+        reason = "Term starts Monday; the only approver left the school last week."
+
+        response = self._post_override(actor, entity, instance, reason=reason)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.data["data"]
+        self.assertEqual(payload["approval_state"], ProcApprovalState.APPROVED)
+        self.assertEqual(payload["override"]["reason"], reason)
+
+        # The document reached its approved outcome, ledger status included.
+        req.refresh_from_db()
+        self.assertEqual(req.approval_state, ProcApprovalState.APPROVED)
+        self.assertEqual(req.status, DocumentStatus.APPROVED)
+
+        # The workflow instance terminated coherently, with no stage left active.
+        instance.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.APPROVED)
+        self.assertIsNone(instance.current_stage_id)
+        self.assertIsNotNone(instance.completed_at)
+
+        # The trail shows the stage that never ran, and no vote was manufactured.
+        released = WorkflowStageInstance.objects.get(
+            instance=instance, stage__code="manager",
+        )
+        self.assertEqual(released.status, WorkflowStageStatus.SKIPPED)
+        self.assertEqual(released.skip_reason, WF_OVERRIDE_SKIP_REASON)
+        self.assertFalse(WorkflowStageAction.objects.filter(
+            stage_instance__instance=instance).exists())
+
+        # The override record: actor, amount at the time, reason verbatim.
+        override = ApprovalOverride.objects.get()
+        self.assertEqual(override.overridden_by_id, actor.pk)
+        self.assertEqual(override.entity_id, entity.pk)
+        self.assertEqual(override.document_object_id, req.pk)
+        self.assertEqual(override.document_type, "procurement.requisition")
+        self.assertEqual(override.workflow_instance_id, str(instance.id))
+        self.assertEqual(override.stage_code, "manager")
+        self.assertEqual(override.amount, req.estimated_total)
+        self.assertEqual(override.reason, reason)
+        self.assertIsNotNone(override.created_at)
+
+        # The audit row an auditor looks for, in finance's authoritative log.
+        audit = FinanceAuditLog.objects.get(
+            entity=entity, action=FinanceAuditAction.SPEND_APPROVAL_OVERRIDDEN,
+        )
+        self.assertEqual(audit.actor_id, actor.pk)
+        self.assertEqual(audit.target_type, "PurchaseRequisition")
+        self.assertEqual(audit.target_id, str(req.pk))
+        self.assertEqual(audit.metadata["reason"], reason)
+        self.assertEqual(audit.metadata["amount"], req.estimated_total)
+
+        # And on the workflow's own log, naming the human.
+        marked = [
+            log for log in WorkflowAuditLog.objects.filter(instance=instance)
+            if log.context.get("override")
+        ]
+        self.assertEqual(len(marked), 1)
+        self.assertEqual(marked[0].actor_id, actor.pk)
+        self.assertEqual(marked[0].context["reason"], reason)
+
+    def test_override_record_cannot_be_edited_afterwards(self):
+        """The reason is evidence; editing it would turn the trail into a claim."""
+        from vs_procurement.exceptions import ApprovalOverrideError
+        from vs_procurement.models import ApprovalOverride
+
+        entity, _, _, _, _ = self.build_p2p()
+        _, instance, _ = self._park(entity)
+        actor = self._overrider(entity)
+        self._post_override(actor, entity, instance, reason="Original justification.")
+
+        override = ApprovalOverride.objects.get()
+        override.reason = "A tidier story."
+        with self.assertRaises(ApprovalOverrideError):
+            override.save(update_fields=["reason"])
+        self.assertEqual(
+            ApprovalOverride.objects.get().reason, "Original justification.",
+        )
+
+    def test_overridden_document_is_distinguishable_from_an_approved_one(self):
+        """Two APPROVED requisitions; only one of them was ever reviewed."""
+        from core.test_utils import TenantAPIClient
+        from vs_procurement.approval_override import is_document_overridden
+        from vs_procurement.approvals import submit_for_approval
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_PERMISSION
+
+        entity, _, _, _, _ = self.build_p2p()
+        overridden, instance, requester = self._park(entity)
+        actor = self._overrider(entity)
+        self._post_override(actor, entity, instance)
+
+        # A second requisition, decided the ordinary way by a real approver.
+        approver = self._user("genuine-approver@t.com", tenant=entity.tenant)
+        self._grant(approver, WF_DEFAULT_MANAGER_PERMISSION, tenant=entity.tenant)
+        reviewed = self._requisition(entity, requester)
+        reviewed_instance = submit_for_approval(reviewed, actor_user=requester)
+        decision = TenantAPIClient(user=approver).post(
+            f"/v1/procurement/approvals/{reviewed_instance.id}/actions/?entity={entity.code}",
+            {"action": "APPROVED"}, format="json",
+        )
+        self.assertEqual(decision.status_code, 200)
+
+        overridden.refresh_from_db()
+        reviewed.refresh_from_db()
+        self.assertEqual(overridden.approval_state, ProcApprovalState.APPROVED)
+        self.assertEqual(reviewed.approval_state, ProcApprovalState.APPROVED)
+        # Same approval state, different provenance - permanently.
+        self.assertTrue(is_document_overridden(overridden))
+        self.assertFalse(is_document_overridden(reviewed))
+
+        reader = self._user("list-reader@t.com", tenant=entity.tenant)
+        self._grant(reader, "procurement.requisition.view", tenant=entity.tenant,
+                    role_key="proc-reader")
+        rows = TenantAPIClient(user=reader).get(
+            f"/v1/procurement/requisitions/?entity={entity.code}",
+        ).data["data"]
+        flags = {row["id"]: row["approved_by_override"] for row in rows}
+        self.assertEqual(flags, {overridden.pk: True, reviewed.pk: False})
+
+    def test_requisition_list_filters_on_approved_without_review(self):
+        """``?approved_by_override=`` finds them, and its negation excludes them."""
+        from core.test_utils import TenantAPIClient
+
+        entity, _, _, _, _ = self.build_p2p()
+        overridden, instance, requester = self._park(entity)
+        actor = self._overrider(entity)
+        self._post_override(actor, entity, instance)
+        untouched = self._requisition(entity, requester)
+
+        reader = self._user("filter-reader@t.com", tenant=entity.tenant)
+        self._grant(reader, "procurement.requisition.view", tenant=entity.tenant,
+                    role_key="proc-reader")
+        client = TenantAPIClient(user=reader)
+        url = f"/v1/procurement/requisitions/?entity={entity.code}"
+
+        self.assertEqual(
+            [row["id"] for row in client.get(f"{url}&approved_by_override=1").data["data"]],
+            [overridden.pk],
+        )
+        self.assertEqual(
+            [row["id"] for row in client.get(f"{url}&approved_by_override=0").data["data"]],
+            [untouched.pk],
+        )
+        # An entity with no overrides still returns a JSON array, not {}.
+        empty = client.get(
+            f"{url}&approved_by_override=1&status={DocumentStatus.DRAFT}",
+        )
+        self.assertEqual(empty.data["data"], [])
+
+    def test_override_does_not_leak_across_entities_in_the_list(self):
+        """One entity's override never marks or matches another entity's rows."""
+        from core.test_utils import TenantAPIClient
+
+        entity, _, _, _, _ = self.build_p2p()
+        sibling = LedgerEntity.objects.create(
+            name="Sibling Books", code="SIBBK2", kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant,
+        )
+        seed_chart_of_accounts(sibling)
+        _, instance, _ = self._park(entity)
+        sibling_req, _, _ = self._park(sibling, requester_email="sib2-requester@t.com")
+        actor = self._overrider(entity)
+        self._post_override(actor, entity, instance)
+
+        reader = self._user("cross-reader@t.com", tenant=entity.tenant)
+        self._grant(reader, "procurement.requisition.view", tenant=entity.tenant,
+                    role_key="proc-reader")
+        rows = TenantAPIClient(user=reader).get(
+            f"/v1/procurement/requisitions/?entity={sibling.code}&approved_by_override=1",
+        ).data["data"]
+        self.assertEqual(rows, [])
+        sibling_req.refresh_from_db()
+        self.assertEqual(sibling_req.approval_state, ProcApprovalState.PENDING)
+
+    # -- it releases one stage, not the ladder -------------------------------- #
+
+    def test_override_hands_a_remaining_stage_back_to_its_real_approvers(self):
+        """A released stage advances the workflow; it does not approve the document.
+
+        The senior stage is staffed and included by threshold, so the document returns
+        to ordinary review rather than reaching APPROVED. One override buys exactly one
+        stage.
+        """
+        from vs_workflow.constants import WorkflowInstanceStatus, WorkflowStageStatus
+        from vs_workflow.models import WorkflowStageApprover, WorkflowStageInstance
+        from vs_procurement.approvals import (
+            ensure_default_approval_templates, submit_for_approval,
+        )
+        from vs_procurement.constants import WF_DEFAULT_SENIOR_PERMISSION
+
+        entity, _, _, _, _ = self.build_p2p()
+        ensure_default_approval_templates()
+        requester = self._user("big-spender@t.com", tenant=entity.tenant)
+        senior = self._user("senior-approver@t.com", tenant=entity.tenant)
+        self._grant(senior, WF_DEFAULT_SENIOR_PERMISSION, tenant=entity.tenant,
+                    role_key="proc-senior")
+        # Above the senior threshold, so the second stage is included.
+        req = self._requisition(entity, requester, unit_price=60_000_000)
+        instance = submit_for_approval(req, actor_user=requester)
+        actor = self._overrider(entity)
+
+        response = self._post_override(actor, entity, instance)
+
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        instance.refresh_from_db()
+        self.assertEqual(req.approval_state, ProcApprovalState.PENDING)
+        self.assertEqual(instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        self.assertEqual(instance.current_stage.code, "senior")
+        # The senior stage activated normally, with its real approver frozen in.
+        senior_stage = WorkflowStageInstance.objects.get(
+            instance=instance, stage__code="senior",
+        )
+        self.assertEqual(senior_stage.status, WorkflowStageStatus.ACTIVE)
+        self.assertEqual(
+            list(WorkflowStageApprover.objects.filter(stage_instance=senior_stage)
+                 .values_list("user_id", flat=True)),
+            [senior.pk],
+        )
+
+    # -- Round 1 stays intact ------------------------------------------------- #
+
+    def test_override_does_not_disturb_parking_or_its_repair(self):
+        """Releasing one document changes nothing about anyone else's parked work."""
+        from vs_workflow.services.approvers import EligibleApprover
+        from vs_procurement.approval_parking import is_document_parked, repair_workflows
+        from vs_procurement.approvals import (
+            ensure_default_approval_templates, submit_for_approval,
+        )
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_PERMISSION
+        from vs_workflow.models import WorkflowStageApprover, WorkflowStageInstance
+
+        entity, _, _, _, _ = self.build_p2p()
+        ensure_default_approval_templates()
+        released_req, released_instance, requester = self._park(entity)
+
+        # A second document, still parked, and a third whose snapshot is populated.
+        bystander = self._requisition(entity, requester)
+        submit_for_approval(bystander, actor_user=requester)
+        frozen_approver = self._user("frozen-one@t.com", tenant=entity.tenant)
+        reviewed = self._requisition(entity, requester)
+        with patch(
+            "vs_workflow.services.approvers.resolve_approvers",
+            return_value=[EligibleApprover(user=frozen_approver)],
+        ):
+            reviewed_instance = submit_for_approval(reviewed, actor_user=requester)
+
+        actor = self._overrider(entity)
+        self.assertEqual(self._post_override(actor, entity, released_instance).status_code, 200)
+
+        # The bystander is untouched and still parked.
+        bystander.refresh_from_db()
+        self.assertEqual(bystander.approval_state, ProcApprovalState.PENDING)
+        self.assertTrue(is_document_parked(bystander))
+
+        # The repair still works afterwards, and still refuses to rewrite a populated
+        # snapshot even though somebody new now holds the permission.
+        newcomer = self._user("post-override-approver@t.com", tenant=entity.tenant)
+        self._grant(newcomer, WF_DEFAULT_MANAGER_PERMISSION, tenant=entity.tenant)
+        self.assertEqual(repair_workflows(tenant=entity.tenant), 1)
+        self.assertFalse(is_document_parked(bystander))
+        reviewed_stage = WorkflowStageInstance.objects.get(
+            instance=reviewed_instance, status="ACTIVE",
+        )
+        self.assertEqual(
+            list(WorkflowStageApprover.objects.filter(stage_instance=reviewed_stage)
+                 .values_list("user_id", flat=True)),
+            [frozen_approver.pk],
+        )
+        released_req.refresh_from_db()
+        self.assertEqual(released_req.approval_state, ProcApprovalState.APPROVED)
+
+    # -- seeding -------------------------------------------------------------- #
+
+    def test_override_permission_is_seeded_but_granted_to_nobody(self):
+        """Registered so it can be assigned deliberately; held by no role out of the box."""
+        from django.core.management import call_command
+        from vs_rbac.models import Permission, TenantRolePermission
+
+        call_command("seed_actions", verbosity=0)
+        call_command("seed_procurement_permissions", verbosity=0)
+
+        permission = Permission.objects.get(key=self.OVERRIDE_KEY)
+        self.assertEqual(permission.sensitivity_level, "CRITICAL")
+        self.assertTrue(permission.is_restricted)
+        self.assertEqual(
+            TenantRolePermission.objects.filter(permission=permission).count(), 0,
+        )
+        # Not a vacuous assertion: the ordinary approval key *was* granted by the
+        # same run, so the grant loop demonstrably executed.
+        self.assertGreater(
+            TenantRolePermission.objects.filter(
+                permission__key="procurement.approval.approve", granted=True,
+            ).count(),
+            0,
         )
 
 

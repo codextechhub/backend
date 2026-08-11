@@ -467,6 +467,12 @@ class FinanceAuditAction(models.TextChoices):
     # but their audit vocabulary belongs to finance's authoritative log (finance does
     # not import procurement - these are just string constants).
     REQUISITION_APPROVED = "REQUISITION_APPROVED", "Requisition approved"
+    # A spend document that nobody could approve, released without a vote by a
+    # permissioned human. This is the row an auditor looks for: it is never written
+    # by an ordinary approval, only by the dedicated, reasoned override.
+    SPEND_APPROVAL_OVERRIDDEN = (
+        "SPEND_APPROVAL_OVERRIDDEN", "Spend approval released by override (no review)"
+    )
     RFQ_ISSUED = "RFQ_ISSUED", "Request for quotation issued"
     RFQ_CANCELLED = "RFQ_CANCELLED", "Request for quotation cancelled"
     RFQ_CLOSED = "RFQ_CLOSED", "Request for quotation closed without award"

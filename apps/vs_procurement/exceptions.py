@@ -57,6 +57,47 @@ class ApprovalTemplateMissingError(ApprovalWorkflowError):
     default_message = "No approval route is configured for this document."
 
 
+class ApprovalOverrideError(ApprovalWorkflowError):
+    """Base for refusals of the parked-approval override (see ``approval_override``).
+
+    Separate from :class:`ApprovalWorkflowError` so a caller (or an alerting rule) can
+    tell "the override was refused" apart from any other approval hand-off failure -
+    the override is a break-glass control and every refusal of it is worth seeing.
+    """
+    error_code = "APPROVAL_OVERRIDE_REFUSED"
+    default_message = "The approval override could not be applied."
+
+
+class ApprovalNotParkedError(ApprovalOverrideError):
+    """Raised when an override is attempted on a document somebody can still decide.
+
+    The override exists solely to free a document nobody is *able* to act on. If a
+    single eligible approver exists - including one who has only just been granted the
+    permission, which the parking repair discovers first - the answer is a decision,
+    not an override.
+    """
+    error_code = "APPROVAL_NOT_PARKED"
+    default_message = "This document is not parked, so it cannot be released by override."
+
+
+class ApprovalOverrideReasonError(ApprovalOverrideError):
+    """Raised when the mandatory override reason is missing, blank, or unusable.
+
+    One error covers the whole reason contract (present, textual, bounded) because to a
+    caller they are the same fix: send a real justification.
+    """
+    error_code = "APPROVAL_OVERRIDE_REASON_INVALID"
+    default_message = "A written reason is required to release an approval by override."
+    http_status = 400
+
+
+class ApprovalOverrideNotPermittedError(ApprovalOverrideError):
+    """Raised when the actor does not hold the dedicated override permission."""
+    error_code = "APPROVAL_OVERRIDE_FORBIDDEN"
+    default_message = "You do not have permission to release an approval by override."
+    http_status = 403
+
+
 class StockError(PostingError):
     """Raised for stock-ledger violations (issue, adjustment, valuation)."""
     error_code = "STOCK_ERROR"

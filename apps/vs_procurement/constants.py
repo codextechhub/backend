@@ -205,6 +205,18 @@ WF_DEFAULT_SENIOR_THRESHOLD = 50_000_000
 WF_DEFAULT_MANAGER_PERMISSION = "procurement.approval.approve"
 WF_DEFAULT_SENIOR_PERMISSION = "procurement.approval.approve_senior"
 
+#: Permission key that may release a *parked* approval without a vote. Seeded by
+#: ``seed_procurement_permissions`` but deliberately granted to **no** role: it is a
+#: break-glass control an administrator must assign on purpose. See
+#: :mod:`vs_procurement.approval_override`.
+WF_APPROVAL_OVERRIDE_PERMISSION = "procurement.approval.override"
+
+#: ``WorkflowStageInstance.skip_reason`` written on a stage released by an override.
+#: Procurement stages never auto-skip (``skip_if_no_approvers=False``), so inside
+#: :data:`PROCUREMENT_APPROVAL_TYPES` this token is the *only* reason a stage can end
+#: SKIPPED without a condition, which makes "the stage nobody ran" queryable.
+WF_OVERRIDE_SKIP_REASON = "released_by_approval_override"
+
 
 class MatchStatus(models.TextChoices):
     """Outcome of the 3-way match (PO ↔ GRN ↔ vendor invoice).

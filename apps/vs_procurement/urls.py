@@ -123,6 +123,8 @@ urlpatterns = [
          name="proc-approval-detail"),
     path("approvals/<str:workflow_id>/actions/", views.ProcurementApprovalActionView.as_view(),
          name="proc-approval-action"),
+    path("approvals/<str:workflow_id>/override/", views.ProcurementApprovalOverrideView.as_view(),
+         name="proc-approval-override"),
 
     # Inventory / stock ledger
     path("stock-items/", views.StockItemListCreateView.as_view(), name="proc-stock-items"),
