@@ -5949,6 +5949,13 @@ class PurchaseOrderVendorEmailTests(_P2PFixtureMixin, TestCase):
         with self.assertRaises(po_email.PurchaseOrderEmailError):
             po_email.send_approved(draft, actor_user=self.user)
 
+    def test_delivery_lock_targets_only_the_delivery_row(self):
+        from vs_procurement import po_email
+
+        query = po_email._delivery_for_update_queryset().query
+        self.assertTrue(query.select_for_update)
+        self.assertEqual(query.select_for_update_of, ("self",))
+
     def test_email_preview_is_permission_gated_and_entity_scoped(self):
         from core.test_utils import TenantAPIClient
 

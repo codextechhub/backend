@@ -9,7 +9,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("vs_procurement", "0020_requestforquotation_response_due_at_and_more"),
+        ("vs_procurement", "0021_vendorinvoice_creation_idempotency"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

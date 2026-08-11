@@ -336,12 +336,18 @@ def _context(po, delivery):
     }
 
 
-@transaction.atomic
-def _queue_delivery(delivery_id: int, *, actor_user=None):
-    delivery = PurchaseOrderVendorDelivery.objects.select_for_update().select_related(
+def _delivery_for_update_queryset():
+    # Nullable related rows use outer joins. Lock only the delivery row so
+    # PostgreSQL does not try to apply FOR UPDATE to the nullable join side.
+    return PurchaseOrderVendorDelivery.objects.select_for_update(of=("self",)).select_related(
         "purchase_order__vendor", "purchase_order__entity__tenant",
         "purchase_order__currency", "purchase_order__branch", "requested_by",
-    ).prefetch_related("purchase_order__lines", "purchase_order__vendor__contacts").get(pk=delivery_id)
+    ).prefetch_related("purchase_order__lines", "purchase_order__vendor__contacts")
+
+
+@transaction.atomic
+def _queue_delivery(delivery_id: int, *, actor_user=None):
+    delivery = _delivery_for_update_queryset().get(pk=delivery_id)
     po = delivery.purchase_order
     if delivery.status not in (
         PurchaseOrderVendorDeliveryStatus.AWAITING_APPROVAL,
