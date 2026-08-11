@@ -55,6 +55,13 @@ app.conf.beat_schedule = {
     # availability and mark them purged. Availability itself is derived at read
     # time, so a missed night only delays reclaiming bytes - it never changes
     # what a user sees. Idempotent.
+    # Every five minutes: start any schedule whose moment has come. The window is
+    # the worst-case lateness a scheduled export can suffer, so it is deliberately
+    # tighter than the nightly housekeeping below.
+    "exports-dispatch-schedules": {
+        "task": "vs_exports.dispatch_schedules",
+        "schedule": crontab(minute="*/5"),
+    },
     "exports-expire-files": {
         "task": "vs_exports.expire_files",
         "schedule": crontab(hour=3, minute=30),

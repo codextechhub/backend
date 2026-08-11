@@ -1,6 +1,6 @@
 """Background work for the Export Centre.
 
-Two tasks, each thin: the decisions live in :mod:`vs_exports.services`, so the same
+Four tasks, each thin: the decisions live in :mod:`vs_exports.services`, so the same
 behaviour is reachable from a test, a management command or a worker.
 
 Every task rides the platform's :class:`core.tasks_base.TrackedTask` base, so each run
@@ -67,3 +67,15 @@ def prune_analytics_task():
     cutoff = timezone.now() - datetime.timedelta(days=RETENTION_DAYS)
     deleted, _ = ExportAnalyticsEvent.objects.filter(occurred_at__lt=cutoff).delete()
     return {"deleted": deleted, "older_than_days": RETENTION_DAYS}
+
+
+@shared_task(name="vs_exports.dispatch_schedules")
+def dispatch_due_schedules_task():
+    """Every few minutes: start the schedules whose moment has come.
+
+    Cheap when there is nothing to do - one indexed query on ``next_run_at`` - so it
+    can run often enough that a 03:00 schedule fires close to 03:00.
+    """
+    from .services import dispatch_due_schedules
+
+    return dispatch_due_schedules()

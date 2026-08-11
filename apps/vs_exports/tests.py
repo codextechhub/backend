@@ -26,11 +26,14 @@ from vs_finance.models import Account, Customer, Invoice, InvoiceLine, LedgerEnt
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies
 from vs_tenants.models import Tenant
 
-from vs_exports import analytics, engine, services
+from vs_exports import analytics, engine, scheduling, services
 from vs_exports.catalogue import get_dataset
 from vs_exports.constants import (
     AuditAction,
     DatasetScope,
+    PauseReason,
+    Recurrence,
+    ScheduleState,
     DownloadOutcome,
     DownloadRefusal,
     ExportFormat,
@@ -48,6 +51,7 @@ from vs_exports.models import (
     ExportDownload,
     ExportFile,
     ExportRun,
+    ExportSchedule,
 )
 
 User = get_user_model()
@@ -1603,3 +1607,353 @@ class FromScreenTests(_ExportFixture, TestCase):
                 if not filters and not unmapped:
                     silent.append(f"{screen.key}.{param}")
         self.assertEqual(silent, [], "; ".join(silent))
+
+
+# --------------------------------------------------------------------------- #
+# Schedules                                                                   #
+# --------------------------------------------------------------------------- #
+class ScheduleOccurrenceTests(TestCase):
+    """Occurrence maths on its own - no database rows, so the arithmetic is legible."""
+
+    class _Stub:
+        """Duck-typed stand-in carrying the fields next_occurrence reads."""
+
+        def __init__(self, **kwargs):
+            self.timezone_name = "Africa/Lagos"
+            self.day = None
+            self.ends_on = None
+            self.pause_detail = ""
+            self.state = ScheduleState.ACTIVE
+            self.__dict__.update(kwargs)
+
+    def test_daily_rolls_to_tomorrow_once_todays_time_has_passed(self):
+        schedule = self._Stub(
+            recurrence=Recurrence.DAILY, at_time=datetime.time(3, 0),
+            starts_on=datetime.date(2026, 7, 1),
+        )
+        after = datetime.datetime(2026, 7, 27, 6, 0, tzinfo=datetime.timezone.utc)
+        nxt = scheduling.next_occurrence(schedule, after=after)
+        self.assertEqual(
+            nxt.astimezone(scheduling._zone("Africa/Lagos")).date(),
+            datetime.date(2026, 7, 28),
+        )
+
+    def test_monthly_clamps_a_31st_onto_a_short_month(self):
+        schedule = self._Stub(
+            recurrence=Recurrence.MONTHLY, day=31, at_time=datetime.time(3, 0),
+            starts_on=datetime.date(2026, 1, 1),
+        )
+        after = datetime.datetime(2026, 2, 1, 0, 0, tzinfo=datetime.timezone.utc)
+        nxt = scheduling.next_occurrence(schedule, after=after)
+        self.assertEqual(
+            nxt.astimezone(scheduling._zone("Africa/Lagos")).date(),
+            datetime.date(2026, 2, 28),
+        )
+
+    def test_local_time_survives_a_clock_change(self):
+        """The whole reason the schedule stores a zone name and not an offset."""
+        schedule = self._Stub(
+            recurrence=Recurrence.DAILY, at_time=datetime.time(3, 0),
+            starts_on=datetime.date(2026, 3, 1), timezone_name="Europe/London",
+        )
+        zone = scheduling._zone("Europe/London")
+        before = scheduling.next_occurrence(
+            schedule,
+            after=datetime.datetime(2026, 3, 20, 12, 0, tzinfo=datetime.timezone.utc),
+        )
+        after = scheduling.next_occurrence(
+            schedule,
+            after=datetime.datetime(2026, 4, 10, 12, 0, tzinfo=datetime.timezone.utc),
+        )
+        self.assertEqual(before.astimezone(zone).hour, 3)
+        self.assertEqual(after.astimezone(zone).hour, 3)
+        # The UTC hour differs precisely because the local hour did not.
+        self.assertNotEqual(before.hour, after.hour)
+
+    def test_quarterly_keeps_the_start_months_phase(self):
+        schedule = self._Stub(
+            recurrence=Recurrence.QUARTERLY, day=1, at_time=datetime.time(3, 0),
+            starts_on=datetime.date(2026, 1, 1),
+        )
+        after = datetime.datetime(2026, 2, 15, 0, 0, tzinfo=datetime.timezone.utc)
+        nxt = scheduling.next_occurrence(schedule, after=after)
+        self.assertEqual(nxt.astimezone(scheduling._zone("Africa/Lagos")).month, 4)
+
+    def test_weekly_lands_on_the_named_weekday(self):
+        schedule = self._Stub(
+            recurrence=Recurrence.WEEKLY, day=0, at_time=datetime.time(7, 0),
+            starts_on=datetime.date(2026, 7, 1),
+        )
+        after = datetime.datetime(2026, 7, 29, 12, 0, tzinfo=datetime.timezone.utc)
+        nxt = scheduling.next_occurrence(schedule, after=after)
+        self.assertEqual(nxt.astimezone(scheduling._zone("Africa/Lagos")).weekday(), 0)
+
+    def test_once_has_no_second_occurrence(self):
+        schedule = self._Stub(
+            recurrence=Recurrence.ONCE, at_time=datetime.time(20, 0),
+            starts_on=datetime.date(2026, 9, 30),
+        )
+        after = datetime.datetime(2026, 10, 1, 0, 0, tzinfo=datetime.timezone.utc)
+        self.assertIsNone(scheduling.next_occurrence(schedule, after=after))
+
+    def test_an_end_date_closes_the_series(self):
+        schedule = self._Stub(
+            recurrence=Recurrence.DAILY, at_time=datetime.time(3, 0),
+            starts_on=datetime.date(2026, 7, 1), ends_on=datetime.date(2026, 7, 5),
+        )
+        after = datetime.datetime(2026, 7, 6, 0, 0, tzinfo=datetime.timezone.utc)
+        self.assertIsNone(scheduling.next_occurrence(schedule, after=after))
+
+    def test_an_unknown_timezone_falls_back_rather_than_stopping_the_schedule(self):
+        """A schedule that silently stopped firing would be worse than one an hour off."""
+        self.assertEqual(str(scheduling._zone("Mars/Olympus")), "Africa/Lagos")
+
+    def test_a_missed_window_runs_inside_the_grace_period_only(self):
+        now = timezone.now()
+        self.assertTrue(
+            scheduling.should_run_missed(now - datetime.timedelta(hours=2), now=now)
+        )
+        self.assertFalse(
+            scheduling.should_run_missed(now - datetime.timedelta(hours=9), now=now)
+        )
+
+
+class ScheduleLifecycleTests(_ExportFixture, TestCase):
+    """Creating, pausing, resuming and dispatching, against the database."""
+
+    def setUp(self):
+        self.build()
+        self.definition = self.make_definition(owner=self.admin)
+        self.client = TenantAPIClient(user=self.admin)
+
+    def _schedule(self, **kwargs):
+        defaults = dict(
+            definition=self.definition, recurrence=Recurrence.DAILY,
+            at_time=datetime.time(3, 0), timezone_name="Africa/Lagos",
+            starts_on=datetime.date.today() - datetime.timedelta(days=1),
+        )
+        defaults.update(kwargs)
+        schedule = ExportSchedule.objects.create(**defaults)
+        schedule.reschedule()
+        return schedule
+
+    def _make_due(self, schedule, *, minutes=5):
+        schedule.next_run_at = timezone.now() - datetime.timedelta(minutes=minutes)
+        schedule.save(update_fields=["next_run_at"])
+        return schedule
+
+    # -- creation ----------------------------------------------------------- #
+    def test_a_schedule_can_be_created_and_reads_back_in_plain_language(self):
+        response = self.client.post("/v1/exports/schedules/", {
+            "definition": self.definition.pk, "recurrence": Recurrence.MONTHLY,
+            "day": 1, "at_time": "03:00",
+            "starts_on": datetime.date.today().isoformat(),
+        }, format="json")
+        self.assertEqual(response.status_code, 201)
+        data = response.json()["data"]
+        self.assertIn("day 1 of every month at 03:00", data["reads_as"])
+        self.assertIn("Africa/Lagos", data["reads_as"])
+        self.assertIsNotNone(data["next_run_at"])
+
+    def test_a_draft_cannot_be_scheduled(self):
+        self.definition.is_draft = True
+        self.definition.save(update_fields=["is_draft"])
+        response = self.client.post("/v1/exports/schedules/", {
+            "definition": self.definition.pk, "recurrence": Recurrence.DAILY,
+            "at_time": "03:00", "starts_on": datetime.date.today().isoformat(),
+        }, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_an_unknown_timezone_is_rejected_at_the_edge(self):
+        response = self.client.post("/v1/exports/schedules/", {
+            "definition": self.definition.pk, "recurrence": Recurrence.DAILY,
+            "at_time": "03:00", "starts_on": datetime.date.today().isoformat(),
+            "timezone_name": "Mars/Olympus",
+        }, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_an_end_before_the_start_is_rejected(self):
+        today = datetime.date.today()
+        response = self.client.post("/v1/exports/schedules/", {
+            "definition": self.definition.pk, "recurrence": Recurrence.DAILY,
+            "at_time": "03:00", "starts_on": today.isoformat(),
+            "ends_on": (today - datetime.timedelta(days=1)).isoformat(),
+        }, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_scheduling_someone_elses_export_is_refused(self):
+        response = TenantAPIClient(user=self.analyst).post("/v1/exports/schedules/", {
+            "definition": self.definition.pk, "recurrence": Recurrence.DAILY,
+            "at_time": "03:00", "starts_on": datetime.date.today().isoformat(),
+        }, format="json")
+        self.assertIn(response.status_code, (403, 404))
+
+    def test_a_schedule_from_another_tenant_is_not_found(self):
+        schedule = self._schedule()
+        response = TenantAPIClient(
+            user=self.outsider, tenant_slug=self.other_tenant.slug,
+        ).get(f"/v1/exports/schedules/{schedule.pk}/")
+        self.assertEqual(response.status_code, 404)
+
+    def test_state_cannot_be_set_through_patch(self):
+        """Pausing has its own endpoint because it is audited; PATCH must not be a
+        second, silent way to do it."""
+        schedule = self._schedule()
+        response = self.client.patch(
+            f"/v1/exports/schedules/{schedule.pk}/",
+            {"state": ScheduleState.PAUSED}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.state, ScheduleState.ACTIVE)
+
+    # -- failures and pausing ----------------------------------------------- #
+    def test_three_consecutive_failures_pause_the_schedule(self):
+        schedule = self._schedule()
+        for _ in range(2):
+            schedule.register_failure("A filter no longer exists.")
+        self.assertEqual(schedule.state, ScheduleState.ACTIVE)
+        schedule.register_failure("A filter no longer exists.")
+        self.assertEqual(schedule.state, ScheduleState.PAUSED)
+        self.assertEqual(schedule.pause_reason, PauseReason.CONSECUTIVE_FAILURES)
+        self.assertIn("filter", schedule.pause_detail)
+
+    def test_a_good_run_clears_the_failure_counter(self):
+        schedule = self._schedule()
+        schedule.register_failure("x")
+        schedule.register_success()
+        self.assertEqual(schedule.consecutive_failures, 0)
+
+    def test_a_failing_scheduled_run_advances_the_schedule(self):
+        """End to end: a broken export run must move its own schedule on."""
+        broken = self.make_definition(
+            owner=self.admin, name="Broken",
+            filters=[{"id": "invoice_date", "start": self.today.isoformat(),
+                      "end": self.today.isoformat()},
+                     {"id": "settlement_status", "values": ["PENDING"]}],
+        )
+        schedule = self._schedule(definition=broken)
+        run, _ = services.trigger_run(
+            definition=broken, actor=self.admin,
+            trigger=RunTrigger.SCHEDULED, schedule=schedule,
+        )
+        run.refresh_from_db()
+        schedule.refresh_from_db()
+        self.assertEqual(run.status, RunStatus.FAILED)
+        self.assertEqual(schedule.consecutive_failures, 1)
+        self.assertEqual(schedule.last_run_id, run.pk)
+
+    def test_resume_clears_the_pause_and_recomputes(self):
+        schedule = self._schedule()
+        services.pause_schedule(schedule, self.admin, detail="Month end")
+        self.assertEqual(schedule.state, ScheduleState.PAUSED)
+
+        response = self.client.post(
+            f"/v1/exports/schedules/{schedule.pk}/resume/", {}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.state, ScheduleState.ACTIVE)
+        self.assertEqual(schedule.consecutive_failures, 0)
+        self.assertIsNotNone(schedule.next_run_at)
+
+    def test_a_finished_schedule_cannot_be_resumed(self):
+        schedule = self._schedule(
+            recurrence=Recurrence.ONCE,
+            starts_on=datetime.date.today() - datetime.timedelta(days=2),
+        )
+        self.assertEqual(schedule.state, ScheduleState.FINISHED)
+        response = self.client.post(
+            f"/v1/exports/schedules/{schedule.pk}/resume/", {}, format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_pausing_is_audited(self):
+        from vs_audit.models import AuditEvent
+
+        schedule = self._schedule()
+        self.client.post(
+            f"/v1/exports/schedules/{schedule.pk}/pause/",
+            {"reason": "Month end"}, format="json",
+        )
+        self.assertTrue(AuditEvent.objects.filter(
+            action_type=AuditAction.SCHEDULE_PAUSED, entity_id=str(schedule.pk),
+        ).exists())
+
+    # -- dispatch ------------------------------------------------------------ #
+    def test_the_dispatcher_starts_a_due_schedule_and_moves_it_on(self):
+        schedule = self._make_due(self._schedule())
+        summary = services.dispatch_due_schedules()
+        self.assertEqual(summary["started"], 1)
+
+        schedule.refresh_from_db()
+        self.assertGreater(schedule.next_run_at, timezone.now())
+        run = ExportRun.objects.filter(schedule=schedule).first()
+        self.assertIsNotNone(run)
+        self.assertEqual(run.trigger, RunTrigger.SCHEDULED)
+        self.assertEqual(run.requested_by_id, self.definition.owner_id)
+        self.assertEqual(run.status, RunStatus.COMPLETED)
+
+    def test_the_dispatcher_ignores_a_schedule_that_is_not_yet_due(self):
+        self._schedule()
+        self.assertEqual(services.dispatch_due_schedules()["started"], 0)
+
+    def test_a_window_missed_beyond_the_grace_period_is_skipped_not_caught_up(self):
+        schedule = self._make_due(self._schedule(), minutes=12 * 60)
+        summary = services.dispatch_due_schedules()
+        self.assertEqual(summary["skipped"], 1)
+        self.assertEqual(summary["started"], 0)
+        self.assertFalse(ExportRun.objects.filter(schedule=schedule).exists())
+        schedule.refresh_from_db()
+        self.assertGreater(schedule.next_run_at, timezone.now())
+
+    def test_an_inactive_owner_pauses_the_schedule_rather_than_running_as_them(self):
+        schedule = self._make_due(self._schedule())
+        self.admin.status = "DEACTIVATED"
+        self.admin.save(update_fields=["status"])
+
+        summary = services.dispatch_due_schedules()
+        self.assertEqual(summary["paused"], 1)
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.state, ScheduleState.PAUSED)
+        self.assertEqual(schedule.pause_reason, PauseReason.OWNER_INACTIVE)
+        self.assertFalse(ExportRun.objects.filter(schedule=schedule).exists())
+
+    def test_a_tenant_at_its_cap_keeps_its_window_for_the_next_tick(self):
+        """Deferring must not lose the occurrence - otherwise a busy morning silently
+        skips a nightly export."""
+        schedule = self._make_due(self._schedule())
+        due_at = schedule.next_run_at
+        for _ in range(3):
+            ExportRun.objects.create(
+                tenant=self.tenant, entity=self.entity, definition=self.definition,
+                frozen_config=services.freeze(self.definition),
+                requested_by=self.admin, status=RunStatus.RUNNING,
+            )
+        summary = services.dispatch_due_schedules()
+        self.assertEqual(summary["deferred"], 1)
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.next_run_at, due_at)
+
+    def test_a_paused_schedule_is_never_dispatched(self):
+        schedule = self._make_due(self._schedule())
+        services.pause_schedule(schedule, self.admin)
+        self.assertEqual(services.dispatch_due_schedules()["started"], 0)
+
+    def test_the_dispatch_task_returns_its_summary(self):
+        from vs_exports.tasks import dispatch_due_schedules_task
+
+        self._make_due(self._schedule())
+        self.assertEqual(dispatch_due_schedules_task()["started"], 1)
+
+    def test_deleting_a_schedule_leaves_its_files_alone(self):
+        schedule = self._make_due(self._schedule())
+        services.dispatch_due_schedules()
+        run = ExportRun.objects.get(schedule=schedule)
+
+        response = self.client.delete(f"/v1/exports/schedules/{schedule.pk}/")
+        self.assertEqual(response.status_code, 200)
+        run.refresh_from_db()
+        self.assertEqual(run.status, RunStatus.COMPLETED)
+        self.assertIsNone(run.schedule_id)
+        self.assertTrue(ExportFile.objects.filter(run=run).exists())

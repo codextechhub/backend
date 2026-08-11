@@ -41,6 +41,12 @@ urlpatterns = [
     path("files/<int:pk>/download/", views.FileDownloadView.as_view(), name="export-file-download"),
     path("files/<int:pk>/downloads/", views.FileDownloadLogView.as_view(), name="export-file-downloads"),
 
+    # Schedules
+    path("schedules/", views.ScheduleListView.as_view(), name="export-schedules"),
+    path("schedules/<int:pk>/", views.ScheduleDetailView.as_view(), name="export-schedule-detail"),
+    path("schedules/<int:pk>/pause/", views.SchedulePauseView.as_view(), name="export-schedule-pause"),
+    path("schedules/<int:pk>/resume/", views.ScheduleResumeView.as_view(), name="export-schedule-resume"),
+
     # Product analytics - a separate pipeline from the audit trail
     path("analytics/", views.AnalyticsIngestView.as_view(), name="export-analytics"),
     path("analytics/summary/", views.AnalyticsSummaryView.as_view(), name="export-analytics-summary"),

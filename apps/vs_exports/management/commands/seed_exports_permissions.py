@@ -46,6 +46,8 @@ EXPORTS_RESOURCES = [
     ("run",             "export runs",           [("view", "NORMAL"), ("create", "NORMAL"),
                                                   ("cancel", "NORMAL")]),
     ("file",            "produced files",        [("download", "SENSITIVE")]),
+    ("schedule",        "export schedules",      [("view", "NORMAL"), ("create", "NORMAL"),
+                                                  ("manage", "SENSITIVE")]),
     ("sensitive_field", "restricted fields in exports", [("export", "CRITICAL")]),
     ("activity",        "other people's export activity", [("view", "CRITICAL")]),
 ]

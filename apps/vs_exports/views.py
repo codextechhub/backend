@@ -37,6 +37,7 @@ from .constants import (
     ExportPermission,
     FORMAT_MEDIA,
     RunTrigger,
+    ScheduleState,
     Sharing,
     SUCCESSFUL_RUN_STATUSES,
     ValuesMode,
@@ -47,6 +48,7 @@ from .models import (
     ExportDefinitionShare,
     ExportFile,
     ExportRun,
+    ExportSchedule,
 )
 from .serializers import (
     AnalyticsIngestSerializer,
@@ -57,6 +59,7 @@ from .serializers import (
     ExportFileSerializer,
     ExportRunDetailSerializer,
     ExportRunListSerializer,
+    ExportScheduleSerializer,
     PreviewSerializer,
     QuickExportSerializer,
     RunRequestSerializer,
@@ -154,6 +157,20 @@ class _ExportBase(APIView):
         if run is None:
             raise NotFound("No run matches that id.")
         return run
+
+    # One schedule by pk, scoped to the definitions this caller may see.
+    def get_schedule(self, pk, *, for_write=False):
+        definition_ids = self.visible_definitions().values_list("pk", flat=True)
+        schedule = ExportSchedule.objects.filter(
+            pk=pk, definition_id__in=definition_ids,
+        ).select_related("definition", "last_run").first()
+        if schedule is None:
+            raise NotFound("No schedule matches that id.")
+        if for_write:
+            # Changing how someone else's export behaves unattended needs the same
+            # ownership rule as changing the export itself.
+            self.get_definition(schedule.definition_id, for_write=True)
+        return schedule
 
     # The boundary one dataset should be read inside, for this request.
     def resolve_scope(self, dataset):
@@ -875,3 +892,130 @@ class AnalyticsSummaryView(_ExportBase):
             "Export metrics retrieved successfully.",
             analytics.summary(self.tenant, since=since),
         )
+
+
+# --------------------------------------------------------------------------- #
+# Schedules                                                                   #
+# --------------------------------------------------------------------------- #
+class ScheduleListView(_ExportBase):
+    """``GET`` the Schedules list - ``POST`` a new schedule."""
+
+    rbac_permission = [ExportPermission.SCHEDULE_VIEW, ExportPermission.SCHEDULE_CREATE]
+
+    def get(self, request):
+        definition_ids = self.visible_definitions().values_list("pk", flat=True)
+        qs = ExportSchedule.objects.filter(
+            definition_id__in=definition_ids,
+        ).select_related("definition", "definition__owner", "last_run")
+        if request.query_params.get("state"):
+            qs = qs.filter(state=request.query_params["state"].upper())
+        if request.query_params.get("definition"):
+            qs = qs.filter(definition_id=request.query_params["definition"])
+        return self.paginate(request, qs, ExportScheduleSerializer)
+
+    def post(self, request):
+        if not self.can(ExportPermission.SCHEDULE_CREATE):
+            raise PermissionDenied("You cannot schedule exports.")
+        payload = ExportScheduleSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+
+        # Only an export you could edit may be scheduled: an unattended run makes its
+        # owner answerable for output nobody asked for that morning.
+        definition = self.get_definition(
+            payload.validated_data["definition"].pk, for_write=True,
+        )
+        if definition.is_draft:
+            raise ValidationError({
+                "definition": (
+                    "Finish this export before scheduling it - a draft cannot run."
+                ),
+            })
+        if definition.is_archived:
+            raise ValidationError({
+                "definition": "This export is archived, so it cannot be scheduled.",
+            })
+
+        schedule = payload.save(definition=definition)
+        schedule.reschedule()
+        audit.record(
+            AuditAction.SCHEDULE_CREATED, actor=request.user, tenant=self.tenant,
+            obj=schedule, label=definition.name,
+            metadata={
+                "recurrence": schedule.recurrence,
+                "timezone": schedule.timezone_name,
+                "next_run_at": str(schedule.next_run_at),
+            },
+        )
+        return success_response(
+            "Schedule created successfully.",
+            ExportScheduleSerializer(schedule, context={"request": request}).data,
+            status=201,
+        )
+
+
+class ScheduleDetailView(_ExportBase):
+    """``GET`` / ``PATCH`` / ``DELETE`` one schedule."""
+
+    rbac_permission = [ExportPermission.SCHEDULE_VIEW, ExportPermission.SCHEDULE_MANAGE]
+
+    def get(self, request, pk):
+        return success_response(
+            "Schedule retrieved successfully.",
+            ExportScheduleSerializer(
+                self.get_schedule(pk), context={"request": request},
+            ).data,
+        )
+
+    def patch(self, request, pk):
+        schedule = self.get_schedule(pk, for_write=True)
+        payload = ExportScheduleSerializer(schedule, data=request.data, partial=True)
+        payload.is_valid(raise_exception=True)
+        schedule = payload.save()
+        schedule.reschedule()
+        return success_response(
+            "Schedule updated successfully. Files already produced are unchanged.",
+            ExportScheduleSerializer(schedule, context={"request": request}).data,
+        )
+
+    def delete(self, request, pk):
+        """Remove the schedule. The export and its files are untouched."""
+        schedule = self.get_schedule(pk, for_write=True)
+        schedule.delete()
+        return success_response(
+            "Schedule removed. The export and the files it produced are unaffected."
+        )
+
+
+class SchedulePauseView(_ExportBase):
+    """``POST /schedules/<pk>/pause/`` - stop it until somebody resumes it."""
+
+    rbac_permission = ExportPermission.SCHEDULE_MANAGE
+    resume = False
+
+    def post(self, request, pk):
+        schedule = self.get_schedule(pk, for_write=True)
+        if self.resume:
+            if schedule.state == ScheduleState.FINISHED:
+                raise ValidationError({
+                    "detail": (
+                        "This schedule has finished - its last occurrence is in the "
+                        "past. Change the dates instead of resuming it."
+                    ),
+                })
+            schedule = services.resume_schedule(schedule, request.user)
+            message = "Schedule resumed successfully."
+        else:
+            schedule = services.pause_schedule(
+                schedule, request.user, detail=request.data.get("reason", ""),
+            )
+            message = "Schedule paused successfully."
+        return success_response(
+            message,
+            ExportScheduleSerializer(schedule, context={"request": request}).data,
+        )
+
+
+class ScheduleResumeView(SchedulePauseView):
+    """``POST /schedules/<pk>/resume/`` - clear the pause and recompute the next run."""
+
+    resume = True

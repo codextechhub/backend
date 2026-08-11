@@ -36,9 +36,13 @@ from .constants import (
     ExportFormat,
     FailureCode,
     FILE_RETENTION_DAYS,
+    MAX_CONSECUTIVE_FAILURES,
+    PauseReason,
+    Recurrence,
     RunPhase,
     RunStatus,
     RunTrigger,
+    ScheduleState,
     Sharing,
     SUCCESSFUL_RUN_STATUSES,
     TERMINAL_RUN_STATUSES,
@@ -202,6 +206,112 @@ class ExportDefinitionShare(TimeStampedModel):
 
 
 # --------------------------------------------------------------------------- #
+# Schedules                                                                   #
+# --------------------------------------------------------------------------- #
+class ExportSchedule(TimeStampedModel):
+    """When a definition runs on its own.
+
+    Local time plus a timezone name, never a stored UTC offset - that is what keeps a
+    03:00 Lagos run at 03:00 when the clocks move. ``next_run_at`` is materialised in
+    UTC purely so the dispatcher has something to index; it is always recomputed from
+    the local fields by :meth:`reschedule`.
+
+    A schedule runs as the *definition's owner*, not as whoever created the schedule,
+    so an unattended run can never read more than the owner could read by hand.
+    """
+
+    definition = models.ForeignKey(
+        ExportDefinition, on_delete=models.CASCADE, related_name="schedules",
+    )
+    recurrence = models.CharField(max_length=12, choices=Recurrence.choices)
+    day = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text=(
+            "1-31 for MONTHLY/QUARTERLY, 0-6 (Monday-Sunday) for WEEKLY, ignored "
+            "otherwise. A day past the end of a short month runs on its last day."
+        ),
+    )
+    at_time = models.TimeField(help_text="Local wall-clock time in `timezone_name`.")
+    timezone_name = models.CharField(max_length=64, default="Africa/Lagos")
+
+    starts_on = models.DateField()
+    ends_on = models.DateField(
+        null=True, blank=True, help_text="Null means no end date.",
+    )
+
+    skip_when_empty = models.BooleanField(
+        default=False,
+        help_text=(
+            "Produce no file when nothing matched, instead of an empty one. Off by "
+            "default: an empty file is itself evidence that nothing happened, and a "
+            "missing file is indistinguishable from a schedule that never ran."
+        ),
+    )
+
+    state = models.CharField(
+        max_length=10, choices=ScheduleState.choices, default=ScheduleState.ACTIVE,
+    )
+    pause_reason = models.CharField(
+        max_length=24, choices=PauseReason.choices, blank=True, default="",
+    )
+    pause_detail = models.CharField(max_length=300, blank=True, default="")
+    consecutive_failures = models.PositiveSmallIntegerField(default=0)
+
+    next_run_at = models.DateTimeField(
+        null=True, blank=True, db_index=True,
+        help_text="Derived from the local fields; the dispatcher's only index.",
+    )
+    last_run = models.ForeignKey(
+        "ExportRun", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+
+    class Meta:
+        ordering = ["next_run_at"]
+        indexes = [models.Index(fields=["state", "next_run_at"])]
+
+    def __str__(self) -> str:
+        return f"{self.definition_id} - {self.recurrence}"
+
+    # Recompute and persist the next occurrence.
+    def reschedule(self, *, after=None, save: bool = True):
+        """Set ``next_run_at`` to the first occurrence strictly after ``after``.
+
+        A series that has run out becomes FINISHED rather than PAUSED: paused means a
+        person must act, and a completed one-off needs nobody.
+        """
+        from .scheduling import next_occurrence
+
+        self.next_run_at = next_occurrence(self, after=after)
+        if self.next_run_at is None and self.state == ScheduleState.ACTIVE:
+            self.state = ScheduleState.FINISHED
+        if save:
+            self.save(update_fields=["next_run_at", "state", "updated_at"])
+        return self.next_run_at
+
+    # Record a failed run and auto-pause once the threshold is crossed.
+    def register_failure(self, detail: str = ""):
+        """The third consecutive failure pauses the schedule and records why.
+
+        Without this a broken export quietly produces one identical failure a night
+        for a month, and the Files list stops being readable.
+        """
+        self.consecutive_failures += 1
+        fields = ["consecutive_failures", "updated_at"]
+        if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+            self.state = ScheduleState.PAUSED
+            self.pause_reason = PauseReason.CONSECUTIVE_FAILURES
+            self.pause_detail = detail[:300]
+            fields += ["state", "pause_reason", "pause_detail"]
+        self.save(update_fields=fields)
+
+    # Clear the failure counter after a good run.
+    def register_success(self):
+        if self.consecutive_failures:
+            self.consecutive_failures = 0
+            self.save(update_fields=["consecutive_failures", "updated_at"])
+
+
+# --------------------------------------------------------------------------- #
 # Runs                                                                        #
 # --------------------------------------------------------------------------- #
 class ExportRun(TimeStampedModel):
@@ -229,6 +339,11 @@ class ExportRun(TimeStampedModel):
         ExportDefinition, on_delete=models.SET_NULL, null=True, blank=True,
         related_name="runs",
         help_text="Null for a quick export, which never had a saved recipe.",
+    )
+    schedule = models.ForeignKey(
+        ExportSchedule, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="runs",
+        help_text="Set when a schedule started this run rather than a person.",
     )
 
     frozen_config = models.JSONField(

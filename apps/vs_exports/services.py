@@ -28,6 +28,9 @@ from . import analytics, audit
 from .catalogue import default_format_options, get_dataset
 from .constants import (
     AuditAction,
+    MISSED_WINDOW_GRACE_HOURS,
+    PauseReason,
+    ScheduleState,
     CONCURRENT_RUN_LIMIT,
     DEFAULT_ROW_CAP,
     DownloadOutcome,
@@ -46,6 +49,7 @@ from .constants import (
     SUCCESSFUL_RUN_STATUSES,
     TERMINAL_RUN_STATUSES,
 )
+from .scheduling import should_run_missed
 from .engine import (
     Cancelled,
     ExportError,
@@ -57,6 +61,7 @@ from .models import (
     ExportDownload,
     ExportFile,
     ExportRun,
+    ExportSchedule,
 )
 
 
@@ -185,7 +190,7 @@ def _accept_run(tenant, client_key):
 
 
 def trigger_run(*, definition, actor, trigger=RunTrigger.MANUAL, client_key="",
-                config=None, queue=True):
+                config=None, schedule=None, queue=True):
     """Create (or return) a run for ``definition`` and hand it to the queue."""
     tenant = definition.tenant
 
@@ -203,6 +208,7 @@ def trigger_run(*, definition, actor, trigger=RunTrigger.MANUAL, client_key="",
         tenant=tenant,
         entity=definition.entity,
         definition=definition,
+        schedule=schedule,
         frozen_config=config or freeze(definition),
         trigger=trigger,
         requested_by=actor,
@@ -449,6 +455,7 @@ def execute_run(run_id: int):
         )
 
     _record_failure_resolved(run)
+    _advance_schedule(run, succeeded=True)
     _notify(run, omissions=bool(omissions))
     return run
 
@@ -546,8 +553,36 @@ def _finish_failed(run, code, message, *, detail=""):
         label=run.reference, severity="CRITICAL", status="FAILED",
         metadata={"code": code, "detail": detail[:500]},
     )
+    _advance_schedule(run, succeeded=False, detail=message)
     _notify(run, failed=True)
     return run
+
+
+# Roll a schedule forward after one of its runs finished.
+def _advance_schedule(run, *, succeeded, detail=""):
+    """Move the schedule on, and pause it if this run was the third failure in a row.
+
+    Kept out of the finalisers themselves so both terminal paths share one rule, and
+    so a run triggered by hand never touches a schedule it did not come from.
+    """
+    if run.schedule_id is None:
+        return
+    schedule = run.schedule
+    if succeeded:
+        schedule.register_success()
+    else:
+        schedule.register_failure(detail)
+        if schedule.state == ScheduleState.PAUSED:
+            audit.record(
+                AuditAction.SCHEDULE_PAUSED, tenant=run.tenant, obj=schedule,
+                label=schedule.definition.name, severity="WARNING",
+                metadata={"reason": schedule.pause_reason, "run": run.reference},
+            )
+    schedule.last_run = run
+    schedule.save(update_fields=["last_run", "updated_at"])
+    # A paused schedule keeps its stale next_run_at so resuming can recompute it.
+    if schedule.state == ScheduleState.ACTIVE:
+        schedule.reschedule()
 
 
 # Finalise a cancelled run.
@@ -739,3 +774,114 @@ def capabilities(user, tenant):
         "in_flight": in_flight(tenant),
         "retention_days": FILE_RETENTION_DAYS,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Schedules                                                                   #
+# --------------------------------------------------------------------------- #
+def dispatch_due_schedules(*, now=None) -> dict:
+    """Trigger every active schedule whose moment has come. Returns a small summary.
+
+    Four things happen here and nowhere else:
+
+    * a window missed through an outage runs once on recovery inside the grace
+      period, and is otherwise skipped and rolled forward rather than caught up;
+    * a schedule whose owner has been deactivated pauses instead of running as them,
+      because an unattended run must never read more than its owner could;
+    * a tenant at its concurrency cap is left alone with its ``next_run_at`` intact,
+      so the next tick retries rather than losing the window;
+    * every started run is attributed to the definition's owner, not to whoever
+      created the schedule.
+    """
+    now = now or timezone.now()
+    due = ExportSchedule.objects.select_related(
+        "definition", "definition__owner", "definition__entity", "definition__tenant",
+    ).filter(state=ScheduleState.ACTIVE, next_run_at__lte=now)
+
+    started, skipped, paused, deferred = 0, 0, 0, 0
+    for schedule in due:
+        if not should_run_missed(schedule.next_run_at, now=now):
+            skipped += 1
+            logger.info(
+                "Export schedule %s missed its %s window by more than %sh; skipping.",
+                schedule.pk, schedule.next_run_at, MISSED_WINDOW_GRACE_HOURS,
+            )
+            schedule.reschedule(after=now)
+            continue
+
+        definition = schedule.definition
+        owner = definition.owner
+        if owner is None or getattr(owner, "status", "ACTIVE") != "ACTIVE":
+            schedule.state = ScheduleState.PAUSED
+            schedule.pause_reason = PauseReason.OWNER_INACTIVE
+            schedule.pause_detail = (
+                "The owner of this export is no longer active. An administrator must "
+                "reassign it before it can run again."
+            )
+            schedule.save(update_fields=[
+                "state", "pause_reason", "pause_detail", "updated_at",
+            ])
+            audit.record(
+                AuditAction.SCHEDULE_PAUSED, tenant=definition.tenant, obj=schedule,
+                label=definition.name, severity="WARNING",
+                metadata={"reason": PauseReason.OWNER_INACTIVE},
+            )
+            paused += 1
+            continue
+
+        try:
+            trigger_run(
+                definition=definition, actor=owner,
+                trigger=RunTrigger.SCHEDULED, schedule=schedule,
+            )
+        except ExportServiceError:
+            # At the cap. Leave next_run_at where it is so the next tick tries again.
+            deferred += 1
+            continue
+        started += 1
+        schedule.refresh_from_db()
+        if schedule.state == ScheduleState.ACTIVE:
+            schedule.reschedule(after=now)
+
+    return {
+        "started": started, "skipped": skipped,
+        "paused": paused, "deferred": deferred,
+    }
+
+
+def pause_schedule(schedule, actor, *, detail=""):
+    """Stop a schedule until somebody resumes it."""
+    schedule.state = ScheduleState.PAUSED
+    schedule.pause_reason = PauseReason.BY_PERSON
+    schedule.pause_detail = detail[:300]
+    schedule.save(update_fields=[
+        "state", "pause_reason", "pause_detail", "updated_at",
+    ])
+    audit.record(
+        AuditAction.SCHEDULE_PAUSED, actor=actor, tenant=schedule.definition.tenant,
+        obj=schedule, label=schedule.definition.name,
+        metadata={"reason": PauseReason.BY_PERSON, "detail": detail[:300]},
+    )
+    return schedule
+
+
+def resume_schedule(schedule, actor):
+    """Clear the pause, reset the failure counter and recompute the next occurrence.
+
+    Resetting the counter matters: without it a schedule paused by three failures
+    would pause again on its very next failure, however long it had run cleanly in
+    between.
+    """
+    schedule.state = ScheduleState.ACTIVE
+    schedule.pause_reason = ""
+    schedule.pause_detail = ""
+    schedule.consecutive_failures = 0
+    schedule.save(update_fields=[
+        "state", "pause_reason", "pause_detail", "consecutive_failures", "updated_at",
+    ])
+    schedule.reschedule()
+    audit.record(
+        AuditAction.SCHEDULE_RESUMED, actor=actor, tenant=schedule.definition.tenant,
+        obj=schedule, label=schedule.definition.name,
+    )
+    return schedule

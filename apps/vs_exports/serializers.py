@@ -20,6 +20,7 @@ from rest_framework import serializers
 from .catalogue import describe_filter, get_dataset
 from .constants import (
     DatasetScope,
+    Recurrence,
     ExportFormat,
     FAILURE_GUIDANCE,
     RETRYABLE_FAILURE_CODES,
@@ -30,6 +31,7 @@ from .models import (
     ExportDownload,
     ExportFile,
     ExportRun,
+    ExportSchedule,
 )
 
 
@@ -493,3 +495,86 @@ class AnalyticsIngestSerializer(serializers.Serializer):
                     f"'{name}' is not an event the client may report."
                 )
         return value
+
+
+class ExportScheduleSerializer(serializers.ModelSerializer):
+    """Schedule row, plus the sentence the editor reads back.
+
+    ``state`` and its companions are read-only: a schedule is paused and resumed
+    through their own endpoints, which audit the change. Letting PATCH set the state
+    would give two ways to pause with only one of them recorded.
+    """
+
+    definition_name = serializers.CharField(source="definition.name", read_only=True)
+    owner_name = serializers.SerializerMethodField()
+    reads_as = serializers.SerializerMethodField()
+    last_run = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ExportSchedule
+        fields = [
+            "id", "definition", "definition_name", "owner_name", "recurrence", "day",
+            "at_time", "timezone_name", "starts_on", "ends_on", "skip_when_empty",
+            "state", "pause_reason", "pause_detail", "consecutive_failures",
+            "next_run_at", "last_run", "reads_as",
+        ]
+        read_only_fields = [
+            "state", "pause_reason", "pause_detail", "consecutive_failures",
+            "next_run_at",
+        ]
+
+    def get_owner_name(self, obj):
+        owner = obj.definition.owner
+        return getattr(owner, "get_full_name", lambda: "")() or getattr(owner, "email", "")
+
+    def get_reads_as(self, obj):
+        from .scheduling import describe
+
+        return describe(obj)
+
+    def get_last_run(self, obj):
+        run = obj.last_run
+        if run is None:
+            return None
+        return {"reference": run.reference, "status": run.status, "at": run.queued_at}
+
+    def validate_timezone_name(self, value):
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise serializers.ValidationError(
+                f"'{value}' is not a time zone this server knows. Use a name like "
+                f"'Africa/Lagos'."
+            )
+        return value
+
+    def validate(self, attrs):
+        def current(field, default=None):
+            if field in attrs:
+                return attrs[field]
+            return getattr(self.instance, field, default)
+
+        recurrence = current("recurrence")
+        day = current("day")
+        if recurrence == Recurrence.WEEKLY and day is not None and not 0 <= int(day) <= 6:
+            raise serializers.ValidationError({
+                "day": "For a weekly schedule, day is 0 (Monday) through 6 (Sunday).",
+            })
+        if recurrence in (Recurrence.MONTHLY, Recurrence.QUARTERLY) and day is not None:
+            if not 1 <= int(day) <= 31:
+                raise serializers.ValidationError({
+                    "day": (
+                        "For a monthly schedule, day is 1 through 31. A day past the "
+                        "end of a short month runs on its last day."
+                    ),
+                })
+
+        starts_on = current("starts_on")
+        ends_on = current("ends_on")
+        if starts_on and ends_on and ends_on < starts_on:
+            raise serializers.ValidationError({
+                "ends_on": "The end date cannot be before the start date.",
+            })
+        return attrs

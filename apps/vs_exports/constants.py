@@ -51,6 +51,7 @@ class RunTrigger(models.TextChoices):
     """What caused a run - shown verbatim in the Files list."""
 
     MANUAL = "MANUAL", "Manual"
+    SCHEDULED = "SCHEDULED", "Scheduled"
     QUICK = "QUICK", "Quick export"
     RETRY = "RETRY", "Retry"
     API = "API", "API"
@@ -143,6 +144,45 @@ class OmissionCode(models.TextChoices):
     FIELD_FORBIDDEN = "FIELD_FORBIDDEN", "Column left out - no access to the field"
     FIELD_WITHDRAWN = "FIELD_WITHDRAWN", "Column left out - the field no longer exists"
     ROW_CAP_HIT = "ROW_CAP_HIT", "Rows left out - the row cap was reached"
+
+
+# --------------------------------------------------------------------------- #
+# Schedules                                                                   #
+# --------------------------------------------------------------------------- #
+class Recurrence(models.TextChoices):
+    """How often a schedule fires. ONCE is a future date, not a repeat."""
+
+    ONCE = "ONCE", "Once, at a future date"
+    DAILY = "DAILY", "Daily"
+    WEEKLY = "WEEKLY", "Weekly"
+    MONTHLY = "MONTHLY", "Monthly"
+    QUARTERLY = "QUARTERLY", "Quarterly"
+
+
+class ScheduleState(models.TextChoices):
+    """PAUSED means something went wrong and a person must act. FINISHED means the
+    series simply ran out - a ONCE schedule that fired, or one past its end date.
+    Keeping them apart is what stops a completed schedule sitting in the paused list
+    looking like a fault."""
+
+    ACTIVE = "ACTIVE", "Active"
+    PAUSED = "PAUSED", "Paused"
+    FINISHED = "FINISHED", "Finished"
+
+
+class PauseReason(models.TextChoices):
+    BY_PERSON = "BY_PERSON", "Paused by a person"
+    CONSECUTIVE_FAILURES = "CONSECUTIVE_FAILURES", "Paused after repeated failures"
+    OWNER_INACTIVE = "OWNER_INACTIVE", "Paused because the owner was deactivated"
+
+
+#: A schedule pauses itself after this many consecutive failed runs, so a broken
+#: export stops filling the Files list with identical failures.
+MAX_CONSECUTIVE_FAILURES = 3
+
+#: A window missed through an outage still runs if recovery is inside this many hours.
+#: Beyond it the window is skipped and reported - six stale nightly files help nobody.
+MISSED_WINDOW_GRACE_HOURS = 6
 
 
 # --------------------------------------------------------------------------- #
@@ -259,6 +299,9 @@ class ExportPermission:
     RUN_CREATE = "exports.run.create"
     RUN_CANCEL = "exports.run.cancel"
     FILE_DOWNLOAD = "exports.file.download"
+    SCHEDULE_VIEW = "exports.schedule.view"
+    SCHEDULE_CREATE = "exports.schedule.create"
+    SCHEDULE_MANAGE = "exports.schedule.manage"
     #: Required *in addition* to the dataset's own key to include a sensitive field.
     SENSITIVE_EXPORT = "exports.sensitive_field.export"
     #: Admin-only: read other people's export activity. Reading it is itself audited.
@@ -280,6 +323,9 @@ class AuditAction:
     DEFINITION_DELETED = "EXPORT_DEFINITION_DELETED"
     DEFINITION_SHARED = "EXPORT_DEFINITION_SHARED"
     SENSITIVE_FIELD_INCLUDED = "EXPORT_SENSITIVE_FIELD_INCLUDED"
+    SCHEDULE_CREATED = "EXPORT_SCHEDULE_CREATED"
+    SCHEDULE_PAUSED = "EXPORT_SCHEDULE_PAUSED"
+    SCHEDULE_RESUMED = "EXPORT_SCHEDULE_RESUMED"
     RUN_STARTED = "EXPORT_REQUESTED"
     RUN_COMPLETED = "EXPORT_COMPLETED"
     RUN_OMITTED_FIELDS = "EXPORT_RUN_OMITTED_FIELDS"
