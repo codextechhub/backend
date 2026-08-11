@@ -31,7 +31,6 @@ from vs_exports.catalogue import get_dataset
 from vs_exports.constants import (
     AuditAction,
     DatasetScope,
-    DeliveryState,
     DownloadOutcome,
     DownloadRefusal,
     ExportFormat,
@@ -790,7 +789,7 @@ class ExportDownloadTests(_ExportFixture, TestCase):
 
 
 # --------------------------------------------------------------------------- #
-# Queue position and delivery                                                 #
+# Queue position                                                 #
 # --------------------------------------------------------------------------- #
 class QueuePositionTests(_ExportFixture, TestCase):
     """A queued run must be able to explain the wait rather than go quiet."""
@@ -855,116 +854,19 @@ class QueuePositionTests(_ExportFixture, TestCase):
         self.assertIsNone(progress["rows_total"])
 
 
-class ExportDeliveryTests(_ExportFixture, TestCase):
-    """A run can succeed while a delivery fails; the two are tracked separately."""
+class NotificationRegistryTests(_ExportFixture, TestCase):
+    """send_notification rejects unregistered keys, so a typo silences a notification
+    exactly the way an unregistered action_type silences an audit event. Both
+    registries get a guard test for the same reason."""
 
     def setUp(self):
         self.build()
         call_command("seed_notification_event_types", verbosity=0)
-        call_command("seed_notification_templates", verbosity=0)
-        self.definition = self.make_definition(owner=self.admin)
-        self.definition.email_recipients = True
-        self.definition.save(update_fields=["email_recipients"])
-        self.definition.shares.create(user=self.analyst, shared_by=self.admin)
-
-    def test_a_delivery_is_opened_per_recipient_and_sent_on_success(self):
-        run, _ = services.trigger_run(definition=self.definition, actor=self.admin)
-        run.refresh_from_db()
-        self.assertEqual(run.status, RunStatus.COMPLETED)
-
-        delivery = run.deliveries.get()
-        self.assertEqual(delivery.recipient_user_id, self.analyst.pk)
-        self.assertEqual(delivery.state, DeliveryState.SENT)
-        self.assertIsNotNone(delivery.attempted_at)
-
-    def test_the_link_token_is_never_serialised(self):
-        run, _ = services.trigger_run(definition=self.definition, actor=self.admin)
-        response = TenantAPIClient(user=self.admin).get(f"/v1/exports/runs/{run.pk}/")
-        body = response.json()
-        self.assertEqual(len(body["data"]["deliveries"]), 1)
-        self.assertNotIn(run.deliveries.get().token, str(body))
-
-    def test_deliveries_are_skipped_when_no_rows_matched(self):
-        """An empty file is worse than no email - the recipient cannot tell why."""
-        self.definition.filters = [{
-            "id": "invoice_date",
-            "start": (self.today + datetime.timedelta(days=400)).isoformat(),
-            "end": (self.today + datetime.timedelta(days=401)).isoformat(),
-        }]
-        self.definition.save(update_fields=["filters"])
-
-        run, _ = services.trigger_run(definition=self.definition, actor=self.admin)
-        run.refresh_from_db()
-        self.assertEqual(run.row_count, 0)
-        self.assertEqual(run.deliveries.get().state, DeliveryState.SKIPPED)
-
-    def test_a_failed_run_skips_its_deliveries_rather_than_leaving_them_pending(self):
-        self.definition.filters = [
-            {"id": "invoice_date", "start": self.today.isoformat(),
-             "end": self.today.isoformat()},
-            {"id": "settlement_status", "values": ["PENDING"]},
-        ]
-        self.definition.save(update_fields=["filters"])
-
-        run, _ = services.trigger_run(definition=self.definition, actor=self.admin)
-        run.refresh_from_db()
-        self.assertEqual(run.status, RunStatus.FAILED)
-        delivery = run.deliveries.get()
-        self.assertEqual(delivery.state, DeliveryState.SKIPPED)
-        self.assertIn("No file", delivery.failure_reason)
-
-    def test_one_failing_send_does_not_fail_the_run_or_the_others(self):
-        self.definition.shares.create(user=self.stranger, shared_by=self.admin)
-        first = {"seen": False}
-
-        def _one_bad_send(*args, **kwargs):
-            """Fail only the first share notification, leave the rest alone."""
-            if kwargs.get("event_key") != "export.file_shared":
-                return []
-            if not first["seen"]:
-                first["seen"] = True
-                raise RuntimeError("smtp down")
-            return []
-
-        with patch("vs_notifications.notify.send_notification", side_effect=_one_bad_send):
-            run, _ = services.trigger_run(definition=self.definition, actor=self.admin)
-        run.refresh_from_db()
-
-        self.assertEqual(run.status, RunStatus.COMPLETED)
-        states = set(run.deliveries.values_list("state", flat=True))
-        self.assertEqual(states, {DeliveryState.FAILED, DeliveryState.SENT})
-
-    def test_no_deliveries_when_the_export_does_not_email(self):
-        self.definition.email_recipients = False
-        self.definition.save(update_fields=["email_recipients"])
-        run, _ = services.trigger_run(definition=self.definition, actor=self.admin)
-        self.assertEqual(run.deliveries.count(), 0)
-
-    def test_revoking_a_link_leaves_the_file_alone(self):
-        run, _ = services.trigger_run(definition=self.definition, actor=self.admin)
-        run.refresh_from_db()
-        delivery = run.deliveries.get()
-
-        response = TenantAPIClient(user=self.admin).post(
-            f"/v1/exports/deliveries/{delivery.pk}/revoke/", {}, format="json",
-        )
-        self.assertEqual(response.status_code, 200)
-        delivery.refresh_from_db()
-        self.assertEqual(delivery.state, DeliveryState.REVOKED)
-        self.assertTrue(run.file.is_downloadable)
-
-    def test_the_download_link_points_at_the_authenticated_endpoint(self):
-        run, _ = services.trigger_run(definition=self.definition, actor=self.admin)
-        run.refresh_from_db()
-        link = services.download_url(run.file)
-        self.assertIn(f"/exports/files/{run.file.pk}", link)
 
     def test_every_notification_event_key_is_registered(self):
-        """send_notification rejects unregistered keys, so a typo silences the
-        notification exactly the way an unregistered audit action does."""
         from vs_notifications.models import NotificationEventType
 
-        for key in ("export.file_shared", "export.run_failed", "export.run_completed"):
+        for key in ("export.run_failed", "export.run_completed"):
             self.assertTrue(
                 NotificationEventType.objects.filter(key=key, is_active=True).exists(),
                 f"{key} is not seeded",
@@ -1434,3 +1336,94 @@ class DriftReadabilityTests(_ExportFixture, TestCase):
         columns = by_field["columns"]
         self.assertNotIn("_", columns["now"])
         self.assertTrue(all(isinstance(c["then"], str) for c in drift["changes"]))
+
+
+# --------------------------------------------------------------------------- #
+# Catalogue breadth and the domain-neutrality guard                           #
+# --------------------------------------------------------------------------- #
+class CatalogueRegistrationTests(TestCase):
+    """The registry lives in vs_exports; the datasets live in the apps that own them.
+
+    CLAUDE.md's first rule is that the engines stay domain-neutral. The Export Centre
+    is an engine, so the test that matters is not "does Finance work" but "can
+    vs_exports still be read without knowing what an invoice is".
+    """
+
+    #: Domain apps the Export Centre must never import. vs_finance is the one
+    #: deliberate exception: LedgerEntity is the platform's entity boundary, named
+    #: directly in the FK, so the models and the entity resolver do reference it.
+    FORBIDDEN = (
+        "vs_payments", "vs_procurement", "vs_schools", "vs_health", "vs_tickets",
+        "vs_workflow", "vs_import_data",
+    )
+
+    def test_the_engine_never_imports_a_domain_app(self):
+        import pathlib
+
+        import vs_exports
+
+        root = pathlib.Path(vs_exports.__file__).parent
+        offenders = []
+        for path in sorted(root.glob("*.py")):
+            if path.name == "tests.py":
+                continue
+            source = path.read_text()
+            for app in self.FORBIDDEN:
+                if f"import {app}" in source or f"from {app}" in source:
+                    offenders.append(f"{path.name} imports {app}")
+        self.assertEqual(offenders, [], "; ".join(offenders))
+
+    def test_the_catalogue_declares_no_datasets_of_its_own(self):
+        """catalogue.py holds the vocabulary. A dataset declared there would be a
+        domain fact living in the engine."""
+        import pathlib
+
+        from vs_exports import catalogue
+
+        source = pathlib.Path(catalogue.__file__).read_text()
+        self.assertNotIn("register(Dataset(", source)
+
+    def test_every_module_that_owns_data_publishes_some(self):
+        from vs_exports.catalogue import all_datasets, modules
+
+        published = set(modules())
+        # The breadth the Export Centre promises: not just finance.
+        for module in ("Finance", "Payments", "Procurement", "Audit",
+                       "Administration", "Support", "Workflow"):
+            self.assertIn(module, published)
+        self.assertGreaterEqual(len(all_datasets()), 15)
+
+    def test_every_dataset_resolves_against_the_orm(self):
+        """A label with no column behind it is a run-time failure waiting to happen,
+        so every declared path is asked of the ORM here rather than by a user."""
+        from vs_exports.catalogue import all_datasets
+
+        class _Scope:
+            tenant = None
+            entity = None
+
+        broken = []
+        for dataset in all_datasets():
+            model = dataset.base(_Scope()).model
+            for field in dataset.fields:
+                try:
+                    model.objects.none().values_list(field.path)
+                except Exception as exc:
+                    broken.append(f"{dataset.key}.{field.id} -> {field.path}: {exc}")
+            for spec in dataset.filters:
+                try:
+                    model.objects.none().filter(**{f"{spec.path}__isnull": True})
+                except Exception as exc:
+                    broken.append(f"{dataset.key}!{spec.id} -> {spec.path}: {exc}")
+        self.assertEqual(broken, [], "\n".join(broken))
+
+    def test_every_dataset_names_a_permission_and_a_locked_column(self):
+        """Two invariants the engine relies on: nothing is exportable without a key,
+        and every row can be identified in the file it lands in."""
+        from vs_exports.catalogue import all_datasets
+
+        for dataset in all_datasets():
+            self.assertTrue(dataset.permission, f"{dataset.key} has no permission key")
+            self.assertTrue(
+                dataset.locked_field_ids, f"{dataset.key} has no locked column",
+            )

@@ -27,7 +27,6 @@ from .constants import (
 )
 from .models import (
     ExportDefinition,
-    ExportDelivery,
     ExportDownload,
     ExportFile,
     ExportRun,
@@ -56,8 +55,7 @@ class ExportDefinitionListSerializer(serializers.ModelSerializer):
         fields = [
             "id", "name", "description", "dataset", "scope", "entity_code", "format",
             "values_mode", "column_count", "owner_name", "is_owner", "sharing",
-            "shared_with", "is_draft", "is_archived", "email_recipients",
-            "last_run", "updated_at",
+            "shared_with", "is_draft", "is_archived", "last_run", "updated_at",
         ]
 
     def get_dataset(self, obj):
@@ -133,7 +131,7 @@ class ExportDefinitionWriteSerializer(serializers.ModelSerializer):
         fields = [
             "name", "description", "dataset_key", "columns", "filters", "sort",
             "format", "format_options", "values_mode", "file_name_pattern",
-            "sharing", "is_draft", "email_recipients",
+            "sharing", "is_draft",
         ]
 
     def validate_dataset_key(self, value):
@@ -276,11 +274,10 @@ class ExportRunDetailSerializer(ExportRunListSerializer):
     failure = serializers.SerializerMethodField()
     configuration = serializers.SerializerMethodField()
     drift = serializers.SerializerMethodField()
-    deliveries = serializers.SerializerMethodField()
 
     class Meta(ExportRunListSerializer.Meta):
         fields = ExportRunListSerializer.Meta.fields + [
-            "omissions", "failure", "configuration", "drift", "deliveries",
+            "omissions", "failure", "configuration", "drift",
         ]
 
     def get_failure(self, obj):
@@ -355,8 +352,6 @@ class ExportRunDetailSerializer(ExportRunListSerializer):
             "changes": changes,
         }
 
-    def get_deliveries(self, obj):
-        return ExportDeliverySerializer(obj.deliveries.all(), many=True).data
 
 
 # What each drifted key is called on screen.
@@ -421,22 +416,6 @@ class ExportDownloadSerializer(serializers.ModelSerializer):
     def get_user_name(self, obj):
         user = obj.user
         return getattr(user, "get_full_name", lambda: "")() or getattr(user, "email", "-")
-
-
-class ExportDeliverySerializer(serializers.ModelSerializer):
-    """One recipient's copy. The link token is never serialised."""
-
-    recipient = serializers.SerializerMethodField()
-
-    class Meta:
-        model = ExportDelivery
-        fields = ["id", "destination", "recipient", "state", "attempted_at", "failure_reason"]
-
-    def get_recipient(self, obj):
-        if obj.recipient_user_id:
-            user = obj.recipient_user
-            return getattr(user, "get_full_name", lambda: "")() or getattr(user, "email", "")
-        return obj.recipient_email
 
 
 # --------------------------------------------------------------------------- #

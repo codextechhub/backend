@@ -26,6 +26,13 @@ Three ideas:
 
 Everything the API exposes about a dataset comes from here, so the UI never hardcodes
 fields, formats or option sets - which is exactly what the spec requires.
+
+**Where the datasets themselves live.** This module holds the *vocabulary* and the
+registry; it declares no datasets of its own and imports no domain app. Each app
+publishes its own in an ``export_datasets`` module, loaded from that app's
+``AppConfig.ready()``. That is what keeps the Export Centre domain-neutral: adding a
+school or health dataset never touches vs_exports, and vs_exports never grows a
+``from vs_finance.models import ...``.
 """
 from __future__ import annotations
 
@@ -302,6 +309,31 @@ def default_format_options(fmt: str) -> dict:
     return {k: v["default"] for k, v in FORMAT_OPTION_SCHEMA.get(fmt, {}).items()}
 
 
+# Resolve the label map for a Django TextChoices class without importing it eagerly.
+def choice_labels(dotted: str) -> dict:
+    """``"vs_finance.constants.DocumentStatus"`` → ``{value: label}``.
+
+    Also resolves classes nested inside another class, which is how several apps
+    declare theirs (``"vs_user.models.User.Status"``): the longest importable prefix is
+    imported, then the remaining segments are walked as attributes.
+
+    Resolved at import of the declaring module, not per request, so a typo shows up on
+    boot rather than halfway through somebody's export.
+    """
+    import importlib
+
+    parts = dotted.split(".")
+    for split in range(len(parts) - 1, 0, -1):
+        try:
+            obj = importlib.import_module(".".join(parts[:split]))
+        except ModuleNotFoundError:
+            continue
+        for attr in parts[split:]:
+            obj = getattr(obj, attr)
+        return {str(value): str(label) for value, label in obj.choices}
+    raise ModuleNotFoundError(f"Cannot resolve choices from '{dotted}'.")
+
+
 # --------------------------------------------------------------------------- #
 # Registry                                                                    #
 # --------------------------------------------------------------------------- #
@@ -328,282 +360,6 @@ def all_datasets() -> list[Dataset]:
 # List the modules that have at least one dataset.
 def modules() -> list[str]:
     return sorted({d.module for d in _REGISTRY.values()})
-
-
-# --------------------------------------------------------------------------- #
-# Published datasets                                                          #
-# --------------------------------------------------------------------------- #
-# Finance ------------------------------------------------------------------- #
-# Build the entity-scoped base queryset for customer invoices.
-def _invoices(scope):
-    from vs_finance.models import Invoice
-
-    return Invoice.objects.filter(entity=scope.entity)
-
-
-# Build the entity-scoped base queryset for invoice lines.
-def _invoice_lines(scope):
-    from vs_finance.models import InvoiceLine
-
-    return InvoiceLine.objects.filter(invoice__entity=scope.entity)
-
-
-# Build the entity-scoped base queryset for posted journal lines.
-def _gl_postings(scope):
-    from vs_finance.models import JournalLine
-
-    return JournalLine.objects.filter(entry__entity=scope.entity)
-
-
-# Build the entity-scoped base queryset for gateway collections.
-def _collections(scope):
-    from vs_payments.models import CollectionIntent
-
-    return CollectionIntent.objects.filter(entity=scope.entity)
-
-
-# Build the tenant-scoped base queryset for audit events.
-def _audit_events(scope):
-    from vs_audit.models import AuditEvent
-
-    # Tenant-scoped: audit events belong to the organisation, not to a set of books.
-    return AuditEvent.objects.filter(tenant=scope.tenant)
-
-
-# Resolve the label map for a Django TextChoices class without importing it eagerly.
-def _choice_labels(dotted: str) -> dict:
-    """``"vs_finance.constants.DocumentStatus"`` → ``{value: label}``.
-
-    Resolved lazily at import of this module (not at request time) so a typo shows up
-    on boot rather than mid-export.
-    """
-    module_path, _, name = dotted.rpartition(".")
-    import importlib
-
-    choices = getattr(importlib.import_module(module_path), name)
-    return {str(value): str(label) for value, label in choices.choices}
-
-
-_DOC_STATUS = _choice_labels("vs_finance.constants.DocumentStatus")
-_PAY_STATUS = _choice_labels("vs_finance.constants.InvoicePaymentStatus")
-_COLLECTION_STATUS = _choice_labels("vs_payments.constants.CollectionStatus")
-_PROVIDER = _choice_labels("vs_payments.constants.PaymentProvider")
-
-
-CUSTOMER_INVOICES = register(Dataset(
-    key="finance.customer_invoices",
-    module="Finance",
-    name="Customer invoices",
-    description=(
-        "One row per invoice raised, with customer, dates, status and totals. Updated "
-        "continuously. Two customer fields are restricted and marked sensitive."
-    ),
-    base=_invoices,
-    permission="finance.invoice.view",
-    row_cap=200_000,
-    max_date_span_days=None,
-    default_columns=(
-        "document_number", "customer_name", "invoice_date", "due_date",
-        "status", "total",
-    ),
-    fields=(
-        Field("document_number", "Invoice number", "Invoice", KIND_TEXT, locked=True,
-              description="The invoice's document number - the row's identity."),
-        Field("customer_name", "Customer", "Invoice", KIND_TEXT, source="customer__name"),
-        Field("customer_code", "Customer code", "Invoice", KIND_TEXT, source="customer__code"),
-        Field("invoice_date", "Invoice date", "Invoice", KIND_DATE),
-        Field("due_date", "Due date", "Invoice", KIND_DATE),
-        Field("status", "Status", "Invoice", KIND_CHOICE, choices=_DOC_STATUS),
-        Field("payment_status", "Payment status", "Invoice", KIND_CHOICE, choices=_PAY_STATUS),
-        Field("subtotal", "Subtotal", "Amounts", KIND_MONEY),
-        Field("tax_total", "Tax", "Amounts", KIND_MONEY),
-        Field("total", "Total", "Amounts", KIND_MONEY),
-        Field("amount_paid", "Amount paid", "Amounts", KIND_MONEY),
-        Field("currency", "Currency", "Amounts", KIND_TEXT, source="currency__code"),
-        Field("reference", "Reference", "Invoice", KIND_TEXT),
-        Field("narration", "Narration", "Invoice", KIND_TEXT),
-        Field("customer_tax_id", "Customer tax ID", "Customer", KIND_TEXT,
-              source="customer__source_id", sensitive=True,
-              description="Restricted: the customer's external tax reference."),
-        Field("customer_email", "Billing contact email", "Customer", KIND_TEXT,
-              source="customer__billing_email", sensitive=True,
-              description="Restricted: personal contact data."),
-        Field("customer_phone", "Billing phone", "Customer", KIND_TEXT,
-              source="customer__billing_phone", sensitive=True,
-              description="Restricted: personal contact data."),
-        Field("created_at", "Created", "Record", KIND_DATETIME),
-    ),
-    filters=(
-        FilterDef("invoice_date", "Invoice date", FILTER_DATE_RANGE, required=True,
-                  is_primary_date=True,
-                  description="Required so an export can never mean 'every invoice ever'."),
-        FilterDef("status", "Status", FILTER_CHOICE, choices=_DOC_STATUS),
-        FilterDef("payment_status", "Payment status", FILTER_CHOICE, choices=_PAY_STATUS),
-        FilterDef("customer", "Customer", FILTER_TEXT, source="customer__name"),
-        FilterDef("total", "Total", FILTER_NUMBER_RANGE,
-                  description="Amounts are in kobo."),
-    ),
-))
-
-
-INVOICE_LINES = register(Dataset(
-    key="finance.invoice_lines",
-    module="Finance",
-    name="Invoice lines",
-    description=(
-        "One row per line on an invoice. Use this when you need item-level detail; "
-        "expect roughly four times as many rows."
-    ),
-    base=_invoice_lines,
-    permission="finance.invoice.view",
-    row_cap=500_000,
-    default_columns=("invoice_number", "description", "quantity", "net_amount", "tax_amount"),
-    fields=(
-        Field("invoice_number", "Invoice number", "Invoice", KIND_TEXT,
-              source="invoice__document_number", locked=True),
-        Field("invoice_date", "Invoice date", "Invoice", KIND_DATE, source="invoice__invoice_date"),
-        Field("customer_name", "Customer", "Invoice", KIND_TEXT, source="invoice__customer__name"),
-        Field("description", "Description", "Line", KIND_TEXT),
-        Field("quantity", "Quantity", "Line", KIND_NUMBER),
-        Field("unit_price", "Unit price", "Line", KIND_MONEY),
-        Field("net_amount", "Net amount", "Line", KIND_MONEY),
-        Field("tax_amount", "Tax amount", "Line", KIND_MONEY),
-        Field("revenue_account", "Revenue account", "Line", KIND_TEXT, source="revenue_account__code"),
-        Field("tax_code", "Tax code", "Line", KIND_TEXT, source="tax_code__code"),
-    ),
-    filters=(
-        FilterDef("invoice_date", "Invoice date", FILTER_DATE_RANGE, required=True,
-                  source="invoice__invoice_date", is_primary_date=True),
-        FilterDef("status", "Invoice status", FILTER_CHOICE, source="invoice__status",
-                  choices=_DOC_STATUS),
-    ),
-))
-
-
-GL_POSTINGS = register(Dataset(
-    key="finance.gl_postings",
-    module="Finance",
-    name="General ledger postings",
-    description=(
-        "Posted journal entries for the period, one row per line. Tuned for a "
-        "month at a time; wider ranges run but take longer."
-    ),
-    base=_gl_postings,
-    permission="finance.journal.view",
-    row_cap=500_000,
-    max_date_span_days=31,
-    default_columns=("entry_number", "entry_date", "account_code", "debit", "credit"),
-    fields=(
-        Field("entry_number", "Entry number", "Journal", KIND_TEXT,
-              source="entry__document_number", locked=True),
-        Field("entry_date", "Entry date", "Journal", KIND_DATE, source="entry__date"),
-        Field("entry_status", "Entry status", "Journal", KIND_CHOICE,
-              source="entry__status", choices=_DOC_STATUS),
-        Field("line_no", "Line", "Line", KIND_NUMBER),
-        Field("account_code", "Account code", "Line", KIND_TEXT, source="account__code"),
-        Field("account_name", "Account", "Line", KIND_TEXT, source="account__name"),
-        Field("debit", "Debit", "Amounts", KIND_MONEY),
-        Field("credit", "Credit", "Amounts", KIND_MONEY),
-        Field("description", "Description", "Line", KIND_TEXT),
-        Field("cost_center", "Cost centre", "Analysis", KIND_TEXT, source="cost_center__code"),
-    ),
-    filters=(
-        FilterDef("entry_date", "Entry date", FILTER_DATE_RANGE, required=True,
-                  source="entry__date", is_primary_date=True),
-        FilterDef("entry_status", "Entry status", FILTER_CHOICE, source="entry__status",
-                  choices=_DOC_STATUS),
-        FilterDef("account", "Account code", FILTER_TEXT, source="account__code"),
-    ),
-))
-
-
-# Payments ------------------------------------------------------------------ #
-SETTLEMENTS = register(Dataset(
-    key="payments.collections",
-    module="Payments",
-    name="Gateway collections",
-    description=(
-        "Every collection attempt through a payment provider, with provider reference, "
-        "status and the receipt it booked."
-    ),
-    base=_collections,
-    permission="payments.collection.view",
-    row_cap=200_000,
-    default_columns=("reference", "created_at", "amount", "status", "provider"),
-    fields=(
-        Field("reference", "Our reference", "Collection", KIND_TEXT, locked=True),
-        Field("provider_reference", "Provider reference", "Collection", KIND_TEXT),
-        Field("provider", "Provider", "Collection", KIND_CHOICE, choices=_PROVIDER),
-        Field("channel", "Channel", "Collection", KIND_TEXT),
-        Field("status", "Status", "Collection", KIND_CHOICE, choices=_COLLECTION_STATUS),
-        Field("amount", "Amount", "Amounts", KIND_MONEY),
-        Field("currency", "Currency", "Amounts", KIND_TEXT, source="currency__code"),
-        Field("customer_name", "Customer", "Payer", KIND_TEXT, source="customer__name"),
-        Field("invoice_number", "Invoice", "Collection", KIND_TEXT,
-              source="invoice__document_number"),
-        Field("created_at", "Created", "Record", KIND_DATETIME),
-        Field("confirmed_at", "Confirmed", "Record", KIND_DATETIME),
-        Field("payer_email", "Payer email", "Payer", KIND_TEXT, sensitive=True,
-              description="Restricted: personal contact data."),
-        Field("payer_name", "Payer name", "Payer", KIND_TEXT, sensitive=True,
-              description="Restricted: personal data supplied at checkout."),
-    ),
-    filters=(
-        FilterDef("created_at", "Created", FILTER_DATE_RANGE, required=True,
-                  is_primary_date=True),
-        FilterDef("status", "Status", FILTER_CHOICE, choices=_COLLECTION_STATUS),
-        FilterDef("provider", "Provider", FILTER_CHOICE, choices=_PROVIDER),
-    ),
-))
-
-
-# Audit -------------------------------------------------------------------- #
-_AUDIT_SEVERITY = _choice_labels("vs_audit.models.AuditSeverity")
-_AUDIT_STATUS = _choice_labels("vs_audit.models.AuditStatus")
-_AUDIT_MODULE = _choice_labels("vs_audit.models.AuditModuleKey")
-
-
-AUDIT_EVENTS = register(Dataset(
-    key="audit.events",
-    module="Audit",
-    name="Audit events",
-    description=(
-        "Every audited action across the platform, one row per event. Covers the whole "
-        "organisation - audit is not kept per set of books."
-    ),
-    base=_audit_events,
-    scope=DatasetScope.TENANT,
-    # The precise key: platform.audit.view reads the console, .export takes the data
-    # out of it. Already seeded as restricted by seed_platform_permissions.
-    permission="platform.audit.export",
-    row_cap=500_000,
-    max_date_span_days=92,
-    default_columns=("event_at", "module_key", "action_type", "actor_label", "summary"),
-    fields=(
-        Field("event_id", "Event", "Event", KIND_TEXT, source="id", locked=True),
-        Field("event_at", "When", "Event", KIND_DATETIME),
-        Field("module_key", "Module", "Event", KIND_CHOICE, choices=_AUDIT_MODULE),
-        Field("action_type", "Action", "Event", KIND_TEXT),
-        Field("severity", "Severity", "Event", KIND_CHOICE, choices=_AUDIT_SEVERITY),
-        Field("status", "Outcome", "Event", KIND_CHOICE, choices=_AUDIT_STATUS),
-        Field("summary", "Summary", "Event", KIND_TEXT),
-        Field("actor_label", "Actor", "Actor", KIND_TEXT),
-        Field("actor_email", "Actor email", "Actor", KIND_TEXT,
-              source="actor_user__email", sensitive=True,
-              description="Restricted: identifies the person behind the action."),
-        Field("entity_type", "Object type", "Target", KIND_TEXT),
-        Field("entity_label", "Object", "Target", KIND_TEXT),
-    ),
-    filters=(
-        FilterDef("event_at", "When", FILTER_DATE_RANGE, required=True,
-                  is_primary_date=True,
-                  description="Required - an unbounded audit export is never what "
-                              "anyone actually wants."),
-        FilterDef("module_key", "Module", FILTER_CHOICE, choices=_AUDIT_MODULE),
-        FilterDef("severity", "Severity", FILTER_CHOICE, choices=_AUDIT_SEVERITY),
-        FilterDef("status", "Outcome", FILTER_CHOICE, choices=_AUDIT_STATUS),
-    ),
-))
 
 
 # --------------------------------------------------------------------------- #

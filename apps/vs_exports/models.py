@@ -17,9 +17,9 @@ Four things, in the order a person meets them:
     read time, so nothing depends on a sweeper being punctual and the run record is
     never rewritten to represent expiry.
 
-:class:`ExportDownload` / :class:`ExportDelivery`
-    Who took the file (allowed *and* refused), and where copies were sent. A run can
-    succeed while a delivery fails; separate records are what let the UI say so.
+:class:`ExportDownload`
+    Who took the file, allowed *and* refused. A refusal leaves the same trail as a
+    success, because "who tried and was told no" is what a compliance review asks.
 """
 from __future__ import annotations
 
@@ -31,8 +31,6 @@ from django.db import models
 from django.utils import timezone
 
 from .constants import (
-    DeliveryState,
-    Destination,
     DownloadOutcome,
     DownloadRefusal,
     ExportFormat,
@@ -132,14 +130,6 @@ class ExportDefinition(TimeStampedModel):
     )
     is_archived = models.BooleanField(default=False)
 
-    email_recipients = models.BooleanField(
-        default=False,
-        help_text=(
-            "Whether each run also sends a secure download link to the people this "
-            "export is shared with. The Export Centre destination is always on - it "
-            "is the record - so this is the only destination that is a choice."
-        ),
-    )
 
     class Meta:
         ordering = ["-updated_at"]
@@ -438,49 +428,6 @@ class ExportDownload(models.Model):
 
     def __str__(self) -> str:
         return f"{self.file_id} {self.outcome} @{self.at:%Y-%m-%d %H:%M}"
-
-
-class ExportDelivery(TimeStampedModel):
-    """One recipient's copy of one run's file.
-
-    Separate from the run because a run can succeed while a delivery fails; without
-    these rows the UI cannot say which happened and users retry the wrong thing.
-    Recipients receive a *link*, never an attachment - the token below resolves to the
-    authenticated download endpoint and is worthless on its own.
-    """
-
-    run = models.ForeignKey(
-        ExportRun, on_delete=models.CASCADE, related_name="deliveries",
-    )
-    destination = models.CharField(
-        max_length=12, choices=Destination.choices, default=Destination.EMAIL_LINK,
-    )
-    recipient_user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="export_deliveries",
-    )
-    recipient_email = models.EmailField(blank=True, default="")
-    state = models.CharField(
-        max_length=8, choices=DeliveryState.choices, default=DeliveryState.PENDING,
-    )
-    token = models.CharField(
-        max_length=64, unique=True,
-        help_text="Opaque link token. Expires with the file and is revocable.",
-    )
-    attempted_at = models.DateTimeField(null=True, blank=True)
-    failure_reason = models.CharField(max_length=300, blank=True, default="")
-
-    class Meta:
-        ordering = ["-created_at"]
-        indexes = [models.Index(fields=["run", "state"])]
-
-    def __str__(self) -> str:
-        return f"{self.recipient_email or self.recipient_user_id} [{self.state}]"
-
-    def save(self, *args, **kwargs):
-        if not self.token:
-            self.token = secrets.token_urlsafe(32)
-        return super().save(*args, **kwargs)
 
 
 # --------------------------------------------------------------------------- #

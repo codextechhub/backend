@@ -139,8 +139,6 @@ class AuditActionType(models.TextChoices):
     EXPORT_FILE_DOWNLOADED = "EXPORT_FILE_DOWNLOADED", "Export File Downloaded (export.file.downloaded)"
     EXPORT_FILE_DOWNLOAD_REFUSED = "EXPORT_FILE_DOWNLOAD_REFUSED", "Export Download Refused (export.file.download_refused)"
     EXPORT_FILE_EXPIRED = "EXPORT_FILE_EXPIRED", "Export File Expired (export.file.expired)"
-    EXPORT_LINK_SENT = "EXPORT_LINK_SENT", "Export Link Sent (export.link.sent)"
-    EXPORT_LINK_REVOKED = "EXPORT_LINK_REVOKED", "Export Link Revoked (export.link.revoked)"
     EXPORT_ADMIN_VIEWED_ACTIVITY = "EXPORT_ADMIN_VIEWED_ACTIVITY", "Export Activity Viewed (export.admin.viewed_activity)"
 
     CUSTOM = "CUSTOM", "Custom"

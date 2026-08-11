@@ -32,7 +32,6 @@ from . import analytics, audit, services
 from .catalogue import all_datasets, get_dataset, modules
 from .constants import (
     AuditAction,
-    Destination,
     DownloadOutcome,
     ExportPermission,
     FORMAT_MEDIA,
@@ -44,7 +43,6 @@ from .engine import ExportError, estimate, may_export_dataset, plain_sentence, s
 from .models import (
     ExportDefinition,
     ExportDefinitionShare,
-    ExportDelivery,
     ExportFile,
     ExportRun,
 )
@@ -53,7 +51,6 @@ from .serializers import (
     ExportDefinitionDetailSerializer,
     ExportDefinitionListSerializer,
     ExportDefinitionWriteSerializer,
-    ExportDeliverySerializer,
     ExportDownloadSerializer,
     ExportFileSerializer,
     ExportRunDetailSerializer,
@@ -560,7 +557,7 @@ class RunListView(_ExportBase):
 
 
 class RunDetailView(_ExportBase):
-    """``GET /v1/exports/runs/<pk>/`` - outcome, frozen config, drift, deliveries."""
+    """``GET /v1/exports/runs/<pk>/`` - outcome, frozen config and drift."""
 
     rbac_permission = ExportPermission.RUN_VIEW
 
@@ -689,8 +686,6 @@ def _refusal_message(reason, file) -> str:
             "You no longer have access to the dataset this file came from.",
         DownloadRefusal.NOT_SHARED:
             "This export has not been shared with you.",
-        DownloadRefusal.LINK_REVOKED:
-            "The secure link for this file was revoked.",
     }.get(reason, "You cannot download this file.")
 
 
@@ -712,25 +707,6 @@ class FileDownloadLogView(_ExportBase):
 # --------------------------------------------------------------------------- #
 # Deliveries and admin activity                                               #
 # --------------------------------------------------------------------------- #
-class DeliveryRevokeView(_ExportBase):
-    """``POST /v1/exports/deliveries/<pk>/revoke/`` - kill one secure link."""
-
-    rbac_permission = ExportPermission.DEFINITION_SHARE
-
-    def post(self, request, pk):
-        run_ids = self.visible_runs().values_list("pk", flat=True)
-        delivery = ExportDelivery.objects.filter(
-            pk=pk, run_id__in=run_ids,
-        ).select_related("run", "run__tenant").first()
-        if delivery is None:
-            raise NotFound("No delivery matches that id.")
-        delivery = services.revoke_delivery(delivery, request.user)
-        return success_response(
-            "Link revoked. The file itself is unchanged.",
-            ExportDeliverySerializer(delivery).data,
-        )
-
-
 class ActivityView(_ExportBase):
     """``GET /v1/exports/activity/`` - the admin console's all-activity view.
 
@@ -756,8 +732,6 @@ class ActivityView(_ExportBase):
             qs = qs.filter(frozen_config__dataset_key=request.query_params["dataset"])
         if request.query_params.get("status"):
             qs = qs.filter(status=request.query_params["status"].upper())
-        if request.query_params.get("external_only") == "true":
-            qs = qs.filter(deliveries__destination=Destination.EMAIL_LINK).distinct()
         if request.query_params.get("since"):
             qs = qs.filter(queued_at__date__gte=request.query_params["since"])
         return self.paginate(request, qs, ExportRunListSerializer)

@@ -1,8 +1,7 @@
 """URL map for the Export Centre - mounted at ``/v1/exports/``.
 
 Routes mirror the capabilities the handoff lists (D10·1): catalogue, preview and
-estimate, quick export, definitions, runs, files, deliveries, capabilities,
-activity.
+estimate, quick export, definitions, runs, files, capabilities and activity.
 Every list route is paginated and every mutation is RBAC-gated in the view.
 """
 from django.urls import path
@@ -43,7 +42,6 @@ urlpatterns = [
     path("analytics/", views.AnalyticsIngestView.as_view(), name="export-analytics"),
     path("analytics/summary/", views.AnalyticsSummaryView.as_view(), name="export-analytics-summary"),
 
-    # Deliveries and admin activity
-    path("deliveries/<int:pk>/revoke/", views.DeliveryRevokeView.as_view(), name="export-delivery-revoke"),
+    # Admin activity
     path("activity/", views.ActivityView.as_view(), name="export-activity"),
 ]

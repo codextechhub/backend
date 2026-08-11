@@ -63,7 +63,6 @@ class RunPhase(models.TextChoices):
     COUNTING = "COUNTING", "Counting rows"
     READING = "READING", "Reading rows"
     BUILDING = "BUILDING", "Building file"
-    DELIVERING = "DELIVERING", "Delivering"
     DONE = "DONE", "Done"
 
 
@@ -194,21 +193,6 @@ class Sharing(models.TextChoices):
     SHARED = "SHARED", "Shared"
 
 
-class Destination(models.TextChoices):
-    """Where a produced file goes. ``CENTRE`` is always on - it is the record."""
-
-    CENTRE = "CENTRE", "Export Centre"
-    EMAIL_LINK = "EMAIL_LINK", "Secure download link by email"
-
-
-class DeliveryState(models.TextChoices):
-    """A run can succeed while a delivery fails; they are tracked separately."""
-
-    PENDING = "PENDING", "Pending"
-    SENT = "SENT", "Sent"
-    FAILED = "FAILED", "Failed"
-    REVOKED = "REVOKED", "Revoked"
-    SKIPPED = "SKIPPED", "Skipped"
 
 
 class DownloadOutcome(models.TextChoices):
@@ -224,7 +208,6 @@ class DownloadRefusal(models.TextChoices):
     NO_ENTITY_ACCESS = "NO_ENTITY_ACCESS", "No access to the run's entity"
     NO_DATASET_ACCESS = "NO_DATASET_ACCESS", "No access to the run's dataset"
     NOT_SHARED = "NOT_SHARED", "The export is not shared with this user"
-    LINK_REVOKED = "LINK_REVOKED", "The secure link was revoked"
 
 
 # --------------------------------------------------------------------------- #
@@ -304,6 +287,4 @@ class AuditAction:
     FILE_DOWNLOADED = "EXPORT_FILE_DOWNLOADED"
     FILE_DOWNLOAD_REFUSED = "EXPORT_FILE_DOWNLOAD_REFUSED"
     FILE_EXPIRED = "EXPORT_FILE_EXPIRED"
-    LINK_SENT = "EXPORT_LINK_SENT"
-    LINK_REVOKED = "EXPORT_LINK_REVOKED"
     ADMIN_VIEWED_ACTIVITY = "EXPORT_ADMIN_VIEWED_ACTIVITY"

@@ -15,3 +15,9 @@ class VsProcurementConfig(AppConfig):
         # Import for side effect: registers the spend-approval handlers with vs_workflow.
         from . import workflow_handlers  # noqa: F401
         from . import receivers  # noqa: F401
+
+        # Publish this app's datasets to the Export Centre. Registration lives
+        # here, not in vs_exports, so the engine never imports a domain app.
+        from .export_datasets import register_datasets
+
+        register_datasets()

@@ -1,4 +1,4 @@
-"""Run lifecycle, downloads and deliveries.
+"""Run lifecycle, downloads and file retention.
 
 The views stay thin; everything that decides *what happens* lives here.
 
@@ -17,10 +17,8 @@ from __future__ import annotations
 
 import datetime
 import logging
-import secrets
 import uuid
 
-from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db.models import F
@@ -32,8 +30,6 @@ from .constants import (
     AuditAction,
     CONCURRENT_RUN_LIMIT,
     DEFAULT_ROW_CAP,
-    DeliveryState,
-    Destination,
     DownloadOutcome,
     DownloadRefusal,
     ExportFormat,
@@ -58,7 +54,6 @@ from .engine import (
     resolve_columns,
 )
 from .models import (
-    ExportDelivery,
     ExportDownload,
     ExportFile,
     ExportRun,
@@ -213,7 +208,6 @@ def trigger_run(*, definition, actor, trigger=RunTrigger.MANUAL, client_key="",
         requested_by=actor,
         client_key=client_key or "",
     )
-    _open_deliveries(run)
     analytics.record(
         analytics.Event.RUN_TRIGGERED, tenant=tenant, actor=actor,
         properties={"trigger": trigger, "from_definition": run.definition_id is not None},
@@ -455,7 +449,6 @@ def execute_run(run_id: int):
         )
 
     _record_failure_resolved(run)
-    _dispatch_deliveries(run, file)
     _notify(run, omissions=bool(omissions))
     return run
 
@@ -553,11 +546,6 @@ def _finish_failed(run, code, message, *, detail=""):
         label=run.reference, severity="CRITICAL", status="FAILED",
         metadata={"code": code, "detail": detail[:500]},
     )
-    # Any pending delivery is skipped rather than left pending forever - a run with no
-    # file has nothing to deliver, and the UI must be able to say so.
-    ExportDelivery.objects.filter(run=run, state=DeliveryState.PENDING).update(
-        state=DeliveryState.SKIPPED, failure_reason="No file was produced.",
-    )
     _notify(run, failed=True)
     return run
 
@@ -616,118 +604,6 @@ def _notify(run, *, failed=False, omissions=False):
 # --------------------------------------------------------------------------- #
 # Deliveries                                                                  #
 # --------------------------------------------------------------------------- #
-# Open one pending delivery per recipient at trigger time.
-def _open_deliveries(run):
-    """Create the PENDING delivery rows this run will try to send.
-
-    Written at trigger time, not on completion, so a run that fails still shows *who
-    was going to receive it* and that they did not - a run can succeed while a
-    delivery fails, and the UI can only say which if the rows exist either way.
-
-    Recipients are the people the export is shared with. v1 delivers to signed-in
-    platform users only: an external address cannot be re-authorised at download time,
-    and the whole point of a link over an attachment is that it is re-checked.
-    """
-    definition = run.definition
-    if definition is None or not definition.email_recipients:
-        return
-    ExportDelivery.objects.bulk_create([
-        ExportDelivery(
-            run=run,
-            destination=Destination.EMAIL_LINK,
-            recipient_user=share.user,
-            recipient_email=share.user.email,
-            token=secrets.token_urlsafe(32),
-        )
-        for share in definition.shares.select_related("user")
-    ])
-
-
-# Send the secure links for a completed run.
-def _dispatch_deliveries(run, file):
-    """Send each pending delivery, or skip it when there is nothing worth sending.
-
-    Recipients receive a link to the authenticated download endpoint - never the file
-    itself - so access is judged against the recipient at the moment they click, not at
-    the moment we send. One failed send never fails the run or the other recipients.
-    """
-    pending = list(
-        ExportDelivery.objects.filter(run=run, state=DeliveryState.PENDING)
-        .select_related("recipient_user")
-    )
-    if not pending:
-        return
-    if not file.row_count:
-        # An empty file is worse than no email: the recipient opens it, finds nothing,
-        # and has no way to tell "no matches" from "something broke".
-        ExportDelivery.objects.filter(run=run, state=DeliveryState.PENDING).update(
-            state=DeliveryState.SKIPPED,
-            failure_reason="No rows matched, so there was nothing worth sending.",
-        )
-        return
-
-    from vs_notifications.notify import send_notification
-
-    link = download_url(file)
-    for delivery in pending:
-        delivery.attempted_at = timezone.now()
-        try:
-            send_notification(
-                event_key="export.file_shared",
-                context={
-                    "label": f"Export: {file.name}",
-                    "export_name": run.frozen_config.get("name") or run.reference,
-                    "file_name": file.name,
-                    "rows": file.row_count,
-                    "available_until": file.available_until.strftime("%d %b %Y"),
-                    "link": link,
-                    "reference": run.reference,
-                },
-                recipients=[delivery.recipient_user] if delivery.recipient_user_id else [],
-                tenant=run.tenant,
-            )
-            delivery.state = DeliveryState.SENT
-        except Exception as exc:                   # pragma: no cover - best effort
-            # The file exists and the run succeeded; only this delivery did not.
-            delivery.state = DeliveryState.FAILED
-            delivery.failure_reason = str(exc)[:300]
-            logger.warning("Export delivery %s failed", delivery.pk, exc_info=True)
-        delivery.save(update_fields=[
-            "state", "attempted_at", "failure_reason", "updated_at",
-        ])
-        if delivery.state == DeliveryState.SENT:
-            audit.record(
-                AuditAction.LINK_SENT, actor=run.requested_by, tenant=run.tenant,
-                obj=delivery,
-                label=delivery.recipient_email or str(delivery.recipient_user_id),
-                metadata={"run": run.reference, "file": file.name},
-            )
-
-
-# Build the link a recipient follows to reach the file.
-def download_url(file) -> str:
-    """Absolute URL of the authenticated download endpoint for ``file``.
-
-    Deliberately not a signed or public URL: it resolves to the same endpoint the
-    Export Centre uses, so the recipient must sign in and still hold access to the
-    run's entity and dataset. A leaked link is worth nothing on its own.
-    """
-    base = str(getattr(settings, "FRONTEND_BASE_URL", "")).rstrip("/")
-    return f"{base}/exports/files/{file.pk}"
-
-
-def revoke_delivery(delivery, actor):
-    """Kill a secure link. The file itself is untouched; only this route closes."""
-    delivery.state = DeliveryState.REVOKED
-    delivery.save(update_fields=["state", "updated_at"])
-    audit.record(
-        AuditAction.LINK_REVOKED, actor=actor, tenant=delivery.run.tenant, obj=delivery,
-        label=delivery.recipient_email or str(delivery.recipient_user_id),
-        severity="WARNING",
-    )
-    return delivery
-
-
 # --------------------------------------------------------------------------- #
 # Downloads                                                                   #
 # --------------------------------------------------------------------------- #
