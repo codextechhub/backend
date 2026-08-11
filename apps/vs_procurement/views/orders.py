@@ -46,11 +46,14 @@ from ..serializers import (
 
 from .base import (
     _ProcBase,
+    _branch_scoped,
     _date,
     _dec,
+    _inherited_branch_id,
     _lead_time_days,
     _money,
     _quantity,
+    _raised_branch,
     _require_lines,
     _resolve_account,
     _resolve_currency,
@@ -108,8 +111,9 @@ def _po_base_queryset(entity):
     return (
         PurchaseOrder.objects.filter(entity=entity)
         # ``contract`` is select_related so the serializer's contract_reference never
-        # costs a per-row query on either the list or the detail read.
-        .select_related("vendor", "requisition", "contract")
+        # costs a per-row query on either the list or the detail read; ``branch``
+        # for the same reason on the branch label.
+        .select_related("vendor", "requisition", "contract", "branch")
         .annotate(ordered_qty=Sum("lines__quantity"), received_qty=Sum("lines__received_qty"))
     )
 
@@ -246,7 +250,10 @@ class PurchaseOrderListCreateView(_ProcBase):
     def get(self, request):
         """List entity POs with server-derived receipt progress and filters."""
         entity = resolve_entity(request)
-        qs = _filter_purchase_orders(_purchase_order_list_queryset(entity), request.query_params)
+        qs = _branch_scoped(
+            request, entity, _purchase_order_list_queryset(entity), request.query_params,
+        )
+        qs = _filter_purchase_orders(qs, request.query_params)
         return self.paginate(request, qs.order_by("-id"), PurchaseOrderListSerializer)
 
     def post(self, request):
@@ -256,6 +263,10 @@ class PurchaseOrderListCreateView(_ProcBase):
         req = PurchaseRequisition.objects.filter(entity=entity, pk=body.get("requisition")).first()
         if req is None:
             raise ValidationError({"requisition": "An approved requisition is required."})
+        # The requisition already fixes the PO's branch (create_po_from_requisition
+        # copies it); this only refuses a caller who may not work in that branch.
+        # Deliberately no ``branch`` input here - the source document decides.
+        _inherited_branch_id(request, req)
         vendor = _resolve_vendor(entity, body.get("vendor"))
         # Optional explicit call-off link; validated against this PO's own vendor.
         contract = _resolve_po_contract(entity, vendor, body.get("contract"))
@@ -430,7 +441,7 @@ def _rfq_list_queryset(entity):
     long RFQ list stays a single query. A *response* is any non-draft quotation - a
     vendor's actual reply, not a half-captured draft.
     """
-    return RequestForQuotation.objects.filter(entity=entity).select_related("requisition").annotate(
+    return RequestForQuotation.objects.filter(entity=entity).select_related("requisition", "branch").annotate(
         line_count=Count("lines", distinct=True),
         response_count=Count(
             "quotations",
@@ -443,7 +454,7 @@ def _rfq_list_queryset(entity):
 
 def _rfq_detail_queryset(entity):
     """Entity-scoped RFQ prefetched for the detail drawer (lines + invitations + quotes)."""
-    return RequestForQuotation.objects.filter(entity=entity).select_related("requisition").prefetch_related(
+    return RequestForQuotation.objects.filter(entity=entity).select_related("requisition", "branch").prefetch_related(
         Prefetch("lines", queryset=RfqLine.objects.filter(is_active=True).select_related("expense_account")),
         # Invited vendors + quotations are joined in Python in the serializer to derive
         # each invitation's "responded" flag without a per-row query.
@@ -543,7 +554,7 @@ class RfqListCreateView(_ProcBase):
     def get(self, request):
         """List sourcing events with SQL-derived invitation and response counts."""
         entity = resolve_entity(request)
-        qs = _rfq_list_queryset(entity)
+        qs = _branch_scoped(request, entity, _rfq_list_queryset(entity), request.query_params)
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(rfq_status=status_)
         if (q := (request.query_params.get("q") or request.query_params.get("search") or "").strip()):
@@ -574,6 +585,12 @@ class RfqListCreateView(_ProcBase):
         _validate_rfq_dates(issue_date, response_due_date)
         rfq = RequestForQuotation.objects.create(
             entity=entity, requisition=requisition,
+            # Sourcing against a requisition inherits its branch; a standalone RFQ
+            # starts its own chain and captures the branch from the raiser.
+            branch_id=(
+                _inherited_branch_id(request, requisition) if requisition is not None
+                else getattr(_raised_branch(request, entity, body), "pk", None)
+            ),
             title=_text(body.get("title"), "title", 200),
             issue_date=issue_date, response_due_date=response_due_date,
             budget_estimate=_budget_estimate(body.get("budget_estimate")),
@@ -751,7 +768,7 @@ def _quotation_detail_queryset(entity):
     return VendorQuotation.objects.filter(entity=entity).exclude(
         vendor_managed=True, quotation_status=QuotationStatus.DRAFT,
     ).select_related(
-        "vendor", "rfq", "awarded_po",
+        "vendor", "rfq", "awarded_po", "branch",
     ).prefetch_related("lines", "lines__expense_account", "attachments", "submissions")
 
 
@@ -807,7 +824,8 @@ class QuotationListCreateView(_ProcBase):
         entity = resolve_entity(request)
         qs = VendorQuotation.objects.filter(entity=entity).exclude(
             vendor_managed=True, quotation_status=QuotationStatus.DRAFT,
-        ).select_related("vendor", "rfq")
+        ).select_related("vendor", "rfq", "branch")
+        qs = _branch_scoped(request, entity, qs, request.query_params)
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(quotation_status=status_)
         if (rfq := request.query_params.get("rfq")):
@@ -853,6 +871,9 @@ class QuotationListCreateView(_ProcBase):
         _validate_quote_dates(quote_date, valid_until)
         quotation = VendorQuotation.objects.create(
             entity=entity, rfq=rfq, vendor=vendor,
+            # An offer belongs to the sourcing event it answers, so the branch
+            # comes from the RFQ and is never re-read from the request.
+            branch_id=_inherited_branch_id(request, rfq),
             quote_date=quote_date, valid_until=valid_until,
             currency=_resolve_currency(entity, body.get("currency")),
             lead_time_days=_lead_time_days(body.get("lead_time_days")),

@@ -490,6 +490,9 @@ class RequisitionSerializer(serializers.ModelSerializer):
     """
 
     lines = RequisitionLineSerializer(many=True, read_only=True)
+    branch_name = serializers.CharField(
+        source="branch.name", read_only=True, default=None,
+    )
     estimated_total_naira = serializers.SerializerMethodField()
     requested_by_name = serializers.SerializerMethodField()
     is_parked = serializers.SerializerMethodField()
@@ -501,7 +504,7 @@ class RequisitionSerializer(serializers.ModelSerializer):
         model = PurchaseRequisition
         fields = [
             "id", "document_number", "status", "approval_state", "is_parked",
-            "approved_by_override", "title",
+            "approved_by_override", "branch_id", "branch_name", "title",
             "request_date", "needed_by", "requested_by_id", "requested_by_name",
             "cost_center_id", "cost_center_code", "cost_center_name",
             "justification", "estimated_total", "estimated_total_naira", "created_at", "lines",
@@ -610,6 +613,9 @@ class RfqListSerializer(serializers.ModelSerializer):
     """Lean list row. ``line_count``/``response_count`` are queryset annotations
     (see :func:`RfqListCreateView.get`) - never per-row counts, so the list stays O(1)."""
 
+    branch_name = serializers.CharField(
+        source="branch.name", read_only=True, default=None,
+    )
     requisition_number = serializers.CharField(
         source="requisition.document_number", read_only=True, default=None,
     )
@@ -621,6 +627,7 @@ class RfqListSerializer(serializers.ModelSerializer):
         model = RequestForQuotation
         fields = [
             "id", "document_number", "rfq_status", "title",
+            "branch_id", "branch_name",
             "requisition_id", "requisition_number", "issue_date", "response_due_date",
             "response_due_at", "version", "budget_estimate", "line_count", "response_count", "invited_count",
         ]
@@ -648,6 +655,9 @@ class RfqQuotationSummarySerializer(serializers.ModelSerializer):
 class RfqDetailSerializer(serializers.ModelSerializer):
     """Full RFQ record for the detail drawer: lines, received quotations, activity."""
 
+    branch_name = serializers.CharField(
+        source="branch.name", read_only=True, default=None,
+    )
     requisition_number = serializers.CharField(
         source="requisition.document_number", read_only=True, default=None,
     )
@@ -663,6 +673,7 @@ class RfqDetailSerializer(serializers.ModelSerializer):
         model = RequestForQuotation
         fields = [
             "id", "document_number", "rfq_status", "title",
+            "branch_id", "branch_name",
             "requisition_id", "requisition_number", "issue_date", "response_due_date",
             "response_due_at", "version", "budget_estimate", "notes", "line_count", "response_count", "invited_count",
             "lines", "invitations", "quotations", "amendments", "activity",
@@ -769,6 +780,9 @@ class VendorQuotationLineSerializer(serializers.ModelSerializer):
 class QuotationListSerializer(serializers.ModelSerializer):
     """Lean quotation list row. ``is_expired`` is a display overlay, never persisted."""
 
+    branch_name = serializers.CharField(
+        source="branch.name", read_only=True, default=None,
+    )
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     rfq_number = serializers.CharField(source="rfq.document_number", read_only=True)
@@ -779,6 +793,7 @@ class QuotationListSerializer(serializers.ModelSerializer):
         model = VendorQuotation
         fields = [
             "id", "document_number", "quotation_status",
+            "branch_id", "branch_name",
             "rfq_id", "rfq_number", "vendor_id", "vendor_code", "vendor_name",
             "quote_date", "valid_until", "lead_time_days", "reference",
             "total", "total_naira", "is_expired", "awarded_po_id",
@@ -794,6 +809,9 @@ class QuotationListSerializer(serializers.ModelSerializer):
 class QuotationDetailSerializer(serializers.ModelSerializer):
     """Full quotation record for the detail drawer: lines, totals, PO link, activity."""
 
+    branch_name = serializers.CharField(
+        source="branch.name", read_only=True, default=None,
+    )
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     rfq_number = serializers.CharField(source="rfq.document_number", read_only=True)
@@ -811,6 +829,7 @@ class QuotationDetailSerializer(serializers.ModelSerializer):
         model = VendorQuotation
         fields = [
             "id", "document_number", "quotation_status",
+            "branch_id", "branch_name",
             "rfq_id", "rfq_number", "vendor_id", "vendor_code", "vendor_name",
             "quote_date", "valid_until", "currency_id", "lead_time_days",
             "reference", "notes", "is_expired",
@@ -961,6 +980,9 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
     """
 
     lines = POLineSerializer(many=True, read_only=True)
+    branch_name = serializers.CharField(
+        source="branch.name", read_only=True, default=None,
+    )
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     requisition_number = serializers.CharField(
@@ -985,6 +1007,7 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
         model = PurchaseOrder
         fields = [
             "id", "document_number", "status", "approval_state", "display_status",
+            "branch_id", "branch_name",
             "vendor_id", "vendor_code", "vendor_name", "requisition_id", "requisition_number",
             "contract_id", "contract_reference",
             "quotation_number", "order_date", "expected_date", "delivery_address",
@@ -1081,6 +1104,9 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
     """
 
     lines = GRNLineSerializer(many=True, read_only=True)
+    branch_name = serializers.CharField(
+        source="branch.name", read_only=True, default=None,
+    )
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     purchase_order_number = serializers.CharField(source="purchase_order.document_number", read_only=True, default=None)
@@ -1098,6 +1124,7 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
         model = GoodsReceivedNote
         fields = [
             "id", "document_number", "status", "receipt_status", "vendor_id", "vendor_code", "vendor_name", "received_by_name",
+            "branch_id", "branch_name",
             "purchase_order_id", "purchase_order_number", "received_date", "reference", "narration",
             "received_item_count", "ordered_item_count",
             "purchase_order_fulfilment_status", "purchase_order_received_item_count",
@@ -1226,6 +1253,9 @@ class VendorInvoiceSerializer(serializers.ModelSerializer):
     """
 
     lines = VendorInvoiceLineSerializer(many=True, read_only=True)
+    branch_name = serializers.CharField(
+        source="branch.name", read_only=True, default=None,
+    )
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     purchase_order_number = serializers.CharField(
@@ -1240,6 +1270,7 @@ class VendorInvoiceSerializer(serializers.ModelSerializer):
         model = VendorInvoice
         fields = [
             "id", "document_number", "status", "approval_state", "match_status", "payment_status",
+            "branch_id", "branch_name",
             "display_status", "is_overdue",
             "vendor_id", "vendor_code", "vendor_name", "purchase_order_id", "purchase_order_number",
             "invoice_date", "due_date", "vendor_reference", "narration",
@@ -1321,6 +1352,9 @@ class VendorPaymentSerializer(serializers.ModelSerializer):
     """
 
     allocations = VendorPaymentAllocationSerializer(many=True, read_only=True)
+    branch_name = serializers.CharField(
+        source="branch.name", read_only=True, default=None,
+    )
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     payment_code = serializers.CharField(source="payment_account.code", read_only=True, default=None)
@@ -1337,6 +1371,7 @@ class VendorPaymentSerializer(serializers.ModelSerializer):
         model = VendorPayment
         fields = [
             "id", "document_number", "status", "approval_state", "allocation_status",
+            "branch_id", "branch_name",
             "vendor_id", "vendor_code", "vendor_name",
             "payment_date", "method",
             "gross_amount", "wht_amount", "net_amount", "net_naira",

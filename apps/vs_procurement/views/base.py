@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal, InvalidOperation
 
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.views import APIView
 
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
@@ -86,6 +86,133 @@ def _resolve_cost_center(entity, ref, field="cost_center"):
     if cost_center is None:
         raise ValidationError({field: "No such active cost centre in this entity."})
     return cost_center
+
+
+# --------------------------------------------------------------------------- #
+# Branch sub-scope                                                            #
+# --------------------------------------------------------------------------- #
+#
+# Every finance document already carries an optional ``branch`` sub-scope inside
+# its entity (``vs_finance.FinanceDocument.branch``).  These four helpers are the
+# single place procurement decides what goes in it, so the rules below hold for
+# every document type rather than one endpoint at a time:
+#
+#   * a document that *starts* a chain captures the branch from the person
+#     raising it (:func:`_raised_branch`);
+#   * a document that *continues* a chain takes the branch from its source
+#     document and nothing else (:func:`_inherited_branch_id`);
+#   * lists narrow to the caller's branch and then to ``?branch=``
+#     (:func:`_branch_scoped`).
+#
+# An absent branch is a real, valid answer - the document belongs to the entity
+# as a whole - and is never coerced or rejected.  A tenant with no branches at
+# all therefore behaves exactly as it did before: every value here stays ``None``.
+
+
+def _caller_branch(request):
+    """The branch the caller is bound to, or ``None`` when they are not bound to one.
+
+    Branch context is **not** carried by a header or a query parameter.  The
+    authoritative source is the effective user's own ``branch`` assignment
+    (``vs_user.User.branch``): it is fixed when the account is provisioned, it is
+    validated against the user's tenant on save, and DRF's ``request.user`` is the
+    *effective* user, so it stays correct through impersonation.  Note that
+    ``request.branch`` - which ``vs_rbac`` reads when scoring a permission - is
+    never populated by any middleware, so it must not be trusted to carry scope.
+    """
+    user = getattr(request, "user", None)
+    if user is None or not getattr(user, "is_authenticated", False):
+        return None
+    return getattr(user, "branch", None)
+
+
+def _resolve_branch_reference(entity, ref, field="branch"):
+    """Resolve a branch id inside ``entity``'s owning tenant, or ``None`` when blank.
+
+    A branch belonging to another tenant is reported exactly like an unknown one,
+    so the parameter cannot be used to discover ids outside the caller's tenant.
+    """
+    if ref in (None, ""):
+        return None
+    from vs_schools.models import Branch
+
+    raw = str(ref)
+    # Reject a non-numeric or out-of-range id here rather than let it reach the
+    # database, where an oversized bigint is a server error instead of a 400.
+    if raw.isdigit() and int(raw) <= 9_223_372_036_854_775_807:
+        # all_objects deliberately: the explicit tenant filter is the security
+        # boundary, and it must not depend on ambient request-local tenant state.
+        branch = Branch.all_objects.filter(
+            school__tenant=entity.tenant, pk=int(raw),
+        ).first()
+    else:
+        branch = None
+    if branch is None:
+        raise ValidationError({field: "No such branch in this tenant."})
+    return branch
+
+
+def _raised_branch(request, entity, body, *, field="branch"):
+    """The branch a newly raised document belongs to.
+
+    A caller bound to a branch always raises for that branch; naming a different
+    one is refused rather than silently retargeted.  A caller who is not bound to
+    a branch may name one belonging to this entity's tenant, or leave it out -
+    leaving it out means the purchase belongs to the entity as a whole and is a
+    valid answer, not missing data.
+    """
+    own = _caller_branch(request)
+    raw = body.get(field) if hasattr(body, "get") else None
+    if own is None:
+        return _resolve_branch_reference(entity, raw, field)
+    if request.user.tenant_id != entity.tenant_id:
+        # ``User.save`` refuses a branch outside the user's own tenant, so the
+        # caller's tenant is an exact, query-free proxy for their branch's tenant.
+        # Unreachable through the API (entity resolution already pins the caller's
+        # tenant), but fail closed rather than write a foreign tenant's branch.
+        raise PermissionDenied("Your branch does not belong to this entity.")
+    if raw not in (None, "") and str(raw) != str(own.pk):
+        raise PermissionDenied("You can only raise documents for your own branch.")
+    return own
+
+
+def _inherited_branch_id(request, *sources, field="branch"):
+    """The branch id a downstream document takes from the source(s) it continues.
+
+    The chain decides, not the request: once a source document exists its branch
+    is the answer, and no request body, header, or ``?branch=`` may override it.
+    Sources that disagree (a payment settling invoices from two branches) resolve
+    to the entity as a whole.  The only check left is that the caller is entitled
+    to work in the resulting scope at all - a branch-bound user may not continue
+    another branch's chain, nor an entity-wide one.
+    """
+    known = {getattr(s, f"{field}_id") for s in sources if s is not None}
+    branch_id = known.pop() if len(known) == 1 else None
+    own = _caller_branch(request)
+    if own is not None and branch_id != own.pk:
+        raise PermissionDenied("This document belongs to another branch.")
+    return branch_id
+
+
+def _branch_scoped(request, entity, qs, params, *, field="branch"):
+    """Narrow a document list to the caller's branch, then to ``?branch=``.
+
+    A caller bound to a branch only ever sees that branch's documents - branch
+    narrows *within* the entity and can never widen what the entity scope already
+    allows.  A caller who is not bound to one sees the whole entity and may narrow
+    it with ``?branch=<id>``, or with ``?branch=none`` for the documents raised
+    for the entity as a whole.  An unknown branch is a 400 rather than a silent
+    empty page, so the filter cannot be used to probe ids in another tenant.
+    """
+    own = _caller_branch(request)
+    if own is not None:
+        qs = qs.filter(**{f"{field}_id": own.pk})
+    raw = str((params.get(field) if params else "") or "").strip()
+    if not raw:
+        return qs
+    if raw.lower() in ("none", "null"):
+        return qs.filter(**{f"{field}__isnull": True})
+    return qs.filter(**{field: _resolve_branch_reference(entity, raw, field)})
 
 
 def _resolve_vendor(entity, ref):

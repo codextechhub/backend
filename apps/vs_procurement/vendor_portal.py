@@ -331,6 +331,9 @@ def _quotation(invitation: RfqInvitation, *, create: bool = False) -> VendorQuot
     if quote is None and create:
         quote = VendorQuotation.objects.create(
             entity=invitation.rfq.entity, rfq=invitation.rfq, vendor=invitation.vendor,
+            # The vendor portal is an external, token-authenticated surface with no
+            # branch context of its own; the RFQ it answers is the only source.
+            branch_id=invitation.rfq.branch_id,
             vendor_managed=True,
             quote_date=timezone.localdate(), currency=invitation.rfq.entity.base_currency,
             subtotal=0, tax_total=0, total=0,

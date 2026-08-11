@@ -21,14 +21,22 @@ from .. import approvals, payables
 from ..constants import ProcApprovalState, VendorKycStatus
 from ..models import VendorInvoice, VendorPayment, VendorPaymentAllocation
 from ..serializers import VendorPaymentListSerializer, VendorPaymentSerializer
-from .base import _ProcBase, _date, _money, _resolve_tax, _resolve_vendor
+from .base import (
+    _ProcBase,
+    _branch_scoped,
+    _date,
+    _inherited_branch_id,
+    _money,
+    _resolve_tax,
+    _resolve_vendor,
+)
 
 
 def _payment_queryset(entity):
     """Eager-load every relation the detail drawer serializes (incl. the posted journal)."""
     return VendorPayment.objects.filter(entity=entity).select_related(
         "vendor", "payment_account", "payment_account__bank_account", "wht_tax_code",
-        "journal", "created_by",
+        "journal", "created_by", "branch",
     ).prefetch_related(
         "allocations__vendor_invoice", "journal__lines__account",
     )
@@ -38,7 +46,8 @@ def _payment_list_queryset(entity):
     """Lighter list source - the list row never serializes the journal lines, so the
     journal select_related/prefetch the detail drawer needs are dropped here."""
     return VendorPayment.objects.filter(entity=entity).select_related(
-        "vendor", "payment_account", "payment_account__bank_account", "wht_tax_code", "created_by",
+        "vendor", "payment_account", "payment_account__bank_account", "wht_tax_code",
+        "created_by", "branch",
     ).prefetch_related("allocations__vendor_invoice")
 
 
@@ -174,7 +183,7 @@ class VendorPaymentListCreateView(_ProcBase):
     def get(self, request):
         """Return a paginated, filterable payment console for the current entity."""
         entity = resolve_entity(request)
-        qs = _payment_list_queryset(entity)
+        qs = _branch_scoped(request, entity, _payment_list_queryset(entity), request.query_params)
         if status := request.query_params.get("status"):
             qs = qs.filter(status=status)
         if approval := request.query_params.get("approval_state"):
@@ -199,6 +208,10 @@ class VendorPaymentListCreateView(_ProcBase):
             raise ValidationError({"wht_amount": "WHT cannot exceed the invoice amount being settled."})
         payment = VendorPayment.objects.create(
             entity=entity, vendor=vendor,
+            # A settlement belongs to the branch of the bills it settles. Invoices
+            # from different branches (only a caller who is not branch-bound can
+            # select those) settle at entity level.
+            branch_id=_inherited_branch_id(request, *(invoice for invoice, _ in plan)),
             payment_date=_date(body.get("payment_date"), "payment_date", required=True),
             method=_validate_method(body.get("method")), gross_amount=gross,
             wht_amount=wht, net_amount=gross - wht, allocated_amount=0,
@@ -226,6 +239,9 @@ class VendorPaymentEligibleInvoiceView(_ProcBase):
         """Return oldest-due eligible invoices, optionally for one vendor."""
         entity = resolve_entity(request)
         qs = VendorInvoice.objects.filter(entity=entity, status=DocumentStatus.POSTED).exclude(payment_status="PAID")
+        # A branch-bound caller cannot settle another branch's bill, so this
+        # picker must not offer one either.
+        qs = _branch_scoped(request, entity, qs, request.query_params)
         if vendor := request.query_params.get("vendor"):
             resolved = _resolve_vendor(entity, vendor)
             qs = qs.filter(vendor=resolved)

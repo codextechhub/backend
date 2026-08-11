@@ -40,10 +40,13 @@ from ..serializers import (
 
 from .base import (
     _ProcBase,
+    _branch_scoped,
     _date,
+    _inherited_branch_id,
     _money,
     _nonneg_qty,
     _quantity,
+    _raised_branch,
     _require_lines,
     _resolve_account,
     _resolve_cost_center,
@@ -166,8 +169,9 @@ class GoodsReceiptListCreateView(_ProcBase):
         """List entity receipts with the relations needed for progress display."""
         entity = resolve_entity(request)
         qs = GoodsReceivedNote.objects.filter(entity=entity).select_related(
-            "vendor", "purchase_order", "received_by",
+            "vendor", "purchase_order", "received_by", "branch",
         ).prefetch_related("lines__po_line", "lines__cost_center", "purchase_order__lines")
+        qs = _branch_scoped(request, entity, qs, request.query_params)
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
         return self.paginate(request, qs.order_by("-id"), GoodsReceivedNoteListSerializer)
@@ -197,6 +201,12 @@ class GoodsReceiptListCreateView(_ProcBase):
                 raise ValidationError({"purchase_order": "Goods can only be received against an approved purchase order."})
         grn = GoodsReceivedNote.objects.create(
             entity=entity, vendor=vendor, purchase_order=po,
+            # A receipt against a PO belongs to that PO's branch; a receipt with no
+            # PO starts its own chain and captures the branch from the receiver.
+            branch_id=(
+                _inherited_branch_id(request, po) if po is not None
+                else getattr(_raised_branch(request, entity, body), "pk", None)
+            ),
             received_date=_date(body.get("received_date"), "received_date", required=True),
             reference=body.get("reference", ""), narration=body.get("narration", ""),
             # Capture the authenticated receiver so the GRN audit is attributable without trusting client input.
@@ -291,7 +301,7 @@ class GoodsReceiptPostView(_ProcBase):
 def _invoice_queryset(entity):
     """Eager-loaded source for invoice detail (drawer) serialization."""
     return VendorInvoice.objects.filter(entity=entity).select_related(
-        "vendor", "purchase_order", "journal",
+        "vendor", "purchase_order", "journal", "branch",
     ).prefetch_related(
         "lines__expense_account", "lines__tax_code__paid_account",
         "lines__po_line", "lines__grn_line__grn", "lines__cost_center",
@@ -302,7 +312,9 @@ def _invoice_queryset(entity):
 def _invoice_list_queryset(entity):
     """Lighter source for the paginated list - the list serializer drops line/journal
     arrays, so only the vendor + PO needed for the row headline are joined."""
-    return VendorInvoice.objects.filter(entity=entity).select_related("vendor", "purchase_order")
+    return VendorInvoice.objects.filter(entity=entity).select_related(
+        "vendor", "purchase_order", "branch",
+    )
 
 
 def _invoice_display_filter(qs, value):
@@ -615,7 +627,7 @@ class VendorInvoiceListCreateView(_ProcBase):
     def get(self, request):
         """List entity bills using persisted lifecycle fields for console tabs."""
         entity = resolve_entity(request)
-        qs = _invoice_list_queryset(entity)
+        qs = _branch_scoped(request, entity, _invoice_list_queryset(entity), request.query_params)
         for param in ("status", "payment_status", "match_status"):
             if (val := request.query_params.get(param)):
                 qs = qs.filter(**{param: val})
@@ -665,6 +677,12 @@ class VendorInvoiceListCreateView(_ProcBase):
             with transaction.atomic():
                 invoice = VendorInvoice.objects.create(
                     entity=entity, vendor=vendor, purchase_order=po,
+                    # A bill against a PO belongs to that PO's branch; a bill with
+                    # no PO captures the branch from the person entering it.
+                    branch_id=(
+                        _inherited_branch_id(request, po) if po is not None
+                        else getattr(_raised_branch(request, entity, body), "pk", None)
+                    ),
                     invoice_date=_date(body.get("invoice_date"), "invoice_date", required=True),
                     due_date=_date(body.get("due_date"), "due_date"),
                     currency=_resolve_currency(entity, body.get("currency")),

@@ -39,9 +39,11 @@ from ..serializers import (
 
 from .base import (
     _ProcBase,
+    _branch_scoped,
     _date,
     _money,
     _quantity,
+    _raised_branch,
     _require_lines,
     _resolve_account,
     _resolve_cost_center,
@@ -139,8 +141,9 @@ class RequisitionListCreateView(_ProcBase):
         """List entity requisitions with requester, cost center, and lines preloaded."""
         entity = resolve_entity(request)
         qs = PurchaseRequisition.objects.filter(entity=entity).select_related(
-            "requested_by", "cost_center",
+            "requested_by", "cost_center", "branch",
         ).prefetch_related("lines")
+        qs = _branch_scoped(request, entity, qs, request.query_params)
         qs = _filter_requisitions(qs, request.query_params)
         return self.paginate(
             request, qs.order_by("-id"), RequisitionSerializer,
@@ -168,6 +171,11 @@ class RequisitionListCreateView(_ProcBase):
             )
         req = PurchaseRequisition.objects.create(
             entity=entity,
+            # The requisition is where the branch sub-scope enters the chain:
+            # every downstream document inherits it from here rather than
+            # re-reading it from a request. An absent branch means the purchase
+            # belongs to the entity as a whole.
+            branch=_raised_branch(request, entity, body),
             title=str(body.get("title", "")).strip(),
             request_date=request_date,
             needed_by=needed_by,
