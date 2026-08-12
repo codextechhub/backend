@@ -81,10 +81,14 @@ class ApproverSource(models.TextChoices):
     RBAC_PERMISSION is the original (and default) strategy: anyone holding
     `approver_permission_key` within `approver_scope`. ORGANOGRAM is an
     additive, opt-in strategy that climbs the CX organogram relative to the
-    requester. The two are mutually exclusive per stage.
+    requester. ROLE points directly at a named tenant role
+    (`approver_role`) and resolves its active assignees - the human-facing
+    replacement for permission keys. The strategies are mutually exclusive
+    per stage.
     """
     RBAC_PERMISSION = "RBAC_PERMISSION", "RBAC permission holders (default)"
     ORGANOGRAM      = "ORGANOGRAM",      "Organogram (relative to requester)"
+    ROLE            = "ROLE",            "Tenant role holders"
 
 class OrganogramTarget(models.TextChoices):
     """The climb mode used when ApproverSource is ORGANOGRAM."""

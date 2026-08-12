@@ -119,8 +119,10 @@ Key fields:
 
 | Field | Meaning |
 |---|---|
-| `approver_permission_key` | RBAC permission key used to resolve who can approve this stage. |
-| `approver_scope` | `BRANCH`, `SCHOOL`, or `PLATFORM` - narrows the RBAC query to branch-level, school-level, or all users platform-wide. |
+| `approver_source` | How approvers are resolved: `RBAC_PERMISSION` (default - permission key lookup), `ROLE` (active assignees of a named tenant role), or `ORGANOGRAM` (climbs the CX org chart relative to the requester). |
+| `approver_permission_key` | RBAC permission key used to resolve who can approve this stage (`RBAC_PERMISSION` source only). |
+| `approver_role_key` | Tenant role key (e.g. `bursar`) whose active assignees approve this stage (`ROLE` source only). Publish fails if no active role with that key exists in the tenant. |
+| `approver_scope` | `BRANCH`, `SCHOOL`, or `PLATFORM` - narrows the RBAC/role query to branch-level, school-level, or all users platform-wide. |
 | `advance_rule` | `UNANIMOUS` (everyone must approve), `QUORUM` (N of M), or `ANY` (first approver wins). |
 | `quorum_count` | Only used when `advance_rule = QUORUM`. Minimum approvals needed. |
 | `on_rejection` | What happens when someone rejects: `TERMINAL` (ends the workflow) or `RETURN_TO_REQUESTER`. |

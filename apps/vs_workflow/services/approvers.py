@@ -63,6 +63,40 @@ def _users_with_permission(tenant, branch, permission_key: str, scope: ApproverS
     )
 
 
+# Resolve the active assignees of a named tenant role.
+def _role_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
+    """Resolve base approvers as the active assignees of stage.approver_role.
+
+    Opt-in strategy (ApproverSource.ROLE) - the human-facing replacement for
+    permission keys: the stage points straight at a named tenant role and the
+    engine reads its ACTIVE assignments. Branch handling mirrors the RBAC
+    path exactly: BRANCH scope honours branch-limited assignments for the
+    instance's branch, every other scope counts tenant-wide assignments only.
+    An archived or deactivated role resolves to no approvers, so the stage's
+    skip_if_no_approvers policy decides what happens next.
+    """
+    if not stage.approver_role_id:
+        return []
+
+    from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+
+    branch_arg = instance.branch if stage.approver_scope == ApproverScope.BRANCH else None
+    assignments = (
+        TenantUserRoleAssignment.objects.filter(
+            tenant=instance.tenant,
+            role_id=stage.approver_role_id,
+            role__status=TenantRoleTemplate.Status.ACTIVE,
+            assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+            user__is_active=True,
+        )
+        .filter(Q(branch__isnull=True) | Q(branch=branch_arg))
+        .select_related("user")
+    )
+    # De-dup by user id - a user can hold tenant-wide and branch-limited
+    # assignments of the same role simultaneously.
+    return list({a.user_id: a.user for a in assignments}.values())
+
+
 # Resolve organogram-based approvers relative to the requester.
 def _organogram_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
     """Resolve base approvers by climbing the CX organogram relative to the requester.
@@ -106,6 +140,8 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
       - ORGANOGRAM (opt-in): the holder(s) of the seat reached by climbing the
         CX organogram relative to the requester (direct manager, N levels up,
         department head, or a specific position).
+      - ROLE (opt-in): the active assignees of the named tenant role in
+        stage.approver_role, honouring approver_scope for branch narrowing.
 
     The requester is always excluded - they cannot approve their own submission.
     Active delegations then expand the list regardless of source: if an eligible
@@ -120,6 +156,11 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
         base_users = [
             u for u in _organogram_base_users(stage, instance)
             if u and u.pk != instance.requested_by_id
+        ]
+    elif stage.approver_source == ApproverSource.ROLE:
+        base_users = [
+            u for u in _role_base_users(stage, instance)
+            if u.pk != instance.requested_by_id
         ]
     else:
         if not stage.approver_permission_key:

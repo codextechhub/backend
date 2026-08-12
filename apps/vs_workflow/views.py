@@ -114,6 +114,20 @@ class WorkflowTemplateViewSet(
                 stage.organogram_position = Position.objects.filter(code=d["organogram_position_code"]).first()
             except ImportError:
                 stage.organogram_position = None
+        if d["approver_source"] == ApproverSource.ROLE:
+            from vs_rbac.models import TenantRoleTemplate
+            role = TenantRoleTemplate.objects.filter(
+                tenant=requester.tenant, key=d["approver_role_key"],
+                status=TenantRoleTemplate.Status.ACTIVE,
+            ).first()
+            if role is None:
+                # A mistyped role key deserves loud feedback in the builder,
+                # not a silent empty approver list.
+                return Response(
+                    {"detail": f"No active role with key '{d['approver_role_key']}' "
+                               "exists in this tenant."},
+                    status=status.HTTP_404_NOT_FOUND)
+            stage.approver_role = role
 
         # Build a transient instance carrying just the context the resolver reads.
         instance = WorkflowInstance(

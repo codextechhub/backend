@@ -362,3 +362,228 @@ class PublishTemplateTests(TestCase):
         )
         tpl = WorkflowTemplate.objects.get(document_type="TPL_RT")
         self.assertEqual(WorkflowRoutePath.objects.filter(template=tpl).count(), 0)
+
+
+# ── ROLE approver source ─────────────────────────────────────────────────────
+
+class RoleSourceResolveApproversTests(TestCase):
+    """resolve_approvers with approver_source=ROLE reads TenantUserRoleAssignment
+    rows directly - no permission keys involved."""
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import make_role
+        self.requester = _make_active_user("role-req@test.com")
+        self.tenant = self.requester.tenant
+        self.template = _make_template(doc_type="ROLE_DOC")
+        self.role = make_role(self.tenant, name="Bursar")
+        self.instance = _make_instance(self.template, self.requester)
+
+    def _role_stage(self, role=None, scope="SCHOOL", code="role-stage"):
+        stage = _make_stage(self.template, code=code)
+        stage.approver_source = "ROLE"
+        stage.approver_role = role if role is not None else self.role
+        stage.approver_scope = scope
+        stage.save(update_fields=["approver_source", "approver_role", "approver_scope"])
+        return stage
+
+    def _assign(self, user, role=None, **kwargs):
+        from vs_rbac.tests.helpers import make_assignment
+        return make_assignment(self.tenant, user, role or self.role, **kwargs)
+
+    def test_active_assignee_is_eligible(self):
+        approver = _make_active_user("bursar@test.com")
+        self._assign(approver)
+        result = resolve_approvers(self._role_stage(), self.instance)
+        self.assertEqual([e.user.pk for e in result], [approver.pk])
+        self.assertIsNone(result[0].on_behalf_of)
+
+    def test_requester_excluded_even_when_assigned(self):
+        self._assign(self.requester)
+        result = resolve_approvers(self._role_stage(), self.instance)
+        self.assertEqual(result, [])
+
+    def test_revoked_assignment_not_eligible(self):
+        approver = _make_active_user("ex-bursar@test.com")
+        self._assign(approver, assignment_status="REVOKED")
+        result = resolve_approvers(self._role_stage(), self.instance)
+        self.assertEqual(result, [])
+
+    def test_inactive_user_not_eligible(self):
+        approver = _make_active_user("gone@test.com")
+        self._assign(approver)
+        # save() re-derives is_active from status, so deactivate via status.
+        approver.status = "DEACTIVATED"
+        approver.save(update_fields=["status"])
+        result = resolve_approvers(self._role_stage(), self.instance)
+        self.assertEqual(result, [])
+
+    def test_archived_role_resolves_empty(self):
+        approver = _make_active_user("archived-role@test.com")
+        self._assign(approver)
+        self.role.status = "ARCHIVED"
+        self.role.save(update_fields=["status"])
+        result = resolve_approvers(self._role_stage(), self.instance)
+        self.assertEqual(result, [])
+
+    def test_stage_without_role_resolves_empty(self):
+        stage = _make_stage(self.template, code="no-role")
+        stage.approver_source = "ROLE"
+        stage.save(update_fields=["approver_source"])
+        self.assertEqual(resolve_approvers(stage, self.instance), [])
+
+    def test_other_tenant_assignment_not_eligible(self):
+        """A same-key role in another tenant never leaks approvers across tenants."""
+        from vs_rbac.tests.helpers import make_assignment, make_branch, make_role, make_school
+        school = make_school(slug="other-school")
+        branch = make_branch(school)
+        other_user = _make_user_in_branch("other-tenant@test.com", branch)
+        other_role = make_role(school.tenant, name="Bursar")
+        make_assignment(school.tenant, other_user, other_role)
+        # The stage points at OUR tenant's role; the other tenant's rows are invisible.
+        result = resolve_approvers(self._role_stage(), self.instance)
+        self.assertEqual(result, [])
+
+    def test_school_scope_ignores_branch_limited_assignments(self):
+        """Mirrors the RBAC path: outside BRANCH scope only tenant-wide
+        assignments count."""
+        from vs_rbac.tests.helpers import make_branch, make_school
+        school = make_school(slug="scope-school")
+        branch = make_branch(school)
+        requester = _make_user_in_branch("scope-req@test.com", branch)
+        wide = _make_user_in_branch("wide@test.com", branch)
+        narrow = _make_user_in_branch("narrow@test.com", branch)
+        from vs_rbac.tests.helpers import make_assignment, make_role
+        role = make_role(school.tenant, name="Branch Head")
+        from vs_rbac.models import TenantUserRoleAssignment
+        make_assignment(school.tenant, wide, role)  # tenant-wide
+        TenantUserRoleAssignment.objects.create(   # branch-limited
+            tenant=school.tenant, user=narrow, role=role, branch=branch,
+            assignment_status="ACTIVE",
+        )
+        instance = _make_instance(self.template, requester)
+        instance.branch = branch
+        instance.save(update_fields=["branch"])
+
+        stage = self._role_stage(role=role, scope="SCHOOL", code="school-scope")
+        self.assertEqual({e.user.pk for e in resolve_approvers(stage, instance)},
+                         {wide.pk})
+
+        stage_b = self._role_stage(role=role, scope="BRANCH", code="branch-scope")
+        self.assertEqual({e.user.pk for e in resolve_approvers(stage_b, instance)},
+                         {wide.pk, narrow.pk})
+
+    def test_delegation_expands_role_approvers(self):
+        from vs_workflow.models import ApprovalDelegation
+        approver = _make_active_user("delegating-bursar@test.com")
+        delegate = _make_active_user("stand-in@test.com")
+        self._assign(approver)
+        now = timezone.now()
+        ApprovalDelegation.objects.create(
+            tenant=self.tenant, delegator=approver, delegate=delegate,
+            starts_at=now - timezone.timedelta(hours=1),
+            ends_at=now + timezone.timedelta(hours=1),
+        )
+        result = resolve_approvers(self._role_stage(), self.instance)
+        pairs = {(e.user.pk, e.on_behalf_of.pk if e.on_behalf_of else None) for e in result}
+        self.assertEqual(pairs, {(approver.pk, None), (delegate.pk, approver.pk)})
+
+
+def _make_active_user(email):
+    from django.contrib.auth import get_user_model
+    return get_user_model().objects.create_user(
+        email=email, user_type="CX_STAFF", status="ACTIVE",
+        first_name="Test", last_name="User",
+    )
+
+
+def _make_user_in_branch(email, branch):
+    from django.contrib.auth import get_user_model
+    return get_user_model().objects.create_user(
+        email=email, user_type="STAFF", status="ACTIVE",
+        first_name="Branch", last_name="User", branch=branch,
+    )
+
+
+# ── publish_template with ROLE stages ────────────────────────────────────────
+
+class PublishRoleStageTests(TestCase):
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import make_role
+        self.user = _make_user("publisher@test.com")
+        self.tenant = self.user.tenant
+        self.role = make_role(self.tenant, name="Finance Officer", key="finance-officer")
+
+    def _publish(self, stage_overrides=None, tenant="default"):
+        stage = {
+            "code": "s1", "label": "Finance", "kind": "APPROVAL", "order": 1,
+            "approver_source": "ROLE", "approver_role_key": "finance-officer",
+        }
+        stage.update(stage_overrides or {})
+        return templates_svc.publish_template(
+            tenant=self.tenant if tenant == "default" else tenant,
+            document_type="ROLE_TPL", code="default", name="T",
+            stages_payload=[stage],
+        )
+
+    def test_role_key_resolved_to_fk(self):
+        t = self._publish()
+        stage = t.stages.get(code="s1")
+        self.assertEqual(stage.approver_role_id, self.role.pk)
+        self.assertEqual(stage.approver_source, "ROLE")
+
+    def test_unknown_role_key_fails_publish(self):
+        with self.assertRaises(TemplateInvalidError):
+            self._publish({"approver_role_key": "no-such-role"})
+        self.assertFalse(WorkflowTemplate.objects.filter(
+            document_type="ROLE_TPL").exists())
+
+    def test_missing_role_key_fails_publish(self):
+        with self.assertRaises(TemplateInvalidError):
+            self._publish({"approver_role_key": ""})
+
+    def test_inactive_role_fails_publish(self):
+        self.role.status = "INACTIVE"
+        self.role.save(update_fields=["status"])
+        with self.assertRaises(TemplateInvalidError):
+            self._publish()
+
+    def test_global_template_cannot_use_role_stage(self):
+        with self.assertRaises(TemplateInvalidError):
+            self._publish(tenant=None)
+
+    def test_non_role_stage_ignores_role_key(self):
+        """approver_role stays empty unless the stage opts into the ROLE source."""
+        t = self._publish({"approver_source": "RBAC_PERMISSION",
+                           "approver_permission_key": "x.y.z"})
+        self.assertIsNone(t.stages.get(code="s1").approver_role_id)
+
+
+# ── serializer validation for ROLE stages ────────────────────────────────────
+
+class RoleStageSerializerValidationTests(SimpleTestCase):
+
+    def test_publish_requires_role_key_for_role_source(self):
+        from vs_workflow.serializers import WorkflowTemplatePublishSerializer
+        s = WorkflowTemplatePublishSerializer(data={
+            "document_type": "d", "code": "c", "name": "n",
+            "stages": [{"code": "s1", "label": "S1", "approver_source": "ROLE"}],
+        })
+        self.assertFalse(s.is_valid())
+        self.assertIn("approver_role_key", str(s.errors))
+
+    def test_preview_requires_role_key_for_role_source(self):
+        from vs_workflow.serializers import ApproverPreviewRequestSerializer
+        s = ApproverPreviewRequestSerializer(data={
+            "requester": "u1", "approver_source": "ROLE",
+        })
+        self.assertFalse(s.is_valid())
+        self.assertIn("approver_role_key", str(s.errors))
+
+    def test_preview_accepts_role_config(self):
+        from vs_workflow.serializers import ApproverPreviewRequestSerializer
+        s = ApproverPreviewRequestSerializer(data={
+            "requester": "u1", "approver_source": "ROLE",
+            "approver_role_key": "bursar",
+        })
+        self.assertTrue(s.is_valid(), s.errors)

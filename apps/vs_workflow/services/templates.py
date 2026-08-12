@@ -5,6 +5,7 @@ from typing import Optional
 from django.db import transaction
 from django.utils import timezone
 
+from vs_workflow.exceptions import TemplateInvalidError
 from vs_workflow.models import WorkflowInstance, WorkflowTemplate
 
 
@@ -22,6 +23,37 @@ def _resolve_position(code: Optional[str]):
     except ImportError:
         return None
     return Position.objects.filter(code=code).first()
+
+
+# Resolve a ROLE stage's role key to the tenant's role, failing loudly.
+def _resolve_role(stage_payload: dict, tenant):
+    """Resolve approver_role_key to the tenant's TenantRoleTemplate.
+
+    Unlike _resolve_position this raises instead of degrading to None: a ROLE
+    stage that silently loses its role would auto-skip (or stall) every future
+    instance, so a bad key must fail the publish, not the approvals.
+    """
+    if stage_payload.get("approver_source") != "ROLE":
+        return None
+    key = stage_payload.get("approver_role_key") or ""
+    label = stage_payload.get("code") or stage_payload.get("label") or "?"
+    if not key:
+        raise TemplateInvalidError(
+            f"Stage '{label}': approver_role_key is required when approver_source is ROLE.")
+    if tenant is None:
+        raise TemplateInvalidError(
+            f"Stage '{label}': ROLE stages need a tenant-scoped template - "
+            "global templates cannot reference tenant roles.")
+
+    from vs_rbac.models import TenantRoleTemplate
+
+    role = TenantRoleTemplate.objects.filter(
+        tenant=tenant, key=key, status=TenantRoleTemplate.Status.ACTIVE,
+    ).first()
+    if role is None:
+        raise TemplateInvalidError(
+            f"Stage '{label}': no active role with key '{key}' exists in this tenant.")
+    return role
 
 
 # Publish one workflow template definition atomically.
@@ -72,6 +104,8 @@ def publish_template(*, tenant, branch=None, document_type: str, code: str, name
             "approver_source": s.get("approver_source", "RBAC_PERMISSION"),
             "approver_permission_key": s.get("approver_permission_key", ""),
             "approver_scope": s.get("approver_scope", "SCHOOL"),
+            # Role config - only meaningful when approver_source==ROLE.
+            "approver_role": _resolve_role(s, tenant),
             # Organogram config - only meaningful when approver_source==ORGANOGRAM.
             "organogram_target": s.get("organogram_target", ""),
             "organogram_levels": s.get("organogram_levels", 1),

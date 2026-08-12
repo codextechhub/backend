@@ -119,7 +119,9 @@ class WorkflowStage(models.Model):
         kind: ``APPROVAL`` or ``BRANCH``. BRANCH stages are auto-skipped by the engine.
         order: Ascending integer used for linear routing when no routes are defined.
         approver_permission_key: RBAC permission key used to resolve eligible approvers.
-        approver_scope: ``BRANCH``, ``SCHOOL``, or ``PLATFORM`` - narrows the RBAC lookup.
+        approver_scope: ``BRANCH``, ``SCHOOL``, or ``PLATFORM`` - narrows the RBAC/role lookup.
+        approver_role: Named tenant role whose active assignees approve this stage
+            (only used when ``approver_source`` is ``ROLE``).
         advance_rule: ``UNANIMOUS``, ``QUORUM``, or ``ANY`` - how many approvals advance the stage.
         quorum_count: Minimum approvals required when advance_rule is ``QUORUM``.
         on_rejection: ``TERMINAL`` ends the workflow; ``RETURN_TO_REQUESTER`` sends it back.
@@ -137,9 +139,10 @@ class WorkflowStage(models.Model):
     # ── Approver resolution strategy ────────────────────────────────────────
     # RBAC_PERMISSION (default) uses approver_permission_key + approver_scope.
     # ORGANOGRAM is an additive, opt-in strategy that climbs the CX organogram
-    # relative to the requester (see the organogram_* fields below). The two are
-    # mutually exclusive; the existing RBAC path is unchanged when source is
-    # left at its default.
+    # relative to the requester (see the organogram_* fields below). ROLE points
+    # at a named tenant role (approver_role) and resolves its active assignees.
+    # The strategies are mutually exclusive; the existing RBAC path is unchanged
+    # when source is left at its default.
     approver_source = models.CharField(
         max_length=20, choices=ApproverSource.choices,
         default=ApproverSource.RBAC_PERMISSION,
@@ -147,6 +150,13 @@ class WorkflowStage(models.Model):
     approver_permission_key = models.CharField(max_length=150, blank=True, default="")
     approver_scope = models.CharField(max_length=20, choices=ApproverScope.choices,
                                       default=ApproverScope.SCHOOL)
+    # ── Role config (only used when approver_source == ROLE) ──────────────────
+    # PROTECT so a role referenced by an approval stage cannot be deleted out
+    # from under the template; archive the role or repoint the stage first.
+    approver_role = models.ForeignKey(
+        "vs_rbac.TenantRoleTemplate", on_delete=models.PROTECT,
+        null=True, blank=True, related_name="workflow_stages",
+    )
     # ── Organogram config (only used when approver_source == ORGANOGRAM) ──────
     organogram_target = models.CharField(
         max_length=20, choices=OrganogramTarget.choices, blank=True, default="",

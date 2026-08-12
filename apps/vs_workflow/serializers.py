@@ -14,6 +14,12 @@ class WorkflowStageReadSerializer(serializers.ModelSerializer):
     organogram_position_code = serializers.CharField(
         source="organogram_position.code", read_only=True, default=None,
     )
+    approver_role_key = serializers.CharField(
+        source="approver_role.key", read_only=True, default=None,
+    )
+    approver_role_name = serializers.CharField(
+        source="approver_role.name", read_only=True, default=None,
+    )
 
     class Meta:
         model = WorkflowStage
@@ -21,6 +27,7 @@ class WorkflowStageReadSerializer(serializers.ModelSerializer):
             "id", "code", "label", "kind", "order",
             "approver_source",
             "approver_permission_key", "approver_scope",
+            "approver_role_key", "approver_role_name",
             "organogram_target", "organogram_levels", "organogram_position_code",
             "advance_rule", "quorum_count", "on_rejection",
             "skip_if_no_approvers", "inclusion_condition",
@@ -104,6 +111,13 @@ class WorkflowTemplatePublishSerializer(serializers.Serializer):
                         f"Stage '{label}': organogram_position_code is required "
                         f"when organogram_target is SPECIFIC_POSITION."
                     )
+            # A ROLE stage must name the tenant role it resolves; existence of
+            # the role is checked tenant-aware in the publish service.
+            if s.get("approver_source") == ApproverSource.ROLE.value and not s.get("approver_role_key"):
+                raise serializers.ValidationError(
+                    f"Stage '{label}': approver_role_key is required when "
+                    f"approver_source is ROLE."
+                )
         return value
 
 
@@ -231,6 +245,9 @@ class ApproverPreviewRequestSerializer(serializers.Serializer):
     approver_scope = serializers.ChoiceField(
         choices=ApproverScope.choices, required=False, default=ApproverScope.PLATFORM,
     )
+    # ROLE config - a TenantRoleTemplate *key* (matches the publish payload's
+    # approver_role_key).
+    approver_role_key = serializers.CharField(required=False, allow_blank=True, default="")
     # Optional context for delegation matching.
     document_type = serializers.CharField(required=False, allow_blank=True, default="")
 
@@ -242,6 +259,10 @@ class ApproverPreviewRequestSerializer(serializers.Serializer):
             if attrs["organogram_target"] == OrganogramTarget.SPECIFIC_POSITION and not attrs.get("organogram_position_code"):
                 raise serializers.ValidationError(
                     {"organogram_position_code": "Required when target is SPECIFIC_POSITION."})
+        elif attrs["approver_source"] == ApproverSource.ROLE:
+            if not attrs.get("approver_role_key"):
+                raise serializers.ValidationError(
+                    {"approver_role_key": "Required when approver_source is ROLE."})
         elif not attrs.get("approver_permission_key"):
             raise serializers.ValidationError(
                 {"approver_permission_key": "Required when approver_source is RBAC_PERMISSION."})
