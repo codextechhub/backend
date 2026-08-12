@@ -5,8 +5,9 @@ These operate exclusively on the canonical tenant RBAC tables
 ``TenantUserRoleAssignment`` / ``TenantRoleChangeRequest``).
 
 Scope (tenant / branch) never comes from the request body - it is injected by
-the view from the URL / ``request.tenant``. Serializers validate that any
-referenced user, role, or branch belongs to that tenant.
+the view from the URL / ``request.tenant``. Every referenced user, role or
+branch is *resolved inside* that tenant, so a reference the caller is not
+entitled to is simply not found rather than found-then-rejected.
 """
 from __future__ import annotations
 
@@ -33,6 +34,106 @@ from .registry import (
     PermissionKeyListValidationMixin,
     PermissionSerializer,
 )
+
+
+# -----------------------------------------------------------------------------
+# Tenant-scoped reference resolution
+# -----------------------------------------------------------------------------
+# Resolving a reference globally and *then* comparing tenants rejects correctly
+# but tells the caller the difference between "this id is not yours" and "this
+# id does not exist" - an existence oracle it can enumerate with. Every
+# reference below is therefore resolved INSIDE the tenant, so a foreign row, an
+# absent row and an unusable id all take the same code path and come back with
+# the same message. ``vs_schools.services.references`` sets the same standard
+# for branch references on the school side; the wording is kept in step
+# deliberately, but the constant is local because ``vs_rbac`` is a
+# domain-neutral engine app and must not grow a dependency on ``vs_schools``
+# beyond the model import it already has.
+
+# The largest value a 64-bit signed column can hold. Every pk resolved here is
+# a BigAutoField, and PostgreSQL raises (a 500) rather than returning no rows
+# when handed something larger, so oversized ids are "not found" too.
+_MAX_BIGINT = 9_223_372_036_854_775_807
+
+BRANCH_NOT_FOUND = "No such branch in this tenant."
+USER_NOT_FOUND = "No such user in this tenant."
+ROLE_NOT_FOUND = "No such role in this tenant."
+
+
+class TenantScopedSerializerMixin:
+    """Supplies the tenant that every reference on the serializer resolves in.
+
+    The tenant is injected by the view (``TenantScopedRBACMixin`` puts it in the
+    serializer context); on an update it can also be read off the instance being
+    edited, whose tenant is fixed and never writable.
+    """
+
+    def _tenant(self):
+        tenant = self.context.get("tenant")
+        if tenant is None and self.instance is not None:
+            tenant = getattr(self.instance, "tenant", None)
+        return tenant
+
+    def run_validation(self, data=serializers.empty):
+        """Refuse the payload before a single reference is resolved.
+
+        With no tenant nothing can be scoped, so nothing may be looked up:
+        resolving first would let a caller in this state still tell an id that
+        exists somewhere from one that exists nowhere. Every view supplies the
+        tenant, so this only guards non-HTTP callers - but it is what makes the
+        guarantee unconditional rather than "unless the context is missing".
+        """
+        if self._tenant() is None:
+            # List-wrapped to match the shape ``validate`` produces once DRF has
+            # normalised it, so the envelope is the same whichever path fires.
+            raise serializers.ValidationError(
+                {"tenant": ["Tenant context is required."]}
+            )
+        return super().run_validation(data)
+
+
+class TenantScopedRelatedField(serializers.PrimaryKeyRelatedField):
+    """A pk reference resolved inside the serializer's tenant, or not at all.
+
+    ``tenant_lookup`` is the ORM path from the referenced model to the tenant
+    (``"tenant"``, ``"school__tenant"``, ...). ``not_found`` replaces *both*
+    DRF failure messages, so an id that is not a plausible bigint, an id that
+    does not exist and an id owned by another tenant are indistinguishable.
+    """
+
+    def __init__(self, *, tenant_lookup, not_found, **kwargs):
+        self.tenant_lookup = tenant_lookup
+        self.not_found = not_found
+        error_messages = dict(kwargs.pop("error_messages", None) or {})
+        error_messages.setdefault("does_not_exist", not_found)
+        error_messages.setdefault("incorrect_type", not_found)
+        super().__init__(error_messages=error_messages, **kwargs)
+
+    def _tenant(self):
+        """Walk up to the serializer that knows the tenant, if there is one."""
+        parent = self.parent
+        while parent is not None and not hasattr(parent, "_tenant"):
+            parent = parent.parent
+        return parent._tenant() if parent is not None else None
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        tenant = self._tenant()
+        if tenant is None:
+            # The tenant is not knowable at field time (an unusual binding, or
+            # a serializer built with neither context nor instance). Resolving
+            # against an empty queryset would break legitimate flows, so
+            # resolve unscoped and let the serializer's fallback check reject
+            # with the identical message - the oracle survives neither path.
+            return queryset
+        return queryset.filter(**{self.tenant_lookup: tenant})
+
+    def to_internal_value(self, data):
+        # A non-numeric or oversized id is "not found", never a database error.
+        raw = str(data).strip()
+        if not raw.isdigit() or int(raw) > _MAX_BIGINT:
+            self.fail("does_not_exist", pk_value=data)
+        return super().to_internal_value(data)
 
 
 # -----------------------------------------------------------------------------
@@ -130,7 +231,9 @@ class TenantRoleTemplateListSerializer(serializers.ModelSerializer):
 
 
 class TenantRoleTemplateDetailSerializer(
-    PermissionKeyListValidationMixin, serializers.ModelSerializer
+    TenantScopedSerializerMixin,
+    PermissionKeyListValidationMixin,
+    serializers.ModelSerializer,
 ):
     """Detailed serializer for tenant role templates.
 
@@ -139,11 +242,23 @@ class TenantRoleTemplateDetailSerializer(
     - ``group_ids`` replaces the role's attached permission groups.
     - dependency validation runs against the flattened effective set.
 
-    Scope (tenant) is injected by the view; ``branch`` (when supplied) must
-    belong to the tenant.
+    Scope (tenant) is injected by the view; ``branch`` (when supplied) is
+    resolved inside that tenant, so another tenant's branch is simply not
+    found.
     """
 
     tenant = serializers.SlugRelatedField(slug_field="slug", read_only=True)
+
+    # all_objects + an explicit filter deliberately: the tenant the serializer
+    # was given is the security boundary, and it must not depend on the ambient
+    # request-local tenant state that ``Branch.objects`` reads.
+    branch = TenantScopedRelatedField(
+        queryset=Branch.all_objects.select_related("school"),
+        tenant_lookup="school__tenant",
+        not_found=BRANCH_NOT_FOUND,
+        required=False,
+        allow_null=True,
+    )
 
     role_permissions = TenantRolePermissionSerializer(many=True, read_only=True)
     role_groups = TenantRoleGroupAttachmentSerializer(many=True, read_only=True)
@@ -192,18 +307,22 @@ class TenantRoleTemplateDetailSerializer(
             "updated_at",
         ]
 
-    def _tenant(self):
-        tenant = self.context.get("tenant")
-        if tenant is None and self.instance is not None:
-            tenant = self.instance.tenant
-        return tenant
-
     def validate_branch(self, value):
+        """Fallback tenancy check for a branch the field resolved unscoped.
+
+        ``branch`` is normally resolved inside the tenant by the field itself,
+        which makes this unreachable. It stays as the backstop for the one case
+        the field cannot cover - it could not reach a tenant through its parent
+        - and raises the *same* message the lookup does so that path is not an
+        oracle either. When no tenant is knowable at all the mixin's
+        ``run_validation`` has already refused the payload, so nothing was
+        looked up in the first place.
+        """
         if value is None:
             return value
         tenant = self._tenant()
         if tenant is not None and value.school.tenant_id != tenant.pk:
-            raise serializers.ValidationError("Branch must belong to this tenant.")
+            raise serializers.ValidationError(BRANCH_NOT_FOUND)
         return value
 
     def validate(self, attrs):
@@ -353,23 +472,36 @@ class TenantRoleTemplateDetailSerializer(
 # -----------------------------------------------------------------------------
 # User role assignments
 # -----------------------------------------------------------------------------
-class TenantUserRoleAssignmentSerializer(serializers.ModelSerializer):
+class TenantUserRoleAssignmentSerializer(
+    TenantScopedSerializerMixin, serializers.ModelSerializer,
+):
     """Assign or revoke a tenant role for a user.
 
-    Rules enforced:
-    - the user must belong to the assignment tenant
-    - the role must belong to the assignment tenant
-    - the branch (when set) must belong to the tenant
+    Every reference is resolved inside the assignment's tenant, so a user, role
+    or branch belonging to another tenant is reported exactly like one that does
+    not exist. Nothing is ever accepted across a tenant boundary.
     """
 
-    user = serializers.PrimaryKeyRelatedField(
-        queryset=get_user_model().objects.all(), write_only=True,
+    user = TenantScopedRelatedField(
+        queryset=get_user_model().objects.all(),
+        tenant_lookup="tenant",
+        not_found=USER_NOT_FOUND,
+        write_only=True,
     )
-    role = serializers.PrimaryKeyRelatedField(
-        queryset=TenantRoleTemplate.objects.all(), write_only=True,
+    role = TenantScopedRelatedField(
+        queryset=TenantRoleTemplate.objects.all(),
+        tenant_lookup="tenant",
+        not_found=ROLE_NOT_FOUND,
+        write_only=True,
     )
-    branch = serializers.PrimaryKeyRelatedField(
-        queryset=Branch.objects.all(), required=False, allow_null=True,
+    # all_objects + an explicit filter deliberately: see the role template
+    # serializer above - ambient tenant state must not be the boundary.
+    branch = TenantScopedRelatedField(
+        queryset=Branch.all_objects.select_related("school"),
+        tenant_lookup="school__tenant",
+        not_found=BRANCH_NOT_FOUND,
+        required=False,
+        allow_null=True,
     )
 
     user_id = serializers.SerializerMethodField()
@@ -471,12 +603,6 @@ class TenantUserRoleAssignmentSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
-    def _tenant(self):
-        tenant = self.context.get("tenant")
-        if tenant is None and self.instance is not None:
-            tenant = self.instance.tenant
-        return tenant
-
     def validate(self, attrs):
         tenant = self._tenant()
         if tenant is None:
@@ -494,18 +620,17 @@ class TenantUserRoleAssignmentSerializer(serializers.ModelSerializer):
             ),
         )
 
+        # Fallback tenancy checks. The three references are resolved inside the
+        # tenant by their fields, so these are unreachable through the API; they
+        # remain as the backstop for a field that could not reach a tenant, and
+        # each raises the same message its lookup does so neither route reveals
+        # that the id exists somewhere else.
         if user is not None and getattr(user, "tenant_id", None) != tenant.pk:
-            raise serializers.ValidationError(
-                {"user": "User must belong to the same tenant as the assignment."}
-            )
+            raise serializers.ValidationError({"user": USER_NOT_FOUND})
         if role is not None and role.tenant_id != tenant.pk:
-            raise serializers.ValidationError(
-                {"role": "Role must belong to the same tenant as the assignment."}
-            )
+            raise serializers.ValidationError({"role": ROLE_NOT_FOUND})
         if branch is not None and branch.school.tenant_id != tenant.pk:
-            raise serializers.ValidationError(
-                {"branch": "Branch must belong to the same tenant as the assignment."}
-            )
+            raise serializers.ValidationError({"branch": BRANCH_NOT_FOUND})
 
         if (
             new_status == TenantUserRoleAssignment.AssignmentStatus.ACTIVE
@@ -626,10 +751,21 @@ class TenantRoleChangeDeltaItemSerializer(serializers.ModelSerializer):
         return value
 
 
-class TenantRoleChangeRequestSerializer(serializers.ModelSerializer):
-    """Create a tenant role change request with delta items."""
+class TenantRoleChangeRequestSerializer(
+    TenantScopedSerializerMixin, serializers.ModelSerializer,
+):
+    """Create a tenant role change request with delta items.
+
+    ``target_role`` is resolved inside the request's tenant, so another
+    tenant's role is reported exactly like a role that does not exist.
+    """
 
     tenant = serializers.SlugRelatedField(slug_field="slug", read_only=True)
+    target_role = TenantScopedRelatedField(
+        queryset=TenantRoleTemplate.objects.all(),
+        tenant_lookup="tenant",
+        not_found=ROLE_NOT_FOUND,
+    )
     delta_items = TenantRoleChangeDeltaItemSerializer(many=True)
 
     class Meta:
@@ -662,12 +798,6 @@ class TenantRoleChangeRequestSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
-    def _tenant(self):
-        tenant = self.context.get("tenant")
-        if tenant is None and self.instance is not None:
-            tenant = self.instance.tenant
-        return tenant
-
     def validate(self, attrs):
         tenant = self._tenant()
         if tenant is None:
@@ -676,10 +806,11 @@ class TenantRoleChangeRequestSerializer(serializers.ModelSerializer):
         target_role = attrs.get("target_role") or getattr(
             self.instance, "target_role", None
         )
+        # Fallback tenancy check - see the assignment serializer above. Same
+        # message as the lookup, so a foreign role stays indistinguishable from
+        # an absent one on this route too.
         if target_role is not None and target_role.tenant_id != tenant.pk:
-            raise serializers.ValidationError(
-                {"target_role": "Target role must belong to the same tenant as the request."}
-            )
+            raise serializers.ValidationError({"target_role": ROLE_NOT_FOUND})
         if not attrs.get("delta_items"):
             raise serializers.ValidationError(
                 {"delta_items": "At least one delta item is required."}
