@@ -1595,6 +1595,76 @@ class PayoutBatchApprovalTests(TestCase):
         batch.refresh_from_db()
         self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)  # Both signed.
 
+    # --- 8. parked work becomes reachable again ---------------------------- #
+
+    def _park_a_batch(self):
+        """Submit under a seeded ladder with nobody appointed. Returns the batch."""
+        self._seed_tenant_ladder()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        return batch
+
+    def test_a_late_appointed_approver_is_invisible_until_the_repair_runs(self):
+        """The trap itself: the snapshot froze empty, so the grant alone changes nothing."""
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.exceptions import NotAnEligibleApproverError
+
+        batch = self._park_a_batch()
+        approver = self._make_approver()  # Granted only now, after activation.
+        with self.assertRaises(NotAnEligibleApproverError):
+            wf_actions.record_action(
+                self._instance_for(batch).id, approver, ActionEnum.APPROVED)
+
+    def test_the_repair_releases_a_parked_batch_without_resubmitting(self):
+        """A payout batch gets the repair procurement always had.
+
+        Before this was moved into the engine the scan was fenced to procurement's
+        four document types, so a parked payout batch stayed stuck for that attempt
+        and the only recovery was withdraw and resubmit.
+        """
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.services import my_queue
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+
+        batch = self._park_a_batch()
+        outsider = self.User.objects.create_user(
+            email="nobody-pba@test.com", password="pw", user_type="SCHOOL_ADMIN",
+            status="ACTIVE", first_name="No", last_name="Body",
+            tenant=self.school.tenant,
+        )
+        # Nobody holds the key yet, so there is nothing to restore and nothing to see.
+        self.assertEqual(my_queue.pending_approval_snapshots(outsider, self.school), [])
+
+        approver = self._make_approver()  # Appointed after the stage already activated.
+        # Reading the queue is what repairs it; no resubmission anywhere.
+        snaps = my_queue.pending_approval_snapshots(approver, self.school)
+        self.assertEqual(len(snaps), 1)
+
+        wf_actions.record_action(self._instance_for(batch).id, approver, ActionEnum.APPROVED)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
+
+    def test_the_repair_leaves_a_staffed_stage_alone(self):
+        """The freeze guarantee: a populated snapshot is never rewritten or added to."""
+        from vs_workflow.models import WorkflowStageApprover
+        from vs_workflow.services import parking
+
+        self._seed_tenant_ladder()
+        first = self._make_approver()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        before = set(WorkflowStageApprover.objects.values_list("pk", flat=True))
+        self.assertTrue(before)
+
+        # A second holder appears after activation. The stage is staffed, so the
+        # repair must not reach in and add them mid-review.
+        self._make_approver(email="apr2-pba@test.com")
+        self.assertEqual(parking.repair_workflows(tenant=self.school.tenant), 0)
+        self.assertEqual(
+            set(WorkflowStageApprover.objects.values_list("pk", flat=True)), before)
+        self.assertTrue(WorkflowStageApprover.objects.filter(user=first).exists())
+
     # --- 6. reject → back to draft, nothing dispatched --------------------- #
 
     def test_reject_returns_batch_to_draft(self):
