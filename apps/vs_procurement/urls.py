@@ -117,6 +117,8 @@ urlpatterns = [
     # Spend approvals (vs_workflow)
     path("approvals/default-templates/", views.ApprovalTemplateSetupView.as_view(),
          name="proc-approval-default-templates"),
+    path("approvals/coverage/", views.ProcurementApprovalCoverageView.as_view(),
+         name="proc-approval-coverage"),
     path("approvals/", views.ProcurementApprovalListView.as_view(),
          name="proc-approvals"),
     path("approvals/<str:workflow_id>/", views.ProcurementApprovalDetailView.as_view(),

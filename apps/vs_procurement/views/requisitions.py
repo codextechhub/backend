@@ -12,7 +12,7 @@ import datetime
 from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.utils import timezone
-from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from core.response import success_response
 from vs_finance.constants import BudgetStatus, DocumentStatus
@@ -41,6 +41,7 @@ from .base import (
     _ProcBase,
     _branch_scoped,
     _date,
+    _document_or_404,
     _money,
     _quantity,
     _raised_branch,
@@ -202,11 +203,13 @@ class RequisitionDetailView(_ProcBase):
     def get(self, request, pk):
         """Return one entity requisition with a safe workflow-instance overlay."""
         entity = resolve_entity(request)
-        req = PurchaseRequisition.objects.filter(entity=entity, pk=pk).select_related(
-            "requested_by", "cost_center",
-        ).prefetch_related("lines").first()
-        if req is None:
-            raise NotFound("No such requisition in this entity.")
+        req = _document_or_404(
+            request,
+            PurchaseRequisition.objects.filter(entity=entity).select_related(
+                "requested_by", "cost_center", "branch",
+            ).prefetch_related("lines"),
+            pk, "No such requisition in this entity.",
+        )
         data = RequisitionSerializer(req).data
         # Generic workflow rows link through content type + object id; for_document builds that pair safely.
         instance = WorkflowInstance.objects.for_document(req).order_by("-created_at").first()
@@ -217,9 +220,10 @@ class RequisitionDetailView(_ProcBase):
     def patch(self, request, pk):
         """Serialize draft edits; submitted and approved intent is immutable."""
         entity = resolve_entity(request)
-        req = PurchaseRequisition.objects.select_for_update().filter(entity=entity, pk=pk).first()
-        if req is None:
-            raise NotFound("No such requisition in this entity.")
+        req = _document_or_404(
+            request, PurchaseRequisition.objects.select_for_update().filter(entity=entity),
+            pk, "No such requisition in this entity.",
+        )
         if req.status != DocumentStatus.DRAFT:
             raise ValidationError({"status": "Only a draft requisition can be edited."})
         body = request.data
@@ -238,11 +242,17 @@ class RequisitionDetailView(_ProcBase):
 
 
 class RequisitionSummaryView(_ProcBase):
-    """Compact, unpaginated KPI totals for the requisition list header."""
+    """Compact, unpaginated KPI totals for the requisition list header.
+
+    Counted over exactly the rows the caller's own list returns (same branch
+    narrowing, same ``?branch=``), so the header can never report spend the
+    caller is not allowed to see, nor totals that fail to reconcile with the
+    rows underneath them.
+    """
     rbac_permission = "procurement.requisition.view"
 
     def get(self, request):
-        """Return entity-wide, same-period KPI comparisons in integer kobo."""
+        """Return same-period KPI comparisons in integer kobo for the visible rows."""
         entity = resolve_entity(request)
         as_of = timezone.localdate()
         current_start = as_of.replace(day=1)
@@ -250,7 +260,10 @@ class RequisitionSummaryView(_ProcBase):
         prior_start = prior_month_end.replace(day=1)
         # Compare the same number of elapsed calendar days so a partial month is not measured against a full month.
         prior_end = min(prior_month_end, prior_start + datetime.timedelta(days=as_of.day - 1))
-        qs = PurchaseRequisition.objects.filter(entity=entity)
+        qs = _branch_scoped(
+            request, entity, PurchaseRequisition.objects.filter(entity=entity),
+            request.query_params,
+        )
 
         pending = qs.filter(status=DocumentStatus.PENDING_APPROVAL).aggregate(
             count=Count("id"), amount=Sum("estimated_total"),
@@ -371,9 +384,10 @@ class RequisitionSubmitView(_ProcBase):
     def post(self, request, pk):
         """Submit entity-scoped intent; workflow owns threshold and approver routing."""
         entity = resolve_entity(request)
-        req = PurchaseRequisition.objects.filter(entity=entity, pk=pk).first()
-        if req is None:
-            raise NotFound("No such requisition in this entity.")
+        req = _document_or_404(
+            request, PurchaseRequisition.objects.filter(entity=entity),
+            pk, "No such requisition in this entity.",
+        )
         instance = approvals.submit_for_approval(req, actor_user=request.user)
         return _approval_response("Requisition submitted for approval.",
                                   req, instance, RequisitionSerializer)
@@ -406,9 +420,10 @@ class PurchaseOrderSubmitApprovalView(_ProcBase):
     def post(self, request, pk):
         """Hand entity-scoped commitment intent to the workflow engine."""
         entity = resolve_entity(request)
-        po = PurchaseOrder.objects.filter(entity=entity, pk=pk).first()
-        if po is None:
-            raise NotFound("No such purchase order in this entity.")
+        po = _document_or_404(
+            request, PurchaseOrder.objects.filter(entity=entity),
+            pk, "No such purchase order in this entity.",
+        )
         auto_email = request.data.get("auto_email_vendor", False)
         if not isinstance(auto_email, bool):
             raise ValidationError({"auto_email_vendor": "Enter true or false."})
@@ -443,9 +458,10 @@ class VendorInvoiceSubmitApprovalView(_ProcBase):
     def post(self, request, pk):
         """Freeze current match evidence for workflow; posting remains separate."""
         entity = resolve_entity(request)
-        inv = VendorInvoice.objects.filter(entity=entity, pk=pk).first()
-        if inv is None:
-            raise NotFound("No such vendor invoice in this entity.")
+        inv = _document_or_404(
+            request, VendorInvoice.objects.filter(entity=entity),
+            pk, "No such vendor invoice in this entity.",
+        )
         if inv.status != DocumentStatus.DRAFT:
             raise ValidationError({"status": "Only a draft vendor invoice can be submitted for approval."})
         # Approval must review the same priced and matched evidence that posting
@@ -459,17 +475,31 @@ class VendorInvoiceSubmitApprovalView(_ProcBase):
 
 
 class ApprovalTemplateSetupView(_ProcBase):
-    """Provision the platform-wide default threshold-gated approval templates.
+    """Provision **this tenant's own** threshold-gated approval rules.
 
-    POST body (all optional): ``threshold`` (kobo), ``manager_permission``,
-    ``senior_permission``. Idempotent - re-running upserts the templates in place.
+    The rules are created for the selected entity's owning tenant, never for the
+    platform: the platform-wide ladder is the shared fallback every tenant without
+    its own rules reads, and one tenant's administrator must not be able to rewrite
+    the threshold or the approving permissions for all the others.
+
+    Seeded blocked on purpose: the rules arrive with nobody holding the approving
+    permission, so the first document submitted parks and asks for an approver to be
+    appointed rather than approving itself.
+
+    Idempotent and non-destructive: a document type whose ladder already exists is
+    reported and left untouched, so re-running can never restore the defaults over a
+    tenant's customised rules.
+
+    POST body (all optional, applied only to newly created ladders): ``threshold``
+    (kobo), ``manager_permission``, ``senior_permission``.
 
     docstring-name: Set up approval templates
     """
     rbac_permission = "procurement.approval.manage"
 
     def post(self, request):
-        """Idempotently upsert shared threshold templates from validated settings."""
+        """Create this tenant's missing approval ladders from validated settings."""
+        entity = resolve_entity(request)
         body = request.data or {}
         kwargs = {}
         if "threshold" in body:
@@ -478,12 +508,21 @@ class ApprovalTemplateSetupView(_ProcBase):
             kwargs["manager_permission"] = str(body["manager_permission"])
         if body.get("senior_permission"):
             kwargs["senior_permission"] = str(body["senior_permission"])
-        templates = approvals.ensure_default_approval_templates(
-            created_by=request.user, **kwargs,
+        results = approvals.ensure_tenant_approval_templates(
+            entity.tenant, created_by=request.user, **kwargs,
         )
-        return success_response("Default approval templates provisioned.", data={
-            "templates": [
-                {"id": t.id, "document_type": t.document_type, "code": t.code, "name": t.name}
-                for t in templates
-            ],
-        })
+        created = sum(1 for _, was_created in results if was_created)
+        return success_response(
+            "Approval rules are in place for this tenant."
+            if created else "This tenant already has its own approval rules.",
+            data={
+                "created_count": created,
+                "templates": [
+                    {
+                        "id": t.id, "document_type": t.document_type, "code": t.code,
+                        "name": t.name, "created": was_created,
+                    }
+                    for t, was_created in results
+                ],
+            },
+        )

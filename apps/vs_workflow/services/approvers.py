@@ -63,6 +63,24 @@ def _users_with_permission(tenant, branch, permission_key: str, scope: ApproverS
     )
 
 
+# Public name for the same lookup, for callers outside the engine.
+def users_with_permission(*, tenant, branch, permission_key: str, scope: ApproverScope):
+    """Who the engine would consider eligible for ``permission_key`` in this scope.
+
+    The supported, read-only entry point to :func:`_users_with_permission` for apps
+    that must answer "who can approve here, and where does nobody?" without guessing
+    at the engine's scope mapping or copying it. Same arguments, same queryset, no
+    side effects: this is an alias, not a second implementation, so an administrative
+    coverage screen can never disagree with live routing.
+
+    Callers outside ``vs_workflow`` should use this name; the underscored one remains
+    for the engine's own internal use.
+    """
+    return _users_with_permission(
+        tenant=tenant, branch=branch, permission_key=permission_key, scope=scope,
+    )
+
+
 # Resolve organogram-based approvers relative to the requester.
 def _organogram_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
     """Resolve base approvers by climbing the CX organogram relative to the requester.

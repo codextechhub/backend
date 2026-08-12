@@ -11,9 +11,12 @@ handler (see :mod:`vs_procurement.workflow_handlers`). Those callbacks land here
 * :func:`apply_rejected`  - the workflow terminally rejected it.
 * :func:`reset_pending`   - the requester withdrew / an admin cancelled it.
 
-:func:`submit_for_approval` is the hand-off the API calls; :func:`ensure_default_approval_templates`
-provisions the platform-wide default templates so any :class:`~vs_finance.models.LedgerEntity`
-works out of the box (branch/school templates still override via the engine's cascade).
+:func:`submit_for_approval` is the hand-off the API calls.
+:func:`ensure_tenant_approval_templates` gives one tenant its own approval rules, and
+:func:`ensure_default_approval_templates` publishes the platform-wide fallback so no
+:class:`~vs_finance.models.LedgerEntity` is ever left unroutable; a tenant's own rules
+(and a branch's, where a site's rules genuinely differ) override it through the engine's
+branch → tenant → platform cascade.
 
 This module touches **no GL** - ``approval_state`` is a governance overlay independent of
 the ledger ``status``; for a requisition the approval also drives the existing
@@ -59,16 +62,10 @@ def _doc_models():
     return (PurchaseRequisition, PurchaseOrder, VendorInvoice, VendorPayment)
 
 
-def ensure_default_approval_templates(
-    *,
-    threshold: int = WF_DEFAULT_SENIOR_THRESHOLD,
-    manager_permission: str = WF_DEFAULT_MANAGER_PERMISSION,
-    senior_permission: str = WF_DEFAULT_SENIOR_PERMISSION,
-    created_by=None,
+def _default_stages_payload(
+    amount_field: str, *, threshold: int, manager_permission: str, senior_permission: str,
 ) -> list:
-    """Publish (idempotently) the platform-wide default approval templates.
-
-    One template per approvable document type, each a two-stage ladder:
+    """The two-stage default ladder, shared by the platform and per-tenant seeds.
 
     * **manager** - always runs; any holder of ``manager_permission`` can approve.
     * **senior**  - gated by ``inclusion_condition`` ``amount >= threshold`` (kobo), so
@@ -81,57 +78,171 @@ def ensure_default_approval_templates(
     reachable again by :mod:`vs_procurement.approval_parking` once the permission is
     granted.
 
-    Templates are platform-scoped (``school=None, branch=None``) so they act as the
-    universal fallback; a branch- or school-specific template still wins via the engine's
-    branch → school → platform cascade. Re-running upserts in place (safe to seed often).
-    ``threshold`` is integer kobo, matching every model's workflow amount field. Returns
-    the published :class:`~vs_workflow.models.WorkflowTemplate` objects.
+    Both stages are ``approver_scope="BRANCH"``, which is what makes a multi-site
+    tenant route correctly: the engine forwards the *document's own* branch to RBAC,
+    so a request raised at one site resolves to that site's approvers plus anybody
+    holding the permission tenant-wide, and never to another site's approvers. A
+    document with no branch (raised for the entity as a whole) forwards ``None`` and
+    therefore resolves to tenant-wide holders only, which is also exactly what a
+    tenant with no branches at all has always done.
+    """
+    return [
+        {
+            "code": "manager",
+            "label": "Manager approval",
+            "kind": "APPROVAL",
+            "order": 10,
+            "approver_permission_key": manager_permission,
+            # Route by the document's own branch - see the docstring above.
+            "approver_scope": "BRANCH",
+            "advance_rule": "ANY",
+            "on_rejection": "TERMINAL",
+            # Never auto-skip: an unstaffed stage must park the document, not
+            # let it approve itself.
+            "skip_if_no_approvers": False,
+        },
+        {
+            "code": "senior",
+            "label": "Senior approval",
+            "kind": "APPROVAL",
+            "order": 20,
+            "approver_permission_key": senior_permission,
+            "approver_scope": "BRANCH",
+            "advance_rule": "ANY",
+            "on_rejection": "TERMINAL",
+            # Never auto-skip - see the manager stage above.
+            "skip_if_no_approvers": False,
+            "inclusion_condition": {
+                "op": "gte", "field": amount_field, "value": int(threshold),
+            },
+        },
+    ]
+
+
+def ensure_default_approval_templates(
+    *,
+    threshold: int = WF_DEFAULT_SENIOR_THRESHOLD,
+    manager_permission: str = WF_DEFAULT_MANAGER_PERMISSION,
+    senior_permission: str = WF_DEFAULT_SENIOR_PERMISSION,
+    created_by=None,
+) -> list:
+    """Publish (idempotently) the **platform-wide** default approval templates.
+
+    One template per approvable document type, each the two-stage ladder described in
+    :func:`_default_stages_payload`.
+
+    These are the last-resort fallback, not a tenant's rules: they are platform-scoped
+    (``tenant=None, branch=None``) so that no tenant is ever left with an unroutable
+    document, and a tenant's own template overrides them through the engine's
+    branch → tenant → platform cascade (see :func:`ensure_tenant_approval_templates`).
+    Since procurement stages never auto-skip, falling back here parks the document
+    rather than approving it, so the fallback is safe to keep.
+
+    Re-running upserts in place (safe to seed often) - which is also why this must only
+    ever be called by platform-level provisioning: it rewrites one shared row that every
+    tenant without its own template reads. ``threshold`` is integer kobo, matching every
+    model's workflow amount field. Returns the published
+    :class:`~vs_workflow.models.WorkflowTemplate` objects.
     """
     from vs_workflow.services.templates import publish_template
 
     published = []
     for model in _doc_models():
         document_type = model.workflow_document_type
-        amount_field = model.workflow_amount_field
         label, name = _TEMPLATE_META[document_type]
-        stages_payload = [
-            {
-                "code": "manager",
-                "label": "Manager approval",
-                "kind": "APPROVAL",
-                "order": 10,
-                "approver_permission_key": manager_permission,
-                "approver_scope": "PLATFORM",
-                "advance_rule": "ANY",
-                "on_rejection": "TERMINAL",
-                # Never auto-skip: an unstaffed stage must park the document, not
-                # let it approve itself.
-                "skip_if_no_approvers": False,
-            },
-            {
-                "code": "senior",
-                "label": "Senior approval",
-                "kind": "APPROVAL",
-                "order": 20,
-                "approver_permission_key": senior_permission,
-                "approver_scope": "PLATFORM",
-                "advance_rule": "ANY",
-                "on_rejection": "TERMINAL",
-                # Never auto-skip - see the manager stage above.
-                "skip_if_no_approvers": False,
-                "inclusion_condition": {
-                    "op": "gte", "field": amount_field, "value": int(threshold),
-                },
-            },
-        ]
         template = publish_template(
             tenant=None, branch=None, document_type=document_type,
             code=WF_DEFAULT_TEMPLATE_CODE, name=name,
             description=f"Default threshold-gated approval ladder for a {label}.",
-            created_by=created_by, stages_payload=stages_payload,
+            created_by=created_by,
+            stages_payload=_default_stages_payload(
+                model.workflow_amount_field, threshold=threshold,
+                manager_permission=manager_permission, senior_permission=senior_permission,
+            ),
         )
         published.append(template)
     return published
+
+
+def ensure_tenant_approval_templates(
+    tenant,
+    *,
+    threshold: int = WF_DEFAULT_SENIOR_THRESHOLD,
+    manager_permission: str = WF_DEFAULT_MANAGER_PERMISSION,
+    senior_permission: str = WF_DEFAULT_SENIOR_PERMISSION,
+    created_by=None,
+) -> list:
+    """Give one tenant its **own** approval rules. Returns ``[(template, created), ...]``.
+
+    Every tenant sharing a single platform-wide ladder means one tenant's administrator
+    editing the threshold, the permission keys or the stage list changes how *every*
+    other tenant's spend is approved. This is the seam that ends that: a tenant-scoped
+    template (``tenant=<tenant>, branch=None``) wins over the platform row through the
+    engine's own cascade, and nothing outside this tenant can reach it.
+
+    Two properties are deliberate and tested:
+
+    * **Idempotent, and never destructive.** A document type that already has a
+      tenant-scoped template is left exactly as it is and reported with
+      ``created=False`` - re-running after an administrator has customised the ladder
+      must not quietly restore the defaults. (Contrast
+      :func:`ensure_default_approval_templates`, which upserts, because the platform
+      row is provisioning's to own.)
+    * **Seeded blocked, not seeded open.** The rules arrive with no approver attached:
+      the stages resolve approvers through RBAC, and a new tenant has granted the
+      approving permission to nobody, so the first submitted document parks and says
+      so instead of approving itself. Procurement stays deliberately blocked until the
+      tenant appoints someone, which is the secure-by-default order of operations.
+
+    A branch never needs its own template for routing: the stages are branch-scoped
+    approvers over one tenant ladder (see :func:`_default_stages_payload`). Publishing a
+    branch-specific template stays available for a site whose *rules* genuinely differ,
+    and still wins over this one.
+
+    Safe for onboarding to call on every tenant creation, and for an administrator to
+    call again later.
+    """
+    from vs_workflow.models import WorkflowTemplate
+    from vs_workflow.services.templates import publish_template
+
+    if tenant is None:
+        raise ApprovalWorkflowError("A tenant is required to seed its approval rules.")
+
+    document_types = [model.workflow_document_type for model in _doc_models()]
+    # One query for the whole set: which of this tenant's ladders already exist.
+    # all_objects deliberately: the explicit tenant filter is the boundary, and a row
+    # hidden by ambient request-local scoping would be re-published over, which is
+    # exactly the destructive outcome this function promises never to cause.
+    existing = {
+        template.document_type: template
+        for template in WorkflowTemplate.all_objects.filter(
+            tenant=tenant, branch=None, code=WF_DEFAULT_TEMPLATE_CODE,
+            document_type__in=document_types,
+        )
+    }
+
+    results = []
+    for model in _doc_models():
+        document_type = model.workflow_document_type
+        label, name = _TEMPLATE_META[document_type]
+        if document_type in existing:
+            results.append((existing[document_type], False))
+            continue
+        results.append((
+            publish_template(
+                tenant=tenant, branch=None, document_type=document_type,
+                code=WF_DEFAULT_TEMPLATE_CODE, name=name,
+                description=f"Threshold-gated approval ladder for a {label}.",
+                created_by=created_by,
+                stages_payload=_default_stages_payload(
+                    model.workflow_amount_field, threshold=threshold,
+                    manager_permission=manager_permission,
+                    senior_permission=senior_permission,
+                ),
+            ),
+            True,
+        ))
+    return results
 
 
 # --------------------------------------------------------------------------- #

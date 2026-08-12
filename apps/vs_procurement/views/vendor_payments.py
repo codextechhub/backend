@@ -10,7 +10,7 @@ from __future__ import annotations
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import ValidationError
 
 from core.response import success_response
 from vs_finance.constants import DocumentStatus, PaymentMethod
@@ -25,6 +25,7 @@ from .base import (
     _ProcBase,
     _branch_scoped,
     _date,
+    _document_or_404,
     _inherited_branch_id,
     _money,
     _resolve_tax,
@@ -267,9 +268,10 @@ class VendorPaymentDetailView(_ProcBase):
     def get(self, request, pk):
         """Return one entity-scoped payment without leaking foreign ids."""
         entity = resolve_entity(request)
-        payment = _payment_queryset(entity).filter(pk=pk).first()
-        if payment is None:
-            raise NotFound("No such vendor payment in this entity.")
+        payment = _document_or_404(
+            request, _payment_queryset(entity), pk,
+            "No such vendor payment in this entity.",
+        )
         return success_response("Vendor payment retrieved.", data=_serialize_detail(payment))
 
     @transaction.atomic
@@ -278,9 +280,10 @@ class VendorPaymentDetailView(_ProcBase):
         entity = resolve_entity(request)
         # Serialize competing edits so an allocation plan and its derived totals
         # cannot be saved from different request snapshots.
-        payment = VendorPayment.objects.select_for_update().filter(entity=entity, pk=pk).first()
-        if payment is None:
-            raise NotFound("No such vendor payment in this entity.")
+        payment = _document_or_404(
+            request, VendorPayment.objects.select_for_update().filter(entity=entity),
+            pk, "No such vendor payment in this entity.",
+        )
         if payment.status != DocumentStatus.DRAFT or payment.approval_state not in (
             ProcApprovalState.NOT_SUBMITTED, ProcApprovalState.REJECTED,
         ):
@@ -318,9 +321,10 @@ class VendorPaymentSubmitView(_ProcBase):
     def post(self, request, pk):
         """Submit a draft allocation plan for approval eligibility checks."""
         entity = resolve_entity(request)
-        payment = _payment_queryset(entity).filter(pk=pk).first()
-        if payment is None:
-            raise NotFound("No such vendor payment in this entity.")
+        payment = _document_or_404(
+            request, _payment_queryset(entity), pk,
+            "No such vendor payment in this entity.",
+        )
         if payment.status != DocumentStatus.DRAFT or not payment.allocations.exists():
             raise ValidationError({"status": "Only a draft with invoice allocations can be submitted."})
         instance = approvals.submit_for_approval(payment, actor_user=request.user)
@@ -338,9 +342,10 @@ class VendorPaymentPostView(_ProcBase):
     def post(self, request, pk):
         """Create settlement effects from the approved allocation plan."""
         entity = resolve_entity(request)
-        payment = _payment_queryset(entity).filter(pk=pk).first()
-        if payment is None:
-            raise NotFound("No such vendor payment in this entity.")
+        payment = _document_or_404(
+            request, _payment_queryset(entity), pk,
+            "No such vendor payment in this entity.",
+        )
         if not payment.allocations.exists():
             raise ValidationError({"allocations": "An approved invoice-allocation plan is required before posting."})
         # Explicit allocations are approval evidence; never let posting silently
@@ -360,9 +365,10 @@ class VendorPaymentCancelView(_ProcBase):
     def post(self, request, pk):
         """Lock and cancel an eligible draft without racing submission/posting."""
         entity = resolve_entity(request)
-        payment = VendorPayment.objects.select_for_update().filter(entity=entity, pk=pk).first()
-        if payment is None:
-            raise NotFound("No such vendor payment in this entity.")
+        payment = _document_or_404(
+            request, VendorPayment.objects.select_for_update().filter(entity=entity),
+            pk, "No such vendor payment in this entity.",
+        )
         if payment.status != DocumentStatus.DRAFT or payment.approval_state == ProcApprovalState.PENDING:
             raise ValidationError({"status": "Only a non-pending, unposted payment can be cancelled."})
         payment.status = DocumentStatus.CANCELLED
@@ -377,9 +383,10 @@ class VendorPaymentReverseView(_ProcBase):
     def post(self, request, pk):
         """Create dated reversing effects while preserving the original payment."""
         entity = resolve_entity(request)
-        payment = _payment_queryset(entity).filter(pk=pk).first()
-        if payment is None:
-            raise NotFound("No such vendor payment in this entity.")
+        payment = _document_or_404(
+            request, _payment_queryset(entity), pk,
+            "No such vendor payment in this entity.",
+        )
         reversal_date = _date(request.data.get("date"), "date") or timezone.localdate()
         payables.reverse_vendor_payment(payment, actor_user=request.user, date=reversal_date)
         return success_response(

@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal, InvalidOperation
 
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.views import APIView
 
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
@@ -93,7 +93,7 @@ def _resolve_cost_center(entity, ref, field="cost_center"):
 # --------------------------------------------------------------------------- #
 #
 # Every finance document already carries an optional ``branch`` sub-scope inside
-# its entity (``vs_finance.FinanceDocument.branch``).  These four helpers are the
+# its entity (``vs_finance.FinanceDocument.branch``).  These helpers are the
 # single place procurement decides what goes in it, so the rules below hold for
 # every document type rather than one endpoint at a time:
 #
@@ -101,8 +101,9 @@ def _resolve_cost_center(entity, ref, field="cost_center"):
 #     raising it (:func:`_raised_branch`);
 #   * a document that *continues* a chain takes the branch from its source
 #     document and nothing else (:func:`_inherited_branch_id`);
-#   * lists narrow to the caller's branch and then to ``?branch=``
-#     (:func:`_branch_scoped`).
+#   * every read narrows to the caller's branch, whether it is a list, a KPI
+#     total or a single document (:func:`_branch_q`, and the three wrappers
+#     :func:`_branch_scoped`, :func:`_branch_visible`, :func:`_document_or_404`).
 #
 # An absent branch is a real, valid answer - the document belongs to the entity
 # as a whole - and is never coerced or rejected.  A tenant with no branches at
@@ -194,25 +195,75 @@ def _inherited_branch_id(request, *sources, field="branch"):
     return branch_id
 
 
-def _branch_scoped(request, entity, qs, params, *, field="branch"):
-    """Narrow a document list to the caller's branch, then to ``?branch=``.
+def _branch_q(request, entity=None, params=None, *, field="branch", prefix=""):
+    """The branch narrowing one caller is under, as a reusable ``Q``.
+
+    The single expression of "which documents is this caller looking at", so a
+    list, its KPI header and the dashboard cannot drift apart: they all filter on
+    this, differing only in ``prefix`` when the branch is reached through a
+    relation (``purchase_order__``).
 
     A caller bound to a branch only ever sees that branch's documents - branch
     narrows *within* the entity and can never widen what the entity scope already
     allows.  A caller who is not bound to one sees the whole entity and may narrow
     it with ``?branch=<id>``, or with ``?branch=none`` for the documents raised
-    for the entity as a whole.  An unknown branch is a 400 rather than a silent
-    empty page, so the filter cannot be used to probe ids in another tenant.
+    for the entity as a whole.  Both terms are ANDed, so a bound caller asking for
+    somebody else's branch gets an empty answer rather than that branch's rows.
+    An unknown branch is a 400 rather than a silent empty page, so the filter
+    cannot be used to probe ids in another tenant.
+
+    ``params`` may be omitted (detail reads take no filter input); the returned
+    ``Q`` is then empty for an unbound caller, which filters nothing at all.
     """
+    from django.db.models import Q
+
+    query = Q()
     own = _caller_branch(request)
     if own is not None:
-        qs = qs.filter(**{f"{field}_id": own.pk})
+        query &= Q(**{f"{prefix}{field}_id": own.pk})
     raw = str((params.get(field) if params else "") or "").strip()
     if not raw:
-        return qs
+        return query
     if raw.lower() in ("none", "null"):
-        return qs.filter(**{f"{field}__isnull": True})
-    return qs.filter(**{field: _resolve_branch_reference(entity, raw, field)})
+        return query & Q(**{f"{prefix}{field}__isnull": True})
+    return query & Q(**{
+        f"{prefix}{field}": _resolve_branch_reference(entity, raw, field),
+    })
+
+
+def _branch_scoped(request, entity, qs, params, *, field="branch"):
+    """Narrow a document list to the caller's branch, then to ``?branch=``."""
+    return qs.filter(_branch_q(request, entity, params, field=field))
+
+
+def _branch_visible(request, qs, *, field="branch", prefix=""):
+    """Narrow any queryset to the branch the caller is entitled to work in.
+
+    The read half of the branch rule with no request input at all: it answers
+    "may this caller touch this row", which is what a detail read, an action, or
+    a KPI aggregate needs.  An unbound caller is unaffected, so a tenant with no
+    branches gets the identical queryset it did before.
+    """
+    return qs.filter(_branch_q(request, field=field, prefix=prefix))
+
+
+def _document_or_404(request, qs, pk, message, *, field="branch", prefix=""):
+    """Fetch one document by pk inside the caller's entity *and* branch, or 404.
+
+    The choke point every procurement detail and action endpoint goes through.
+    Entity scoping alone leaves a branch-bound caller able to read and act on a
+    neighbouring branch's document by guessing its id, and doing that check
+    per-endpoint guarantees the next endpoint forgets it.
+
+    A row in another branch is reported with exactly the same "no such document"
+    message as a row that does not exist, so the endpoint is not an id-discovery
+    channel; ``qs`` must already be entity-scoped, which keeps tenant isolation
+    where it has always been.
+    """
+    row = _branch_visible(request, qs, field=field, prefix=prefix).filter(pk=pk).first()
+    if row is None:
+        raise NotFound(message)
+    return row
 
 
 def _resolve_vendor(entity, ref):

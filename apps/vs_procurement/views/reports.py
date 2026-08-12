@@ -20,6 +20,7 @@ from vs_finance.views import resolve_entity
 from .base import (
     _kobo,
     _ProcBase,
+    _branch_q,
     _date,
     _resolve_vendor,
 )
@@ -368,7 +369,12 @@ class GRIRPoLineDetailView(_ProcBase):
 # --------------------------------------------------------------------------- #
 
 class ProcurementDashboardView(_ProcBase):
-    """Return the permission-aware procurement dashboard for one entity."""
+    """Return the permission-aware procurement dashboard for one entity.
+
+    Every document-derived figure is narrowed to the caller's branch, so a
+    branch-bound viewer's spend, order pipeline, overdue bills and approval cards
+    reconcile with the lists they can actually open.
+    """
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
@@ -378,7 +384,10 @@ class ProcurementDashboardView(_ProcBase):
         entity = resolve_entity(request)
         return success_response(
             "Procurement dashboard retrieved.",
-            data=procurement_dashboard(entity, user=request.user),
+            data=procurement_dashboard(
+                entity, user=request.user,
+                branch_filter=_branch_q(request, entity, request.query_params),
+            ),
         )
 
 

@@ -25,7 +25,8 @@ from vs_workflow.serializers import StageActionWriteSerializer
 from vs_workflow.services import actions as workflow_actions
 from vs_workflow.services.routing import preview_next_approval_stage
 
-from .. import approval_override, approval_parking
+from .base import _ProcBase, _branch_q, _caller_branch
+from .. import approval_coverage, approval_override, approval_parking
 from ..constants import (
     PROCUREMENT_APPROVAL_TYPES,
     WF_APPROVAL_OVERRIDE_PERMISSION,
@@ -78,8 +79,14 @@ def _document_title(document, document_type: str) -> str:
     )
 
 
-def _document_map(entity, snapshots):
-    """Bulk-resolve generic workflow targets inside the selected ledger entity."""
+def _document_map(entity, snapshots, branch_filter):
+    """Bulk-resolve generic workflow targets inside the caller's entity and branch.
+
+    ``branch_filter`` narrows the resolution exactly as the document lists do (see
+    ``views.base._branch_q``), so an approver bound to one site can never read or act
+    on another site's document through the queue - an unresolved target is skipped by
+    every caller here, which is the same "no such approval" answer as a foreign entity.
+    """
     ids_by_type = {document_type: set() for document_type in PROCUREMENT_APPROVAL_TYPES}
     usable = []
     seen = set()
@@ -97,7 +104,9 @@ def _document_map(entity, snapshots):
 
     documents = {}
     for document_type, model in DOCUMENT_MODELS.items():
-        qs = model.objects.filter(entity=entity, pk__in=ids_by_type[document_type])
+        qs = model.objects.filter(
+            entity=entity, pk__in=ids_by_type[document_type],
+        ).filter(branch_filter)
         if document_type != WF_DOCTYPE_REQUISITION:
             qs = qs.select_related("vendor")
         documents[document_type] = {row.pk: row for row in qs}
@@ -163,10 +172,10 @@ def _list_row(entity, snapshot, document, object_id):
     }
 
 
-def _pending_context(entity, user, workflow_id):
+def _pending_context(entity, user, workflow_id, branch_filter):
     """Resolve an actionable workflow and its real document without existence leaks."""
     snapshots = _pending_snapshots(user, workflow_id=workflow_id)
-    usable, documents = _document_map(entity, snapshots)
+    usable, documents = _document_map(entity, snapshots, branch_filter)
     if not usable:
         # One indistinguishable 404 covers foreign entities, document families,
         # ineligible users, completed votes and stale workflow attempts.
@@ -237,16 +246,21 @@ def _detail(entity, instance, snapshot, document, object_id):
     return data
 
 
-def _entity_workflow_document(entity, workflow_id):
+def _entity_workflow_document(entity, workflow_id, branch_filter):
     """Resolve one procurement workflow and its document inside ``entity``.
 
     Deliberately *not* the eligibility lookup :func:`_pending_context` performs: a parked
     stage has no eligible approver by definition, so the actor releasing it is never in
-    the frozen snapshot. Isolation is therefore carried entirely by the entity: the
-    instance must belong to the entity's tenant, be one of Procurement's own document
-    families, and resolve to a document in *this* entity's books. A foreign tenant, a
-    foreign entity, a finance or payout workflow and a genuinely unknown id all return
-    the same 404, so possession of a workflow id reveals nothing.
+    the frozen snapshot. Isolation is therefore carried by the entity and the caller's
+    branch: the instance must belong to the entity's tenant, be one of Procurement's own
+    document families, and resolve to a document in *this* entity's books that the
+    caller may work in. A foreign tenant, a foreign entity, another branch's document, a
+    finance or payout workflow and a genuinely unknown id all return the same 404, so
+    possession of a workflow id reveals nothing.
+
+    The branch term matters here as much as anywhere else: an override releases spend
+    without review, and a caller who may not read a document must not be able to
+    release it either.
     """
     instance = (
         WorkflowInstance.all_objects
@@ -266,10 +280,43 @@ def _entity_workflow_document(entity, workflow_id):
         raise missing
     document = DOCUMENT_MODELS[instance.document_type].objects.filter(
         entity=entity, pk=object_id,
-    ).first()
+    ).filter(branch_filter).first()
     if document is None:
         raise missing
     return instance, document
+
+
+class ProcurementApprovalCoverageView(_ProcBase):
+    """Who can approve procurement spend here, and where nobody can.
+
+    The evidence behind the approval-rules screen: for every branch (plus the
+    entity-level scope) it reports the ladder that would actually run there and the
+    people who currently hold each approving permission - and, where a stage has
+    nobody behind it, says so. A stage with no approver is not a cosmetic problem: any
+    document reaching it parks until an administrator appoints someone.
+
+    Read-only. It resolves rules and people through the workflow engine's own template
+    cascade and eligibility lookup, so it cannot disagree with live routing. A caller
+    bound to a branch sees that branch's scope only, the same narrowing every other
+    procurement read is under.
+
+    Only display names are returned, never account identifiers or email addresses.
+
+    docstring-name: Approval coverage
+    """
+    rbac_permission = "procurement.approval.manage"
+
+    def get(self, request):
+        """Report approver coverage per branch for the caller's own tenant."""
+        entity = resolve_entity(request)
+        own = _caller_branch(request)
+        return success_response("Approval coverage retrieved.", data=approval_coverage.approval_coverage(
+            entity.tenant,
+            branches=None if own is None else [own],
+            # A caller who only works in one branch is reported that branch alone;
+            # the entity-level scope is somebody else's to staff.
+            include_entity_level=own is None,
+        ))
 
 
 class ProcurementApprovalOverrideView(APIView):
@@ -292,7 +339,9 @@ class ProcurementApprovalOverrideView(APIView):
     def post(self, request, workflow_id):
         """Release the entity-verified parked stage and report where the document landed."""
         entity = resolve_entity(request)
-        instance, document = _entity_workflow_document(entity, workflow_id)
+        instance, document = _entity_workflow_document(
+            entity, workflow_id, _branch_q(request, entity),
+        )
         override = approval_override.release_parked_document(
             document, actor_user=request.user,
             reason=request.data.get("reason"),
@@ -334,7 +383,9 @@ class ProcurementApprovalListView(APIView):
         # snapshot and would never appear here, however the permissions changed since.
         # Restore reachability first, then read; one indexed query when nothing is parked.
         approval_parking.repair_workflows(tenant=entity.tenant)
-        usable, documents = _document_map(entity, _pending_snapshots(request.user))
+        usable, documents = _document_map(
+            entity, _pending_snapshots(request.user), _branch_q(request, entity),
+        )
         rows = []
         for snapshot, object_id in usable:
             instance = snapshot.stage_instance.instance
@@ -370,7 +421,7 @@ class ProcurementApprovalDetailView(APIView):
         entity = resolve_entity(request)
         approval_parking.repair_workflows(tenant=entity.tenant, instance_id=workflow_id)
         instance, snapshot, document, object_id = _pending_context(
-            entity, request.user, workflow_id,
+            entity, request.user, workflow_id, _branch_q(request, entity),
         )
         instance = (
             WorkflowInstance.all_objects.filter(pk=instance.pk)
@@ -405,7 +456,9 @@ class ProcurementApprovalActionView(APIView):
         # Eligibility is read from the frozen snapshot, so repair a parked stage before
         # the check rather than after it; the repair itself never records a decision.
         approval_parking.repair_workflows(tenant=entity.tenant, instance_id=workflow_id)
-        instance, _, _, _ = _pending_context(entity, request.user, workflow_id)
+        instance, _, _, _ = _pending_context(
+            entity, request.user, workflow_id, _branch_q(request, entity),
+        )
         serializer = StageActionWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         decision = serializer.validated_data

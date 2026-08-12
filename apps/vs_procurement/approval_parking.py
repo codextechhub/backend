@@ -150,10 +150,10 @@ class _ResolutionCache:
             stage.approver_scope, instance.tenant_id, instance.branch_id,
         )
         if key not in self._holders:
-            # The engine's own helper, so the scope mapping and its graceful
+            # The engine's own public helper, so the scope mapping and its graceful
             # degradation when vs_rbac is absent stay defined in exactly one place.
             # Read-only: nothing in vs_workflow is modified by calling it.
-            holders = approvers_service._users_with_permission(
+            holders = approvers_service.users_with_permission(
                 tenant=instance.tenant, branch=instance.branch,
                 permission_key=stage.approver_permission_key,
                 scope=ApproverScope(stage.approver_scope),

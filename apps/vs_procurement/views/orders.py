@@ -12,7 +12,7 @@ import datetime
 from django.db import transaction
 from django.db.models import Count, F, Prefetch, Q, Sum
 from django.utils import timezone
-from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from core.response import success_response
 from vs_finance.constants import DocumentStatus
@@ -46,8 +46,10 @@ from ..serializers import (
 
 from .base import (
     _ProcBase,
+    _branch_q,
     _branch_scoped,
     _date,
+    _document_or_404,
     _dec,
     _inherited_branch_id,
     _lead_time_days,
@@ -191,12 +193,18 @@ def _filter_purchase_orders(qs, params):
     return qs
 
 
-def purchase_order_summary(entity, *, as_of: datetime.date | None = None) -> dict:
+def purchase_order_summary(entity, *, as_of: datetime.date | None = None,
+                           branch_filter=None) -> dict:
     """Build the PO-list KPIs from all *issued* entity orders, not the current page.
 
     Drafts and orders still in approval are not commitments a vendor is fulfilling,
     so they are excluded from every count and value here - the same population the
     dashboard's "Open Purchase Orders" KPI reports.
+
+    ``branch_filter`` is the caller's branch narrowing as a ``Q`` (see
+    ``views.base._branch_q``); it defaults to no narrowing so a service-level caller
+    keeps the entity-wide answer. The console passes its own, so the header totals
+    count exactly the orders the list underneath them shows.
     """
     as_of = as_of or timezone.localdate()
     month_start = as_of.replace(day=1)
@@ -206,6 +214,7 @@ def purchase_order_summary(entity, *, as_of: datetime.date | None = None) -> dic
     open_count = partial_count = awaiting_count = open_value = mtd_value = prior_mtd_value = 0
     rows = (
         _po_base_queryset(entity)
+        .filter(branch_filter if branch_filter is not None else Q())
         .exclude(status__in=_CLOSED_PO_STATUSES + _UNISSUED_PO_STATUSES)
         .exclude(approval_state=ProcApprovalState.PENDING)
         .values("status", "order_date", "total", "ordered_qty", "received_qty")
@@ -307,9 +316,10 @@ class PurchaseOrderDetailView(_ProcBase):
     def get(self, request, pk):
         """Return one entity PO with related documents and workflow overlay."""
         entity = resolve_entity(request)
-        po = _purchase_order_queryset(entity).filter(pk=pk).first()
-        if po is None:
-            raise NotFound("No such purchase order in this entity.")
+        po = _document_or_404(
+            request, _purchase_order_queryset(entity), pk,
+            "No such purchase order in this entity.",
+        )
         data = PurchaseOrderSerializer(po).data
         # Generic workflow rows use content type + object id, which for_document resolves safely.
         instance = WorkflowInstance.objects.for_document(po).order_by("-created_at").first()
@@ -321,9 +331,10 @@ class PurchaseOrderDetailView(_ProcBase):
         """Lock and update mutable draft terms without changing approved line intent."""
         entity = resolve_entity(request)
         # Lock only the base row because PostgreSQL rejects row locks over grouped or nullable-join detail queries.
-        po = PurchaseOrder.objects.select_for_update().filter(entity=entity, pk=pk).first()
-        if po is None:
-            raise NotFound("No such purchase order in this entity.")
+        po = _document_or_404(
+            request, PurchaseOrder.objects.select_for_update().filter(entity=entity), pk,
+            "No such purchase order in this entity.",
+        )
         # The workflow overlay can be PENDING while the finance document status still reads DRAFT.
         if po.status != DocumentStatus.DRAFT or po.approval_state == ProcApprovalState.PENDING:
             raise ValidationError({"status": "Only a draft purchase order can be edited."})
@@ -362,13 +373,19 @@ class PurchaseOrderDetailView(_ProcBase):
 
 
 class PurchaseOrderSummaryView(_ProcBase):
-    """Entity-scoped KPIs for the PO list header (not a paginated list aggregate)."""
+    """KPIs for the PO list header (not a paginated list aggregate).
+
+    Narrowed to exactly the orders the caller's own list returns, so a
+    branch-bound buyer's header never counts another site's commitments.
+    """
     rbac_permission = "procurement.purchase_order.view"
 
     def get(self, request):
-        """Compute entity-wide commitment KPIs independent of list pagination."""
+        """Compute commitment KPIs over the caller's visible orders, not the page."""
         entity = resolve_entity(request)
-        return success_response("Purchase order summary retrieved.", data=purchase_order_summary(entity))
+        return success_response("Purchase order summary retrieved.", data=purchase_order_summary(
+            entity, branch_filter=_branch_q(request, entity, request.query_params),
+        ))
 
 
 class PurchaseOrderEmailPreviewView(_ProcBase):
@@ -377,11 +394,13 @@ class PurchaseOrderEmailPreviewView(_ProcBase):
 
     def get(self, request, pk):
         entity = resolve_entity(request)
-        po = PurchaseOrder.objects.filter(entity=entity, pk=pk).select_related(
-            "vendor", "entity__tenant",
-        ).prefetch_related("vendor__contacts").first()
-        if po is None:
-            raise NotFound("No such purchase order in this entity.")
+        po = _document_or_404(
+            request,
+            PurchaseOrder.objects.filter(entity=entity).select_related(
+                "vendor", "entity__tenant",
+            ).prefetch_related("vendor__contacts"),
+            pk, "No such purchase order in this entity.",
+        )
         return success_response("Purchase order email preview retrieved.", data=po_email.preview(po))
 
 
@@ -391,9 +410,10 @@ class PurchaseOrderEmailView(_ProcBase):
 
     def post(self, request, pk):
         entity = resolve_entity(request)
-        po = PurchaseOrder.objects.filter(entity=entity, pk=pk).first()
-        if po is None:
-            raise NotFound("No such purchase order in this entity.")
+        po = _document_or_404(
+            request, PurchaseOrder.objects.filter(entity=entity), pk,
+            "No such purchase order in this entity.",
+        )
         try:
             delivery = po_email.send_approved(
                 po, actor_user=request.user, buyer_message=request.data.get("email_message", ""),
@@ -412,11 +432,16 @@ class PurchaseOrderEmailRetryView(_ProcBase):
 
     def post(self, request, pk, delivery_id):
         entity = resolve_entity(request)
-        delivery = PurchaseOrderVendorDelivery.objects.select_related("purchase_order").filter(
-            pk=delivery_id, purchase_order_id=pk, purchase_order__entity=entity,
-        ).first()
-        if delivery is None:
-            raise NotFound("No such purchase-order email delivery in this entity.")
+        # The delivery is reached through its order, so the branch check rides the
+        # same relation: another branch's delivery is as unknown as a missing one.
+        delivery = _document_or_404(
+            request,
+            PurchaseOrderVendorDelivery.objects.select_related("purchase_order").filter(
+                purchase_order_id=pk, purchase_order__entity=entity,
+            ),
+            delivery_id, "No such purchase-order email delivery in this entity.",
+            prefix="purchase_order__",
+        )
         try:
             po_email.retry(
                 delivery, actor_user=request.user,
@@ -627,18 +652,19 @@ class RfqDetailView(_ProcBase):
     def get(self, request, pk):
         """Return one entity RFQ with prefetched specifications, invitees, and bids."""
         entity = resolve_entity(request)
-        rfq = _rfq_detail_queryset(entity).filter(pk=pk).first()
-        if rfq is None:
-            raise NotFound("No such RFQ in this entity.")
+        rfq = _document_or_404(
+            request, _rfq_detail_queryset(entity), pk, "No such RFQ in this entity.",
+        )
         return success_response("RFQ retrieved.", data=RfqDetailSerializer(rfq, context={"request": request}).data)
 
     @transaction.atomic
     def patch(self, request, pk):
         """Replace draft sourcing terms under lock; issued invitations are immutable."""
         entity = resolve_entity(request)
-        rfq = RequestForQuotation.objects.select_for_update().filter(entity=entity, pk=pk).first()
-        if rfq is None:
-            raise NotFound("No such RFQ in this entity.")
+        rfq = _document_or_404(
+            request, RequestForQuotation.objects.select_for_update().filter(entity=entity),
+            pk, "No such RFQ in this entity.",
+        )
         # Only a draft is editable; once issued its lines are a firm invitation vendors quote against.
         if rfq.rfq_status != RfqStatus.DRAFT:
             raise ValidationError(
@@ -679,9 +705,10 @@ class RfqIssueView(_ProcBase):
     def post(self, request, pk):
         """Freeze and publish a draft invitation after service eligibility checks."""
         entity = resolve_entity(request)
-        rfq = RequestForQuotation.objects.filter(entity=entity, pk=pk).first()
-        if rfq is None:
-            raise NotFound("No such RFQ in this entity.")
+        rfq = _document_or_404(
+            request, RequestForQuotation.objects.filter(entity=entity), pk,
+            "No such RFQ in this entity.",
+        )
         sourcing.issue_rfq(
             rfq,
             competition_exception_reason=_competition_exception_reason(request),
@@ -702,9 +729,10 @@ class RfqCloseView(_ProcBase):
     def post(self, request, pk):
         """Close an issued event without award and preserve rejected bid history."""
         entity = resolve_entity(request)
-        rfq = RequestForQuotation.objects.filter(entity=entity, pk=pk).first()
-        if rfq is None:
-            raise NotFound("No such RFQ in this entity.")
+        rfq = _document_or_404(
+            request, RequestForQuotation.objects.filter(entity=entity), pk,
+            "No such RFQ in this entity.",
+        )
         sourcing.close_rfq(rfq, reason=request.data.get("reason", ""), actor_user=request.user)
         rfq = _rfq_detail_queryset(entity).get(pk=rfq.pk)
         return success_response("RFQ closed.", data=RfqDetailSerializer(rfq, context={"request": request}).data)
@@ -717,26 +745,32 @@ class RfqCancelView(_ProcBase):
     def post(self, request, pk):
         """Cancel without deleting the invitation and quotation audit trail."""
         entity = resolve_entity(request)
-        rfq = RequestForQuotation.objects.filter(entity=entity, pk=pk).first()
-        if rfq is None:
-            raise NotFound("No such RFQ in this entity.")
+        rfq = _document_or_404(
+            request, RequestForQuotation.objects.filter(entity=entity), pk,
+            "No such RFQ in this entity.",
+        )
         sourcing.cancel_rfq(rfq, reason=request.data.get("reason", ""), actor_user=request.user)
         rfq = _rfq_detail_queryset(entity).get(pk=rfq.pk)
         return success_response("RFQ cancelled.", data=RfqDetailSerializer(rfq, context={"request": request}).data)
 
 
 class RfqSummaryView(_ProcBase):
-    """Entity-scoped KPI counts for the RFQ list header (Draft · Open · Responses · Closing)."""
+    """KPI counts for the RFQ list header (Draft · Open · Responses · Closing).
+
+    Counted over the sourcing events the caller can actually list, so the header
+    agrees with the rows beneath it in a multi-site tenant.
+    """
     rbac_permission = "procurement.rfq.view"
 
     def get(self, request):
-        """Return entity-wide sourcing KPIs, never page-local approximations."""
+        """Return sourcing KPIs for the caller's visible events, not the page."""
         entity = resolve_entity(request)
         today = timezone.localdate()
         from ..settings import resolve_procurement_settings
         policy = resolve_procurement_settings(entity)
+        branch_filter = _branch_q(request, entity, request.query_params)
         # One aggregate over the RFQ table for the three RFQ-status counts.
-        counts = RequestForQuotation.objects.filter(entity=entity).aggregate(
+        counts = RequestForQuotation.objects.filter(entity=entity).filter(branch_filter).aggregate(
             draft=Count("id", filter=Q(rfq_status=RfqStatus.DRAFT)),
             open=Count("id", filter=Q(rfq_status=RfqStatus.ISSUED)),
             closing_soon=Count("id", filter=Q(
@@ -750,7 +784,7 @@ class RfqSummaryView(_ProcBase):
         # A second cheap query: submitted responses currently sitting on issued RFQs.
         responses_in = VendorQuotation.objects.filter(
             entity=entity, rfq__rfq_status=RfqStatus.ISSUED,
-        ).exclude(quotation_status=QuotationStatus.DRAFT).count()
+        ).filter(branch_filter).exclude(quotation_status=QuotationStatus.DRAFT).count()
         return success_response("RFQ summary retrieved.", data={
             "draft": counts["draft"] or 0,
             "open": counts["open"] or 0,
@@ -904,19 +938,23 @@ class QuotationDetailView(_ProcBase):
     def get(self, request, pk):
         """Return one entity-scoped offer with its priced line evidence."""
         entity = resolve_entity(request)
-        quotation = _quotation_detail_queryset(entity).filter(pk=pk).first()
-        if quotation is None:
-            raise NotFound("No such quotation in this entity.")
+        quotation = _document_or_404(
+            request, _quotation_detail_queryset(entity), pk,
+            "No such quotation in this entity.",
+        )
         return success_response("Quotation retrieved.", data=QuotationDetailSerializer(quotation).data)
 
     @transaction.atomic
     def patch(self, request, pk):
         """Replace only a draft offer and reprice its integer-kobo totals."""
         entity = resolve_entity(request)
-        quotation = VendorQuotation.objects.select_for_update().select_related("rfq").filter(
-            entity=entity, pk=pk).first()
-        if quotation is None:
-            raise NotFound("No such quotation in this entity.")
+        quotation = _document_or_404(
+            request,
+            VendorQuotation.objects.select_for_update().select_related("rfq").filter(
+                entity=entity,
+            ),
+            pk, "No such quotation in this entity.",
+        )
         # Submitted/awarded/rejected offers are firm and immutable - only a draft edits.
         if quotation.quotation_status != QuotationStatus.DRAFT:
             raise ValidationError(
@@ -951,9 +989,10 @@ class QuotationSubmitView(_ProcBase):
     def post(self, request, pk):
         """Submit the offer while preserving the captured pricing snapshot."""
         entity = resolve_entity(request)
-        quotation = VendorQuotation.objects.filter(entity=entity, pk=pk).first()
-        if quotation is None:
-            raise NotFound("No such quotation in this entity.")
+        quotation = _document_or_404(
+            request, VendorQuotation.objects.filter(entity=entity), pk,
+            "No such quotation in this entity.",
+        )
         sourcing.submit_quotation(quotation, actor_user=request.user)
         quotation = _quotation_detail_queryset(entity).get(pk=quotation.pk)
         return success_response(
@@ -972,9 +1011,10 @@ class QuotationAwardView(_ProcBase):
     def post(self, request, pk):
         """Award a live offer, create a draft PO, and retain losing-bid evidence."""
         entity = resolve_entity(request)
-        quotation = VendorQuotation.objects.filter(entity=entity, pk=pk).first()
-        if quotation is None:
-            raise NotFound("No such quotation in this entity.")
+        quotation = _document_or_404(
+            request, VendorQuotation.objects.filter(entity=entity), pk,
+            "No such quotation in this entity.",
+        )
         po = sourcing.award_quotation(
             quotation,
             order_date=_date(request.data.get("order_date"), "order_date"),

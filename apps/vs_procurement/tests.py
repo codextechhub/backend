@@ -9699,3 +9699,1020 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(
             WorkflowInstance.all_objects.filter(pk=lekki_instance.pk).count(), 1,
         )
+
+
+# --------------------------------------------------------------------------- #
+# Round 3: per-tenant approval rules, branch routing, branch-safe reads        #
+# --------------------------------------------------------------------------- #
+
+class _BranchTenantsFixture(_P2PFixtureMixin):
+    """Two differently shaped tenants, used by every Round 3 test class.
+
+    ``multi`` has two campuses, ``flat`` has none at all, and ``foreign`` exists only
+    to prove nothing crosses a tenant boundary. A single-shape fixture would prove
+    nothing about tenancy, so every behaviour below is asserted on both shapes.
+    """
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import make_branch, make_school
+
+        seed_currencies()
+        self.multi_school = make_school(
+            slug="r3-multi", name="Multi Campus Group", status="ACTIVE",
+        )
+        self.lekki = make_branch(self.multi_school, name="Lekki Campus")
+        self.ikeja = make_branch(self.multi_school, name="Ikeja Campus", is_main=False)
+        self.multi_tenant = self.multi_school.tenant
+        self.multi = self.build_books("R3MULTI", self.multi_tenant)
+
+        self.flat_school = make_school(
+            slug="r3-flat", name="Single Site School", status="ACTIVE",
+        )
+        self.flat_tenant = self.flat_school.tenant
+        self.flat = self.build_books("R3FLAT", self.flat_tenant)
+
+        self.foreign_school = make_school(
+            slug="r3-foreign", name="Foreign School", status="ACTIVE",
+        )
+        self.foreign_tenant = self.foreign_school.tenant
+        self.foreign = self.build_books("R3FORGN", self.foreign_tenant)
+
+    # -- fixture builders ---------------------------------------------------- #
+
+    def build_books(self, code, tenant):
+        """An entity with a seeded chart, an open period, and a payable vendor."""
+        entity = LedgerEntity.objects.create(
+            name=f"{code} Books", code=code, kind=LedgerEntity.Kind.TENANT, tenant=tenant,
+        )
+        seed_chart_of_accounts(entity)
+        year = FiscalYear.objects.create(
+            entity=entity, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        FiscalPeriod.objects.create(
+            entity=entity, fiscal_year=year, period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+        )
+        vendor = Vendor.objects.create(
+            entity=entity, code="ACME", name="Acme Supplies",
+            payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"),
+            kyc_status="VERIFIED",
+        )
+        return types.SimpleNamespace(entity=entity, vendor=vendor)
+
+    def user_for(self, tenant, email, *, branch=None, first_name="Branch"):
+        """A user who is (or is not) bound to a branch of their own tenant."""
+        from django.contrib.auth import get_user_model
+
+        return get_user_model().objects.create_user(
+            email=email, password="pw", tenant=tenant, branch=branch,
+            # SCHOOL_ADMIN is the branch-optional user type; STAFF must have one.
+            user_type="STAFF" if branch is not None else "SCHOOL_ADMIN",
+            status="ACTIVE", first_name=first_name, last_name="Tester",
+        )
+
+    def client_for(self, tenant, email, *, branch=None):
+        """A real-JWT client for a user who is (or is not) bound to a branch."""
+        from core.test_utils import TenantAPIClient
+
+        user = self.user_for(tenant, email, branch=branch)
+        client = TenantAPIClient(user=user)
+        client.test_user = user
+        return client
+
+    @staticmethod
+    def grant(user, permission_key, *, tenant, role_key, branch=None):
+        """Give ``user`` a real RBAC grant, optionally scoped to one branch.
+
+        Goes through the registry rather than patching the resolver: whether routing
+        honours a branch-scoped assignment is exactly what is under test, so the grant
+        has to be the real thing.
+        """
+        from vs_rbac.models import (
+            Permission, PermissionAction, PermissionModule, PermissionResource,
+            TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment,
+        )
+
+        module_name, resource_name, action_name = permission_key.split(".")
+        module, _ = PermissionModule.objects.get_or_create(name=module_name)
+        resource, _ = PermissionResource.objects.get_or_create(module=module, name=resource_name)
+        action, _ = PermissionAction.objects.get_or_create(name=action_name)
+        permission, _ = Permission.objects.get_or_create(
+            key=permission_key,
+            defaults={"module": module, "resource": resource, "action": action},
+        )
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=tenant, key=role_key, defaults={"name": role_key, "status": "ACTIVE"},
+        )
+        TenantRolePermission.objects.get_or_create(
+            role=role, permission=permission, defaults={"granted": True},
+        )
+        TenantUserRoleAssignment.objects.get_or_create(
+            tenant=tenant, user=user, role=role,
+            defaults={"assignment_status": "ACTIVE", "branch": branch},
+        )
+
+    # -- document builders --------------------------------------------------- #
+
+    def requisition(self, books, *, branch=None, requester=None, unit_price=10_000):
+        req = PurchaseRequisition.objects.create(
+            entity=books.entity, branch=branch, request_date=datetime.date(2026, 1, 3),
+            requested_by=requester, title="Chairs",
+        )
+        PurchaseRequisitionLine.objects.create(
+            requisition=req, line_no=1, description="Chair", quantity=1,
+            estimated_unit_price=unit_price,
+            expense_account=self.acc(books.entity, "5300"),
+        )
+        req.recompute_total(save=True)
+        return req
+
+    def purchase_order(self, books, *, branch=None, status=DocumentStatus.DRAFT):
+        from vs_procurement.purchasing import price_po
+
+        po = PurchaseOrder.objects.create(
+            entity=books.entity, vendor=books.vendor, branch=branch,
+            order_date=datetime.date(2026, 1, 5), status=status,
+        )
+        PurchaseOrderLine.objects.create(
+            purchase_order=po, line_no=1, description="Chair",
+            expense_account=self.acc(books.entity, "5300"),
+            quantity=1, unit_price=10_000,
+        )
+        price_po(po)
+        return po
+
+    def goods_receipt(self, books, *, branch=None):
+        return GoodsReceivedNote.objects.create(
+            entity=books.entity, vendor=books.vendor, branch=branch,
+            received_date=datetime.date(2026, 1, 8),
+        )
+
+    def vendor_invoice(self, books, *, branch=None):
+        invoice = VendorInvoice.objects.create(
+            entity=books.entity, vendor=books.vendor, branch=branch,
+            invoice_date=datetime.date(2026, 1, 10), due_date=datetime.date(2026, 1, 20),
+        )
+        VendorInvoiceLine.objects.create(
+            vendor_invoice=invoice, line_no=1, description="Chair",
+            expense_account=self.acc(books.entity, "5300"), quantity=1, unit_price=10_000,
+        )
+        return invoice
+
+    def vendor_payment(self, books, *, branch=None):
+        return VendorPayment.objects.create(
+            entity=books.entity, vendor=books.vendor, branch=branch,
+            payment_date=datetime.date(2026, 1, 20), gross_amount=10_000,
+            wht_amount=0, net_amount=10_000, allocated_amount=0,
+        )
+
+
+class ProcurementBranchDocumentAccessTests(_BranchTenantsFixture, TestCase):
+    """A branch-bound caller cannot read or act on another branch's document.
+
+    Round 2 narrowed the *lists*; a detail or action endpoint still resolved on entity
+    plus primary key, so guessing an id reached a neighbouring site's purchase. These
+    tests pin the closed version: another branch's document is reported exactly like a
+    document that does not exist, on every read and every action.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.lekki_client = self.client_for(
+            self.multi_tenant, "lekki-detail@t.com", branch=self.lekki,
+        )
+        self.ikeja_client = self.client_for(
+            self.multi_tenant, "ikeja-detail@t.com", branch=self.ikeja,
+        )
+        self.hq_client = self.client_for(self.multi_tenant, "hq-detail@t.com")
+
+    def documents(self, branch):
+        """One document of every branch-carrying family, all in ``branch``."""
+        return {
+            "requisitions": self.requisition(self.multi, branch=branch),
+            "purchase-orders": self.purchase_order(self.multi, branch=branch),
+            "goods-receipts": self.goods_receipt(self.multi, branch=branch),
+            "vendor-invoices": self.vendor_invoice(self.multi, branch=branch),
+            "vendor-payments": self.vendor_payment(self.multi, branch=branch),
+        }
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_detail_read_of_another_branchs_document_is_not_found(self, _permission):
+        code = self.multi.entity.code
+        for path, document in self.documents(self.lekki).items():
+            with self.subTest(path=path):
+                mine = self.lekki_client.get(
+                    f"/v1/procurement/{path}/{document.pk}/?entity={code}",
+                )
+                self.assertEqual(mine.status_code, 200, mine.data)
+
+                theirs = self.ikeja_client.get(
+                    f"/v1/procurement/{path}/{document.pk}/?entity={code}",
+                )
+                self.assertEqual(theirs.status_code, 404)
+                # Indistinguishable from a document that never existed: the endpoint
+                # must not become an id-discovery channel for the next branch along.
+                missing = self.ikeja_client.get(
+                    f"/v1/procurement/{path}/99999999/?entity={code}",
+                )
+                self.assertEqual(missing.status_code, 404)
+                self.assertEqual(theirs.json()["message"], missing.json()["message"])
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_actions_on_another_branchs_document_are_not_found(self, _permission):
+        code = self.multi.entity.code
+        documents = self.documents(self.lekki)
+        actions = [
+            ("requisitions", documents["requisitions"].pk, "submit"),
+            ("purchase-orders", documents["purchase-orders"].pk, "submit"),
+            ("goods-receipts", documents["goods-receipts"].pk, "post"),
+            ("vendor-invoices", documents["vendor-invoices"].pk, "submit"),
+            ("vendor-invoices", documents["vendor-invoices"].pk, "match"),
+            ("vendor-invoices", documents["vendor-invoices"].pk, "post"),
+            ("vendor-payments", documents["vendor-payments"].pk, "submit"),
+            ("vendor-payments", documents["vendor-payments"].pk, "post"),
+            ("vendor-payments", documents["vendor-payments"].pk, "cancel"),
+        ]
+        for path, pk, action in actions:
+            with self.subTest(path=path, action=action):
+                response = self.ikeja_client.post(
+                    f"/v1/procurement/{path}/{pk}/{action}/?entity={code}", {}, format="json",
+                )
+                self.assertEqual(response.status_code, 404, response.data)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_patch_of_another_branchs_draft_is_not_found_and_changes_nothing(self, _permission):
+        code = self.multi.entity.code
+        req = self.requisition(self.multi, branch=self.lekki)
+        response = self.ikeja_client.patch(
+            f"/v1/procurement/requisitions/{req.pk}/?entity={code}",
+            {"title": "Rewritten by another branch", "request_date": "2026-01-03"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 404)
+        req.refresh_from_db()
+        self.assertEqual(req.title, "Chairs")
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_entity_level_documents_stay_reachable_by_an_unbound_caller(self, _permission):
+        """A purchase raised for the entity as a whole is nobody's branch and must
+        remain exactly as reachable as it was before branch scoping existed."""
+        code = self.multi.entity.code
+        for path, document in self.documents(None).items():
+            with self.subTest(path=path):
+                visible = self.hq_client.get(
+                    f"/v1/procurement/{path}/{document.pk}/?entity={code}",
+                )
+                self.assertEqual(visible.status_code, 200, visible.data)
+                # A bound caller may not work at entity level - the same rule Round 2
+                # applied to the lists and to continuing a chain.
+                hidden = self.lekki_client.get(
+                    f"/v1/procurement/{path}/{document.pk}/?entity={code}",
+                )
+                self.assertEqual(hidden.status_code, 404)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_tenant_without_branches_reads_details_exactly_as_before(self, _permission):
+        client = self.client_for(self.flat_tenant, "flat-detail@t.com")
+        code = self.flat.entity.code
+        for path, document in (
+            ("requisitions", self.requisition(self.flat)),
+            ("purchase-orders", self.purchase_order(self.flat)),
+            ("goods-receipts", self.goods_receipt(self.flat)),
+            ("vendor-invoices", self.vendor_invoice(self.flat)),
+            ("vendor-payments", self.vendor_payment(self.flat)),
+        ):
+            with self.subTest(path=path):
+                response = client.get(f"/v1/procurement/{path}/{document.pk}/?entity={code}")
+                self.assertEqual(response.status_code, 200, response.data)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_another_tenants_document_remains_unreachable(self, _permission):
+        """Branch narrows inside the entity; it never relaxes the entity or tenant."""
+        foreign_req = self.requisition(self.foreign)
+        response = self.hq_client.get(
+            f"/v1/procurement/requisitions/{foreign_req.pk}/"
+            f"?entity={self.multi.entity.code}",
+        )
+        self.assertEqual(response.status_code, 404)
+        # Naming the other tenant's entity is refused by entity resolution itself.
+        cross = self.hq_client.get(
+            f"/v1/procurement/requisitions/{foreign_req.pk}/"
+            f"?entity={self.foreign.entity.code}",
+        )
+        self.assertEqual(cross.status_code, 404)
+
+    def test_branch_scoped_detail_endpoints_still_require_permission(self):
+        """No RBAC grant is still a 403, before any branch check runs."""
+        code = self.multi.entity.code
+        req = self.requisition(self.multi, branch=self.lekki)
+        for label, client in (
+            ("bound", self.lekki_client), ("unbound", self.hq_client),
+        ):
+            with self.subTest(caller=label):
+                self.assertEqual(
+                    client.get(f"/v1/procurement/requisitions/{req.pk}/?entity={code}").status_code,
+                    403,
+                )
+                self.assertEqual(
+                    client.post(
+                        f"/v1/procurement/requisitions/{req.pk}/submit/?entity={code}",
+                        {}, format="json",
+                    ).status_code,
+                    403,
+                )
+
+
+class ProcurementTenantApprovalRulesTests(_BranchTenantsFixture, TestCase):
+    """Each tenant gets its own approval rules; the platform ladder is only a fallback.
+
+    Before this round every tenant shared one platform-wide template, so one tenant's
+    threshold and approving permissions decided every other tenant's spend.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from vs_workflow.models import WorkflowTemplate
+
+        self.WorkflowTemplate = WorkflowTemplate
+
+    def tenant_templates(self, tenant):
+        return self.WorkflowTemplate.objects.filter(tenant=tenant, branch__isnull=True)
+
+    def test_seeding_a_tenant_creates_its_own_rules_and_is_idempotent(self):
+        from vs_procurement.approvals import ensure_tenant_approval_templates
+
+        first = ensure_tenant_approval_templates(self.multi_tenant)
+        self.assertEqual(len(first), 4)
+        self.assertTrue(all(created for _, created in first))
+        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
+
+        second = ensure_tenant_approval_templates(self.multi_tenant)
+        # Idempotent: the same four ladders, none of them created again.
+        self.assertFalse(any(created for _, created in second))
+        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
+        self.assertEqual({t.pk for t, _ in first}, {t.pk for t, _ in second})
+        # Another tenant is untouched by seeding this one.
+        self.assertEqual(self.tenant_templates(self.foreign_tenant).count(), 0)
+
+    def test_seeding_never_overwrites_a_tenants_customised_rules(self):
+        from vs_procurement.approvals import ensure_tenant_approval_templates
+        from vs_procurement.constants import (
+            WF_DEFAULT_TEMPLATE_CODE, WF_DOCTYPE_REQUISITION,
+        )
+        from vs_workflow.services.templates import publish_template
+
+        customised = publish_template(
+            tenant=self.multi_tenant, branch=None,
+            document_type=WF_DOCTYPE_REQUISITION, code=WF_DEFAULT_TEMPLATE_CODE,
+            name="Our own ladder", description="Customised by the tenant.",
+            stages_payload=[{
+                "code": "board", "label": "Board sign-off", "kind": "APPROVAL",
+                "order": 10, "approver_permission_key": "procurement.approval.approve",
+                "approver_scope": "BRANCH", "advance_rule": "UNANIMOUS",
+                "on_rejection": "TERMINAL", "skip_if_no_approvers": False,
+            }],
+        )
+
+        results = ensure_tenant_approval_templates(self.multi_tenant)
+        by_type = {t.document_type: (t, created) for t, created in results}
+        template, created = by_type[WF_DOCTYPE_REQUISITION]
+        self.assertFalse(created)
+        self.assertEqual(template.pk, customised.pk)
+        customised.refresh_from_db()
+        self.assertEqual(customised.name, "Our own ladder")
+        stages = list(customised.stages.filter(retired_at__isnull=True))
+        self.assertEqual([stage.code for stage in stages], ["board"])
+        self.assertEqual(stages[0].advance_rule, "UNANIMOUS")
+        # The document types it had not customised were still filled in.
+        self.assertEqual(sum(1 for _, was_created in results if was_created), 3)
+
+    def test_a_tenants_own_rules_beat_the_platform_fallback(self):
+        from vs_procurement.approvals import (
+            ensure_default_approval_templates, ensure_tenant_approval_templates,
+            submit_for_approval,
+        )
+
+        ensure_default_approval_templates()
+        ensure_tenant_approval_templates(self.multi_tenant)
+        requester = self.user_for(self.multi_tenant, "r3-own-rules@t.com")
+
+        mine = submit_for_approval(
+            self.requisition(self.multi, requester=requester), actor_user=requester,
+        )
+        self.assertEqual(mine.template.tenant_id, self.multi_tenant.pk)
+
+        # A tenant with no rules of its own still routes, through the fallback.
+        flat_requester = self.user_for(self.flat_tenant, "r3-fallback@t.com")
+        theirs = submit_for_approval(
+            self.requisition(self.flat, requester=flat_requester), actor_user=flat_requester,
+        )
+        self.assertIsNone(theirs.template.tenant_id)
+
+    def test_a_seeded_tenant_is_blocked_until_it_appoints_an_approver(self):
+        """Seeded rules with nobody behind them park the document, never approve it."""
+        from vs_procurement.approval_parking import is_document_parked
+        from vs_procurement.approvals import (
+            ensure_tenant_approval_templates, submit_for_approval,
+        )
+        from vs_workflow.constants import WorkflowInstanceStatus
+
+        ensure_tenant_approval_templates(self.multi_tenant)
+        requester = self.user_for(self.multi_tenant, "r3-blocked@t.com")
+        req = self.requisition(self.multi, branch=self.lekki, requester=requester)
+
+        instance = submit_for_approval(req, actor_user=requester)
+        req.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        self.assertEqual(req.approval_state, ProcApprovalState.PENDING)
+        self.assertNotEqual(req.status, DocumentStatus.APPROVED)
+        self.assertTrue(is_document_parked(req))
+
+    def test_platform_fallback_parks_rather_than_self_approving(self):
+        from vs_procurement.approval_parking import is_document_parked
+        from vs_procurement.approvals import (
+            ensure_default_approval_templates, submit_for_approval,
+        )
+
+        ensure_default_approval_templates()
+        for label, books, tenant in (
+            ("multi-branch", self.multi, self.multi_tenant),
+            ("no branches", self.flat, self.flat_tenant),
+        ):
+            with self.subTest(tenant=label):
+                requester = self.user_for(tenant, f"r3-park-{books.entity.code}@t.com")
+                req = self.requisition(books, requester=requester)
+                submit_for_approval(req, actor_user=requester)
+                req.refresh_from_db()
+                self.assertEqual(req.approval_state, ProcApprovalState.PENDING)
+                self.assertTrue(is_document_parked(req))
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_setup_endpoint_seeds_the_callers_tenant_and_not_the_platform(self, _permission):
+        client = self.client_for(self.multi_tenant, "r3-setup@t.com")
+        response = client.post(
+            f"/v1/procurement/approvals/default-templates/?entity={self.multi.entity.code}",
+            {}, format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.json()["data"]["created_count"], 4)
+        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
+        # The shared platform row is not one tenant administrator's to publish.
+        self.assertEqual(
+            self.WorkflowTemplate.objects.filter(tenant__isnull=True).count(), 0,
+        )
+        # No other tenant gained rules from this call.
+        self.assertEqual(self.tenant_templates(self.foreign_tenant).count(), 0)
+
+        again = client.post(
+            f"/v1/procurement/approvals/default-templates/?entity={self.multi.entity.code}",
+            {}, format="json",
+        )
+        self.assertEqual(again.status_code, 200)
+        self.assertEqual(again.json()["data"]["created_count"], 0)
+        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
+
+    def test_setup_endpoint_requires_permission(self):
+        client = self.client_for(self.multi_tenant, "r3-setup-403@t.com")
+        response = client.post(
+            f"/v1/procurement/approvals/default-templates/?entity={self.multi.entity.code}",
+            {}, format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 0)
+
+    def test_seeding_command_is_idempotent_and_reports_what_it_did(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        out = StringIO()
+        call_command("seed_procurement_approvals", "--tenant", self.multi_tenant.slug, stdout=out)
+        self.assertIn("4 created", out.getvalue())
+        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
+
+        out = StringIO()
+        call_command("seed_procurement_approvals", "--tenant", self.multi_tenant.slug, stdout=out)
+        self.assertIn("0 created", out.getvalue())
+        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
+
+        # The platform fallback is published deliberately, not as a side effect.
+        self.assertEqual(
+            self.WorkflowTemplate.objects.filter(tenant__isnull=True).count(), 0,
+        )
+        call_command("seed_procurement_approvals", "--platform", stdout=StringIO())
+        self.assertEqual(
+            self.WorkflowTemplate.objects.filter(tenant__isnull=True).count(), 4,
+        )
+
+
+class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
+    """A request is routed to its own site's approvers, and to nobody else's.
+
+    ``approver_scope`` decides which arguments the engine forwards to RBAC:
+    ``PLATFORM`` (and ``SCHOOL``) forward no branch at all, so only a tenant-wide role
+    assignment is ever eligible and an approver appointed at one site is never resolved
+    for that site's own requests. ``BRANCH`` forwards the *document's* branch, making
+    eligibility "assigned at this branch, or assigned tenant-wide".
+    """
+
+    MANAGER_KEY = "procurement.approval.approve"
+
+    def setUp(self):
+        super().setUp()
+        from vs_procurement.approvals import ensure_tenant_approval_templates
+
+        ensure_tenant_approval_templates(self.multi_tenant)
+        ensure_tenant_approval_templates(self.flat_tenant)
+
+        self.lekki_approver = self.user_for(
+            self.multi_tenant, "lekki-approver@t.com", branch=self.lekki, first_name="Lekki",
+        )
+        self.ikeja_approver = self.user_for(
+            self.multi_tenant, "ikeja-approver@t.com", branch=self.ikeja, first_name="Ikeja",
+        )
+        self.tenant_wide_approver = self.user_for(
+            self.multi_tenant, "hq-approver@t.com", first_name="Head",
+        )
+        self.grant(self.lekki_approver, self.MANAGER_KEY,
+                   tenant=self.multi_tenant, role_key="lekki-approver", branch=self.lekki)
+        self.grant(self.ikeja_approver, self.MANAGER_KEY,
+                   tenant=self.multi_tenant, role_key="ikeja-approver", branch=self.ikeja)
+        self.grant(self.tenant_wide_approver, self.MANAGER_KEY,
+                   tenant=self.multi_tenant, role_key="tenant-wide-approver")
+
+        self.requester = self.user_for(self.multi_tenant, "r3-routing-requester@t.com")
+
+    def eligible_ids(self, instance):
+        """The frozen approver snapshot the engine wrote when the stage activated."""
+        from vs_workflow.models import WorkflowStageApprover
+
+        return set(
+            WorkflowStageApprover.objects.filter(
+                stage_instance__instance=instance, attempt=1,
+            ).values_list("user_id", flat=True)
+        )
+
+    def submit(self, books, *, branch=None, requester=None):
+        from vs_procurement.approvals import submit_for_approval
+
+        requester = requester or self.requester
+        req = self.requisition(books, branch=branch, requester=requester)
+        return req, submit_for_approval(req, actor_user=requester)
+
+    def test_an_approver_at_one_branch_is_not_routed_another_branchs_request(self):
+        _, lekki_instance = self.submit(self.multi, branch=self.lekki)
+        _, ikeja_instance = self.submit(self.multi, branch=self.ikeja)
+
+        self.assertEqual(
+            self.eligible_ids(lekki_instance),
+            {self.lekki_approver.pk, self.tenant_wide_approver.pk},
+        )
+        self.assertEqual(
+            self.eligible_ids(ikeja_instance),
+            {self.ikeja_approver.pk, self.tenant_wide_approver.pk},
+        )
+        # The point, stated directly.
+        self.assertNotIn(self.ikeja_approver.pk, self.eligible_ids(lekki_instance))
+        self.assertNotIn(self.lekki_approver.pk, self.eligible_ids(ikeja_instance))
+
+    def test_an_entity_level_request_routes_to_tenant_wide_approvers_only(self):
+        """The decided answer for a document with no branch.
+
+        A purchase raised for the entity as a whole belongs to no single site, so no
+        site's approver inherits authority over it: only a tenant-wide holder is
+        eligible. This is also what makes a branchless tenant behave exactly as before.
+        """
+        _, instance = self.submit(self.multi, branch=None)
+        self.assertEqual(self.eligible_ids(instance), {self.tenant_wide_approver.pk})
+
+    def test_an_entity_level_request_parks_when_only_branch_approvers_exist(self):
+        """The corollary: branch approvers do not silently cover entity-level spend."""
+        from vs_procurement.approval_parking import is_document_parked
+        from vs_rbac.models import TenantUserRoleAssignment
+
+        TenantUserRoleAssignment.objects.filter(
+            user=self.tenant_wide_approver,
+        ).update(assignment_status="REVOKED")
+
+        req, instance = self.submit(self.multi, branch=None)
+        self.assertEqual(self.eligible_ids(instance), set())
+        req.refresh_from_db()
+        self.assertEqual(req.approval_state, ProcApprovalState.PENDING)
+        self.assertTrue(is_document_parked(req))
+
+    def test_a_tenant_without_branches_routes_exactly_as_before(self):
+        flat_approver = self.user_for(self.flat_tenant, "flat-approver@t.com")
+        flat_requester = self.user_for(self.flat_tenant, "flat-requester@t.com")
+        self.grant(flat_approver, self.MANAGER_KEY,
+                   tenant=self.flat_tenant, role_key="flat-approver")
+
+        _, instance = self.submit(self.flat, requester=flat_requester)
+        self.assertEqual(self.eligible_ids(instance), {flat_approver.pk})
+
+    def test_routing_never_crosses_a_tenant_boundary(self):
+        foreign_approver = self.user_for(self.foreign_tenant, "foreign-approver@t.com")
+        self.grant(foreign_approver, self.MANAGER_KEY,
+                   tenant=self.foreign_tenant, role_key="foreign-approver")
+
+        _, instance = self.submit(self.multi, branch=self.lekki)
+        self.assertNotIn(foreign_approver.pk, self.eligible_ids(instance))
+
+    def test_the_seeded_stages_are_branch_scoped(self):
+        """The seeded rules themselves, not just their effect."""
+        from vs_workflow.models import WorkflowTemplate
+
+        stages = [
+            stage
+            for template in WorkflowTemplate.objects.filter(tenant=self.multi_tenant)
+            for stage in template.stages.all()
+        ]
+        self.assertTrue(stages)
+        self.assertEqual({stage.approver_scope for stage in stages}, {"BRANCH"})
+        # Round 1's guarantee must survive: spend still never approves itself.
+        self.assertEqual({stage.skip_if_no_approvers for stage in stages}, {False})
+
+    def test_the_migration_reroutes_already_published_stages(self):
+        """Existing environments were seeded PLATFORM and must be moved, once."""
+        import importlib
+
+        from django.apps import apps as global_apps
+
+        from vs_procurement.constants import PROCUREMENT_APPROVAL_TYPES
+        from vs_workflow.models import WorkflowStage
+
+        migration = importlib.import_module(
+            "vs_procurement.migrations.0025_procurement_stages_route_by_branch",
+        )
+        procurement_stages = WorkflowStage.objects.filter(
+            template__document_type__in=PROCUREMENT_APPROVAL_TYPES,
+        )
+        procurement_stages.update(approver_scope="PLATFORM")
+
+        migration.route_by_branch(global_apps, None)
+        self.assertEqual(
+            set(procurement_stages.values_list("approver_scope", flat=True)), {"BRANCH"},
+        )
+        # Re-running changes nothing, and the reverse is a true inverse.
+        migration.route_by_branch(global_apps, None)
+        self.assertEqual(
+            set(procurement_stages.values_list("approver_scope", flat=True)), {"BRANCH"},
+        )
+        migration.route_platform_wide(global_apps, None)
+        self.assertEqual(
+            set(procurement_stages.values_list("approver_scope", flat=True)), {"PLATFORM"},
+        )
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_the_queue_does_not_show_another_branchs_document(self, _permission):
+        """Routing and visibility have to agree: a branch-bound approver's inbox is
+        narrowed the same way every other procurement read is."""
+        from core.test_utils import TenantAPIClient
+
+        _, lekki_instance = self.submit(self.multi, branch=self.lekki)
+        code = self.multi.entity.code
+
+        lekki_client = TenantAPIClient(user=self.lekki_approver)
+        mine = lekki_client.get(f"/v1/procurement/approvals/?entity={code}")
+        self.assertEqual(mine.status_code, 200)
+        self.assertEqual(
+            [row["id"] for row in mine.json()["data"]], [str(lekki_instance.id)],
+        )
+
+        ikeja_client = TenantAPIClient(user=self.ikeja_approver)
+        theirs = ikeja_client.get(f"/v1/procurement/approvals/?entity={code}")
+        self.assertEqual(theirs.status_code, 200)
+        self.assertEqual(theirs.json()["data"], [])
+
+        # And the detail/action endpoints refuse the same document by id.
+        detail = ikeja_client.get(
+            f"/v1/procurement/approvals/{lekki_instance.id}/?entity={code}",
+        )
+        self.assertEqual(detail.status_code, 404)
+        acted = ikeja_client.post(
+            f"/v1/procurement/approvals/{lekki_instance.id}/actions/?entity={code}",
+            {"action": "APPROVED"}, format="json",
+        )
+        self.assertEqual(acted.status_code, 404)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_a_branch_approver_can_decide_their_own_branchs_request(self, _permission):
+        """The other half: narrowing must not leave the work undecidable."""
+        from core.test_utils import TenantAPIClient
+
+        req, instance = self.submit(self.multi, branch=self.lekki)
+        code = self.multi.entity.code
+
+        client = TenantAPIClient(user=self.lekki_approver)
+        response = client.post(
+            f"/v1/procurement/approvals/{instance.id}/actions/?entity={code}",
+            {"action": "APPROVED"}, format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        req.refresh_from_db()
+        self.assertEqual(req.approval_state, ProcApprovalState.APPROVED)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_a_parked_approval_cannot_be_overridden_from_another_branch(self, _permission):
+        """Round 4's break-glass is a write on a document, so it is branch-scoped too.
+
+        Releasing spend without review is the last capability that should survive a
+        branch boundary: a caller who cannot read the document must not be able to
+        approve it by override either.
+        """
+        from core.test_utils import TenantAPIClient
+        from vs_procurement.constants import WF_APPROVAL_OVERRIDE_PERMISSION
+        from vs_rbac.models import TenantUserRoleAssignment
+
+        # Nobody can decide it, so it parks - the only state an override applies to.
+        TenantUserRoleAssignment.objects.filter(
+            user__in=[self.lekki_approver, self.tenant_wide_approver],
+        ).update(assignment_status="REVOKED")
+        req, instance = self.submit(self.multi, branch=self.lekki)
+        code = self.multi.entity.code
+
+        breaker = self.user_for(
+            self.multi_tenant, "ikeja-breaker@t.com", branch=self.ikeja, first_name="Ikeja",
+        )
+        self.grant(breaker, WF_APPROVAL_OVERRIDE_PERMISSION,
+                   tenant=self.multi_tenant, role_key="breaker")
+        refused = TenantAPIClient(user=breaker).post(
+            f"/v1/procurement/approvals/{instance.id}/override/?entity={code}",
+            {"reason": "We need these chairs."}, format="json",
+        )
+        self.assertEqual(refused.status_code, 404)
+        req.refresh_from_db()
+        self.assertEqual(req.approval_state, ProcApprovalState.PENDING)
+
+        # The same grant at the document's own branch still releases it.
+        holder = self.user_for(
+            self.multi_tenant, "lekki-breaker@t.com", branch=self.lekki, first_name="Lekki",
+        )
+        self.grant(holder, WF_APPROVAL_OVERRIDE_PERMISSION,
+                   tenant=self.multi_tenant, role_key="breaker-lekki")
+        released = TenantAPIClient(user=holder).post(
+            f"/v1/procurement/approvals/{instance.id}/override/?entity={code}",
+            {"reason": "We need these chairs."}, format="json",
+        )
+        self.assertEqual(released.status_code, 200, released.data)
+        req.refresh_from_db()
+        self.assertEqual(req.approval_state, ProcApprovalState.APPROVED)
+
+
+class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
+    """Who can approve spend here is answerable, and the gaps are named as gaps."""
+
+    MANAGER_KEY = "procurement.approval.approve"
+
+    def setUp(self):
+        super().setUp()
+        from vs_procurement.approvals import ensure_tenant_approval_templates
+
+        ensure_tenant_approval_templates(self.multi_tenant)
+        self.lekki_approver = self.user_for(
+            self.multi_tenant, "cover-lekki@t.com", branch=self.lekki, first_name="Lekki",
+        )
+        self.grant(self.lekki_approver, self.MANAGER_KEY,
+                   tenant=self.multi_tenant, role_key="cover-lekki", branch=self.lekki)
+
+    def coverage(self, tenant=None, **kwargs):
+        from vs_procurement.approval_coverage import approval_coverage
+
+        return approval_coverage(tenant or self.multi_tenant, **kwargs)
+
+    @staticmethod
+    def stage(report, *, branch_id, document_type, stage_code):
+        scope = next(s for s in report["scopes"] if s["branch_id"] == branch_id)
+        document = next(d for d in scope["documents"] if d["document_type"] == document_type)
+        return next(s for s in document["stages"] if s["stage_code"] == stage_code)
+
+    def test_holders_are_reported_per_branch_and_gaps_are_visible(self):
+        from vs_procurement.constants import WF_DOCTYPE_REQUISITION
+
+        report = self.coverage()
+        staffed = self.stage(
+            report, branch_id=self.lekki.pk,
+            document_type=WF_DOCTYPE_REQUISITION, stage_code="manager",
+        )
+        self.assertTrue(staffed["has_approver"])
+        self.assertEqual([person["id"] for person in staffed["approvers"]],
+                         [self.lekki_approver.pk])
+        # Display name only - never an email or any other account field.
+        self.assertNotIn("email", staffed["approvers"][0])
+
+        empty = self.stage(
+            report, branch_id=self.ikeja.pk,
+            document_type=WF_DOCTYPE_REQUISITION, stage_code="manager",
+        )
+        self.assertFalse(empty["has_approver"])
+        self.assertEqual(empty["approvers"], [])
+
+        entity_level = self.stage(
+            report, branch_id=None,
+            document_type=WF_DOCTYPE_REQUISITION, stage_code="manager",
+        )
+        # A branch-scoped grant does not cover entity-level spend.
+        self.assertFalse(entity_level["has_approver"])
+
+        self.assertTrue(report["has_gaps"])
+        ikeja_scope = next(s for s in report["scopes"] if s["branch_id"] == self.ikeja.pk)
+        self.assertEqual(ikeja_scope["gap_count"], 8)  # 4 document types x 2 stages
+
+    def test_a_tenant_wide_holder_covers_every_branch_and_the_entity(self):
+        from vs_procurement.constants import WF_DOCTYPE_PURCHASE_ORDER
+
+        holder = self.user_for(self.multi_tenant, "cover-hq@t.com", first_name="Head")
+        self.grant(holder, self.MANAGER_KEY, tenant=self.multi_tenant, role_key="cover-hq")
+        report = self.coverage()
+
+        for branch_id in (None, self.lekki.pk, self.ikeja.pk):
+            with self.subTest(branch=branch_id):
+                stage = self.stage(
+                    report, branch_id=branch_id,
+                    document_type=WF_DOCTYPE_PURCHASE_ORDER, stage_code="manager",
+                )
+                self.assertIn(holder.pk, [person["id"] for person in stage["approvers"]])
+
+    def test_the_report_names_the_rules_it_is_reporting_on(self):
+        from vs_procurement.approvals import ensure_default_approval_templates
+        from vs_procurement.constants import WF_DOCTYPE_REQUISITION
+
+        ensure_default_approval_templates()
+        tenant_rules = self.stage(
+            self.coverage(), branch_id=self.lekki.pk,
+            document_type=WF_DOCTYPE_REQUISITION, stage_code="manager",
+        )
+        self.assertEqual(tenant_rules["rules_source"], "TENANT")
+
+        fallback = self.stage(
+            self.coverage(self.flat_tenant), branch_id=None,
+            document_type=WF_DOCTYPE_REQUISITION, stage_code="manager",
+        )
+        self.assertEqual(fallback["rules_source"], "PLATFORM")
+
+    def test_a_tenant_with_no_rules_at_all_reports_them_as_unconfigured(self):
+        report = self.coverage(self.foreign_tenant)
+        scope = report["scopes"][0]
+        self.assertTrue(scope["is_entity_level"])
+        self.assertEqual(len(scope["unconfigured_document_types"]), 4)
+        self.assertTrue(all(not d["configured"] for d in scope["documents"]))
+
+    def test_a_tenant_without_branches_reports_one_scope(self):
+        from vs_procurement.approvals import ensure_tenant_approval_templates
+
+        ensure_tenant_approval_templates(self.flat_tenant)
+        report = self.coverage(self.flat_tenant)
+        self.assertEqual(len(report["scopes"]), 1)
+        self.assertTrue(report["scopes"][0]["is_entity_level"])
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_the_endpoint_narrows_to_a_bound_callers_own_branch(self, _permission):
+        code = self.multi.entity.code
+        unbound = self.client_for(self.multi_tenant, "cover-admin@t.com")
+        everything = unbound.get(f"/v1/procurement/approvals/coverage/?entity={code}")
+        self.assertEqual(everything.status_code, 200, everything.data)
+        self.assertEqual(
+            [scope["branch_id"] for scope in everything.json()["data"]["scopes"]],
+            [None, self.lekki.pk, self.ikeja.pk],
+        )
+
+        bound = self.client_for(self.multi_tenant, "cover-bound@t.com", branch=self.ikeja)
+        mine = bound.get(f"/v1/procurement/approvals/coverage/?entity={code}")
+        self.assertEqual(mine.status_code, 200)
+        self.assertEqual(
+            [scope["branch_id"] for scope in mine.json()["data"]["scopes"]],
+            [self.ikeja.pk],
+        )
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_the_endpoint_never_reports_another_tenants_approvers(self, _permission):
+        foreign_holder = self.user_for(self.foreign_tenant, "cover-foreign@t.com")
+        self.grant(foreign_holder, self.MANAGER_KEY,
+                   tenant=self.foreign_tenant, role_key="cover-foreign")
+        client = self.client_for(self.multi_tenant, "cover-isolation@t.com")
+        response = client.get(
+            f"/v1/procurement/approvals/coverage/?entity={self.multi.entity.code}",
+        )
+        self.assertEqual(response.status_code, 200)
+        reported = {
+            person["id"]
+            for scope in response.json()["data"]["scopes"]
+            for document in scope["documents"]
+            for stage in document["stages"]
+            for person in stage["approvers"]
+        }
+        self.assertNotIn(foreign_holder.pk, reported)
+
+    def test_the_endpoint_requires_permission(self):
+        client = self.client_for(self.multi_tenant, "cover-403@t.com")
+        response = client.get(
+            f"/v1/procurement/approvals/coverage/?entity={self.multi.entity.code}",
+        )
+        self.assertEqual(response.status_code, 403)
+
+
+class ProcurementBranchTotalsTests(_BranchTenantsFixture, TestCase):
+    """KPI headers count exactly the rows the caller's own list returns."""
+
+    def setUp(self):
+        super().setUp()
+        self.lekki_client = self.client_for(
+            self.multi_tenant, "totals-lekki@t.com", branch=self.lekki,
+        )
+        self.hq_client = self.client_for(self.multi_tenant, "totals-hq@t.com")
+        # 100,000 kobo at Lekki, 700,000 at Ikeja, 30,000 for the entity as a whole.
+        self.lekki_req = self.requisition(self.multi, branch=self.lekki, unit_price=100_000)
+        self.ikeja_req = self.requisition(self.multi, branch=self.ikeja, unit_price=700_000)
+        self.entity_req = self.requisition(self.multi, unit_price=30_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_requisition_summary_matches_the_callers_visible_rows(self, _permission):
+        code = self.multi.entity.code
+        everything = self.hq_client.get(f"/v1/procurement/requisitions/summary/?entity={code}")
+        self.assertEqual(everything.status_code, 200, everything.data)
+        self.assertEqual(everything.json()["data"]["draft"]["count"], 3)
+        self.assertEqual(everything.json()["data"]["draft"]["amount"], 830_000)
+
+        mine = self.lekki_client.get(f"/v1/procurement/requisitions/summary/?entity={code}")
+        self.assertEqual(mine.status_code, 200)
+        self.assertEqual(mine.json()["data"]["draft"]["count"], 1)
+        self.assertEqual(mine.json()["data"]["draft"]["amount"], 100_000)
+        listed = self.lekki_client.get(f"/v1/procurement/requisitions/?entity={code}")
+        self.assertEqual([row["id"] for row in listed.json()["data"]], [self.lekki_req.pk])
+
+        # The header follows an explicit ?branch= exactly as the list does.
+        filtered = self.hq_client.get(
+            f"/v1/procurement/requisitions/summary/?entity={code}&branch={self.ikeja.pk}",
+        )
+        self.assertEqual(filtered.json()["data"]["draft"]["count"], 1)
+        self.assertEqual(filtered.json()["data"]["draft"]["amount"], 700_000)
+
+        head_office = self.hq_client.get(
+            f"/v1/procurement/requisitions/summary/?entity={code}&branch=none",
+        )
+        self.assertEqual(head_office.json()["data"]["draft"]["amount"], 30_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_purchase_order_summary_matches_the_callers_visible_rows(self, _permission):
+        code = self.multi.entity.code
+        for branch in (self.lekki, self.ikeja, None):
+            self.purchase_order(self.multi, branch=branch, status=DocumentStatus.APPROVED)
+
+        everything = self.hq_client.get(f"/v1/procurement/purchase-orders/summary/?entity={code}")
+        self.assertEqual(everything.status_code, 200, everything.data)
+        self.assertEqual(everything.json()["data"]["open"]["count"], 3)
+
+        mine = self.lekki_client.get(f"/v1/procurement/purchase-orders/summary/?entity={code}")
+        self.assertEqual(mine.status_code, 200)
+        self.assertEqual(mine.json()["data"]["open"]["count"], 1)
+        listed = self.lekki_client.get(f"/v1/procurement/purchase-orders/?entity={code}")
+        self.assertEqual(len(listed.json()["data"]), 1)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_the_dashboard_reconciles_with_what_the_caller_can_open(self, _permission):
+        code = self.multi.entity.code
+        for branch in (self.lekki, self.ikeja):
+            self.purchase_order(self.multi, branch=branch, status=DocumentStatus.APPROVED)
+
+        everything = self.hq_client.get(f"/v1/procurement/reports/dashboard/?entity={code}")
+        self.assertEqual(everything.status_code, 200, everything.data)
+        self.assertEqual(everything.json()["data"]["kpis"]["open_purchase_orders"]["count"], 2)
+
+        mine = self.lekki_client.get(f"/v1/procurement/reports/dashboard/?entity={code}")
+        self.assertEqual(mine.status_code, 200)
+        self.assertEqual(mine.json()["data"]["kpis"]["open_purchase_orders"]["count"], 1)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_totals_in_a_tenant_without_branches_are_unchanged(self, _permission):
+        client = self.client_for(self.flat_tenant, "totals-flat@t.com")
+        code = self.flat.entity.code
+        self.requisition(self.flat, unit_price=55_000)
+
+        summary = client.get(f"/v1/procurement/requisitions/summary/?entity={code}")
+        self.assertEqual(summary.status_code, 200, summary.data)
+        self.assertEqual(summary.json()["data"]["draft"]["count"], 1)
+        self.assertEqual(summary.json()["data"]["draft"]["amount"], 55_000)
+
+        dashboard = client.get(f"/v1/procurement/reports/dashboard/?entity={code}")
+        self.assertEqual(dashboard.status_code, 200)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_totals_never_include_another_tenants_documents(self, _permission):
+        self.requisition(self.foreign, unit_price=900_000)
+        summary = self.hq_client.get(
+            f"/v1/procurement/requisitions/summary/?entity={self.multi.entity.code}",
+        )
+        self.assertEqual(summary.json()["data"]["draft"]["amount"], 830_000)
+
+    def test_summary_endpoints_still_require_permission(self):
+        code = self.multi.entity.code
+        for path in (
+            "requisitions/summary", "purchase-orders/summary",
+            "vendor-invoices/summary", "rfqs/summary", "reports/dashboard",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    self.lekki_client.get(f"/v1/procurement/{path}/?entity={code}").status_code,
+                    403,
+                )

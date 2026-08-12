@@ -14,7 +14,7 @@ from decimal import Decimal
 from django.db import IntegrityError, transaction
 from django.db.models import Count, Q, Sum
 from django.utils import timezone
-from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from core.response import success_response
 from vs_finance.views import resolve_entity
@@ -42,6 +42,7 @@ from .base import (
     _ProcBase,
     _branch_scoped,
     _date,
+    _document_or_404,
     _inherited_branch_id,
     _money,
     _nonneg_qty,
@@ -233,14 +234,16 @@ class GoodsReceiptDetailView(_ProcBase):
     def get(self, request, pk):
         """Return one entity receipt with its PO and line snapshots."""
         entity = resolve_entity(request)
-        grn = GoodsReceivedNote.objects.filter(
-            entity=entity, pk=pk,
-        ).select_related("vendor", "purchase_order", "received_by").prefetch_related(
-            "lines__po_line", "lines__cost_center", "lines__stock_item",
-            "purchase_order__lines",
-        ).first()
-        if grn is None:
-            raise NotFound("No such goods receipt in this entity.")
+        grn = _document_or_404(
+            request,
+            GoodsReceivedNote.objects.filter(entity=entity).select_related(
+                "vendor", "purchase_order", "received_by",
+            ).prefetch_related(
+                "lines__po_line", "lines__cost_center", "lines__stock_item",
+                "purchase_order__lines",
+            ),
+            pk, "No such goods receipt in this entity.",
+        )
         return success_response("Goods receipt retrieved.", data=GoodsReceivedNoteSerializer(grn).data)
 
     @transaction.atomic
@@ -249,9 +252,10 @@ class GoodsReceiptDetailView(_ProcBase):
         entity = resolve_entity(request)
         # Lock only the base row: PostgreSQL rejects FOR UPDATE over the outer joins
         # that select_related on the nullable purchase_order / received_by would add.
-        grn = GoodsReceivedNote.objects.select_for_update().filter(entity=entity, pk=pk).first()
-        if grn is None:
-            raise NotFound("No such goods receipt in this entity.")
+        grn = _document_or_404(
+            request, GoodsReceivedNote.objects.select_for_update().filter(entity=entity),
+            pk, "No such goods receipt in this entity.",
+        )
         if grn.status != "DRAFT":
             raise ValidationError({"status": "Only a draft goods receipt can be edited."})
         body = request.data
@@ -283,9 +287,10 @@ class GoodsReceiptPostView(_ProcBase):
     def post(self, request, pk):
         """Delegate inventory/GRIR effects to the purchasing posting service."""
         entity = resolve_entity(request)
-        grn = GoodsReceivedNote.objects.filter(entity=entity, pk=pk).first()
-        if grn is None:
-            raise NotFound("No such goods receipt in this entity.")
+        grn = _document_or_404(
+            request, GoodsReceivedNote.objects.filter(entity=entity), pk,
+            "No such goods receipt in this entity.",
+        )
         purchasing.post_grn(grn, actor_user=request.user)
         grn = _read_grn_for_response(entity, grn.pk)
         return success_response(
@@ -710,13 +715,20 @@ class VendorInvoiceListCreateView(_ProcBase):
 
 
 class VendorInvoiceSummaryView(_ProcBase):
-    """Entity-scoped KPI aggregate for the Vendor Invoices console."""
+    """KPI aggregate for the Vendor Invoices console.
+
+    Counted over the bills the caller's own list returns, so a branch-bound
+    payables clerk is never shown another site's overdue balance.
+    """
     rbac_permission = "procurement.vendor_invoice.view"
 
     def get(self, request):
-        """Return entity-wide counts and overdue balance in integer kobo."""
+        """Return counts and overdue balance in integer kobo for the visible bills."""
         entity = resolve_entity(request)
-        qs = VendorInvoice.objects.filter(entity=entity)
+        qs = _branch_scoped(
+            request, entity, VendorInvoice.objects.filter(entity=entity),
+            request.query_params,
+        )
         today = timezone.localdate()
         overdue = qs.filter(status="POSTED", due_date__lt=today).exclude(payment_status="PAID")
         data = {
@@ -740,9 +752,10 @@ class VendorInvoiceDetailView(_ProcBase):
     def get(self, request, pk):
         """Return one entity bill with match, payment, posting, and audit context."""
         entity = resolve_entity(request)
-        invoice = _invoice_queryset(entity).filter(pk=pk).first()
-        if invoice is None:
-            raise NotFound("No such vendor invoice in this entity.")
+        invoice = _document_or_404(
+            request, _invoice_queryset(entity), pk,
+            "No such vendor invoice in this entity.",
+        )
         return success_response("Vendor invoice retrieved.", data=_serialize_invoice_detail(invoice))
 
     @transaction.atomic
@@ -751,11 +764,10 @@ class VendorInvoiceDetailView(_ProcBase):
         entity = resolve_entity(request)
         # Lock only the invoice row: purchase_order is nullable, and PostgreSQL
         # rejects FOR UPDATE against the nullable side of that outer join.
-        invoice = VendorInvoice.objects.select_for_update().filter(
-            entity=entity, pk=pk,
-        ).first()
-        if invoice is None:
-            raise NotFound("No such vendor invoice in this entity.")
+        invoice = _document_or_404(
+            request, VendorInvoice.objects.select_for_update().filter(entity=entity),
+            pk, "No such vendor invoice in this entity.",
+        )
         if invoice.status != "DRAFT" or invoice.approval_state not in ("NOT_SUBMITTED", "REJECTED"):
             raise ValidationError({"status": "Only an unsubmitted or rejected draft vendor invoice can be edited."})
         body = request.data
@@ -816,9 +828,10 @@ class VendorInvoiceMatchView(_ProcBase):
     def post(self, request, pk):
         """Reprice and compare bill evidence without posting the liability."""
         entity = resolve_entity(request)
-        invoice = _invoice_queryset(entity).filter(pk=pk).first()
-        if invoice is None:
-            raise NotFound("No such vendor invoice in this entity.")
+        invoice = _document_or_404(
+            request, _invoice_queryset(entity), pk,
+            "No such vendor invoice in this entity.",
+        )
         payables.price_vendor_invoice(invoice)
         payables.match_vendor_invoice(invoice, save=True)
         invoice.refresh_from_db()
@@ -851,9 +864,10 @@ class VendorInvoicePostView(_ProcBase):
     def post(self, request, pk):
         """Post an eligible bill; variance override is explicit and permission-gated."""
         entity = resolve_entity(request)
-        invoice = _invoice_queryset(entity).filter(pk=pk).first()
-        if invoice is None:
-            raise NotFound("No such vendor invoice in this entity.")
+        invoice = _document_or_404(
+            request, _invoice_queryset(entity), pk,
+            "No such vendor invoice in this entity.",
+        )
         allow_variance = request.data.get("allow_variance", False)
         if not isinstance(allow_variance, bool):
             raise ValidationError({"allow_variance": "Expected a JSON boolean."})

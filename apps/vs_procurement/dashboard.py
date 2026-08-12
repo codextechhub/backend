@@ -93,7 +93,7 @@ def _month_end(day: datetime.date) -> datetime.date:
     return day.replace(day=calendar.monthrange(day.year, day.month)[1])
 
 
-def _spend_kobo(entity, start: datetime.date, end: datetime.date) -> int:
+def _spend_kobo(entity, start: datetime.date, end: datetime.date, branch_filter) -> int:
     """Sum realised gross spend in the inclusive invoice-date window."""
     # Spend is recognised only when a vendor invoice is posted, never while draft.
     return int(
@@ -101,7 +101,7 @@ def _spend_kobo(entity, start: datetime.date, end: datetime.date) -> int:
             entity=entity,
             status=DocumentStatus.POSTED,
             invoice_date__range=(start, end),
-        ).aggregate(total=Sum("total"))["total"]
+        ).filter(branch_filter).aggregate(total=Sum("total"))["total"]
         or 0
     )
 
@@ -115,10 +115,11 @@ def _delta_pct(current: int, prior: int) -> float | None:
     return round((current - prior) / prior * 100, 1)
 
 
-def _po_status(entity) -> dict:
+def _po_status(entity, branch_filter) -> dict:
     """Keep chart stages aligned with the PO list; derive receipt KPIs separately."""
     rows = (
         PurchaseOrder.objects.filter(entity=entity)
+        .filter(branch_filter)
         .exclude(status__in=(DocumentStatus.CANCELLED, DocumentStatus.REVERSED))
         # Aggregate line quantities once per PO to avoid loading every line in Python.
         .annotate(ordered_qty=Sum("lines__quantity"), received_qty=Sum("lines__received_qty"))
@@ -180,9 +181,11 @@ def _po_status(entity) -> dict:
 # Chart aggregates                                                            #
 # --------------------------------------------------------------------------- #
 
-def _spend_by_category(entity, start: datetime.date, end: datetime.date) -> dict:
+def _spend_by_category(entity, start: datetime.date, end: datetime.date, branch_filter) -> dict:
     """Return the five largest category slices plus one exact long-tail slice."""
-    report = spend_analysis(entity, start_date=start, end_date=end)
+    report = spend_analysis(
+        entity, start_date=start, end_date=end, branch_filter=branch_filter,
+    )
     # Limit the legend to five named categories; merge the long tail into Other.
     top = report.by_category[:5]
     remainder = report.by_category[5:]
@@ -197,7 +200,7 @@ def _spend_by_category(entity, start: datetime.date, end: datetime.date) -> dict
     return {"total": _money(report.total_gross), "items": items}
 
 
-def _monthly_trend(entity, as_of: datetime.date) -> dict:
+def _monthly_trend(entity, as_of: datetime.date, branch_filter) -> dict:
     """Return eight calendar-month slots ending at ``as_of`` (current month is MTD)."""
     # Offsets -7…0 produce a stable eight-month window ending in the current month.
     starts = [_shift_month(_month_start(as_of), offset) for offset in range(-7, 1)]
@@ -211,6 +214,7 @@ def _monthly_trend(entity, as_of: datetime.date) -> dict:
                 invoice_date__gte=starts[0],
                 invoice_date__lte=as_of,
             )
+            .filter(branch_filter)
             .annotate(month=TruncMonth("invoice_date"))
             .values("month")
             .annotate(total=Sum("total"))
@@ -237,8 +241,8 @@ def _requester_name(user) -> str:
     )
 
 
-def _pending_approvals(entity, user) -> list:
-    """Build the actor's current procurement queue, constrained to ``entity``.
+def _pending_approvals(entity, user, branch_filter) -> list:
+    """Build the actor's current procurement queue, constrained to ``entity`` and branch.
 
     This returns the complete de-duplicated queue; the dashboard composer owns the
     four-card presentation cap so the count KPI can still report the full queue.
@@ -303,10 +307,14 @@ def _pending_approvals(entity, user) -> list:
         seen_instances.add(instance.id)
 
     documents = {
-        # Filtering by entity here is the cross-tenant boundary for generic workflows.
+        # Filtering by entity here is the cross-tenant boundary for generic workflows;
+        # the branch filter is the sub-scope, so a card can never name a document the
+        # caller is not allowed to open.
         doc_type: {
             row.pk: row
-            for row in model.objects.filter(entity=entity, pk__in=ids_by_type[doc_type]).select_related(
+            for row in model.objects.filter(
+                entity=entity, pk__in=ids_by_type[doc_type],
+            ).filter(branch_filter).select_related(
                 *("vendor",) if doc_type != WF_DOCTYPE_REQUISITION else ()
             )
         }
@@ -378,15 +386,28 @@ def _recent_activity(entity) -> list:
     ]
 
 
-def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = None) -> dict:
+def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = None,
+                          branch_filter=None) -> dict:
     """Return the complete Procurement Dashboard payload for one ledger entity.
 
     ``as_of`` closes the current MTD spend/trend and supplies the overdue-invoice clock.
     The comparison period is the same elapsed day count in the previous month, clamped
     to that month's end. Activity is capped at five events and the visible approval panel
     at four cards; ``pending_approvals.count`` still reflects every eligible item.
+
+    ``branch_filter`` is the caller's branch narrowing as a ``Q`` (see
+    ``views.base._branch_q``), applied to every document-derived figure so a
+    branch-bound viewer's spend, orders, overdue bills and approval cards match the
+    lists they can open. It defaults to no narrowing, which is what an unbound viewer
+    and a tenant with no branches both get. ``active_vendors`` stays entity-wide
+    because vendors are entity master data that every branch shares and the vendor
+    list is not branch-narrowed either.
     """
     as_of = as_of or timezone.localdate()
+    if branch_filter is None:
+        from django.db.models import Q
+
+        branch_filter = Q()
     current_start = _month_start(as_of)
     previous_start = _shift_month(current_start, -1)
     # Compare equal elapsed days (e.g. Jul 1–17 against Jun 1–17), clamped for
@@ -396,17 +417,17 @@ def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = No
         previous_start + datetime.timedelta(days=as_of.day - 1),
     )
 
-    current_spend = _spend_kobo(entity, current_start, as_of)
-    previous_spend = _spend_kobo(entity, previous_start, previous_end)
-    po_status = _po_status(entity)
-    approvals = _pending_approvals(entity, user)
+    current_spend = _spend_kobo(entity, current_start, as_of, branch_filter)
+    previous_spend = _spend_kobo(entity, previous_start, previous_end, branch_filter)
+    po_status = _po_status(entity, branch_filter)
+    approvals = _pending_approvals(entity, user, branch_filter)
 
     # Strictly earlier due dates are overdue; an invoice due on as_of remains current.
     overdue = VendorInvoice.objects.filter(
         entity=entity,
         status=DocumentStatus.POSTED,
         due_date__lt=as_of,
-    ).exclude(payment_status=InvoicePaymentStatus.PAID)
+    ).filter(branch_filter).exclude(payment_status=InvoicePaymentStatus.PAID)
     overdue_values = overdue.aggregate(
         count=Count("id"),
         # Outstanding balance is invoice total less all allocations already paid.
@@ -439,9 +460,12 @@ def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = No
                 "on_hold_count": active_vendors.filter(on_hold=True).count(),
             },
         },
-        "spend_by_category": _spend_by_category(entity, current_start, as_of),
+        "spend_by_category": _spend_by_category(entity, current_start, as_of, branch_filter),
         "purchase_order_status": {"items": po_status["items"]},
-        "monthly_spend_trend": _monthly_trend(entity, as_of),
+        "monthly_spend_trend": _monthly_trend(entity, as_of, branch_filter),
+        # Entity-wide: the finance audit log carries no branch column, so this feed
+        # cannot be narrowed here. It names actions and document numbers only - no
+        # amounts - and remains a known gap for a branch-bound viewer.
         "recent_activity": _recent_activity(entity),
         # Four cards fit the prototype panel; the full queue remains a click away and
         # the KPI above deliberately uses len(approvals) before this presentation cap.

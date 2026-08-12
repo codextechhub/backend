@@ -1097,7 +1097,8 @@ class SpendAnalysis:
     invoice_count: int = 0
 
 
-def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, category=None) -> SpendAnalysis:
+def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, category=None,
+                   branch_filter=None) -> SpendAnalysis:
     """Analyse realised spend for ``entity`` from POSTED vendor invoices.
 
     Spend is the gross of POSTED :class:`VendorInvoice` s whose ``invoice_date`` falls
@@ -1108,6 +1109,10 @@ def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, categ
     ``"UNCATEGORISED"``) to scope it to one purchasing category - the per-category drawer
     reuses this so its by_vendor / by_period reflect only that category. Both supplied
     date bounds are inclusive, and every amount remains gross/net/tax integer kobo.
+
+    ``branch_filter`` is an optional ``Q`` narrowing the population to one branch
+    sub-scope (see ``views.base._branch_q``); omitted, the analysis stays entity-wide
+    exactly as before.
     """
     from vs_finance.constants import DocumentStatus
 
@@ -1118,6 +1123,8 @@ def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, categ
         .filter(entity=entity, status=DocumentStatus.POSTED)
         .select_related("vendor", "vendor__category")
     )
+    if branch_filter is not None:
+        qs = qs.filter(branch_filter)
     if vendor is not None:
         qs = qs.filter(vendor=vendor)
     if category is not None:
