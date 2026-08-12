@@ -122,6 +122,7 @@ class SensitiveSerializerWiringTest(TestCase):
             {
                 "email": "procurement.vendor.view_sensitive",
                 "phone": "procurement.vendor.view_sensitive",
+                "contacts": "procurement.vendor.view_sensitive",
                 "address": "procurement.vendor.view_sensitive",
                 "tax_id": "procurement.vendor.view_sensitive",
                 "bank_name": "procurement.vendor.view_sensitive",
