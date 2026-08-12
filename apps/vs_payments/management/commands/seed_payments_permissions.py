@@ -33,6 +33,13 @@ PAYMENTS_RESOURCES = [
     # references and error detail, so it is SENSITIVE; replaying re-runs the confirm
     # services and can book real money, so it is CRITICAL.
     ("webhook",         "provider webhooks",   [("view", "SENSITIVE"), ("replay", "CRITICAL")]),
+    # The platform-scope half of the same problem. An event that matched nothing has no
+    # entity, so the entity-scoped keys above cannot govern it: those are a tenant's
+    # licence over its own books, and this list spans every tenant. Separate keys keep
+    # that reach a deliberate grant rather than a side effect of holding the tenant one.
+    # The views additionally require the caller to be CX (platform-tenant) staff.
+    ("unattributed_webhook", "unattributed provider webhooks",
+     [("view", "SENSITIVE"), ("replay", "CRITICAL")]),
     ("virtual_account", "virtual accounts",    [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("manage", "SENSITIVE"), ("view_sensitive", "SENSITIVE")]),
     # Bulk-payout-batch approval (maker-checker over the highest-risk cash-out path).

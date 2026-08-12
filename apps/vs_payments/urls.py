@@ -28,5 +28,13 @@ urlpatterns = [
          name="payments-webhooks-summary"),
     path("webhooks/<int:pk>/replay/", views.WebhookEventReplayView.as_view(),
          name="payments-webhook-replay"),
+    # Platform-scope (CX staff only): events that matched neither a collection nor a
+    # payout, and so have no entity to be listed under. Declared above the receiver for
+    # the same reason "summary" is - "unattributed" is not a provider name.
+    path("webhooks/unattributed/", views.UnattributedWebhookListView.as_view(),
+         name="payments-webhooks-unattributed"),
+    path("webhooks/unattributed/<int:pk>/replay/",
+         views.UnattributedWebhookReplayView.as_view(),
+         name="payments-webhook-unattributed-replay"),
     path("webhooks/<str:provider>/", views.WebhookView.as_view(), name="payments-webhook"),
 ]

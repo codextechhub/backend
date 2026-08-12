@@ -27,7 +27,12 @@ from core.response import success_response
 from vs_finance.money import format_naira
 from vs_finance.models import Account, Customer, Invoice
 from vs_finance.views import resolve_entity
-from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive, user_has_rbac_permission
+from vs_rbac.permissions import (
+    HasRBACPermission,
+    IsAuthenticatedAndActive,
+    IsVisionStaff,
+    user_has_rbac_permission,
+)
 
 from . import reconciliation, services, webhooks
 from .constants import VirtualAccountStatus, WebhookStatus
@@ -958,9 +963,10 @@ def _entity_webhooks(entity):
     :class:`~vs_payments.models.WebhookEvent` carries no entity of its own - it is a
     raw provider event, stored before we know what it concerns - so tenancy is derived
     from the record it was matched to. An event we could not match to anything has no
-    entity and is therefore never returned here; surfacing those needs a platform-level
-    operations view, tracked separately, because showing one tenant an unattributable
-    reference would leak another tenant's transaction.
+    entity and is therefore never returned here, because showing one tenant an
+    unattributable reference would leak another tenant's transaction. Those events are
+    not lost: they belong to the platform-scope view below
+    (:class:`UnattributedWebhookListView`), which is CX-staff only.
     """
     return WebhookEvent.objects.filter(
         Q(collection__entity=entity) | Q(payout__entity=entity),
@@ -1038,13 +1044,38 @@ class WebhookEventSummaryView(APIView):
         })
 
 
-class WebhookEventReplayView(APIView):
-    """POST /payments/webhooks/<id>/replay/ - re-run a stored event.
+# Re-run one stored event and describe what happened.
+def _replay_event(event):
+    """Replay ``event`` and return the operator-facing response for it.
+
+    Shared by the entity-scoped and the platform-scope replay endpoints: which events a
+    caller may reach differs, what a replay *does* does not, and the behaviour below
+    (the already-processed short-circuit, the honest "did not succeed" message) is the
+    part that must not drift between the two screens.
 
     Re-runs the same :func:`vs_payments.webhooks.process_stored_event` the task uses,
     against the body already on file. Safe to press twice: the confirm services are
     idempotent on a terminal record, and the processor itself no-ops on an event that
     already reached PROCESSED, so a replay can neither double-book nor undo one.
+    """
+    if event.status == WebhookStatus.PROCESSED:
+        return success_response(
+            "This event was already processed; nothing to replay.",
+            data=WebhookEventSerializer(event).data,
+        )
+
+    webhooks.process_stored_event(event.id)
+    event.refresh_from_db()
+    booked = event.status == WebhookStatus.PROCESSED
+    return success_response(
+        "Webhook replayed and booked." if booked
+        else f"Replay did not succeed: {event.error or 'see the event for detail'}.",
+        data=WebhookEventSerializer(event).data,
+    )
+
+
+class WebhookEventReplayView(APIView):
+    """POST /payments/webhooks/<id>/replay/ - re-run a stored event.
 
     The usual reason a replay now succeeds is that the blocker has gone - most often a
     fiscal period that was closed when the event first arrived and has since reopened.
@@ -1061,17 +1092,107 @@ class WebhookEventReplayView(APIView):
         event = _entity_webhooks(entity).filter(pk=pk).first()
         if event is None:
             raise NotFound("Webhook event not found for this entity.")
-        if event.status == WebhookStatus.PROCESSED:
-            return success_response(
-                "This event was already processed; nothing to replay.",
-                data=WebhookEventSerializer(event).data,
-            )
+        return _replay_event(event)
 
-        webhooks.process_stored_event(event.id)
-        event.refresh_from_db()
-        booked = event.status == WebhookStatus.PROCESSED
-        return success_response(
-            "Webhook replayed and booked." if booked
-            else f"Replay did not succeed: {event.error or 'see the event for detail'}.",
-            data=WebhookEventSerializer(event).data,
-        )
+
+# --------------------------------------------------------------------------- #
+# Unattributed webhooks (platform scope, CX staff only)                        #
+# --------------------------------------------------------------------------- #
+
+# Restrict webhook events to the ones that belong to nobody.
+def _unattributed_webhooks():
+    """Webhook events that matched neither a collection nor a payout.
+
+    The exact complement of :func:`_entity_webhooks`: an event links to a collection or
+    a payout (and is then shown on that entity's screen) or it links to neither, in
+    which case there is no entity to scope it to and no tenant may be shown it. What is
+    left is genuine debris - a staging PSP pointed at production, a reference that no
+    longer exists, an event type we do not handle - but it is still money moving at the
+    provider against a reference we do not recognise, so somebody has to see it.
+    """
+    return WebhookEvent.objects.filter(collection__isnull=True, payout__isnull=True)
+
+
+# Group the platform-only gate for the unattributed-webhook endpoints.
+class _PlatformWebhookView(APIView):
+    """Base for the unattributed-event endpoints: CX staff, and no ``?entity=``.
+
+    These rows have no entity, so :func:`vs_finance.views.resolve_entity` - the normal
+    "does this entity belong to your tenant" gate - has nothing to resolve and cannot be
+    the authorisation here. The gate instead is ``IsVisionStaff``, the platform's
+    existing convention for a CX-only surface (``vs_todo``, ``vs_schools`` lifecycle,
+    the security screens all use it): it passes only when the *effective* user's home
+    tenant is the PLATFORM (Codex) tenant, so a school user is refused however their
+    roles are configured, and a CX staffer proxying as a school user is refused too
+    (while proxying they are that school's user and must see what that user sees).
+
+    ``IsVisionStaff`` answers "may this person stand at the platform level at all";
+    ``HasRBACPermission`` answers "may they do this particular thing". Both are
+    required: the entity-scoped ``payments.webhook.*`` grants deliberately do not
+    reach here, because they are a tenant's licence over its own books.
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff & HasRBACPermission]
+
+
+class UnattributedWebhookListView(_PlatformWebhookView):
+    """GET /payments/webhooks/unattributed/ - provider events that belong to no tenant.
+
+    Expect this list to be short and usually empty; that is the healthy state, not a
+    reason to alarm anyone. Defaults, like the entity-scoped list, to the events that
+    reached a terminal state needing a human: IGNORED (valid signature, nothing local
+    to match) and FAILED. ``?status=ALL`` widens it to everything unattributed, which
+    also surfaces RECEIVED rows still waiting on a worker.
+
+    Filters: ``?status=`` (a single WebhookStatus, or ``ALL``), ``?provider=``,
+    ``?search=`` over the provider reference (there is no matched record to search).
+
+    docstring-name: Unattributed provider webhooks
+    """
+
+    rbac_permission = "payments.unattributed_webhook.view"
+
+    # Handle GET requests for this endpoint.
+    def get(self, request):
+        qs = _unattributed_webhooks()
+
+        status_filter = (request.query_params.get("status") or "").upper()
+        if status_filter == "ALL":
+            pass  # Explicitly asked for everything unattributed, not just the problems.
+        elif status_filter:
+            qs = qs.filter(status=status_filter)
+        else:
+            qs = qs.filter(status__in=NEEDS_ATTENTION_STATUSES)
+
+        if (provider := request.query_params.get("provider")):
+            qs = qs.filter(provider=provider)
+        if (search := (request.query_params.get("search") or "").strip()):
+            qs = qs.filter(provider_reference__icontains=search)
+        return _paginate(request, qs.order_by("-created_at", "-id"),
+                         WebhookEventSerializer, self)
+
+
+class UnattributedWebhookReplayView(_PlatformWebhookView):
+    """POST /payments/webhooks/unattributed/<id>/replay/ - re-run an unattributed event.
+
+    Same replay as the entity-scoped one (:func:`_replay_event`), reached differently.
+    It is worth pressing after the reason for the mismatch has been fixed: provision the
+    virtual account the deposit named, for instance, and the replay resolves the payer
+    and books the receipt. The event then has a collection, so it leaves this list and
+    appears on that entity's own screen - which is where it belonged all along.
+
+    Only ever finds an unattributed event: an id that has since been matched (or never
+    was) resolves to nothing here, so this endpoint can never be used to reach into a
+    tenant's own events.
+
+    docstring-name: Replay an unattributed provider webhook
+    """
+
+    rbac_permission = "payments.unattributed_webhook.replay"
+
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk):
+        event = _unattributed_webhooks().filter(pk=pk).first()
+        if event is None:
+            raise NotFound("No unattributed webhook event matches that id.")
+        return _replay_event(event)

@@ -1824,3 +1824,282 @@ class FailedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
         event.refresh_from_db()
         self.assertEqual(event.status, "FAILED")
         self.assertFalse(Payment.objects.filter(entity=entity).exists())
+
+
+class UnattributedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
+    """An event that matched nothing belongs to no tenant, and still has to be seen.
+
+    ``FailedWebhookVisibilityTests`` above covers the events we *can* attribute: they
+    reach an entity through the collection or payout they matched, and that entity's
+    operators see them. An event that matched neither has no entity at all, so it
+    appeared on no screen - and it is not nothing, it is money moving at the provider
+    against a reference we do not recognise (a staging PSP pointed at production, a
+    deleted reference, an event type we do not handle).
+
+    It cannot simply be shown to every tenant: the reference belongs to one of them, and
+    showing it to the others leaks a transaction. So it lives on a platform-scope list
+    that only CX staff may open, gated by its own permission keys rather than the
+    entity-scoped ``payments.webhook.*`` grants, which are a tenant's licence over its
+    own books.
+    """
+
+    LIST_URL = "/v1/payments/webhooks/unattributed/"
+
+    def setUp(self):
+        from django.core.management import call_command
+        from django.contrib.auth import get_user_model
+        from vs_tenants.models import Tenant
+
+        call_command("seed_actions", verbosity=0)
+        call_command("seed_payments_permissions", verbosity=0)
+
+        self.User = get_user_model()
+        self.Tenant = Tenant
+        self.codex = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+    # -- actors ------------------------------------------------------------- #
+
+    def _client_holding(self, *keys, email, tenant=None, user_type="CX_STAFF"):
+        """A live client for a user holding exactly *keys* in *tenant* (codex default).
+
+        Deliberately never the super admin: ``is_vision_super_admin`` bypasses every
+        RBAC check, which would hide whether the new keys are enforced at all.
+        """
+        from core.test_utils import TenantAPIClient
+        from vs_rbac.tests.helpers import (
+            make_assignment, make_permission, make_role, make_role_permission,
+        )
+
+        tenant = tenant or self.codex
+        user = self.User.objects.create_user(
+            email=email, password="testpass123", user_type=user_type,
+            status="ACTIVE", first_name="Hook", last_name="Tester", tenant=tenant,
+        )
+        role = make_role(tenant, name=f"Role {email}")
+        for key in keys:
+            make_role_permission(role, make_permission(key))
+        make_assignment(tenant, user, role)
+        return TenantAPIClient(user=user)
+
+    def _platform_operator(self, email="unattributed-ops@test.com"):
+        """CX staff holding both new platform-scope keys."""
+        return self._client_holding(
+            "payments.unattributed_webhook.view",
+            "payments.unattributed_webhook.replay",
+            email=email,
+        )
+
+    def _school_tenant(self, slug="hook-school"):
+        return self.Tenant.objects.create(
+            name="Hook School", slug=slug,
+            kind=self.Tenant.Kind.SCHOOL, status=self.Tenant.Status.ACTIVE,
+        )
+
+    # -- events ------------------------------------------------------------- #
+
+    def _unmatched_charge(self, *, reference="STRAY-1", amount=50000):
+        """Ingest a signed charge for a reference we never issued; returns the event."""
+        raw, headers = self.fake.build_webhook(
+            event="charge.success", reference=reference, status="SUCCEEDED", amount=amount)
+        with self.captureOnCommitCallbacks(execute=True):  # Run the deferred worker inline.
+            event = webhooks.ingest_webhook(provider="FAKE", raw_body=raw, headers=headers)
+        event.refresh_from_db()
+        return event
+
+    def _deposit_to_unknown_account(self, *, account_number, reference, amount):
+        """Ingest a deposit naming a NUBAN we have not provisioned; returns the event."""
+        self.fake.forced_status[reference] = "SUCCEEDED"  # The provider's own API agrees.
+        self.fake.forced_amount[reference] = amount  # ... and reports the settled amount.
+        raw, headers = self.fake.build_webhook(
+            event="charge.success", reference=reference, status="SUCCEEDED",
+            amount=amount, receiver_account_number=account_number)
+        with self.captureOnCommitCallbacks(execute=True):
+            event = webhooks.ingest_webhook(provider="FAKE", raw_body=raw, headers=headers)
+        event.refresh_from_db()
+        return event
+
+    def _attributed_failure(self, entity, customer):
+        """Drive a real collection webhook that fails to book; returns the event.
+
+        Mirrors ``FailedWebhookVisibilityTests._failed_collection_webhook``: the event
+        is linked to a collection (and therefore to an entity) even though the booking
+        blew up, which is exactly what must keep it off the platform list.
+        """
+        intent = services.initiate_collection(
+            entity=entity, amount=50000, customer=customer, narration="Fees")
+        self.fake.forced_status[intent.reference] = "SUCCEEDED"
+        FiscalPeriod.objects.filter(entity=entity).update(status="CLOSED")
+        raw, headers = self.fake.build_webhook(
+            event="charge.success", reference=intent.reference,
+            status="SUCCEEDED", amount=50000)
+        event = webhooks.ingest_webhook(provider="FAKE", raw_body=raw, headers=headers)
+        webhooks.process_stored_event(event.id)
+        event.refresh_from_db()
+        return event
+
+    # -- what the list contains --------------------------------------------- #
+
+    def test_an_unattributed_event_is_listed_for_the_platform(self):
+        self.build()
+        event = self._unmatched_charge()
+
+        self.assertEqual(event.status, "IGNORED")
+        self.assertIsNone(event.collection_id)
+        self.assertIsNone(event.payout_id)
+
+        resp = self._platform_operator().get(self.LIST_URL)
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        rows = resp.json()["data"]
+        self.assertEqual([r["id"] for r in rows], [event.id])
+        self.assertEqual(rows[0]["error"], "No matching collection intent.")  # Why it is here.
+        self.assertIsNone(rows[0]["target_kind"])  # Nothing local to point at.
+        # The provider's raw record is the provider's, not the console's.
+        for leaked in ("payload", "raw_body", "headers", "signature"):
+            self.assertNotIn(leaked, rows[0])
+
+    def test_an_event_that_belongs_to_an_entity_is_not_on_the_platform_list(self):
+        entity, customer, _vendor = self.build()
+        attributed = self._attributed_failure(entity, customer)
+        stray = self._unmatched_charge(reference="STRAY-2")
+
+        resp = self._platform_operator().get(self.LIST_URL)
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        listed = [r["id"] for r in resp.json()["data"]]
+        self.assertEqual(listed, [stray.id])  # The entity's own event has its own screen.
+        self.assertNotIn(attributed.id, listed)
+
+    def test_the_quiet_case_is_an_empty_list_not_an_error(self):
+        self.build()
+
+        resp = self._platform_operator().get(self.LIST_URL)
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["data"], [])
+
+    def test_status_all_widens_the_list_beyond_the_terminal_states(self):
+        # A stored-but-not-yet-processed event is unattributed too, but it is in flight,
+        # not debris - so it stays out of the default view and shows under ?status=ALL.
+        self.build()
+        raw, headers = self.fake.build_webhook(
+            event="charge.success", reference="STRAY-3", status="SUCCEEDED", amount=1000)
+        event = webhooks.ingest_webhook(  # No on-commit capture: the worker never runs.
+            provider="FAKE", raw_body=raw, headers=headers)
+        self.assertEqual(event.status, "RECEIVED")
+
+        client = self._platform_operator()
+        self.assertEqual(client.get(self.LIST_URL).json()["data"], [])
+        widened = client.get(f"{self.LIST_URL}?status=ALL")
+        self.assertEqual([r["id"] for r in widened.json()["data"]], [event.id])
+
+    # -- who may open it ----------------------------------------------------- #
+
+    def test_a_tenant_user_is_refused_even_holding_the_entity_scoped_keys(self):
+        """The whole point of the screen: it spans tenants, so no tenant may open it.
+
+        This user holds every payments webhook key there is, including the two new
+        platform ones. Their home tenant is a school, so the platform gate refuses them
+        before RBAC is consulted - a tenant cannot be granted its way into a list of
+        other tenants' references.
+        """
+        self.build()
+        event = self._unmatched_charge()
+        client = self._client_holding(
+            "payments.webhook.view", "payments.webhook.replay",
+            "payments.unattributed_webhook.view", "payments.unattributed_webhook.replay",
+            email="school-hooks@test.com", tenant=self._school_tenant(),
+            user_type="SCHOOL_ADMIN",
+        )
+
+        self.assertEqual(client.get(self.LIST_URL).status_code, 403)
+        self.assertEqual(
+            client.post(f"{self.LIST_URL}{event.id}/replay/").status_code, 403)
+
+    def test_a_platform_user_without_the_new_key_is_refused(self):
+        """Holding the entity-scoped webhook keys is not holding these ones."""
+        self.build()
+        event = self._unmatched_charge()
+        client = self._client_holding(
+            "payments.webhook.view", "payments.webhook.replay",
+            email="cx-entity-hooks@test.com",
+        )
+
+        self.assertEqual(client.get(self.LIST_URL).status_code, 403)
+        self.assertEqual(
+            client.post(f"{self.LIST_URL}{event.id}/replay/").status_code, 403)
+
+    def test_the_replay_key_alone_does_not_open_the_list(self):
+        self.build()
+        client = self._client_holding(
+            "payments.unattributed_webhook.replay", email="cx-replay-only@test.com")
+
+        self.assertEqual(client.get(self.LIST_URL).status_code, 403)
+
+    # -- replay -------------------------------------------------------------- #
+
+    def test_replay_books_the_deposit_once_the_account_is_provisioned(self):
+        """The realistic reason an unattributed event becomes attributable.
+
+        A payer transfers into a NUBAN the console has no record of, so nothing resolves
+        it and the cash sits unbooked. Once an operator provisions that account, the
+        stored event has everything it needs: replaying it resolves the payer, books the
+        receipt, and the event leaves this list for the entity's own screen.
+        """
+        entity, customer, _vendor = self.build()
+        event = self._deposit_to_unknown_account(
+            account_number="9988776655", reference="DEP-STRAY", amount=45000)
+        self.assertEqual(event.status, "IGNORED")
+        self.assertIn("9988776655", event.error)
+        self.assertFalse(Payment.objects.filter(entity=entity).exists())
+
+        VirtualAccount.objects.create(  # The account is provisioned after the fact.
+            entity=entity, provider="FAKE", customer=customer,
+            account_number="9988776655", bank_name="Fake MFB", account_name="Acme Ltd",
+            deposit_account=Account.objects.get(entity=entity, code="1110"),
+        )
+        client = self._platform_operator()
+        resp = client.post(f"{self.LIST_URL}{event.id}/replay/")
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        event.refresh_from_db()
+        self.assertEqual(event.status, "PROCESSED")
+        self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)
+        # Now attributable, so it belongs to the entity's screen and not this one.
+        self.assertIsNotNone(event.collection_id)
+        self.assertEqual(client.get(f"{self.LIST_URL}?status=ALL").json()["data"], [])
+
+    def test_replaying_twice_books_nothing_further(self):
+        entity, customer, _vendor = self.build()
+        event = self._deposit_to_unknown_account(
+            account_number="9988776600", reference="DEP-STRAY-2", amount=30000)
+        VirtualAccount.objects.create(
+            entity=entity, provider="FAKE", customer=customer,
+            account_number="9988776600", bank_name="Fake MFB", account_name="Acme Ltd",
+            deposit_account=Account.objects.get(entity=entity, code="1110"),
+        )
+        client = self._platform_operator()
+
+        first = client.post(f"{self.LIST_URL}{event.id}/replay/")
+        self.assertEqual(first.status_code, 200, first.content)
+        self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)
+
+        # The event is no longer unattributed, so the platform endpoint no longer owns
+        # it: pressing replay again from a stale screen must 404 rather than reach into
+        # the entity's records, and must certainly not book a second receipt.
+        again = client.post(f"{self.LIST_URL}{event.id}/replay/")
+        self.assertEqual(again.status_code, 404)
+        self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)
+
+    def test_a_replay_that_resolves_nothing_says_so_and_changes_nothing(self):
+        entity, _customer, _vendor = self.build()
+        event = self._unmatched_charge(reference="STRAY-4")
+
+        resp = self._platform_operator().post(f"{self.LIST_URL}{event.id}/replay/")
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIn("did not succeed", resp.json()["message"])
+        event.refresh_from_db()
+        self.assertEqual(event.status, "IGNORED")
+        self.assertIsNone(event.collection_id)
+        self.assertFalse(Payment.objects.filter(entity=entity).exists())
