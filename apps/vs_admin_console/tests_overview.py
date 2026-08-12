@@ -434,3 +434,182 @@ class OverviewTenantIsolationTests(OverviewTestBase):
         grant(self.user, PERM_TEAM)
         make_vision_user(email="ov-wide-cx@codex.test")
         self.assertEqual(self.fetch()["team"]["total"], 2)
+
+
+class OverviewExpandedSignalTests(OverviewTestBase):
+    """The second wave of signals - same contract: gated, and silent when quiet.
+
+    Fixtures are deliberately minimal (nullable control accounts stay null):
+    the signals only count rows, so the tests build only what the count reads.
+    """
+
+    def _entity(self, code="SIGBOOKS"):
+        from vs_finance.models import LedgerEntity
+
+        return LedgerEntity.objects.create(
+            name=f"{code} Books", code=code, tenant=self.user.tenant,
+        )
+
+    def test_overdue_invoices_counts_posted_unpaid_past_due(self):
+        import datetime
+
+        from django.utils import timezone
+        from vs_finance.constants import DocumentStatus, InvoicePaymentStatus
+        from vs_finance.models import Customer, Invoice
+
+        entity = self._entity()
+        customer = Customer.objects.create(entity=entity, code="C1", name="Acme")
+        yesterday = timezone.localdate() - datetime.timedelta(days=1)
+        tomorrow = timezone.localdate() + datetime.timedelta(days=1)
+
+        def invoice(due, status=DocumentStatus.POSTED, paid=InvoicePaymentStatus.UNPAID):
+            Invoice.objects.create(
+                entity=entity, customer=customer, invoice_date=yesterday,
+                due_date=due, status=status, payment_status=paid,
+            )
+
+        invoice(yesterday)                                        # counts
+        invoice(yesterday, paid=InvoicePaymentStatus.PARTIAL)     # counts
+        invoice(yesterday, paid=InvoicePaymentStatus.PAID)        # settled
+        invoice(tomorrow)                                         # not yet due
+        invoice(yesterday, status=DocumentStatus.DRAFT)           # not posted
+
+        self.assertNotIn("signals", self.fetch())
+        grant(self.user, "finance.invoice.view")
+        self.assertEqual(self.fetch()["signals"]["overdue_invoices"]["count"], 2)
+
+    def test_unallocated_credit_counts_receipts_with_cash_left(self):
+        import datetime
+
+        from vs_finance.constants import DocumentStatus
+        from vs_finance.models import Customer, Payment
+
+        entity = self._entity("SIGRCP")
+        customer = Customer.objects.create(entity=entity, code="C2", name="Beta")
+        day = datetime.date(2026, 8, 1)
+
+        def receipt(amount, allocated, refunded=0, status=DocumentStatus.POSTED):
+            Payment.objects.create(
+                entity=entity, customer=customer, payment_date=day, status=status,
+                amount=amount, allocated_amount=allocated, refunded_amount=refunded,
+            )
+
+        receipt(10_000, 4_000)            # 6k credit - counts
+        receipt(10_000, 10_000)           # fully applied
+        receipt(10_000, 4_000, 6_000)     # rest refunded out
+        receipt(10_000, 0, status=DocumentStatus.DRAFT)  # not posted
+
+        self.assertNotIn("signals", self.fetch())
+        grant(self.user, "finance.payment.view")
+        self.assertEqual(self.fetch()["signals"]["unallocated_credit"]["count"], 1)
+
+    def test_vendor_invoices_unpaid_counts_posted_not_paid(self):
+        import datetime
+
+        from vs_finance.constants import DocumentStatus, InvoicePaymentStatus
+        from vs_procurement.models import Vendor, VendorInvoice
+
+        entity = self._entity("SIGAP")
+        vendor = Vendor.objects.create(entity=entity, code="V1", name="Supplies Co")
+        day = datetime.date(2026, 8, 1)
+
+        def bill(status=DocumentStatus.POSTED, paid=InvoicePaymentStatus.UNPAID):
+            VendorInvoice.objects.create(
+                entity=entity, vendor=vendor, invoice_date=day,
+                status=status, payment_status=paid,
+            )
+
+        bill()                                      # counts
+        bill(paid=InvoicePaymentStatus.PARTIAL)     # counts
+        bill(paid=InvoicePaymentStatus.PAID)
+        bill(status=DocumentStatus.DRAFT)
+
+        self.assertNotIn("signals", self.fetch())
+        grant(self.user, "procurement.vendor_invoice.view")
+        self.assertEqual(self.fetch()["signals"]["vendor_invoices_unpaid"]["count"], 2)
+
+    def test_rfqs_open_counts_issued_only(self):
+        import datetime
+
+        from vs_procurement.constants import RfqStatus
+        from vs_procurement.models import RequestForQuotation
+
+        entity = self._entity("SIGRFQ")
+        day = datetime.date(2026, 8, 1)
+        for status in (RfqStatus.ISSUED, RfqStatus.ISSUED, RfqStatus.DRAFT, RfqStatus.AWARDED):
+            RequestForQuotation.objects.create(
+                entity=entity, issue_date=day, rfq_status=status,
+            )
+
+        self.assertNotIn("signals", self.fetch())
+        grant(self.user, "procurement.rfq.view")
+        self.assertEqual(self.fetch()["signals"]["rfqs_open"]["count"], 2)
+
+    def test_contracts_expiring_counts_active_inside_the_window(self):
+        import datetime
+
+        from django.utils import timezone
+        from vs_procurement.constants import ContractStatus
+        from vs_procurement.models import Vendor, VendorContract
+
+        entity = self._entity("SIGCON")
+        vendor = Vendor.objects.create(entity=entity, code="V2", name="Services Co")
+        today = timezone.localdate()
+
+        def contract(ref, end, status=ContractStatus.ACTIVE):
+            VendorContract.objects.create(
+                entity=entity, vendor=vendor, reference=ref, title=ref,
+                status=status, start_date=today - datetime.timedelta(days=100), end_date=end,
+            )
+
+        contract("SOON", today + datetime.timedelta(days=10))            # counts
+        contract("FAR", today + datetime.timedelta(days=90))             # outside window
+        contract("DRAFT", today + datetime.timedelta(days=10), ContractStatus.DRAFT)
+
+        self.assertNotIn("signals", self.fetch())
+        grant(self.user, "procurement.contract.view")
+        self.assertEqual(self.fetch()["signals"]["contracts_expiring"]["count"], 1)
+
+    def test_users_without_roles_is_tenant_scoped_and_gated(self):
+        # Two extra active CX accounts with no role; the caller's own grant role
+        # (created by `grant`) keeps the caller out of the count.
+        make_vision_user(email="ov-roleless-1@codex.test")
+        make_vision_user(email="ov-roleless-2@codex.test")
+
+        self.assertNotIn("signals", self.fetch())
+        grant(self.user, "platform.roles.view")
+        self.assertEqual(self.fetch()["signals"]["users_without_roles"]["count"], 2)
+
+    def test_team_overdue_tasks_walks_the_callers_own_subtree(self):
+        import datetime
+
+        from django.utils import timezone
+        from vs_todo.models import Task
+        from vs_user.models import OrgNode, Position, PositionAssignment
+
+        division = OrgNode.objects.create(name="Ops", code="SIG-OPS", kind=OrgNode.Kind.DIVISION)
+        report = make_vision_user(email="ov-report@codex.test")
+        outsider = make_vision_user(email="ov-outsider@codex.test")
+
+        top = Position.objects.create(title="Ops Lead", code="SIG-LEAD", org_node=division)
+        seat = Position.objects.create(title="Ops Analyst", code="SIG-AN", org_node=division, reports_to=top)
+        lone = Position.objects.create(title="Lone Seat", code="SIG-LONE", org_node=division)
+        PositionAssignment.objects.create(user=self.user, position=top, is_primary=True)
+        PositionAssignment.objects.create(user=report, position=seat, is_primary=True)
+        PositionAssignment.objects.create(user=outsider, position=lone, is_primary=True)
+
+        yesterday = timezone.localdate() - datetime.timedelta(days=1)
+
+        def task(assignee, deadline, done=False):
+            Task.objects.create(
+                assignee=assignee, title="t", metric="m", target="g",
+                deadline=deadline, is_done=done,
+            )
+
+        task(report, yesterday)                 # counts
+        task(report, yesterday, done=True)      # finished
+        task(outsider, yesterday)               # not in the caller's subtree
+        task(self.user, yesterday)              # own tasks live in the tasks section
+
+        signals = self.fetch().get("signals", {})
+        self.assertEqual(signals["team_overdue_tasks"]["count"], 1)

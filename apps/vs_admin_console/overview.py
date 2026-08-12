@@ -230,10 +230,17 @@ def _health() -> dict:
 
 PERM_FINANCE_REPORT_VIEW = "finance.report.view"
 PERM_FINANCE_JOURNAL_VIEW = "finance.journal.view"
+PERM_FINANCE_INVOICE_VIEW = "finance.invoice.view"
+PERM_FINANCE_PAYMENT_VIEW = "finance.payment.view"
 PERM_PO_VIEW = "procurement.purchase_order.view"
+PERM_VENDOR_INVOICE_VIEW = "procurement.vendor_invoice.view"
+PERM_RFQ_VIEW = "procurement.rfq.view"
+PERM_CONTRACT_VIEW = "procurement.contract.view"
 PERM_WEBHOOK_VIEW = "payments.webhook.view"
 
 SIGNAL_WINDOW_HOURS = 24
+#: An ACTIVE vendor contract ending inside this window is "expiring".
+CONTRACT_EXPIRY_DAYS = 30
 
 
 def _signals(user, tenant) -> dict:
@@ -321,6 +328,105 @@ def _signals(user, tenant) -> dict:
         ).count()
         if failures:
             signals["webhook_failures_24h"] = {"count": failures}
+
+    if has_permission(user, PERM_FINANCE_INVOICE_VIEW, tenant=tenant):
+        # Posted invoices past due and not fully settled - dunning pressure.
+        from vs_finance.constants import DocumentStatus, InvoicePaymentStatus
+        from vs_finance.models import Invoice
+
+        overdue = (
+            Invoice.objects.filter(
+                status=DocumentStatus.POSTED,
+                due_date__lt=timezone.localdate(),
+            )
+            .exclude(payment_status=InvoicePaymentStatus.PAID)
+            .count()
+        )
+        if overdue:
+            signals["overdue_invoices"] = {"count": overdue}
+
+    if has_permission(user, PERM_FINANCE_PAYMENT_VIEW, tenant=tenant):
+        # Receipts whose cash is still sitting as customer credit (2140):
+        # amount beyond what's been allocated to invoices or refunded back out.
+        from django.db.models import F
+
+        from vs_finance.constants import DocumentStatus
+        from vs_finance.models import Payment
+
+        idle = Payment.objects.filter(
+            status=DocumentStatus.POSTED,
+            amount__gt=F("allocated_amount") + F("refunded_amount"),
+        ).count()
+        if idle:
+            signals["unallocated_credit"] = {"count": idle}
+
+    if has_permission(user, PERM_VENDOR_INVOICE_VIEW, tenant=tenant):
+        # Posted vendor bills not yet fully paid - payables waiting on cash.
+        from vs_finance.constants import DocumentStatus as FinStatus
+        from vs_finance.constants import InvoicePaymentStatus as PayStatus
+        from vs_procurement.models import VendorInvoice
+
+        unpaid = (
+            VendorInvoice.objects.filter(status=FinStatus.POSTED)
+            .exclude(payment_status=PayStatus.PAID)
+            .count()
+        )
+        if unpaid:
+            signals["vendor_invoices_unpaid"] = {"count": unpaid}
+
+    if has_permission(user, PERM_RFQ_VIEW, tenant=tenant):
+        # Sourcing sitting open: issued RFQs that have not been awarded/closed.
+        from vs_procurement.constants import RfqStatus
+        from vs_procurement.models import RequestForQuotation
+
+        open_rfqs = RequestForQuotation.objects.filter(rfq_status=RfqStatus.ISSUED).count()
+        if open_rfqs:
+            signals["rfqs_open"] = {"count": open_rfqs}
+
+    if has_permission(user, PERM_CONTRACT_VIEW, tenant=tenant):
+        from vs_procurement.constants import ContractStatus
+        from vs_procurement.models import VendorContract
+
+        horizon = timezone.localdate() + timezone.timedelta(days=CONTRACT_EXPIRY_DAYS)
+        expiring = VendorContract.objects.filter(
+            status=ContractStatus.ACTIVE, end_date__lte=horizon,
+        ).count()
+        if expiring:
+            signals["contracts_expiring"] = {"count": expiring}
+
+    if any(has_permission(user, key, tenant=tenant) for key in PERM_ROLE_VIEW_KEYS):
+        # Access hygiene: active accounts in the caller's tenant holding no
+        # active role. Scoped to the caller's own tenant like the roles screen.
+        from vs_rbac.models import TenantUserRoleAssignment
+        from vs_user.models import User
+
+        scope = tenant or user.tenant
+        assigned = TenantUserRoleAssignment.objects.filter(
+            tenant=scope,
+            assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+        ).values("user_id")
+        roleless = (
+            User.objects.filter(tenant=scope, is_active=True)
+            .exclude(id__in=assigned)
+            .count()
+        )
+        if roleless:
+            signals["users_without_roles"] = {"count": roleless}
+
+    if getattr(user, "user_type", None) == "CX_STAFF":
+        # A manager's reports with overdue tasks - own subtree, so the gate is
+        # the same hierarchy that scopes the team dashboard, not a key.
+        from vs_todo.models import Task
+        from vs_todo.services.hierarchy import TodoHierarchy
+
+        reports = [u for u in TodoHierarchy.descendant_users(user) if u.pk != user.pk]
+        if reports:
+            team_overdue = Task.objects.filter(
+                assignee__in=reports, is_done=False,
+                deadline__lt=timezone.localdate(),
+            ).count()
+            if team_overdue:
+                signals["team_overdue_tasks"] = {"count": team_overdue}
 
     # Own background jobs that failed recently - own rows, so no key beyond an
     # active account, exactly like approvals/submissions above. Successes are
