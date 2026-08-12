@@ -1522,14 +1522,6 @@ class PayoutBatchApprovalTests(TestCase):
             defaults={"assignment_status": "ACTIVE"},
         )
 
-    def _senior(self, email="snr-pba@test.com"):
-        user = self.User.objects.create_user(
-            email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
-            first_name="Sen", last_name="Ior", tenant=self.school.tenant,
-        )
-        self._grant(user, "payments.payout_batch.approve_high_value", "pba-senior")
-        return user
-
     def test_the_seeded_ladder_closes_the_open_door(self):
         """The real seed, not a test fixture, is what has to stop a direct submit."""
         from vs_finance.approvals import approval_required
@@ -1559,14 +1551,14 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertEqual(self._instance_for(batch).status, WorkflowInstanceStatus.IN_PROGRESS)
         self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
 
-    def test_a_small_batch_needs_one_approval(self):
-        """Below the bar the senior stage never runs, so one checker releases it."""
+    def test_one_approval_releases_the_batch(self):
+        """The whole ladder is one stage, so one checker's vote dispatches it."""
         from vs_workflow.services import actions as wf_actions
         from vs_workflow.constants import WorkflowStageAction as ActionEnum
 
-        self._seed_tenant_ladder(threshold=100_000)  # Bar at 1,000.00.
+        self._seed_tenant_ladder()
         approver = self._make_approver()
-        batch = self._draft_batch(10_000)  # 100.00, well under.
+        batch = self._draft_batch(10_000)
         self._submit_for_approval(batch)
 
         wf_actions.record_action(self._instance_for(batch).id, approver, ActionEnum.APPROVED)
@@ -1574,26 +1566,24 @@ class PayoutBatchApprovalTests(TestCase):
         batch.refresh_from_db()
         self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
 
-    def test_a_large_batch_escalates_before_any_money_leaves(self):
-        """The threshold's whole job: one signature is not enough for a big run."""
+    def test_batch_size_does_not_change_who_must_sign(self):
+        """No threshold any more: a large run takes the same single approval.
+
+        Pinned rather than assumed, because the ladder used to escalate on total and a
+        reinstated condition would silently park large batches for a stage nobody holds.
+        """
         from vs_workflow.services import actions as wf_actions
         from vs_workflow.constants import WorkflowStageAction as ActionEnum
 
-        self._seed_tenant_ladder(threshold=100_000)  # Bar at 1,000.00.
+        self._seed_tenant_ladder()
         approver = self._make_approver()
-        senior = self._senior()
-        batch = self._draft_batch(90_000, 90_000)  # 1,800.00 total, over the bar.
+        batch = self._draft_batch(900_000_00, 900_000_00)  # Far past the old bar.
         self._submit_for_approval(batch)
-        instance = self._instance_for(batch)
 
-        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
-        batch.refresh_from_db()
-        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)  # Still nothing sent.
-        self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
+        wf_actions.record_action(self._instance_for(batch).id, approver, ActionEnum.APPROVED)
 
-        wf_actions.record_action(instance.id, senior, ActionEnum.APPROVED)
         batch.refresh_from_db()
-        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)  # Both signed.
+        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
 
     # --- 8. parked work becomes reachable again ---------------------------- #
 
@@ -1697,7 +1687,6 @@ class PayoutApprovalSeedingTests(TestCase):
     """
 
     APPROVE_KEY = "payments.payout_batch.approve"
-    SENIOR_KEY = "payments.payout_batch.approve_high_value"
 
     def setUp(self):
         import io
@@ -1715,21 +1704,17 @@ class PayoutApprovalSeedingTests(TestCase):
 
     # --- shape ------------------------------------------------------------- #
 
-    def test_the_platform_fallback_publishes_a_two_stage_ladder(self):
-        """One always-on stage, one that only large batches reach."""
+    def test_the_platform_fallback_publishes_one_always_on_stage(self):
+        """One stage, no condition: every batch takes the same single approval."""
         from vs_payments.approvals import ensure_default_approval_templates
 
         template = ensure_default_approval_templates()
         self.assertIsNone(template.tenant)  # Platform-scoped fallback.
         self.assertIsNone(template.branch)
-        first, senior = self._stages(template)
-        self.assertEqual(first.approver_permission_key, self.APPROVE_KEY)
-        self.assertIsNone(first.inclusion_condition)  # Always runs.
-        self.assertEqual(senior.approver_permission_key, self.SENIOR_KEY)
-        self.assertEqual(
-            senior.inclusion_condition,
-            {"op": "gte", "field": "total_amount", "value": 50_000_000},
-        )
+        (only,) = self._stages(template)
+        self.assertEqual(only.approver_permission_key, self.APPROVE_KEY)
+        self.assertIsNone(only.inclusion_condition)  # Always runs.
+        self.assertEqual(only.advance_rule, "ANY")
 
     def test_no_stage_may_ever_auto_skip_itself(self):
         """The whole point: an unstaffed stage must park, not approve.
@@ -1746,12 +1731,12 @@ class PayoutApprovalSeedingTests(TestCase):
             self.assertFalse(stage.skip_if_no_approvers, stage.code)
             self.assertEqual(stage.on_rejection, "TERMINAL", stage.code)
 
-    def test_the_threshold_is_configurable(self):
+    def test_the_approving_permission_is_configurable(self):
         from vs_payments.approvals import ensure_default_approval_templates
 
-        template = ensure_default_approval_templates(threshold=1_000_00)
-        _first, senior = self._stages(template)
-        self.assertEqual(senior.inclusion_condition["value"], 1_000_00)
+        template = ensure_default_approval_templates(approve_permission="payments.report.view")
+        (only,) = self._stages(template)
+        self.assertEqual(only.approver_permission_key, "payments.report.view")
 
     # --- provisioning semantics -------------------------------------------- #
 
@@ -1761,30 +1746,31 @@ class PayoutApprovalSeedingTests(TestCase):
         template, created = ensure_tenant_approval_templates(self.tenant)
         self.assertTrue(created)
         self.assertEqual(template.tenant_id, self.tenant.pk)
-        self.assertEqual(len(self._stages(template)), 2)
+        self.assertEqual(len(self._stages(template)), 1)
 
     def test_reseeding_a_tenant_never_overwrites_what_an_admin_configured(self):
         """Non-destructive by contract: a customised ladder survives a re-run."""
         from vs_payments.approvals import ensure_tenant_approval_templates
 
-        template, _ = ensure_tenant_approval_templates(self.tenant, threshold=9_999)
+        template, _ = ensure_tenant_approval_templates(
+            self.tenant, approve_permission="payments.report.view")
         again, created = ensure_tenant_approval_templates(self.tenant)
         self.assertFalse(created)
         self.assertEqual(again.pk, template.pk)
-        _first, senior = self._stages(again)
-        self.assertEqual(senior.inclusion_condition["value"], 9_999)  # Untouched.
+        (only,) = self._stages(again)
+        self.assertEqual(only.approver_permission_key, "payments.report.view")  # Untouched.
 
     def test_reseeding_the_platform_row_upserts_rather_than_duplicating(self):
         from vs_workflow.models import WorkflowTemplate
         from vs_payments.approvals import ensure_default_approval_templates
 
         ensure_default_approval_templates()
-        ensure_default_approval_templates(threshold=7_777)
+        ensure_default_approval_templates(approve_permission="payments.report.view")
         rows = WorkflowTemplate.all_objects.filter(
             tenant=None, branch=None, document_type="payments.payout_batch")
         self.assertEqual(rows.count(), 1)  # One shared row, rewritten in place.
-        _first, senior = self._stages(rows.get())
-        self.assertEqual(senior.inclusion_condition["value"], 7_777)
+        (only,) = self._stages(rows.get())
+        self.assertEqual(only.approver_permission_key, "payments.report.view")
 
     def test_a_tenant_is_required(self):
         from vs_payments.approvals import ensure_tenant_approval_templates

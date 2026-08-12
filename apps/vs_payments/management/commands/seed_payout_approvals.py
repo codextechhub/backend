@@ -4,8 +4,8 @@ A payout batch pays many beneficiaries at once and is the highest-risk cash-out 
 the product. The approval handler for it already exists, but the gate is opt-in by
 template, so an install with no template does not have a locked door on that path, it
 has an open one. This command is the operational half of the fix
-(:mod:`vs_payments.approvals` is the service half): it publishes the two-stage ladder
-that makes approval actually required.
+(:mod:`vs_payments.approvals` is the service half): it publishes the single approving
+stage that makes approval actually required.
 
 Usage::
 
@@ -16,13 +16,12 @@ Usage::
 Two guarantees, both deliberate and matching ``seed_procurement_approvals``:
 
 * **Never destructive.** A tenant that already has its own ladder is reported and
-  skipped, so re-running after an administrator customised the threshold or the
-  approving permissions cannot restore the defaults over them. Only ``--platform``
+  skipped, so re-running after an administrator customised the approving permission or
+  added stages of their own cannot restore the defaults over them. Only ``--platform``
   upserts, because that row is platform provisioning's to own.
 * **Seeded blocked.** The rules arrive with nobody holding the approving permission, so
   the first batch submitted parks and asks for an approver rather than paying itself
-  out. Grant ``payments.payout_batch.approve`` deliberately afterwards, and
-  ``payments.payout_batch.approve_high_value`` to whoever signs off on large runs.
+  out. Grant ``payments.payout_batch.approve`` deliberately afterwards.
 
 Safe to re-run. ``--dry-run`` reports what would change and writes nothing.
 """
@@ -33,11 +32,7 @@ from vs_payments.approvals import (
     ensure_default_approval_templates,
     ensure_tenant_approval_templates,
 )
-from vs_payments.constants import (
-    WF_DEFAULT_APPROVE_PERMISSION,
-    WF_DEFAULT_SENIOR_PERMISSION,
-    WF_DEFAULT_SENIOR_THRESHOLD,
-)
+from vs_payments.constants import WF_DEFAULT_APPROVE_PERMISSION
 
 
 class Command(BaseCommand):
@@ -54,19 +49,11 @@ class Command(BaseCommand):
         )
         parser.add_argument(
             "--platform", action="store_true",
-            help="Publish the platform-wide fallback ladder (upserts in place).",
-        )
-        parser.add_argument(
-            "--threshold", type=int, default=WF_DEFAULT_SENIOR_THRESHOLD,
-            help="Kobo at/above which the senior stage runs (new ladders only).",
+            help="Publish the platform-wide fallback rule (upserts in place).",
         )
         parser.add_argument(
             "--approve-permission", default=WF_DEFAULT_APPROVE_PERMISSION,
-            help="Permission key the first stage resolves approvers against.",
-        )
-        parser.add_argument(
-            "--senior-permission", default=WF_DEFAULT_SENIOR_PERMISSION,
-            help="Permission key the threshold-gated second stage resolves against.",
+            help="Permission key the approving stage resolves approvers against.",
         )
         parser.add_argument(
             "--dry-run", action="store_true", help="Report what would change; write nothing.",
@@ -78,14 +65,7 @@ class Command(BaseCommand):
         slugs = options["tenants"]
         if not (slugs or options["all_tenants"] or options["platform"]):
             raise CommandError("Pass --tenant SLUG, --all-tenants, or --platform.")
-        if options["threshold"] < 0:
-            raise CommandError("--threshold is an amount in kobo and cannot be negative.")
-
-        ladder_kwargs = {
-            "threshold": options["threshold"],
-            "approve_permission": options["approve_permission"],
-            "senior_permission": options["senior_permission"],
-        }
+        ladder_kwargs = {"approve_permission": options["approve_permission"]}
 
         tenants = []
         if slugs:
@@ -101,7 +81,7 @@ class Command(BaseCommand):
         with transaction.atomic():
             if options["platform"]:
                 ensure_default_approval_templates(**ladder_kwargs)
-                self.stdout.write("Platform fallback: payout-batch ladder published.")
+                self.stdout.write("Platform fallback: payout-batch approval published.")
 
             for tenant in tenants:
                 _template, created = ensure_tenant_approval_templates(tenant, **ladder_kwargs)

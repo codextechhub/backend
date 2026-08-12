@@ -153,12 +153,13 @@ REFERENCE_PREFIX = "CXP"
 #: Template code for the seeded ladder. One per document type, matching procurement.
 WF_DEFAULT_TEMPLATE_CODE = "standard"
 
-#: Kobo at/above which the second, senior stage runs. Mirrors procurement's default
-#: (500,000.00) so a tenant reasons about one number across every spend path, and is
-#: overridable per call and per command invocation.
-WF_DEFAULT_SENIOR_THRESHOLD = 50_000_000
-
-#: Permission keys the two stages resolve approvers against. Both already exist in
-#: seed_payments_permissions; nothing here creates a key.
+#: Permission key the single approving stage resolves approvers against. It already
+#: exists in seed_payments_permissions; nothing here creates a key.
+#:
+#: The ladder is one stage on purpose (see vs_payments.approvals). The threshold-gated
+#: senior stage was removed: a second signature is only a real control when a second
+#: person actually holds the senior key, and in practice the same small finance team
+#: held both, so it bought a click rather than a reviewer.
+#: ``payments.payout_batch.approve_high_value`` stays registered so a tenant that does
+#: have a separate signing authority can add a stage pointing at it.
 WF_DEFAULT_APPROVE_PERMISSION = "payments.payout_batch.approve"
-WF_DEFAULT_SENIOR_PERMISSION = "payments.payout_batch.approve_high_value"
