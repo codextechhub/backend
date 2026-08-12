@@ -189,6 +189,11 @@ class PayoutBatch(TimeStampedModel):
     # behind approval (opt-in by template); otherwise direct submit is unchanged.
     workflow_document_type = "payments.payout_batch"
 
+    # Field the engine reads for a threshold-gated stage's inclusion condition. The
+    # denormalised batch total is the right bar: what escalates a batch is the money
+    # leaving in one run, not the size of any single beneficiary line.
+    workflow_amount_field = "total_amount"
+
     entity = models.ForeignKey(
         "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="payout_batches",
     )

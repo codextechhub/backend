@@ -144,3 +144,21 @@ DEFAULT_CURRENCY = "NGN"
 
 #: Prefix for locally-generated provider references (our idempotency key on the way out).  # Shared outbound reference prefix.
 REFERENCE_PREFIX = "CXP"
+
+
+# --------------------------------------------------------------------------- #
+# Payout-batch approval defaults (see vs_payments.approvals)                   #
+# --------------------------------------------------------------------------- #
+
+#: Template code for the seeded ladder. One per document type, matching procurement.
+WF_DEFAULT_TEMPLATE_CODE = "standard"
+
+#: Kobo at/above which the second, senior stage runs. Mirrors procurement's default
+#: (500,000.00) so a tenant reasons about one number across every spend path, and is
+#: overridable per call and per command invocation.
+WF_DEFAULT_SENIOR_THRESHOLD = 50_000_000
+
+#: Permission keys the two stages resolve approvers against. Both already exist in
+#: seed_payments_permissions; nothing here creates a key.
+WF_DEFAULT_APPROVE_PERMISSION = "payments.payout_batch.approve"
+WF_DEFAULT_SENIOR_PERMISSION = "payments.payout_batch.approve_high_value"

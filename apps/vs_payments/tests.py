@@ -1499,6 +1499,102 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertEqual((batch.metadata or {}).get("approval_status"), "APPROVED")
         self.assertTrue(all(p.status == PayoutStatus.PROCESSING for p in batch.instructions.all()))
 
+    # --- 7. the seeded ladder, not a hand-made one ------------------------- #
+
+    def _seed_tenant_ladder(self, **kwargs):
+        """Publish the real shipped ladder for this tenant."""
+        from vs_payments.approvals import ensure_tenant_approval_templates
+
+        template, _created = ensure_tenant_approval_templates(
+            self.school.tenant, **kwargs)
+        return template
+
+    def _grant(self, user, permission_key, role_key):
+        role, _ = self.TenantRoleTemplate.objects.get_or_create(
+            tenant=self.school.tenant, key=role_key,
+            defaults={"name": role_key, "status": "ACTIVE"},
+        )
+        self.TenantRolePermission.objects.get_or_create(
+            role=role, permission_id=permission_key, defaults={"granted": True},
+        )
+        self.TenantUserRoleAssignment.objects.get_or_create(
+            tenant=self.school.tenant, user=user, role=role,
+            defaults={"assignment_status": "ACTIVE"},
+        )
+
+    def _senior(self, email="snr-pba@test.com"):
+        user = self.User.objects.create_user(
+            email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
+            first_name="Sen", last_name="Ior", tenant=self.school.tenant,
+        )
+        self._grant(user, "payments.payout_batch.approve_high_value", "pba-senior")
+        return user
+
+    def test_the_seeded_ladder_closes_the_open_door(self):
+        """The real seed, not a test fixture, is what has to stop a direct submit."""
+        from vs_finance.approvals import approval_required
+
+        batch = self._draft_batch(10000)
+        self.assertFalse(approval_required(batch))  # Open before seeding.
+        self._seed_tenant_ladder()
+        batch.refresh_from_db()
+        self.assertTrue(approval_required(batch))  # Closed after it.
+        resp = self._direct_submit(batch)
+        self.assertEqual(resp.status_code, 400, resp.content)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+        self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
+
+    def test_a_seeded_batch_with_nobody_appointed_parks_instead_of_paying(self):
+        """Seeded blocked, not seeded open: no approver means no money moves."""
+        from vs_workflow.constants import WorkflowInstanceStatus
+
+        self._seed_tenant_ladder()  # Nobody holds the approving permission yet.
+        batch = self._draft_batch(10000)
+        resp = self._submit_for_approval(batch)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)  # Not dispatched.
+        self.assertEqual((batch.metadata or {}).get("approval_status"), "PENDING_APPROVAL")
+        self.assertEqual(self._instance_for(batch).status, WorkflowInstanceStatus.IN_PROGRESS)
+        self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
+
+    def test_a_small_batch_needs_one_approval(self):
+        """Below the bar the senior stage never runs, so one checker releases it."""
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+
+        self._seed_tenant_ladder(threshold=100_000)  # Bar at 1,000.00.
+        approver = self._make_approver()
+        batch = self._draft_batch(10_000)  # 100.00, well under.
+        self._submit_for_approval(batch)
+
+        wf_actions.record_action(self._instance_for(batch).id, approver, ActionEnum.APPROVED)
+
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
+
+    def test_a_large_batch_escalates_before_any_money_leaves(self):
+        """The threshold's whole job: one signature is not enough for a big run."""
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+
+        self._seed_tenant_ladder(threshold=100_000)  # Bar at 1,000.00.
+        approver = self._make_approver()
+        senior = self._senior()
+        batch = self._draft_batch(90_000, 90_000)  # 1,800.00 total, over the bar.
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+
+        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)  # Still nothing sent.
+        self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
+
+        wf_actions.record_action(instance.id, senior, ActionEnum.APPROVED)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)  # Both signed.
+
     # --- 6. reject → back to draft, nothing dispatched --------------------- #
 
     def test_reject_returns_batch_to_draft(self):
@@ -1518,6 +1614,145 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertEqual((batch.metadata or {}).get("approval_status"), "DRAFT")
         self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
 
+
+# Group tests for the seeded payout-approval ladder (turning the gate ON).
+class PayoutApprovalSeedingTests(TestCase):
+    """Provisioning the approval rules that make the payout gate actually engage.
+
+    The gating *behaviour* is covered by :class:`PayoutBatchApprovalTests`, which
+    hand-publishes a template. What is covered here is the thing that decides whether
+    any template exists at all: with none, a payout batch goes straight to the provider,
+    so an unconfigured install has an open door on its highest-risk cash-out path rather
+    than a locked one.
+    """
+
+    APPROVE_KEY = "payments.payout_batch.approve"
+    SENIOR_KEY = "payments.payout_batch.approve_high_value"
+
+    def setUp(self):
+        import io
+        from django.core.management import call_command
+        from vs_schools.models import School
+
+        call_command("seed_payments_permissions", verbosity=0, stdout=io.StringIO())
+        self.school = School.objects.create(
+            name="Rowan", slug="rowan-seed", code="RWNSD", status="ACTIVE")
+        self.tenant = self.school.tenant
+
+    def _stages(self, template):
+        """The template's live stages, in routing order."""
+        return list(template.stages.filter(retired_at__isnull=True).order_by("order"))
+
+    # --- shape ------------------------------------------------------------- #
+
+    def test_the_platform_fallback_publishes_a_two_stage_ladder(self):
+        """One always-on stage, one that only large batches reach."""
+        from vs_payments.approvals import ensure_default_approval_templates
+
+        template = ensure_default_approval_templates()
+        self.assertIsNone(template.tenant)  # Platform-scoped fallback.
+        self.assertIsNone(template.branch)
+        first, senior = self._stages(template)
+        self.assertEqual(first.approver_permission_key, self.APPROVE_KEY)
+        self.assertIsNone(first.inclusion_condition)  # Always runs.
+        self.assertEqual(senior.approver_permission_key, self.SENIOR_KEY)
+        self.assertEqual(
+            senior.inclusion_condition,
+            {"op": "gte", "field": "total_amount", "value": 50_000_000},
+        )
+
+    def test_no_stage_may_ever_auto_skip_itself(self):
+        """The whole point: an unstaffed stage must park, not approve.
+
+        The engine's model default is ``skip_if_no_approvers=True``, so a ladder seeded
+        without overriding it would sail a batch through while *appearing* approved,
+        which is worse than no gate at all.
+        """
+        from vs_payments.approvals import ensure_default_approval_templates
+
+        stages = self._stages(ensure_default_approval_templates())
+        self.assertTrue(stages)
+        for stage in stages:
+            self.assertFalse(stage.skip_if_no_approvers, stage.code)
+            self.assertEqual(stage.on_rejection, "TERMINAL", stage.code)
+
+    def test_the_threshold_is_configurable(self):
+        from vs_payments.approvals import ensure_default_approval_templates
+
+        template = ensure_default_approval_templates(threshold=1_000_00)
+        _first, senior = self._stages(template)
+        self.assertEqual(senior.inclusion_condition["value"], 1_000_00)
+
+    # --- provisioning semantics -------------------------------------------- #
+
+    def test_a_tenant_gets_its_own_ladder(self):
+        from vs_payments.approvals import ensure_tenant_approval_templates
+
+        template, created = ensure_tenant_approval_templates(self.tenant)
+        self.assertTrue(created)
+        self.assertEqual(template.tenant_id, self.tenant.pk)
+        self.assertEqual(len(self._stages(template)), 2)
+
+    def test_reseeding_a_tenant_never_overwrites_what_an_admin_configured(self):
+        """Non-destructive by contract: a customised ladder survives a re-run."""
+        from vs_payments.approvals import ensure_tenant_approval_templates
+
+        template, _ = ensure_tenant_approval_templates(self.tenant, threshold=9_999)
+        again, created = ensure_tenant_approval_templates(self.tenant)
+        self.assertFalse(created)
+        self.assertEqual(again.pk, template.pk)
+        _first, senior = self._stages(again)
+        self.assertEqual(senior.inclusion_condition["value"], 9_999)  # Untouched.
+
+    def test_reseeding_the_platform_row_upserts_rather_than_duplicating(self):
+        from vs_workflow.models import WorkflowTemplate
+        from vs_payments.approvals import ensure_default_approval_templates
+
+        ensure_default_approval_templates()
+        ensure_default_approval_templates(threshold=7_777)
+        rows = WorkflowTemplate.all_objects.filter(
+            tenant=None, branch=None, document_type="payments.payout_batch")
+        self.assertEqual(rows.count(), 1)  # One shared row, rewritten in place.
+        _first, senior = self._stages(rows.get())
+        self.assertEqual(senior.inclusion_condition["value"], 7_777)
+
+    def test_a_tenant_is_required(self):
+        from vs_payments.approvals import ensure_tenant_approval_templates
+
+        with self.assertRaises(ValueError):
+            ensure_tenant_approval_templates(None)
+
+    # --- the command ------------------------------------------------------- #
+
+    def test_the_command_refuses_to_guess_what_to_seed(self):
+        import io
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command("seed_payout_approvals", verbosity=0, stdout=io.StringIO())
+
+    def test_the_command_seeds_a_named_tenant(self):
+        import io
+        from django.core.management import call_command
+        from vs_workflow.models import WorkflowTemplate
+
+        call_command(
+            "seed_payout_approvals", tenants=[self.tenant.slug],
+            verbosity=0, stdout=io.StringIO())
+        self.assertTrue(WorkflowTemplate.all_objects.filter(
+            tenant=self.tenant, document_type="payments.payout_batch").exists())
+
+    def test_a_dry_run_writes_nothing(self):
+        import io
+        from django.core.management import call_command
+        from vs_workflow.models import WorkflowTemplate
+
+        call_command(
+            "seed_payout_approvals", platform=True, tenants=[self.tenant.slug],
+            dry_run=True, verbosity=0, stdout=io.StringIO())
+        self.assertFalse(WorkflowTemplate.all_objects.filter(
+            document_type="payments.payout_batch").exists())
 
 # Group tests for Paystack Adapter Tests (real adapter, network function mocked).
 class PaystackAdapterTests(TestCase):
