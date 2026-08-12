@@ -231,9 +231,117 @@ class OverviewSectionTests(OverviewTestBase):
         # "undefined" rather than 0.
         data = self.fetch()
         self.assertEqual(data["approvals"]["pending"], 0)
+        self.assertEqual(data["approvals"]["items"], [])
         self.assertEqual(data["submissions"]["returned"], 0)
+        self.assertEqual(data["submissions"]["items"], [])
         self.assertEqual(data["notifications"]["unread"], 0)
         self.assertEqual(data["tasks"]["stats"]["total"], 0)
+
+
+class OverviewWorklistTests(OverviewTestBase):
+    """The dashboard worklist items inside approvals/submissions.
+
+    Items must stay inside the caller's own queue (another user's decisions or
+    submissions can never appear), match the count's own rules, and stay capped
+    so the landing payload cannot grow with the queue.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.contenttypes.models import ContentType
+        from vs_workflow.models import WorkflowStage, WorkflowTemplate
+
+        self.requester = make_vision_user(email="ov-requester@codex.test")
+        self.requester.first_name = "Rita"
+        self.requester.last_name = "Requester"
+        self.requester.save(update_fields=["first_name", "last_name"])
+
+        self.template = WorkflowTemplate.objects.create(
+            document_type="TEST_DOC", code="default", name="Overview Template",
+        )
+        self.stage = WorkflowStage.objects.create(
+            template=self.template, code="review", label="Manager Review",
+            kind="APPROVAL", order=1, advance_rule="ANY",
+            on_rejection="TERMINAL", skip_if_no_approvers=False,
+        )
+        self.doc_ct = ContentType.objects.get_for_model(WorkflowTemplate)
+
+    def _make_instance(self, requester, status="IN_PROGRESS", object_id="doc-1"):
+        from django.utils import timezone as tz
+        from vs_workflow.models import WorkflowInstance
+
+        return WorkflowInstance.objects.create(
+            tenant=requester.tenant,
+            template=self.template,
+            document_content_type=self.doc_ct,
+            document_object_id=object_id,
+            document_type=self.template.document_type,
+            status=status,
+            requested_by=requester,
+            current_stage=self.stage,
+            submitted_at=tz.now(),
+        )
+
+    def _queue_for(self, approver, object_id="doc-1"):
+        """One instance awaiting *approver*'s decision; returns the instance."""
+        from django.utils import timezone as tz
+        from vs_workflow.models import WorkflowStageApprover, WorkflowStageInstance
+
+        instance = self._make_instance(self.requester, object_id=object_id)
+        stage_instance = WorkflowStageInstance.objects.create(
+            instance=instance, stage=self.stage,
+            status="ACTIVE", attempt=1, activated_at=tz.now(),
+        )
+        WorkflowStageApprover.objects.create(
+            stage_instance=stage_instance, user=approver, attempt=1,
+        )
+        return instance
+
+    def test_approval_items_carry_what_the_row_renders(self):
+        instance = self._queue_for(self.user)
+        approvals = self.fetch()["approvals"]
+        self.assertEqual(approvals["pending"], 1)
+        (item,) = approvals["items"]
+        self.assertEqual(item["id"], str(instance.id))
+        self.assertEqual(item["document_type"], "TEST_DOC")
+        self.assertEqual(item["document_object_id"], "doc-1")
+        self.assertEqual(item["stage_label"], "Manager Review")
+        self.assertEqual(item["requested_by_name"], "Rita Requester")
+        self.assertIsNotNone(item["awaiting_since"])
+
+    def test_approval_items_are_only_the_callers_queue(self):
+        other = make_vision_user(email="ov-other@codex.test")
+        self._queue_for(other, object_id="not-mine")
+        approvals = self.fetch()["approvals"]
+        self.assertEqual(approvals["pending"], 0)
+        self.assertEqual(approvals["items"], [])
+
+    def test_approval_items_are_capped_but_the_count_is_not(self):
+        from vs_admin_console.overview import APPROVAL_ITEMS_LIMIT
+
+        for n in range(APPROVAL_ITEMS_LIMIT + 2):
+            self._queue_for(self.user, object_id=f"doc-{n}")
+        approvals = self.fetch()["approvals"]
+        self.assertEqual(approvals["pending"], APPROVAL_ITEMS_LIMIT + 2)
+        self.assertEqual(len(approvals["items"]), APPROVAL_ITEMS_LIMIT)
+
+    def test_returned_items_are_own_newest_first_and_capped(self):
+        from vs_admin_console.overview import RETURNED_ITEMS_LIMIT
+        from vs_workflow.models import WorkflowInstance
+
+        for n in range(RETURNED_ITEMS_LIMIT + 1):
+            self._make_instance(self.user, status="RETURNED", object_id=f"ret-{n}")
+        # Someone else's returned submission must not appear in my list.
+        self._make_instance(self.requester, status="RETURNED", object_id="not-mine")
+
+        submissions = self.fetch()["submissions"]
+        self.assertEqual(submissions["returned"], RETURNED_ITEMS_LIMIT + 1)
+        self.assertEqual(len(submissions["items"]), RETURNED_ITEMS_LIMIT)
+        listed = [item["document_object_id"] for item in submissions["items"]]
+        self.assertNotIn("not-mine", listed)
+        # auto_now updated_at: creation order ascending, so newest-first means
+        # the highest suffix leads.
+        self.assertEqual(listed[0], f"ret-{RETURNED_ITEMS_LIMIT}")
 
 
 class OverviewSetupFlagTests(OverviewTestBase):
