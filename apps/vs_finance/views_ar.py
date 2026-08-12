@@ -1642,13 +1642,18 @@ class RefundSubmitView(_RefundActionBase):
     def post(self, request, pk):
         from vs_workflow.services.submission import submit_for_approval
 
+        from vs_workflow.services import release as release_svc
+
         _, refund = self._refund(request, pk)
         Customer.objects.select_for_update().get(pk=refund.customer_id)
-        submit_for_approval(refund, requested_by=request.user)
+        instance = submit_for_approval(refund, requested_by=request.user)
         refund.refresh_from_db()
         return success_response(
             f"Refund {refund.document_number} submitted for approval.",
-            data=RefundSerializer(refund).data,
+            data=RefundSerializer(refund).data
+            # Same contract as procurement and payouts: the client learns here that
+            # nobody can approve this, and can offer to continue without approval.
+            | {"approval": release_svc.approval_block(instance)},
         )
 
 
@@ -1815,12 +1820,17 @@ class WriteOffRequestSubmitView(_WriteOffActionBase):
     def post(self, request, pk):
         from vs_workflow.services.submission import submit_for_approval
 
+        from vs_workflow.services import release as release_svc
+
         _, wor = self._wor(request, pk)
-        submit_for_approval(wor, requested_by=request.user)
+        instance = submit_for_approval(wor, requested_by=request.user)
         wor.refresh_from_db()
         return success_response(
             f"Write-off request {wor.document_number} submitted for approval.",
-            data=WriteOffRequestSerializer(wor).data,
+            data=WriteOffRequestSerializer(wor).data
+            # Same contract as procurement and payouts: the client learns here that
+            # nobody can approve this, and can offer to continue without approval.
+            | {"approval": release_svc.approval_block(instance)},
         )
 
 

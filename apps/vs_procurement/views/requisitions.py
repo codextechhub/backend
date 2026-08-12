@@ -403,11 +403,16 @@ def _approval_response(message, document, instance, serializer_cls):
     Re-reads ``document`` because the engine may have reached a terminal decision
     synchronously (all stages auto-skipped), mutating it via a different instance.
     """
+    from vs_workflow.services import release as release_svc
+
     document.refresh_from_db()
     return success_response(message, data={
         "workflow_instance_id": instance.id,
         "workflow_status": instance.status,
         "approval_state": document.approval_state,
+        # Tells the client in the submit response itself that nobody can approve what it
+        # just submitted, so the "continue anyway" prompt costs no extra round trip.
+        "approval": release_svc.approval_block(instance),
         "document": serializer_cls(document).data,
     })
 

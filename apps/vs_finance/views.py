@@ -1325,11 +1325,16 @@ class JournalSubmitView(APIView):
         entry = JournalEntry.objects.filter(entity=entity, id=id).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
-        submit_for_approval(entry, requested_by=request.user)
+        from vs_workflow.services import release as release_svc
+
+        instance = submit_for_approval(entry, requested_by=request.user)
         entry.refresh_from_db()
         return success_response(
             message=f"Journal {entry.document_number} submitted for approval.",
-            data=JournalEntryDetailSerializer(entry).data,
+            data=JournalEntryDetailSerializer(entry).data
+            # Same contract as procurement and payouts: the client learns here that
+            # nobody can approve this, and can offer to continue without approval.
+            | {"approval": release_svc.approval_block(instance)},
         )
 
 

@@ -328,10 +328,16 @@ class VendorPaymentSubmitView(_ProcBase):
         if payment.status != DocumentStatus.DRAFT or not payment.allocations.exists():
             raise ValidationError({"status": "Only a draft with invoice allocations can be submitted."})
         instance = approvals.submit_for_approval(payment, actor_user=request.user)
+        from vs_workflow.services import release as release_svc
+
+        payment.refresh_from_db()
         return success_response("Vendor payment submitted for approval.", data={
             "document": VendorPaymentSerializer(payment).data,
             "workflow_instance_id": instance.pk,
             "approval_state": payment.approval_state,
+            # See _approval_response in views/requisitions.py: same contract, so the
+            # four procurement submit screens answer "who approves this" identically.
+            "approval": release_svc.approval_block(instance),
         })
 
 

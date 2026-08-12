@@ -659,10 +659,16 @@ class PayoutBatchSubmitForApprovalView(APIView):
         batch = PayoutBatch.objects.filter(entity=entity, pk=pk).first()
         if batch is None:  # Return 404 when the batch does not belong to this tenant.
             raise NotFound("No such payout batch in this entity.")
-        submit_for_approval(batch, requested_by=request.user)  # Create the workflow instance + activate stage 1.
+        from vs_workflow.services import release as release_svc
+
+        instance = submit_for_approval(batch, requested_by=request.user)  # Instance + stage 1.
         batch.refresh_from_db()  # Pick up the handler's metadata change.
         return success_response(
-            "Payout batch submitted for approval.", data=PayoutBatchSerializer(batch).data,
+            "Payout batch submitted for approval.",
+            data=PayoutBatchSerializer(batch).data
+            # Same contract as procurement: if nobody holds the approving permission the
+            # batch has parked, and the client can offer to continue without approval.
+            | {"approval": release_svc.approval_block(instance)},
         )
 
 

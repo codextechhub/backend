@@ -1585,6 +1585,128 @@ class PayoutBatchApprovalTests(TestCase):
         batch.refresh_from_db()
         self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
 
+    # --- 9. continuing when nobody can approve ----------------------------- #
+
+    def test_a_submitter_is_told_when_nobody_can_approve(self):
+        """The warning's data: the submit response says it parked, and on what."""
+        from vs_workflow.services import release
+
+        self._seed_tenant_ladder()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+
+        park = release.approval_block(self._instance_for(batch))
+        self.assertTrue(park["parked"])
+        self.assertEqual(park["stage_label"], "Payout approval")
+        # Names the key an administrator would grant, rather than just "no approver".
+        self.assertEqual(park["permission_key"], "payments.payout_batch.approve")
+
+    def test_continuing_without_approval_dispatches_the_batch(self):
+        """Choosing to continue takes the batch the whole way, as an approval would."""
+        from vs_workflow.services import release
+
+        self._seed_tenant_ladder()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+
+        release.release_parked_stage(instance, actor_user=self.requester, reason="Payroll is due.")
+
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
+        instance.refresh_from_db()
+        self.assertEqual(instance.status, "APPROVED")
+
+    def test_continuing_is_refused_while_anybody_can_still_approve(self):
+        """The safety property: this is never a bypass of a reviewer who exists.
+
+        Without it the dialog would be a self-approval button on any document whose
+        approver simply had not got to it yet.
+        """
+        from vs_workflow.services import release
+
+        self._seed_tenant_ladder()
+        self._make_approver()  # Somebody can decide it.
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+
+        with self.assertRaises(release.NotParkedError):
+            release.release_parked_stage(
+                self._instance_for(batch), actor_user=self.requester, reason="Let me through.")
+
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)  # Nothing dispatched.
+
+    def test_a_late_granted_approver_cancels_the_bypass(self):
+        """Between the warning and the click, somebody was appointed. Review wins."""
+        from vs_workflow.services import release
+
+        self._seed_tenant_ladder()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        self.assertTrue(release.describe_park(instance)["parked"])  # Warning was right.
+
+        self._make_approver()  # Appointed while the dialog was open.
+
+        with self.assertRaises(release.NotParkedError):
+            release.release_parked_stage(instance, actor_user=self.requester)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+
+    def test_who_released_it_and_why_is_on_the_record(self):
+        """The bypass trades a reviewer for a record, so the record has to be real."""
+        from vs_workflow.models import WorkflowAuditLog
+        from vs_workflow.services import release
+
+        self._seed_tenant_ladder()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+
+        release.release_parked_stage(
+            instance, actor_user=self.requester, reason="Payroll is due today.")
+
+        row = WorkflowAuditLog.objects.filter(
+            instance=instance, context__action="RELEASED_NO_APPROVER").first()
+        self.assertIsNotNone(row, "the release left no audit row")
+        self.assertEqual(row.actor_id, self.requester.pk)
+        self.assertEqual(row.context["reason"], "Payroll is due today.")
+        self.assertEqual(row.context["permission_key"], "payments.payout_batch.approve")
+
+    def test_a_release_with_no_typed_reason_still_records_one(self):
+        """The dialog asks for no text, so the default has to carry the meaning."""
+        from vs_workflow.models import WorkflowAuditLog
+        from vs_workflow.services import release
+
+        self._seed_tenant_ladder()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+
+        release.release_parked_stage(instance, actor_user=self.requester)
+
+        row = WorkflowAuditLog.objects.filter(
+            instance=instance, context__action="RELEASED_NO_APPROVER").get()
+        self.assertEqual(row.context["reason"], release.DEFAULT_REASON)
+
+    def test_only_the_submitter_may_continue(self):
+        """Ungated by permission is not the same as open to every user in the tenant."""
+        from vs_workflow.services import release
+
+        self._seed_tenant_ladder()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+
+        stranger = self.User.objects.create_user(
+            email="stranger-pba@test.com", password="pw", user_type="SCHOOL_ADMIN",
+            status="ACTIVE", first_name="Stran", last_name="Ger",
+            tenant=self.school.tenant,
+        )
+        self.assertFalse(release.may_release(instance, stranger))
+        self.assertTrue(release.may_release(instance, instance.requested_by))
+
     # --- 8. parked work becomes reachable again ---------------------------- #
 
     def _park_a_batch(self):

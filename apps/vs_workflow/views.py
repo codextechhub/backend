@@ -34,6 +34,7 @@ from vs_workflow.serializers import (
 )
 from vs_workflow.services import actions as actions_svc
 from vs_workflow.services import my_queue as my_queue_svc
+from vs_workflow.services import release as release_svc
 from vs_workflow.services import submission as submission_svc
 from vs_workflow.services import templates as templates_svc
 from vs_workflow.services.approvers import resolve_approvers
@@ -213,7 +214,11 @@ class WorkflowInstanceViewSet(
             document=document, requested_by=request.user,
             template_code=d.get("template_code") or None,
         )
-        return Response(WorkflowInstanceDetailSerializer(instance).data, status=status.HTTP_201_CREATED)
+        return Response(
+            WorkflowInstanceDetailSerializer(instance).data
+            | {"approval": release_svc.approval_block(instance)},
+            status=status.HTTP_201_CREATED,
+        )
 
     @action(detail=True, methods=["post"])
     def withdraw(self, request, pk=None):
@@ -231,6 +236,51 @@ class WorkflowInstanceViewSet(
         p.is_valid(raise_exception=True)
         instance = actions_svc.cancel(
             self.get_object().id, request.user, p.validated_data["reason"])
+        return Response(WorkflowInstanceDetailSerializer(instance).data)
+
+    @action(detail=True, methods=["post"], url_path="continue-without-approval")
+    def continue_without_approval(self, request, pk=None):
+        """POST - step past a stage nobody can approve, and record who chose to.
+
+        Offered when a submission parks: the template requires an approval nobody holds
+        the permission for, so the document would otherwise wait indefinitely. The
+        release is refused if anybody at all can decide the stage, which is what keeps
+        this from being a self-approval button on a document that has a reviewer.
+
+        Guarded by ownership rather than a permission key, deliberately: this is the
+        submitter's own escape from their own stuck submission. See
+        ``services.release.may_release``.
+
+        docstring-name: Continue without approval
+        """
+        instance = self.get_object()
+        if not release_svc.may_release(instance, request.user):
+            return Response({
+                "success": False,
+                "message": "Only the person who submitted this can continue it without approval.",
+                "error": {"code": "NOT_THE_SUBMITTER", "detail": {}},
+            }, status=status.HTTP_403_FORBIDDEN)
+        try:
+            release_svc.release_parked_stage(
+                instance, actor_user=request.user,
+                reason=(request.data or {}).get("reason"),
+            )
+        except release_svc.NotParkedError as exc:
+            # Somebody became able to approve between the warning and the click. The
+            # document is fine; it just needs a decision now, so this is not an error
+            # state the client should treat as a failure to submit.
+            return Response({
+                "success": False,
+                "message": str(exc),
+                "error": {"code": "NOT_PARKED", "detail": release_svc.describe_park(instance)},
+            }, status=status.HTTP_409_CONFLICT)
+        except ValueError as exc:
+            return Response({
+                "success": False,
+                "message": str(exc),
+                "error": {"code": "INVALID_REASON", "detail": {}},
+            }, status=status.HTTP_400_BAD_REQUEST)
+        instance.refresh_from_db()
         return Response(WorkflowInstanceDetailSerializer(instance).data)
 
     @action(detail=True, methods=["post"], url_path="actions")
