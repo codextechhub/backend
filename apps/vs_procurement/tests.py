@@ -10716,3 +10716,487 @@ class ProcurementBranchTotalsTests(_BranchTenantsFixture, TestCase):
                     self.lekki_client.get(f"/v1/procurement/{path}/?entity={code}").status_code,
                     403,
                 )
+
+
+class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
+    """Analytics reports answer under the caller's branch, like every other read.
+
+    Round 3 made lists, single documents, KPI headers and the dashboard agree by routing
+    every "what can this caller see" question through one helper. The analytics reports
+    were left out, so a branch-bound bursar's own list showed one campus while the spend
+    report beside it showed the whole tenant. These tests pin the closed version: for
+    every report, the figure equals the sum over the documents that same caller can
+    actually open, on a multi-branch tenant and on a tenant with no branches at all.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.lekki_client = self.client_for(
+            self.multi_tenant, "rpt-lekki@t.com", branch=self.lekki,
+        )
+        self.ikeja_client = self.client_for(
+            self.multi_tenant, "rpt-ikeja@t.com", branch=self.ikeja,
+        )
+        self.hq_client = self.client_for(self.multi_tenant, "rpt-hq@t.com")
+        # Three sub-scopes inside one entity, with distinct amounts so a leak is a wrong
+        # number rather than a coincidence. The entity-level chain stands in for the
+        # historical rows Round 2 could not backfill: raised before the branch column
+        # existed, so its branch is genuinely null.
+        self.lekki_books = self.posted_scope(self.multi, branch=self.lekki, base=500_000)
+        self.ikeja_books = self.posted_scope(self.multi, branch=self.ikeja, base=300_000)
+        self.legacy_books = self.posted_scope(self.multi, branch=None, base=200_000)
+
+    # -- fixture builders ---------------------------------------------------- #
+
+    def posted_scope(self, books, *, branch, base):
+        """One branch sub-scope's posted evidence, shaped to feed every report.
+
+        Two live orders: a *billed* one (receipt cleared by a still-unpaid bill, which is
+        what AP aging, the cash forecast and spend read) and an *unbilled* one (a receipt
+        nothing has cleared, which is the only thing GR/IR aging shows, since a fully
+        cleared receipt nets to zero and drops out). Both stay open so the reports have
+        something to report.
+        """
+        billed = self.posted_order(books, branch=branch, unit=base, bill=True)
+        unbilled = self.posted_order(books, branch=branch, unit=base // 2, bill=False)
+        return types.SimpleNamespace(
+            branch=branch, billed=billed, unbilled=unbilled,
+            billed_amount=base, open_receipt_amount=base // 2,
+        )
+
+    def posted_order(self, books, *, branch, unit, bill,
+                     order=datetime.date(2026, 1, 5),
+                     expected=datetime.date(2026, 1, 9),
+                     received=datetime.date(2026, 1, 8),
+                     invoiced=datetime.date(2026, 1, 10)):
+        """A requisition, PO and posted GRN (plus an optional posted bill) in one branch.
+
+        Every document carries ``branch`` explicitly, which is what a real chain gets from
+        ``views.base._inherited_branch_id``; the services under test here are the reports,
+        not the write path, so the branch is set directly rather than driven through the
+        API.
+        """
+        from vs_procurement.purchasing import price_po
+
+        entity, vendor = books.entity, books.vendor
+        requisition = PurchaseRequisition.objects.create(
+            entity=entity, branch=branch, request_date=datetime.date(2026, 1, 2),
+            title="Chairs",
+        )
+        PurchaseRequisitionLine.objects.create(
+            requisition=requisition, line_no=1, description="Chair", quantity=1,
+            estimated_unit_price=unit, expense_account=self.acc(entity, "5300"),
+        )
+        requisition.recompute_total(save=True)
+
+        po = PurchaseOrder.objects.create(
+            entity=entity, vendor=vendor, branch=branch, requisition=requisition,
+            order_date=order, expected_date=expected, status=DocumentStatus.APPROVED,
+        )
+        po_line = PurchaseOrderLine.objects.create(
+            purchase_order=po, line_no=1, description="Chair",
+            expense_account=self.acc(entity, "5300"), quantity=1, unit_price=unit,
+        )
+        price_po(po)
+
+        grn = GoodsReceivedNote.objects.create(
+            entity=entity, vendor=vendor, branch=branch, purchase_order=po,
+            received_date=received,
+        )
+        GoodsReceivedNoteLine.objects.create(
+            grn=grn, po_line=po_line, expense_account=po_line.expense_account,
+            accepted_qty=1, unit_price=unit, line_no=1,
+        )
+        post_grn(grn)
+
+        invoice = None
+        if bill:
+            invoice = VendorInvoice.objects.create(
+                entity=entity, vendor=vendor, branch=branch, purchase_order=po,
+                invoice_date=invoiced, due_date=invoiced,
+                approval_state=ProcApprovalState.APPROVED,
+            )
+            VendorInvoiceLine.objects.create(
+                vendor_invoice=invoice, po_line=po_line,
+                expense_account=self.acc(entity, "5300"),
+                quantity=1, unit_price=unit, line_no=1,
+            )
+            post_vendor_invoice(invoice)
+
+        return types.SimpleNamespace(
+            requisition=requisition, po=po, po_line=po_line, grn=grn,
+            invoice=invoice, unit=unit,
+        )
+
+    def settle(self, books, order, *, branch, paid=datetime.date(2026, 1, 25)):
+        """Post a payment that fully settles one order's bill, completing the chain."""
+        payment = VendorPayment.objects.create(
+            entity=books.entity, vendor=books.vendor, branch=branch,
+            payment_date=paid, gross_amount=order.unit,
+            payment_account=self.acc(books.entity, "1100"),
+            approval_state=ProcApprovalState.APPROVED,
+        )
+        # An explicit split keeps the test deterministic: auto-allocation settles the
+        # vendor's oldest open bills, which in this fixture live in another branch.
+        post_vendor_payment(payment, allocations=[(order.invoice, order.unit)])
+        return payment
+
+    # -- helpers ------------------------------------------------------------- #
+
+    def report(self, client, path, **params):
+        """GET one report for ``client`` and return its ``data`` block."""
+        query = "&".join(
+            [f"entity={self.multi.entity.code}"]
+            + [f"{key}={value}" for key, value in params.items()]
+        )
+        response = client.get(f"/v1/procurement/reports/{path}/?{query}")
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.json()["data"]
+
+    def visible_invoice_total(self, client):
+        """Sum the vendor bills this caller's own list actually returns.
+
+        The acceptance criterion is a comparison against the operational list, not
+        against a number recomputed the way the report computes it: a shared mistake
+        would cancel out and prove nothing.
+        """
+        response = client.get(
+            f"/v1/procurement/vendor-invoices/?entity={self.multi.entity.code}",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return sum(int(row["total"]) for row in response.json()["data"])
+
+    # -- the acceptance criterion -------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_spend_analysis_equals_the_bills_the_caller_can_open(self, _permission):
+        data = self.report(self.lekki_client, "spend-analysis")
+        self.assertEqual(data["total_gross"]["kobo"], 500_000)
+        self.assertEqual(
+            data["total_gross"]["kobo"], self.visible_invoice_total(self.lekki_client),
+        )
+        self.assertEqual(data["invoice_count"], 1)
+
+        other = self.report(self.ikeja_client, "spend-analysis")
+        self.assertEqual(other["total_gross"]["kobo"], 300_000)
+        self.assertEqual(
+            other["total_gross"]["kobo"], self.visible_invoice_total(self.ikeja_client),
+        )
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_ap_aging_equals_the_open_bills_the_caller_can_open(self, _permission):
+        data = self.report(self.lekki_client, "ap-aging")
+        self.assertEqual(data["total_net"]["kobo"], 500_000)
+        self.assertEqual(
+            data["total_net"]["kobo"], self.visible_invoice_total(self.lekki_client),
+        )
+        self.assertEqual(sum(b["kobo"] for b in data["bucket_totals"].values()), 500_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_cash_requirements_equals_the_open_bills_the_caller_can_open(self, _permission):
+        data = self.report(self.lekki_client, "ap-cash-requirements")
+        self.assertEqual(data["total_due"]["kobo"], 500_000)
+        self.assertEqual(data["net_cash_requirement"]["kobo"], 500_000)
+        self.assertEqual(
+            data["total_due"]["kobo"], self.visible_invoice_total(self.lekki_client),
+        )
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_grir_aging_equals_the_receipts_the_caller_can_open(self, _permission):
+        data = self.report(self.lekki_client, "grir-aging")
+        # Only the unbilled order leaves an open GR/IR position; the billed one nets out.
+        self.assertEqual(data["total_open"]["kobo"], 250_000)
+        self.assertEqual(
+            [row["grn_id"] for row in data["rows"]],
+            [self.lekki_books.unbilled.grn.pk],
+        )
+
+        listed = self.lekki_client.get(
+            f"/v1/procurement/goods-receipts/?entity={self.multi.entity.code}",
+        )
+        self.assertEqual(listed.status_code, 200, listed.data)
+        visible = {row["id"] for row in listed.json()["data"]}
+        self.assertTrue({row["grn_id"] for row in data["rows"]} <= visible)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_vendor_performance_counts_only_the_callers_own_documents(self, _permission):
+        self.settle(self.multi, self.lekki_books.billed, branch=self.lekki)
+        self.settle(self.multi, self.ikeja_books.billed, branch=self.ikeja)
+
+        data = self.report(self.lekki_client, "vendor-performance")
+        row = data["rows"][0]
+        self.assertEqual(row["po_count"], 2)                      # billed + unbilled
+        self.assertEqual(row["total_ordered"]["kobo"], 750_000)   # 500,000 + 250,000
+        self.assertEqual(row["receipt_count"], 2)
+        self.assertEqual(row["invoice_count"], 1)
+        self.assertEqual(row["total_billed"]["kobo"], 500_000)
+        self.assertEqual(
+            row["total_billed"]["kobo"], self.visible_invoice_total(self.lekki_client),
+        )
+        # The payment metrics follow the payment's own branch, matching the payment list.
+        self.assertEqual(row["payment_count"], 1)
+        self.assertEqual(row["total_paid"]["kobo"], 500_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_cycle_time_measures_only_the_callers_own_chains(self, _permission):
+        # Two settled chains with deliberately different payment dates: if the report
+        # leaked, the average would move off this branch's own 15 days.
+        self.settle(self.multi, self.lekki_books.billed, branch=self.lekki,
+                    paid=datetime.date(2026, 1, 25))
+        self.settle(self.multi, self.ikeja_books.billed, branch=self.ikeja,
+                    paid=datetime.date(2026, 1, 31))
+
+        mine = self.report(self.lekki_client, "cycle-time")
+        stages = {s["name"]: s for s in mine["stages"]}
+        self.assertEqual(stages["invoice_to_payment"]["sample_count"], 1)
+        self.assertEqual(stages["invoice_to_payment"]["avg_days"], 15.0)  # 01-10 to 01-25
+        self.assertEqual(mine["end_to_end_count"], 1)
+        self.assertEqual(mine["end_to_end_avg_days"], 23.0)               # 01-02 to 01-25
+
+        theirs = self.report(self.ikeja_client, "cycle-time")
+        theirs_stages = {s["name"]: s for s in theirs["stages"]}
+        self.assertEqual(theirs_stages["invoice_to_payment"]["avg_days"], 21.0)
+
+        # The unbound caller still averages both chains together.
+        everything = self.report(self.hq_client, "cycle-time")
+        all_stages = {s["name"]: s for s in everything["stages"]}
+        self.assertEqual(all_stages["invoice_to_payment"]["sample_count"], 2)
+        self.assertEqual(all_stages["invoice_to_payment"]["avg_days"], 18.0)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_grir_po_lines_lists_only_the_callers_own_orders(self, _permission):
+        data = self.report(self.lekki_client, "grir-lines")
+        self.assertEqual(
+            {row["po_line_id"] for row in data["rows"]},
+            {self.lekki_books.billed.po_line.pk, self.lekki_books.unbilled.po_line.pk},
+        )
+
+        listed = self.lekki_client.get(
+            f"/v1/procurement/purchase-orders/?entity={self.multi.entity.code}",
+        )
+        visible = {row["id"] for row in listed.json()["data"]}
+        self.assertEqual(
+            visible, {self.lekki_books.billed.po.pk, self.lekki_books.unbilled.po.pk},
+        )
+
+    # -- the callers who must not change ------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_an_unbound_caller_still_sees_the_whole_entity(self, _permission):
+        spend = self.report(self.hq_client, "spend-analysis")
+        self.assertEqual(spend["total_gross"]["kobo"], 1_000_000)  # 500k + 300k + 200k
+        self.assertEqual(spend["invoice_count"], 3)
+        # Nothing was narrowed, so the excluded-rows key must not appear at all.
+        self.assertNotIn("unassigned_excluded_count", spend)
+
+        aging = self.report(self.hq_client, "ap-aging")
+        self.assertEqual(aging["total_net"]["kobo"], 1_000_000)
+        self.assertNotIn("unassigned_excluded_count", aging)
+
+        grir = self.report(self.hq_client, "grir-aging")
+        self.assertEqual(grir["total_open"]["kobo"], 500_000)      # 250k + 150k + 100k
+        # The GL reconciliation stays available for a caller who sees the whole entity.
+        self.assertIsNotNone(grir["control_balance"])
+        self.assertEqual(grir["difference"]["kobo"], 0)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_an_unbound_caller_can_still_narrow_with_an_explicit_branch(self, _permission):
+        data = self.report(self.hq_client, "spend-analysis", branch=self.ikeja.pk)
+        self.assertEqual(data["total_gross"]["kobo"], 300_000)
+
+        head_office = self.report(self.hq_client, "spend-analysis", branch="none")
+        self.assertEqual(head_office["total_gross"]["kobo"], 200_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_an_unknown_branch_is_rejected_rather_than_silently_empty(self, _permission):
+        response = self.hq_client.get(
+            f"/v1/procurement/reports/spend-analysis/?entity={self.multi.entity.code}"
+            f"&branch=99999999",
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_a_tenant_without_branches_is_completely_unchanged(self, _permission):
+        client = self.client_for(self.flat_tenant, "rpt-flat@t.com")
+        flat = self.posted_scope(self.flat, branch=None, base=440_000)
+        code = self.flat.entity.code
+
+        for path, check in (
+            ("spend-analysis", lambda d: self.assertEqual(d["total_gross"]["kobo"], 440_000)),
+            ("ap-aging", lambda d: self.assertEqual(d["total_net"]["kobo"], 440_000)),
+            ("ap-cash-requirements", lambda d: self.assertEqual(d["total_due"]["kobo"], 440_000)),
+            ("grir-aging", lambda d: self.assertEqual(d["total_open"]["kobo"], 220_000)),
+            ("vendor-performance", lambda d: self.assertEqual(len(d["rows"]), 1)),
+            ("cycle-time", lambda d: self.assertIn("stages", d)),
+            ("grir-lines", lambda d: self.assertEqual(len(d["rows"]), 2)),
+            ("ap-reconciliation", lambda d: self.assertTrue(d["is_reconciled"])),
+        ):
+            with self.subTest(path=path):
+                response = client.get(f"/v1/procurement/reports/{path}/?entity={code}")
+                self.assertEqual(response.status_code, 200, response.data)
+                data = response.json()["data"]
+                check(data)
+                # No branch exists in this tenant, so nothing may hint that one does.
+                self.assertNotIn("unassigned_excluded_count", data)
+
+        grir = client.get(f"/v1/procurement/reports/grir-aging/?entity={code}").json()["data"]
+        self.assertIsNotNone(grir["control_balance"])
+        self.assertEqual(grir["difference"]["kobo"], 0)
+        self.assertEqual(flat.billed_amount, 440_000)
+
+    # -- the historical wrinkle ---------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_entity_level_rows_are_declared_excluded_not_silently_dropped(self, _permission):
+        """A branch-bound caller is told their total is a subset, and by how many rows.
+
+        The 200,000 raised for the entity as a whole predates the branch column, so it is
+        legitimately outside this caller's view and must not be counted. Reporting the
+        count (never the amount) is what stops 500,000 being read as the whole story,
+        without disclosing what head office spent.
+        """
+        spend = self.report(self.lekki_client, "spend-analysis")
+        self.assertEqual(spend["total_gross"]["kobo"], 500_000)
+        self.assertEqual(spend["unassigned_excluded_count"], 1)
+        # The excluded amount itself is never disclosed anywhere in the payload.
+        self.assertNotIn("200000", str(spend))
+
+        self.assertEqual(
+            self.report(self.lekki_client, "ap-aging")["unassigned_excluded_count"], 1,
+        )
+        self.assertEqual(
+            self.report(self.lekki_client, "ap-cash-requirements")["unassigned_excluded_count"], 1,
+        )
+        # GR/IR counts receipts, of which the entity-level scope posted two.
+        self.assertEqual(
+            self.report(self.lekki_client, "grir-aging")["unassigned_excluded_count"], 2,
+        )
+        self.assertEqual(
+            self.report(self.lekki_client, "vendor-performance")["unassigned_excluded_count"], 1,
+        )
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_an_old_row_is_never_given_an_invented_branch(self, _permission):
+        """The excluded documents stay branch-less; nothing backfills them."""
+        self.report(self.lekki_client, "spend-analysis")
+        self.legacy_books.billed.invoice.refresh_from_db()
+        self.legacy_books.billed.grn.refresh_from_db()
+        self.legacy_books.billed.po.refresh_from_db()
+        self.assertIsNone(self.legacy_books.billed.invoice.branch_id)
+        self.assertIsNone(self.legacy_books.billed.grn.branch_id)
+        self.assertIsNone(self.legacy_books.billed.po.branch_id)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_grir_aging_withholds_the_gl_comparison_from_a_narrowed_caller(self, _permission):
+        """No branch-level control balance exists, so none is invented.
+
+        The ledger has no branch column. Comparing one campus's open receipts against the
+        entity's clearing account would report a difference on every read and bury the
+        genuine "a posting bypassed the subledger" alarm this field carries.
+        """
+        mine = self.report(self.lekki_client, "grir-aging")
+        self.assertEqual(mine["total_open"]["kobo"], 250_000)
+        self.assertIsNone(mine["control_balance"])
+        self.assertIsNone(mine["difference"])
+
+        # The entity-level control itself is untouched and still available.
+        balance = self.report(self.lekki_client, "grir")
+        self.assertEqual(balance["grir_balance"]["kobo"], 500_000)
+
+    # -- isolation ----------------------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_reports_never_include_another_tenants_documents(self, _permission):
+        self.posted_scope(self.foreign, branch=None, base=9_000_000)
+
+        for client, expected in ((self.hq_client, 1_000_000), (self.lekki_client, 500_000)):
+            with self.subTest(caller=client.test_user.email):
+                data = self.report(client, "spend-analysis")
+                self.assertEqual(data["total_gross"]["kobo"], expected)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_a_report_cannot_reach_another_entity_by_changing_the_entity_code(self, _permission):
+        response = self.lekki_client.get(
+            f"/v1/procurement/reports/spend-analysis/?entity={self.foreign.entity.code}",
+        )
+        self.assertIn(response.status_code, (400, 403, 404), response.data)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_a_drawer_will_not_open_another_branchs_document(self, _permission):
+        code = self.multi.entity.code
+        foreign_grn = self.ikeja_books.unbilled.grn.pk
+        foreign_line = self.ikeja_books.billed.po_line.pk
+
+        denied = self.lekki_client.get(
+            f"/v1/procurement/reports/grir-aging/grn/?entity={code}&grn={foreign_grn}",
+        )
+        self.assertEqual(denied.status_code, 404, denied.data)
+        missing = self.lekki_client.get(
+            f"/v1/procurement/reports/grir-aging/grn/?entity={code}&grn=99999999",
+        )
+        # Another branch's receipt is indistinguishable from one that does not exist.
+        self.assertEqual(denied.json()["message"], missing.json()["message"])
+
+        line_denied = self.lekki_client.get(
+            f"/v1/procurement/reports/grir-lines/detail/?entity={code}&po_line={foreign_line}",
+        )
+        self.assertEqual(line_denied.status_code, 404, line_denied.data)
+
+        # The caller's own documents still open.
+        own = self.lekki_client.get(
+            f"/v1/procurement/reports/grir-aging/grn/?entity={code}"
+            f"&grn={self.lekki_books.unbilled.grn.pk}",
+        )
+        self.assertEqual(own.status_code, 200, own.data)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_the_ap_vendor_drawer_shows_only_the_callers_own_bills(self, _permission):
+        code = self.multi.entity.code
+        response = self.lekki_client.get(
+            f"/v1/procurement/reports/ap-aging/vendor/?entity={code}&vendor=ACME",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.json()["data"]
+        self.assertEqual(data["outstanding"]["kobo"], 500_000)
+        self.assertEqual(
+            [row["invoice_id"] for row in data["invoices"]],
+            [self.lekki_books.billed.invoice.pk],
+        )
+
+    # -- shape and permissions ----------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_a_branch_with_no_documents_returns_an_empty_report_not_an_error(self, _permission):
+        from vs_rbac.tests.helpers import make_branch
+
+        empty = make_branch(self.multi_school, name="Yaba Campus", is_main=False)
+        client = self.client_for(self.multi_tenant, "rpt-yaba@t.com", branch=empty)
+
+        spend = self.report(client, "spend-analysis")
+        self.assertEqual(spend["total_gross"]["kobo"], 0)
+        self.assertEqual(spend["invoice_count"], 0)
+        self.assertEqual(spend["by_category"], [])
+        self.assertEqual(spend["by_period"], [])
+        self.assertEqual(spend["by_vendor"], [])
+        self.assertEqual(self.report(client, "ap-aging")["total_net"]["kobo"], 0)
+        self.assertEqual(self.report(client, "ap-aging")["rows"], [])
+        self.assertEqual(self.report(client, "grir-aging")["total_open"]["kobo"], 0)
+        self.assertEqual(self.report(client, "cycle-time")["end_to_end_count"], 0)
+        self.assertEqual(self.report(client, "grir-lines")["rows"], [])
+        # Still narrowed, so the excluded-rows count is still reported honestly.
+        self.assertEqual(spend["unassigned_excluded_count"], 1)
+
+    def test_every_report_endpoint_still_requires_permission(self):
+        code = self.multi.entity.code
+        for path in (
+            "dashboard", "ap-aging", "ap-aging/vendor", "ap-reconciliation", "grir",
+            "ap-cash-requirements", "grir-aging", "grir-aging/grn", "grir-lines",
+            "grir-lines/detail", "spend-analysis", "vendor-performance", "cycle-time",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    self.lekki_client.get(
+                        f"/v1/procurement/reports/{path}/?entity={code}",
+                    ).status_code,
+                    403,
+                )

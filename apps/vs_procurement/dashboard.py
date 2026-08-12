@@ -181,10 +181,10 @@ def _po_status(entity, branch_filter) -> dict:
 # Chart aggregates                                                            #
 # --------------------------------------------------------------------------- #
 
-def _spend_by_category(entity, start: datetime.date, end: datetime.date, branch_filter) -> dict:
+def _spend_by_category(entity, start: datetime.date, end: datetime.date, branch_scope) -> dict:
     """Return the five largest category slices plus one exact long-tail slice."""
     report = spend_analysis(
-        entity, start_date=start, end_date=end, branch_filter=branch_filter,
+        entity, start_date=start, end_date=end, branch_scope=branch_scope,
     )
     # Limit the legend to five named categories; merge the long tail into Other.
     top = report.by_category[:5]
@@ -387,7 +387,7 @@ def _recent_activity(entity) -> list:
 
 
 def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = None,
-                          branch_filter=None) -> dict:
+                          branch_scope=None) -> dict:
     """Return the complete Procurement Dashboard payload for one ledger entity.
 
     ``as_of`` closes the current MTD spend/trend and supplies the overdue-invoice clock.
@@ -395,8 +395,8 @@ def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = No
     to that month's end. Activity is capped at five events and the visible approval panel
     at four cards; ``pending_approvals.count`` still reflects every eligible item.
 
-    ``branch_filter`` is the caller's branch narrowing as a ``Q`` (see
-    ``views.base._branch_q``), applied to every document-derived figure so a
+    ``branch_scope`` is the caller's branch narrowing (``views.base._BranchScope``, the
+    same object the analytics reports take), applied to every document-derived figure so a
     branch-bound viewer's spend, orders, overdue bills and approval cards match the
     lists they can open. It defaults to no narrowing, which is what an unbound viewer
     and a tenant with no branches both get. ``active_vendors`` stays entity-wide
@@ -404,10 +404,11 @@ def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = No
     list is not branch-narrowed either.
     """
     as_of = as_of or timezone.localdate()
-    if branch_filter is None:
-        from django.db.models import Q
+    from django.db.models import Q
 
-        branch_filter = Q()
+    # Every block below reads one model that carries ``branch`` directly, so the scope
+    # collapses to a single Q here and the helpers stay unchanged.
+    branch_filter = branch_scope.q() if branch_scope is not None else Q()
     current_start = _month_start(as_of)
     previous_start = _shift_month(current_start, -1)
     # Compare equal elapsed days (e.g. Jul 1–17 against Jun 1–17), clamped for
@@ -460,7 +461,7 @@ def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = No
                 "on_hold_count": active_vendors.filter(on_hold=True).count(),
             },
         },
-        "spend_by_category": _spend_by_category(entity, current_start, as_of, branch_filter),
+        "spend_by_category": _spend_by_category(entity, current_start, as_of, branch_scope),
         "purchase_order_status": {"items": po_status["items"]},
         "monthly_spend_trend": _monthly_trend(entity, as_of, branch_filter),
         # Entity-wide: the finance audit log carries no branch column, so this feed

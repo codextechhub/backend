@@ -66,21 +66,52 @@ class APAgingReport:
     total_outstanding: int = 0
     total_unallocated_credit: int = 0
     total_net: int = 0
+    #: Entity-level (branch-less) bills excluded from a narrowed view; None when not narrowed.
+    unassigned_excluded_count: int | None = None
 
 
-def _ap_snapshot(entity, *, as_of=None, vendor=None):
+def _unassigned_count(qs, branch_scope, *, prefix="") -> int | None:
+    """How many rows of this population belong to the entity as a whole, not a branch.
+
+    A document raised before the branch column existed carries a null branch, so it reads
+    as entity-level and is legitimately outside a branch-bound caller's report.  Silently
+    dropping it would let that caller read their total as the whole story, so the reports
+    carry this count beside the total.
+
+    The **count** is deliberate: it says "your view is a subset, by this many documents"
+    without disclosing what head office or another branch actually spent, which a money
+    figure would.  ``None`` means the caller is not narrowed at all, and every caller
+    then keeps the response they had before this existed - an unbound viewer and a tenant
+    with no branches included.  Old rows are never given an invented branch.
+    """
+    if branch_scope is None or not branch_scope.is_narrowed:
+        return None
+    return qs.filter(**{f"{prefix}branch__isnull": True}).count()
+
+
+def _ap_snapshot(entity, *, as_of=None, vendor=None, branch_scope=None):
     """Return effective invoices, historical allocations, and unapplied vendor credits.
 
     With no explicit cutoff this preserves the current-state contract. With ``as_of``,
     journal dates define accounting effectiveness and a later payment reversal does not
     rewrite the earlier snapshot; its posted reversal only removes the payment on/after
     the reversal date.
+
+    ``branch_scope`` (``views.base._BranchScope``) narrows both sides of the snapshot to
+    the sub-scope the caller can actually open: bills through ``VendorInvoice.branch`` and
+    unapplied credits through ``VendorPayment.branch``.  Narrowing both is what keeps the
+    net honest - a branch's bills reduced by another branch's prepayment would be a figure
+    that reconciles with nothing.  Allocations need no filter of their own: they are
+    already bounded by the two id sets above.  Omitted, the snapshot stays entity-wide.
     """
     from django.db.models import Q, Sum
     from .models import VendorInvoice, VendorPayment, VendorPaymentAllocation
 
     invoices = VendorInvoice.objects.filter(entity=entity)
     payments = VendorPayment.objects.filter(entity=entity)
+    if branch_scope is not None:
+        invoices = invoices.filter(branch_scope.q())
+        payments = payments.filter(branch_scope.q())
     if vendor is not None:
         invoices = invoices.filter(vendor=vendor)
         payments = payments.filter(vendor=vendor)
@@ -152,7 +183,7 @@ def _account_gl_net_as_of(account, as_of) -> int:
     return net if account.normal_balance == NormalBalance.DEBIT else -net
 
 
-def ap_aging(entity, *, as_of=None) -> APAgingReport:
+def ap_aging(entity, *, as_of=None, branch_scope=None) -> APAgingReport:
     """Age each vendor's open bills into current/1-30/31-60/61-90/90+ buckets.
 
     A bill ages off its ``due_date`` (falling back to ``invoice_date``). Only POSTED,
@@ -161,7 +192,15 @@ def ap_aging(entity, *, as_of=None) -> APAgingReport:
     control account's GL balance (see :func:`reconcile_ap`). Bucket totals remain gross
     open invoices; unapplied payments reduce only the vendor/report net. When supplied,
     ``as_of`` is both the aging clock and accounting-effectiveness cutoff.
+
+    ``branch_scope`` narrows the report to the bills the caller can actually open, so a
+    branch-bound viewer's aging reconciles with their own vendor-invoice list.  Note that
+    ``total_net`` then no longer equals the entity's AP control balance - that identity is
+    an entity-level control, which is why :func:`reconcile_ap` deliberately never passes a
+    scope through.
     """
+    from .models import VendorInvoice
+
     cutoff = as_of
     as_of = as_of or timezone.now().date()
     report = APAgingReport(entity_id=entity.id, as_of=as_of)
@@ -181,7 +220,10 @@ def ap_aging(entity, *, as_of=None) -> APAgingReport:
     # Entity scoping is applied before any vendor grouping; callers cannot mix tenant
     # balances merely by passing a vendor id from another ledger entity.
     invoices, paid_by_invoice, credits_by_vendor = _ap_snapshot(
-        entity, as_of=cutoff,
+        entity, as_of=cutoff, branch_scope=branch_scope,
+    )
+    report.unassigned_excluded_count = _unassigned_count(
+        VendorInvoice.objects.filter(entity=entity, status="POSTED"), branch_scope,
     )
     for inv in invoices:
         due = int(inv.total) - paid_by_invoice.get(inv.id, 0)
@@ -311,9 +353,11 @@ class CashRequirementsForecast:
     total_due: int = 0
     total_unallocated_credit: int = 0
     net_cash_requirement: int = 0
+    #: Entity-level (branch-less) bills excluded from a narrowed view; None when not narrowed.
+    unassigned_excluded_count: int | None = None
 
 
-def ap_cash_requirements(entity, *, as_of=None) -> CashRequirementsForecast:
+def ap_cash_requirements(entity, *, as_of=None, branch_scope=None) -> CashRequirementsForecast:
     """Forecast upcoming cash outflows by grouping open bills on *days until due*.
 
     The forward-looking twin of :func:`ap_aging`: every POSTED, not-fully-paid bill's
@@ -323,14 +367,22 @@ def ap_cash_requirements(entity, *, as_of=None) -> CashRequirementsForecast:
     ``overdue``). Unallocated vendor payments are shown separately and reduce the net
     requirement. All amounts are integer kobo; ``as_of`` is both forecast clock and
     accounting-effectiveness cutoff.
+
+    ``branch_scope`` narrows the forecast to the bills the caller can actually open, so a
+    branch-bound viewer forecasts their own site's cash rather than the whole tenant's.
     """
+    from .models import VendorInvoice
+
     cutoff = as_of
     as_of = as_of or timezone.now().date()
     report = CashRequirementsForecast(entity_id=entity.id, as_of=as_of)
     rows: dict[int, CashRequirementRow] = {}
 
     invoices, paid_by_invoice, credits_by_vendor = _ap_snapshot(
-        entity, as_of=cutoff,
+        entity, as_of=cutoff, branch_scope=branch_scope,
+    )
+    report.unassigned_excluded_count = _unassigned_count(
+        VendorInvoice.objects.filter(entity=entity, status="POSTED"), branch_scope,
     )
     for inv in invoices:
         due = int(inv.total) - paid_by_invoice.get(inv.id, 0)
@@ -399,12 +451,19 @@ def _grir_invoice_line_basis(line) -> int:
     return compute_line_net(line.quantity, unit_price)
 
 
-def _grir_attribution(entity, *, as_of=None):
+def _grir_attribution(entity, *, as_of=None, branch_scope=None):
     """Attribute posted invoice clearing to receipt lines, including PO-only FIFO.
 
     Explicit ``grn_line`` links win and consume that receipt's capacity first. Remaining
     PO-only clearing is split by receipt date/GRN/line order without inventing receipt
     rows for excess invoice-first value.
+
+    ``branch_scope`` narrows both sides, each through its own route to the branch column
+    (``grn__`` for receipt lines, ``vendor_invoice__`` for invoice lines).  Both sides must
+    move together: narrowing receipts alone would leave a branch's receipts looking
+    uncleared because the bills that cleared them were filtered away.  A downstream
+    document inherits its source's branch (``views.base._inherited_branch_id``), so a
+    receipt and the bill clearing it are in the same sub-scope by construction.
     """
     from collections import defaultdict
     from django.db.models import Q
@@ -420,6 +479,9 @@ def _grir_attribution(entity, *, as_of=None):
     ).select_related(
         "vendor_invoice", "grn_line__grn", "po_line",
     ).order_by("vendor_invoice__invoice_date", "vendor_invoice_id", "id")
+    if branch_scope is not None:
+        receipt_qs = receipt_qs.filter(branch_scope.q("grn__"))
+        invoice_qs = invoice_qs.filter(branch_scope.q("vendor_invoice__"))
     if as_of is None:
         receipt_qs = receipt_qs.filter(grn__status="POSTED")
         invoice_qs = invoice_qs.filter(vendor_invoice__status="POSTED")
@@ -527,11 +589,16 @@ class GRIRAgingReport:
     rows: list = field(default_factory=list)
     bucket_totals: dict = field(default_factory=lambda: {b: 0 for b in AGING_BUCKETS})
     total_open: int = 0
-    control_balance: int = 0   # signed normal-balance net of the GR/IR clearing account
-    difference: int = 0        # total_open − control_balance (unlinked/manual/legacy noise)
+    # Signed normal-balance net of the GR/IR clearing account, and total_open − that
+    # (unlinked/manual/legacy noise). Both are None for a branch-narrowed caller: the
+    # GL carries no branch, so there is no branch-level control figure to compare against.
+    control_balance: int | None = 0
+    difference: int | None = 0
+    #: Entity-level (branch-less) receipts excluded from a narrowed view; None when not narrowed.
+    unassigned_excluded_count: int | None = None
 
 
-def grir_aging(entity, *, as_of=None) -> GRIRAgingReport:
+def grir_aging(entity, *, as_of=None, branch_scope=None) -> GRIRAgingReport:
     """Age the open GR/IR clearing balance by goods-receipt date.
 
     Where :func:`grir_balance` is a single point-in-time figure, this drills it into how
@@ -544,11 +611,18 @@ def grir_aging(entity, *, as_of=None) -> GRIRAgingReport:
     therefore does not remain in GR/IR. ``open_value`` is signed: positive means
     received-not-invoiced; negative means the clearing basis exceeded the receipt.
     Bucket totals preserve that sign. All amounts are integer kobo.
+
+    ``branch_scope`` narrows the receipt walk to the GRNs the caller can actually open.
+    The GL side is **not** narrowed and is reported as ``None`` instead: the ledger has no
+    branch column, so comparing one branch's open receipts against the entity's clearing
+    account would manufacture a ``difference`` on every branch-bound read and drown the
+    real reconciliation alarm this field exists to raise.  The entity-level control stays
+    available, unchanged, on :func:`grir_balance`.
     """
     cutoff = as_of
     as_of = as_of or timezone.now().date()
     report = GRIRAgingReport(entity_id=entity.id, as_of=as_of)
-    attribution = _grir_attribution(entity, as_of=cutoff)
+    attribution = _grir_attribution(entity, as_of=cutoff, branch_scope=branch_scope)
     posted_grns = {}
     for line in attribution["receipt_lines"]:
         posted_grns[line.grn_id] = line.grn
@@ -576,6 +650,17 @@ def grir_aging(entity, *, as_of=None) -> GRIRAgingReport:
         report.total_open += open_value
 
     report.rows = rows
+    from .models import GoodsReceivedNote
+
+    report.unassigned_excluded_count = _unassigned_count(
+        GoodsReceivedNote.objects.filter(entity=entity, status="POSTED"), branch_scope,
+    )
+    if branch_scope is not None and branch_scope.is_narrowed:
+        # No branch-level GL control exists to reconcile against; say so rather than
+        # subtract an entity-wide balance from a branch-wide total.
+        report.control_balance = None
+        report.difference = None
+        return report
     control = grir_balance(entity, as_of=cutoff)
     report.control_balance = control
     # Both sides use the GR/IR account's signed normal-balance convention: receipt-heavy
@@ -618,13 +703,18 @@ class APVendorDetail:
     invoices: list = field(default_factory=list)
 
 
-def ap_vendor_open_bills(entity, vendor, *, as_of=None) -> APVendorDetail:
+def ap_vendor_open_bills(entity, vendor, *, as_of=None, branch_scope=None) -> APVendorDetail:
     """Age one vendor's open bills for the AP drawer - buckets + the invoice list.
 
     Scoped to a single ``vendor`` (entity-checked by the caller), this mirrors
     :func:`ap_aging`'s per-vendor arithmetic but returns the underlying open invoices too:
     each POSTED, not-fully-paid bill's ``balance_due`` aged off its ``due_date`` (falling
     back to ``invoice_date``). All amounts are integer kobo.
+
+    ``branch_scope`` narrows it exactly as :func:`ap_aging` is narrowed, which is what
+    stops the drawer from disagreeing with the row that opened it.  A vendor is entity
+    master data shared by every branch, so the vendor itself is never branch-checked;
+    only their bills are.
     """
     cutoff = as_of
     as_of = as_of or timezone.now().date()
@@ -634,7 +724,7 @@ def ap_vendor_open_bills(entity, vendor, *, as_of=None) -> APVendorDetail:
     )
 
     invoices, paid_by_invoice, credits_by_vendor = _ap_snapshot(
-        entity, as_of=cutoff, vendor=vendor,
+        entity, as_of=cutoff, vendor=vendor, branch_scope=branch_scope,
     )
     for inv in sorted(
         invoices, key=lambda row: (row.due_date or row.invoice_date, row.invoice_date, row.id),
@@ -678,7 +768,7 @@ class GRIRGrnDetail:
     invoices: list = field(default_factory=list)   # [{id, document_number, invoice_date, net}] (GR/IR basis)
 
 
-def grir_grn_detail(entity, grn_id, *, as_of=None) -> GRIRGrnDetail | None:
+def grir_grn_detail(entity, grn_id, *, as_of=None, branch_scope=None) -> GRIRGrnDetail | None:
     """The GR/IR position and linked documents for one GRN (drawer detail).
 
     Returns the GRN's received value, the value of POSTED vendor-invoice lines that
@@ -687,18 +777,22 @@ def grir_grn_detail(entity, grn_id, *, as_of=None) -> GRIRGrnDetail | None:
     ``None`` when the GRN is not in ``entity``. The entity-qualified lookup is the
     tenant boundary even when a caller guesses a valid foreign ``grn_id``. All amounts
     are integer kobo.
+
+    ``branch_scope`` applies the same narrowing to the lookup, so a receipt in another
+    branch returns ``None`` and the view reports it exactly like a receipt that does not
+    exist.  Without it this drawer would let a branch-bound caller read a neighbouring
+    site's receipt by guessing an id - the id-discovery hole
+    ``views.base._document_or_404`` closed on the operational endpoints.
     """
     from django.db.models import Q
     from .models import GoodsReceivedNote
 
     cutoff = as_of
     as_of = as_of or timezone.now().date()
-    grn = (
-        GoodsReceivedNote.objects
-        .filter(entity=entity, pk=grn_id)
-        .select_related("vendor", "purchase_order")
-        .first()
-    )
+    grn_qs = GoodsReceivedNote.objects.filter(entity=entity, pk=grn_id)
+    if branch_scope is not None:
+        grn_qs = grn_qs.filter(branch_scope.q())
+    grn = grn_qs.select_related("vendor", "purchase_order").first()
     if grn is None:
         return None
     if cutoff is None:
@@ -720,7 +814,7 @@ def grir_grn_detail(entity, grn_id, *, as_of=None) -> GRIRGrnDetail | None:
         if not effective:
             return None
 
-    attribution = _grir_attribution(entity, as_of=cutoff)
+    attribution = _grir_attribution(entity, as_of=cutoff, branch_scope=branch_scope)
     invoiced = attribution["by_grn"].get(grn.id, 0)
     invoices = attribution["evidence_by_grn"].get(grn.id, [])
 
@@ -787,7 +881,7 @@ class GRIRPoLinesReport:
     rows: list = field(default_factory=list)
 
 
-def grir_po_lines(entity, *, as_of=None) -> GRIRPoLinesReport:
+def grir_po_lines(entity, *, as_of=None, branch_scope=None) -> GRIRPoLinesReport:
     """Line-level GR/IR: per PO line, ordered vs received vs invoiced (qty + value).
 
     Where :func:`grir_aging` ages the balance per *goods receipt*, this drills it to the
@@ -798,6 +892,12 @@ def grir_po_lines(entity, *, as_of=None) -> GRIRPoLinesReport:
     (the direct ``po_line`` FK - the same link that advances invoiced quantity). Only
     lines with any receipt or invoice activity are returned. ``as_of`` cuts both sides
     off by their posted journal dates. All amounts are integer kobo.
+
+    ``branch_scope`` narrows every side through its own route to the order's branch
+    (``purchase_order__`` for the lines, ``po_line__purchase_order__`` for both
+    aggregates), so a branch-bound caller reconciles only their own orders.  The PO owns
+    the branch here rather than the receipt or the bill, because the PO line is the row
+    this report returns.
     """
     from collections import defaultdict
     from decimal import Decimal
@@ -818,6 +918,8 @@ def grir_po_lines(entity, *, as_of=None) -> GRIRPoLinesReport:
         .select_related("purchase_order", "purchase_order__vendor")
         .order_by("purchase_order__order_date", "purchase_order_id", "line_no", "id")
     )
+    if branch_scope is not None:
+        po_lines = po_lines.filter(branch_scope.q("purchase_order__"))
 
     # Two bulk aggregates keyed by po_line - no per-line query (avoids N+1).
     # Received side: accepted qty + booked value from POSTED goods-receipt lines.
@@ -826,6 +928,8 @@ def grir_po_lines(entity, *, as_of=None) -> GRIRPoLinesReport:
         GoodsReceivedNoteLine.objects
         .filter(po_line__purchase_order__entity=entity)
     )
+    if branch_scope is not None:
+        grn_agg = grn_agg.filter(branch_scope.q("po_line__purchase_order__"))
     if cutoff is None:
         grn_agg = grn_agg.filter(grn__status="POSTED")
     else:
@@ -849,6 +953,8 @@ def grir_po_lines(entity, *, as_of=None) -> GRIRPoLinesReport:
         .filter(po_line__purchase_order__entity=entity)
         .select_related("po_line", "grn_line__grn")
     )
+    if branch_scope is not None:
+        inv_lines = inv_lines.filter(branch_scope.q("po_line__purchase_order__"))
     if cutoff is None:
         inv_lines = inv_lines.filter(vendor_invoice__status="POSTED")
     else:
@@ -912,26 +1018,32 @@ class GRIRPoLineDetail:
     invoices: list = field(default_factory=list)  # [{..., quantity, net}] where net is GR/IR basis
 
 
-def grir_po_line_detail(entity, po_line_id, *, as_of=None) -> GRIRPoLineDetail | None:
+def grir_po_line_detail(entity, po_line_id, *, as_of=None, branch_scope=None) -> GRIRPoLineDetail | None:
     """The GR/IR reconciliation and linked documents for a single PO line (drawer).
 
     Entity-scoped: a PO line on another entity's order returns ``None`` (the view 404s,
     never leaks). Lists each POSTED goods-receipt line and POSTED vendor-invoice line that
     references this PO line, alongside the received/invoiced/balance reconciliation. All
     amounts are integer kobo.
+
+    ``branch_scope`` narrows the same resolution, so a line on another branch's order is
+    reported exactly like a line that does not exist.  Applying it once here is enough:
+    the receipts and bills below are reached through this line, and a document inherits
+    its source's branch, so they cannot belong to a different sub-scope.
     """
     from decimal import Decimal
     from django.db.models import Q
 
     from .models import GoodsReceivedNoteLine, PurchaseOrderLine, VendorInvoiceLine
 
-    line = (
+    line_qs = (
         PurchaseOrderLine.objects
         # Scope through the parent PO's entity so a foreign line id cannot be read.
         .filter(purchase_order__entity=entity, pk=po_line_id)
-        .select_related("purchase_order", "purchase_order__vendor")
-        .first()
     )
+    if branch_scope is not None:
+        line_qs = line_qs.filter(branch_scope.q("purchase_order__"))
+    line = line_qs.select_related("purchase_order", "purchase_order__vendor").first()
     if line is None:
         return None
 
@@ -1095,10 +1207,12 @@ class SpendAnalysis:
     total_tax: int = 0
     total_gross: int = 0
     invoice_count: int = 0
+    #: Entity-level (branch-less) bills excluded from a narrowed view; None when not narrowed.
+    unassigned_excluded_count: int | None = None
 
 
 def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, category=None,
-                   branch_filter=None) -> SpendAnalysis:
+                   branch_scope=None) -> SpendAnalysis:
     """Analyse realised spend for ``entity`` from POSTED vendor invoices.
 
     Spend is the gross of POSTED :class:`VendorInvoice` s whose ``invoice_date`` falls
@@ -1110,39 +1224,46 @@ def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, categ
     reuses this so its by_vendor / by_period reflect only that category. Both supplied
     date bounds are inclusive, and every amount remains gross/net/tax integer kobo.
 
-    ``branch_filter`` is an optional ``Q`` narrowing the population to one branch
-    sub-scope (see ``views.base._branch_q``); omitted, the analysis stays entity-wide
-    exactly as before.
+    ``branch_scope`` (``views.base._BranchScope``) narrows the population to the bills the
+    caller can actually open, so a branch-bound viewer's spend equals the sum of their own
+    vendor-invoice list.  Omitted, the analysis stays entity-wide exactly as before.
     """
     from vs_finance.constants import DocumentStatus
 
     from .models import VendorInvoice
 
-    qs = (
+    # Built without the branch term first, so the same window/category/vendor population
+    # can also answer how many of its bills sit at entity level. Deriving both from one
+    # queryset is what stops the excluded count from describing a different population
+    # than the totals beside it.
+    population = (
         VendorInvoice.objects
         .filter(entity=entity, status=DocumentStatus.POSTED)
         .select_related("vendor", "vendor__category")
     )
-    if branch_filter is not None:
-        qs = qs.filter(branch_filter)
     if vendor is not None:
-        qs = qs.filter(vendor=vendor)
+        population = population.filter(vendor=vendor)
     if category is not None:
         # "UNCATEGORISED" is the synthetic key for vendors with no category (mirrors the
         # by_category grouping below); a real code matches the vendor's category code.
         if category == "UNCATEGORISED":
-            qs = qs.filter(vendor__category__isnull=True)
+            population = population.filter(vendor__category__isnull=True)
         else:
-            qs = qs.filter(vendor__category__code=category)
+            population = population.filter(vendor__category__code=category)
     if start_date is not None:
-        qs = qs.filter(invoice_date__gte=start_date)
+        population = population.filter(invoice_date__gte=start_date)
     if end_date is not None:
-        qs = qs.filter(invoice_date__lte=end_date)
+        population = population.filter(invoice_date__lte=end_date)
+
+    qs = population
+    if branch_scope is not None:
+        qs = qs.filter(branch_scope.q())
 
     vendors: dict = {}
     categories: dict = {}
     periods: dict = {}
     report = SpendAnalysis(entity_id=entity.id, start_date=start_date, end_date=end_date)
+    report.unassigned_excluded_count = _unassigned_count(population, branch_scope)
 
     for inv in qs:
         report.total_net += inv.subtotal
@@ -1221,9 +1342,12 @@ class VendorPerformanceReport:
     start_date: object
     end_date: object
     rows: list = field(default_factory=list)
+    #: Entity-level (branch-less) bills excluded from a narrowed view; None when not narrowed.
+    unassigned_excluded_count: int | None = None
 
 
-def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None) -> VendorPerformanceReport:
+def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None,
+                       branch_scope=None) -> VendorPerformanceReport:
     """Blend ordering, delivery timeliness and payment speed per vendor.
 
     For each vendor with activity in ``[start_date, end_date]``:
@@ -1240,6 +1364,14 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None) -
     Date bounds are inclusive and are applied to the date owned by each metric (PO order,
     GRN receipt, or invoice date); the attached assessment is the latest overall snapshot,
     not constrained to the activity window.
+
+    ``branch_scope`` narrows every evidence population to the documents the caller can
+    open, each through its own route to the branch column: orders, receipts and bills
+    carry it directly, while a payment allocation reaches it through ``payment__``.
+    Allocations follow the **payment's** branch, matching the vendor-payment list the
+    caller sees.  ``latest_assessment`` is deliberately left alone: an assessment is a
+    scorecard of the vendor, which is entity master data every branch shares, and it has
+    no branch column of its own to narrow by.
     """
     from vs_finance.constants import DocumentStatus
 
@@ -1263,6 +1395,8 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None) -
     excluded = {DocumentStatus.CANCELLED, DocumentStatus.REVERSED}
 
     po_qs = PurchaseOrder.objects.filter(entity=entity).select_related("vendor").exclude(status__in=excluded)
+    if branch_scope is not None:
+        po_qs = po_qs.filter(branch_scope.q())
     if vendor is not None:
         po_qs = po_qs.filter(vendor=vendor)
     if start_date is not None:
@@ -1279,6 +1413,8 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None) -
         .filter(entity=entity, status=DocumentStatus.POSTED)
         .select_related("vendor", "purchase_order")
     )
+    if branch_scope is not None:
+        grn_qs = grn_qs.filter(branch_scope.q())
     if vendor is not None:
         grn_qs = grn_qs.filter(vendor=vendor)
     if start_date is not None:
@@ -1295,17 +1431,23 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None) -
             else:
                 r.late_receipts += 1
 
-    inv_qs = (
+    inv_population = (
         VendorInvoice.objects
         .filter(entity=entity, status=DocumentStatus.POSTED)
         .select_related("vendor")
     )
     if vendor is not None:
-        inv_qs = inv_qs.filter(vendor=vendor)
+        inv_population = inv_population.filter(vendor=vendor)
     if start_date is not None:
-        inv_qs = inv_qs.filter(invoice_date__gte=start_date)
+        inv_population = inv_population.filter(invoice_date__gte=start_date)
     if end_date is not None:
-        inv_qs = inv_qs.filter(invoice_date__lte=end_date)
+        inv_population = inv_population.filter(invoice_date__lte=end_date)
+    # Billing is the report's headline (total_billed is also the row sort key), so the
+    # bill population is the one whose entity-level remainder is worth reporting.
+    report_unassigned = _unassigned_count(inv_population, branch_scope)
+    inv_qs = inv_population
+    if branch_scope is not None:
+        inv_qs = inv_qs.filter(branch_scope.q())
     pay_days: dict = {}
     for inv in inv_qs:
         r = row_for(inv.vendor)
@@ -1319,6 +1461,8 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None) -
         .filter(payment__entity=entity, payment__status=DocumentStatus.POSTED)
         .select_related("payment", "payment__vendor", "vendor_invoice")
     )
+    if branch_scope is not None:
+        alloc_qs = alloc_qs.filter(branch_scope.q("payment__"))
     if vendor is not None:
         alloc_qs = alloc_qs.filter(payment__vendor=vendor)
     paid_seen: dict = {}
@@ -1371,6 +1515,7 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None) -
     )
     return VendorPerformanceReport(
         entity_id=entity.id, start_date=start_date, end_date=end_date, rows=ordered_rows,
+        unassigned_excluded_count=report_unassigned,
     )
 
 
@@ -1396,9 +1541,12 @@ class ProcurementCycleTime:
     end_to_end_avg_days: float | None = None
     end_to_end_count: int = 0
     end_to_end_excluded_count: int = 0
+    #: Entity-level (branch-less) settling payments excluded from a narrowed view.
+    unassigned_excluded_count: int | None = None
 
 
-def procurement_cycle_time(entity, *, start_date=None, end_date=None) -> ProcurementCycleTime:
+def procurement_cycle_time(entity, *, start_date=None, end_date=None,
+                           branch_scope=None) -> ProcurementCycleTime:
     """Measure how long each hop of the procure-to-pay chain takes, on average.
 
     Walks every settling payment back through its bill → PO → requisition and averages
@@ -1415,10 +1563,17 @@ def procurement_cycle_time(entity, *, start_date=None, end_date=None) -> Procure
     negative hops are excluded and counted separately without suppressing other valid
     stages. ``end_to_end`` is requisition → full settlement for complete chains. PO
     timing uses the earliest POSTED receipt.
+
+    ``branch_scope`` narrows the chains to the caller's sub-scope.  The chain is anchored
+    on the settling payment, so the payment's branch decides (``payment__``), and the
+    receipt cache is narrowed to match; a document inherits its source's branch, so a
+    chain never straddles two branches.  A payment that settled bills from two branches
+    resolves to no branch at all (``views.base._inherited_branch_id``) and so belongs to
+    neither branch's cycle time, which is the honest answer rather than counting it twice.
     """
     from vs_finance.constants import DocumentStatus
 
-    from .models import GoodsReceivedNote, VendorPaymentAllocation
+    from .models import GoodsReceivedNote, VendorPayment, VendorPaymentAllocation
 
     req_to_po: list = []
     po_to_receipt: list = []
@@ -1443,11 +1598,14 @@ def procurement_cycle_time(entity, *, start_date=None, end_date=None) -> Procure
     # Cache the earliest POSTED receipt per PO so we don't re-query in the loop.
     # Chronological ordering plus setdefault deliberately keeps the first receipt only.
     first_receipt: dict = {}
-    for grn in (
+    grn_qs = (
         GoodsReceivedNote.objects
         .filter(entity=entity, status=DocumentStatus.POSTED, purchase_order__isnull=False)
         .order_by("received_date", "id")
-    ):
+    )
+    if branch_scope is not None:
+        grn_qs = grn_qs.filter(branch_scope.q())
+    for grn in grn_qs:
         first_receipt.setdefault(grn.purchase_order_id, grn.received_date)
 
     alloc_qs = (
@@ -1463,6 +1621,8 @@ def procurement_cycle_time(entity, *, start_date=None, end_date=None) -> Procure
         )
         .order_by("vendor_invoice_id", "payment__payment_date", "payment_id", "id")
     )
+    if branch_scope is not None:
+        alloc_qs = alloc_qs.filter(branch_scope.q("payment__"))
     settled: dict = {}
     for alloc in alloc_qs:
         inv = alloc.vendor_invoice
@@ -1545,4 +1705,10 @@ def procurement_cycle_time(entity, *, start_date=None, end_date=None) -> Procure
         end_to_end_avg_days=_avg_days(end_to_end),
         end_to_end_count=len(end_to_end),
         end_to_end_excluded_count=excluded["end_to_end"],
+        unassigned_excluded_count=_unassigned_count(
+            # The chain is anchored on the settling payment, so that is the population
+            # whose entity-level remainder a narrowed caller is not seeing.
+            VendorPayment.objects.filter(entity=entity, status=DocumentStatus.POSTED),
+            branch_scope,
+        ),
     )

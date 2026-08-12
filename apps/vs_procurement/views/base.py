@@ -102,8 +102,12 @@ def _resolve_cost_center(entity, ref, field="cost_center"):
 #   * a document that *continues* a chain takes the branch from its source
 #     document and nothing else (:func:`_inherited_branch_id`);
 #   * every read narrows to the caller's branch, whether it is a list, a KPI
-#     total or a single document (:func:`_branch_q`, and the three wrappers
-#     :func:`_branch_scoped`, :func:`_branch_visible`, :func:`_document_or_404`).
+#     total, an analytics report or a single document.  One rule
+#     (:func:`_branch_lookups`) is rendered two ways: as a ``Q`` for a single
+#     model (:func:`_branch_q`, and the wrappers :func:`_branch_scoped`,
+#     :func:`_branch_visible`, :func:`_document_or_404`), and as a
+#     :class:`_BranchScope` for a service that spans several models
+#     (:func:`_branch_scope`).
 #
 # An absent branch is a real, valid answer - the document belongs to the entity
 # as a whole - and is never coerced or rejected.  A tenant with no branches at
@@ -195,40 +199,94 @@ def _inherited_branch_id(request, *sources, field="branch"):
     return branch_id
 
 
+def _branch_lookups(request, entity=None, params=None, *, field="branch"):
+    """The caller's branch narrowing, resolved once into plain lookup/value pairs.
+
+    This is the actual rule; :func:`_branch_q` and :class:`_BranchScope` are only two
+    renderings of it.  Keeping the *decision* here and the *relation path* out of it is
+    what lets a list, a KPI header and a report aggregate agree even though each reaches
+    the branch column by a different route.
+
+    A caller bound to a branch only ever sees that branch's documents - branch narrows
+    *within* the entity and can never widen what the entity scope already allows.  A
+    caller who is not bound to one sees the whole entity and may narrow it with
+    ``?branch=<id>``, or with ``?branch=none`` for the documents raised for the entity as
+    a whole.  The pairs are ANDed by every renderer, so a bound caller asking for somebody
+    else's branch gets an empty answer rather than that branch's rows; the three lookup
+    names used here are distinct, so no term can overwrite another.  An unknown branch is
+    a 400 rather than a silent empty page, so the filter cannot be used to probe ids in
+    another tenant.
+
+    ``params`` may be omitted (detail reads take no filter input); the result is then
+    empty for an unbound caller, which filters nothing at all.
+    """
+    lookups = {}
+    own = _caller_branch(request)
+    if own is not None:
+        lookups[f"{field}_id"] = own.pk
+    raw = str((params.get(field) if params else "") or "").strip()
+    if not raw:
+        return lookups
+    if raw.lower() in ("none", "null"):
+        lookups[f"{field}__isnull"] = True
+        return lookups
+    lookups[field] = _resolve_branch_reference(entity, raw, field)
+    return lookups
+
+
+class _BranchScope:
+    """One caller's branch narrowing, renderable against any relation path.
+
+    A list filters one model, so a single ``Q`` is enough for it.  A report service
+    aggregates several models that reach ``branch`` by different routes (a payment
+    allocation through ``payment__``, a receipt line through ``grn__``), so handing it a
+    pre-built ``Q`` would force it to re-derive the rule for every other path - which is
+    exactly the drift Round 3 removed.  It is handed this instead: the same resolved
+    answer, re-rendered per path.
+
+    ``is_narrowed`` reports whether the caller is looking at less than the whole entity.
+    It is deliberately the *only* thing that turns branch-specific fields on in a report
+    payload, so an unbound caller and a tenant with no branches keep byte-identical
+    responses.
+    """
+
+    __slots__ = ("_lookups",)
+
+    def __init__(self, lookups):
+        self._lookups = lookups
+
+    def q(self, prefix=""):
+        """The narrowing as a ``Q``, with ``prefix`` naming the route to ``branch``."""
+        from django.db.models import Q
+
+        return Q(**{f"{prefix}{name}": value for name, value in self._lookups.items()})
+
+    @property
+    def is_narrowed(self) -> bool:
+        """True when this caller sees less than the whole entity."""
+        return bool(self._lookups)
+
+
+def _branch_scope(request, entity=None, params=None, *, field="branch") -> _BranchScope:
+    """Resolve the caller's branch narrowing once, for a service that spans models.
+
+    Resolving here rather than per queryset also means ``?branch=`` is validated once
+    per request, so an unknown branch is one 400 rather than a different error depending
+    on which population the service happened to filter first.
+    """
+    return _BranchScope(_branch_lookups(request, entity, params, field=field))
+
+
 def _branch_q(request, entity=None, params=None, *, field="branch", prefix=""):
     """The branch narrowing one caller is under, as a reusable ``Q``.
 
     The single expression of "which documents is this caller looking at", so a
     list, its KPI header and the dashboard cannot drift apart: they all filter on
     this, differing only in ``prefix`` when the branch is reached through a
-    relation (``purchase_order__``).
-
-    A caller bound to a branch only ever sees that branch's documents - branch
-    narrows *within* the entity and can never widen what the entity scope already
-    allows.  A caller who is not bound to one sees the whole entity and may narrow
-    it with ``?branch=<id>``, or with ``?branch=none`` for the documents raised
-    for the entity as a whole.  Both terms are ANDed, so a bound caller asking for
-    somebody else's branch gets an empty answer rather than that branch's rows.
-    An unknown branch is a 400 rather than a silent empty page, so the filter
-    cannot be used to probe ids in another tenant.
-
-    ``params`` may be omitted (detail reads take no filter input); the returned
-    ``Q`` is then empty for an unbound caller, which filters nothing at all.
+    relation (``purchase_order__``).  See :func:`_branch_lookups` for the rule it
+    renders.
     """
-    from django.db.models import Q
-
-    query = Q()
-    own = _caller_branch(request)
-    if own is not None:
-        query &= Q(**{f"{prefix}{field}_id": own.pk})
-    raw = str((params.get(field) if params else "") or "").strip()
-    if not raw:
-        return query
-    if raw.lower() in ("none", "null"):
-        return query & Q(**{f"{prefix}{field}__isnull": True})
-    return query & Q(**{
-        f"{prefix}{field}": _resolve_branch_reference(entity, raw, field),
-    })
+    return _branch_scope(request, entity, params, field=field).q(prefix)
 
 
 def _branch_scoped(request, entity, qs, params, *, field="branch"):
