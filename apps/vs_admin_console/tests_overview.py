@@ -344,6 +344,99 @@ class OverviewWorklistTests(OverviewTestBase):
         self.assertEqual(listed[0], f"ret-{RETURNED_ITEMS_LIMIT}")
 
 
+class OverviewSignalTests(OverviewTestBase):
+    """Module signals - gated by the target screen's key AND silent when quiet.
+
+    A healthy or empty signal must be absent, not zero: the dashboard renders
+    a card per key it receives, so a leaked zero would paint a false alarm and
+    a leaked count would hand out a number from a screen the caller can't open.
+    """
+
+    def test_signals_absent_when_everything_is_quiet(self):
+        self.assertNotIn("signals", self.fetch())
+
+    def test_failed_jobs_are_own_recent_failures_only(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+        from core.models import BackgroundJob
+
+        other = make_vision_user(email="ov-jobs-other@codex.test")
+        now = timezone.now()
+
+        def job(owner, status, finished, task_id):
+            BackgroundJob.objects.create(
+                owner=owner, tenant=owner.tenant, status=status,
+                finished_at=finished, celery_task_id=task_id,
+            )
+
+        job(self.user, "FAILED", now, "sig-own-recent")
+        job(self.user, "FAILED", now - timedelta(days=2), "sig-own-old")
+        job(other, "FAILED", now, "sig-other-recent")
+        job(self.user, "SUCCEEDED", now, "sig-own-ok")
+
+        signals = self.fetch()["signals"]
+        self.assertEqual(signals["jobs_failed_24h"]["count"], 1)
+
+    def test_webhook_failures_need_the_webhook_key(self):
+        from vs_payments.models import WebhookEvent
+
+        WebhookEvent.objects.create(provider="PAYSTACK", status="FAILED", dedupe_key="sig-wh-1")
+        WebhookEvent.objects.create(provider="PAYSTACK", status="PROCESSED", dedupe_key="sig-wh-2")
+
+        self.assertNotIn("signals", self.fetch())
+        grant(self.user, "payments.webhook.view")
+        signals = self.fetch()["signals"]
+        self.assertEqual(signals["webhook_failures_24h"]["count"], 1)
+
+    def test_fiscal_runway_needs_the_finance_key_and_reports_the_worst_entity(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+        from vs_finance.models import FiscalPeriod, FiscalYear, LedgerEntity
+
+        healthy = LedgerEntity.objects.create(
+            name="Healthy Books", code="OVHEALTHY", tenant=self.user.tenant,
+        )
+        expiring = LedgerEntity.objects.create(
+            name="Expiring Books", code="OVEXPIRING", tenant=self.user.tenant,
+        )
+        today = timezone.localdate()
+
+        def calendar(entity, end):
+            year = FiscalYear.objects.create(
+                entity=entity, year=end.year,
+                start_date=end - timedelta(days=364), end_date=end,
+            )
+            FiscalPeriod.objects.create(
+                entity=entity, fiscal_year=year, period_no=1, name="P1",
+                start_date=end - timedelta(days=364), end_date=end,
+            )
+
+        calendar(healthy, today + timedelta(days=300))
+        calendar(expiring, today + timedelta(days=10))
+        # Any migration-seeded entities (e.g. the CODEX platform entity) have no
+        # calendar and would legitimately rank EXPIRED - give every other active
+        # entity a healthy one so the fixtures above control the outcome.
+        for entity in LedgerEntity.objects.filter(is_active=True).exclude(
+            pk__in=(healthy.pk, expiring.pk),
+        ):
+            calendar(entity, today + timedelta(days=300))
+
+        self.assertNotIn("signals", self.fetch())
+        grant(self.user, "finance.report.view")
+        runway = self.fetch()["signals"]["fiscal_runway"]
+        self.assertEqual(runway["entity_name"], "Expiring Books")
+        self.assertEqual(runway["status"], "EXPIRING")
+        self.assertEqual(runway["days_remaining"], 10)
+
+    def test_draft_journals_and_open_pos_stay_gated(self):
+        # No fixtures needed: the gate check runs before any query, so absent
+        # keys must keep the signal absent even if data existed.
+        data = self.fetch()
+        self.assertNotIn("signals", data)
+
+
 class OverviewSetupFlagTests(OverviewTestBase):
     """The "Getting started" flags - each gated by the screen it describes.
 

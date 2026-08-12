@@ -264,6 +264,114 @@ def _setup(user, tenant) -> dict:
     return setup
 
 
+PERM_FINANCE_REPORT_VIEW = "finance.report.view"
+PERM_FINANCE_JOURNAL_VIEW = "finance.journal.view"
+PERM_PO_VIEW = "procurement.purchase_order.view"
+PERM_WEBHOOK_VIEW = "payments.webhook.view"
+
+SIGNAL_WINDOW_HOURS = 24
+
+
+def _signals(user, tenant) -> dict:
+    """Module signals: conditions someone should act on soon.
+
+    Same contract as every other section, applied twice over: a signal is
+    omitted when the caller lacks the key of the screen it points at, AND when
+    there is nothing to act on - a healthy signal is silence, not a green card.
+    The frontend renders only what arrives, so quiet days cost no screen space.
+    """
+    from django.utils import timezone
+
+    signals: dict = {}
+    since = timezone.now() - timezone.timedelta(hours=SIGNAL_WINDOW_HOURS)
+
+    if has_permission(user, PERM_FINANCE_REPORT_VIEW, tenant=tenant):
+        # Worst fiscal runway across active entities - the same computation the
+        # finance dashboard banner uses, read entity-by-entity (entities are the
+        # org's own few ledgers, so this stays a handful of LIMIT-1 queries).
+        from vs_finance.models import LedgerEntity
+        from vs_finance.posting import FISCAL_RUNWAY_HEALTHY, fiscal_calendar_runway
+
+        worst = None
+        for entity in LedgerEntity.objects.filter(is_active=True):
+            runway = fiscal_calendar_runway(entity)
+            if runway["status"] == FISCAL_RUNWAY_HEALTHY:
+                continue
+            # None days_remaining means "no calendar at all" - rank it worst.
+            rank = runway["days_remaining"] if runway["days_remaining"] is not None else -(10 ** 6)
+            if worst is None or rank < worst["rank"]:
+                worst = {
+                    "rank": rank,
+                    "entity_name": entity.name,
+                    "status": runway["status"],
+                    "days_remaining": runway["days_remaining"],
+                    "calendar_end": runway["calendar_end"],
+                }
+        if worst is not None:
+            worst.pop("rank")
+            signals["fiscal_runway"] = worst
+
+    if has_permission(user, PERM_FINANCE_JOURNAL_VIEW, tenant=tenant):
+        from vs_finance.constants import DocumentStatus
+        from vs_finance.models import JournalEntry
+
+        drafts = JournalEntry.objects.filter(status=DocumentStatus.DRAFT).count()
+        if drafts:
+            signals["draft_journals"] = {"count": drafts}
+
+    if has_permission(user, PERM_PO_VIEW, tenant=tenant):
+        # Issued orders still awaiting (full) delivery - the PO console's own
+        # open-orders rule: drafts and in-approval orders are not commitments,
+        # and receipt progress is derived from line quantities via the shared
+        # stage helper so this number always matches the PO list.
+        from django.db.models import Q, Sum
+
+        from vs_finance.constants import DocumentStatus as FinDocStatus
+        from vs_procurement.constants import ProcApprovalState
+        from vs_procurement.models import PurchaseOrder
+        from vs_procurement.purchasing import po_receipt_stage
+
+        rows = (
+            PurchaseOrder.objects
+            .exclude(status__in=(
+                FinDocStatus.CANCELLED, FinDocStatus.REVERSED,
+                FinDocStatus.DRAFT, FinDocStatus.PENDING_APPROVAL,
+            ))
+            .exclude(approval_state=ProcApprovalState.PENDING)
+            .annotate(ordered_qty=Sum("lines__quantity"), received_qty=Sum("lines__received_qty"))
+            .values_list("ordered_qty", "received_qty")
+        )
+        awaiting = sum(
+            1 for ordered, received in rows
+            if po_receipt_stage(ordered, received) != "RECEIVED"
+        )
+        if awaiting:
+            signals["pos_awaiting_receipt"] = {"count": awaiting}
+
+    if has_permission(user, PERM_WEBHOOK_VIEW, tenant=tenant):
+        from vs_payments.constants import WebhookStatus
+        from vs_payments.models import WebhookEvent
+
+        failures = WebhookEvent.objects.filter(
+            status=WebhookStatus.FAILED, created_at__gte=since,
+        ).count()
+        if failures:
+            signals["webhook_failures_24h"] = {"count": failures}
+
+    # Own background jobs that failed recently - own rows, so no key beyond an
+    # active account, exactly like approvals/submissions above. Successes are
+    # already toasted live by the queues poller; failures are what linger.
+    from core.models import BackgroundJob
+
+    failed_jobs = BackgroundJob.objects.filter(
+        owner=user, status=BackgroundJob.Status.FAILED, finished_at__gte=since,
+    ).count()
+    if failed_jobs:
+        signals["jobs_failed_24h"] = {"count": failed_jobs}
+
+    return signals
+
+
 def console_overview(request) -> dict:
     """Assemble every section the caller is allowed to see."""
     user = request.user
@@ -302,5 +410,10 @@ def console_overview(request) -> dict:
     setup = _setup(user, tenant)
     if setup:
         data["setup"] = setup
+
+    # Module signals follow the same rule: absent when quiet or not permitted.
+    signals = _signals(user, tenant)
+    if signals:
+        data["signals"] = signals
 
     return data
