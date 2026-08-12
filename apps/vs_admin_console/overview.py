@@ -140,15 +140,16 @@ def _approvals(user, school) -> dict:
         ),
     )[:APPROVAL_ITEMS_LIMIT]
 
-    requester_ids = {
+    # One in_bulk covers requesters and the people delegates are covering for.
+    name_ids = {
         snap.stage_instance.instance.requested_by_id
         for snap in top
         if snap.stage_instance.instance.requested_by_id
-    }
-    requesters = User.objects.in_bulk(requester_ids) if requester_ids else {}
+    } | {snap.on_behalf_of_id for snap in top if snap.on_behalf_of_id}
+    people = User.objects.in_bulk(name_ids) if name_ids else {}
 
-    def requester_name(instance) -> str:
-        person = requesters.get(instance.requested_by_id)
+    def person_name(pk) -> str:
+        person = people.get(pk)
         if person is None:
             return ""
         return person.full_name or person.email
@@ -163,10 +164,14 @@ def _approvals(user, school) -> dict:
             "document_object_id": instance.document_object_id,
             "stage_label": snap.stage_instance.stage.label,
             "awaiting_since": snap.stage_instance.activated_at,
-            "requested_by_name": requester_name(instance),
+            "requested_by_name": person_name(instance.requested_by_id),
+            # Set when the caller is a delegate covering this decision for
+            # someone else - the dashboard splits these into their own box.
+            "on_behalf_of_name": person_name(snap.on_behalf_of_id) if snap.on_behalf_of_id else None,
         })
 
-    return {"pending": len(snaps), "items": items}
+    delegated = sum(1 for snap in snaps if snap.on_behalf_of_id)
+    return {"pending": len(snaps), "delegated": delegated, "items": items}
 
 
 def _submissions(user, school) -> dict:
@@ -438,6 +443,14 @@ def _signals(user, tenant) -> dict:
     ).count()
     if failed_jobs:
         signals["jobs_failed_24h"] = {"count": failed_jobs}
+
+    # Finished work ready to collect - the counterpart notice to the failures
+    # above, for completions the live queue toasts may have missed.
+    succeeded_jobs = BackgroundJob.objects.filter(
+        owner=user, status=BackgroundJob.Status.SUCCEEDED, finished_at__gte=since,
+    ).count()
+    if succeeded_jobs:
+        signals["jobs_succeeded_24h"] = {"count": succeeded_jobs}
 
     return signals
 

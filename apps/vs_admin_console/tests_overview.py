@@ -613,3 +613,85 @@ class OverviewExpandedSignalTests(OverviewTestBase):
 
         signals = self.fetch().get("signals", {})
         self.assertEqual(signals["team_overdue_tasks"]["count"], 1)
+
+
+class OverviewDelegationAndExportTests(OverviewTestBase):
+    """Delegate-cover approvals and finished-jobs notices."""
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.contenttypes.models import ContentType
+        from vs_workflow.models import WorkflowStage, WorkflowTemplate
+
+        self.requester = make_vision_user(email="ov-del-req@codex.test")
+        self.template = WorkflowTemplate.objects.create(
+            document_type="TEST_DOC", code="default", name="Delegation Template",
+        )
+        self.stage = WorkflowStage.objects.create(
+            template=self.template, code="review", label="Manager Review",
+            kind="APPROVAL", order=1, advance_rule="ANY",
+            on_rejection="TERMINAL", skip_if_no_approvers=False,
+        )
+        self.doc_ct = ContentType.objects.get_for_model(WorkflowTemplate)
+
+    def _queue_for(self, approver, object_id, on_behalf_of=None):
+        from django.utils import timezone as tz
+        from vs_workflow.models import (
+            WorkflowInstance, WorkflowStageApprover, WorkflowStageInstance,
+        )
+
+        instance = WorkflowInstance.objects.create(
+            tenant=self.requester.tenant, template=self.template,
+            document_content_type=self.doc_ct, document_object_id=object_id,
+            document_type=self.template.document_type, status="IN_PROGRESS",
+            requested_by=self.requester, current_stage=self.stage,
+            submitted_at=tz.now(),
+        )
+        stage_instance = WorkflowStageInstance.objects.create(
+            instance=instance, stage=self.stage,
+            status="ACTIVE", attempt=1, activated_at=tz.now(),
+        )
+        WorkflowStageApprover.objects.create(
+            stage_instance=stage_instance, user=approver, attempt=1,
+            on_behalf_of=on_behalf_of,
+        )
+        return instance
+
+    def test_delegated_count_and_item_flag(self):
+        principal = make_vision_user(email="ov-del-principal@codex.test")
+        principal.first_name, principal.last_name = "Pat", "Principal"
+        principal.save(update_fields=["first_name", "last_name"])
+
+        self._queue_for(self.user, "own-doc")
+        self._queue_for(self.user, "covered-doc", on_behalf_of=principal)
+
+        approvals = self.fetch()["approvals"]
+        self.assertEqual(approvals["pending"], 2)
+        self.assertEqual(approvals["delegated"], 1)
+        by_doc = {item["document_object_id"]: item for item in approvals["items"]}
+        self.assertIsNone(by_doc["own-doc"]["on_behalf_of_name"])
+        self.assertEqual(by_doc["covered-doc"]["on_behalf_of_name"], "Pat Principal")
+
+    def test_succeeded_jobs_are_own_recent_completions_only(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+        from core.models import BackgroundJob
+
+        other = make_vision_user(email="ov-done-other@codex.test")
+        now = timezone.now()
+
+        def job(owner, status, finished, task_id):
+            BackgroundJob.objects.create(
+                owner=owner, tenant=owner.tenant, status=status,
+                finished_at=finished, celery_task_id=task_id,
+            )
+
+        job(self.user, "SUCCEEDED", now, "done-own-recent")
+        job(self.user, "SUCCEEDED", now - timedelta(days=2), "done-own-old")
+        job(other, "SUCCEEDED", now, "done-other")
+        job(self.user, "RUNNING", None, "done-own-running")
+
+        signals = self.fetch()["signals"]
+        self.assertEqual(signals["jobs_succeeded_24h"]["count"], 1)
+        self.assertNotIn("jobs_failed_24h", signals)
