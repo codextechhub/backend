@@ -587,3 +587,252 @@ class RoleStageSerializerValidationTests(SimpleTestCase):
             "approver_role_key": "bursar",
         })
         self.assertTrue(s.is_valid(), s.errors)
+
+
+# ── WORKFLOW_GROUP approver source ───────────────────────────────────────────
+
+class GroupSourceResolveApproversTests(TestCase):
+    """A group resolves people, roles, and positions together into one pool."""
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import make_branch, make_school
+        from vs_workflow.models import WorkflowApproverGroup
+        self.school = make_school(slug="group-school")
+        self.branch = make_branch(self.school)
+        self.tenant = self.school.tenant
+        self.requester = _make_user_in_branch("grp-req@test.com", self.branch)
+        self.template = _make_template(doc_type="GROUP_DOC")
+        self.group = WorkflowApproverGroup.objects.create(
+            tenant=self.tenant, code="po-approvers", name="PO Approvers",
+        )
+        self.instance = _make_instance(self.template, self.requester)
+        self.instance.branch = self.branch
+        self.instance.save(update_fields=["branch"])
+
+    def _stage(self, scope="SCHOOL", code="grp-stage", group=None):
+        stage = _make_stage(self.template, code=code)
+        stage.approver_source = "WORKFLOW_GROUP"
+        stage.approver_group = group if group is not None else self.group
+        stage.approver_scope = scope
+        stage.save(update_fields=["approver_source", "approver_group", "approver_scope"])
+        return stage
+
+    def _add(self, **kwargs):
+        from vs_workflow.models import WorkflowApproverGroupMember
+        return WorkflowApproverGroupMember.objects.create(group=self.group, **kwargs)
+
+    def _user(self, email):
+        return _make_user_in_branch(email, self.branch)
+
+    def _position(self, code="POS-1", title="Head of Finance", holder=None):
+        from vs_user.models import OrgNode, Position, PositionAssignment
+        node, _ = OrgNode.objects.get_or_create(
+            code="DV-FIN", defaults={"name": "Finance Division", "kind": "DIVISION"})
+        position = Position.objects.create(title=title, code=code, org_node=node)
+        if holder is not None:
+            PositionAssignment.objects.create(
+                position=position, user=holder, is_primary=True)
+        return position
+
+    def test_user_member_resolves(self):
+        alice = self._user("alice@test.com")
+        self._add(kind="USER", user=alice)
+        result = resolve_approvers(self._stage(), self.instance)
+        self.assertEqual([e.user.pk for e in result], [alice.pk])
+
+    def test_role_member_resolves_all_assignees(self):
+        from vs_rbac.tests.helpers import make_assignment, make_role
+        role = make_role(self.tenant, name="Bursar")
+        a, b = self._user("bursar1@test.com"), self._user("bursar2@test.com")
+        make_assignment(self.tenant, a, role)
+        make_assignment(self.tenant, b, role)
+        self._add(kind="ROLE", role=role)
+        result = resolve_approvers(self._stage(), self.instance)
+        self.assertEqual({e.user.pk for e in result}, {a.pk, b.pk})
+
+    def test_position_member_resolves_current_holder(self):
+        holder = self._user("head-fin@test.com")
+        self._add(kind="POSITION", position=self._position(holder=holder))
+        result = resolve_approvers(self._stage(), self.instance)
+        self.assertEqual([e.user.pk for e in result], [holder.pk])
+
+    def test_vacant_position_resolves_empty(self):
+        self._add(kind="POSITION", position=self._position(code="POS-VACANT"))
+        self.assertEqual(resolve_approvers(self._stage(), self.instance), [])
+
+    def test_mixed_membership_is_unioned_and_deduped(self):
+        """A person who is also a role holder appears exactly once."""
+        from vs_rbac.tests.helpers import make_assignment, make_role
+        both = self._user("both@test.com")
+        only_user = self._user("only-user@test.com")
+        holder = self._user("only-position@test.com")
+        role = make_role(self.tenant, name="Bursar")
+        make_assignment(self.tenant, both, role)
+
+        self._add(kind="USER", user=both)
+        self._add(kind="USER", user=only_user)
+        self._add(kind="ROLE", role=role)
+        self._add(kind="POSITION", position=self._position(code="POS-MIX", holder=holder))
+
+        result = resolve_approvers(self._stage(), self.instance)
+        ids = [e.user.pk for e in result]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(set(ids), {both.pk, only_user.pk, holder.pk})
+
+    def test_requester_excluded_from_group(self):
+        self._add(kind="USER", user=self.requester)
+        self.assertEqual(resolve_approvers(self._stage(), self.instance), [])
+
+    def test_inactive_group_resolves_empty(self):
+        self._add(kind="USER", user=self._user("someone@test.com"))
+        self.group.is_active = False
+        self.group.save(update_fields=["is_active"])
+        self.assertEqual(resolve_approvers(self._stage(), self.instance), [])
+
+    def test_empty_group_resolves_empty(self):
+        self.assertEqual(resolve_approvers(self._stage(), self.instance), [])
+
+    def test_position_holder_outside_tenant_is_excluded(self):
+        """Positions are platform-global seats - a group must never route
+        approval authority to a user from another tenant."""
+        outsider = _make_active_user("cx-staff@test.com")   # codex tenant
+        self.assertNotEqual(outsider.tenant_id, self.tenant.pk)
+        self._add(kind="POSITION", position=self._position(code="POS-CX", holder=outsider))
+        self.assertEqual(resolve_approvers(self._stage(), self.instance), [])
+
+    def test_branch_scope_narrows_role_members_only(self):
+        from vs_rbac.models import TenantUserRoleAssignment
+        from vs_rbac.tests.helpers import make_assignment, make_role
+        role = make_role(self.tenant, name="Branch Approver")
+        wide = self._user("wide-grp@test.com")
+        narrow = self._user("narrow-grp@test.com")
+        person = self._user("named-person@test.com")
+        make_assignment(self.tenant, wide, role)
+        TenantUserRoleAssignment.objects.create(
+            tenant=self.tenant, user=narrow, role=role, branch=self.branch,
+            assignment_status="ACTIVE",
+        )
+        self._add(kind="ROLE", role=role)
+        self._add(kind="USER", user=person)
+
+        school_scoped = resolve_approvers(self._stage(scope="SCHOOL"), self.instance)
+        self.assertEqual({e.user.pk for e in school_scoped}, {wide.pk, person.pk})
+
+        branch_scoped = resolve_approvers(
+            self._stage(scope="BRANCH", code="grp-branch"), self.instance)
+        self.assertEqual({e.user.pk for e in branch_scoped},
+                         {wide.pk, narrow.pk, person.pk})
+
+    def test_delegation_expands_group_approvers(self):
+        from vs_workflow.models import ApprovalDelegation
+        approver = self._user("grp-delegator@test.com")
+        delegate = self._user("grp-delegate@test.com")
+        self._add(kind="USER", user=approver)
+        now = timezone.now()
+        ApprovalDelegation.objects.create(
+            tenant=self.tenant, delegator=approver, delegate=delegate,
+            starts_at=now - timezone.timedelta(hours=1),
+            ends_at=now + timezone.timedelta(hours=1),
+        )
+        result = resolve_approvers(self._stage(), self.instance)
+        pairs = {(e.user.pk, e.on_behalf_of.pk if e.on_behalf_of else None) for e in result}
+        self.assertEqual(pairs, {(approver.pk, None), (delegate.pk, approver.pk)})
+
+    def test_describe_group_members_explains_each_row(self):
+        """The screen's per-member breakdown runs the engine's own resolution."""
+        from vs_rbac.tests.helpers import make_assignment, make_role
+        from vs_workflow.services.approvers import describe_group_members
+        person = self._user("described@test.com")
+        role = make_role(self.tenant, name="Bursar")
+        make_assignment(self.tenant, self._user("bursar-x@test.com"), role)
+        self._add(kind="USER", user=person)
+        self._add(kind="ROLE", role=role)
+        self._add(kind="POSITION", position=self._position(code="POS-DESC"))
+
+        rows = {r["kind"]: r for r in describe_group_members(self.group, self.tenant)}
+        self.assertEqual(rows["USER"]["resolved_count"], 1)
+        self.assertEqual(rows["ROLE"]["resolved_count"], 1)
+        self.assertEqual(rows["ROLE"]["target_code"], role.key)
+        # A vacant seat is the state the screen must warn about.
+        self.assertEqual(rows["POSITION"]["resolved_count"], 0)
+
+
+class PublishGroupStageTests(TestCase):
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import make_school
+        from vs_workflow.models import WorkflowApproverGroup
+        self.school = make_school(slug="pub-group-school")
+        self.tenant = self.school.tenant
+        self.group = WorkflowApproverGroup.objects.create(
+            tenant=self.tenant, code="exam-board", name="Exam Board",
+        )
+
+    def _publish(self, overrides=None, tenant="default"):
+        stage = {
+            "code": "s1", "label": "Board", "kind": "APPROVAL", "order": 1,
+            "approver_source": "WORKFLOW_GROUP", "approver_group_code": "exam-board",
+        }
+        stage.update(overrides or {})
+        return templates_svc.publish_template(
+            tenant=self.tenant if tenant == "default" else tenant,
+            document_type="GROUP_TPL", code="default", name="T",
+            stages_payload=[stage],
+        )
+
+    def test_group_code_resolved_to_fk(self):
+        t = self._publish()
+        self.assertEqual(t.stages.get(code="s1").approver_group_id, self.group.pk)
+
+    def test_unknown_group_code_fails_publish(self):
+        with self.assertRaises(TemplateInvalidError):
+            self._publish({"approver_group_code": "nope"})
+
+    def test_missing_group_code_fails_publish(self):
+        with self.assertRaises(TemplateInvalidError):
+            self._publish({"approver_group_code": ""})
+
+    def test_inactive_group_fails_publish(self):
+        self.group.is_active = False
+        self.group.save(update_fields=["is_active"])
+        with self.assertRaises(TemplateInvalidError):
+            self._publish()
+
+    def test_other_tenant_group_fails_publish(self):
+        from vs_rbac.tests.helpers import make_school
+        other = make_school(slug="other-pub-school")
+        with self.assertRaises(TemplateInvalidError):
+            self._publish(tenant=other.tenant)
+
+    def test_global_template_cannot_use_group_stage(self):
+        with self.assertRaises(TemplateInvalidError):
+            self._publish(tenant=None)
+
+
+class GroupMemberConstraintTests(TestCase):
+    """The DB is the last line of defence on member shape."""
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import make_school
+        from vs_workflow.models import WorkflowApproverGroup
+        self.tenant = make_school(slug="constraint-school").tenant
+        self.group = WorkflowApproverGroup.objects.create(
+            tenant=self.tenant, code="c", name="C")
+
+    def test_kind_must_match_populated_target(self):
+        from django.db.utils import IntegrityError
+        from vs_workflow.models import WorkflowApproverGroupMember
+        user = _make_active_user("mismatch@test.com")
+        with self.assertRaises(IntegrityError):
+            WorkflowApproverGroupMember.objects.create(
+                group=self.group, kind="ROLE", user=user)
+
+    def test_duplicate_user_member_rejected(self):
+        from django.db.utils import IntegrityError
+        from vs_workflow.models import WorkflowApproverGroupMember
+        user = _make_active_user("dupe@test.com")
+        WorkflowApproverGroupMember.objects.create(
+            group=self.group, kind="USER", user=user)
+        with self.assertRaises(IntegrityError):
+            WorkflowApproverGroupMember.objects.create(
+                group=self.group, kind="USER", user=user)

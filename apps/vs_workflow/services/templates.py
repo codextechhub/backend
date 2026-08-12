@@ -56,6 +56,39 @@ def _resolve_role(stage_payload: dict, tenant):
     return role
 
 
+# Resolve a WORKFLOW_GROUP stage's group code to the tenant's group.
+def _resolve_group(stage_payload: dict, tenant):
+    """Resolve approver_group_code to the tenant's WorkflowApproverGroup.
+
+    Fails the publish rather than degrading to None, for the same reason as
+    _resolve_role: a group stage that lost its group would auto-skip (or
+    stall) every future instance.
+    """
+    if stage_payload.get("approver_source") != "WORKFLOW_GROUP":
+        return None
+    code = stage_payload.get("approver_group_code") or ""
+    label = stage_payload.get("code") or stage_payload.get("label") or "?"
+    if not code:
+        raise TemplateInvalidError(
+            f"Stage '{label}': approver_group_code is required when "
+            "approver_source is WORKFLOW_GROUP.")
+    if tenant is None:
+        raise TemplateInvalidError(
+            f"Stage '{label}': WORKFLOW_GROUP stages need a tenant-scoped template - "
+            "global templates cannot reference tenant approver groups.")
+
+    from vs_workflow.models import WorkflowApproverGroup
+
+    group = WorkflowApproverGroup.all_objects.filter(
+        tenant=tenant, code=code, is_active=True,
+    ).first()
+    if group is None:
+        raise TemplateInvalidError(
+            f"Stage '{label}': no active approver group with code '{code}' "
+            "exists in this tenant.")
+    return group
+
+
 # Publish one workflow template definition atomically.
 @transaction.atomic
 def publish_template(*, tenant, branch=None, document_type: str, code: str, name: str,
@@ -106,6 +139,8 @@ def publish_template(*, tenant, branch=None, document_type: str, code: str, name
             "approver_scope": s.get("approver_scope", "SCHOOL"),
             # Role config - only meaningful when approver_source==ROLE.
             "approver_role": _resolve_role(s, tenant),
+            # Group config - only meaningful when approver_source==WORKFLOW_GROUP.
+            "approver_group": _resolve_group(s, tenant),
             # Organogram config - only meaningful when approver_source==ORGANOGRAM.
             "organogram_target": s.get("organogram_target", ""),
             "organogram_levels": s.get("organogram_levels", 1),

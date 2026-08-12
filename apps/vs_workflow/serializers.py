@@ -2,9 +2,12 @@
 
 from rest_framework import serializers
 
-from vs_workflow.constants import ApproverScope, ApproverSource, OrganogramTarget
+from vs_workflow.constants import (
+    ApproverScope, ApproverSource, GroupMemberKind, OrganogramTarget,
+)
 from vs_workflow.models import (
-    ApprovalDelegation, WorkflowAuditLog, WorkflowInstance,
+    ApprovalDelegation, WorkflowApproverGroup, WorkflowApproverGroupMember,
+    WorkflowAuditLog, WorkflowInstance,
     WorkflowRoutePath, WorkflowStage, WorkflowStageAction,
     WorkflowStageApprover, WorkflowStageInstance, WorkflowTemplate,
 )
@@ -20,6 +23,12 @@ class WorkflowStageReadSerializer(serializers.ModelSerializer):
     approver_role_name = serializers.CharField(
         source="approver_role.name", read_only=True, default=None,
     )
+    approver_group_code = serializers.CharField(
+        source="approver_group.code", read_only=True, default=None,
+    )
+    approver_group_name = serializers.CharField(
+        source="approver_group.name", read_only=True, default=None,
+    )
 
     class Meta:
         model = WorkflowStage
@@ -28,6 +37,7 @@ class WorkflowStageReadSerializer(serializers.ModelSerializer):
             "approver_source",
             "approver_permission_key", "approver_scope",
             "approver_role_key", "approver_role_name",
+            "approver_group_code", "approver_group_name",
             "organogram_target", "organogram_levels", "organogram_position_code",
             "advance_rule", "quorum_count", "on_rejection",
             "skip_if_no_approvers", "inclusion_condition",
@@ -117,6 +127,13 @@ class WorkflowTemplatePublishSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     f"Stage '{label}': approver_role_key is required when "
                     f"approver_source is ROLE."
+                )
+            # Likewise a group stage must name its approver group.
+            if s.get("approver_source") == ApproverSource.WORKFLOW_GROUP.value and \
+                    not s.get("approver_group_code"):
+                raise serializers.ValidationError(
+                    f"Stage '{label}': approver_group_code is required when "
+                    f"approver_source is WORKFLOW_GROUP."
                 )
         return value
 
@@ -248,6 +265,8 @@ class ApproverPreviewRequestSerializer(serializers.Serializer):
     # ROLE config - a TenantRoleTemplate *key* (matches the publish payload's
     # approver_role_key).
     approver_role_key = serializers.CharField(required=False, allow_blank=True, default="")
+    # WORKFLOW_GROUP config - an approver group *code*.
+    approver_group_code = serializers.CharField(required=False, allow_blank=True, default="")
     # Optional context for delegation matching.
     document_type = serializers.CharField(required=False, allow_blank=True, default="")
 
@@ -263,7 +282,140 @@ class ApproverPreviewRequestSerializer(serializers.Serializer):
             if not attrs.get("approver_role_key"):
                 raise serializers.ValidationError(
                     {"approver_role_key": "Required when approver_source is ROLE."})
+        elif attrs["approver_source"] == ApproverSource.WORKFLOW_GROUP:
+            if not attrs.get("approver_group_code"):
+                raise serializers.ValidationError(
+                    {"approver_group_code": "Required when approver_source is WORKFLOW_GROUP."})
         elif not attrs.get("approver_permission_key"):
             raise serializers.ValidationError(
                 {"approver_permission_key": "Required when approver_source is RBAC_PERMISSION."})
+        return attrs
+
+
+# ── Approver groups (the "Workflow Approver" screen) ─────────────────────────
+
+class WorkflowApproverGroupMemberReadSerializer(serializers.ModelSerializer):
+    """One membership row, with the display fields the screen needs.
+
+    Live resolution ("resolves to N people") is not computed here - it is
+    served per group by the group detail/resolve endpoints, so listing many
+    groups does not run one resolution query per member row.
+    """
+
+    role_key      = serializers.CharField(source="role.key",       read_only=True, default=None)
+    role_name     = serializers.CharField(source="role.name",      read_only=True, default=None)
+    position_code = serializers.CharField(source="position.code",  read_only=True, default=None)
+    position_title = serializers.CharField(source="position.title", read_only=True, default=None)
+    user_name     = serializers.SerializerMethodField()
+    user_email    = serializers.CharField(source="user.email",     read_only=True, default=None)
+
+    class Meta:
+        model = WorkflowApproverGroupMember
+        fields = [
+            "id", "kind", "user", "user_name", "user_email",
+            "role", "role_key", "role_name",
+            "position", "position_code", "position_title", "added_at",
+        ]
+        read_only_fields = fields
+
+    def get_user_name(self, obj):
+        if obj.user is None:
+            return None
+        return getattr(obj.user, "full_name", "") or obj.user.get_username()
+
+
+class WorkflowApproverGroupSerializer(serializers.ModelSerializer):
+    members = WorkflowApproverGroupMemberReadSerializer(many=True, read_only=True)
+    member_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WorkflowApproverGroup
+        fields = [
+            "id", "code", "name", "description", "branch", "is_active",
+            "members", "member_count", "created_at", "updated_at",
+        ]
+        # tenant and created_by come from the request, never the payload.
+        read_only_fields = ["id", "members", "created_at", "updated_at"]
+
+    def get_member_count(self, obj):
+        return obj.members.count()
+
+    def validate_code(self, value):
+        """Codes are the stable handle templates publish against, so they must
+        stay unique per tenant and immutable once a group exists."""
+        tenant = self.context.get("tenant")
+        if self.instance is not None:
+            if value != self.instance.code:
+                raise serializers.ValidationError(
+                    "A group's code cannot be changed - templates reference it. "
+                    "Create a new group instead.")
+            return value
+        if tenant is not None and WorkflowApproverGroup.all_objects.filter(
+                tenant=tenant, code=value).exists():
+            raise serializers.ValidationError(
+                f"An approver group with code '{value}' already exists in this tenant.")
+        return value
+
+    def validate_branch(self, value):
+        tenant = self.context.get("tenant")
+        if value is not None and tenant is not None and value.school.tenant_id != tenant.pk:
+            raise serializers.ValidationError("Branch must belong to your tenant.")
+        return value
+
+
+class WorkflowApproverGroupMemberWriteSerializer(serializers.Serializer):
+    """Adds one member to a group. Exactly one target must match `kind`.
+
+    Targets are validated against the group's tenant here rather than trusted:
+    the add-member combobox is a tenant-scoped search, but the API is the
+    boundary that has to hold.
+    """
+
+    kind = serializers.ChoiceField(choices=GroupMemberKind.choices)
+    user = serializers.CharField(required=False, allow_blank=True, default="")
+    role_key = serializers.CharField(required=False, allow_blank=True, default="")
+    position_code = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate(self, attrs):
+        kind = attrs["kind"]
+        tenant = self.context["tenant"]
+        required = {
+            GroupMemberKind.USER: "user",
+            GroupMemberKind.ROLE: "role_key",
+            GroupMemberKind.POSITION: "position_code",
+        }[kind]
+        if not attrs.get(required):
+            raise serializers.ValidationError({required: f"Required when kind is {kind}."})
+
+        if kind == GroupMemberKind.USER:
+            from django.contrib.auth import get_user_model
+            user = get_user_model().objects.filter(
+                pk=attrs["user"], tenant=tenant, is_active=True).first()
+            if user is None:
+                # Same message for "not found" and "other tenant" - the API must
+                # not confirm that a user id exists elsewhere.
+                raise serializers.ValidationError(
+                    {"user": "No active user with that id exists in your tenant."})
+            attrs["resolved_target"] = user
+        elif kind == GroupMemberKind.ROLE:
+            from vs_rbac.models import TenantRoleTemplate
+            role = TenantRoleTemplate.objects.filter(
+                tenant=tenant, key=attrs["role_key"],
+                status=TenantRoleTemplate.Status.ACTIVE).first()
+            if role is None:
+                raise serializers.ValidationError(
+                    {"role_key": "No active role with that key exists in your tenant."})
+            attrs["resolved_target"] = role
+        else:
+            try:
+                from vs_user.models import Position
+            except ImportError:
+                raise serializers.ValidationError(
+                    {"position_code": "The organogram is not available in this install."})
+            position = Position.objects.filter(
+                code=attrs["position_code"], is_active=True).first()
+            if position is None:
+                raise serializers.ValidationError(
+                    {"position_code": "No active position with that code exists."})
+            attrs["resolved_target"] = position
         return attrs

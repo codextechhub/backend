@@ -119,15 +119,63 @@ Key fields:
 
 | Field | Meaning |
 |---|---|
-| `approver_source` | How approvers are resolved: `RBAC_PERMISSION` (default - permission key lookup), `ROLE` (active assignees of a named tenant role), or `ORGANOGRAM` (climbs the CX org chart relative to the requester). |
+| `approver_source` | How approvers are resolved: `RBAC_PERMISSION` (default - permission key lookup), `ROLE` (active assignees of a named tenant role), `WORKFLOW_GROUP` (a named approver group), or `ORGANOGRAM` (climbs the CX org chart relative to the requester). |
 | `approver_permission_key` | RBAC permission key used to resolve who can approve this stage (`RBAC_PERMISSION` source only). |
 | `approver_role_key` | Tenant role key (e.g. `bursar`) whose active assignees approve this stage (`ROLE` source only). Publish fails if no active role with that key exists in the tenant. |
-| `approver_scope` | `BRANCH`, `SCHOOL`, or `PLATFORM` - narrows the RBAC/role query to branch-level, school-level, or all users platform-wide. |
+| `approver_group_code` | Approver group code (e.g. `po-approvers`) whose resolved membership approves this stage (`WORKFLOW_GROUP` source only). Publish fails if no active group with that code exists in the tenant. |
+| `approver_scope` | `BRANCH`, `SCHOOL`, or `PLATFORM` - narrows the RBAC/role query to branch-level, school-level, or all users platform-wide. For a group, it narrows that group's `ROLE` members only. |
 | `advance_rule` | `UNANIMOUS` (everyone must approve), `QUORUM` (N of M), or `ANY` (first approver wins). |
 | `quorum_count` | Only used when `advance_rule = QUORUM`. Minimum approvals needed. |
 | `on_rejection` | What happens when someone rejects: `TERMINAL` (ends the workflow) or `RETURN_TO_REQUESTER`. |
 | `skip_if_no_approvers` | If `True` and no eligible approvers are found, the stage is auto-skipped. |
 | `inclusion_condition` | JSON condition. If it evaluates to `False` for this document, the stage is skipped entirely. |
+
+---
+
+### WorkflowApproverGroup
+
+A **named, reusable pool of approvers** owned by one tenant - "PO Approvers",
+"Exam Board", "Leave Committee". A stage with `approver_source = WORKFLOW_GROUP`
+points at one by code, and the group's membership is read live at every stage
+activation: editing a group changes who approves next time, with no republish.
+
+Membership is deliberately mixed. Each member row is one of:
+
+| `kind` | Points at | Resolves to |
+|---|---|---|
+| `USER` | A specific person | That person. Static. |
+| `ROLE` | A tenant role | Everyone actively assigned that role, right now. |
+| `POSITION` | An organogram seat | Whoever currently holds that seat. |
+
+`ROLE` and `POSITION` members are computed at resolution time, so staff joining
+or leaving a role or a seat flow through with no group edit. Every resolved
+person is filtered to the group's own tenant, so a group can never route
+approval authority outside the tenant that owns it - organogram positions in
+particular are platform-global seats.
+
+A group that resolves to nobody (empty, deactivated, or every member vacant)
+behaves like any other empty stage: `skip_if_no_approvers` decides whether the
+stage is skipped or the workflow waits.
+
+**Managing groups** (the "Workflow Approver" screen):
+
+| Method | Path | Permission |
+|---|---|---|
+| `GET` / `POST` | `/approver-groups/` | `workflow.group.view` / `workflow.group.manage` |
+| `GET` / `PATCH` / `DELETE` | `/approver-groups/{id}/` | view / manage |
+| `POST` | `/approver-groups/{id}/members/` | manage |
+| `DELETE` | `/approver-groups/{id}/members/{member_id}/` | manage |
+| `GET` | `/approver-groups/{id}/resolve/` | view |
+
+`resolve/` returns the live per-member breakdown ("this role resolves to 3
+people") plus the de-duplicated union of everyone the group currently reaches.
+It runs the engine's own resolution, so the screen can never disagree with what
+an activation will do. Pass `?branch=<id>` to preview branch narrowing.
+
+Deleting a group that an active stage still references returns `409` with
+`APPROVER_GROUP_IN_USE`; deactivate it instead, which keeps the stage resolvable
+(to nobody) and preserves audit history. A group's `code` is immutable once
+created, because published templates reference it.
 
 ---
 

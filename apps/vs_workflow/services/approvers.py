@@ -14,7 +14,9 @@ from typing import TYPE_CHECKING, List, Optional
 from django.db.models import Q
 from django.utils import timezone
 
-from vs_workflow.constants import ApproverScope, ApproverSource, OrganogramTarget
+from vs_workflow.constants import (
+    ApproverScope, ApproverSource, GroupMemberKind, OrganogramTarget,
+)
 from vs_workflow.models import ApprovalDelegation, WorkflowInstance, WorkflowStage
 
 if TYPE_CHECKING:
@@ -63,6 +65,38 @@ def _users_with_permission(tenant, branch, permission_key: str, scope: ApproverS
     )
 
 
+# Resolve the active assignees of one or more tenant roles.
+def _users_for_roles(role_ids, tenant, branch) -> list:
+    """Active assignees of the given roles within one tenant.
+
+    Shared by the ROLE stage source and by ROLE members of an approver group,
+    so both honour the same rules: the role itself must be ACTIVE, the
+    assignment must be ACTIVE, and the user must be active. ``branch`` narrows
+    to branch-limited assignments for that branch (plus tenant-wide ones);
+    pass None to count tenant-wide assignments only.
+    """
+    role_ids = [r for r in role_ids if r]
+    if not role_ids:
+        return []
+
+    from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+
+    assignments = (
+        TenantUserRoleAssignment.objects.filter(
+            tenant=tenant,
+            role_id__in=role_ids,
+            role__status=TenantRoleTemplate.Status.ACTIVE,
+            assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+            user__is_active=True,
+        )
+        .filter(Q(branch__isnull=True) | Q(branch=branch))
+        .select_related("user")
+    )
+    # De-dup by user id - a user can hold tenant-wide and branch-limited
+    # assignments of the same role simultaneously.
+    return list({a.user_id: a.user for a in assignments}.values())
+
+
 # Resolve the active assignees of a named tenant role.
 def _role_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
     """Resolve base approvers as the active assignees of stage.approver_role.
@@ -75,26 +109,112 @@ def _role_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
     An archived or deactivated role resolves to no approvers, so the stage's
     skip_if_no_approvers policy decides what happens next.
     """
-    if not stage.approver_role_id:
+    branch_arg = instance.branch if stage.approver_scope == ApproverScope.BRANCH else None
+    return _users_for_roles([stage.approver_role_id], instance.tenant, branch_arg)
+
+
+# Keep only active users belonging to the resolving tenant.
+def _tenant_members(users, tenant_id) -> list:
+    """De-dupe and enforce tenant containment on a resolved user list.
+
+    Containment is applied at resolution rather than trusted from the stored
+    rows: organogram positions are platform-global seats, so a tenant's group
+    must never route approval authority to somebody outside that tenant.
+    """
+    return list({
+        u.pk: u for u in users
+        if u is not None and u.is_active and u.tenant_id == tenant_id
+    }.values())
+
+
+# Resolve the mixed membership of a named approver group.
+def resolve_group_users(group, tenant, branch=None) -> list:
+    """Live membership of an approver group as a flat, de-duped user list.
+
+    The group's rows are heterogeneous and resolved together:
+      * USER     - the named person, taken as-is.
+      * ROLE     - every active assignee of that role (same rules as the ROLE
+                   stage source).
+      * POSITION - the current holder(s) of that organogram seat.
+
+    A deactivated group resolves to nobody, leaving the stage's
+    skip_if_no_approvers policy to decide what happens next. Shared by stage
+    activation and by the Workflow Approver screen's live preview, so what an
+    admin sees is exactly what the engine will use.
+    """
+    if group is None or not group.is_active:
         return []
 
-    from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+    members = list(group.members.select_related("user", "position").all())
 
-    branch_arg = instance.branch if stage.approver_scope == ApproverScope.BRANCH else None
-    assignments = (
-        TenantUserRoleAssignment.objects.filter(
-            tenant=instance.tenant,
-            role_id=stage.approver_role_id,
-            role__status=TenantRoleTemplate.Status.ACTIVE,
-            assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
-            user__is_active=True,
-        )
-        .filter(Q(branch__isnull=True) | Q(branch=branch_arg))
-        .select_related("user")
+    users: list = [m.user for m in members if m.kind == GroupMemberKind.USER and m.user]
+    users += _users_for_roles(
+        [m.role_id for m in members if m.kind == GroupMemberKind.ROLE], tenant, branch,
     )
-    # De-dup by user id - a user can hold tenant-wide and branch-limited
-    # assignments of the same role simultaneously.
-    return list({a.user_id: a.user for a in assignments}.values())
+    for m in members:
+        if m.kind == GroupMemberKind.POSITION and m.position is not None:
+            users += m.position.current_holders
+
+    return _tenant_members(users, getattr(tenant, "pk", tenant))
+
+
+# Per-member breakdown of a group's live resolution.
+def describe_group_members(group, tenant, branch=None) -> list:
+    """Explain a group row by row: what each member points at and who it
+    resolves to right now.
+
+    Powers the Workflow Approver screen, where a ROLE or POSITION row shows
+    "resolves to N people" and expands to name them. Runs the same resolution
+    the engine runs, so the screen can never disagree with an activation.
+    """
+    if group is None:
+        return []
+
+    tenant_id = getattr(tenant, "pk", tenant)
+    rows = []
+    for m in group.members.select_related("user", "role", "position").all():
+        if m.kind == GroupMemberKind.USER:
+            label = _display_name(m.user)
+            target_code, resolved = None, _tenant_members([m.user], tenant_id)
+        elif m.kind == GroupMemberKind.ROLE:
+            label = m.role.name if m.role else ""
+            target_code = m.role.key if m.role else None
+            resolved = _tenant_members(
+                _users_for_roles([m.role_id], tenant, branch), tenant_id)
+        else:
+            label = m.position.title if m.position else ""
+            target_code = m.position.code if m.position else None
+            resolved = _tenant_members(
+                m.position.current_holders if m.position else [], tenant_id)
+        rows.append({
+            "id": str(m.pk),
+            "kind": m.kind,
+            "label": label,
+            "target_code": target_code,
+            "resolved_count": len(resolved),
+            "resolved_users": [
+                {"id": str(u.pk), "name": _display_name(u), "email": u.email}
+                for u in resolved
+            ],
+        })
+    return rows
+
+
+def _display_name(user) -> str:
+    if user is None:
+        return ""
+    return getattr(user, "full_name", "") or user.get_username()
+
+
+def _group_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
+    """Resolve base approvers from stage.approver_group's membership.
+
+    Opt-in strategy (ApproverSource.WORKFLOW_GROUP). approver_scope narrows
+    ROLE members to the instance's branch exactly as it does for the ROLE
+    source; USER and POSITION members are unaffected by scope.
+    """
+    branch_arg = instance.branch if stage.approver_scope == ApproverScope.BRANCH else None
+    return resolve_group_users(stage.approver_group, instance.tenant, branch_arg)
 
 
 # Resolve organogram-based approvers relative to the requester.
@@ -142,6 +262,8 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
         department head, or a specific position).
       - ROLE (opt-in): the active assignees of the named tenant role in
         stage.approver_role, honouring approver_scope for branch narrowing.
+      - WORKFLOW_GROUP (opt-in): the resolved membership of the named approver
+        group in stage.approver_group, mixing people, roles, and positions.
 
     The requester is always excluded - they cannot approve their own submission.
     Active delegations then expand the list regardless of source: if an eligible
@@ -160,6 +282,11 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     elif stage.approver_source == ApproverSource.ROLE:
         base_users = [
             u for u in _role_base_users(stage, instance)
+            if u.pk != instance.requested_by_id
+        ]
+    elif stage.approver_source == ApproverSource.WORKFLOW_GROUP:
+        base_users = [
+            u for u in _group_base_users(stage, instance)
             if u.pk != instance.requested_by_id
         ]
     else:

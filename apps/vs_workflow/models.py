@@ -1,6 +1,8 @@
 """
-Data models for vs_workflow - 8 models.
+Data models for vs_workflow.
 
+WorkflowApproverGroup       - named, reusable approver pool owned by a tenant.
+WorkflowApproverGroupMember - one member of that pool: a person, a role, or a position.
 WorkflowTemplate      - reusable blueprint.
 WorkflowStage         - one node (APPROVAL or BRANCH).
 WorkflowRoutePath     - directed edge between stages, optionally condition-guarded.
@@ -24,6 +26,7 @@ from vs_workflow.constants import (
     ApproverScope,
     ApproverSource,
     AuditEventType,
+    GroupMemberKind,
     OrganogramTarget,
     StageAdvanceRule,
     StageKind,
@@ -107,6 +110,125 @@ class WorkflowTemplate(models.Model):
         return getattr(self.school, "pk", None)
 
 
+class WorkflowApproverGroup(models.Model):
+    """A named, reusable pool of approvers owned by one tenant.
+
+    Groups exist so a template stage can say "the Exam Board approves this"
+    instead of naming a permission key. Membership is edited in one place and
+    read live at every stage activation, so a group edit takes effect on the
+    next activation of every template that references it - no republish.
+
+    Attributes:
+        tenant: Owning tenant. Groups are never global; approval authority is
+            always tenant-local.
+        branch: Optional branch narrowing. Null means the group applies to the
+            whole tenant.
+        code: Slug identifying the group within the tenant (e.g. ``po-approvers``).
+        is_active: Deactivating a group makes it resolve to no approvers rather
+            than deleting it, so referencing stages and audit history survive.
+    """
+
+    id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="workflow_approver_groups",
+    )
+    branch = models.ForeignKey(
+        "vs_schools.Branch", on_delete=models.PROTECT,
+        null=True, blank=True, related_name="workflow_approver_groups",
+    )
+    code = models.SlugField(max_length=100)
+    name = models.CharField(max_length=150)
+    description = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
+        constraints = [
+            models.UniqueConstraint(fields=["tenant", "code"], name="uniq_approver_group_code"),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "is_active"]),
+        ]
+        ordering = ["name"]
+
+    def __str__(self):
+        return f"{self.name} [{self.code}]"
+
+    @property
+    def school(self):
+        return getattr(self.tenant, "school_profile", None)
+
+    @property
+    def school_id(self):
+        return getattr(self.school, "pk", None)
+
+
+class WorkflowApproverGroupMember(models.Model):
+    """One membership row in a WorkflowApproverGroup.
+
+    Exactly one of user/role/position is set, matching ``kind``. USER rows are
+    static; ROLE and POSITION rows are computed at resolution time, so people
+    joining or leaving a role or seat flow through without a group edit.
+
+    Attributes:
+        kind: ``USER``, ``ROLE``, or ``POSITION`` - which target field is populated.
+        user: The person, when kind is USER.
+        role: The tenant role whose active assignees join the pool, when kind is ROLE.
+        position: The organogram seat whose current holders join the pool,
+            when kind is POSITION.
+    """
+
+    id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
+    group = models.ForeignKey(WorkflowApproverGroup, on_delete=models.CASCADE,
+                              related_name="members")
+    kind = models.CharField(max_length=20, choices=GroupMemberKind.choices)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                             null=True, blank=True, related_name="+")
+    # PROTECT on role/position: a target referenced by an approver group must not
+    # vanish silently - retire the target or remove the member row first.
+    role = models.ForeignKey("vs_rbac.TenantRoleTemplate", on_delete=models.PROTECT,
+                             null=True, blank=True, related_name="approver_group_members")
+    position = models.ForeignKey("vs_user.Position", on_delete=models.PROTECT,
+                                 null=True, blank=True, related_name="approver_group_members")
+    added_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+                                 null=True, blank=True, related_name="+")
+    added_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            # Exactly one target field, and it must match the declared kind.
+            models.CheckConstraint(
+                condition=(
+                    Q(kind="USER", user__isnull=False, role__isnull=True, position__isnull=True)
+                    | Q(kind="ROLE", role__isnull=False, user__isnull=True, position__isnull=True)
+                    | Q(kind="POSITION", position__isnull=False, user__isnull=True, role__isnull=True)
+                ),
+                name="ck_group_member_target_matches_kind",
+            ),
+            models.UniqueConstraint(fields=["group", "user"], condition=Q(kind="USER"),
+                                    name="uniq_group_member_user"),
+            models.UniqueConstraint(fields=["group", "role"], condition=Q(kind="ROLE"),
+                                    name="uniq_group_member_role"),
+            models.UniqueConstraint(fields=["group", "position"], condition=Q(kind="POSITION"),
+                                    name="uniq_group_member_position"),
+        ]
+        indexes = [models.Index(fields=["group", "kind"])]
+        ordering = ["kind", "added_at"]
+
+    def __str__(self):
+        target = self.user_id or self.role_id or self.position_id
+        return f"{self.kind}:{target}"
+
+
 class WorkflowStage(models.Model):
     """A single step within a WorkflowTemplate.
 
@@ -122,6 +244,8 @@ class WorkflowStage(models.Model):
         approver_scope: ``BRANCH``, ``SCHOOL``, or ``PLATFORM`` - narrows the RBAC/role lookup.
         approver_role: Named tenant role whose active assignees approve this stage
             (only used when ``approver_source`` is ``ROLE``).
+        approver_group: Named approver group whose resolved membership approves this
+            stage (only used when ``approver_source`` is ``WORKFLOW_GROUP``).
         advance_rule: ``UNANIMOUS``, ``QUORUM``, or ``ANY`` - how many approvals advance the stage.
         quorum_count: Minimum approvals required when advance_rule is ``QUORUM``.
         on_rejection: ``TERMINAL`` ends the workflow; ``RETURN_TO_REQUESTER`` sends it back.
@@ -155,6 +279,11 @@ class WorkflowStage(models.Model):
     # from under the template; archive the role or repoint the stage first.
     approver_role = models.ForeignKey(
         "vs_rbac.TenantRoleTemplate", on_delete=models.PROTECT,
+        null=True, blank=True, related_name="workflow_stages",
+    )
+    # ── Group config (only used when approver_source == WORKFLOW_GROUP) ───────
+    approver_group = models.ForeignKey(
+        WorkflowApproverGroup, on_delete=models.PROTECT,
         null=True, blank=True, related_name="workflow_stages",
     )
     # ── Organogram config (only used when approver_source == ORGANOGRAM) ──────

@@ -83,12 +83,27 @@ class ApproverSource(models.TextChoices):
     additive, opt-in strategy that climbs the CX organogram relative to the
     requester. ROLE points directly at a named tenant role
     (`approver_role`) and resolves its active assignees - the human-facing
-    replacement for permission keys. The strategies are mutually exclusive
-    per stage.
+    replacement for permission keys. WORKFLOW_GROUP points at a reusable,
+    named approver group whose membership mixes people, roles, and
+    organogram positions. The strategies are mutually exclusive per stage.
     """
     RBAC_PERMISSION = "RBAC_PERMISSION", "RBAC permission holders (default)"
     ORGANOGRAM      = "ORGANOGRAM",      "Organogram (relative to requester)"
     ROLE            = "ROLE",            "Tenant role holders"
+    WORKFLOW_GROUP  = "WORKFLOW_GROUP",  "Workflow approver group"
+
+
+class GroupMemberKind(models.TextChoices):
+    """What one row of a WorkflowApproverGroup points at.
+
+    A group's membership is heterogeneous on purpose: a committee is usually
+    "these two named people, plus whoever currently holds the Bursar role,
+    plus the Head of Finance seat". USER is static; ROLE and POSITION are
+    resolved live at stage activation, so staff changes need no group edit.
+    """
+    USER     = "USER",     "Specific person"
+    ROLE     = "ROLE",     "Role holders"
+    POSITION = "POSITION", "Position holders"
 
 class OrganogramTarget(models.TextChoices):
     """The climb mode used when ApproverSource is ORGANOGRAM."""
@@ -105,6 +120,8 @@ PERM_INSTANCE_SUBMIT = "workflow.instance.submit"
 PERM_INSTANCE_VIEW   = "workflow.instance.view"
 PERM_INSTANCE_CANCEL = "workflow.instance.cancel"
 PERM_ACTION_REVERSE  = "workflow.action.reverse"
+PERM_GROUP_MANAGE    = "workflow.group.manage"
+PERM_GROUP_VIEW      = "workflow.group.view"
 
 # Notification event keys
 # Notification event keys emitted for workflow lifecycle transitions.

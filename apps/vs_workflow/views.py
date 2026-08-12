@@ -18,17 +18,19 @@ from vs_rbac.permissions import user_has_rbac_permission
 from vs_workflow.constants import (
     PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW,
     PERM_INSTANCE_SUBMIT, PERM_INSTANCE_VIEW, PERM_INSTANCE_CANCEL,
-    PERM_ACTION_REVERSE,
-    ApproverSource, OrganogramTarget,
+    PERM_ACTION_REVERSE, PERM_GROUP_MANAGE, PERM_GROUP_VIEW,
+    ApproverSource, GroupMemberKind, OrganogramTarget,
 )
 from vs_workflow.models import (
-    ApprovalDelegation, WorkflowInstance, WorkflowStage, WorkflowStageAction,
+    ApprovalDelegation, WorkflowApproverGroup, WorkflowApproverGroupMember,
+    WorkflowInstance, WorkflowStage, WorkflowStageAction,
     WorkflowStageApprover, WorkflowStageInstance, WorkflowTemplate,
 )
 from vs_workflow.serializers import (
     ApprovalDelegationSerializer, ApproverPreviewRequestSerializer,
     CancelInstanceSerializer, ReverseActionSerializer,
     StageActionWriteSerializer, SubmitForApprovalSerializer,
+    WorkflowApproverGroupMemberWriteSerializer, WorkflowApproverGroupSerializer,
     WorkflowInstanceDetailSerializer, WorkflowInstanceListSerializer,
     WorkflowTemplatePublishSerializer, WorkflowTemplateReadSerializer,
 )
@@ -36,7 +38,9 @@ from vs_workflow.services import actions as actions_svc
 from vs_workflow.services import my_queue as my_queue_svc
 from vs_workflow.services import submission as submission_svc
 from vs_workflow.services import templates as templates_svc
-from vs_workflow.services.approvers import resolve_approvers
+from vs_workflow.services.approvers import (
+    describe_group_members, resolve_approvers, resolve_group_users,
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -128,6 +132,16 @@ class WorkflowTemplateViewSet(
                                "exists in this tenant."},
                     status=status.HTTP_404_NOT_FOUND)
             stage.approver_role = role
+        if d["approver_source"] == ApproverSource.WORKFLOW_GROUP:
+            group = WorkflowApproverGroup.all_objects.filter(
+                tenant=requester.tenant, code=d["approver_group_code"], is_active=True,
+            ).first()
+            if group is None:
+                return Response(
+                    {"detail": f"No active approver group with code "
+                               f"'{d['approver_group_code']}' exists in this tenant."},
+                    status=status.HTTP_404_NOT_FOUND)
+            stage.approver_group = group
 
         # Build a transient instance carrying just the context the resolver reads.
         instance = WorkflowInstance(
@@ -349,6 +363,134 @@ class TeamLoadView(SchoolScopedMixin, APIView):
              "stage_label": info["stage_label"], "active_count": info["count"]}
             for (dt, code), info in sorted(buckets.items())
         ])
+
+
+# ── Approver groups ───────────────────────────────────────────────────────────
+
+class WorkflowApproverGroupViewSet(SchoolScopedMixin, ModelViewSet):
+    """Named approver pools behind the Workflow Approver screen.
+
+    docstring-name: Workflow approver groups
+    """
+    serializer_class = WorkflowApproverGroupSerializer
+
+    _WRITE_ACTIONS = {"create", "update", "partial_update", "destroy",
+                      "add_member", "remove_member"}
+
+    def get_permissions(self):
+        self.rbac_permission = (
+            PERM_GROUP_MANAGE if self.action in self._WRITE_ACTIONS else PERM_GROUP_VIEW
+        )
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get_serializer_context(self):
+        return super().get_serializer_context() | {"tenant": self.request.tenant}
+
+    def get_queryset(self):
+        # Scope on request.tenant, which the auth layer always resolves from the
+        # asserted ?tenant=. Note _filter_by_school cannot be used as the tenant
+        # guard here: request._cached_school is never populated, so it is a
+        # no-op, and all_objects bypasses the tenant-aware manager.
+        qs = (WorkflowApproverGroup.all_objects
+              .filter(tenant=self.request.tenant)
+              .prefetch_related("members__user", "members__role", "members__position"))
+        if self.request.query_params.get("is_active") in ("true", "false"):
+            qs = qs.filter(is_active=self.request.query_params["is_active"] == "true")
+        if self.request.query_params.get("search"):
+            term = self.request.query_params["search"]
+            qs = qs.filter(Q(name__icontains=term) | Q(code__icontains=term))
+        return qs.order_by("name")
+
+    def perform_create(self, serializer):
+        serializer.save(tenant=self.request.tenant, created_by=self.request.user)
+
+    def destroy(self, request, *args, **kwargs):
+        """Refuse to delete a group a template still points at.
+
+        The FK is PROTECT, so the alternative is a 500. Deactivating keeps the
+        stage resolvable (to nobody) and preserves audit history.
+        """
+        group = self.get_object()
+        used_by = list(group.workflow_stages.filter(retired_at__isnull=True)
+                       .values_list("template__code", "code")[:10])
+        if used_by:
+            return Response({
+                "success": False,
+                "message": "This group is used by one or more workflow stages. "
+                           "Deactivate it instead, or repoint those stages first.",
+                "error": {
+                    "code": "APPROVER_GROUP_IN_USE",
+                    "detail": {"stages": [f"{t}:{s}" for t, s in used_by]},
+                },
+            }, status=status.HTTP_409_CONFLICT)
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=["get"])
+    def resolve(self, request, pk=None):
+        """Who this group resolves to right now, per member and in total.
+
+        Powers the screen's "resolves to N people" affordance. Runs the same
+        resolution the engine runs at stage activation, so the preview cannot
+        disagree with reality. `?branch=<id>` previews branch narrowing for
+        ROLE members the way a BRANCH-scoped stage would see them.
+        """
+        group = self.get_object()
+        branch = None
+        branch_id = request.query_params.get("branch")
+        if branch_id:
+            from vs_schools.models import Branch
+            branch = Branch.objects.filter(
+                pk=branch_id, school__tenant=request.tenant).first()
+            if branch is None:
+                return Response({"detail": "Branch not found."},
+                                status=status.HTTP_404_NOT_FOUND)
+
+        members = describe_group_members(group, request.tenant, branch)
+        people = resolve_group_users(group, request.tenant, branch)
+        return Response({
+            "group": {"id": str(group.pk), "code": group.code,
+                      "name": group.name, "is_active": group.is_active},
+            "members": members,
+            "resolved_count": len(people),
+            "resolved_users": [
+                {"id": str(u.pk),
+                 "name": getattr(u, "full_name", "") or u.get_username(),
+                 "email": u.email}
+                for u in people
+            ],
+        })
+
+    @action(detail=True, methods=["post"], url_path="members")
+    def add_member(self, request, pk=None):
+        """Add one person, role, or position to the group."""
+        group = self.get_object()
+        s = WorkflowApproverGroupMemberWriteSerializer(
+            data=request.data, context={"tenant": request.tenant})
+        s.is_valid(raise_exception=True)
+        d = s.validated_data
+        target = d["resolved_target"]
+        field = {GroupMemberKind.USER: "user", GroupMemberKind.ROLE: "role",
+                 GroupMemberKind.POSITION: "position"}[d["kind"]]
+
+        member, created = WorkflowApproverGroupMember.objects.get_or_create(
+            group=group, kind=d["kind"], **{field: target},
+            defaults={"added_by": request.user},
+        )
+        serializer = self.get_serializer(group)
+        return Response(serializer.data,
+                        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+    @action(detail=True, methods=["delete"], url_path="members/(?P<member_id>[^/.]+)")
+    def remove_member(self, request, pk=None, member_id=None):
+        """Remove one membership row. Scoped to this group so a member id from
+        another tenant's group cannot be deleted by guessing it."""
+        group = self.get_object()
+        member = WorkflowApproverGroupMember.objects.filter(
+            pk=member_id, group=group).first()
+        if member is None:
+            raise NotFound("Member not found.")
+        member.delete()
+        return Response(self.get_serializer(group).data)
 
 
 # ── Delegations ───────────────────────────────────────────────────────────────
