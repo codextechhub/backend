@@ -28,6 +28,11 @@ ACCOUNT_MAPPING_CONSUMERS = {
         "vs_finance.receivables",
         "Holds unapplied receipts, overpayments, credit notes and refundable credit.",
     ),
+    AccountMappingKey.VENDOR_ADVANCE: _consumer(
+        "Vendor prepayments",
+        "vs_procurement.payables",
+        "Holds money paid to a vendor before their bill exists, until a bill draws it down.",
+    ),
     AccountMappingKey.GRIR_CLEARING: _consumer(
         "Goods received and invoice received",
         "vs_procurement.reports",

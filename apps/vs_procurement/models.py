@@ -1728,17 +1728,42 @@ class VendorPayment(FinanceDocument):
 
     @property
     def unallocated_amount(self) -> int:
-        """Gross not yet applied to any bill - an open debit on the vendor."""
+        """Gross not yet applied to any bill - money sitting in vendor advances (1240).
+
+        Named for the sub-ledger question ("how much of this payment has found a
+        bill?"), but it is also a GL statement: whatever is unallocated was never
+        debited to AP, it was debited to the vendor-advance asset and is still there.
+        :attr:`advance_remaining` is the same figure named for that second question.
+        """
         # Unallocated cash remains the gross payment less allocations already attached to invoices.
         return self.gross_amount - self.allocated_amount
+
+    @property
+    def advance_remaining(self) -> int:
+        """Kobo of this payment still sitting in the vendor-advance asset (1240).
+
+        The AP-side twin of :attr:`vs_finance.models.Payment.credit_remaining`, and the
+        figure screens must show as "paid in advance". It equals
+        :attr:`unallocated_amount` because allocation to a bill is the only thing that
+        drains a vendor advance today; the AR twin subtracts refunds as well, and this
+        property is where an AP-side refund would be subtracted if one is ever built.
+        """
+        return self.unallocated_amount
 
 
 class VendorPaymentAllocation(TimeStampedModel):
     """Links a slice of a :class:`VendorPayment` (gross) to a :class:`VendorInvoice`.
 
-    Mirrors :class:`vs_finance.models.PaymentAllocation`: the GL already moved when the
-    payment posted (Dr AP, Cr bank/WHT); allocation is the sub-ledger act of saying
-    which bills that AP debit settles.
+    Mirrors :class:`vs_finance.models.PaymentAllocation`. Allocation is the sub-ledger
+    act of saying which bills a payment settles; on the paying document's own date the
+    settled part already debited AP directly. What allocation adds is the later case: a
+    payment made before the bill existed parked its money in the vendor-advance asset,
+    and applying it to a bill raises a reclassification (Dr AP, Cr vendor advances).
+
+    A row is an immutable **event**, not a running total, for the same reason the AR
+    twin is: two tranches against one bill can debit AP on two different dates, and a
+    single accumulating row could carry only one of those dates honestly - leaving
+    every "as at" report between them disagreeing with the ledger.
     """
 
     # Allocations are lifecycle-owned children of the payment instruction, but invoices
@@ -1751,15 +1776,15 @@ class VendorPaymentAllocation(TimeStampedModel):
         VendorInvoice, on_delete=models.PROTECT, related_name="allocations",
     )
     amount = MoneyField(help_text="Gross applied to this bill, in kobo.")
+    effective_date = models.DateField(
+        null=True, blank=True,
+        help_text="Accounting date this settlement took effect - the date of the "
+                  "journal that debited AP for it. Null only on rows predating the "
+                  "column, where it is reconstructed as max(payment date, bill date).",
+    )
 
     class Meta:
         constraints = [
-            # One row per payment/invoice pair makes retries idempotent and prevents a
-            # duplicated split from inflating both invoice and payment settlement totals.
-            models.UniqueConstraint(
-                fields=["payment", "vendor_invoice"],
-                name="uniq_proc_alloc_payment_invoice",
-            ),
             models.CheckConstraint(
                 check=models.Q(amount__gte=0), name="ck_proc_alloc_non_negative",
             ),
@@ -1767,11 +1792,40 @@ class VendorPaymentAllocation(TimeStampedModel):
         indexes = [
             models.Index(fields=["vendor_invoice"]),
             models.Index(fields=["payment"]),
+            models.Index(fields=["effective_date"]),
         ]
         ordering = ["payment", "id"]
 
     def __str__(self) -> str:
         return f"{self.payment_id}→{self.vendor_invoice_id}: {self.amount}"
+
+
+class VendorAdvanceAllocationJournal(TimeStampedModel):
+    """Durable link from a later vendor-advance draw-down to its GL journal.
+
+    A payment made before its bill exists leaves its money in the vendor-advance asset
+    (1240). Applying it to a bill later raises its own reclassification journal
+    (Dr AP, Cr vendor advances), which is a GL effect the payment document owns but
+    which is not ``VendorPayment.journal``. Recording the link is what lets a reversal
+    unwind *all* of a payment's ledger effects instead of just the original disbursement.
+
+    The AP mirror of :class:`vs_finance.models.CustomerCreditAllocationJournal`.
+    """
+
+    payment = models.ForeignKey(
+        VendorPayment, on_delete=models.PROTECT, related_name="advance_allocation_journals",
+    )
+    journal = models.OneToOneField(
+        "vs_finance.JournalEntry", on_delete=models.PROTECT,
+        related_name="vendor_advance_allocation",
+    )
+    amount = MoneyField(help_text="Vendor advance reclassified to AP, in kobo.")
+
+    class Meta:
+        ordering = ["journal_id", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.payment_id}→J{self.journal_id}: {self.amount}"
 
 
 # --------------------------------------------------------------------------- #

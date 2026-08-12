@@ -655,6 +655,7 @@ class AccountMappingKey(models.TextChoices):
     ACCOUNTS_RECEIVABLE = "ACCOUNTS_RECEIVABLE", "Accounts receivable"
     ACCOUNTS_PAYABLE = "ACCOUNTS_PAYABLE", "Accounts payable"
     CUSTOMER_CREDIT = "CUSTOMER_CREDIT", "Customer credit"
+    VENDOR_ADVANCE = "VENDOR_ADVANCE", "Vendor advances"
     GRIR_CLEARING = "GRIR_CLEARING", "GR/IR clearing"
     OUTPUT_VAT = "OUTPUT_VAT", "Output VAT"
     WHT_PAYABLE = "WHT_PAYABLE", "WHT payable"

@@ -26,6 +26,12 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     ("1100", "Cash & Bank", AccountType.ASSET, True, False),  # Main cash/bank account.
     ("1110", "Petty Cash", AccountType.ASSET, True, False),  # Petty cash account.
     ("1200", "Accounts Receivable", AccountType.ASSET, True, False),  # AR control account.
+    # Vendor advances is the asset mirror of 2140 Customer Credit, numbered to match
+    # it (x140 = "counterparty prepayment control"). Money paid to a vendor before
+    # their bill exists cannot sit in AP: AP is a liability and a debit balance there
+    # would assert that suppliers owe us money. It is an asset - the vendor owes us
+    # goods - and it drains back to AP when the bill arrives.
+    ("1240", "Vendor Advances", AccountType.ASSET, True, False),  # Prepayments to vendors.
     ("1300", "Input VAT (Recoverable)", AccountType.ASSET, True, False),  # Recoverable VAT account.
     ("1400", "Inventory", AccountType.ASSET, True, False),  # Inventory account.
     ("1500", "Property, Plant & Equipment", AccountType.ASSET, True, False),  # PPE cost account.
@@ -83,6 +89,9 @@ DEFAULT_IFRS_LINE_BY_CODE = {  # Maps default account codes to statutory present
     # Assets  # Default asset presentation mappings.
     "1100": IFRSLine.CASH, "1110": IFRSLine.CASH,  # Cash and petty cash.
     "1200": IFRSLine.TRADE_RECEIVABLES,  # Accounts receivable.
+    # "Trade and other receivables" carries supplier advances under IFRS for SMEs,
+    # and it mirrors 2140 presenting inside "trade and other payables".
+    "1240": IFRSLine.TRADE_RECEIVABLES,  # Advances paid to vendors.
     "1300": IFRSLine.CURRENT_TAX_ASSET,  # Recoverable input VAT.
     "1400": IFRSLine.INVENTORIES,  # Inventory.
     "1500": IFRSLine.PPE, "1900": IFRSLine.PPE,  # PPE and accumulated depreciation.
@@ -103,8 +112,8 @@ DEFAULT_IFRS_LINE_BY_CODE = {  # Maps default account codes to statutory present
 
 #: parent_code by child_code - wires the tree after the flat create.
 _PARENTS = {  # Parent account code by child account code.
-    "1100": "1000", "1110": "1000", "1200": "1000", "1300": "1000", "1400": "1000",  # Asset children.
-    "1500": "1000", "1900": "1000",  # More asset children.
+    "1100": "1000", "1110": "1000", "1200": "1000", "1240": "1000", "1300": "1000",  # Asset children.
+    "1400": "1000", "1500": "1000", "1900": "1000",  # More asset children.
     "2100": "2000", "2140": "2000", "2150": "2000", "2200": "2000", "2300": "2000",  # Liability children.
     "2310": "2000", "2320": "2000", "2330": "2000", "2400": "2000",  # More liability children.
     "3100": "3000", "3200": "3000",  # Equity children.

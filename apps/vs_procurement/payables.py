@@ -6,8 +6,19 @@ Mirrors the AR revenue cycle in :mod:`vs_finance.receivables`, but for money *ou
   ``Dr GR/IR clearing (+ Dr input VAT), Cr AP control``. For a PO-based bill the debit
   clears the GR/IR liability the goods receipt parked, so once goods are both received
   and billed **GR/IR nets to zero**. A non-PO bill debits the expense directly.
-* **Vendor payment** → ``Dr AP (gross), Cr bank (net), Cr WHT payable (withheld)`` -
-  then the gross is *allocated* across bills (a sub-ledger act with no further GL).
+* **Vendor payment** → ``Dr AP (settled), Dr vendor advances (unsettled),
+  Cr bank (net), Cr WHT payable (withheld)``. The debit is **split at source**: AP is
+  debited only for what the payment actually settles, and anything paid ahead of a bill
+  lands in the vendor-advance asset. Debiting AP for the whole gross would put a debit
+  balance on a liability, which reads as "our suppliers owe us money"; the truth is that
+  we are out of pocket and the vendor owes us goods, which is an asset. Applying that
+  advance to a bill later reclassifies it (``Dr AP, Cr vendor advances``) on the later of
+  the two documents' dates.
+
+The AR side solves the same problem in the opposite direction (see
+:func:`vs_finance.receivables._post_payment_atomic`): cash received early is a
+*liability*, customer credit, because the customer's money is still theirs. A vendor
+advance is its mirror, not its copy.
 
 All amounts are integer kobo; tax/WHT are computed from basis points with the same
 ``ROUND_HALF_UP`` discipline as the rest of the engine.
@@ -31,11 +42,13 @@ from vs_finance.constants import (
 from vs_finance.exceptions import FinanceError, PostingError
 from vs_finance.posting import post_journal, resolve_period
 from vs_finance.money import format_naira
-from vs_finance.receivables import compute_line_net, compute_tax
+from vs_finance.receivables import (
+    compute_line_net, compute_tax, stamp_allocation_effective_date,
+)
 
 from .constants import (
     MATCH_BLOCKING, PURCHASE_PRICE_VARIANCE_CODE, MatchStatus, ProcApprovalState,
-    VendorKycStatus, WHT_PAYABLE_CODE,
+    VENDOR_ADVANCE_CODE, VendorKycStatus, WHT_PAYABLE_CODE,
 )
 from .exceptions import ThreeWayMatchError
 from .purchasing import resolve_account
@@ -338,7 +351,7 @@ def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=Fals
 # Handle the post vendor payment workflow.
 def post_vendor_payment(payment, *, actor_user=None, auto_allocate=True, allocations=None,
                         system_originated=False):
-    """Post a :class:`VendorPayment` (Dr AP, Cr bank net, Cr WHT) and allocate it.
+    """Post a :class:`VendorPayment` (Dr AP/vendor advances, Cr bank net, Cr WHT).
 
     ``allocations`` (a list of ``(vendor_invoice, gross_amount_kobo)``) applies an
     explicit split; otherwise ``auto_allocate`` settles the vendor's oldest open bills
@@ -371,9 +384,13 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
 
     Locks are acquired in stable domain order: payment, vendor, persisted plan rows, then
     invoices (explicit targets by primary key; automatic targets in due/invoice/id
-    settlement order). Draft allocation rows are approval instructions; only rows
-    recreated after ``post_journal`` represent posted sub-ledger settlement. The payment
-    journal itself reduces AP once, regardless of allocation.
+    settlement order). Draft allocation rows are approval instructions; they are deleted
+    and only rows written by the settlement pass represent posted sub-ledger settlement.
+
+    The settlement pass runs **before** the journal, because what it settles is what
+    decides the journal's debit split: AP is debited for the settled part only, and the
+    rest is a vendor advance. Both live in this one transaction, so the sub-ledger and
+    the GL cannot disagree about how the money was classified.
     """
     from vs_finance.models import JournalEntry, JournalLine
     from .models import Vendor, VendorInvoice, VendorPayment, VendorPaymentAllocation
@@ -451,6 +468,27 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
         raise PostingError("WHT must be between 0 and the gross amount.")
     payment.net_amount = payment.gross_amount - payment.wht_amount  # Recompute net cash paid.
 
+    # Draft allocation rows are approval instructions, not settled sub-ledger rows.
+    # They are replaced by the settlement pass below, which writes the real ones.
+    if persisted_plan:
+        VendorPaymentAllocation.objects.filter(payment=payment).delete()
+
+    # Settle first, then journal. ``as_of`` is the payment's own date: this journal is
+    # dated there, so it cannot debit AP for a bill that does not exist yet. Such a bill
+    # is skipped (auto) or refused (named), and the money falls through to the vendor
+    # advance - which is exactly what it is.
+    plan = (
+        _build_vendor_bill_plan(payment, allocations, as_of=payment.payment_date)
+        if (allocations is not None or auto_allocate) else []
+    )
+    settled, created_rows, _latest = _apply_vendor_payment_subledger(
+        payment, plan, remaining=payment.gross_amount, strict=bool(allocations),
+    )
+    advance = payment.gross_amount - settled  # Paid ahead of any bill: an asset, not AP.
+    # Every row this pass wrote is debited to AP by the journal below, dated
+    # payment_date; the plan was filtered to bills already raised by then.
+    stamp_allocation_effective_date(created_rows, payment.payment_date)
+
     period = resolve_period(payment.entity, payment.payment_date)  # Find the open accounting period.
 
     entry = JournalEntry.objects.create(
@@ -460,12 +498,24 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
         narration=payment.narration or f"Vendor payment {payment.document_number or ''}".strip(),
         reference=payment.reference, created_by=actor_user,
     )
-    line_no = 1  # First journal line is the AP debit.
-    JournalLine.objects.create(
-        entry=entry, account=ap_account, debit=payment.gross_amount, credit=0,
-        description=f"AP: {vendor.code}", line_no=line_no,
-    )
-    line_no += 1  # Second line is the bank/cash credit.
+    line_no = 0  # Track journal line ordering.
+    if settled > 0:  # Only the part that actually settles a bill reduces the liability.
+        line_no += 1  # First journal line is the AP debit.
+        JournalLine.objects.create(
+            entry=entry, account=ap_account, debit=settled, credit=0,
+            description=f"AP: {vendor.code}", line_no=line_no,
+        )
+    if advance > 0:  # The rest is money the vendor owes us in goods.
+        line_no += 1  # Next line is the vendor-advance asset debit.
+        JournalLine.objects.create(
+            entry=entry,
+            account=resolve_account(
+                payment.entity, VENDOR_ADVANCE_CODE, label="vendor advances",
+            ),
+            debit=advance, credit=0,
+            description=f"Vendor advance: {vendor.code}", line_no=line_no,
+        )
+    line_no += 1  # Then the bank/cash credit.
     JournalLine.objects.create(
         entry=entry, account=payment.payment_account, debit=0, credit=payment.net_amount,
         description=f"Payment: {vendor.code}", line_no=line_no,
@@ -476,22 +526,20 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
             if (payment.wht_tax_code_id and payment.wht_tax_code.collected_account_id)  # Branch on the current domain condition.
             else resolve_account(payment.entity, WHT_PAYABLE_CODE, label="WHT payable")
         )
-        line_no += 1  # Third line is the WHT payable credit.
+        line_no += 1  # Last line is the WHT payable credit.
         JournalLine.objects.create(
             entry=entry, account=wht_account, debit=0, credit=payment.wht_amount,
             description="WHT withheld", line_no=line_no,
         )
 
-    # Draft allocation rows are approval instructions, not settled sub-ledger rows.
-    # Recreate them through the allocation service only after the journal posts.
-    if persisted_plan:
-        VendorPaymentAllocation.objects.filter(payment=payment).delete()
-
     post_journal(entry, actor_user=actor_user)  # Validate and post the payment journal.
 
     payment.journal = entry  # Link the payment to the posted journal.
     payment.status = DocumentStatus.POSTED  # Mark the payment posted.
-    payment.save(update_fields=["journal", "net_amount", "status", "updated_at"])
+    payment.allocated_amount = settled  # Store the gross actually applied to bills.
+    payment.save(update_fields=[
+        "journal", "net_amount", "status", "allocated_amount", "updated_at",
+    ])
 
     record(  # Log the successful vendor payment post.
         entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_POSTED,
@@ -502,66 +550,94 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
         ),
         journal_id=entry.pk, gross=payment.gross_amount,
         net=payment.net_amount, wht=payment.wht_amount,
+        allocated=settled, advance=advance,
     )
-
-    if allocations:  # Explicit allocations override auto allocation.
-        allocate_vendor_payment(payment, allocations=allocations, actor_user=actor_user, strict=True)  # Apply the approved plan.
-    elif auto_allocate:  # Otherwise settle oldest open bills when enabled.
-        allocate_vendor_payment(payment, actor_user=actor_user)  # Auto-allocate against open bills.
+    if created_rows:  # Keep the payment's activity feed reading as it always has.
+        record(  # Log the settlement the posting journal carried out.
+            entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_ALLOCATED,
+            actor_user=actor_user, target=payment,
+            message=f"Allocated {format_naira(settled)} across {len(created_rows)} bill(s).",
+            journal_id=entry.pk, allocated=settled, unallocated=advance,
+            effective_date=str(payment.payment_date),
+        )
     return payment  # Return the posted vendor payment.
 
 
-@transaction.atomic
-# Handle the allocate vendor payment workflow.
-def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, strict=False):
-    """Apply a posted vendor payment's unallocated gross to bills.
+# Build the list of bills a vendor payment should settle, in settlement order.
+def _build_vendor_bill_plan(payment, allocations, *, as_of=None):
+    """An explicit ``[(bill, amount)]`` plan, or the vendor's open bills oldest-first.
 
-    ``allocations`` is an optional list of ``(vendor_invoice, gross_amount_kobo)``;
-    without it the vendor's open posted bills are settled oldest-first (by due date,
-    then invoice date). Never allocates past a bill's balance due or the payment's
-    remaining gross. Allocations change invoice settlement state only: the posted payment
-    already produced the AP/bank/WHT journal, so this service must not create another GL
-    entry. Returns the list of created allocation rows.
+    ``as_of`` is the settling journal's own accounting date, and it is the choke point
+    for causal ordering: a payment journal dated 1 March cannot debit AP for a bill
+    raised on 10 March, because on 1 March that liability does not exist and the debit
+    would drive the control account negative for the gap.
 
-    A payment may not settle a bill dated after it - on the payment's own date that
-    liability does not exist, and an AP aging as at that date would show a bill paid
-    before it was raised. As on the AR side, auto-allocation skips such bills (the
-    money stays unallocated until they are raised) while an explicitly named bill is
-    refused, since dropping a target the user chose would post something else.
+    The two modes handle that differently, on purpose, exactly as
+    :func:`vs_finance.receivables._build_invoice_plan` does:
+
+    * **Auto-allocation** silently *skips* a not-yet-raised bill. That is not a
+      failure - it is a prepayment, and the money correctly falls through to the
+      vendor-advance asset to be applied when the bill arrives.
+    * **An explicit plan** names a bill the user chose, so silently dropping it would
+      post something other than what was asked for. It raises, and says which date to use.
+
+    Pass no ``as_of`` when the settlement raises its own journal dated at the later of
+    the two documents (see :func:`allocate_vendor_payment`); applying an existing advance
+    to a newer bill is ordinary business and must not be refused.
     """
     from vs_finance.chronology import accounting_date, describe, ensure_on_or_after
 
-    from .models import VendorInvoice, VendorPaymentAllocation
+    from .models import VendorInvoice
 
-    if payment.status != DocumentStatus.POSTED:  # Only posted payments can be allocated.
-        raise PostingError("Only a posted vendor payment can be allocated.")
-
-    remaining = payment.unallocated_amount  # Gross amount left to allocate.
-    created = []  # Allocation rows created or extended in this run.
-
-    if allocations is None:  # Build an oldest-first plan when no explicit plan is supplied.
-        open_invoices = (  # Posted vendor bills that still have a balance.
-            VendorInvoice.objects
-            .filter(vendor=payment.vendor, status=DocumentStatus.POSTED,
-                    invoice_date__lte=payment.payment_date)  # Only bills that already exist.
-            .exclude(payment_status=InvoicePaymentStatus.PAID)
-            .order_by("due_date", "invoice_date", "id")
-        )
-        plan = [(inv, inv.balance_due) for inv in open_invoices]  # Allocate up to each bill's current balance.
-    else:  # Caller supplied an explicit allocation split.
+    if allocations is not None:  # Explicit allocations always win over auto-allocation.
         plan = list(allocations)  # Normalize the iterable to a list.
-        for invoice, _requested in plan:  # A named bill must already exist on the payment date.
-            bill_date = accounting_date(invoice)
-            ensure_on_or_after(
-                subject=f"Vendor payment {payment.document_number or payment.pk}",
-                subject_date=payment.payment_date,
-                source=f"bill {describe(invoice, 'the vendor invoice')}",
-                source_date=bill_date,
-                remedy=(
-                    f"Either date the payment {bill_date} or later, or leave it "
-                    f"unallocated and apply it once the bill is raised."
-                ),
-            )
+        if as_of is not None:  # A named bill must already exist on the settling date.
+            for invoice, _requested in plan:
+                bill_date = accounting_date(invoice)
+                ensure_on_or_after(
+                    subject=f"Vendor payment {payment.document_number or payment.pk}",
+                    subject_date=as_of,
+                    source=f"bill {describe(invoice, 'the vendor invoice')}",
+                    source_date=bill_date,
+                    remedy=(
+                        f"Either date the payment {bill_date} or later, or leave it "
+                        f"unallocated and apply it once the bill is raised."
+                    ),
+                )
+        return plan  # Explicit plan passed its date checks.
+
+    open_invoices = (  # Posted vendor bills that still have a balance.
+        VendorInvoice.objects
+        .filter(vendor=payment.vendor, status=DocumentStatus.POSTED)
+        .exclude(payment_status=InvoicePaymentStatus.PAID)
+        .order_by("due_date", "invoice_date", "id")
+    )
+    if as_of is not None:  # Auto-allocation only settles what already exists.
+        open_invoices = open_invoices.filter(invoice_date__lte=as_of)
+    return [(inv, inv.balance_due) for inv in open_invoices]  # Up to each bill's balance.
+
+
+# Apply a settlement plan to the AP sub-ledger, without touching the GL.
+def _apply_vendor_payment_subledger(payment, plan, *, remaining, strict=False):
+    """Settle ``plan``'s bills from ``remaining`` kobo, capped at each bill's balance.
+
+    GL-agnostic by design: the caller owns the journal, because the *same* settlement
+    means a different journal depending on where the money currently sits. At posting
+    time the settled total is debited straight to AP; later, it is a reclassification
+    out of the vendor advance. Splitting the sub-ledger work out is what lets both
+    callers share one set of validation rules.
+
+    Returns ``(applied, created_rows, latest_bill_date)``. The last value is the newest
+    bill date this run actually settled, which is what a later caller needs to date its
+    reclassification journal so AP is never debited before the liability exists.
+    """
+    from vs_finance.chronology import accounting_date
+
+    from .models import VendorPaymentAllocation
+
+    created = []  # Allocation rows written by this run.
+    applied = 0  # Total gross settled by this run.
+    latest = None  # Newest bill date this run actually settled.
 
     seen_invoice_ids = set()
     if strict:
@@ -602,30 +678,142 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, stric
         apply_amount = min(int(requested), invoice.balance_due, remaining)  # Cap allocation at requested, bill balance, and remaining payment.
         if apply_amount <= 0:  # Skip zero-value allocations.
             continue
-        alloc, _ = VendorPaymentAllocation.objects.get_or_create(
-            payment=payment, vendor_invoice=invoice, defaults={"amount": 0},
+        # One row per settlement event, never a running total. The caller stamps each
+        # row with the date of the journal that debited AP for it, and a second tranche
+        # against the same bill can move AP on a different date - merging them would
+        # leave one row that cannot honestly carry either date.
+        alloc = VendorPaymentAllocation.objects.create(
+            payment=payment, vendor_invoice=invoice, amount=apply_amount,
         )
-        alloc.amount += apply_amount  # Increase the allocation amount.
-        alloc.save(update_fields=["amount", "updated_at"])
 
         invoice.amount_paid += apply_amount  # Increase the bill's paid amount.
         invoice.refresh_payment_status(save=False)  # Recompute paid/partial/unpaid state.
         invoice.save(update_fields=["amount_paid", "payment_status", "updated_at"])
 
-        remaining -= apply_amount  # Reduce the unallocated gross payment amount.
+        remaining -= apply_amount  # Reduce the money still available to settle with.
+        applied += apply_amount  # Track the total settled by this run.
         created.append(alloc)  # Track the allocation row for the return value.
+        bill_date = accounting_date(invoice)  # Date of the bill just settled.
+        if bill_date is not None and (latest is None or bill_date > latest):
+            latest = bill_date  # Track the newest settled bill date.
+    return applied, created, latest  # Settled amount, allocation rows, newest bill date.
 
-    payment.allocated_amount = payment.gross_amount - remaining  # Store the total gross amount allocated.
+
+@transaction.atomic
+# Handle the allocate vendor payment workflow.
+def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, strict=False):
+    """Apply a posted payment's **vendor advance** to bills, reclassifying it into AP.
+
+    After posting, anything the payment did not settle sits in the vendor-advance asset
+    (1240). Applying it to a bill moves it back where the settlement belongs
+    (``Dr AP, Cr vendor advances``) and settles the bill - no cash moves.
+    ``allocations`` is an optional explicit ``[(bill, amount)]`` plan; without it the
+    vendor's open posted bills are settled oldest-first (by due date, then invoice date).
+    Never allocates past a bill's balance due or the advance still remaining.
+
+    Applying an older payment to a newer bill is ordinary and allowed - that is a
+    prepayment finding its bill, and the whole reason the advance account exists. What
+    is *not* allowed is dating that reclassification on the payment's date when the bill
+    is newer, which would debit AP before the liability existed; the journal is dated at
+    the later of the two instead. The AP mirror of
+    :func:`vs_finance.receivables.allocate_payment`.
+    """
+    from vs_finance.chronology import effective_allocation_date
+    from vs_finance.models import JournalEntry, JournalLine
+
+    from .models import Vendor, VendorAdvanceAllocationJournal, VendorPayment
+
+    payment = VendorPayment.objects.select_for_update(of=("self",)).select_related(
+        "vendor",
+    ).get(pk=payment.pk)
+    # Lock only the master row: the payable-account relation is nullable and PostgreSQL
+    # rejects FOR UPDATE across that outer join.
+    payment.vendor = Vendor.objects.select_for_update(of=("self",)).get(pk=payment.vendor_id)
+
+    if payment.status != DocumentStatus.POSTED:  # Only posted payments can be allocated.
+        raise PostingError("Only a posted vendor payment can be allocated.")
+
+    vendor = payment.vendor  # Vendor drives the AP control account.
+    ap_account = vendor.payable_account  # Resolve the AP control account.
+    if ap_account is None:  # Cannot debit AP without a payable account.
+        raise PostingError(f"Vendor {vendor.code} has no payable (AP control) account set.")
+
+    remaining = payment.advance_remaining  # Money of this payment still in 1240.
+    if remaining <= 0:  # Nothing sitting in the advance to apply.
+        return []
+
+    plan = _build_vendor_bill_plan(payment, allocations)  # No cutoff: a newer bill is fine.
+    applied, created, latest = _apply_vendor_payment_subledger(
+        payment, plan, remaining=remaining, strict=strict,
+    )
+    if applied <= 0:  # No bill was eligible for allocation.
+        return []
+
+    effective = effective_allocation_date(payment.payment_date, [latest])  # Later of the two.
+    stamp_allocation_effective_date(created, effective)  # Rows carry the date AP moved.
+    period = resolve_period(payment.entity, effective)  # Find the open accounting period.
+    entry = JournalEntry.objects.create(
+        entity=payment.entity, branch=payment.branch,
+        date=effective, period=period,
+        source=JournalSource.PURCHASE, currency=payment.currency,
+        narration=f"Apply vendor advance: {vendor.code}",
+        reference=payment.reference, created_by=actor_user,
+    )
+    JournalLine.objects.create(
+        entry=entry, account=ap_account, debit=applied, credit=0,
+        description=f"AP: {vendor.code}", line_no=1,
+    )
+    JournalLine.objects.create(
+        entry=entry,
+        account=resolve_account(payment.entity, VENDOR_ADVANCE_CODE, label="vendor advances"),
+        debit=0, credit=applied,
+        description=f"Vendor advance applied: {vendor.code}", line_no=2,
+    )
+    post_journal(entry, actor_user=actor_user)  # Validate and post the reclassification.
+
+    # Attach the journal to the payment durably, so a reversal can unwind every GL
+    # effect the payment owns and not just its original disbursement.
+    VendorAdvanceAllocationJournal.objects.create(
+        payment=payment, journal=entry, amount=applied,
+    )
+
+    payment.allocated_amount += applied  # Increase the payment's applied total.
     payment.save(update_fields=["allocated_amount", "updated_at"])
 
-    if created:  # Log only when at least one bill was allocated.
-        record(  # Write the allocation audit event.
-            entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_ALLOCATED,
-            actor_user=actor_user, target=payment,
-            message=f"Allocated {format_naira(payment.allocated_amount)} across {len(created)} bill(s).",
-            allocated=payment.allocated_amount, unallocated=payment.unallocated_amount,
+    record(  # Write the allocation audit event.
+        entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_ALLOCATED,
+        actor_user=actor_user, target=payment,
+        message=f"Allocated {format_naira(applied)} of vendor advance across {len(created)} bill(s).",
+        journal_id=entry.pk, allocated=payment.allocated_amount,
+        unallocated=payment.advance_remaining, effective_date=str(effective),
+    )
+    return created  # Return allocation rows created by this call.
+
+
+# Refuse a reversal whose later advance draw-downs are not fully linked to journals.
+def _ensure_advance_journal_coverage(payment, links) -> None:
+    """Check every kobo settled after posting has a reclassification journal attached.
+
+    What the posting journal debited to AP is settlement the payment journal itself
+    carries; anything allocated beyond that was drawn out of the vendor advance later
+    and must have its own linked journal. If the two disagree, some GL effect of this
+    payment is unreachable from the payment, and reversing only the part we can see
+    would desynchronise the ledger. Refuse instead, and say so.
+    """
+    ap_account_id = payment.vendor.payable_account_id
+    initially_settled = sum(
+        int(value or 0) for value in payment.journal.lines
+        .filter(account_id=ap_account_id).values_list("debit", flat=True)
+    )
+    expected_later = max(0, int(payment.allocated_amount) - initially_settled)
+    linked_later = sum(int(link.amount) for link in links)
+    if linked_later != expected_later:
+        raise PostingError(
+            f"Vendor payment {payment.document_number or payment.pk} has {expected_later} kobo "
+            f"of later vendor-advance allocations but only {linked_later} kobo of linked "
+            "reclassification journals. Repair the allocation-journal links before "
+            "reversing; reversing only part would desynchronise the ledger.",
         )
-    return created  # Return allocation rows touched by this call.
 
 
 @transaction.atomic
@@ -633,13 +821,23 @@ def reverse_vendor_payment(payment, *, actor_user=None, date=None):
     """Reverse a posted payment and restore every invoice settlement it funded.
 
     Lock order mirrors posting: payment, allocation rows by invoice id, then invoices by
-    primary key. The reversal journal restores the GL; allocation rows remain as history
+    primary key. The reversal journals restore the GL; allocation rows remain as history
     while invoice ``amount_paid`` and derived payment status are rolled back.
+
+    A payment that later applied its vendor advance to a bill owns **more than one**
+    journal: the original disbursement plus one reclassification per draw-down. All of
+    them are reversed, newest first. Reversing only the disbursement would strip the
+    Cr bank / Dr advance while leaving the Dr AP / Cr advance behind, pushing the advance
+    account credit-negative and understating AP by the same amount.
     """
     from vs_finance.posting import reverse_journal
-    from .models import VendorInvoice, VendorPayment, VendorPaymentAllocation
+    from .models import (
+        VendorAdvanceAllocationJournal, VendorInvoice, VendorPayment, VendorPaymentAllocation,
+    )
 
-    payment = VendorPayment.objects.select_for_update(of=("self",)).select_related("journal").get(pk=payment.pk)
+    payment = VendorPayment.objects.select_for_update(of=("self",)).select_related(
+        "journal", "vendor",
+    ).get(pk=payment.pk)
     if payment.status != DocumentStatus.POSTED or payment.journal_id is None:
         raise PostingError("Only a posted vendor payment with a journal can be reversed.")
 
@@ -652,7 +850,15 @@ def reverse_vendor_payment(payment, *, actor_user=None, date=None):
         invoice.pk: invoice for invoice in VendorInvoice.objects.select_for_update()
         .filter(pk__in=invoice_ids).order_by("pk")
     }
+    advance_journals = list(
+        VendorAdvanceAllocationJournal.objects.select_for_update()
+        .filter(payment=payment).select_related("journal")
+        .order_by("journal__date", "journal_id")
+    )
+    _ensure_advance_journal_coverage(payment, advance_journals)
 
+    for link in reversed(advance_journals):  # Newest reclassification unwinds first.
+        reverse_journal(link.journal, actor_user=actor_user, date=date, document_owner=payment)
     reversal = reverse_journal(
         payment.journal, actor_user=actor_user, date=date,
         document_owner=payment,

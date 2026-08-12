@@ -20,7 +20,7 @@ from django.utils import timezone
 from vs_finance.constants import (
     DocumentStatus, FinanceAuditAction, FinanceAuditStatus, InvoicePaymentStatus,
 )
-from vs_finance.exceptions import PostingError
+from vs_finance.exceptions import BackdatedPostingError, PostingError
 from vs_finance.models import (
     Account,
     BankAccount,
@@ -61,6 +61,7 @@ from vs_procurement.models import (
     StockItem,
     StockMovement,
     Vendor,
+    VendorAdvanceAllocationJournal,
     VendorContact,
     VendorAssessment,
     VendorContract,
@@ -88,6 +89,7 @@ from vs_procurement.sourcing import (
     submit_quotation,
 )
 from vs_procurement.payables import (
+    allocate_vendor_payment,
     post_vendor_invoice,
     post_vendor_payment,
     reverse_vendor_payment,
@@ -2722,6 +2724,276 @@ class APReconciliationTests(_P2PFixtureMixin, TestCase):
         self.assertTrue(rec.is_reconciled)
         self.assertEqual(rec.subledger_total, 400_000)
         self.assertEqual(ap_aging(entity).total_net, 400_000)
+
+
+class VendorAdvanceTests(_P2PFixtureMixin, TestCase):
+    """Money paid before a bill exists must live in an asset, never as a debit in AP.
+
+    AP is a liability: a debit balance there asserts that suppliers owe *us* money,
+    which is not something the account can mean. These tests pin the split at source
+    (AP for what a payment settles, 1240 for the rest), the reclassification when a
+    later bill draws the advance down, and the AP control identity at every date in
+    between.
+    """
+
+    def _posted_bill(self, entity, vendor, total=1_000_000, date=datetime.date(2026, 1, 10)):
+        invoice = self.make_bill(entity, vendor, [("5300", 1, total, None, None)], date=date)
+        post_vendor_invoice(invoice)
+        invoice.refresh_from_db()
+        return invoice
+
+    def _payment(self, entity, vendor, *, amount, date, wht=0):
+        return VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=date,
+            gross_amount=amount, wht_amount=wht,
+            payment_account=self.acc(entity, "1100"),
+            approval_state=ProcApprovalState.APPROVED,
+        )
+
+    def _gl(self, entity, code, as_of):
+        """Signed normal-balance movement on one account through ``as_of``."""
+        from vs_procurement.reports import _account_gl_net_as_of
+
+        return _account_gl_net_as_of(self.acc(entity, code), as_of)
+
+    def _assert_ap_reconciles(self, entity, *dates):
+        for as_of in dates:
+            rec = reconcile_ap(entity, as_of=as_of)
+            self.assertTrue(
+                rec.is_reconciled,
+                f"AP did not reconcile as at {as_of}: sub-ledger {rec.subledger_total} "
+                f"vs control {rec.control_total}",
+            )
+
+    def test_the_chart_seeds_a_vendor_advance_asset(self):
+        entity, _, _, _, _ = self.build_p2p()
+        advance = self.acc(entity, "1240")
+        # An ASSET, deliberately: the vendor owes us goods. The customer-credit mirror
+        # (2140) is a LIABILITY because there we owe the customer their money back.
+        self.assertEqual(advance.account_type, "ASSET")
+        self.assertEqual(advance.normal_balance, "DEBIT")
+        self.assertTrue(advance.is_postable)
+        self.assertEqual(advance.parent.code, "1000")
+
+    def test_payment_before_any_bill_lands_in_advances_and_leaves_ap_alone(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        paid_on = datetime.date(2026, 1, 5)
+        payment = self._payment(entity, vendor, amount=800_000, date=paid_on)
+
+        post_vendor_payment(payment)
+
+        payment.refresh_from_db()
+        lines = {line.account.code: line for line in payment.journal.lines.all()}
+        self.assertNotIn("2100", lines)              # AP never touched: nothing was owed.
+        self.assertEqual(lines["1240"].debit, 800_000)   # The advance we are now owed.
+        self.assertEqual(lines["1100"].credit, 800_000)  # Cash actually left.
+        self.assertEqual(payment.allocated_amount, 0)
+        self.assertEqual(payment.advance_remaining, 800_000)
+
+        self.assertEqual(self._gl(entity, "2100", paid_on), 0)
+        self.assertEqual(self._gl(entity, "1240", paid_on), 800_000)
+        self._assert_ap_reconciles(entity, paid_on, None)
+
+    def test_a_later_bill_draws_the_advance_down_dated_to_the_bill(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        paid_on, billed_on = datetime.date(2026, 1, 5), datetime.date(2026, 1, 10)
+        payment = self._payment(entity, vendor, amount=1_000_000, date=paid_on)
+        post_vendor_payment(payment)
+        invoice = self._posted_bill(entity, vendor, total=1_000_000, date=billed_on)
+
+        rows = allocate_vendor_payment(payment)
+
+        self.assertEqual(len(rows), 1)
+        payment.refresh_from_db()
+        invoice.refresh_from_db()
+        self.assertEqual(payment.allocated_amount, 1_000_000)
+        self.assertEqual(payment.advance_remaining, 0)
+        self.assertEqual(invoice.payment_status, InvoicePaymentStatus.PAID)
+
+        link = VendorAdvanceAllocationJournal.objects.get(payment=payment)
+        # Dated at the later of the two documents: the reclassification cannot debit AP
+        # before the liability it clears exists.
+        self.assertEqual(link.journal.date, billed_on)
+        self.assertEqual(rows[0].effective_date, billed_on)
+        reclass = {line.account.code: line for line in link.journal.lines.all()}
+        self.assertEqual(reclass["2100"].debit, 1_000_000)
+        self.assertEqual(reclass["1240"].credit, 1_000_000)
+
+        # Between payment and bill the money is an asset and AP is flat; from the bill
+        # date both are back to zero. No day in between shows AP in debit.
+        self.assertEqual(self._gl(entity, "2100", datetime.date(2026, 1, 7)), 0)
+        self.assertEqual(self._gl(entity, "1240", datetime.date(2026, 1, 7)), 1_000_000)
+        self.assertEqual(self._gl(entity, "2100", billed_on), 0)
+        self.assertEqual(self._gl(entity, "1240", billed_on), 0)
+        self._assert_ap_reconciles(
+            entity, paid_on, datetime.date(2026, 1, 7), billed_on,
+            datetime.date(2026, 1, 20), None,
+        )
+
+    def test_same_day_payment_that_settles_a_bill_is_unchanged(self):
+        """The regression that matters most: an ordinary payment must post as before."""
+        entity, _, vendor, _, wht = self.build_p2p()
+        invoice = self._posted_bill(entity, vendor, total=1_000_000)
+        payment = self._payment(
+            entity, vendor, amount=1_000_000, date=datetime.date(2026, 1, 15), wht=50_000,
+        )
+        payment.wht_tax_code = wht
+        payment.save(update_fields=["wht_tax_code"])
+
+        post_vendor_payment(payment)
+
+        payment.refresh_from_db()
+        invoice.refresh_from_db()
+        lines = {line.account.code: line for line in payment.journal.lines.all()}
+        self.assertEqual(lines["2100"].debit, 1_000_000)  # Whole gross settles AP.
+        self.assertEqual(lines["1100"].credit, 950_000)   # Cash out, net of WHT.
+        self.assertEqual(lines["2300"].credit, 50_000)    # WHT payable untouched by the split.
+        self.assertNotIn("1240", lines)                   # Nothing was paid in advance.
+        self.assertEqual(payment.allocated_amount, 1_000_000)
+        self.assertEqual(payment.advance_remaining, 0)
+        self.assertEqual(invoice.payment_status, InvoicePaymentStatus.PAID)
+        # No second journal: a same-day settlement needs no reclassification.
+        self.assertFalse(VendorAdvanceAllocationJournal.objects.filter(payment=payment).exists())
+        self._assert_ap_reconciles(entity, datetime.date(2026, 1, 15), None)
+
+    def test_overpayment_splits_between_ap_and_advances(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self._posted_bill(entity, vendor, total=600_000)
+        payment = self._payment(
+            entity, vendor, amount=1_000_000, date=datetime.date(2026, 1, 15),
+        )
+
+        post_vendor_payment(payment)
+
+        payment.refresh_from_db()
+        lines = {line.account.code: line for line in payment.journal.lines.all()}
+        self.assertEqual(lines["2100"].debit, 600_000)   # Only what the bill owed.
+        self.assertEqual(lines["1240"].debit, 400_000)   # The rest is paid in advance.
+        self.assertEqual(payment.allocated_amount, 600_000)
+        self.assertEqual(payment.advance_remaining, 400_000)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.payment_status, InvoicePaymentStatus.PAID)
+        self._assert_ap_reconciles(entity, datetime.date(2026, 1, 15), None)
+
+    def test_aging_reports_the_advance_without_netting_it_into_the_control(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        self._posted_bill(entity, vendor, total=1_000_000)
+        post_vendor_payment(
+            self._payment(entity, vendor, amount=1_500_000, date=datetime.date(2026, 1, 15)),
+        )
+
+        aging = ap_aging(entity)
+        # Sub-ledger and control agree on the liability; the advance is reported beside
+        # it as the vendor's net position, not folded into what we owe.
+        self.assertEqual(aging.total_outstanding, 0)
+        self.assertEqual(aging.total_unallocated_credit, 500_000)
+        self.assertEqual(aging.total_net, -500_000)
+        rec = reconcile_ap(entity)
+        self.assertTrue(rec.is_reconciled)
+        self.assertEqual(rec.subledger_total, 0)
+        self.assertEqual(rec.control_total, 0)
+
+    def test_naming_a_bill_the_payment_predates_is_still_refused_at_posting(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self._posted_bill(entity, vendor, date=datetime.date(2026, 1, 20))
+        payment = self._payment(
+            entity, vendor, amount=1_000_000, date=datetime.date(2026, 1, 5),
+        )
+
+        # The posting journal is dated 5 January; it cannot debit AP for a liability
+        # raised on the 20th. Leaving it unallocated (as an advance) is the way through.
+        with self.assertRaises(BackdatedPostingError):
+            post_vendor_payment(payment, allocations=[(invoice, 1_000_000)])
+
+        payment.refresh_from_db()
+        self.assertIsNone(payment.journal_id)
+        self.assertEqual(payment.status, DocumentStatus.DRAFT)
+
+    def test_allocating_an_advance_to_a_newer_bill_is_allowed(self):
+        """The same pairing the posting path refuses is correct once it is dated right."""
+        entity, _, vendor, _, _ = self.build_p2p()
+        payment = self._payment(
+            entity, vendor, amount=1_000_000, date=datetime.date(2026, 1, 5),
+        )
+        post_vendor_payment(payment)
+        invoice = self._posted_bill(entity, vendor, date=datetime.date(2026, 1, 20))
+
+        rows = allocate_vendor_payment(payment, allocations=[(invoice, 1_000_000)], strict=True)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].effective_date, datetime.date(2026, 1, 20))
+        self._assert_ap_reconciles(
+            entity, datetime.date(2026, 1, 10), datetime.date(2026, 1, 20), None,
+        )
+
+    def test_reversal_unwinds_the_reclassification_as_well_as_the_payment(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        payment = self._payment(
+            entity, vendor, amount=1_000_000, date=datetime.date(2026, 1, 5),
+        )
+        post_vendor_payment(payment)
+        invoice = self._posted_bill(entity, vendor, total=1_000_000)
+        allocate_vendor_payment(payment)
+
+        reverse_vendor_payment(payment, date=datetime.date(2026, 1, 25))
+
+        payment.refresh_from_db()
+        invoice.refresh_from_db()
+        self.assertEqual(payment.status, DocumentStatus.REVERSED)
+        self.assertEqual(invoice.amount_paid, 0)
+        self.assertEqual(invoice.payment_status, InvoicePaymentStatus.UNPAID)
+        # Both journals are reversed. Reversing only the disbursement would leave the
+        # Dr AP / Cr advance behind, pushing 1240 credit-negative and understating AP.
+        link = VendorAdvanceAllocationJournal.objects.get(payment=payment)
+        link.journal.refresh_from_db()
+        self.assertEqual(link.journal.status, DocumentStatus.REVERSED)
+        self.assertEqual(payment.journal.status, DocumentStatus.REVERSED)
+        after = datetime.date(2026, 1, 25)
+        self.assertEqual(self._gl(entity, "1240", after), 0)
+        self.assertEqual(self._gl(entity, "2100", after), 1_000_000)  # The bill still stands.
+        self._assert_ap_reconciles(entity, after, None)
+
+    def test_a_reclassification_journal_cannot_be_reversed_on_its_own(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        payment = self._payment(
+            entity, vendor, amount=1_000_000, date=datetime.date(2026, 1, 5),
+        )
+        post_vendor_payment(payment)
+        self._posted_bill(entity, vendor, total=1_000_000)
+        allocate_vendor_payment(payment)
+        link = VendorAdvanceAllocationJournal.objects.get(payment=payment)
+
+        from vs_finance.posting import reverse_journal
+
+        # The journal belongs to the payment; unwinding it alone would desynchronise
+        # the sub-ledger from the ledger.
+        with self.assertRaisesMessage(PostingError, "VendorPayment"):
+            reverse_journal(link.journal, date=datetime.date(2026, 1, 25))
+
+    def test_as_at_reporting_follows_the_settlement_date_not_the_row(self):
+        """A run settling bills of different ages dates each report by the journal.
+
+        Both bills are settled in one allocation call, which raises one journal dated at
+        the newest of them. Read as at a date between the two bills, the sub-ledger must
+        still say the older bill is unpaid, because the ledger had not moved yet.
+        """
+        entity, _, vendor, _, _ = self.build_p2p()
+        payment = self._payment(
+            entity, vendor, amount=1_000_000, date=datetime.date(2026, 1, 2),
+        )
+        post_vendor_payment(payment)
+        self._posted_bill(entity, vendor, total=500_000, date=datetime.date(2026, 1, 10))
+        self._posted_bill(entity, vendor, total=500_000, date=datetime.date(2026, 1, 20))
+
+        allocate_vendor_payment(payment)
+
+        mid = datetime.date(2026, 1, 15)
+        aging = ap_aging(entity, as_of=mid)
+        self.assertEqual(aging.total_outstanding, 500_000)        # The 10 Jan bill, unpaid.
+        self.assertEqual(aging.total_unallocated_credit, 1_000_000)  # Advance still whole.
+        self._assert_ap_reconciles(
+            entity, datetime.date(2026, 1, 5), mid, datetime.date(2026, 1, 20), None,
+        )
 
 
 class FullChainTests(_P2PFixtureMixin, TestCase):

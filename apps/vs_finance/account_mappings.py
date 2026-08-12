@@ -18,6 +18,9 @@ ACCOUNT_MAPPING_SPECS = {
     AccountMappingKey.ACCOUNTS_RECEIVABLE: ("1200", AccountType.ASSET),
     AccountMappingKey.ACCOUNTS_PAYABLE: ("2100", AccountType.LIABILITY),
     AccountMappingKey.CUSTOMER_CREDIT: ("2140", AccountType.LIABILITY),
+    # The counterparty mirror of 2140, and deliberately an ASSET: money paid to a
+    # vendor before their bill exists is value the vendor still owes us in goods.
+    AccountMappingKey.VENDOR_ADVANCE: ("1240", AccountType.ASSET),
     AccountMappingKey.GRIR_CLEARING: ("2150", AccountType.LIABILITY),
     AccountMappingKey.OUTPUT_VAT: ("2200", AccountType.LIABILITY),
     AccountMappingKey.WHT_PAYABLE: ("2300", AccountType.LIABILITY),

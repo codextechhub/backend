@@ -100,6 +100,11 @@ class APAgingView(_ProcBase):
                 "entity": entity.code, "as_of": str(report.as_of),
                 "buckets": list(AGING_BUCKETS),
                 "bucket_totals": {b: _kobo(v) for b, v in report.bucket_totals.items()},
+                # All three, because they answer different questions: what we owe
+                # (the AP control), what we have paid ahead of a bill (a separate
+                # asset), and the vendor's net position. Only the first is a payable.
+                "total_outstanding": _kobo(report.total_outstanding),
+                "total_unallocated_credit": _kobo(report.total_unallocated_credit),
                 "total_net": _kobo(report.total_net),
         }, report)
         return _paginated_report(

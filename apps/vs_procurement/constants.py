@@ -260,6 +260,7 @@ class StockMovementType(models.TextChoices):
 #: Well-known Chart-of-Accounts codes the P2P journals resolve against (per entity).
 GRIR_CLEARING_CODE = "2150"   # Goods-Received / Invoice-Received clearing (liability)
 WHT_PAYABLE_CODE = "2300"     # Withholding-tax payable (liability)
+VENDOR_ADVANCE_CODE = "1240"  # Money paid to a vendor before their bill exists (asset)
 INVENTORY_ASSET_CODE = "1400"        # Inventory / stock on hand (asset)
 INVENTORY_ADJUSTMENT_CODE = "5150"   # Inventory adjustments / shrinkage (expense)
 PURCHASE_PRICE_VARIANCE_CODE = "5160"  # Invoice-vs-receipt price variance (expense)

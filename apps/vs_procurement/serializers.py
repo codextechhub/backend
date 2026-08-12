@@ -1364,6 +1364,9 @@ class VendorPaymentSerializer(serializers.ModelSerializer):
     wht_tax_code_value = serializers.CharField(source="wht_tax_code.code", read_only=True, default=None)
     created_by_name = serializers.SerializerMethodField()
     unallocated_amount = serializers.IntegerField(read_only=True)
+    # The same kobo named for where they actually sit: unallocated gross was never
+    # debited to AP, it is a vendor advance in 1240 until a bill draws it down.
+    advance_remaining = serializers.IntegerField(read_only=True)
     allocation_status = serializers.SerializerMethodField()
     net_naira = serializers.SerializerMethodField()
 
@@ -1375,7 +1378,8 @@ class VendorPaymentSerializer(serializers.ModelSerializer):
             "vendor_id", "vendor_code", "vendor_name",
             "payment_date", "method",
             "gross_amount", "wht_amount", "net_amount", "net_naira",
-            "allocated_amount", "unallocated_amount", "payment_account_id", "payment_code",
+            "allocated_amount", "unallocated_amount", "advance_remaining",
+            "payment_account_id", "payment_code",
             "payment_account_name", "bank_account_id", "bank_account_name",
             "wht_tax_code_id", "wht_tax_code_value", "reference", "narration",
             "journal_id", "created_at", "created_by_name", "allocations",

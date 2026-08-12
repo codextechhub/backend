@@ -479,10 +479,14 @@ def _journal_document_owner(entry):
             continue
         if owner is None:
             continue
-        # A later customer-credit reclassification belongs to its receipt/note, not
-        # to the small linkage row that makes the relationship durable.
+        # A later credit/advance reclassification belongs to its receipt, note or
+        # vendor payment, not to the small linkage row that makes the relationship
+        # durable. Both sides of the ledger park early money in a holding account and
+        # reclassify it when the document it belongs to arrives.
         if type(owner).__name__ == "CustomerCreditAllocationJournal":
             owner = owner.payment or owner.note
+        elif type(owner).__name__ == "VendorAdvanceAllocationJournal":
+            owner = owner.payment
         return owner
 
     # Pre-migration later-allocation journals were linked only through the

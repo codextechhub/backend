@@ -53,8 +53,8 @@ class AgingRow:
     payment_terms: str = ""       # vendor's standard net terms (e.g. "NET_30"), for the table subtitle
     buckets: dict = field(default_factory=lambda: {b: 0 for b in AGING_BUCKETS})
     outstanding: int = 0          # gross of unapplied debit
-    unallocated_credit: int = 0   # open payment (prepayment) not yet applied
-    net: int = 0                  # outstanding - unallocated_credit
+    unallocated_credit: int = 0   # paid in advance, sitting in vendor advances (1240)
+    net: int = 0                  # outstanding - advances paid
 
 
 @dataclass
@@ -90,18 +90,30 @@ def _unassigned_count(qs, branch_scope, *, prefix="") -> int | None:
 
 
 def _ap_snapshot(entity, *, as_of=None, vendor=None, branch_scope=None):
-    """Return effective invoices, historical allocations, and unapplied vendor credits.
+    """Return effective invoices, settlement applied by the cutoff, and vendor advances.
 
     With no explicit cutoff this preserves the current-state contract. With ``as_of``,
     journal dates define accounting effectiveness and a later payment reversal does not
     rewrite the earlier snapshot; its posted reversal only removes the payment on/after
     the reversal date.
 
+    The third return value is money paid to a vendor that has not settled a bill: it sits
+    in the vendor-advance asset (1240), **not** in AP, because the payment journal debits
+    AP only for what it settles. It nets down the vendor's overall position on the aging
+    screen but has no place in the AP control reconciliation.
+
+    Settlement is dated by the allocation row's own ``effective_date`` - the date of the
+    journal that debited AP for it - and not by the mere existence of the row. A row is
+    written when someone allocates, which can be long after both documents, and one run
+    can settle bills of different ages under a single journal dated at the newest of
+    them. Reading the row without its date put settlements on the timeline before the
+    ledger moved, and the reconciliation then failed for the days in between.
+
     ``branch_scope`` (``views.base._BranchScope``) narrows both sides of the snapshot to
     the sub-scope the caller can actually open: bills through ``VendorInvoice.branch`` and
-    unapplied credits through ``VendorPayment.branch``.  Narrowing both is what keeps the
-    net honest - a branch's bills reduced by another branch's prepayment would be a figure
-    that reconciles with nothing.  Allocations need no filter of their own: they are
+    advances through ``VendorPayment.branch``.  Narrowing both is what keeps the net
+    honest - a branch's bills reduced by another branch's prepayment would be a figure
+    that reconciles with nothing.  Allocations need no scope filter of their own: they are
     already bounded by the two id sets above.  Omitted, the snapshot stays entity-wide.
     """
     from django.db.models import Q, Sum
@@ -135,32 +147,40 @@ def _ap_snapshot(entity, *, as_of=None, vendor=None, branch_scope=None):
     invoices = list(invoices.select_related("vendor").order_by("invoice_date", "id"))
     invoice_ids = [invoice.id for invoice in invoices]
     payment_ids = list(payments.values_list("id", flat=True))
-    paid_by_invoice = {
-        row["vendor_invoice_id"]: int(row["amount"] or 0)
-        for row in (
-            VendorPaymentAllocation.objects
-            .filter(vendor_invoice_id__in=invoice_ids, payment_id__in=payment_ids)
-            .values("vendor_invoice_id")
-            .annotate(amount=Sum("amount"))
-        )
-    }
-    allocated_by_payment = {
-        row["payment_id"]: int(row["amount"] or 0)
-        for row in (
-            VendorPaymentAllocation.objects
-            .filter(payment_id__in=payment_ids, vendor_invoice_id__in=invoice_ids)
-            .values("payment_id")
-            .annotate(amount=Sum("amount"))
-        )
-    }
-    credits_by_vendor = {}
+
+    def _settled(queryset, group_field):
+        """``{id: kobo}`` settled, honouring ``as_of`` through the row's effective date.
+
+        Rows with no ``effective_date`` are excluded from a dated read rather than
+        assumed: a null means the date is genuinely unknown (a row written before the
+        column existed and out of reach of the backfill), and guessing would put a
+        settlement on the timeline at a date nobody can defend.
+        """
+        if as_of is not None:
+            queryset = queryset.filter(effective_date__isnull=False, effective_date__lte=as_of)
+        return {
+            row[group_field]: int(row["amount"] or 0)
+            for row in queryset.values(group_field).annotate(amount=Sum("amount"))
+        }
+
+    paid_by_invoice = _settled(
+        VendorPaymentAllocation.objects
+        .filter(vendor_invoice_id__in=invoice_ids, payment_id__in=payment_ids),
+        "vendor_invoice_id",
+    )
+    allocated_by_payment = _settled(
+        VendorPaymentAllocation.objects
+        .filter(payment_id__in=payment_ids, vendor_invoice_id__in=invoice_ids),
+        "payment_id",
+    )
+    advances_by_vendor = {}
     for payment in payments.select_related("vendor").order_by("payment_date", "id"):
-        credit = int(payment.gross_amount) - allocated_by_payment.get(payment.id, 0)
-        if credit > 0:
-            credits_by_vendor[payment.vendor_id] = (
-                credits_by_vendor.get(payment.vendor_id, 0) + credit
+        advance = int(payment.gross_amount) - allocated_by_payment.get(payment.id, 0)
+        if advance > 0:
+            advances_by_vendor[payment.vendor_id] = (
+                advances_by_vendor.get(payment.vendor_id, 0) + advance
             )
-    return invoices, paid_by_invoice, credits_by_vendor
+    return invoices, paid_by_invoice, advances_by_vendor
 
 
 def _snapshot_payment_status(total: int, paid: int) -> str:
@@ -187,17 +207,18 @@ def ap_aging(entity, *, as_of=None, branch_scope=None) -> APAgingReport:
     """Age each vendor's open bills into current/1-30/31-60/61-90/90+ buckets.
 
     A bill ages off its ``due_date`` (falling back to ``invoice_date``). Only POSTED,
-    not-fully-paid bills contribute, by their ``balance_due``. Each vendor's unallocated
-    payment (a prepayment/debit) is reported and netted, so ``total_net`` equals the AP
-    control account's GL balance (see :func:`reconcile_ap`). Bucket totals remain gross
-    open invoices; unapplied payments reduce only the vendor/report net. When supplied,
+    not-fully-paid bills contribute, by their ``balance_due``. Each vendor's unapplied
+    payment is reported and netted for the vendor's overall position. That money lives in
+    the separate 1240 vendor-advance asset, so :func:`reconcile_ap` compares
+    ``total_outstanding``, not ``total_net``, with the AP control account. Bucket totals
+    remain gross open invoices; advances reduce only the vendor/report net. When supplied,
     ``as_of`` is both the aging clock and accounting-effectiveness cutoff.
 
     ``branch_scope`` narrows the report to the bills the caller can actually open, so a
     branch-bound viewer's aging reconciles with their own vendor-invoice list.  Note that
-    ``total_net`` then no longer equals the entity's AP control balance - that identity is
-    an entity-level control, which is why :func:`reconcile_ap` deliberately never passes a
-    scope through.
+    ``total_outstanding`` then no longer equals the entity's AP control balance - that
+    identity is an entity-level control, which is why :func:`reconcile_ap` deliberately
+    never passes a scope through.
     """
     from .models import VendorInvoice
 
@@ -219,7 +240,7 @@ def ap_aging(entity, *, as_of=None, branch_scope=None) -> APAgingReport:
 
     # Entity scoping is applied before any vendor grouping; callers cannot mix tenant
     # balances merely by passing a vendor id from another ledger entity.
-    invoices, paid_by_invoice, credits_by_vendor = _ap_snapshot(
+    invoices, paid_by_invoice, advances_by_vendor = _ap_snapshot(
         entity, as_of=cutoff, branch_scope=branch_scope,
     )
     report.unassigned_excluded_count = _unassigned_count(
@@ -236,15 +257,15 @@ def ap_aging(entity, *, as_of=None, branch_scope=None) -> APAgingReport:
         r.buckets[bucket] += due
         r.outstanding += due
 
-    # A posted but unallocated payment is an AP debit/prepayment. It is not aged into an
-    # invoice bucket because no bill/due date owns that credit yet.
-    if credits_by_vendor:
+    # A posted but unapplied payment is a vendor advance. It is not aged into an invoice
+    # bucket because no bill/due date owns that money yet.
+    if advances_by_vendor:
         from .models import Vendor
 
         for vendor in Vendor.objects.filter(
-            entity=entity, id__in=credits_by_vendor,
+            entity=entity, id__in=advances_by_vendor,
         ).order_by("code", "id"):
-            row_for(vendor).unallocated_credit += credits_by_vendor[vendor.id]
+            row_for(vendor).unallocated_credit += advances_by_vendor[vendor.id]
 
     for r in rows.values():
         r.net = r.outstanding - r.unallocated_credit
@@ -277,12 +298,17 @@ def reconcile_ap(entity, *, as_of=None) -> APReconciliation:
     the balance of the payable control account(s) in the ledger. Any drift means a
     posting bypassed the sub-ledger (or vice-versa) and must be investigated.
     ``_account_gl_net`` expresses each credit-normal AP account as a positive liability,
-    matching the sub-ledger's ``outstanding - unallocated_credit`` sign convention.
+    matching the sub-ledger's ``outstanding`` sign convention.
     """
     from .models import Vendor
 
     aging = ap_aging(entity, as_of=as_of)
-    subledger_total = aging.total_net
+    # Money paid ahead of a bill is booked to the 1240 vendor-advance asset, not to the
+    # AP control, so it belongs on the aging screen's vendor *net* position but not in
+    # this control-account reconciliation. It used to be netted here because the payment
+    # journal debited AP for the full gross, which is exactly the bug that put a debit
+    # balance on a liability. Mirrors :func:`vs_finance.reports.reconcile_ar`.
+    subledger_total = aging.total_outstanding
 
     # De-duplicate shared AP controls: several vendors may point at the same account,
     # but its GL balance must enter the reconciliation exactly once.
@@ -364,9 +390,10 @@ def ap_cash_requirements(entity, *, as_of=None, branch_scope=None) -> CashRequir
     ``balance_due`` is bucketed by ``due_date - as_of`` into overdue / 0-7 / 8-30 / 31-60
     / 61-90 / 90+ days, per vendor, so treasury can see how much cash each window needs.
     A bill with no ``due_date`` falls back to ``invoice_date`` (typically landing in
-    ``overdue``). Unallocated vendor payments are shown separately and reduce the net
-    requirement. All amounts are integer kobo; ``as_of`` is both forecast clock and
-    accounting-effectiveness cutoff.
+    ``overdue``). Money already paid in advance (sitting in the 1240 vendor-advance
+    asset) is shown separately and reduces the net requirement, because that cash has
+    left already and the bill it will settle needs none. All amounts are integer kobo;
+    ``as_of`` is both forecast clock and accounting-effectiveness cutoff.
 
     ``branch_scope`` narrows the forecast to the bills the caller can actually open, so a
     branch-bound viewer forecasts their own site's cash rather than the whole tenant's.
@@ -378,7 +405,7 @@ def ap_cash_requirements(entity, *, as_of=None, branch_scope=None) -> CashRequir
     report = CashRequirementsForecast(entity_id=entity.id, as_of=as_of)
     rows: dict[int, CashRequirementRow] = {}
 
-    invoices, paid_by_invoice, credits_by_vendor = _ap_snapshot(
+    invoices, paid_by_invoice, advances_by_vendor = _ap_snapshot(
         entity, as_of=cutoff, branch_scope=branch_scope,
     )
     report.unassigned_excluded_count = _unassigned_count(
@@ -401,11 +428,11 @@ def ap_cash_requirements(entity, *, as_of=None, branch_scope=None) -> CashRequir
         r.buckets[bucket] += due
         r.total += due
 
-    if credits_by_vendor:
+    if advances_by_vendor:
         from .models import Vendor
 
         for vendor in Vendor.objects.filter(
-            entity=entity, id__in=credits_by_vendor,
+            entity=entity, id__in=advances_by_vendor,
         ).order_by("code", "id"):
             row = rows.get(vendor.id)
             if row is None:
@@ -413,7 +440,7 @@ def ap_cash_requirements(entity, *, as_of=None, branch_scope=None) -> CashRequir
                     vendor_id=vendor.id, code=vendor.code, name=vendor.name,
                     buckets={b: 0 for b in FORECAST_BUCKETS},
                 )
-            row.unallocated_credit += credits_by_vendor[vendor.id]
+            row.unallocated_credit += advances_by_vendor[vendor.id]
 
     for r in rows.values():
         for b in FORECAST_BUCKETS:
@@ -723,7 +750,7 @@ def ap_vendor_open_bills(entity, vendor, *, as_of=None, branch_scope=None) -> AP
         buckets={b: 0 for b in AGING_BUCKETS},
     )
 
-    invoices, paid_by_invoice, credits_by_vendor = _ap_snapshot(
+    invoices, paid_by_invoice, advances_by_vendor = _ap_snapshot(
         entity, as_of=cutoff, vendor=vendor, branch_scope=branch_scope,
     )
     for inv in sorted(
@@ -745,7 +772,7 @@ def ap_vendor_open_bills(entity, vendor, *, as_of=None, branch_scope=None) -> AP
             balance_due=due, payment_status=_snapshot_payment_status(inv.total, paid),
         ))
 
-    detail.unallocated_credit = credits_by_vendor.get(vendor.id, 0)
+    detail.unallocated_credit = advances_by_vendor.get(vendor.id, 0)
     detail.net = detail.outstanding - detail.unallocated_credit
     return detail
 
