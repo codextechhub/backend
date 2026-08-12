@@ -1427,3 +1427,173 @@ class WebhookProviderResolutionTests(TestCase):
     def test_unknown_provider_raises_not_configured(self):
         with self.assertRaises(ProviderNotConfiguredError):
             webhooks.ingest_webhook(provider="nope", raw_body=b"{}", headers={})
+
+
+class FailedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
+    """Money that arrives but cannot be booked has to be findable.
+
+    ``process_stored_event`` marks a failed dispatch FAILED and deliberately swallows
+    the exception - right for the PSP, which has already been acked and whose retries
+    are idempotent. But nothing surfaced the result: there was no endpoint listing
+    WebhookEvent at all, so a customer's payment could arrive, fail to book, and exist
+    only as a database row nobody would look at.
+    """
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
+        from core.test_utils import TenantAPIClient
+
+        from django.core.management import call_command
+        call_command("seed_actions", verbosity=0)
+        call_command("seed_payments_permissions", verbosity=0)
+
+        self.User = get_user_model()
+        self.user = self.User.objects.create_user(
+            email="webhook-admin@test.com", password="testpass123",
+            user_type="CX_STAFF", status="ACTIVE", first_name="Hook", last_name="Admin",
+        )
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin",
+            defaults={"name": "Super Admin", "status": "ACTIVE"})
+        TenantUserRoleAssignment.objects.create(
+            tenant=Tenant.objects.get(slug="codex"), user=self.user, role=role,
+            assignment_status="ACTIVE")
+        self.client = TenantAPIClient(user=self.user)
+
+    def _unprivileged_client(self):
+        """A live user holding no payments keys at all."""
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
+        from core.test_utils import TenantAPIClient
+
+        user = self.User.objects.create_user(
+            email="webhook-nobody@test.com", password="testpass123",
+            user_type="CX_STAFF", status="ACTIVE", first_name="No", last_name="Rights",
+        )
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=Tenant.objects.get(slug="codex"), key="xvs_no_rights",
+            defaults={"name": "No Rights", "status": "ACTIVE"})
+        TenantUserRoleAssignment.objects.create(
+            tenant=Tenant.objects.get(slug="codex"), user=user, role=role,
+            assignment_status="ACTIVE")
+        return TenantAPIClient(user=user)
+
+    def _close_all_periods(self, entity):
+        """Leave the entity with no open period, so a receipt cannot post today."""
+        FiscalPeriod.objects.filter(entity=entity).update(status="CLOSED")
+
+    def _failed_collection_webhook(self, entity, customer):
+        """Drive a real collection webhook while nothing can post, and return the event."""
+        intent = services.initiate_collection(
+            entity=entity, amount=50000, customer=customer, narration="Fees")
+        # The dispatcher deliberately does not trust the status carried by the webhook;
+        # it re-polls the provider before moving money, so the fake has to agree.
+        self.fake.forced_status[intent.reference] = "SUCCEEDED"
+        self._close_all_periods(entity)
+        raw, headers = self.fake.build_webhook(
+            event="charge.success", reference=intent.reference,
+            status="SUCCEEDED", amount=50000)
+        event = webhooks.ingest_webhook(
+            provider="FAKE", raw_body=raw, headers=headers)
+        webhooks.process_stored_event(event.id)
+        event.refresh_from_db()
+        return intent, event
+
+    def test_a_failed_booking_is_recorded_and_books_nothing(self):
+        entity, customer, _vendor = self.build()
+        intent, event = self._failed_collection_webhook(entity, customer)
+
+        self.assertEqual(event.status, "FAILED")
+        self.assertTrue(event.error)  # the reason is kept for the operator
+        self.assertFalse(Payment.objects.filter(entity=entity).exists())
+        intent.refresh_from_db()
+        self.assertIsNone(intent.payment_id)
+        # The event stays attributable even though the confirm blew up - without this
+        # it belongs to no entity and no entity-scoped screen can ever show it.
+        self.assertEqual(event.collection_id, intent.pk)
+
+    def test_the_failed_event_is_listed_for_its_entity(self):
+        entity, customer, _vendor = self.build()
+        _intent, event = self._failed_collection_webhook(entity, customer)
+
+        resp = self.client.get(f"/v1/payments/webhooks/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200)
+        rows = resp.json()["data"]
+        self.assertEqual([r["id"] for r in rows], [event.id])
+        self.assertEqual(rows[0]["status"], "FAILED")
+        self.assertEqual(rows[0]["target_kind"], "COLLECTION")
+        self.assertEqual(rows[0]["amount"], 50000)
+        self.assertTrue(rows[0]["error"])
+        # The provider's raw record is never handed to the console.
+        for leaked in ("payload", "raw_body", "headers", "signature"):
+            self.assertNotIn(leaked, rows[0])
+
+    def test_the_summary_counts_what_needs_attention(self):
+        entity, customer, _vendor = self.build()
+        self._failed_collection_webhook(entity, customer)
+
+        resp = self.client.get(f"/v1/payments/webhooks/summary/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["data"]["failed"], 1)
+        self.assertEqual(resp.json()["data"]["needs_attention"], 1)
+
+    def test_another_entitys_failure_is_not_listed(self):
+        entity, customer, _vendor = self.build()
+        self._failed_collection_webhook(entity, customer)
+
+        other = LedgerEntity.objects.create(
+            name="Other Books", code="OTHER", kind=LedgerEntity.Kind.TENANT)
+        seed_chart_of_accounts(other)
+        resp = self.client.get(f"/v1/payments/webhooks/?entity={other.code}")
+        self.assertEqual(resp.status_code, 200)
+        # The paginated envelope keeps an empty page as a list (the []→{} coercion is
+        # on success_response, which this view does not take).
+        self.assertEqual(resp.json()["data"], [])
+
+    def test_listing_requires_the_permission(self):
+        entity, customer, _vendor = self.build()
+        self._failed_collection_webhook(entity, customer)
+
+        resp = self._unprivileged_client().get(
+            f"/v1/payments/webhooks/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_replay_requires_the_permission(self):
+        entity, customer, _vendor = self.build()
+        _intent, event = self._failed_collection_webhook(entity, customer)
+
+        resp = self._unprivileged_client().post(
+            f"/v1/payments/webhooks/{event.id}/replay/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_replay_books_exactly_one_receipt_once_a_period_is_open(self):
+        entity, customer, _vendor = self.build()
+        intent, event = self._failed_collection_webhook(entity, customer)
+        FiscalPeriod.objects.filter(entity=entity).update(status="OPEN")
+
+        resp = self.client.post(
+            f"/v1/payments/webhooks/{event.id}/replay/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        event.refresh_from_db()
+        self.assertEqual(event.status, "PROCESSED")
+        self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)
+
+        # Pressing it again must not book a second receipt.
+        again = self.client.post(
+            f"/v1/payments/webhooks/{event.id}/replay/?entity={entity.code}")
+        self.assertEqual(again.status_code, 200)
+        self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)
+
+    def test_a_replay_that_still_cannot_book_says_so(self):
+        entity, customer, _vendor = self.build()
+        _intent, event = self._failed_collection_webhook(entity, customer)
+
+        resp = self.client.post(  # Periods are still closed.
+            f"/v1/payments/webhooks/{event.id}/replay/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("did not succeed", resp.json()["message"])
+        event.refresh_from_db()
+        self.assertEqual(event.status, "FAILED")
+        self.assertFalse(Payment.objects.filter(entity=entity).exists())

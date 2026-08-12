@@ -15,7 +15,7 @@ handler, so the views stay thin.  # Keep business logic in services, not views.
 """
 from __future__ import annotations
 
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.utils import timezone
 from rest_framework import generics
 from rest_framework.exceptions import NotFound, ValidationError
@@ -30,9 +30,16 @@ from vs_finance.views import resolve_entity
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive, user_has_rbac_permission
 
 from . import reconciliation, services, webhooks
-from .constants import VirtualAccountStatus
+from .constants import VirtualAccountStatus, WebhookStatus
 from .exceptions import DuplicateWebhookError
-from .models import CollectionIntent, PaymentEvent, PayoutBatch, PayoutInstruction, VirtualAccount
+from .models import (
+    CollectionIntent,
+    PaymentEvent,
+    PayoutBatch,
+    PayoutInstruction,
+    VirtualAccount,
+    WebhookEvent,
+)
 from .serializers import (
     CollectionIntentSerializer,
     PaymentEventSerializer,
@@ -40,6 +47,7 @@ from .serializers import (
     PayoutBatchSummarySerializer,
     PayoutInstructionSerializer,
     VirtualAccountSerializer,
+    WebhookEventSerializer,
 )
 
 
@@ -932,4 +940,138 @@ class WebhookView(APIView):
             return success_response("Duplicate event ignored.", data={"duplicate": True})
         return success_response(
             "Webhook processed.", data={"id": event.id, "status": event.status},
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Inbound webhooks that need an operator                                       #
+# --------------------------------------------------------------------------- #
+
+#: Webhook states that mean "money moved at the provider and we did not record it".
+NEEDS_ATTENTION_STATUSES = (WebhookStatus.FAILED, WebhookStatus.IGNORED)
+
+
+# Restrict webhook events to those belonging to one entity.
+def _entity_webhooks(entity):
+    """Webhook events attributable to ``entity`` through their collection or payout.
+
+    :class:`~vs_payments.models.WebhookEvent` carries no entity of its own - it is a
+    raw provider event, stored before we know what it concerns - so tenancy is derived
+    from the record it was matched to. An event we could not match to anything has no
+    entity and is therefore never returned here; surfacing those needs a platform-level
+    operations view, tracked separately, because showing one tenant an unattributable
+    reference would leak another tenant's transaction.
+    """
+    return WebhookEvent.objects.filter(
+        Q(collection__entity=entity) | Q(payout__entity=entity),
+    ).select_related("collection__customer", "payout")
+
+
+class WebhookEventListView(APIView):
+    """GET /payments/webhooks/ - inbound provider events, newest first.
+
+    Defaults to the ones that need an operator: FAILED (we tried to book and could
+    not) and IGNORED (valid signature, nothing local to match). Money has usually
+    moved at the provider by then, so without this list a failed booking is visible
+    only to someone querying the table by hand.
+
+    Filters: ``?status=`` (a single WebhookStatus, or ``ALL``), ``?provider=``,
+    ``?search=`` over the provider reference and the matched record's reference.
+
+    docstring-name: Provider webhooks
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "payments.webhook.view"
+
+    # Handle GET requests for this endpoint.
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = _entity_webhooks(entity)
+
+        status_filter = (request.query_params.get("status") or "").upper()
+        if status_filter == "ALL":
+            pass  # Explicitly asked for the whole history, not just the problems.
+        elif status_filter:
+            qs = qs.filter(status=status_filter)
+        else:
+            qs = qs.filter(status__in=NEEDS_ATTENTION_STATUSES)
+
+        if (provider := request.query_params.get("provider")):
+            qs = qs.filter(provider=provider)
+        if (search := (request.query_params.get("search") or "").strip()):
+            qs = qs.filter(
+                Q(provider_reference__icontains=search)
+                | Q(collection__reference__icontains=search)
+                | Q(payout__reference__icontains=search),
+            )
+        return _paginate(request, qs.order_by("-created_at", "-id"),
+                         WebhookEventSerializer, self)
+
+
+class WebhookEventSummaryView(APIView):
+    """GET /payments/webhooks/summary/ - how many events are waiting on an operator.
+
+    Small on purpose: it exists so a console can badge the problem without pulling a
+    page of rows, and so "nothing to see" is a cheap, honest answer.
+
+    docstring-name: Provider webhooks summary
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "payments.webhook.view"
+
+    # Handle GET requests for this endpoint.
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = _entity_webhooks(entity)
+        counts = {
+            row["status"]: row["count"]
+            for row in qs.values("status").annotate(count=Count("id"))
+        }
+        return success_response("Webhook summary retrieved.", data={
+            "failed": counts.get(WebhookStatus.FAILED, 0),
+            "ignored": counts.get(WebhookStatus.IGNORED, 0),
+            "needs_attention": sum(
+                counts.get(status, 0) for status in NEEDS_ATTENTION_STATUSES),
+            "status_counts": counts,
+        })
+
+
+class WebhookEventReplayView(APIView):
+    """POST /payments/webhooks/<id>/replay/ - re-run a stored event.
+
+    Re-runs the same :func:`vs_payments.webhooks.process_stored_event` the task uses,
+    against the body already on file. Safe to press twice: the confirm services are
+    idempotent on a terminal record, and the processor itself no-ops on an event that
+    already reached PROCESSED, so a replay can neither double-book nor undo one.
+
+    The usual reason a replay now succeeds is that the blocker has gone - most often a
+    fiscal period that was closed when the event first arrived and has since reopened.
+
+    docstring-name: Replay a provider webhook
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "payments.webhook.replay"
+
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk):
+        entity = resolve_entity(request)
+        event = _entity_webhooks(entity).filter(pk=pk).first()
+        if event is None:
+            raise NotFound("Webhook event not found for this entity.")
+        if event.status == WebhookStatus.PROCESSED:
+            return success_response(
+                "This event was already processed; nothing to replay.",
+                data=WebhookEventSerializer(event).data,
+            )
+
+        webhooks.process_stored_event(event.id)
+        event.refresh_from_db()
+        booked = event.status == WebhookStatus.PROCESSED
+        return success_response(
+            "Webhook replayed and booked." if booked
+            else f"Replay did not succeed: {event.error or 'see the event for detail'}.",
+            data=WebhookEventSerializer(event).data,
         )

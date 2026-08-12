@@ -21,5 +21,12 @@ urlpatterns = [
     path("transactions/", views.TransactionsLogView.as_view(), name="payments-transactions"),
     path("movements/", views.MovementsView.as_view(), name="payments-movements"),
     path("movements/summary/", views.MovementsSummaryView.as_view(), name="payments-movements-summary"),
+    # Operator-facing webhook views come before the public receiver: the receiver's
+    # <str:provider> would otherwise swallow "summary" as a provider name.
+    path("webhooks/", views.WebhookEventListView.as_view(), name="payments-webhooks"),
+    path("webhooks/summary/", views.WebhookEventSummaryView.as_view(),
+         name="payments-webhooks-summary"),
+    path("webhooks/<int:pk>/replay/", views.WebhookEventReplayView.as_view(),
+         name="payments-webhook-replay"),
     path("webhooks/<str:provider>/", views.WebhookView.as_view(), name="payments-webhook"),
 ]

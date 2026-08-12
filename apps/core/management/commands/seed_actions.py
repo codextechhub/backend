@@ -41,6 +41,7 @@ ACTIONS: list[tuple[str, str]] = [
     ("archive",    "Move a record to an archived / read-only state without hard deletion."),
     ("suspend",    "Temporarily deactivate an account or entity."),
     ("reactivate", "Restore a previously suspended or deactivated entity."),
+    ("replay",     "Re-run a stored inbound event that failed to process the first time."),
 
     # ── Data transfer & movement ──────────────────────────────────────────────
     ("export",     "Download data to CSV, XLSX, or PDF."),

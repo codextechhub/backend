@@ -29,6 +29,10 @@ PAYMENTS_RESOURCES = [
     ("payout",          "gateway payouts",     [("view", "NORMAL"), ("create", "CRITICAL"),
                                                ("view_sensitive", "SENSITIVE")]),
     ("report",          "settlement reports",  [("view", "NORMAL")]),
+    # Inbound provider webhooks that could not be booked. Viewing exposes provider
+    # references and error detail, so it is SENSITIVE; replaying re-runs the confirm
+    # services and can book real money, so it is CRITICAL.
+    ("webhook",         "provider webhooks",   [("view", "SENSITIVE"), ("replay", "CRITICAL")]),
     ("virtual_account", "virtual accounts",    [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("manage", "SENSITIVE"), ("view_sensitive", "SENSITIVE")]),
     # Bulk-payout-batch approval (maker-checker over the highest-risk cash-out path).

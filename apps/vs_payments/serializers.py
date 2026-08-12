@@ -12,6 +12,7 @@ from .models import (
     PayoutBatch,
     PayoutInstruction,
     VirtualAccount,
+    WebhookEvent,
 )
 
 
@@ -146,3 +147,54 @@ class PayoutBatchSummarySerializer(serializers.ModelSerializer):
 
     def get_total_amount_naira(self, obj):
         return format_naira(obj.total_amount)
+
+
+class WebhookEventSerializer(serializers.ModelSerializer):
+    """Read serializer for an inbound provider webhook that needs an operator's eye.
+
+    Deliberately omits ``payload``, ``raw_body``, ``headers`` and ``signature``. Those
+    are stored verbatim for audit and replay and are the provider's own record: they
+    carry signature material and whatever personal data the PSP chose to include, none
+    of which a console list needs. What an operator needs is which event it was, what
+    it was for, and why it did not go through.
+    """
+
+    amount = serializers.SerializerMethodField()
+    amount_naira = serializers.SerializerMethodField()
+    customer_name = serializers.SerializerMethodField()
+    target_reference = serializers.SerializerMethodField()
+    target_kind = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WebhookEvent
+        fields = [
+            "id", "provider", "event_type", "provider_reference", "status", "verified",
+            "error", "created_at", "processed_at",
+            "collection_id", "payout_id", "target_kind", "target_reference",
+            "amount", "amount_naira", "customer_name",
+        ]
+
+    def _target(self, obj):
+        return obj.collection or obj.payout
+
+    def get_target_kind(self, obj) -> str | None:
+        if obj.collection_id:
+            return "COLLECTION"
+        return "PAYOUT" if obj.payout_id else None
+
+    def get_target_reference(self, obj) -> str | None:
+        target = self._target(obj)
+        return target.reference if target else None
+
+    def get_amount(self, obj) -> int | None:
+        target = self._target(obj)
+        return int(target.amount) if target else None
+
+    def get_amount_naira(self, obj) -> str | None:
+        target = self._target(obj)
+        return format_naira(target.amount) if target else None
+
+    def get_customer_name(self, obj) -> str | None:
+        """Who the money came from, when the event is a collection we could match."""
+        customer = getattr(obj.collection, "customer", None) if obj.collection_id else None
+        return customer.name if customer else None

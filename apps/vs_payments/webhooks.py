@@ -146,11 +146,19 @@ def _dispatch(event: WebhookEvent, parsed, record=None) -> None:
     ``success`` (e.g. Paystack sets ``charge.success`` regardless of the inner txn
     status) and against a leaked webhook secret being used to fabricate settlements.
     """
+    # Attribution is recorded BEFORE confirming, not after. The confirm services can
+    # raise (a closed period, a provider error), and the caller catches that, marks the
+    # event FAILED and saves only status/error - so an assignment made after the call
+    # never lands. That left exactly the events an operator needs to find with no link
+    # to a collection or payout, and therefore no entity: unattributable to any tenant
+    # and invisible to every entity-scoped screen. Linking first costs nothing on the
+    # happy path and keeps a failure traceable.
     if parsed.direction == PaymentDirection.COLLECTION:  # Money-in events are matched to collection intents.
         intent = record  # Reuse the record resolved during ingestion to avoid a second lookup.
         if intent is not None:  # Only confirm if the webhook maps to a known intent.
-            services.confirm_collection(intent)  # Re-verify the provider state before booking the receipt.
             event.collection = intent  # Link the webhook event to the matching collection.
+            event.save(update_fields=["collection", "updated_at"])  # Survive a failed confirm.
+            services.confirm_collection(intent)  # Re-verify the provider state before booking the receipt.
             event.status = WebhookStatus.PROCESSED  # Mark the webhook as fully handled.
         else:  # If we cannot resolve the intent, we leave the event stored but unprocessed.
             event.status = WebhookStatus.IGNORED  # Record that the payload was valid but unmatched.
@@ -158,8 +166,9 @@ def _dispatch(event: WebhookEvent, parsed, record=None) -> None:
     elif parsed.direction == PaymentDirection.PAYOUT:  # Money-out events are matched to payout instructions.
         payout = record  # Reuse the record resolved during ingestion to avoid a second lookup.
         if payout is not None:  # Only confirm if the webhook maps to a known payout.
-            services.confirm_payout(payout)  # Re-verify the provider state before posting the vendor payment.
             event.payout = payout  # Link the webhook event to the matching payout.
+            event.save(update_fields=["payout", "updated_at"])  # Survive a failed confirm.
+            services.confirm_payout(payout)  # Re-verify the provider state before posting the vendor payment.
             event.status = WebhookStatus.PROCESSED  # Mark the webhook as fully handled.
         else:  # If we cannot resolve the payout, keep the webhook as an ignored audit record.
             event.status = WebhookStatus.IGNORED  # Record that the payload was valid but unmatched.
