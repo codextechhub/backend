@@ -12,6 +12,13 @@ It enforces the two non-negotiables of PSP webhooks:
 
 The raw body and headers are persisted verbatim before any processing, so an event is
 always auditable/replayable regardless of how dispatch goes.
+
+Most events are matched to something we already created. One is not: a transfer into a
+dedicated **virtual account** is unsolicited by definition (that is the point of the
+account), so there is no local intent to find. Those are resolved by the account the
+event says was credited and the intent is created on the spot - see
+:func:`_deposit_collection`. The provider's transaction reference becomes that intent's
+reference, which is what keeps a re-delivery or a replay from creating a second one.
 """
 from __future__ import annotations
 
@@ -28,7 +35,7 @@ from .constants import (
     WebhookStatus,
 )
 from .exceptions import DuplicateWebhookError, WebhookSignatureError
-from .models import CollectionIntent, PayoutInstruction, WebhookEvent
+from .models import CollectionIntent, PayoutInstruction, VirtualAccount, WebhookEvent
 from .providers.registry import get_provider
 
 
@@ -80,7 +87,7 @@ def ingest_webhook(*, provider: str, raw_body: bytes, headers: dict | None = Non
         raise DuplicateWebhookError()
 
     if created:  # Audit-once: only the first sighting emits a WEBHOOK_RECEIVED row (a not-yet-processed
-        record = _find_record(parsed)  # retry re-enters here but must not add a second audit line). Resolve the target once
+        record = _find_record(parsed, provider)  # retry re-enters here but must not add a second audit line). Resolve the target once
         audit.record(  # so the audit row is attributed to the matched record's entity (shows in its log).
             action=PaymentAuditAction.WEBHOOK_RECEIVED, provider=provider,
             entity=getattr(record, "entity", None),  # Attribute the event to the matched record's entity.
@@ -121,7 +128,7 @@ def process_stored_event(event_id: int) -> WebhookEvent | None:
         raw_body=(event.raw_body or "").encode(),  # Rebuild the raw bytes the parser may inspect.
         headers=event.headers or {},
     )
-    record = _find_record(parsed)  # Resolve the target collection/payout for dispatch.
+    record = _find_record(parsed, event.provider)  # Resolve the target collection/payout for dispatch.
 
     try:  # Dispatch can fail after the webhook is safely stored.
         _dispatch(event, parsed, record)
@@ -162,7 +169,7 @@ def _dispatch(event: WebhookEvent, parsed, record=None) -> None:
             event.status = WebhookStatus.PROCESSED  # Mark the webhook as fully handled.
         else:  # If we cannot resolve the intent, we leave the event stored but unprocessed.
             event.status = WebhookStatus.IGNORED  # Record that the payload was valid but unmatched.
-            event.error = "No matching collection intent."  # Save a clear operator-facing explanation.
+            event.error = _unmatched_collection_reason(parsed)  # Save a clear operator-facing explanation.
     elif parsed.direction == PaymentDirection.PAYOUT:  # Money-out events are matched to payout instructions.
         payout = record  # Reuse the record resolved during ingestion to avoid a second lookup.
         if payout is not None:  # Only confirm if the webhook maps to a known payout.
@@ -184,29 +191,87 @@ def _dispatch(event: WebhookEvent, parsed, record=None) -> None:
 
 
 # Support the find record workflow.
-def _find_record(parsed):
+def _find_record(parsed, provider: str):
     """Resolve the local collection/payout this event targets (or None if unmatched).
 
     Resolving once here lets us attribute the WEBHOOK_RECEIVED audit row to the record's
     entity and hand the same object to :func:`_dispatch` without a second query.
+    ``provider`` scopes the virtual-account lookup, whose uniqueness is per provider.
     """
     if parsed.direction == PaymentDirection.COLLECTION:  # Money-in events map to a collection intent.
-        return _find_collection(parsed)
+        return _find_collection(parsed, provider)
     if parsed.direction == PaymentDirection.PAYOUT:  # Money-out events map to a payout instruction.
         return _find_payout(parsed)
     return None  # Unknown direction has no attributable record.
 
 
 # Support the find collection workflow.
-def _find_collection(parsed):
+def _find_collection(parsed, provider: str):
     qs = CollectionIntent.objects.all()
     if parsed.reference:  # Prefer the merchant/provider reference when present.
         intent = qs.filter(reference=parsed.reference).first()
         if intent:  # Return immediately on an exact match.
             return intent
     if parsed.provider_reference:  # Fall back to the PSP reference if needed.
-        return qs.filter(provider_reference=parsed.provider_reference).first()
-    return None  # No local collection matched the webhook.
+        intent = qs.filter(provider_reference=parsed.provider_reference).first()
+        if intent:  # Return immediately on an exact match.
+            return intent
+    return _deposit_collection(parsed, provider)  # Last resort: an unsolicited virtual-account transfer.
+
+
+# Support the deposit collection workflow.
+def _deposit_collection(parsed, provider: str):
+    """Resolve a deposit paid straight into one of our virtual accounts, creating its intent.
+
+    Matching by reference only ever finds a collection we *started*. A dedicated virtual
+    account exists so a payer can transfer money with no checkout at all, so a deposit
+    into one matches nothing and, before this, was recorded IGNORED while the cash sat
+    in the bank unbooked. What the event does carry is the account it credited, and that
+    account already names the customer - so the account is the match, and the intent is
+    created from it (see
+    :func:`vs_payments.services.record_virtual_account_deposit`).
+
+    Nothing here trusts the event to move money: the intent lands ``PENDING`` and the
+    ordinary confirm path re-verifies status and amount against the provider's API. Two
+    things are deliberately *not* resolved, because guessing would be worse than an
+    operator looking: an account number we never provisioned (we will not invent a payer
+    for it), and an event with no provider reference (there would be nothing to
+    re-verify against, so the payload's own claim would be all we had).
+    """
+    if not parsed.destination_account_number or not parsed.reference:  # Nothing to match, or nothing to verify with.
+        return None
+    va = (VirtualAccount.objects  # The (provider, account_number) pair is unique.
+          .select_related("entity", "customer", "deposit_account", "currency")
+          .filter(provider=provider, account_number=parsed.destination_account_number)
+          .first())
+    if va is None:  # A number we never issued: leave it IGNORED rather than inventing a customer.
+        return None
+    # An inactive account still resolves. The deposit is real money that arrived, so it
+    # must be recorded and attributable; _book_receipt then refuses to post it and the
+    # event lands on the needs-attention list, which is the intended behaviour.
+    intent, _created = services.record_virtual_account_deposit(
+        virtual_account=va, reference=parsed.reference, amount=parsed.amount,
+        provider_reference=parsed.provider_reference, event_type=parsed.event_type,
+    )
+    return intent  # Hand the deposit to the normal confirm/book path.
+
+
+# Support the unmatched collection reason workflow.
+def _unmatched_collection_reason(parsed) -> str:
+    """Explain to an operator why a money-in event booked nothing.
+
+    "No matching collection intent" is the right answer for a charge we never started,
+    but it is misleading for a deposit that named one of our NUBANs, where the operator
+    needs to know whether the account is unknown to us or the event was unverifiable.
+    """
+    if not parsed.destination_account_number:  # An ordinary charge we have no record of.
+        return "No matching collection intent."
+    if not parsed.reference:  # Named an account, but nothing to re-verify the deposit against.
+        return "Deposit names a virtual account but carries no provider reference to verify."
+    return (  # Named an account number we never provisioned.
+        f"No virtual account '{parsed.destination_account_number}' "
+        f"is provisioned for this provider."
+    )[:255]
 
 
 # Support the find payout workflow.

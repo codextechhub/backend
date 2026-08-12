@@ -206,8 +206,36 @@ class PaystackProvider(Provider):
             amount=int(data.get("amount", 0) or 0),
             currency=data.get("currency", "NGN"),
             dedupe_key=f"PAYSTACK:{event}:{reference or data.get('id', '')}",
+            destination_account_number=(
+                _dedicated_nuban(data) if direction == "COLLECTION" else ""
+            ),
             raw=payload,  # Keep the original normalized payload.
         )
+
+
+# Support the dedicated nuban workflow.
+def _dedicated_nuban(data: dict) -> str:
+    """Return the dedicated virtual account a ``charge.success`` was paid into, if any.
+
+    Paystack reports a transfer into a dedicated account as an ordinary ``charge.success``
+    whose channel is ``dedicated_nuban``. The receiving NUBAN is not a top-level field: it
+    rides on ``data.authorization.receiver_bank_account_number``, and older/alternate
+    payloads repeat it as ``data.metadata.receiver_account_number``. We read both and
+    return ``""`` for every other collection event (card, USSD, hosted checkout), so a
+    normal charge is never mistaken for a virtual-account deposit.
+    """
+    auth = data.get("authorization") or {}  # Authorization block, when the event carries one.
+    if not isinstance(auth, dict):  # Defend against a provider sending a non-object here.
+        auth = {}
+    meta = data.get("metadata") or {}  # Paystack sometimes echoes the receiver in metadata.
+    if not isinstance(meta, dict):  # Paystack allows metadata to be a bare string.
+        meta = {}
+    number = (
+        auth.get("receiver_bank_account_number")
+        or meta.get("receiver_account_number")
+        or ""
+    )
+    return str(number).strip()  # Normalize to a bare string for the local lookup.
 
 
 # Support the header workflow.

@@ -99,6 +99,14 @@ class WebhookParseResult:
     amount: int = 0  # Settled amount in kobo.
     currency: str = "NGN"  # Settlement currency code.
     dedupe_key: str = ""  # Stable idempotency key extracted from the event.
+    # The NUBAN the payer transferred *into*, for money-in events that name one.
+    #
+    # A dedicated virtual account collects unsolicited transfers: there is no checkout
+    # and therefore no local record to match on ``reference``. The destination account
+    # is the only thing in the event that ties the money to a payer we know, so the
+    # neutral shape has to carry it or the webhook layer can never resolve the deposit.
+    # Empty for hosted-checkout charges, card captures and every payout event.
+    destination_account_number: str = ""
     raw: dict = field(default_factory=dict)  # Normalized raw payload for replay/audit.
 
 

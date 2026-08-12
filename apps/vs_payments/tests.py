@@ -418,6 +418,196 @@ class WebhookTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)  # booked once
 
 
+# Group tests for Virtual Account Deposit Tests.
+class VirtualAccountDepositTests(_PaymentsFixtureMixin, TestCase):
+    """Unsolicited transfers into a dedicated NUBAN have to become receipts.
+
+    A virtual account exists so a payer can send money with no checkout at all, which
+    means the deposit webhook matches no local intent. Before this the event was filed
+    IGNORED and the cash sat in the bank unbooked - the whole point of the account,
+    silently dropped. These tests pin the behaviour that replaces it: the account
+    resolves the payer, the deposit still has to survive provider re-verification, and
+    nothing about it may book twice or invent a customer.
+    """
+
+    # Support the deposit webhook workflow.
+    def _deposit(self, *, account_number, reference, amount, entity=None):
+        """Ingest one signed deposit event naming ``account_number`` and return the event."""
+        raw, headers = self.fake.build_webhook(
+            event="charge.success", reference=reference, status="SUCCEEDED",
+            amount=amount, receiver_account_number=account_number,
+        )
+        with self.captureOnCommitCallbacks(execute=True):  # Fire the deferred worker inline.
+            event = webhooks.ingest_webhook(provider="FAKE", raw_body=raw, headers=headers)
+        event.refresh_from_db()
+        return event
+
+    # Support the settled workflow.
+    def _provider_settles(self, reference, amount):
+        """Make the provider's own API agree the deposit settled for ``amount``."""
+        self.fake.forced_status[reference] = "SUCCEEDED"  # Verified status, not the payload's claim.
+        self.fake.forced_amount[reference] = amount  # Verified amount, not the payload's claim.
+
+    # Verify a deposit into a known active account books one receipt behavior.
+    def test_deposit_into_a_known_account_books_one_receipt_for_its_customer(self):
+        entity, customer, _ = self.build()
+        va = services.create_virtual_account(
+            entity=entity, customer=customer, provider="FAKE",
+            deposit_account=Account.objects.get(entity=entity, code="1110"),
+        )
+        self._provider_settles("DEP-1", 45000)
+
+        event = self._deposit(account_number=va.account_number, reference="DEP-1", amount=45000)
+
+        self.assertEqual(event.status, "PROCESSED")
+        intent = CollectionIntent.objects.get(reference="DEP-1")
+        self.assertEqual(intent.status, CollectionStatus.SUCCEEDED)
+        self.assertEqual(intent.channel, "VIRTUAL_ACCOUNT")  # Not a checkout.
+        self.assertEqual(intent.customer_id, customer.pk)  # The account named the payer.
+        self.assertEqual(intent.virtual_account_id, va.pk)
+        self.assertEqual(intent.deposit_account_id, va.deposit_account_id)
+        self.assertEqual(event.collection_id, intent.pk)  # Attributable to the entity.
+        payments = Payment.objects.filter(entity=entity)
+        self.assertEqual(payments.count(), 1)  # Exactly one receipt.
+        self.assertEqual(payments.first().amount, 45000)
+        self.assertEqual(payments.first().customer_id, customer.pk)
+        self.assertEqual(payments.first().status, "POSTED")
+        # The account number is FLS-restricted on the virtual-account serializer, so it
+        # must not be smuggled onto the receipt narration, which has no such protection.
+        self.assertNotIn(va.account_number, payments.first().narration)
+
+    # Verify a re-delivered deposit creates no second intent or receipt behavior.
+    def test_a_redelivered_deposit_creates_no_second_intent_or_receipt(self):
+        entity, customer, _ = self.build()
+        va = services.create_virtual_account(entity=entity, customer=customer, provider="FAKE")
+        self._provider_settles("DEP-2", 30000)
+
+        self._deposit(account_number=va.account_number, reference="DEP-2", amount=30000)
+        # Webhook delivery is at-least-once: the provider sends the same event again.
+        raw, headers = self.fake.build_webhook(
+            event="charge.success", reference="DEP-2", status="SUCCEEDED",
+            amount=30000, receiver_account_number=va.account_number,
+        )
+        with self.assertRaises(DuplicateWebhookError):
+            webhooks.ingest_webhook(provider="FAKE", raw_body=raw, headers=headers)
+
+        self.assertEqual(CollectionIntent.objects.filter(reference="DEP-2").count(), 1)
+        self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)
+
+    # Verify replaying a booked deposit books nothing further behavior.
+    def test_replaying_a_booked_deposit_books_nothing_further(self):
+        entity, customer, _ = self.build()
+        va = services.create_virtual_account(entity=entity, customer=customer, provider="FAKE")
+        self._provider_settles("DEP-3", 12000)
+        event = self._deposit(account_number=va.account_number, reference="DEP-3", amount=12000)
+
+        # The operator replay path re-runs the stored body; it must be a no-op here.
+        webhooks.process_stored_event(event.id)
+        self.assertEqual(CollectionIntent.objects.filter(reference="DEP-3").count(), 1)
+        self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)
+
+    # Verify a deposit into an inactive account is held for review behavior.
+    def test_deposit_into_an_inactive_account_is_held_for_review(self):
+        entity, customer, _ = self.build()
+        va = services.create_virtual_account(entity=entity, customer=customer, provider="FAKE")
+        services.set_virtual_account_status(va, status=VirtualAccountStatus.INACTIVE)
+        self._provider_settles("DEP-4", 20000)
+
+        event = self._deposit(account_number=va.account_number, reference="DEP-4", amount=20000)
+
+        self.assertEqual(event.status, "FAILED")  # Lands on the needs-attention list.
+        self.assertIn("inactive", event.error.lower())
+        self.assertFalse(Payment.objects.filter(entity=entity).exists())
+        # The money still has to be visible: the deposit is recorded and attributable
+        # even though it must not post.
+        intent = CollectionIntent.objects.get(reference="DEP-4")
+        self.assertEqual(intent.status, CollectionStatus.PENDING)
+        self.assertEqual(intent.virtual_account_id, va.pk)
+        self.assertEqual(event.collection_id, intent.pk)
+
+    # Verify a deposit naming an unknown account stays ignored behavior.
+    def test_deposit_naming_an_unknown_account_is_ignored_and_invents_nothing(self):
+        entity, customer, _ = self.build()
+        services.create_virtual_account(entity=entity, customer=customer, provider="FAKE")
+        before = Customer.objects.count()
+        self._provider_settles("DEP-5", 10000)
+
+        event = self._deposit(account_number="0000000001", reference="DEP-5", amount=10000)
+
+        self.assertEqual(event.status, "IGNORED")
+        self.assertIn("0000000001", event.error)  # The operator is told which number.
+        self.assertFalse(CollectionIntent.objects.filter(reference="DEP-5").exists())
+        self.assertEqual(Customer.objects.count(), before)  # No payer was invented.
+        self.assertFalse(Payment.objects.filter(entity=entity).exists())
+
+    # Verify a deposit is never booked on the event's own word behavior.
+    def test_a_deposit_is_not_booked_on_the_events_word_alone(self):
+        """SECURITY: the signed payload's amount must never be what moves money.
+
+        For a checkout collection the fallback amount is the one *we* asked for, so
+        trusting it is fine. A deposit intent is built from the event itself, so the
+        same fallback would be the payload's own claim. A leaked webhook secret would
+        then be enough to mint a receipt. With no provider-reported amount there is
+        nothing authoritative to book, so the booking is refused instead.
+        """
+        entity, customer, _ = self.build()
+        va = services.create_virtual_account(entity=entity, customer=customer, provider="FAKE")
+        self.fake.forced_status["DEP-6"] = "SUCCEEDED"  # Status agrees, but no amount is reported.
+
+        event = self._deposit(account_number=va.account_number, reference="DEP-6", amount=999999)
+
+        self.assertEqual(event.status, "FAILED")
+        self.assertIn("settled amount", event.error)
+        self.assertFalse(Payment.objects.filter(entity=entity).exists())
+        self.assertEqual(
+            CollectionIntent.objects.get(reference="DEP-6").status, CollectionStatus.PENDING)
+
+    # Verify an unverified deposit books nothing behavior.
+    def test_a_deposit_the_provider_will_not_confirm_books_nothing(self):
+        # No forced_status: the provider's API reports PENDING despite the signed
+        # "SUCCEEDED" event, so nothing may post.
+        entity, customer, _ = self.build()
+        va = services.create_virtual_account(entity=entity, customer=customer, provider="FAKE")
+
+        self._deposit(account_number=va.account_number, reference="DEP-7", amount=15000)
+
+        self.assertEqual(
+            CollectionIntent.objects.get(reference="DEP-7").status, CollectionStatus.PENDING)
+        self.assertFalse(Payment.objects.filter(entity=entity).exists())
+
+    # Verify a deposit into an account with no customer is held behavior.
+    def test_deposit_into_a_customerless_account_is_recorded_but_not_booked(self):
+        # VirtualAccount.customer is nullable. Without a payer there is no AR sub-ledger
+        # to credit, and guessing one would be worse than an operator looking at it.
+        entity, _customer, _ = self.build()
+        va = VirtualAccount.objects.create(
+            entity=entity, provider="FAKE", customer=None, account_number="0123456789",
+            bank_name="Fake MFB", account_name="Unassigned",
+        )
+        self._provider_settles("DEP-8", 8000)
+
+        event = self._deposit(account_number=va.account_number, reference="DEP-8", amount=8000)
+
+        self.assertEqual(event.status, "FAILED")
+        self.assertIn("customer", event.error.lower())
+        self.assertFalse(Payment.objects.filter(entity=entity).exists())
+        self.assertEqual(
+            CollectionIntent.objects.get(reference="DEP-8").virtual_account_id, va.pk)
+
+    # Verify an ordinary charge is never treated as a deposit behavior.
+    def test_an_ordinary_unmatched_charge_still_reports_the_old_reason(self):
+        # No destination account on the event, so the deposit path must not engage and
+        # the operator-facing reason must stay the one that describes a charge.
+        entity, customer, _ = self.build()
+        services.create_virtual_account(entity=entity, customer=customer, provider="FAKE")
+
+        event = self._deposit(account_number="", reference="DEP-9", amount=5000)
+
+        self.assertEqual(event.status, "IGNORED")
+        self.assertEqual(event.error, "No matching collection intent.")
+        self.assertFalse(CollectionIntent.objects.filter(reference="DEP-9").exists())
+
+
 # Group tests for Payout Tests.
 class PayoutTests(_PaymentsFixtureMixin, TestCase):
     # Verify initiate then confirm books vendor payment behavior.
@@ -1417,6 +1607,43 @@ class PaystackAdapterTests(TestCase):
         parsed = self.provider.parse_webhook(payload=transfer, raw_body=b"", headers={})
         self.assertEqual(parsed.direction, "PAYOUT")
         self.assertEqual(parsed.status, "PAID")
+
+    # Verify a dedicated-account deposit names its destination NUBAN behavior.
+    def test_parse_webhook_extracts_the_dedicated_account_number(self):
+        """Paystack reports a virtual-account transfer as a plain ``charge.success``.
+
+        The receiving NUBAN is the only thing tying that event to a payer we know, and
+        it is nested in the authorization block (repeated in metadata on some payloads),
+        so the parser has to dig it out. An ordinary card charge must stay empty or a
+        normal collection would be mistaken for a deposit.
+        """
+        deposit = {"event": "charge.success", "data": {
+            "reference": "R2", "status": "success", "amount": 40000, "id": 100,
+            "channel": "dedicated_nuban",
+            "authorization": {"channel": "dedicated_nuban",
+                              "receiver_bank_account_number": "9988776655"}}}
+        parsed = self.provider.parse_webhook(payload=deposit, raw_body=b"", headers={})
+        self.assertEqual(parsed.destination_account_number, "9988776655")
+
+        from_metadata = {"event": "charge.success", "data": {
+            "reference": "R3", "status": "success", "amount": 40000, "id": 101,
+            "metadata": {"receiver_account_number": "1122334455"}}}
+        parsed = self.provider.parse_webhook(payload=from_metadata, raw_body=b"", headers={})
+        self.assertEqual(parsed.destination_account_number, "1122334455")
+
+        # Paystack allows metadata to arrive as a bare string, and a card charge has no
+        # receiver at all; neither may be read as a deposit.
+        card = {"event": "charge.success", "data": {
+            "reference": "R4", "status": "success", "amount": 40000, "id": 102,
+            "metadata": "custom text", "authorization": {"channel": "card"}}}
+        parsed = self.provider.parse_webhook(payload=card, raw_body=b"", headers={})
+        self.assertEqual(parsed.destination_account_number, "")
+
+        transfer = {"event": "transfer.success", "data": {
+            "reference": "P2", "status": "success", "amount": 15000,
+            "authorization": {"receiver_bank_account_number": "9988776655"}}}
+        parsed = self.provider.parse_webhook(payload=transfer, raw_body=b"", headers={})
+        self.assertEqual(parsed.destination_account_number, "")  # Payouts never carry one.
 
 
 # Group tests for Webhook Provider Resolution.

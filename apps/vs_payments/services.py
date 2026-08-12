@@ -25,6 +25,7 @@ from vs_finance.exceptions import FinanceError
 
 from . import audit
 from .constants import (
+    CollectionChannel,
     CollectionStatus,
     PaymentAuditAction,
     PaymentProvider,
@@ -68,8 +69,6 @@ def initiate_collection(*, entity, amount, customer=None, invoice=None,
     ledger entry is made yet - the receipt is booked only when the collection is
     *confirmed* (webhook or verify).
     """
-    from .constants import CollectionChannel
-
     from django.conf import settings
 
     channel = channel or CollectionChannel.CHECKOUT  # Default to a checkout-style collection.
@@ -138,6 +137,63 @@ def initiate_collection(*, entity, amount, customer=None, invoice=None,
     )
 
     return intent  # Return the hydrated intent to the caller.
+
+
+# Handle the record virtual account deposit workflow.
+def record_virtual_account_deposit(*, virtual_account, reference, amount,
+                                   provider_reference="", event_type=""):
+    """Materialise the :class:`CollectionIntent` for a transfer paid into one of our NUBANs.
+
+    A dedicated virtual account exists precisely so a payer can transfer money *without*
+    a checkout, which means there is no local intent for the webhook to match: the money
+    simply lands. This is the missing half of that flow - given the account the provider
+    says was credited, it creates the collection that account's customer would have had,
+    so the deposit then rides the ordinary confirm/book path
+    (:func:`confirm_collection` re-verifies with the provider, ``_book_receipt`` posts
+    the receipt) instead of being dropped as an unmatched event.
+
+    ``reference`` is the provider's own transaction reference for the deposit and becomes
+    our ``reference``, which does three jobs at once: it is what
+    ``verify_collection`` is polled with, it is unique in the table (so two concurrent
+    deliveries of the same deposit collapse to one row), and it is what the webhook
+    matcher finds on a re-delivery or a replay, so nothing is ever created twice.
+
+    ``amount`` is the amount the *event* claims. It is recorded so the deposit is visible
+    immediately, but it is deliberately not authoritative: the confirm step replaces it
+    with the settled amount the provider's API reports before any receipt is booked.
+
+    Returns ``(intent, created)``.
+    """
+    entity = virtual_account.entity  # The deposit belongs to the account's ledger entity.
+    customer = virtual_account.customer  # May be None; booking then refuses and asks for an operator.
+    intent, created = CollectionIntent.objects.get_or_create(
+        reference=reference,  # Unique in the table: the DB itself enforces once-only creation.
+        defaults=dict(
+            entity=entity, provider=virtual_account.provider,
+            channel=CollectionChannel.VIRTUAL_ACCOUNT,  # Not a checkout: money arrived by bank transfer.
+            provider_reference=provider_reference, amount=amount,
+            currency=virtual_account.currency or _entity_currency(entity),
+            customer=customer, virtual_account=virtual_account,
+            deposit_account=virtual_account.deposit_account,  # Land the receipt in the account's own bank GL.
+            payer_email=(customer.billing_email if customer else ""),
+            payer_name=(customer.name if customer else virtual_account.account_name),
+            # Deliberately no account number in the narration: it is FLS-restricted on
+            # the virtual-account serializer, and the narration is copied onto the
+            # finance receipt, which has no such protection.
+            narration="Virtual account deposit.",
+            metadata={"source": "virtual_account_deposit", "webhook_event_type": event_type},
+            status=CollectionStatus.PENDING,  # Nothing is settled until the provider is re-verified.
+        ),
+    )
+    if created:  # Audit only the first sighting so a re-delivery adds no second row.
+        audit.record(
+            action=PaymentAuditAction.COLLECTION_INITIATED, entity=entity,
+            provider=virtual_account.provider, reference=reference,
+            message=f"Recorded {amount} kobo deposit into a virtual account.",
+            metadata={"channel": CollectionChannel.VIRTUAL_ACCOUNT,
+                      "virtual_account_id": virtual_account.pk},
+        )
+    return intent, created  # Hand the intent back for the ordinary confirm path.
 
 
 # Handle the create virtual account workflow.
@@ -226,6 +282,18 @@ def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
             reference=intent.reference, provider_reference=intent.provider_reference,
         )
         status = result.status  # Trust the PSP status for the confirmation decision.
+        # Falling back to intent.amount is safe for a collection we initiated: that amount
+        # is the one *we* asked the payer for. It is not safe for a virtual-account
+        # deposit, where the intent was built from the inbound event, so the fallback
+        # would be the webhook's own claim - exactly the thing this re-verification
+        # exists to distrust. With no provider-reported amount there is nothing
+        # authoritative to book, so refuse: the event is marked FAILED and surfaces on
+        # the operator's needs-attention list with the money still visibly unrecorded.
+        if (result.amount <= 0 and intent.virtual_account_id
+                and intent.channel == CollectionChannel.VIRTUAL_ACCOUNT):
+            raise PaymentStateError(
+                "Provider did not report a settled amount for this virtual account "
+                "deposit; booking held for manual review.")
         amount = result.amount or intent.amount  # Fall back to the original amount if the PSP omits it.
         intent.raw_response = {**(intent.raw_response or {}), "verify": result.raw}  # Append the verification payload.
 

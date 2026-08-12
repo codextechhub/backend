@@ -71,6 +71,7 @@ class FakeProvider(Provider):
             reference=reference,  # Merchant reference being verified.
             provider_reference=provider_reference or f"FAKE-{reference}",  # Provide a predictable provider reference.
             status=status,  # Return the forced or default status.
+            amount=self.forced_amount.get(reference, 0),  # Report the forced settled amount (0 = not reported).
             raw={"forced": status},  # Show where the verification status came from.
         )
 
@@ -124,19 +125,30 @@ class FakeProvider(Provider):
             amount=int(data.get("amount", 0)),
             currency=data.get("currency", "NGN"),
             dedupe_key=f"FAKE:{payload.get('event', '')}:{data.get('reference', '')}",
+            # Mirrors Paystack: a transfer into a dedicated NUBAN names the receiving
+            # account on the event, and nothing else ties it to a payer we know.
+            destination_account_number=(
+                "" if direction == "PAYOUT"
+                else str(data.get("receiver_account_number", "") or "")
+            ),
             raw=payload,  # Preserve the original payload.
         )
 
     # -- test helper -------------------------------------------------------- #  # Utilities used in tests.
     # Handle the build webhook workflow.
     def build_webhook(self, *, event: str, reference: str, status: str,
-                      amount: int = 0, currency: str = "NGN", provider_id: str = "1"):
-        """Return ``(raw_body: bytes, headers: dict)`` for a correctly-signed event."""
-        body = json.dumps({  # Build the webhook body in the same shape the parser expects.
-            "event": event,
-            "data": {
-                "reference": reference, "status": status, "amount": amount,  # Core event fields.
-                "currency": currency, "id": provider_id,  # Provider id used by the parser.
-            },
-        }).encode()  # Encode the JSON payload as bytes for the webhook pipeline.
+                      amount: int = 0, currency: str = "NGN", provider_id: str = "1",
+                      receiver_account_number: str = ""):
+        """Return ``(raw_body: bytes, headers: dict)`` for a correctly-signed event.
+
+        Pass ``receiver_account_number`` to build a dedicated virtual-account deposit
+        (the unsolicited-transfer event); leave it out for an ordinary charge.
+        """
+        data = {  # Build the event data block in the shape the parser expects.
+            "reference": reference, "status": status, "amount": amount,  # Core event fields.
+            "currency": currency, "id": provider_id,  # Provider id used by the parser.
+        }
+        if receiver_account_number:  # Only deposits carry a receiving account.
+            data["receiver_account_number"] = receiver_account_number  # Name the destination NUBAN.
+        body = json.dumps({"event": event, "data": data}).encode()  # Encode the payload as bytes.
         return body, {SIGNATURE_HEADER: self._sign(body)}  # Return the body and matching fake signature.
