@@ -46,7 +46,12 @@ from __future__ import annotations
 
 from django.db import transaction
 
-from vs_workflow.constants import AuditEventType, WorkflowInstanceStatus
+from vs_workflow.constants import (
+    ApproverSource,
+    AuditEventType,
+    OrganogramTarget,
+    WorkflowInstanceStatus,
+)
 from vs_workflow.services import audit as audit_service
 from vs_workflow.services import parking
 from vs_workflow.services import routing as routing_service
@@ -105,13 +110,58 @@ def parked_stage(instance):
     )
 
 
+def stage_requirement(stage) -> str:
+    """One plain sentence naming what would give this stage an approver.
+
+    The dialog has to tell somebody how to fix the situation properly, and "no approver"
+    does not. What fixes it depends entirely on how the stage resolves approvers, so the
+    sentence is composed here, next to the model that knows.
+
+    **Every source gets a usable sentence, including ones added after this was written.**
+    An unrecognised source falls back to a truthful generic line rather than an empty
+    string, because the fallback is what a client renders when the approver model
+    changes underneath it. A vague sentence is recoverable; a blank space where the
+    instruction should be is not.
+    """
+    source = stage.approver_source
+    if source == ApproverSource.RBAC_PERMISSION and stage.approver_permission_key:
+        return f"grant someone the {stage.approver_permission_key} permission"
+    if source == ApproverSource.ORGANOGRAM:
+        target = stage.organogram_target
+        if target == OrganogramTarget.DIRECT_MANAGER:
+            return "give the person who raised this a manager on the organogram"
+        if target == OrganogramTarget.N_LEVELS_UP:
+            levels = stage.organogram_levels or 1
+            return (
+                f"complete the reporting line above the person who raised this "
+                f"({levels} level{'s' if levels != 1 else ''} up)"
+            )
+        if target == OrganogramTarget.DEPARTMENT_HEAD:
+            return "appoint a head for the department of the person who raised this"
+        if target == OrganogramTarget.SPECIFIC_POSITION:
+            position = stage.organogram_position
+            seat = getattr(position, "title", "") or getattr(position, "name", "")
+            return f"put somebody in the {seat} position" if seat else (
+                "put somebody in the position this step approves from")
+        return "complete the organogram around the person who raised this"
+    # Deliberately generic: a source this function has not been taught about is a
+    # configuration question, and pointing at the template is always true.
+    return "configure an approver for this step on the workflow template"
+
+
 def describe_park(instance) -> dict:
     """What the submitter needs to be told, or ``{"parked": False}``.
 
     Shaped for a confirmation dialog: whether the document is stuck, which decision it
-    is stuck on, and which permission nobody holds, so the warning can name the thing an
-    administrator would have to grant instead of saying "no approver" and leaving them
-    to guess.
+    is stuck on, and what would unstick it properly.
+
+    The client is given **facts plus a ready-made sentence**, not just a permission key.
+    ``permission_key`` is only meaningful for an RBAC-sourced stage and is blank
+    otherwise, so a client that wants to render it specially must check
+    ``approver_source`` first; ``requirement`` is always populated and always safe to
+    show. That split is what lets the approver model change without the dialog going
+    blank or, worse, telling somebody to grant a permission that no longer decides
+    anything.
     """
     stage_instance = parked_stage(instance)
     if stage_instance is None:
@@ -121,7 +171,13 @@ def describe_park(instance) -> dict:
         "parked": True,
         "stage_code": stage.code,
         "stage_label": stage.label,
-        "permission_key": stage.approver_permission_key or "",
+        "approver_source": stage.approver_source,
+        # Blank unless this stage really resolves by permission; see the docstring.
+        "permission_key": (
+            stage.approver_permission_key or ""
+            if stage.approver_source == ApproverSource.RBAC_PERMISSION else ""
+        ),
+        "requirement": stage_requirement(stage),
         "document_type": instance.document_type,
     }
 
@@ -162,7 +218,12 @@ def release_parked_stage(instance, *, actor_user, reason=None):
             "override": True,
             "stage_code": stage_instance.stage.code,
             "attempt": stage_instance.attempt,
+            # The audit row must survive a change in how stages resolve approvers, so
+            # it records the source and the requirement alongside the key rather than
+            # relying on a key that may stop being the deciding factor.
+            "approver_source": stage_instance.stage.approver_source,
             "permission_key": stage_instance.stage.approver_permission_key or "",
+            "requirement": stage_requirement(stage_instance.stage),
             "reason": reason_text,
         },
         message=(

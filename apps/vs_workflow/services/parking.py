@@ -134,19 +134,33 @@ class ResolutionCache:
     surviving holders*, so an empty holder set after removing the requester provably
     yields no approvers: a sole approver who is also the requester means parked. That
     lets the memo answer the common case outright and skip the live resolution entirely.
-    Organogram stages are requester-relative and cannot be memoised, so they always take
-    the live path.
+
+    The memo is **opt-in per source, not opt-out**, and that direction matters. Only
+    RBAC_PERMISSION stages carrying a key can be answered from a permission-holder
+    lookup; every other source - organogram today, whatever replaces or joins it later -
+    falls through to the live path. The alternative default, treating an unrecognised
+    source as "provably nobody", would make the repair silently skip those stages, and a
+    stage the repair skips is a document that parks and never un-parks. That is the exact
+    failure this module exists to prevent, so an unknown source must cost a query rather
+    than a lost document.
     """
 
     def __init__(self):
         self._holders: dict = {}
 
     def _holder_ids(self, stage, instance):
-        """Memoised set of base permission holders, or None when not memoisable."""
-        if stage.approver_source == ApproverSource.ORGANOGRAM:
+        """Memoised set of base permission holders, or None when not memoisable.
+
+        ``None`` means "cannot answer from the memo, resolve it live", which is the
+        safe answer for every source this function does not explicitly understand.
+        """
+        if stage.approver_source != ApproverSource.RBAC_PERMISSION:
             return None
         if not stage.approver_permission_key:
-            return frozenset()
+            # A permission-sourced stage with no key is misconfigured rather than
+            # unstaffable. Resolve it live so the engine's own resolver decides,
+            # instead of concluding here that nobody can ever approve it.
+            return None
         key = (
             stage.approver_source, stage.approver_permission_key,
             stage.approver_scope, instance.tenant_id, instance.branch_id,

@@ -1585,6 +1585,93 @@ class PayoutBatchApprovalTests(TestCase):
         batch.refresh_from_db()
         self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
 
+    # --- 10. surviving a change in how approvers are resolved -------------- #
+
+    def test_an_unknown_approver_source_is_repaired_not_skipped(self):
+        """A source the repair has not been taught about must resolve live.
+
+        The approver model is being reworked away from permission keys. If the
+        resolution cache treated an unrecognised source as "provably nobody", every
+        stage using the new model would park and never un-park, which is the exact
+        defect this repair exists to prevent. Costing a query is the acceptable
+        failure here; losing a document is not.
+        """
+        from vs_workflow.services.parking import ResolutionCache
+
+        self._seed_tenant_ladder()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        stage_instance = instance.stage_instances.filter(status="ACTIVE").get()
+        stage = stage_instance.stage
+
+        # Stand in for whatever replaces or joins RBAC_PERMISSION later.
+        stage.approver_source = "GROUP_MEMBERSHIP"
+        stage.approver_permission_key = ""
+        stage.save(update_fields=["approver_source", "approver_permission_key"])
+
+        cache = ResolutionCache()
+        self.assertTrue(
+            cache.has_candidates(stage, instance),
+            "an unrecognised approver source was written off without resolving it",
+        )
+
+    def test_a_permission_stage_with_no_key_is_not_written_off(self):
+        """Misconfigured is not the same as unstaffable; let the resolver decide."""
+        from vs_workflow.services.parking import ResolutionCache
+
+        self._seed_tenant_ladder()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        stage = instance.stage_instances.filter(status="ACTIVE").get().stage
+        stage.approver_permission_key = ""
+        stage.save(update_fields=["approver_permission_key"])
+
+        self.assertTrue(ResolutionCache().has_candidates(stage, instance))
+
+    def test_the_warning_always_says_how_to_fix_it(self):
+        """`requirement` is what the dialog renders, so it can never come back blank."""
+        from vs_workflow.services import release
+
+        self._seed_tenant_ladder()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        stage = instance.stage_instances.filter(status="ACTIVE").get().stage
+
+        park = release.describe_park(instance)
+        self.assertEqual(park["approver_source"], "RBAC_PERMISSION")
+        self.assertIn("payments.payout_batch.approve", park["requirement"])
+
+        # An approver model this code has never seen still yields an instruction.
+        stage.approver_source = "GROUP_MEMBERSHIP"
+        stage.approver_permission_key = ""
+        stage.save(update_fields=["approver_source", "approver_permission_key"])
+        park = release.describe_park(instance)
+        self.assertTrue(park["parked"])
+        self.assertTrue(park["requirement"].strip(), "the dialog would render a blank")
+        # A key that no longer decides anything must not be shown as if it does.
+        self.assertEqual(park["permission_key"], "")
+
+    def test_an_organogram_stage_explains_itself_in_org_terms(self):
+        """Not every stage is fixed by granting a permission."""
+        from vs_workflow.services import release
+
+        self._seed_tenant_ladder()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        stage = instance.stage_instances.filter(status="ACTIVE").get().stage
+        stage.approver_source = "ORGANOGRAM"
+        stage.organogram_target = "DEPARTMENT_HEAD"
+        stage.save(update_fields=["approver_source", "organogram_target"])
+
+        park = release.describe_park(instance)
+        self.assertIn("department", park["requirement"])
+        self.assertNotIn("permission", park["requirement"])
+        self.assertEqual(park["permission_key"], "")
+
     # --- 9. continuing when nobody can approve ----------------------------- #
 
     def test_a_submitter_is_told_when_nobody_can_approve(self):
