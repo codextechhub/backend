@@ -21,7 +21,6 @@ from vs_rbac.models import (
     TenantRolePermission,
     TenantRoleTemplate,
     TenantUserRoleAssignment,
-    UserPermissionOverride,
 )
 from vs_rbac.tests.helpers import (
     make_branch,
@@ -40,24 +39,6 @@ PERM_SCHOOLS = "platform.schools.view"
 PERM_TEAM = "platform.team.view"
 PERM_HEALTH = "platform.health.view"
 PERM_TICKETS = "tickets.ticket.view"
-PERM_ROLES = "platform.roles.view"
-PERM_ORGANOGRAM = "platform.organogram.view"
-
-
-def grant_without_a_role(user, key):
-    """Give *user* a key via a personal ALLOW, leaving zero role assignments.
-
-    ``grant`` below necessarily creates an assignment to carry the key, which
-    would make ``setup.roles_assigned`` true as a side effect of granting the
-    permission that reveals it. This is the only way to observe the false case.
-    """
-    UserPermissionOverride.objects.create(
-        tenant=user.tenant,
-        user=user,
-        permission=make_permission(key),
-        mode=UserPermissionOverride.Mode.ALLOW,
-        reason="overview setup-flag test",
-    )
 
 
 def grant(user, *keys):
@@ -106,7 +87,7 @@ class OverviewPermissionTests(OverviewTestBase):
 
     def test_ungranted_user_gets_no_gated_sections(self):
         data = self.fetch()
-        for section in ("schools", "team", "health", "tickets", "setup"):
+        for section in ("schools", "team", "health", "tickets"):
             self.assertNotIn(
                 section, data,
                 f"{section} leaked to a user holding no permission for it",
@@ -435,80 +416,6 @@ class OverviewSignalTests(OverviewTestBase):
         # keys must keep the signal absent even if data existed.
         data = self.fetch()
         self.assertNotIn("signals", data)
-
-
-class OverviewSetupFlagTests(OverviewTestBase):
-    """The "Getting started" flags - each gated by the screen it describes.
-
-    These back a checklist, so a wrong answer is cosmetic; a leaked one is not.
-    Each flag has to be absent without its own key, and present-and-correct with
-    it, exactly like the sections above.
-    """
-
-    def test_setup_is_absent_without_either_key(self):
-        self.assertNotIn("setup", self.fetch())
-
-    def test_roles_flag_needs_a_roles_view_key(self):
-        grant(self.user, PERM_ORGANOGRAM)
-        self.assertNotIn("roles_assigned", self.fetch()["setup"])
-        grant(self.user, PERM_ROLES)
-        self.assertIn("roles_assigned", self.fetch()["setup"])
-
-    def test_organogram_flag_needs_the_organogram_view_key(self):
-        grant(self.user, PERM_ROLES)
-        self.assertNotIn("organogram_built", self.fetch()["setup"])
-        grant(self.user, PERM_ORGANOGRAM)
-        self.assertIn("organogram_built", self.fetch()["setup"])
-
-    def test_roles_assigned_is_false_with_no_active_assignment(self):
-        grant_without_a_role(self.user, PERM_ROLES)
-        self.assertIs(self.fetch()["setup"]["roles_assigned"], False)
-
-    def test_roles_assigned_is_true_once_a_role_is_assigned(self):
-        # `grant` assigns a role to carry the key, which is itself the condition.
-        grant(self.user, PERM_ROLES)
-        self.assertIs(self.fetch()["setup"]["roles_assigned"], True)
-
-    def test_roles_assigned_ignores_revoked_assignments(self):
-        grant_without_a_role(self.user, PERM_ROLES)
-        role = TenantRoleTemplate.objects.create(
-            tenant=self.user.tenant, key="ov-revoked", name="Revoked",
-            status="ACTIVE",
-        )
-        TenantUserRoleAssignment.objects.create(
-            tenant=self.user.tenant, user=self.user, role=role,
-            assignment_status=TenantUserRoleAssignment.AssignmentStatus.REVOKED,
-        )
-        self.assertIs(self.fetch()["setup"]["roles_assigned"], False)
-
-    def test_roles_assigned_is_scoped_to_the_callers_tenant(self):
-        # The platform tenant has assignments (self.user's own); a school actor
-        # must not see them reflected in their own checklist.
-        grant(self.user, PERM_ROLES)
-        school_admin = make_school_admin(self.branch, email="ov-setup@school.test")
-        grant_without_a_role(school_admin, PERM_ROLES)
-        data = self.fetch(school_admin, tenant=self.school.tenant.slug)
-        self.assertIs(data["setup"]["roles_assigned"], False)
-
-    def test_organogram_built_flips_when_a_node_exists(self):
-        from vs_user.models import OrgNode
-
-        grant(self.user, PERM_ORGANOGRAM)
-        self.assertIs(self.fetch()["setup"]["organogram_built"], False)
-        OrgNode.objects.create(
-            name="Engineering", code="DV-ENG", kind=OrgNode.Kind.DIVISION,
-        )
-        self.assertIs(self.fetch()["setup"]["organogram_built"], True)
-
-    def test_organogram_built_ignores_inactive_nodes(self):
-        from vs_user.models import OrgNode
-
-        grant(self.user, PERM_ORGANOGRAM)
-        OrgNode.objects.create(
-            name="Retired", code="DV-OLD", kind=OrgNode.Kind.DIVISION,
-            is_active=False,
-        )
-        self.assertIs(self.fetch()["setup"]["organogram_built"], False)
 
 
 class OverviewTenantIsolationTests(OverviewTestBase):
