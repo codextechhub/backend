@@ -39,6 +39,8 @@ and a ``UNANIMOUS`` stage requires ``eligible_count > 0`` before it can advance 
 """
 from __future__ import annotations
 
+import logging
+
 from django.db import transaction
 from django.db.models import Exists, OuterRef
 
@@ -52,6 +54,8 @@ from vs_workflow.constants import (
 from vs_workflow.models import WorkflowStageApprover, WorkflowStageInstance
 from vs_workflow.services import approvers as approvers_service
 from vs_workflow.services import audit as audit_service
+
+logger = logging.getLogger("vs_workflow.parking")
 
 
 # --------------------------------------------------------------------------- #
@@ -249,11 +253,25 @@ def repair_stages(stage_instances, document_types=None) -> int:
     :func:`empty_active_stages`, which selects both).
     """
     cache = ResolutionCache()
-    return sum(
-        _repair_one(row.pk, cache, document_types)
-        for row in stage_instances
-        if cache.has_candidates(row.stage, row.instance)
-    )
+    repaired = 0
+    for row in stage_instances:
+        # One unrepairable stage must not abort the pass. This runs on the read
+        # path, over whatever happens to be parked in the tenant, so a single
+        # broken template (a stage naming an approver source the resolver cannot
+        # resolve, which raises by design) would otherwise take down the whole
+        # approvals inbox for everybody in that tenant. The resolver is right to
+        # raise; this sweep is best-effort and degrades to leaving the stage
+        # parked, which is the state it was already in.
+        try:
+            if not cache.has_candidates(row.stage, row.instance):
+                continue
+            repaired += _repair_one(row.pk, cache, document_types)
+        except Exception:  # noqa: BLE001 - see above
+            logger.exception(
+                "parking: could not repair stage instance %s (stage %s, source %s).",
+                row.pk, row.stage.code, row.stage.approver_source,
+            )
+    return repaired
 
 
 def repair_workflows(*, tenant=None, instance_id=None, document_types=None) -> int:

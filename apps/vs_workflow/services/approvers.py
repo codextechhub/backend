@@ -15,6 +15,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from vs_workflow.constants import ApproverScope, ApproverSource, OrganogramTarget
+from vs_workflow.exceptions import UnknownApproverSourceError
 from vs_workflow.models import ApprovalDelegation, WorkflowInstance, WorkflowStage
 
 if TYPE_CHECKING:
@@ -125,6 +126,12 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
         CX organogram relative to the requester (direct manager, N levels up,
         department head, or a specific position).
 
+    Any other source raises :class:`~vs_workflow.exceptions.UnknownApproverSourceError`
+    rather than resolving to nobody. An empty list is a legitimate answer that a
+    skip-enabled stage acts on by skipping itself, so a source this function has
+    not been taught must never be able to produce one. Adding a source means
+    adding a branch below.
+
     The requester is always excluded - they cannot approve their own submission.
     Active delegations then expand the list regardless of source: if an eligible
     approver has delegated their authority, the delegate is added on their behalf
@@ -133,14 +140,32 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     appearing twice. A delegate acting for two different delegators intentionally
     appears twice - once per delegator - because the on_behalf_of field differs.
     """
+    # Dispatch explicitly on the source, with no catch-all branch.
+    #
+    # This used to be ``if ORGANOGRAM: ... else: <assume RBAC>``, which quietly
+    # made "a source I do not recognise" mean "an RBAC stage with no permission
+    # key" and returned []. Downstream, an empty list is indistinguishable from a
+    # stage that legitimately resolved nobody, and ``routing.advance_instance``
+    # reads that as permission to skip the stage whenever
+    # ``skip_if_no_approvers`` is True, which is the model default. So a template
+    # naming a source this resolver had not been taught would not park: it would
+    # silently skip its own approval and let the document through unreviewed.
+    #
+    # Raising instead makes a misconfigured template fail loudly at submission,
+    # where somebody can fix it, rather than quietly at the point it matters
+    # most. Adding a new source means adding a branch here; forgetting to is now
+    # impossible to miss.
     if stage.approver_source == ApproverSource.ORGANOGRAM:
         # Organogram approvers are already relative to the requester; still exclude self-approval.
         base_users = [
             u for u in _organogram_base_users(stage, instance)
             if u and u.pk != instance.requested_by_id
         ]
-    else:
+    elif stage.approver_source == ApproverSource.RBAC_PERMISSION:
         if not stage.approver_permission_key:
+            # A genuine, resolvable answer: this stage resolves by permission and
+            # names none, so it has no approvers. Distinct from the unknown-source
+            # case below, which is a broken template rather than an empty result.
             return []
         # RBAC approvers are resolved at activation time and then frozen.
         base_qs = _users_with_permission(
@@ -151,6 +176,11 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
         )
         base_qs = base_qs.exclude(pk=instance.requested_by_id)
         base_users = list(base_qs.distinct())
+    else:
+        raise UnknownApproverSourceError(
+            f"Stage '{stage.code}' names approver source "
+            f"'{stage.approver_source}', which this engine cannot resolve.",
+        )
 
     base_ids = {u.pk for u in base_users}
 

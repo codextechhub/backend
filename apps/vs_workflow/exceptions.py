@@ -38,6 +38,17 @@ class UnknownOperatorError(WorkflowError):
     default_message = "A condition used an unsupported operator."
 
 
+# Raised when a stage names an approver source the resolver cannot resolve.
+# Deliberately an error rather than an empty approver list: "nobody could be
+# resolved" and "this stage is misconfigured" look identical downstream, and a
+# stage with skip_if_no_approvers=True (the model default) treats the former as
+# permission to skip itself. Returning [] for an unrecognised source would
+# therefore let a configuration mistake silently approve spend.
+class UnknownApproverSourceError(WorkflowError):
+    error_code = "UNKNOWN_APPROVER_SOURCE"
+    default_message = "This stage names an approver source the engine cannot resolve."
+
+
 # Raised when no document handler is registered for the submitted document type.
 class UnknownDocumentTypeError(WorkflowError):
     error_code = "UNKNOWN_DOCUMENT_TYPE"

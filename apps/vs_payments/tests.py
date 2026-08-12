@@ -1672,6 +1672,69 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertNotIn("permission", park["requirement"])
         self.assertEqual(park["permission_key"], "")
 
+    def test_an_unknown_source_cannot_silently_skip_its_own_approval(self):
+        """The dangerous half: a broken template must not approve spend by itself.
+
+        `skip_if_no_approvers` defaults to True, and routing skips a stage that
+        resolves to nobody. So a resolver that answered "no approvers" for a source
+        it did not recognise would let a configuration mistake wave a payout through
+        unreviewed. An unrecognised source has to raise instead.
+        """
+        from vs_workflow.exceptions import UnknownApproverSourceError
+        from vs_workflow.services import approvers as approvers_service
+
+        self._seed_tenant_ladder()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        stage = instance.stage_instances.filter(status="ACTIVE").get().stage
+        stage.approver_source = "GROUP_MEMBERSHIP"
+        stage.skip_if_no_approvers = True  # The model default, and the risky one.
+        stage.save(update_fields=["approver_source", "skip_if_no_approvers"])
+
+        with self.assertRaises(UnknownApproverSourceError):
+            approvers_service.resolve_approvers(stage, instance)
+
+    def test_one_broken_template_does_not_break_everyone_else_s_inbox(self):
+        """The resolver raises by design; the read path must survive it.
+
+        The repair runs on every approvals-queue read, over whatever is parked in
+        the tenant. If an unresolvable stage propagated out of it, one team's
+        misconfigured template would take the approvals inbox down for everybody.
+        """
+        import logging
+        from vs_workflow.services import my_queue, parking
+
+        self._seed_tenant_ladder()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        stage = instance.stage_instances.filter(status="ACTIVE").get().stage
+        stage.approver_source = "GROUP_MEMBERSHIP"
+        stage.save(update_fields=["approver_source"])
+
+        logging.disable(logging.CRITICAL)  # The sweep logs the traceback by design.
+        self.addCleanup(logging.disable, logging.NOTSET)
+
+        # Both the sweep and the queue read it powers stay standing.
+        self.assertEqual(parking.repair_workflows(tenant=self.school.tenant), 0)
+        self.assertEqual(
+            my_queue.pending_approval_snapshots(self.requester, self.school), [])
+
+    def test_a_permission_stage_with_no_key_still_resolves_to_nobody(self):
+        """Not every empty answer is a misconfiguration; this one is legitimate."""
+        from vs_workflow.services import approvers as approvers_service
+
+        self._seed_tenant_ladder()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        stage = instance.stage_instances.filter(status="ACTIVE").get().stage
+        stage.approver_permission_key = ""
+        stage.save(update_fields=["approver_permission_key"])
+
+        self.assertEqual(approvers_service.resolve_approvers(stage, instance), [])
+
     # --- 9. continuing when nobody can approve ----------------------------- #
 
     def test_a_submitter_is_told_when_nobody_can_approve(self):
