@@ -153,6 +153,7 @@ class AdvanceInstanceTests(TestCase):
 # ── Approvers ─────────────────────────────────────────────────────────────────
 
 class ResolveApproversTests(TestCase):
+    """Behaviour shared by every source: no approvers, and delegation."""
 
     def setUp(self):
         self.requester = _make_user("req@test.com")
@@ -169,81 +170,16 @@ class ResolveApproversTests(TestCase):
             submitted_at=timezone.now(),
         )
 
-    def test_no_permission_key_returns_empty(self):
+    def test_stage_with_no_role_key_returns_empty(self):
         stage = _make_stage(self.template)
-        stage.approver_permission_key = ""
-        stage.save(update_fields=["approver_permission_key"])
-        result = resolve_approvers(stage, self.instance)
-        self.assertEqual(result, [])
+        self.assertEqual(stage.approver_source, "ROLE")
+        self.assertEqual(resolve_approvers(stage, self.instance), [])
 
-    def test_requester_excluded_from_approvers(self):
-        stage = _make_stage(self.template)
-        stage.approver_permission_key = "workflow.instance.submit"
-        stage.approver_scope = "PLATFORM"
-        stage.save(update_fields=["approver_permission_key", "approver_scope"])
-        mock_qs = MagicMock()
-        # .exclude() returns a mock whose .distinct() returns empty list
-        mock_qs.exclude.return_value.distinct.return_value = []
-        with patch("vs_workflow.services.approvers._users_with_permission",
-                   return_value=mock_qs), \
-             patch("vs_workflow.services.approvers.ApprovalDelegation.objects") as mock_del:
-            mock_del.filter.return_value.filter.return_value.exclude.return_value\
-                .select_related.return_value = []
-            result = resolve_approvers(stage, self.instance)
-        self.assertEqual(result, [])
-
-    def test_eligible_approver_included(self):
-        approver = _make_user("aprv@test.com")
-        stage = _make_stage(self.template)
-        stage.approver_permission_key = "workflow.instance.submit"
-        stage.approver_scope = "PLATFORM"
-        stage.save(update_fields=["approver_permission_key", "approver_scope"])
-
-        mock_qs = MagicMock()
-        mock_qs.exclude.return_value = mock_qs
-        mock_qs.distinct.return_value = [approver]
-
-        with patch("vs_workflow.services.approvers._users_with_permission",
-                   return_value=mock_qs), \
-             patch("vs_workflow.services.approvers.ApprovalDelegation.objects") as mock_del:
-            mock_del.filter.return_value.filter.return_value.exclude.return_value\
-                .select_related.return_value = []
-            result = resolve_approvers(stage, self.instance)
-
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].user, approver)
-        self.assertIsNone(result[0].on_behalf_of)
-
-    def test_exclusive_delegation_removes_delegator(self):
-        """When a delegation is exclusive the delegator must not appear alongside the delegate."""
-        delegator  = _make_user("delgtr@test.com")
-        delegate   = _make_user("delgte@test.com")
-        stage = _make_stage(self.template)
-        stage.approver_permission_key = "workflow.instance.submit"
-        stage.approver_scope = "PLATFORM"
-        stage.save(update_fields=["approver_permission_key", "approver_scope"])
-
-        mock_qs = MagicMock()
-        mock_qs.exclude.return_value = mock_qs
-        mock_qs.distinct.return_value = [delegator]
-
-        mock_delegation = MagicMock()
-        mock_delegation.delegator_id  = delegator.pk
-        mock_delegation.delegate_id   = delegate.pk
-        mock_delegation.delegator     = delegator
-        mock_delegation.delegate      = delegate
-        mock_delegation.exclusive     = True
-
-        with patch("vs_workflow.services.approvers._users_with_permission",
-                   return_value=mock_qs), \
-             patch("vs_workflow.services.approvers.ApprovalDelegation.objects") as mock_del:
-            mock_del.filter.return_value.filter.return_value.exclude.return_value\
-                .select_related.return_value = [mock_delegation]
-            result = resolve_approvers(stage, self.instance)
-
-        user_ids = [r.user.pk for r in result]
-        self.assertIn(delegate.pk, user_ids)
-        self.assertNotIn(delegator.pk, user_ids)
+    def test_unknown_role_key_returns_empty(self):
+        stage = _make_stage(self.template, code="unknown-role")
+        stage.approver_role_key = "no-such-role"
+        stage.save(update_fields=["approver_role_key"])
+        self.assertEqual(resolve_approvers(stage, self.instance), [])
 
 
 # ── EligibleApprover dataclass ────────────────────────────────────────────────
@@ -379,11 +315,14 @@ class RoleSourceResolveApproversTests(TestCase):
         self.instance = _make_instance(self.template, self.requester)
 
     def _role_stage(self, role=None, scope="SCHOOL", code="role-stage"):
+        role = role if role is not None else self.role
         stage = _make_stage(self.template, code=code)
         stage.approver_source = "ROLE"
-        stage.approver_role = role if role is not None else self.role
+        stage.approver_role_key = role.key
+        stage.approver_role = role
         stage.approver_scope = scope
-        stage.save(update_fields=["approver_source", "approver_role", "approver_scope"])
+        stage.save(update_fields=["approver_source", "approver_role_key",
+                                  "approver_role", "approver_scope"])
         return stage
 
     def _assign(self, user, role=None, **kwargs):
@@ -430,6 +369,27 @@ class RoleSourceResolveApproversTests(TestCase):
         stage.approver_source = "ROLE"
         stage.save(update_fields=["approver_source"])
         self.assertEqual(resolve_approvers(stage, self.instance), [])
+
+    def test_role_key_resolves_in_the_requesting_tenant(self):
+        """A central stage names a key; each tenant resolves its own role."""
+        from vs_rbac.tests.helpers import make_assignment, make_role
+        ours = _make_active_user("key-ours@test.com")
+        self._assign(ours)
+        # Another tenant has a same-keyed role with a different holder.
+        from vs_rbac.tests.helpers import make_branch, make_school
+        other_school = make_school(slug="key-other")
+        other_role = make_role(other_school.tenant, name="Bursar", key=self.role.key)
+        theirs = _make_user_in_branch("key-theirs@test.com", make_branch(other_school))
+        make_assignment(other_school.tenant, theirs, other_role)
+
+        # Key only, no FK - exactly how a central template stores it.
+        stage = _make_stage(self.template, code="key-only")
+        stage.approver_source = "ROLE"
+        stage.approver_role_key = self.role.key
+        stage.save(update_fields=["approver_source", "approver_role_key"])
+
+        result = resolve_approvers(stage, self.instance)
+        self.assertEqual([e.user.pk for e in result], [ours.pk])
 
     def test_other_tenant_assignment_not_eligible(self):
         """A same-key role in another tenant never leaks approvers across tenants."""
@@ -526,9 +486,10 @@ class PublishRoleStageTests(TestCase):
             stages_payload=[stage],
         )
 
-    def test_role_key_resolved_to_fk(self):
+    def test_role_key_stored_and_anchored(self):
         t = self._publish()
         stage = t.stages.get(code="s1")
+        self.assertEqual(stage.approver_role_key, "finance-officer")
         self.assertEqual(stage.approver_role_id, self.role.pk)
         self.assertEqual(stage.approver_source, "ROLE")
 
@@ -548,14 +509,17 @@ class PublishRoleStageTests(TestCase):
         with self.assertRaises(TemplateInvalidError):
             self._publish()
 
-    def test_global_template_cannot_use_role_stage(self):
-        with self.assertRaises(TemplateInvalidError):
-            self._publish(tenant=None)
+    def test_central_template_keeps_the_role_key_without_a_tenant(self):
+        """A central template names the key; there is no tenant to anchor to."""
+        t = self._publish(tenant=None)
+        stage = t.stages.get(code="s1")
+        self.assertEqual(stage.approver_role_key, "finance-officer")
+        self.assertIsNone(stage.approver_role_id)
 
     def test_non_role_stage_ignores_role_key(self):
         """approver_role stays empty unless the stage opts into the ROLE source."""
-        t = self._publish({"approver_source": "RBAC_PERMISSION",
-                           "approver_permission_key": "x.y.z"})
+        t = self._publish({"approver_source": "ORGANOGRAM",
+                           "organogram_target": "DIRECT_MANAGER"})
         self.assertIsNone(t.stages.get(code="s1").approver_role_id)
 
 
@@ -866,7 +830,8 @@ class DynamicRoleResolveTests(TestCase):
         stage.save(update_fields=["approver_source", "approver_scope"])
         for i, (condition, role) in enumerate(rules):
             WorkflowStageDynamicRule.objects.create(
-                stage=stage, order=i, condition=condition, role=role)
+                stage=stage, order=i, condition=condition,
+                role_key=role.key, role=role)
         return stage
 
     def _instance_with(self, document):
@@ -970,7 +935,7 @@ class DynamicRoleResolveTests(TestCase):
             (None, self.bursar_role),
         ])
         rule, evaluations = match_dynamic_rule(stage, {"amount": 250000})
-        self.assertEqual(rule.role_id, self.bursar_role.pk)
+        self.assertEqual(rule.role_key, self.bursar_role.key)
         # The first rule was tried and rejected; evaluation stops at the match.
         self.assertEqual([e["picked"] for e in evaluations], [False, True])
         self.assertEqual(evaluations[0]["trace"]["result"], False)
@@ -1050,9 +1015,11 @@ class PublishDynamicRoleTests(TestCase):
                  "condition": {"op": "gte", "field": "amount", "value": 1}},
             ])
 
-    def test_global_template_cannot_use_dynamic_role(self):
-        with self.assertRaises(TemplateInvalidError):
-            self._publish([{"role_key": "bursar", "condition": None}], tenant=None)
+    def test_central_template_keeps_dynamic_role_keys(self):
+        t = self._publish([{"role_key": "bursar", "condition": None}], tenant=None)
+        rule = t.stages.get(code="s1").dynamic_rules.get()
+        self.assertEqual(rule.role_key, "bursar")
+        self.assertIsNone(rule.role_id)
 
     def test_switching_source_away_drops_stale_rules(self):
         from vs_workflow.models import WorkflowStageDynamicRule
@@ -1087,3 +1054,119 @@ class PublishDynamicRoleTests(TestCase):
                 stages_payload=[{"code": "a", "label": "A", "order": 1,
                                  "inclusion_condition": {"op": "nope", "field": "x"}}],
             )
+
+
+# ── Tenant overrides on a central stage ──────────────────────────────────────
+
+class StageApproverOverrideTests(TestCase):
+    """A tenant repoints one step of a shared central template."""
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import make_assignment, make_branch, make_role, make_school
+        self.school = make_school(slug="ovr-school")
+        self.branch = make_branch(self.school)
+        self.tenant = self.school.tenant
+        self.requester = _make_user_in_branch("ovr-req@test.com", self.branch)
+
+        # A central template: no tenant, names its approver by key.
+        self.template = WorkflowTemplate.all_objects.create(
+            tenant=None, document_type="OVR_DOC", code="central", name="Central")
+        self.stage = _make_stage(self.template, code="approval")
+        self.stage.approver_source = "ROLE"
+        self.stage.approver_role_key = "central-approver"
+        self.stage.save(update_fields=["approver_source", "approver_role_key"])
+
+        self.central_role = make_role(self.tenant, name="Central Approver",
+                                      key="central-approver")
+        self.default_approver = _make_user_in_branch("ovr-default@test.com", self.branch)
+        make_assignment(self.tenant, self.default_approver, self.central_role)
+
+        self.instance = _make_instance(self.template, self.requester)
+        self.instance.branch = self.branch
+        self.instance.save(update_fields=["branch"])
+
+    def _override(self, **kwargs):
+        from vs_workflow.models import WorkflowStageApproverOverride
+        return WorkflowStageApproverOverride.objects.create(
+            tenant=self.tenant, stage=self.stage, **kwargs)
+
+    def test_without_an_override_the_central_role_applies(self):
+        result = resolve_approvers(self.stage, self.instance)
+        self.assertEqual([e.user.pk for e in result], [self.default_approver.pk])
+
+    def test_override_to_another_role_wins(self):
+        from vs_rbac.tests.helpers import make_assignment, make_role
+        ours = make_role(self.tenant, name="Our Approver", key="our-approver")
+        chosen = _make_user_in_branch("ovr-chosen@test.com", self.branch)
+        make_assignment(self.tenant, chosen, ours)
+        self._override(approver_source="ROLE", approver_role_key="our-approver")
+
+        result = resolve_approvers(self.stage, self.instance)
+        self.assertEqual([e.user.pk for e in result], [chosen.pk])
+
+    def test_override_to_a_group_wins(self):
+        from vs_workflow.models import WorkflowApproverGroup, WorkflowApproverGroupMember
+        group = WorkflowApproverGroup.objects.create(
+            tenant=self.tenant, code="ovr-group", name="Our Committee")
+        member = _make_user_in_branch("ovr-committee@test.com", self.branch)
+        WorkflowApproverGroupMember.objects.create(
+            group=group, kind="USER", user=member)
+        self._override(approver_source="WORKFLOW_GROUP", approver_group=group)
+
+        result = resolve_approvers(self.stage, self.instance)
+        self.assertEqual([e.user.pk for e in result], [member.pk])
+
+    def test_override_is_scoped_to_its_own_tenant(self):
+        """Another tenant on the same central stage keeps the default."""
+        from vs_rbac.tests.helpers import (
+            make_assignment, make_branch, make_role, make_school)
+        self._override(approver_source="ROLE", approver_role_key="our-approver")
+
+        other = make_school(slug="ovr-other")
+        other_branch = make_branch(other)
+        other_requester = _make_user_in_branch("ovr-other-req@test.com", other_branch)
+        other_role = make_role(other.tenant, name="Central Approver",
+                               key="central-approver")
+        other_approver = _make_user_in_branch("ovr-other-apr@test.com", other_branch)
+        make_assignment(other.tenant, other_approver, other_role)
+
+        other_instance = _make_instance(self.template, other_requester)
+        result = resolve_approvers(self.stage, other_instance)
+        self.assertEqual([e.user.pk for e in result], [other_approver.pk])
+
+    def test_override_still_excludes_the_requester(self):
+        from vs_rbac.tests.helpers import make_assignment, make_role
+        ours = make_role(self.tenant, name="Our Approver", key="our-approver")
+        make_assignment(self.tenant, self.requester, ours)
+        self._override(approver_source="ROLE", approver_role_key="our-approver")
+        self.assertEqual(resolve_approvers(self.stage, self.instance), [])
+
+    def test_override_still_expands_delegation(self):
+        from vs_rbac.tests.helpers import make_assignment, make_role
+        from vs_workflow.models import ApprovalDelegation
+        ours = make_role(self.tenant, name="Our Approver", key="our-approver")
+        approver = _make_user_in_branch("ovr-delegator@test.com", self.branch)
+        delegate = _make_user_in_branch("ovr-delegate@test.com", self.branch)
+        make_assignment(self.tenant, approver, ours)
+        now = timezone.now()
+        ApprovalDelegation.objects.create(
+            tenant=self.tenant, delegator=approver, delegate=delegate,
+            starts_at=now - timezone.timedelta(hours=1),
+            ends_at=now + timezone.timedelta(hours=1))
+        self._override(approver_source="ROLE", approver_role_key="our-approver")
+
+        pairs = {(e.user.pk, e.on_behalf_of.pk if e.on_behalf_of else None)
+                 for e in resolve_approvers(self.stage, self.instance)}
+        self.assertEqual(pairs, {(approver.pk, None), (delegate.pk, approver.pk)})
+
+    def test_one_override_per_tenant_per_stage(self):
+        from django.db.utils import IntegrityError
+        self._override(approver_source="ROLE", approver_role_key="our-approver")
+        with self.assertRaises(IntegrityError):
+            self._override(approver_source="ROLE", approver_role_key="another")
+
+    def test_override_target_must_match_its_source(self):
+        from django.db.utils import IntegrityError
+        with self.assertRaises(IntegrityError):
+            # ROLE source with no role key is not a usable override.
+            self._override(approver_source="ROLE", approver_role_key="")

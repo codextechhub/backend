@@ -24,7 +24,7 @@ from vs_workflow.constants import (
 )
 from vs_workflow.models import (
     ApprovalDelegation, WorkflowApproverGroup, WorkflowApproverGroupMember,
-    WorkflowInstance, WorkflowStage, WorkflowStageAction,
+    WorkflowInstance, WorkflowStage, WorkflowStageAction, WorkflowStageApproverOverride,
     WorkflowStageApprover, WorkflowStageInstance, WorkflowTemplate,
 )
 from vs_workflow.serializers import (
@@ -32,6 +32,7 @@ from vs_workflow.serializers import (
     CancelInstanceSerializer, ReverseActionSerializer,
     StageActionWriteSerializer, SubmitForApprovalSerializer,
     WorkflowApproverGroupMemberWriteSerializer, WorkflowApproverGroupSerializer,
+    WorkflowStageApproverOverrideSerializer,
     WorkflowInstanceDetailSerializer, WorkflowInstanceListSerializer,
     WorkflowTemplatePublishSerializer, WorkflowTemplateReadSerializer,
 )
@@ -181,7 +182,7 @@ class WorkflowTemplateViewSet(
             approver_source=d["approver_source"],
             organogram_target=d.get("organogram_target", "") or "",
             organogram_levels=d.get("organogram_levels", 1) or 1,
-            approver_permission_key=d.get("approver_permission_key", "") or "",
+            approver_role_key=d.get("approver_role_key", "") or "",
             approver_scope=d.get("approver_scope"),
         )
         if d["approver_source"] == ApproverSource.ORGANOGRAM and \
@@ -193,18 +194,17 @@ class WorkflowTemplateViewSet(
                 stage.organogram_position = None
         if d["approver_source"] == ApproverSource.ROLE:
             from vs_rbac.models import TenantRoleTemplate
-            role = TenantRoleTemplate.objects.filter(
+            exists = TenantRoleTemplate.objects.filter(
                 tenant=requester.tenant, key=d["approver_role_key"],
                 status=TenantRoleTemplate.Status.ACTIVE,
-            ).first()
-            if role is None:
+            ).exists()
+            if not exists:
                 # A mistyped role key deserves loud feedback in the builder,
                 # not a silent empty approver list.
                 return Response(
                     {"detail": f"No active role with key '{d['approver_role_key']}' "
                                "exists in this tenant."},
                     status=status.HTTP_404_NOT_FOUND)
-            stage.approver_role = role
         if d["approver_source"] == ApproverSource.WORKFLOW_GROUP:
             group = WorkflowApproverGroup.all_objects.filter(
                 tenant=requester.tenant, code=d["approver_group_code"], is_active=True,
@@ -578,6 +578,45 @@ class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
             raise NotFound("Member not found.")
         member.delete()
         return Response(self.get_serializer(group).data)
+
+
+# ── Stage approver overrides ──────────────────────────────────────────────────
+
+class WorkflowStageApproverOverrideViewSet(TenantScopedMixin, ModelViewSet):
+    """A tenant's own approver choices on stages it did not author.
+
+    Central templates are published once and shared. Rather than cloning one to
+    change a single approver, a tenant records an override here and the engine
+    consults it at activation. Removing the override restores the template's
+    own approver.
+
+    docstring-name: Workflow stage approver overrides
+    """
+    serializer_class = WorkflowStageApproverOverrideSerializer
+
+    def get_permissions(self):
+        # Repointing an approval step is a template-level decision, so it takes
+        # template manage rights rather than the lighter group rights.
+        self.rbac_permission = (
+            PERM_TEMPLATE_VIEW if self.action in ("list", "retrieve")
+            else PERM_TEMPLATE_MANAGE
+        )
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get_serializer_context(self):
+        return super().get_serializer_context() | {"tenant": self.get_tenant()}
+
+    def get_queryset(self):
+        qs = (WorkflowStageApproverOverride.all_objects
+              .filter(tenant=self.get_tenant())
+              .select_related("stage__template", "approver_group"))
+        if self.request.query_params.get("document_type"):
+            qs = qs.filter(
+                stage__template__document_type=self.request.query_params["document_type"])
+        return qs.order_by("stage__template__document_type", "stage__order")
+
+    def perform_create(self, serializer):
+        serializer.save(tenant=self.get_tenant(), created_by=self.request.user)
 
 
 # ── Delegations ───────────────────────────────────────────────────────────────

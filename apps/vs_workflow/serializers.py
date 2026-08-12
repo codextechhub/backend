@@ -7,7 +7,7 @@ from vs_workflow.constants import (
 )
 from vs_workflow.models import (
     ApprovalDelegation, WorkflowApproverGroup, WorkflowApproverGroupMember,
-    WorkflowStageDynamicRule,
+    WorkflowStageApproverOverride, WorkflowStageDynamicRule,
     WorkflowAuditLog, WorkflowInstance,
     WorkflowRoutePath, WorkflowStage, WorkflowStageAction,
     WorkflowStageApprover, WorkflowStageInstance, WorkflowTemplate,
@@ -15,8 +15,7 @@ from vs_workflow.models import (
 
 
 class WorkflowStageDynamicRuleReadSerializer(serializers.ModelSerializer):
-    role_key  = serializers.CharField(source="role.key",  read_only=True)
-    role_name = serializers.CharField(source="role.name", read_only=True)
+    role_name = serializers.CharField(source="role.name", read_only=True, default=None)
     is_fallback = serializers.BooleanField(read_only=True)
 
     class Meta:
@@ -28,9 +27,6 @@ class WorkflowStageDynamicRuleReadSerializer(serializers.ModelSerializer):
 class WorkflowStageReadSerializer(serializers.ModelSerializer):
     organogram_position_code = serializers.CharField(
         source="organogram_position.code", read_only=True, default=None,
-    )
-    approver_role_key = serializers.CharField(
-        source="approver_role.key", read_only=True, default=None,
     )
     approver_role_name = serializers.CharField(
         source="approver_role.name", read_only=True, default=None,
@@ -50,7 +46,7 @@ class WorkflowStageReadSerializer(serializers.ModelSerializer):
         fields = [
             "id", "code", "label", "kind", "order",
             "approver_source",
-            "approver_permission_key", "approver_scope",
+            "approver_scope",
             "approver_role_key", "approver_role_name",
             "approver_group_code", "approver_group_name",
             "dynamic_role_rules",
@@ -137,9 +133,10 @@ class WorkflowTemplatePublishSerializer(serializers.Serializer):
                         f"Stage '{label}': organogram_position_code is required "
                         f"when organogram_target is SPECIFIC_POSITION."
                     )
-            # A ROLE stage must name the tenant role it resolves; existence of
-            # the role is checked tenant-aware in the publish service.
-            if s.get("approver_source") == ApproverSource.ROLE.value and not s.get("approver_role_key"):
+            # A ROLE stage must name the role it resolves; existence is checked
+            # tenant-aware in the publish service (central stages cannot be).
+            if s.get("approver_source", ApproverSource.ROLE.value) == ApproverSource.ROLE.value \
+                    and not s.get("approver_role_key"):
                 raise serializers.ValidationError(
                     f"Stage '{label}': approver_role_key is required when "
                     f"approver_source is ROLE."
@@ -273,8 +270,10 @@ class ApproverPreviewRequestSerializer(serializers.Serializer):
 
     requester = serializers.CharField(help_text="User id of the sample requester.")
     approver_source = serializers.ChoiceField(
-        choices=ApproverSource.choices, default=ApproverSource.RBAC_PERMISSION,
+        choices=ApproverSource.choices, default=ApproverSource.ROLE,
     )
+    # ROLE config - a role *key*, resolved inside the requester's tenant.
+    approver_role_key = serializers.CharField(required=False, allow_blank=True, default="")
     # ORGANOGRAM config
     organogram_target = serializers.ChoiceField(
         choices=OrganogramTarget.choices, required=False, allow_blank=True, default="",
@@ -282,14 +281,9 @@ class ApproverPreviewRequestSerializer(serializers.Serializer):
     organogram_levels = serializers.IntegerField(required=False, min_value=1, default=1)
     # A Position *code* (matches the publish payload's organogram_position_code).
     organogram_position_code = serializers.CharField(required=False, allow_blank=True, default="")
-    # RBAC config
-    approver_permission_key = serializers.CharField(required=False, allow_blank=True, default="")
     approver_scope = serializers.ChoiceField(
         choices=ApproverScope.choices, required=False, default=ApproverScope.PLATFORM,
     )
-    # ROLE config - a TenantRoleTemplate *key* (matches the publish payload's
-    # approver_role_key).
-    approver_role_key = serializers.CharField(required=False, allow_blank=True, default="")
     # WORKFLOW_GROUP config - an approver group *code*.
     approver_group_code = serializers.CharField(required=False, allow_blank=True, default="")
     # DYNAMIC_ROLE config: the rules to try, plus the sample document to try
@@ -321,9 +315,9 @@ class ApproverPreviewRequestSerializer(serializers.Serializer):
             if not attrs.get("dynamic_role_rules"):
                 raise serializers.ValidationError(
                     {"dynamic_role_rules": "Required when approver_source is DYNAMIC_ROLE."})
-        elif not attrs.get("approver_permission_key"):
+        elif not attrs.get("approver_role_key"):
             raise serializers.ValidationError(
-                {"approver_permission_key": "Required when approver_source is RBAC_PERMISSION."})
+                {"approver_role_key": "Required when approver_source is ROLE."})
         return attrs
 
 
@@ -453,4 +447,77 @@ class WorkflowApproverGroupMemberWriteSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     {"position_code": "No active position with that code exists."})
             attrs["resolved_target"] = position
+        return attrs
+
+
+class WorkflowStageApproverOverrideSerializer(serializers.ModelSerializer):
+    """A tenant's own approver for one stage of a template it did not author."""
+
+    stage_code     = serializers.CharField(source="stage.code",  read_only=True)
+    stage_label    = serializers.CharField(source="stage.label", read_only=True)
+    template_code  = serializers.CharField(source="stage.template.code", read_only=True)
+    document_type  = serializers.CharField(source="stage.template.document_type",
+                                           read_only=True)
+    is_central     = serializers.SerializerMethodField()
+    approver_group_code = serializers.CharField(
+        source="approver_group.code", read_only=True, default=None)
+
+    class Meta:
+        model = WorkflowStageApproverOverride
+        fields = [
+            "id", "stage", "stage_code", "stage_label", "template_code",
+            "document_type", "is_central",
+            "approver_source", "approver_role_key",
+            "approver_group", "approver_group_code",
+            "note", "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def get_is_central(self, obj):
+        return obj.stage.template.tenant_id is None
+
+    def validate(self, attrs):
+        tenant = self.context["tenant"]
+        source = attrs.get("approver_source",
+                           getattr(self.instance, "approver_source", None))
+        role_key = attrs.get("approver_role_key",
+                             getattr(self.instance, "approver_role_key", ""))
+        group = attrs.get("approver_group",
+                          getattr(self.instance, "approver_group", None))
+        stage = attrs.get("stage", getattr(self.instance, "stage", None))
+
+        # Only the two sources a tenant can meaningfully choose between. The
+        # organogram and dynamic rules belong to whoever authored the template.
+        if source not in (ApproverSource.ROLE, ApproverSource.WORKFLOW_GROUP):
+            raise serializers.ValidationError({
+                "approver_source": "An override may be ROLE or WORKFLOW_GROUP."})
+
+        if source == ApproverSource.ROLE:
+            if not role_key:
+                raise serializers.ValidationError({
+                    "approver_role_key": "Required when approver_source is ROLE."})
+            from vs_rbac.models import TenantRoleTemplate
+            if not TenantRoleTemplate.objects.filter(
+                    tenant=tenant, key=role_key,
+                    status=TenantRoleTemplate.Status.ACTIVE).exists():
+                raise serializers.ValidationError({
+                    "approver_role_key":
+                        "No active role with that key exists in your tenant."})
+            attrs["approver_group"] = None
+        else:
+            if group is None:
+                raise serializers.ValidationError({
+                    "approver_group": "Required when approver_source is WORKFLOW_GROUP."})
+            if group.tenant_id != tenant.pk:
+                raise serializers.ValidationError({
+                    "approver_group": "That approver group belongs to another tenant."})
+            attrs["approver_role_key"] = ""
+
+        # A tenant may only repoint a stage it can actually reach: one on a
+        # central template, or on a template it owns.
+        if stage is not None:
+            owner = stage.template.tenant_id
+            if owner is not None and owner != tenant.pk:
+                raise serializers.ValidationError({
+                    "stage": "That stage belongs to another tenant's template."})
         return attrs

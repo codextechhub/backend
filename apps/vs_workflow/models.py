@@ -240,10 +240,13 @@ class WorkflowStage(models.Model):
         code: Unique slug within the template (e.g. ``line-manager``, ``finance``).
         kind: ``APPROVAL`` or ``BRANCH``. BRANCH stages are auto-skipped by the engine.
         order: Ascending integer used for linear routing when no routes are defined.
-        approver_permission_key: RBAC permission key used to resolve eligible approvers.
-        approver_scope: ``BRANCH``, ``SCHOOL``, or ``PLATFORM`` - narrows the RBAC/role lookup.
-        approver_role: Named tenant role whose active assignees approve this stage
-            (only used when ``approver_source`` is ``ROLE``).
+        approver_scope: ``BRANCH``, ``SCHOOL``, or ``PLATFORM`` - narrows the role lookup.
+        approver_role_key: Key of the role whose active assignees approve this stage
+            (``ROLE`` source). Stored as a key rather than a foreign key so a
+            central template can name the same authority in every tenant.
+        approver_role: The resolved role, set only when the template belongs to a
+            tenant. It is the referential anchor (PROTECT); resolution goes
+            through the key so central templates work the same way.
         approver_group: Named approver group whose resolved membership approves this
             stage (only used when ``approver_source`` is ``WORKFLOW_GROUP``).
         advance_rule: ``UNANIMOUS``, ``QUORUM``, or ``ANY`` - how many approvals advance the stage.
@@ -261,22 +264,22 @@ class WorkflowStage(models.Model):
     kind = models.CharField(max_length=20, choices=StageKind.choices, default=StageKind.APPROVAL)
     order = models.PositiveIntegerField(default=0)
     # ── Approver resolution strategy ────────────────────────────────────────
-    # RBAC_PERMISSION (default) uses approver_permission_key + approver_scope.
-    # ORGANOGRAM is an additive, opt-in strategy that climbs the CX organogram
-    # relative to the requester (see the organogram_* fields below). ROLE points
-    # at a named tenant role (approver_role) and resolves its active assignees.
-    # The strategies are mutually exclusive; the existing RBAC path is unchanged
-    # when source is left at its default.
+    # ROLE (default) names a role by key and resolves its holders inside the
+    # tenant that raised the request. WORKFLOW_GROUP points at a named approver
+    # group; DYNAMIC_ROLE lets the document choose the role; ORGANOGRAM climbs
+    # the CX organogram relative to the requester. Mutually exclusive per stage.
     approver_source = models.CharField(
         max_length=20, choices=ApproverSource.choices,
-        default=ApproverSource.RBAC_PERMISSION,
+        default=ApproverSource.ROLE,
     )
-    approver_permission_key = models.CharField(max_length=150, blank=True, default="")
     approver_scope = models.CharField(max_length=20, choices=ApproverScope.choices,
                                       default=ApproverScope.SCHOOL)
     # ── Role config (only used when approver_source == ROLE) ──────────────────
-    # PROTECT so a role referenced by an approval stage cannot be deleted out
-    # from under the template; archive the role or repoint the stage first.
+    # The key is what resolution reads, because a central (tenant-less) template
+    # has to name the same authority in every tenant that uses it. The FK is set
+    # only for tenant-scoped templates, where it adds referential integrity:
+    # PROTECT stops a role being deleted out from under a live stage.
+    approver_role_key = models.SlugField(max_length=120, blank=True, default="")
     approver_role = models.ForeignKey(
         "vs_rbac.TenantRoleTemplate", on_delete=models.PROTECT,
         null=True, blank=True, related_name="workflow_stages",
@@ -325,6 +328,74 @@ class WorkflowStage(models.Model):
         return f"{self.label} [{self.template.code}]"
 
 
+class WorkflowStageApproverOverride(models.Model):
+    """One tenant's own choice of approver for a stage it did not author.
+
+    Central templates are published once with no tenant and serve everybody, so
+    their stages name a role by key. A tenant that wants somebody else to
+    approve that step should not have to clone the whole template to say so:
+    this record repoints the approver for that one stage, for that one tenant,
+    and the engine consults it before the stage's own configuration.
+
+    Overrides only change *who approves*. Advance rule, rejection policy and
+    routing stay with the template, so the central workflow keeps its shape.
+
+    Attributes:
+        tenant: The tenant this override applies to.
+        stage: The stage being repointed, usually on a central template.
+        approver_source: ``ROLE`` or ``WORKFLOW_GROUP`` - the two a tenant can
+            choose between. Organogram and dynamic rules stay template-owned.
+        approver_role_key: Role key, when the source is ROLE.
+        approver_group: The tenant's approver group, when the source is
+            WORKFLOW_GROUP.
+    """
+
+    id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.CASCADE,
+        related_name="workflow_stage_approver_overrides",
+    )
+    stage = models.ForeignKey(WorkflowStage, on_delete=models.CASCADE,
+                              related_name="tenant_overrides")
+    approver_source = models.CharField(max_length=20, choices=ApproverSource.choices)
+    approver_role_key = models.SlugField(max_length=120, blank=True, default="")
+    approver_group = models.ForeignKey(
+        WorkflowApproverGroup, on_delete=models.CASCADE,
+        null=True, blank=True, related_name="stage_overrides",
+    )
+    note = models.TextField(blank=True, default="")
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
+        constraints = [
+            models.UniqueConstraint(fields=["tenant", "stage"],
+                                    name="uniq_stage_override_per_tenant"),
+            # Only the two tenant-choosable sources, each with its own target.
+            models.CheckConstraint(
+                condition=(
+                    Q(approver_source="ROLE", approver_group__isnull=True)
+                    & ~Q(approver_role_key="")
+                ) | (
+                    Q(approver_source="WORKFLOW_GROUP", approver_group__isnull=False,
+                      approver_role_key="")
+                ),
+                name="ck_stage_override_source_target",
+            ),
+        ]
+        indexes = [models.Index(fields=["tenant", "stage"])]
+
+    def __str__(self):
+        return f"{self.tenant_id}:{self.stage_id} -> {self.approver_role_key or self.approver_group_id}"
+
+
 class WorkflowStageDynamicRule(models.Model):
     """One "when this, then that role" rule on a DYNAMIC_ROLE stage.
 
@@ -340,7 +411,9 @@ class WorkflowStageDynamicRule(models.Model):
         stage: The DYNAMIC_ROLE stage these rules belong to.
         order: Evaluation order. First match wins.
         condition: JSON condition evaluated against the document. Null = fallback.
-        role: The tenant role whose active assignees approve when this rule wins.
+        role_key: Key of the role that approves when this rule wins, resolved in
+            the requesting tenant so central templates work.
+        role: The resolved role, set only for tenant-scoped templates.
     """
 
     id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
@@ -348,9 +421,14 @@ class WorkflowStageDynamicRule(models.Model):
                               related_name="dynamic_rules")
     order = models.PositiveIntegerField(default=0)
     condition = models.JSONField(null=True, blank=True)
+    # Empty is never written by the publish path, which requires a key on every
+    # rule; the default exists only so the column can be added to existing rows.
+    role_key = models.SlugField(max_length=120, default="")
     # PROTECT for the same reason as WorkflowStage.approver_role: a role a live
-    # rule routes to must not disappear underneath it.
+    # rule routes to must not disappear underneath it. Null on central templates,
+    # where the key is resolved per requesting tenant.
     role = models.ForeignKey("vs_rbac.TenantRoleTemplate", on_delete=models.PROTECT,
+                             null=True, blank=True,
                              related_name="workflow_dynamic_rules")
     label = models.CharField(max_length=150, blank=True, default="")
 
@@ -362,7 +440,7 @@ class WorkflowStageDynamicRule(models.Model):
         indexes = [models.Index(fields=["stage", "order"])]
 
     def __str__(self):
-        return f"{self.stage_id}#{self.order} -> {self.role_id}"
+        return f"{self.stage_id}#{self.order} -> {self.role_key}"
 
     @property
     def is_fallback(self) -> bool:

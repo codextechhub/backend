@@ -28,8 +28,8 @@ from vs_finance.constants import DocumentStatus, FinanceAuditAction
 
 from .constants import (
     ProcApprovalState,
-    WF_DEFAULT_MANAGER_PERMISSION,
-    WF_DEFAULT_SENIOR_PERMISSION,
+    WF_DEFAULT_MANAGER_ROLE,
+    WF_DEFAULT_SENIOR_ROLE,
     WF_DEFAULT_SENIOR_THRESHOLD,
     WF_DEFAULT_TEMPLATE_CODE,
 )
@@ -62,17 +62,22 @@ def _doc_models():
 def ensure_default_approval_templates(
     *,
     threshold: int = WF_DEFAULT_SENIOR_THRESHOLD,
-    manager_permission: str = WF_DEFAULT_MANAGER_PERMISSION,
-    senior_permission: str = WF_DEFAULT_SENIOR_PERMISSION,
+    manager_role_key: str = WF_DEFAULT_MANAGER_ROLE,
+    senior_role_key: str = WF_DEFAULT_SENIOR_ROLE,
     created_by=None,
 ) -> list:
     """Publish (idempotently) the platform-wide default approval templates.
 
     One template per approvable document type, each a two-stage ladder:
 
-    * **manager** - always runs; any holder of ``manager_permission`` can approve.
+    * **manager** - always runs; any holder of the ``manager_role_key`` role can approve.
     * **senior**  - gated by ``inclusion_condition`` ``amount >= threshold`` (kobo), so
-      only high-value documents escalate to a holder of ``senior_permission``.
+      only high-value documents escalate to a holder of the ``senior_role_key`` role.
+
+    Both stages name their approver by role *key*. These templates are central
+    (no tenant), so the key is resolved inside whichever tenant raised the
+    document; a tenant can repoint either stage to its own role or approver
+    group without cloning the template.
 
     Templates are platform-scoped (``school=None, branch=None``) so they act as the
     universal fallback; a branch- or school-specific template still wins via the engine's
@@ -93,7 +98,8 @@ def ensure_default_approval_templates(
                 "label": "Manager approval",
                 "kind": "APPROVAL",
                 "order": 10,
-                "approver_permission_key": manager_permission,
+                "approver_source": "ROLE",
+                "approver_role_key": manager_role_key,
                 "approver_scope": "PLATFORM",
                 "advance_rule": "ANY",
                 "on_rejection": "TERMINAL",
@@ -104,7 +110,8 @@ def ensure_default_approval_templates(
                 "label": "Senior approval",
                 "kind": "APPROVAL",
                 "order": 20,
-                "approver_permission_key": senior_permission,
+                "approver_source": "ROLE",
+                "approver_role_key": senior_role_key,
                 "approver_scope": "PLATFORM",
                 "advance_rule": "ANY",
                 "on_rejection": "TERMINAL",

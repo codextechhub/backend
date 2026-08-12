@@ -20,7 +20,10 @@ from vs_rbac.tests.helpers import (
 )
 from vs_workflow.constants import PERM_GROUP_MANAGE, PERM_GROUP_VIEW
 from vs_workflow.models import WorkflowApproverGroup, WorkflowApproverGroupMember
-from vs_workflow.views import WorkflowApproverGroupViewSet, WorkflowTemplateViewSet
+from vs_workflow.views import (
+    WorkflowApproverGroupViewSet, WorkflowStageApproverOverrideViewSet,
+    WorkflowTemplateViewSet,
+)
 
 _counter = itertools.count(1)
 
@@ -392,3 +395,121 @@ class DynamicRolePreviewTests(TestCase):
         resp = self._preview({"amount": 1}, rules=[])
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("dynamic_role_rules", str(resp.data))
+
+
+# ── Stage approver overrides ─────────────────────────────────────────────────
+
+OVERRIDES = WorkflowStageApproverOverrideViewSet.as_view({"get": "list", "post": "create"})
+OVERRIDE  = WorkflowStageApproverOverrideViewSet.as_view(
+    {"get": "retrieve", "patch": "partial_update", "delete": "destroy"})
+OVR_BASE = "/v1/workflow/stage-approvers/"
+
+
+class StageApproverOverrideApiTests(TestCase):
+    """Tenants repoint a central step without cloning the template."""
+
+    def setUp(self):
+        from vs_workflow.models import WorkflowStage, WorkflowTemplate
+        self.school = make_school(slug="ovr-api-school", name="Override School")
+        self.branch = make_branch(self.school)
+        self.tenant = self.school.tenant
+
+        self.admin = make_school_admin(self.branch, email="ovr-admin@test.com")
+        _grant(self.admin, ["workflow.template.manage", "workflow.template.view"])
+        self.viewer = make_school_admin(self.branch, email="ovr-viewer@test.com")
+        _grant(self.viewer, ["workflow.template.view"])
+
+        self.central = WorkflowTemplate.all_objects.create(
+            tenant=None, document_type="OVR_API_DOC", code="central", name="Central")
+        self.stage = WorkflowStage.objects.create(
+            template=self.central, code="approval", label="Approval",
+            approver_source="ROLE", approver_role_key="central-approver")
+
+        make_role(self.tenant, name="Our Approver", key="our-approver")
+
+    def _create(self, user=None, **body):
+        payload = {"stage": self.stage.pk, "approver_source": "ROLE",
+                   "approver_role_key": "our-approver"}
+        payload.update(body)
+        return _call(OVERRIDES, "post", OVR_BASE, user or self.admin, self.tenant, payload)
+
+    def test_create_override_on_a_central_stage(self):
+        resp = self._create()
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        body = _body(resp)
+        self.assertEqual(body["approver_role_key"], "our-approver")
+        self.assertTrue(body["is_central"])
+
+    def test_override_takes_effect_at_resolution(self):
+        from vs_workflow.services.approvers import resolve_approvers
+        from vs_workflow.models import WorkflowInstance
+        from django.contrib.contenttypes.models import ContentType
+        from django.utils import timezone
+
+        approver = make_school_admin(self.branch, email="ovr-api-approver@test.com")
+        make_assignment(self.tenant, approver,
+                        make_role(self.tenant, name="Chosen", key="chosen-role"))
+        self._create(approver_role_key="chosen-role")
+
+        requester = make_school_admin(self.branch, email="ovr-api-req@test.com")
+        instance = WorkflowInstance.objects.create(
+            tenant=self.tenant, template=self.central,
+            document_content_type=ContentType.objects.get_for_model(self.central),
+            document_object_id="d1", document_type="OVR_API_DOC",
+            status="IN_PROGRESS", requested_by=requester, submitted_at=timezone.now())
+        result = resolve_approvers(self.stage, instance)
+        self.assertEqual([e.user.pk for e in result], [approver.pk])
+
+    def test_view_permission_cannot_create(self):
+        resp = self._create(user=self.viewer)
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_unknown_role_key_rejected(self):
+        resp = self._create(approver_role_key="not-a-role")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_other_tenants_group_rejected(self):
+        from vs_workflow.models import WorkflowApproverGroup
+        other = make_school(slug="ovr-api-other", name="Other")
+        foreign = WorkflowApproverGroup.objects.create(
+            tenant=other.tenant, code="theirs", name="Theirs")
+        resp = self._create(approver_source="WORKFLOW_GROUP",
+                            approver_group=foreign.pk, approver_role_key="")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_cannot_override_another_tenants_template_stage(self):
+        from vs_workflow.models import WorkflowStage, WorkflowTemplate
+        other = make_school(slug="ovr-api-foreign", name="Foreign")
+        foreign_tpl = WorkflowTemplate.all_objects.create(
+            tenant=other.tenant, document_type="F", code="f", name="F")
+        foreign_stage = WorkflowStage.objects.create(
+            template=foreign_tpl, code="s", label="S",
+            approver_source="ROLE", approver_role_key="x")
+        resp = self._create(stage=foreign_stage.pk)
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_dynamic_role_cannot_be_used_as_an_override(self):
+        """Rule-based routing belongs to whoever authored the template."""
+        resp = self._create(approver_source="DYNAMIC_ROLE")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_other_tenants_override_is_invisible(self):
+        from vs_workflow.models import WorkflowStageApproverOverride
+        other = make_school(slug="ovr-api-hidden", name="Hidden")
+        WorkflowStageApproverOverride.objects.create(
+            tenant=other.tenant, stage=self.stage,
+            approver_source="ROLE", approver_role_key="whatever")
+        self._create()
+        rows = _body(_call(OVERRIDES, "get", OVR_BASE, self.admin, self.tenant))
+        if isinstance(rows, dict):
+            rows = rows.get("results", [])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["approver_role_key"], "our-approver")
+
+    def test_removing_the_override_restores_the_template_default(self):
+        override_id = _body(self._create())["id"]
+        resp = _call(OVERRIDE, "delete", OVR_BASE, self.admin, self.tenant, pk=override_id)
+        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
+        from vs_workflow.models import WorkflowStageApproverOverride
+        self.assertFalse(WorkflowStageApproverOverride.all_objects.filter(
+            tenant=self.tenant, stage=self.stage).exists())

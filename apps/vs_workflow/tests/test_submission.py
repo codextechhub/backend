@@ -154,6 +154,8 @@ class PlatformUserCreationTemplateTests(TestCase):
         )
         stage = template.stages.get(code="platform-admin-approval")
 
-        self.assertEqual(stage.approver_permission_key, "platform.team.create")
+        # The seed's permission key was converted to the role that granted it.
+        self.assertEqual(stage.approver_source, "ROLE")
+        self.assertEqual(stage.approver_role_key, "xvs_platform_admin")
         self.assertEqual(stage.approver_scope, "PLATFORM")
         self.assertTrue(stage.skip_if_no_approvers)

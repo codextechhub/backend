@@ -36,44 +36,14 @@ class EligibleApprover:
     on_behalf_of: Optional[AbstractBaseUser] = None
 
 
-# Resolve RBAC permission holders for a stage.
-def _users_with_permission(tenant, branch, permission_key: str, scope: ApproverScope):
-    """Resolve the set of users holding permission_key in the given scope via vs_rbac.
-
-    This is the single integration boundary between the workflow engine and the
-    RBAC system. If vs_rbac is unavailable (e.g. a standalone install) it falls
-    back to all active users in the school, so the engine degrades gracefully
-    rather than breaking. Scope controls which school/branch args are forwarded:
-    PLATFORM passes both as None, SCHOOL passes school only, BRANCH passes both.
-    """
-    try:
-        from vs_rbac.evaluator import resolve_users_with_permission
-    except ImportError:
-        import logging
-        logging.getLogger(__name__).warning(
-            "vs_rbac not available; returning unscoped user set. Connect vs_rbac.")
-        from django.contrib.auth import get_user_model
-        UserModel = get_user_model()
-        qs = UserModel.objects.filter(is_active=True)
-        if tenant is not None:
-            qs = qs.filter(tenant=tenant)
-        return qs
-
-    branch_arg = branch if scope == ApproverScope.BRANCH else None
-    return resolve_users_with_permission(
-        tenant=tenant, branch=branch_arg, permission_key=permission_key,
-    )
-
-
-# Resolve the active assignees of one or more tenant roles.
+# Resolve the active assignees of one or more roles.
 def _users_for_roles(role_ids, tenant, branch) -> list:
     """Active assignees of the given roles within one tenant.
 
-    Shared by the ROLE stage source and by ROLE members of an approver group,
-    so both honour the same rules: the role itself must be ACTIVE, the
-    assignment must be ACTIVE, and the user must be active. ``branch`` narrows
-    to branch-limited assignments for that branch (plus tenant-wide ones);
-    pass None to count tenant-wide assignments only.
+    The role itself must be ACTIVE, the assignment must be ACTIVE, and the
+    user must be active. ``branch`` narrows to branch-limited assignments for
+    that branch (plus tenant-wide ones); pass None to count tenant-wide
+    assignments only.
     """
     role_ids = [r for r in role_ids if r]
     if not role_ids:
@@ -97,20 +67,49 @@ def _users_for_roles(role_ids, tenant, branch) -> list:
     return list({a.user_id: a.user for a in assignments}.values())
 
 
-# Resolve the active assignees of a named tenant role.
-def _role_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
-    """Resolve base approvers as the active assignees of stage.approver_role.
+# Resolve a role key inside one tenant.
+def _users_for_role_key(role_key: str, tenant, branch) -> list:
+    """Holders of the role with *role_key* in *tenant*.
 
-    Opt-in strategy (ApproverSource.ROLE) - the human-facing replacement for
-    permission keys: the stage points straight at a named tenant role and the
-    engine reads its ACTIVE assignments. Branch handling mirrors the RBAC
-    path exactly: BRANCH scope honours branch-limited assignments for the
-    instance's branch, every other scope counts tenant-wide assignments only.
-    An archived or deactivated role resolves to no approvers, so the stage's
-    skip_if_no_approvers policy decides what happens next.
+    Resolution goes through the key rather than a foreign key because a central
+    template is published once, without a tenant, and has to name the same
+    authority in every tenant that runs it. A tenant with no such role resolves
+    to nobody, which the stage's skip_if_no_approvers policy then decides on -
+    run ``check_workflow_role_coverage`` to find those gaps before they bite.
+    """
+    if not role_key:
+        return []
+
+    from vs_rbac.models import TenantRoleTemplate
+
+    role = TenantRoleTemplate.objects.filter(
+        tenant=tenant, key=role_key, status=TenantRoleTemplate.Status.ACTIVE,
+    ).values_list("pk", flat=True).first()
+    if role is None:
+        return []
+    return _users_for_roles([role], tenant, branch)
+
+
+# Resolve the active assignees of a named tenant role.
+def stage_role_key(stage: WorkflowStage) -> str:
+    """The role key a ROLE stage resolves, preferring the portable key."""
+    if stage.approver_role_key:
+        return stage.approver_role_key
+    return stage.approver_role.key if stage.approver_role_id else ""
+
+
+def _role_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
+    """Resolve base approvers as the holders of the stage's role.
+
+    The default strategy. The stage names a role by key and the engine reads
+    that role's ACTIVE assignments in the tenant that raised the request, so
+    one central template serves every tenant. BRANCH scope also honours
+    branch-limited assignments; every other scope counts tenant-wide
+    assignments only. A missing, archived or unassigned role resolves to no
+    approvers, leaving skip_if_no_approvers to decide.
     """
     branch_arg = instance.branch if stage.approver_scope == ApproverScope.BRANCH else None
-    return _users_for_roles([stage.approver_role_id], instance.tenant, branch_arg)
+    return _users_for_role_key(stage_role_key(stage), instance.tenant, branch_arg)
 
 
 # Keep only active users belonging to the resolving tenant.
@@ -219,12 +218,12 @@ def match_dynamic_rule(stage: WorkflowStage, document):
 
     evaluations = []
     chosen = None
-    for rule in stage.dynamic_rules.select_related("role").all():
+    for rule in stage.dynamic_rules.all():
         matched, trace = evaluate_condition(rule.condition, document)
         evaluations.append({
             "rule_id": str(rule.pk),
             "order": rule.order,
-            "role_key": rule.role.key,
+            "role_key": rule.role_key,
             "is_fallback": rule.is_fallback,
             "trace": trace,
             "picked": False,
@@ -249,7 +248,7 @@ def _dynamic_role_base_users(stage: WorkflowStage, instance: WorkflowInstance) -
     if rule is None:
         return []
     branch_arg = instance.branch if stage.approver_scope == ApproverScope.BRANCH else None
-    return _users_for_roles([rule.role_id], instance.tenant, branch_arg)
+    return _users_for_role_key(rule.role_key, instance.tenant, branch_arg)
 
 
 def _group_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
@@ -296,22 +295,47 @@ def _organogram_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> 
     return []
 
 
+# Find the tenant's own approver choice for a stage, if it has made one.
+def stage_override_for(stage: WorkflowStage, tenant):
+    """The tenant's override for this stage, or None.
+
+    Central templates are shared, so a tenant that wants a different approver
+    on one step records it here instead of cloning the template. Only the
+    approver changes; advance rule, rejection policy and routing stay with the
+    template.
+    """
+    from vs_workflow.models import WorkflowStageApproverOverride
+
+    if tenant is None:
+        return None
+    return (WorkflowStageApproverOverride.all_objects
+            .select_related("approver_group")
+            .filter(tenant=tenant, stage=stage).first())
+
+
+def _override_base_users(override, stage: WorkflowStage, instance: WorkflowInstance) -> list:
+    """Base approvers from a tenant's override, honouring the stage's scope."""
+    branch_arg = instance.branch if stage.approver_scope == ApproverScope.BRANCH else None
+    if override.approver_source == ApproverSource.WORKFLOW_GROUP:
+        return resolve_group_users(override.approver_group, instance.tenant, branch_arg)
+    return _users_for_role_key(override.approver_role_key, instance.tenant, branch_arg)
+
+
 # Build the frozen approver snapshot for a stage activation.
 def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[EligibleApprover]:
     """Build the full eligible approver list for a stage at the moment it activates.
 
-    The base approver set is produced by the stage's `approver_source`:
-      - RBAC_PERMISSION (default): users holding stage.approver_permission_key
-        in the configured scope. This is the original, untouched behaviour.
-      - ORGANOGRAM (opt-in): the holder(s) of the seat reached by climbing the
-        CX organogram relative to the requester (direct manager, N levels up,
-        department head, or a specific position).
-      - ROLE (opt-in): the active assignees of the named tenant role in
-        stage.approver_role, honouring approver_scope for branch narrowing.
-      - WORKFLOW_GROUP (opt-in): the resolved membership of the named approver
-        group in stage.approver_group, mixing people, roles, and positions.
-      - DYNAMIC_ROLE (opt-in): the role named by the first of the stage's
-        ordered rules whose condition matches the document.
+    A tenant override wins first, if the tenant has recorded one for this
+    stage. Otherwise the base approver set comes from the stage's
+    `approver_source`:
+      - ROLE (default): holders of the stage's role key, resolved inside the
+        requesting tenant so one central template serves everybody.
+      - WORKFLOW_GROUP: the resolved membership of the named approver group,
+        mixing people, roles, and positions.
+      - DYNAMIC_ROLE: the role named by the first of the stage's ordered rules
+        whose condition matches the document.
+      - ORGANOGRAM: the holder(s) of the seat reached by climbing the CX
+        organogram relative to the requester.
 
     The requester is always excluded - they cannot approve their own submission.
     Active delegations then expand the list regardless of source: if an eligible
@@ -321,39 +345,22 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     appearing twice. A delegate acting for two different delegators intentionally
     appears twice - once per delegator - because the on_behalf_of field differs.
     """
-    if stage.approver_source == ApproverSource.ORGANOGRAM:
-        # Organogram approvers are already relative to the requester; still exclude self-approval.
-        base_users = [
-            u for u in _organogram_base_users(stage, instance)
-            if u and u.pk != instance.requested_by_id
-        ]
-    elif stage.approver_source == ApproverSource.ROLE:
-        base_users = [
-            u for u in _role_base_users(stage, instance)
-            if u.pk != instance.requested_by_id
-        ]
+    override = stage_override_for(stage, instance.tenant)
+    if override is not None:
+        base_users = _override_base_users(override, stage, instance)
+    elif stage.approver_source == ApproverSource.ORGANOGRAM:
+        # Organogram approvers are already relative to the requester.
+        base_users = _organogram_base_users(stage, instance)
     elif stage.approver_source == ApproverSource.WORKFLOW_GROUP:
-        base_users = [
-            u for u in _group_base_users(stage, instance)
-            if u.pk != instance.requested_by_id
-        ]
+        base_users = _group_base_users(stage, instance)
     elif stage.approver_source == ApproverSource.DYNAMIC_ROLE:
-        base_users = [
-            u for u in _dynamic_role_base_users(stage, instance)
-            if u.pk != instance.requested_by_id
-        ]
+        base_users = _dynamic_role_base_users(stage, instance)
     else:
-        if not stage.approver_permission_key:
-            return []
-        # RBAC approvers are resolved at activation time and then frozen.
-        base_qs = _users_with_permission(
-            tenant=instance.tenant,
-            branch=instance.branch,
-            permission_key=stage.approver_permission_key,
-            scope=ApproverScope(stage.approver_scope),
-        )
-        base_qs = base_qs.exclude(pk=instance.requested_by_id)
-        base_users = list(base_qs.distinct())
+        base_users = _role_base_users(stage, instance)
+
+    # Self-approval is barred on every source, so the filter lives here once
+    # rather than being repeated (and one day forgotten) per branch.
+    base_users = [u for u in base_users if u is not None and u.pk != instance.requested_by_id]
 
     base_ids = {u.pk for u in base_users}
 

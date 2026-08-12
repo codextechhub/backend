@@ -78,22 +78,24 @@ class ApproverSource(models.TextChoices):
     """
     How a stage resolves its eligible approvers.
 
-    RBAC_PERMISSION is the original (and default) strategy: anyone holding
-    `approver_permission_key` within `approver_scope`. ORGANOGRAM is an
-    additive, opt-in strategy that climbs the CX organogram relative to the
-    requester. ROLE points directly at a named tenant role
-    (`approver_role`) and resolves its active assignees - the human-facing
-    replacement for permission keys. WORKFLOW_GROUP points at a reusable,
-    named approver group whose membership mixes people, roles, and
-    organogram positions. DYNAMIC_ROLE picks the role from the document
-    itself, using ordered condition rules. The strategies are mutually
-    exclusive per stage.
+    ROLE (the default) names a role by key and resolves its active
+    assignees inside the tenant that raised the request. WORKFLOW_GROUP
+    points at a reusable, named approver group whose membership mixes
+    people, roles, and organogram positions. DYNAMIC_ROLE picks the role
+    from the document itself, using ordered condition rules. ORGANOGRAM
+    climbs the CX organogram relative to the requester. The strategies are
+    mutually exclusive per stage.
+
+    An earlier RBAC_PERMISSION strategy resolved approvers by permission
+    key. It was removed: permission keys are a developer-facing vocabulary
+    that template builders cannot be expected to know, and every key
+    resolved through roles anyway. ROLE names the same authority in the
+    words an administrator already uses.
     """
-    RBAC_PERMISSION = "RBAC_PERMISSION", "RBAC permission holders (default)"
-    ORGANOGRAM      = "ORGANOGRAM",      "Organogram (relative to requester)"
-    ROLE            = "ROLE",            "Tenant role holders"
+    ROLE            = "ROLE",            "Role holders (default)"
     WORKFLOW_GROUP  = "WORKFLOW_GROUP",  "Workflow approver group"
     DYNAMIC_ROLE    = "DYNAMIC_ROLE",    "Role chosen by the document"
+    ORGANOGRAM      = "ORGANOGRAM",      "Organogram (relative to requester)"
 
 
 class GroupMemberKind(models.TextChoices):

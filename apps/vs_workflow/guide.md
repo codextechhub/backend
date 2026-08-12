@@ -119,12 +119,11 @@ Key fields:
 
 | Field | Meaning |
 |---|---|
-| `approver_source` | How approvers are resolved: `RBAC_PERMISSION` (default - permission key lookup), `ROLE` (active assignees of a named tenant role), `WORKFLOW_GROUP` (a named approver group), `DYNAMIC_ROLE` (role chosen by the document), or `ORGANOGRAM` (climbs the CX org chart relative to the requester). |
-| `approver_permission_key` | RBAC permission key used to resolve who can approve this stage (`RBAC_PERMISSION` source only). |
-| `approver_role_key` | Tenant role key (e.g. `bursar`) whose active assignees approve this stage (`ROLE` source only). Publish fails if no active role with that key exists in the tenant. |
+| `approver_source` | How approvers are resolved: `ROLE` (default - holders of a named role), `WORKFLOW_GROUP` (a named approver group), `DYNAMIC_ROLE` (role chosen by the document), or `ORGANOGRAM` (climbs the CX org chart relative to the requester). |
+| `approver_role_key` | Role key (e.g. `bursar`) whose active holders approve this stage (`ROLE` source only). Resolved **inside the tenant that raised the request**, so one central template serves every tenant. On a tenant-scoped template the publish fails if the role does not exist; on a central template it cannot be checked, so `workflow_role_coverage` reports gaps instead. |
 | `approver_group_code` | Approver group code (e.g. `po-approvers`) whose resolved membership approves this stage (`WORKFLOW_GROUP` source only). Publish fails if no active group with that code exists in the tenant. |
 | `dynamic_role_rules` | Ordered "when this, then that role" rules (`DYNAMIC_ROLE` source only). See below. |
-| `approver_scope` | `BRANCH`, `SCHOOL`, or `PLATFORM` - narrows the RBAC/role query to branch-level, school-level, or all users platform-wide. For a group, it narrows that group's `ROLE` members only. |
+| `approver_scope` | `BRANCH`, `SCHOOL`, or `PLATFORM` - narrows the role query to branch-level, tenant-level, or all users. For a group, it narrows that group's `ROLE` members only. |
 | `advance_rule` | `UNANIMOUS` (everyone must approve), `QUORUM` (N of M), or `ANY` (first approver wins). |
 | `quorum_count` | Only used when `advance_rule = QUORUM`. Minimum approvals needed. |
 | `on_rejection` | What happens when someone rejects: `TERMINAL` (ends the workflow) or `RETURN_TO_REQUESTER`. |
@@ -177,6 +176,43 @@ Deleting a group that an active stage still references returns `409` with
 `APPROVER_GROUP_IN_USE`; deactivate it instead, which keeps the stage resolvable
 (to nobody) and preserves audit history. A group's `code` is immutable once
 created, because published templates reference it.
+
+---
+
+### Central templates and tenant overrides
+
+A template published with **no tenant** is *central*: one definition, shared by
+every tenant, selected by the usual cascade (branch → tenant → central). Its
+stages name approvers by **role key**, and the key is resolved inside whichever
+tenant raised the document. So a central "Spend Approval" step that names
+`procurement-approver` reaches a different set of people in every tenant, which
+is the point.
+
+The consequence to plan for: a tenant with no role of that key resolves to
+nobody. Where the stage is set to `skip_if_no_approvers`, the request then
+passes through unapproved. Run this before relying on a central template:
+
+```
+python manage.py workflow_role_coverage           # report gaps
+python manage.py workflow_role_coverage --create  # create the missing roles
+```
+
+`--create` makes the role but assigns nobody, so the report keeps flagging it
+until an admin assigns someone. It will not invent approval authority.
+
+**A tenant can repoint any central step** without cloning the template:
+
+| Method | Path |
+|---|---|
+| `GET` / `POST` | `/stage-approvers/` |
+| `GET` / `PATCH` / `DELETE` | `/stage-approvers/{id}/` |
+
+An override names either a role key or one of the tenant's approver groups, and
+the engine consults it before the stage's own configuration. Only *who approves*
+changes; advance rule, rejection policy and routing stay with the template.
+Deleting the override restores the template's own approver. Overrides need
+`workflow.template.manage`, because repointing an approval step is a
+template-level decision.
 
 ---
 
@@ -544,7 +580,7 @@ POST /v1/workflow/templates/publish/
       "label": "Line Manager Approval",
       "kind": "APPROVAL",
       "order": 1,
-      "approver_permission_key": "leave.approve.line_manager",
+      "approver_role_key": "line-manager",
       "approver_scope": "SCHOOL",
       "advance_rule": "ANY",
       "on_rejection": "RETURN_TO_REQUESTER"
@@ -554,7 +590,7 @@ POST /v1/workflow/templates/publish/
       "label": "HR Final Approval",
       "kind": "APPROVAL",
       "order": 2,
-      "approver_permission_key": "leave.approve.hr",
+      "approver_role_key": "hr-manager",
       "approver_scope": "SCHOOL",
       "advance_rule": "ANY",
       "on_rejection": "TERMINAL"

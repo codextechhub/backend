@@ -26,13 +26,19 @@ def _resolve_position(code: Optional[str]):
     return Position.objects.filter(code=code).first()
 
 
-# Resolve a ROLE stage's role key to the tenant's role, failing loudly.
+# Resolve a ROLE stage's role key, anchoring it when the template has a tenant.
 def _resolve_role(stage_payload: dict, tenant):
-    """Resolve approver_role_key to the tenant's TenantRoleTemplate.
+    """Validate approver_role_key and return the matching role, or None.
 
-    Unlike _resolve_position this raises instead of degrading to None: a ROLE
-    stage that silently loses its role would auto-skip (or stall) every future
-    instance, so a bad key must fail the publish, not the approvals.
+    Resolution at run time goes through the key, so a central (tenant-less)
+    template can name the same authority in every tenant. The foreign key is
+    only an anchor for tenant-scoped templates, where the role can be checked
+    to exist now and protected from deletion later.
+
+    A tenant-scoped stage naming a role that does not exist is a mistake worth
+    failing the publish for. A central stage cannot be checked that way - the
+    tenants that will run it may not even exist yet - so its key is accepted
+    and ``check_workflow_role_coverage`` reports the gaps instead.
     """
     if stage_payload.get("approver_source") != "ROLE":
         return None
@@ -42,9 +48,7 @@ def _resolve_role(stage_payload: dict, tenant):
         raise TemplateInvalidError(
             f"Stage '{label}': approver_role_key is required when approver_source is ROLE.")
     if tenant is None:
-        raise TemplateInvalidError(
-            f"Stage '{label}': ROLE stages need a tenant-scoped template - "
-            "global templates cannot reference tenant roles.")
+        return None
 
     from vs_rbac.models import TenantRoleTemplate
 
@@ -108,10 +112,6 @@ def _parse_dynamic_rules(stage_payload: dict, tenant):
         raise TemplateInvalidError(
             f"Stage '{label}': dynamic_role_rules is required when "
             "approver_source is DYNAMIC_ROLE.")
-    if tenant is None:
-        raise TemplateInvalidError(
-            f"Stage '{label}': DYNAMIC_ROLE stages need a tenant-scoped template - "
-            "global templates cannot reference tenant roles.")
 
     from vs_rbac.models import TenantRoleTemplate
 
@@ -123,17 +123,20 @@ def _parse_dynamic_rules(stage_payload: dict, tenant):
         key = raw.get("role_key") or ""
         if not key:
             raise TemplateInvalidError(f"{where}: 'role_key' is required.")
-        role = TenantRoleTemplate.objects.filter(
-            tenant=tenant, key=key, status=TenantRoleTemplate.Status.ACTIVE,
-        ).first()
-        if role is None:
-            raise TemplateInvalidError(
-                f"{where}: no active role with key '{key}' exists in this tenant.")
+        role = None
+        if tenant is not None:
+            role = TenantRoleTemplate.objects.filter(
+                tenant=tenant, key=key, status=TenantRoleTemplate.Status.ACTIVE,
+            ).first()
+            if role is None:
+                raise TemplateInvalidError(
+                    f"{where}: no active role with key '{key}' exists in this tenant.")
         condition = raw.get("condition")
         validate_condition(condition, where)
         parsed.append({
             "order": raw.get("order", i),
             "condition": condition,
+            "role_key": key,
             "role": role,
             "label": raw.get("label", "") or "",
         })
@@ -212,10 +215,10 @@ def publish_template(*, tenant, branch=None, document_type: str, code: str, name
             "order": s.get("order", 0),
             # Approver-source strategy. Defaults to the original RBAC path so
             # existing template payloads keep working unchanged.
-            "approver_source": s.get("approver_source", "RBAC_PERMISSION"),
-            "approver_permission_key": s.get("approver_permission_key", ""),
+            "approver_source": s.get("approver_source", "ROLE"),
             "approver_scope": s.get("approver_scope", "SCHOOL"),
             # Role config - only meaningful when approver_source==ROLE.
+            "approver_role_key": s.get("approver_role_key", "") or "",
             "approver_role": _resolve_role(s, tenant),
             # Group config - only meaningful when approver_source==WORKFLOW_GROUP.
             "approver_group": _resolve_group(s, tenant),
@@ -243,7 +246,7 @@ def publish_template(*, tenant, branch=None, document_type: str, code: str, name
         for rule in dynamic_by_code.get(s["code"], []):
             WorkflowStageDynamicRule.objects.create(
                 stage=stage, order=rule["order"], condition=rule["condition"],
-                role=rule["role"], label=rule["label"],
+                role_key=rule["role_key"], role=rule["role"], label=rule["label"],
             )
 
     # Soft-retire stages the new payload no longer includes.
