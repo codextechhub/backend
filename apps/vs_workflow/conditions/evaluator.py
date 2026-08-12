@@ -108,3 +108,57 @@ def evaluate_condition(condition: Any, document: Any) -> Tuple[bool, Dict]:
         return result, {"kind": "op", "op": op, "field": field_path,
                         "left": _safe(left), "right": _safe(value), "result": result}
     raise TemplateInvalidError("Condition did not match any supported form")
+
+
+# Structurally check a condition without needing a document.
+def validate_condition(condition: Any, where: str = "condition") -> None:
+    """Raise if *condition* is not a shape evaluate_condition can run.
+
+    Publishing is the right place to catch a typo like ``"op": "gte "`` or a
+    missing ``field``. Without this the template saves happily and the mistake
+    only surfaces later, as a 422 in the middle of somebody's approval - at
+    which point the workflow is already stuck. Registered ``fn`` keys are
+    checked too, since an unregistered key is equally fatal at run time.
+    """
+    if condition in (None, {}):
+        return
+    if not isinstance(condition, dict):
+        raise TemplateInvalidError(f"{where}: must be a JSON object or null.")
+
+    for key in ("all", "any"):
+        if key in condition:
+            children = condition[key]
+            if not isinstance(children, list) or not children:
+                raise TemplateInvalidError(f"{where}: '{key}' must be a non-empty list.")
+            for i, child in enumerate(children):
+                validate_condition(child, f"{where}.{key}[{i}]")
+            return
+    if "not" in condition:
+        validate_condition(condition["not"], f"{where}.not")
+        return
+    if "fn" in condition:
+        key = condition["fn"]
+        if not key or not isinstance(key, str):
+            raise TemplateInvalidError(f"{where}: 'fn' must be a registered function key.")
+        try:
+            get_condition_function(key)
+        except Exception as exc:
+            raise TemplateInvalidError(f"{where}: {exc}") from exc
+        args = condition.get("args")
+        if args is not None and not isinstance(args, dict):
+            raise TemplateInvalidError(f"{where}: 'args' must be an object.")
+        return
+    if "op" in condition:
+        op = condition["op"]
+        if op not in CONDITION_OPERATORS:
+            raise TemplateInvalidError(
+                f"{where}: unsupported operator '{op}'. "
+                f"Allowed: {', '.join(sorted(CONDITION_OPERATORS))}.")
+        if not condition.get("field"):
+            raise TemplateInvalidError(f"{where}: 'field' is required.")
+        if op in (CONDITION_OP_IN, CONDITION_OP_NOT_IN) and \
+                not isinstance(condition.get("value"), (list, tuple)):
+            raise TemplateInvalidError(f"{where}: '{op}' needs a list 'value'.")
+        return
+    raise TemplateInvalidError(
+        f"{where}: expected one of 'all', 'any', 'not', 'fn', or 'op'.")

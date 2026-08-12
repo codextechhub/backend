@@ -119,10 +119,11 @@ Key fields:
 
 | Field | Meaning |
 |---|---|
-| `approver_source` | How approvers are resolved: `RBAC_PERMISSION` (default - permission key lookup), `ROLE` (active assignees of a named tenant role), `WORKFLOW_GROUP` (a named approver group), or `ORGANOGRAM` (climbs the CX org chart relative to the requester). |
+| `approver_source` | How approvers are resolved: `RBAC_PERMISSION` (default - permission key lookup), `ROLE` (active assignees of a named tenant role), `WORKFLOW_GROUP` (a named approver group), `DYNAMIC_ROLE` (role chosen by the document), or `ORGANOGRAM` (climbs the CX org chart relative to the requester). |
 | `approver_permission_key` | RBAC permission key used to resolve who can approve this stage (`RBAC_PERMISSION` source only). |
 | `approver_role_key` | Tenant role key (e.g. `bursar`) whose active assignees approve this stage (`ROLE` source only). Publish fails if no active role with that key exists in the tenant. |
 | `approver_group_code` | Approver group code (e.g. `po-approvers`) whose resolved membership approves this stage (`WORKFLOW_GROUP` source only). Publish fails if no active group with that code exists in the tenant. |
+| `dynamic_role_rules` | Ordered "when this, then that role" rules (`DYNAMIC_ROLE` source only). See below. |
 | `approver_scope` | `BRANCH`, `SCHOOL`, or `PLATFORM` - narrows the RBAC/role query to branch-level, school-level, or all users platform-wide. For a group, it narrows that group's `ROLE` members only. |
 | `advance_rule` | `UNANIMOUS` (everyone must approve), `QUORUM` (N of M), or `ANY` (first approver wins). |
 | `quorum_count` | Only used when `advance_rule = QUORUM`. Minimum approvals needed. |
@@ -176,6 +177,55 @@ Deleting a group that an active stage still references returns `409` with
 `APPROVER_GROUP_IN_USE`; deactivate it instead, which keeps the stage resolvable
 (to nobody) and preserves audit history. A group's `code` is immutable once
 created, because published templates reference it.
+
+---
+
+### WorkflowStageDynamicRule
+
+Rules for a stage with `approver_source = DYNAMIC_ROLE`, where **the document
+picks the role and the role picks the people**. One stage covers what would
+otherwise need two templates or an extra branch stage:
+
+```json
+{
+  "code": "spend-approval",
+  "label": "Spend Approval",
+  "approver_source": "DYNAMIC_ROLE",
+  "dynamic_role_rules": [
+    {"condition": {"op": "lt",  "field": "amount", "value": 100000},
+     "role_key": "finance-officer"},
+    {"condition": {"op": "lt",  "field": "amount", "value": 1000000},
+     "role_key": "bursar"},
+    {"condition": null, "role_key": "principal"}
+  ]
+}
+```
+
+Rules are evaluated in order and **the first match wins**, the same contract as
+route paths. A rule with `"condition": null` always matches, so it is the
+fallback and must be last; publishing rejects anything after it, because those
+rules could never fire. Conditions use the full condition language (`op`,
+`all`, `any`, `not`, `fn`) that routes and `inclusion_condition` already use.
+
+Once a rule wins, its role resolves exactly like the `ROLE` source: active
+assignees, `approver_scope` narrowing, requester excluded, delegation applied.
+No rule matching and no fallback means no approvers, which
+`skip_if_no_approvers` then decides on.
+
+**Publishing validates conditions.** A typo like `"op": "greater_than"`, a
+missing `field`, an `in` without a list value, or an unregistered `fn` key now
+fails the publish. This applies to route and inclusion conditions too - previously
+a bad operator saved happily and only raised mid-approval, leaving the workflow
+stuck.
+
+**Why did this go to the Bursar?** Two answers:
+
+- Before publishing: `POST /templates/preview-approvers/` with
+  `approver_source: "DYNAMIC_ROLE"`, the rules, and a `sample_document`
+  (e.g. `{"amount": 250000}`). It returns the matched role, the resolved
+  people, and a per-rule trace showing what each condition compared.
+- After the fact: the `STAGE_ACTIVATED` audit entry carries a `dynamic_role`
+  block with the matched rule and the same trace.
 
 ---
 

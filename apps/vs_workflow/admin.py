@@ -4,7 +4,7 @@ from vs_workflow.models import (
     WorkflowTemplate, WorkflowStage, WorkflowRoutePath, WorkflowInstance,
     WorkflowStageInstance, WorkflowStageApprover, WorkflowStageAction,
     ApprovalDelegation, WorkflowApproverGroup, WorkflowApproverGroupMember,
-    WorkflowAuditLog,
+    WorkflowAuditLog, WorkflowStageDynamicRule,
 )
 
 # Inspect published templates and their school/branch scope.
@@ -46,5 +46,5 @@ class WorkflowApproverGroupAdmin(admin.ModelAdmin):
     inlines = [WorkflowApproverGroupMemberInline]
 
 for model in [WorkflowRoutePath, WorkflowStageInstance, WorkflowStageApprover,
-              WorkflowStageAction, ApprovalDelegation]:
+              WorkflowStageAction, ApprovalDelegation, WorkflowStageDynamicRule]:
     admin.site.register(model)

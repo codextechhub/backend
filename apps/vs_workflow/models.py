@@ -325,6 +325,50 @@ class WorkflowStage(models.Model):
         return f"{self.label} [{self.template.code}]"
 
 
+class WorkflowStageDynamicRule(models.Model):
+    """One "when this, then that role" rule on a DYNAMIC_ROLE stage.
+
+    Rules are evaluated in ascending ``order`` against the business document and
+    the first match wins, mirroring how WorkflowRoutePath picks an edge. A rule
+    with a null ``condition`` always matches and is the fallback, so it must be
+    the last rule; anything after it could never fire.
+
+    Rules carry no instance-level references, so publishing replaces them
+    wholesale, exactly like routes.
+
+    Attributes:
+        stage: The DYNAMIC_ROLE stage these rules belong to.
+        order: Evaluation order. First match wins.
+        condition: JSON condition evaluated against the document. Null = fallback.
+        role: The tenant role whose active assignees approve when this rule wins.
+    """
+
+    id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
+    stage = models.ForeignKey(WorkflowStage, on_delete=models.CASCADE,
+                              related_name="dynamic_rules")
+    order = models.PositiveIntegerField(default=0)
+    condition = models.JSONField(null=True, blank=True)
+    # PROTECT for the same reason as WorkflowStage.approver_role: a role a live
+    # rule routes to must not disappear underneath it.
+    role = models.ForeignKey("vs_rbac.TenantRoleTemplate", on_delete=models.PROTECT,
+                             related_name="workflow_dynamic_rules")
+    label = models.CharField(max_length=150, blank=True, default="")
+
+    class Meta:
+        ordering = ["order"]
+        constraints = [
+            models.UniqueConstraint(fields=["stage", "order"], name="uniq_dynamic_rule_order"),
+        ]
+        indexes = [models.Index(fields=["stage", "order"])]
+
+    def __str__(self):
+        return f"{self.stage_id}#{self.order} -> {self.role_id}"
+
+    @property
+    def is_fallback(self) -> bool:
+        return self.condition in (None, {})
+
+
 class WorkflowRoutePath(models.Model):
     """Directed edge between two stages within a template.
 

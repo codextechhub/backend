@@ -836,3 +836,254 @@ class GroupMemberConstraintTests(TestCase):
         with self.assertRaises(IntegrityError):
             WorkflowApproverGroupMember.objects.create(
                 group=self.group, kind="USER", user=user)
+
+
+# ── DYNAMIC_ROLE approver source ─────────────────────────────────────────────
+
+class DynamicRoleResolveTests(TestCase):
+    """The document picks the role; the role picks the people."""
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import make_assignment, make_branch, make_role, make_school
+        self.school = make_school(slug="dyn-school")
+        self.branch = make_branch(self.school)
+        self.tenant = self.school.tenant
+        self.requester = _make_user_in_branch("dyn-req@test.com", self.branch)
+        self.template = _make_template(doc_type="DYN_DOC")
+
+        self.officer_role = make_role(self.tenant, name="Finance Officer", key="finance-officer")
+        self.bursar_role = make_role(self.tenant, name="Bursar", key="bursar")
+        self.officer = _make_user_in_branch("officer@test.com", self.branch)
+        self.bursar = _make_user_in_branch("bursar-dyn@test.com", self.branch)
+        make_assignment(self.tenant, self.officer, self.officer_role)
+        make_assignment(self.tenant, self.bursar, self.bursar_role)
+
+    def _stage(self, rules, code="dyn-stage", scope="SCHOOL"):
+        from vs_workflow.models import WorkflowStageDynamicRule
+        stage = _make_stage(self.template, code=code)
+        stage.approver_source = "DYNAMIC_ROLE"
+        stage.approver_scope = scope
+        stage.save(update_fields=["approver_source", "approver_scope"])
+        for i, (condition, role) in enumerate(rules):
+            WorkflowStageDynamicRule.objects.create(
+                stage=stage, order=i, condition=condition, role=role)
+        return stage
+
+    def _instance_with(self, document):
+        """An instance whose resolved document is the dict *document*.
+
+        The engine reads conditions off ``instance.document``, a
+        GenericForeignKey whose descriptor insists the value match the stored
+        content type, so the stand-in is installed by patching the descriptor
+        for the duration of the test. The evaluator walks dicts and objects
+        alike, which is what makes a plain dict a fair stand-in here.
+        """
+        instance = _make_instance(self.template, self.requester)
+        instance.branch = self.branch
+        instance.save(update_fields=["branch"])
+        patcher = patch.object(WorkflowInstance, "document", document)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return instance
+
+    def test_low_amount_picks_first_matching_rule(self):
+        stage = self._stage([
+            ({"op": "lt", "field": "amount", "value": 100000}, self.officer_role),
+            (None, self.bursar_role),
+        ])
+        result = resolve_approvers(stage, self._instance_with({"amount": 50000}))
+        self.assertEqual([e.user.pk for e in result], [self.officer.pk])
+
+    def test_high_amount_falls_through_to_fallback(self):
+        stage = self._stage([
+            ({"op": "lt", "field": "amount", "value": 100000}, self.officer_role),
+            (None, self.bursar_role),
+        ])
+        result = resolve_approvers(stage, self._instance_with({"amount": 250000}))
+        self.assertEqual([e.user.pk for e in result], [self.bursar.pk])
+
+    def test_boundary_value_uses_the_later_rule(self):
+        """`lt 100000` must not match exactly 100000 - the classic off-by-one."""
+        stage = self._stage([
+            ({"op": "lt", "field": "amount", "value": 100000}, self.officer_role),
+            (None, self.bursar_role),
+        ])
+        result = resolve_approvers(stage, self._instance_with({"amount": 100000}))
+        self.assertEqual([e.user.pk for e in result], [self.bursar.pk])
+
+    def test_no_match_and_no_fallback_resolves_empty(self):
+        stage = self._stage([
+            ({"op": "gte", "field": "amount", "value": 1000000}, self.bursar_role),
+        ])
+        result = resolve_approvers(stage, self._instance_with({"amount": 10}))
+        self.assertEqual(result, [])
+
+    def test_missing_field_does_not_raise(self):
+        """A document without the field compares as None rather than exploding."""
+        stage = self._stage([
+            ({"op": "gte", "field": "amount", "value": 100}, self.bursar_role),
+            (None, self.officer_role),
+        ])
+        result = resolve_approvers(stage, self._instance_with({"other": 1}))
+        self.assertEqual([e.user.pk for e in result], [self.officer.pk])
+
+    def test_compound_condition(self):
+        stage = self._stage([
+            ({"all": [
+                {"op": "gte", "field": "amount", "value": 100000},
+                {"op": "eq", "field": "category", "value": "capital"},
+            ]}, self.bursar_role),
+            (None, self.officer_role),
+        ])
+        both = self._instance_with({"amount": 150000, "category": "capital"})
+        self.assertEqual([e.user.pk for e in resolve_approvers(stage, both)],
+                         [self.bursar.pk])
+        one = self._instance_with({"amount": 150000, "category": "consumable"})
+        self.assertEqual([e.user.pk for e in resolve_approvers(stage, one)],
+                         [self.officer.pk])
+
+    def test_requester_excluded_from_dynamic_role(self):
+        from vs_rbac.tests.helpers import make_assignment
+        make_assignment(self.tenant, self.requester, self.bursar_role)
+        stage = self._stage([(None, self.bursar_role)])
+        ids = [e.user.pk for e in resolve_approvers(stage, self._instance_with({}))]
+        self.assertNotIn(self.requester.pk, ids)
+        self.assertIn(self.bursar.pk, ids)
+
+    def test_delegation_applies_to_the_matched_role(self):
+        from vs_workflow.models import ApprovalDelegation
+        delegate = _make_user_in_branch("dyn-delegate@test.com", self.branch)
+        now = timezone.now()
+        ApprovalDelegation.objects.create(
+            tenant=self.tenant, delegator=self.bursar, delegate=delegate,
+            starts_at=now - timezone.timedelta(hours=1),
+            ends_at=now + timezone.timedelta(hours=1))
+        stage = self._stage([(None, self.bursar_role)])
+        pairs = {(e.user.pk, e.on_behalf_of.pk if e.on_behalf_of else None)
+                 for e in resolve_approvers(stage, self._instance_with({}))}
+        self.assertEqual(pairs, {(self.bursar.pk, None), (delegate.pk, self.bursar.pk)})
+
+    def test_match_dynamic_rule_reports_why(self):
+        from vs_workflow.services.approvers import match_dynamic_rule
+        stage = self._stage([
+            ({"op": "lt", "field": "amount", "value": 100000}, self.officer_role),
+            (None, self.bursar_role),
+        ])
+        rule, evaluations = match_dynamic_rule(stage, {"amount": 250000})
+        self.assertEqual(rule.role_id, self.bursar_role.pk)
+        # The first rule was tried and rejected; evaluation stops at the match.
+        self.assertEqual([e["picked"] for e in evaluations], [False, True])
+        self.assertEqual(evaluations[0]["trace"]["result"], False)
+
+
+class PublishDynamicRoleTests(TestCase):
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import make_role, make_school
+        self.school = make_school(slug="dyn-pub-school")
+        self.tenant = self.school.tenant
+        make_role(self.tenant, name="Bursar", key="bursar")
+        make_role(self.tenant, name="Finance Officer", key="finance-officer")
+
+    def _publish(self, rules, tenant="default", extra=None):
+        stage = {
+            "code": "s1", "label": "Approval", "kind": "APPROVAL", "order": 1,
+            "approver_source": "DYNAMIC_ROLE", "dynamic_role_rules": rules,
+        }
+        stage.update(extra or {})
+        return templates_svc.publish_template(
+            tenant=self.tenant if tenant == "default" else tenant,
+            document_type="DYN_TPL", code="default", name="T",
+            stages_payload=[stage],
+        )
+
+    def test_rules_persisted_in_evaluation_order(self):
+        t = self._publish([
+            {"role_key": "finance-officer",
+             "condition": {"op": "lt", "field": "amount", "value": 100000}},
+            {"role_key": "bursar", "condition": None},
+        ])
+        rules = list(t.stages.get(code="s1").dynamic_rules.all())
+        self.assertEqual([r.role.key for r in rules], ["finance-officer", "bursar"])
+        self.assertEqual([r.order for r in rules], [0, 1])
+        self.assertTrue(rules[1].is_fallback)
+
+    def test_republish_replaces_rules(self):
+        self._publish([{"role_key": "bursar", "condition": None}])
+        t = self._publish([{"role_key": "finance-officer", "condition": None}])
+        rules = list(t.stages.get(code="s1").dynamic_rules.all())
+        self.assertEqual([r.role.key for r in rules], ["finance-officer"])
+
+    def test_empty_rules_rejected(self):
+        with self.assertRaises(TemplateInvalidError):
+            self._publish([])
+
+    def test_unknown_role_key_rejected(self):
+        with self.assertRaises(TemplateInvalidError):
+            self._publish([{"role_key": "nope", "condition": None}])
+
+    def test_bad_operator_rejected_at_publish(self):
+        """A typo'd operator must fail the publish, not the approval."""
+        with self.assertRaises(TemplateInvalidError):
+            self._publish([
+                {"role_key": "bursar",
+                 "condition": {"op": "greater_than", "field": "amount", "value": 1}},
+            ])
+
+    def test_condition_missing_field_rejected(self):
+        with self.assertRaises(TemplateInvalidError):
+            self._publish([{"role_key": "bursar", "condition": {"op": "gte", "value": 1}}])
+
+    def test_in_operator_requires_list_value(self):
+        with self.assertRaises(TemplateInvalidError):
+            self._publish([
+                {"role_key": "bursar",
+                 "condition": {"op": "in", "field": "category", "value": "capital"}},
+            ])
+
+    def test_rule_after_fallback_rejected(self):
+        """Anything after the catch-all could never fire, so it is a mistake."""
+        with self.assertRaises(TemplateInvalidError):
+            self._publish([
+                {"role_key": "bursar", "condition": None},
+                {"role_key": "finance-officer",
+                 "condition": {"op": "gte", "field": "amount", "value": 1}},
+            ])
+
+    def test_global_template_cannot_use_dynamic_role(self):
+        with self.assertRaises(TemplateInvalidError):
+            self._publish([{"role_key": "bursar", "condition": None}], tenant=None)
+
+    def test_switching_source_away_drops_stale_rules(self):
+        from vs_workflow.models import WorkflowStageDynamicRule
+        self._publish([{"role_key": "bursar", "condition": None}])
+        t = templates_svc.publish_template(
+            tenant=self.tenant, document_type="DYN_TPL", code="default", name="T",
+            stages_payload=[{
+                "code": "s1", "label": "Approval", "kind": "APPROVAL", "order": 1,
+                "approver_source": "ROLE", "approver_role_key": "bursar",
+            }],
+        )
+        self.assertEqual(
+            WorkflowStageDynamicRule.objects.filter(stage=t.stages.get(code="s1")).count(), 0)
+
+    def test_bad_route_condition_also_rejected(self):
+        """The same validation now guards route and inclusion conditions."""
+        with self.assertRaises(TemplateInvalidError):
+            templates_svc.publish_template(
+                tenant=self.tenant, document_type="DYN_TPL2", code="default", name="T",
+                stages_payload=[
+                    {"code": "a", "label": "A", "order": 1},
+                    {"code": "b", "label": "B", "order": 2},
+                ],
+                routes_payload=[{"from_stage_code": "a", "to_stage_code": "b",
+                                 "condition": {"op": "bogus", "field": "x", "value": 1}}],
+            )
+
+    def test_bad_inclusion_condition_rejected(self):
+        with self.assertRaises(TemplateInvalidError):
+            templates_svc.publish_template(
+                tenant=self.tenant, document_type="DYN_TPL3", code="default", name="T",
+                stages_payload=[{"code": "a", "label": "A", "order": 1,
+                                 "inclusion_condition": {"op": "nope", "field": "x"}}],
+            )

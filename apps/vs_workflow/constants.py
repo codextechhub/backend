@@ -85,12 +85,15 @@ class ApproverSource(models.TextChoices):
     (`approver_role`) and resolves its active assignees - the human-facing
     replacement for permission keys. WORKFLOW_GROUP points at a reusable,
     named approver group whose membership mixes people, roles, and
-    organogram positions. The strategies are mutually exclusive per stage.
+    organogram positions. DYNAMIC_ROLE picks the role from the document
+    itself, using ordered condition rules. The strategies are mutually
+    exclusive per stage.
     """
     RBAC_PERMISSION = "RBAC_PERMISSION", "RBAC permission holders (default)"
     ORGANOGRAM      = "ORGANOGRAM",      "Organogram (relative to requester)"
     ROLE            = "ROLE",            "Tenant role holders"
     WORKFLOW_GROUP  = "WORKFLOW_GROUP",  "Workflow approver group"
+    DYNAMIC_ROLE    = "DYNAMIC_ROLE",    "Role chosen by the document"
 
 
 class GroupMemberKind(models.TextChoices):

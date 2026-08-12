@@ -14,7 +14,8 @@ from vs_workflow.conditions import evaluate_condition
 from vs_workflow.constants import (
     NOTIF_EVENT_FINAL_APPROVED, NOTIF_EVENT_REJECTED, NOTIF_EVENT_RETURNED,
     NOTIF_EVENT_STAGE_ACTIVATED,
-    AuditEventType, StageKind, WorkflowInstanceStatus, WorkflowStageStatus,
+    ApproverSource, AuditEventType, StageKind, WorkflowInstanceStatus,
+    WorkflowStageStatus,
 )
 from vs_workflow.exceptions import TemplateInvalidError
 from vs_workflow.handlers import get_handler
@@ -214,11 +215,22 @@ def _activate_stage(instance: WorkflowInstance, stage: WorkflowStage,
     ])
     instance.current_stage = stage
     instance.save(update_fields=["current_stage", "updated_at"])
+    audit_context = {
+        "stage_code": stage.code, "stage_label": stage.label,
+        "attempt": attempt, "eligible_count": len(eligible),
+    }
+    if stage.approver_source == ApproverSource.DYNAMIC_ROLE:
+        # Record which rule chose the role. Without it the snapshot says who
+        # was eligible but nothing says why, and a dynamic stage is exactly
+        # where that question gets asked.
+        rule, evaluations = approvers_service.match_dynamic_rule(stage, instance.document)
+        audit_context["dynamic_role"] = {
+            "matched_rule_id": str(rule.pk) if rule else None,
+            "matched_role_key": rule.role.key if rule else None,
+            "evaluations": evaluations,
+        }
     audit_service.write(instance, AuditEventType.STAGE_ACTIVATED,
-                        stage_instance=stage_instance, context={
-                            "stage_code": stage.code, "stage_label": stage.label,
-                            "attempt": attempt, "eligible_count": len(eligible),
-                        })
+                        stage_instance=stage_instance, context=audit_context)
     # Tell the stage's approvers their decision is awaited (bell + inbox).
     _notify(instance, NOTIF_EVENT_STAGE_ACTIVATED,
             recipient_user_ids=list({str(ea.user.id) for ea in eligible}),

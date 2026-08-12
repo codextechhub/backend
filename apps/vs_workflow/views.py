@@ -15,6 +15,7 @@ from rest_framework.viewsets import GenericViewSet, ModelViewSet
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 from vs_rbac.permissions import user_has_rbac_permission
 
+from vs_workflow.exceptions import TemplateInvalidError
 from vs_workflow.constants import (
     PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW,
     PERM_INSTANCE_SUBMIT, PERM_INSTANCE_VIEW, PERM_INSTANCE_CANCEL,
@@ -58,6 +59,61 @@ def _filter_by_branch(qs, branch):
     if branch is not None:
         return qs.filter(Q(branch=branch) | Q(branch__isnull=True))
     return qs
+
+
+# Dry-run a DYNAMIC_ROLE stage's rules against a sample document.
+def _preview_dynamic_role(d, requester, instance, scope):
+    """Return (eligible approvers, rule trace) for unsaved dynamic rules.
+
+    Mirrors what the engine will do at activation - validate each condition,
+    take the first match, resolve that role's assignees - so the builder's
+    answer and the engine's answer come from the same rules. Raises
+    TemplateInvalidError on a malformed rule, which is the point: the builder
+    should learn about a bad operator here, not from a stuck approval.
+    """
+    from vs_rbac.models import TenantRoleTemplate
+    from vs_workflow.conditions import evaluate_condition, validate_condition
+    from vs_workflow.services.approvers import EligibleApprover, _users_for_roles
+
+    document = d.get("sample_document") or {}
+    evaluations, matched = [], None
+
+    for i, raw in enumerate(d["dynamic_role_rules"]):
+        where = f"Rule {i + 1}"
+        key = (raw or {}).get("role_key") or ""
+        if not key:
+            raise TemplateInvalidError(f"{where}: 'role_key' is required.")
+        role = TenantRoleTemplate.objects.filter(
+            tenant=requester.tenant, key=key,
+            status=TenantRoleTemplate.Status.ACTIVE).first()
+        if role is None:
+            raise TemplateInvalidError(
+                f"{where}: no active role with key '{key}' exists in this tenant.")
+        condition = raw.get("condition")
+        validate_condition(condition, where)
+        hit, trace = evaluate_condition(condition, document)
+        evaluations.append({
+            "order": i, "role_key": key, "role_name": role.name,
+            "is_fallback": condition in (None, {}),
+            "trace": trace, "picked": False,
+        })
+        if hit:
+            matched = role
+            evaluations[-1]["picked"] = True
+            break
+
+    if matched is None:
+        return [], {"matched_role_key": None, "matched_role_name": None,
+                    "evaluations": evaluations,
+                    "note": "No rule matched and there is no fallback rule, so "
+                            "this stage would resolve to nobody."}
+
+    branch = instance.branch if scope == "BRANCH" else None
+    users = _users_for_roles([matched.pk], requester.tenant, branch)
+    users = [u for u in users if u.pk != requester.pk]
+    return ([EligibleApprover(user=u) for u in users],
+            {"matched_role_key": matched.key, "matched_role_name": matched.name,
+             "evaluations": evaluations})
 
 
 # Resolve tenant/branch context once for all workflow views.
@@ -168,7 +224,19 @@ class WorkflowTemplateViewSet(
             document_type=d.get("document_type", "") or "",
         )
 
-        eligible = resolve_approvers(stage, instance)
+        rule_preview = None
+        if d["approver_source"] == ApproverSource.DYNAMIC_ROLE:
+            # Dynamic rules live on stage.dynamic_rules, a reverse FK that an
+            # unsaved stage cannot carry, so the preview evaluates the posted
+            # rules directly instead of persisting a throwaway stage.
+            try:
+                eligible, rule_preview = _preview_dynamic_role(
+                    d, requester, instance, stage.approver_scope)
+            except TemplateInvalidError as exc:
+                return Response({"detail": exc.message},
+                                status=status.HTTP_400_BAD_REQUEST)
+        else:
+            eligible = resolve_approvers(stage, instance)
 
         def _u(user):
             if user is None:
@@ -180,12 +248,15 @@ class WorkflowTemplateViewSet(
             }
 
         approvers = [{"user": _u(e.user), "on_behalf_of": _u(e.on_behalf_of)} for e in eligible]
-        return Response({
+        payload = {
             "approver_source": d["approver_source"],
             "organogram_target": d.get("organogram_target") or None,
             "count": len(approvers),
             "approvers": approvers,
-        }, status=status.HTTP_200_OK)
+        }
+        if rule_preview is not None:
+            payload["dynamic_role"] = rule_preview
+        return Response(payload, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["post"], url_path="publish")
     def publish(self, request):

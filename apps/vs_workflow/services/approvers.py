@@ -206,6 +206,52 @@ def _display_name(user) -> str:
     return getattr(user, "full_name", "") or user.get_username()
 
 
+# Pick the rule a DYNAMIC_ROLE stage fires for a given document.
+def match_dynamic_rule(stage: WorkflowStage, document):
+    """First rule whose condition matches *document*, with the evaluation trace.
+
+    Returns ``(rule, evaluations)``. ``rule`` is None when nothing matched,
+    which happens only when the stage has no fallback rule. ``evaluations`` is
+    the per-rule trace list, shaped like the route-evaluation audit entry, so
+    "why did this go to the Bursar" is answerable after the fact.
+    """
+    from vs_workflow.conditions.evaluator import evaluate_condition
+
+    evaluations = []
+    chosen = None
+    for rule in stage.dynamic_rules.select_related("role").all():
+        matched, trace = evaluate_condition(rule.condition, document)
+        evaluations.append({
+            "rule_id": str(rule.pk),
+            "order": rule.order,
+            "role_key": rule.role.key,
+            "is_fallback": rule.is_fallback,
+            "trace": trace,
+            "picked": False,
+        })
+        if matched:
+            chosen = rule
+            evaluations[-1]["picked"] = True
+            break
+    return chosen, evaluations
+
+
+def _dynamic_role_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
+    """Resolve base approvers by letting the document choose the role.
+
+    Opt-in strategy (ApproverSource.DYNAMIC_ROLE): ordered rules are evaluated
+    against the document and the first match names the role, whose active
+    assignees then resolve exactly as they do for the ROLE source. No match and
+    no fallback resolves to nobody, leaving skip_if_no_approvers to decide -
+    the same outcome as a role nobody holds.
+    """
+    rule, _ = match_dynamic_rule(stage, instance.document)
+    if rule is None:
+        return []
+    branch_arg = instance.branch if stage.approver_scope == ApproverScope.BRANCH else None
+    return _users_for_roles([rule.role_id], instance.tenant, branch_arg)
+
+
 def _group_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
     """Resolve base approvers from stage.approver_group's membership.
 
@@ -264,6 +310,8 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
         stage.approver_role, honouring approver_scope for branch narrowing.
       - WORKFLOW_GROUP (opt-in): the resolved membership of the named approver
         group in stage.approver_group, mixing people, roles, and positions.
+      - DYNAMIC_ROLE (opt-in): the role named by the first of the stage's
+        ordered rules whose condition matches the document.
 
     The requester is always excluded - they cannot approve their own submission.
     Active delegations then expand the list regardless of source: if an eligible
@@ -287,6 +335,11 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     elif stage.approver_source == ApproverSource.WORKFLOW_GROUP:
         base_users = [
             u for u in _group_base_users(stage, instance)
+            if u.pk != instance.requested_by_id
+        ]
+    elif stage.approver_source == ApproverSource.DYNAMIC_ROLE:
+        base_users = [
+            u for u in _dynamic_role_base_users(stage, instance)
             if u.pk != instance.requested_by_id
         ]
     else:

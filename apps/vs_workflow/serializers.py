@@ -7,10 +7,22 @@ from vs_workflow.constants import (
 )
 from vs_workflow.models import (
     ApprovalDelegation, WorkflowApproverGroup, WorkflowApproverGroupMember,
+    WorkflowStageDynamicRule,
     WorkflowAuditLog, WorkflowInstance,
     WorkflowRoutePath, WorkflowStage, WorkflowStageAction,
     WorkflowStageApprover, WorkflowStageInstance, WorkflowTemplate,
 )
+
+
+class WorkflowStageDynamicRuleReadSerializer(serializers.ModelSerializer):
+    role_key  = serializers.CharField(source="role.key",  read_only=True)
+    role_name = serializers.CharField(source="role.name", read_only=True)
+    is_fallback = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = WorkflowStageDynamicRule
+        fields = ["id", "order", "condition", "role_key", "role_name",
+                  "label", "is_fallback"]
 
 
 class WorkflowStageReadSerializer(serializers.ModelSerializer):
@@ -29,6 +41,9 @@ class WorkflowStageReadSerializer(serializers.ModelSerializer):
     approver_group_name = serializers.CharField(
         source="approver_group.name", read_only=True, default=None,
     )
+    dynamic_role_rules = WorkflowStageDynamicRuleReadSerializer(
+        source="dynamic_rules", many=True, read_only=True,
+    )
 
     class Meta:
         model = WorkflowStage
@@ -38,6 +53,7 @@ class WorkflowStageReadSerializer(serializers.ModelSerializer):
             "approver_permission_key", "approver_scope",
             "approver_role_key", "approver_role_name",
             "approver_group_code", "approver_group_name",
+            "dynamic_role_rules",
             "organogram_target", "organogram_levels", "organogram_position_code",
             "advance_rule", "quorum_count", "on_rejection",
             "skip_if_no_approvers", "inclusion_condition",
@@ -135,6 +151,15 @@ class WorkflowTemplatePublishSerializer(serializers.Serializer):
                     f"Stage '{label}': approver_group_code is required when "
                     f"approver_source is WORKFLOW_GROUP."
                 )
+            # A dynamic stage needs rules. Their roles and conditions are
+            # validated tenant-aware in the publish service.
+            if s.get("approver_source") == ApproverSource.DYNAMIC_ROLE.value:
+                rules = s.get("dynamic_role_rules")
+                if not rules or not isinstance(rules, list):
+                    raise serializers.ValidationError(
+                        f"Stage '{label}': dynamic_role_rules must be a non-empty "
+                        f"list when approver_source is DYNAMIC_ROLE."
+                    )
         return value
 
 
@@ -267,6 +292,12 @@ class ApproverPreviewRequestSerializer(serializers.Serializer):
     approver_role_key = serializers.CharField(required=False, allow_blank=True, default="")
     # WORKFLOW_GROUP config - an approver group *code*.
     approver_group_code = serializers.CharField(required=False, allow_blank=True, default="")
+    # DYNAMIC_ROLE config: the rules to try, plus the sample document to try
+    # them against, so a builder can check "a 150,000 request goes to the
+    # Bursar" before publishing anything.
+    dynamic_role_rules = serializers.ListField(
+        child=serializers.DictField(), required=False, default=list)
+    sample_document = serializers.DictField(required=False, default=dict)
     # Optional context for delegation matching.
     document_type = serializers.CharField(required=False, allow_blank=True, default="")
 
@@ -286,6 +317,10 @@ class ApproverPreviewRequestSerializer(serializers.Serializer):
             if not attrs.get("approver_group_code"):
                 raise serializers.ValidationError(
                     {"approver_group_code": "Required when approver_source is WORKFLOW_GROUP."})
+        elif attrs["approver_source"] == ApproverSource.DYNAMIC_ROLE:
+            if not attrs.get("dynamic_role_rules"):
+                raise serializers.ValidationError(
+                    {"dynamic_role_rules": "Required when approver_source is DYNAMIC_ROLE."})
         elif not attrs.get("approver_permission_key"):
             raise serializers.ValidationError(
                 {"approver_permission_key": "Required when approver_source is RBAC_PERMISSION."})

@@ -20,7 +20,7 @@ from vs_rbac.tests.helpers import (
 )
 from vs_workflow.constants import PERM_GROUP_MANAGE, PERM_GROUP_VIEW
 from vs_workflow.models import WorkflowApproverGroup, WorkflowApproverGroupMember
-from vs_workflow.views import WorkflowApproverGroupViewSet
+from vs_workflow.views import WorkflowApproverGroupViewSet, WorkflowTemplateViewSet
 
 _counter = itertools.count(1)
 
@@ -305,3 +305,90 @@ class ApproverGroupApiTests(TestCase):
     def test_resolve_denied_without_view_permission(self):
         resp = _call(RESOLVE, "get", BASE, self.nobody, self.tenant, pk=self.group.pk)
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+
+# ── Dynamic role preview ─────────────────────────────────────────────────────
+
+PREVIEW = WorkflowTemplateViewSet.as_view({"post": "preview_approvers"})
+
+
+class DynamicRolePreviewTests(TestCase):
+    """The builder can try rules against a sample document before publishing."""
+
+    def setUp(self):
+        self.school = make_school(slug="dyn-prev-school", name="Preview School")
+        self.branch = make_branch(self.school)
+        self.tenant = self.school.tenant
+
+        self.builder = make_school_admin(self.branch, email="dyn-builder@test.com")
+        _grant(self.builder, ["workflow.template.view", "workflow.template.manage"])
+
+        self.officer_role = make_role(self.tenant, name="Finance Officer",
+                                      key="finance-officer")
+        self.bursar_role = make_role(self.tenant, name="Bursar", key="bursar")
+        self.officer = make_school_admin(self.branch, email="dyn-officer@test.com")
+        self.bursar = make_school_admin(self.branch, email="dyn-bursar@test.com")
+        make_assignment(self.tenant, self.officer, self.officer_role)
+        make_assignment(self.tenant, self.bursar, self.bursar_role)
+
+        self.rules = [
+            {"role_key": "finance-officer",
+             "condition": {"op": "lt", "field": "amount", "value": 100000}},
+            {"role_key": "bursar", "condition": None},
+        ]
+
+    def _preview(self, document, rules=None, user=None):
+        return _call(PREVIEW, "post", "/v1/workflow/templates/preview-approvers/",
+                     user or self.builder, self.tenant, {
+                         "requester": str(self.builder.pk),
+                         "approver_source": "DYNAMIC_ROLE",
+                         "approver_scope": "SCHOOL",
+                         "dynamic_role_rules": rules if rules is not None else self.rules,
+                         "sample_document": document,
+                     })
+
+    def test_small_amount_previews_the_officer(self):
+        resp = self._preview({"amount": 50000})
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        body = _body(resp)
+        self.assertEqual(body["dynamic_role"]["matched_role_key"], "finance-officer")
+        self.assertEqual([a["user"]["id"] for a in body["approvers"]], [str(self.officer.pk)])
+
+    def test_large_amount_previews_the_bursar(self):
+        body = _body(self._preview({"amount": 250000}))
+        self.assertEqual(body["dynamic_role"]["matched_role_key"], "bursar")
+        self.assertEqual([a["user"]["id"] for a in body["approvers"]], [str(self.bursar.pk)])
+
+    def test_preview_shows_why_each_rule_did_or_did_not_fire(self):
+        body = _body(self._preview({"amount": 250000}))
+        evals = body["dynamic_role"]["evaluations"]
+        self.assertEqual([e["picked"] for e in evals], [False, True])
+        self.assertEqual(evals[0]["trace"]["left"], 250000)
+        self.assertFalse(evals[0]["trace"]["result"])
+
+    def test_preview_warns_when_nothing_would_match(self):
+        body = _body(self._preview(
+            {"amount": 10},
+            rules=[{"role_key": "bursar",
+                    "condition": {"op": "gte", "field": "amount", "value": 999999}}]))
+        self.assertIsNone(body["dynamic_role"]["matched_role_key"])
+        self.assertEqual(body["count"], 0)
+        self.assertIn("nobody", body["dynamic_role"]["note"])
+
+    def test_bad_operator_is_a_400_not_a_500(self):
+        resp = self._preview({"amount": 1}, rules=[
+            {"role_key": "bursar",
+             "condition": {"op": "greater", "field": "amount", "value": 1}}])
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_role_from_another_tenant_rejected(self):
+        other = make_school(slug="dyn-prev-other", name="Other")
+        foreign = make_role(other.tenant, name="Foreign", key="foreign-role")
+        resp = self._preview({"amount": 1},
+                             rules=[{"role_key": foreign.key, "condition": None}])
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_rules_are_required_for_dynamic_source(self):
+        resp = self._preview({"amount": 1}, rules=[])
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("dynamic_role_rules", str(resp.data))
