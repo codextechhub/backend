@@ -8,6 +8,8 @@ from django.utils import timezone
 
 from vs_rbac.managers import TenantAwareManager
 
+from .exceptions import InvalidBranchTransition
+
 
 # -----------------------------------------------------------------------------
 # Shared base + helpers
@@ -125,7 +127,7 @@ class School(TimeStampedModel):
         term_structure: Academic calendar definition (`TermStructure` choices).
         currency: Preferred billing currency (`Currency` choices).
         status: Operational flag (`SchoolStatus` choices, indexed).
-        activated_at / deleted_at: Lifecycle timestamps for activation and soft-deletes.
+        activated_at / deactivated_at: Lifecycle timestamps for activation and deactivation.
 
     Meta:
         - indexes on `slug` and (`status`, `created_at`) for list views.
@@ -266,7 +268,7 @@ class Branch(TimeStampedModel):
         _type: Optional free-form descriptor (e.g., Primary, Secondary).
         address / email / country / state: Contact + location metadata captured today.
         status: Lifecycle state (BranchStatus choices, indexed).
-        opened_at / closed_at / activated_at / deleted_at: Optional lifecycle timestamps.
+        opened_at / closed_at / activated_at / deactivated_at: Optional lifecycle timestamps.
 
     Meta:
         - indexes on (`school`, `is_main`), (`school`, `status`), (`school`, `code`)
@@ -377,22 +379,84 @@ class Branch(TimeStampedModel):
     def mark_inactive(self, *, actor_id: str, reason: str):
         self.transition(to_state=BranchStatus.INACTIVE, actor_id=actor_id, reason=reason)
 
+    # States meaning "no longer in service". Entering any of them stamps
+    # `deactivated_at`; coming back to ACTIVE clears it again.
+    OUT_OF_SERVICE_STATES = frozenset({
+        BranchStatus.SUSPENDED,
+        BranchStatus.INACTIVE,
+        BranchStatus.CLOSED,
+    })
+
+    # The lifecycle edges a branch may travel. Two rules shape it: CLOSED is
+    # terminal (a shut-down branch is re-created, not resurrected), and PENDING
+    # is never a target, because "pending activation" is a fact about a branch
+    # that has never opened and activation cannot be undone. SUSPENDED is only
+    # reachable from ACTIVE - you cannot suspend what was never trading.
+    ALLOWED_TRANSITIONS = {
+        BranchStatus.PENDING: frozenset({
+            BranchStatus.ACTIVE, BranchStatus.INACTIVE, BranchStatus.CLOSED,
+        }),
+        BranchStatus.ACTIVE: frozenset({
+            BranchStatus.SUSPENDED, BranchStatus.INACTIVE, BranchStatus.CLOSED,
+        }),
+        BranchStatus.SUSPENDED: frozenset({
+            BranchStatus.ACTIVE, BranchStatus.INACTIVE, BranchStatus.CLOSED,
+        }),
+        BranchStatus.INACTIVE: frozenset({
+            BranchStatus.ACTIVE, BranchStatus.CLOSED,
+        }),
+        BranchStatus.CLOSED: frozenset(),
+    }
+
+    @transaction.atomic
     def transition(self, *, to_state: str, actor_id: str, reason: str = ""):
+        """
+        Moves the branch to `to_state` and records a `BranchLifecycle` row.
+
+        Refuses any edge outside `ALLOWED_TRANSITIONS`. Asking for the state the
+        branch is already in is a no-op, not an error, so the helpers below stay
+        idempotent; the API surface rejects it explicitly instead.
+
+        The status write and the audit row are one unit: a branch must never
+        change state without the history entry that explains it.
+        """
         from_state = self.status
         if from_state == to_state:
             return
 
-        self.status = to_state
-        if to_state == BranchStatus.ACTIVE and self.activated_at is None:
-            self.activated_at = timezone.now()
+        if to_state not in self.ALLOWED_TRANSITIONS.get(from_state, frozenset()):
+            raise InvalidBranchTransition(from_state=from_state, to_state=to_state)
 
-        self.save(update_fields=["status", "activated_at", "updated_at", "deleted_at"])
+        now = timezone.now()
+        self.status = to_state
+
+        if to_state == BranchStatus.ACTIVE:
+            # `activated_at` is the first activation and is never rewritten;
+            # `deactivated_at` describes the current state, so it clears.
+            if self.activated_at is None:
+                self.activated_at = now
+            self.deactivated_at = None
+        elif to_state in self.OUT_OF_SERVICE_STATES:
+            self.deactivated_at = now
+            if to_state == BranchStatus.CLOSED and self.closed_at is None:
+                # Mirrors clean(); transition() saves with update_fields and so
+                # never runs full_clean().
+                self.closed_at = now
+
+        self.save(update_fields=[
+            "status",
+            "activated_at",
+            "deactivated_at",
+            "closed_at",
+            "updated_at",
+        ])
 
         BranchLifecycle.objects.create(
             branch=self,
             from_state=from_state,
             to_state=to_state,
-            actor_id=actor_id,
+            # Callers pass the actor as a User; actor_id is a CharField.
+            actor_id=str(actor_id or ""),
             reason=reason or "",
         )
 
@@ -555,7 +619,9 @@ class BranchLifecycle(models.Model):
     to_state = models.CharField(max_length=32, choices=BranchStatus.choices)
 
     actor_id = models.CharField(max_length=120)
-    reason = models.TextField(blank=True, default=None)
+    # The column is NOT NULL, so default=None made every writer that omitted
+    # `reason` raise IntegrityError.
+    reason = models.TextField(blank=True, default="")
 
     occurred_at = models.DateTimeField(default=timezone.now, db_index=True)
 

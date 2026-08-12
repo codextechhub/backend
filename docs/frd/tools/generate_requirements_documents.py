@@ -39,10 +39,10 @@ AMBER = "A86800"
 RED = "B42318"
 PURPLE = "6F42C1"
 
-MRD_VERSION = "2.5.1"
-FRD_VERSION = "1.1"
-REVIEW_DATE = "11 August 2026"
-CODE_BASELINE = "e60d944ac7ffbfaecc472d8e79ac47d62580968a (11 August 2026)"
+MRD_VERSION = "2.8"
+FRD_VERSION = "1.2"
+REVIEW_DATE = "12 August 2026"
+CODE_BASELINE = "355c59b665fd27d4c47152fa9638093b2e95dc49 plus uncommitted Branch lifecycle work (12 August 2026)"
 
 
 def set_repeat_table_header(row) -> None:
@@ -733,11 +733,11 @@ FR_REQUIREMENTS = [
     {
         "id": "FR-011",
         "title": "Transition Branch Lifecycle",
-        "status": "Defective",
+        "status": "Implemented with limits",
         "requirement": "Privileged staff can move a Branch through an allowed lifecycle matrix and write a lifecycle event only after a successful state change.",
-        "evidence": "A transition endpoint and serializer accept ACTIVE, SUSPENDED, INACTIVE, PENDING, and CLOSED targets.",
+        "evidence": "The transition endpoint accepts ACTIVE, SUSPENDED, INACTIVE, and CLOSED targets, resolves the Branch within the route School, and requires platform.branches.manage in addition to XVision staff. Branch.ALLOWED_TRANSITIONS publishes the permitted edges, CLOSED is terminal, and PENDING is not a target. Branch.transition() runs in one transaction, persists status with activated_at, deactivated_at, and closed_at, and appends the BranchLifecycle row.",
         "acceptance": "The implementation must validate allowed transitions, set lifecycle timestamps consistently, persist the state, and append actor/reason history atomically.",
-        "limit": "Branch.transition() saves a nonexistent deleted_at field, so a real transition fails before history is written. No allowed-transition matrix is enforced and deactivated_at/closed_at handling is incomplete.",
+        "limit": "Closing a Branch has no defined effect on dependent records, sessions, or Branch-bound users. Lifecycle control is platform-side only: a School administrator cannot transition a Branch of their own School.",
     },
     {
         "id": "FR-012",
@@ -755,7 +755,7 @@ FR_REQUIREMENTS = [
         "requirement": "Material School, Branch, configuration, and lifecycle changes must record the actor, target, outcome, before state, and difference where applicable.",
         "evidence": "School create, Branch create, and Branch update emit platform audit evidence. Configuration and entitlement changes use a separate immutable configuration stream.",
         "acceptance": "Successful and failed privileged operations are traceable without exposing secrets or raw traceback data.",
-        "limit": "School update and reset configuration do not emit the expected platform events, and the defective Branch transition prevents successful lifecycle history.",
+        "limit": "School update and reset configuration do not emit the expected platform events. Branch lifecycle history is now written on every successful transition.",
     },
     {
         "id": "FR-014",
@@ -899,7 +899,7 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
         "Current module decision",
         [
             f"Module 1 remains Backend Partial and Integration Partial in MRD v{MRD_VERSION}.",
-            "The defining blockers are School lifecycle controls, the Branch transition defect, and safe handling of closed or deleted Schools and Branches.",
+            "The defining blockers are School lifecycle controls and safe handling of closed or deleted Schools and Branches. The Branch transition defect is resolved in this revision.",
         ],
         kind="attention",
     )
@@ -914,7 +914,7 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
             ["Platform School viewer", "List, search, summarize, and retrieve Schools and Branches."],
             ["Platform School administrator", "Create and update Schools using platform.schools.create or platform.schools.update."],
             ["Platform Branch administrator", "Create and update Branches using platform.branches.create or platform.branches.update."],
-            ["XVision staff", "Attempt Branch lifecycle operations and view package/capability catalogues."],
+            ["XVision staff", "Run Branch lifecycle transitions with platform.branches.manage, and view package/capability catalogues."],
             ["XVision super administrator", "Run the current reset configuration operation."],
             ["School administrator", "Operate within the paired Tenant through permissions provisioned by the School admin role."],
             ["Branch administrator", "Operate within the School tenant and assigned Branch where dependent views enforce Branch scope."],
@@ -934,7 +934,7 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
             ["Branch list, detail, statistics", "platform.branches.view", "Route School plus ambient tenant filtering"],
             ["Create Branch", "platform.branches.create", "ACTIVE route School"],
             ["Update Branch", "platform.branches.update", "Route School and Branch business code"],
-            ["Transition Branch", "IsVisionStaff", "Current endpoint is not fine-grained RBAC and is defective"],
+            ["Transition Branch", "IsVisionStaff and platform.branches.manage", "Resolved within the route School"],
             ["Reset School configuration", "IsVisionSuperAdmin", "Current behavior removes branding only"],
             ["Platform onboarding defaults", "config.value.view / config.value.update", "Platform-only curated settings"],
             ["Entitlements", "config.entitlement.view / manage", "Platform or School Tenant scope"],
@@ -984,11 +984,11 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
         doc,
         ["Area", "Current state", "Required rule"],
         [
-            ["States", "PENDING, ACTIVE, SUSPENDED, INACTIVE, CLOSED", "Publish an allowed-transition matrix and reject every other move."],
-            ["Persistence", "The save call includes nonexistent deleted_at and fails.", "Persist only real fields, then write BranchLifecycle in the same transaction."],
-            ["Timestamps", "activated_at is partially handled; deactivated_at and closed_at are inconsistent.", "Set and clear timestamps according to the transition policy."],
+            ["States", "PENDING, ACTIVE, SUSPENDED, INACTIVE, CLOSED", "Branch.ALLOWED_TRANSITIONS publishes the matrix and refuses every other move with INVALID_BRANCH_TRANSITION."],
+            ["Persistence", "The save call persists status, activated_at, deactivated_at, and closed_at.", "BranchLifecycle is written in the same transaction as the status change."],
+            ["Timestamps", "activated_at records first activation only; deactivated_at is stamped on SUSPENDED, INACTIVE, and CLOSED and cleared on return to ACTIVE; CLOSED stamps closed_at.", "Retain this policy for every new state."],
             ["Access", "Closed-Branch access effects are not defined.", "Define authentication, session, write, read-only, transfer, and dependent-record rules."],
-            ["Authorization", "IsVisionStaff", "Adopt a dedicated lifecycle permission and retain tenant/Branch target validation."],
+            ["Authorization", "IsVisionStaff and platform.branches.manage", "Retain both gates so a mis-granted key cannot reach a platform commercial action."],
         ],
         [1.25, 2.85, 3.17],
         font_size=8.1,
@@ -1021,7 +1021,7 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
             ["ContactInfo", "Primary admin contact card", "Email indexed but not database-unique"],
             ["SchoolPrimaryAdmin", "School admin contact and invitation state", "One-to-one School"],
             ["BranchPrimaryAdmin", "Branch admin contact and invitation state", "One-to-one Branch"],
-            ["BranchLifecycle", "Branch state-change history", "Deleted with Branch today; successful transition path is defective"],
+            ["BranchLifecycle", "Branch state-change history", "Deleted with Branch today; written on every successful transition"],
         ],
         [1.55, 2.35, 3.37],
         font_size=8.0,
@@ -1067,7 +1067,7 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
             ["GET", "/v1/i/{slug}/branches/stats/", "platform.branches.view", "Counts by Branch status"],
             ["GET", "/v1/i/{slug}/branches/{code}/detail/", "platform.branches.view", "Branch detail and primary admin"],
             ["PUT/PATCH", "/v1/i/{slug}/branches/{code}/update/", "platform.branches.update", "Update Branch metadata"],
-            ["POST", "/v1/i/{slug}/branches/{code}/transition/", "IsVisionStaff", "Attempt lifecycle transition; currently defective"],
+            ["POST", "/v1/i/{slug}/branches/{code}/transition/", "IsVisionStaff and platform.branches.manage", "Lifecycle transition; 409 on a refused edge or repeated state"],
         ],
         [0.65, 2.55, 1.65, 2.42],
         font_size=7.6,
@@ -1150,13 +1150,12 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
         ["Priority", "Current gap", "Required completion", "FR"],
         [
             ["P0", "School lifecycle controls", "Add activation, suspension, reactivation, recoverable soft deletion, guarded hard deletion, access effects, and audit evidence.", "FR-015"],
-            ["P0", "Branch transition defect", "Remove the invalid deleted_at update, define allowed transitions and timestamp rules, and cover every path.", "FR-011"],
             ["P0", "Unsafe School detail errors", "Return generic production responses and keep traceback data in server logs only.", "FR-008"],
             ["P1", "Database Branch constraints", "Enforce unique (school, code) and one main Branch per School at the database boundary.", "FR-005"],
             ["P1", "School update and reset audit", "Emit before/after evidence and allow valid branding-only updates.", "FR-009, FR-013, FR-014"],
             ["P1", "Admin provisioning reconciliation", "Expose queued/failed invitations, retry action, and operator visibility.", "FR-004, FR-006"],
             ["P1", "Reset semantics", "Declare reset scope, bind confirmation to School, and restore inherited state safely.", "FR-014"],
-            ["P1", "Branch delete and closed access", "Define retention, dependency checks, transfer rules, read/write restrictions, and safe deletion.", "FR-011, FR-016"],
+            ["P1", "Branch delete and closed access", "Define retention, dependency checks, transfer rules, read/write restrictions, and safe deletion. CLOSED is now terminal, so its effect on dependent records must be stated.", "FR-011, FR-016"],
             ["P2", "Package Branch capacity", "Enforce max_branch or remove it from the active product contract.", "FR-007"],
         ],
         [0.7, 1.65, 4.1, 0.82],
@@ -1189,7 +1188,7 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
             ["Create, list, retrieve, and update Branches", "FR-005, FR-010", "Implemented"],
             ["Per-School Branch code allocation with locking", "FR-005", "Implemented without database uniqueness"],
             ["Main-Branch designation and Branch statistics", "FR-005, FR-010", "Implemented without database main-Branch constraint"],
-            ["Branch status transitions and lifecycle history", "FR-011", "Defective"],
+            ["Branch status transitions and lifecycle history", "FR-011", "Implemented with closed-Branch access limit"],
             ["Tenant-aware School and Branch query scoping", "FR-012", "Partial at Branch-bound authorization layer"],
             ["Reset School-owned configuration to platform defaults", "FR-014", "Partial; branding-only"],
         ],
@@ -1203,7 +1202,8 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
         doc,
         ["Version", "Date", "Summary"],
         [
-            ["1.1", "11 Aug 2026", f"Redesigned using the XVS MRD visual system; reconciled to current code and MRD v{MRD_VERSION}; added platform onboarding defaults, Branch IDs, explicit acceptance criteria, workflow rules, current Needs Attention, and MRD traceability."],
+            ["1.2", "12 Aug 2026", f"FR-011 moves from Defective to Implemented with limits. Branch.transition() persists the real lifecycle timestamps, publishes an allowed-transition matrix with CLOSED terminal and PENDING unreachable, and writes BranchLifecycle in the same transaction. The endpoint resolves the Branch within its route School and now requires platform.branches.manage. Reconciled to MRD v{MRD_VERSION}."],
+            ["1.1", "11 Aug 2026", "Redesigned using the XVS MRD visual system; reconciled to current code and MRD v2.5.1; added platform onboarding defaults, Branch IDs, explicit acceptance criteria, workflow rules, current Needs Attention, and MRD traceability."],
             ["1.0", "1 Aug 2026", "Initial code-aligned engineering FRD based on MRD predecessor v2.2 and commit 192f9782e3e9812a215ad4e3f322777ac12d9461."],
         ],
         [0.75, 1.15, 5.37],
@@ -1239,15 +1239,25 @@ def assert_no_em_dash(path: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--reference", type=Path, required=True)
-    parser.add_argument("--mrd-output", type=Path, required=True)
+    parser.add_argument(
+        "--mrd-output",
+        type=Path,
+        help=(
+            "Optional. build_mrd() patches the v2.5.1 rename delta onto its "
+            "reference and is kept for history only. The MRD has moved on past "
+            "that revision, so pass this only with a matching reference - "
+            "later MRD versions are produced by patch_mrd.py."
+        ),
+    )
     parser.add_argument("--frd-output", type=Path, required=True)
     args = parser.parse_args()
 
-    build_mrd(args.reference, args.mrd_output)
+    if args.mrd_output is not None:
+        build_mrd(args.reference, args.mrd_output)
+        assert_no_em_dash(args.mrd_output)
+        print(args.mrd_output)
     build_frd(args.reference, args.frd_output)
-    assert_no_em_dash(args.mrd_output)
     assert_no_em_dash(args.frd_output)
-    print(args.mrd_output)
     print(args.frd_output)
 
 

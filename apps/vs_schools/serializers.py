@@ -22,6 +22,7 @@ from .models import (
     SchoolStatus,
     PackagePlan,
 )
+from .exceptions import BranchAlreadyInState
 from vs_audit.models import AuditModuleKey, AuditActionType
 from vs_audit.services import AuditDiffService, emit_audit_event
 from vs_config.models import Capability, CapabilityEntitlement
@@ -505,7 +506,7 @@ class BranchCreateSerializer(serializers.ModelSerializer):
         _snap = AuditDiffService.from_instances(
             before_instance=None,
             after_instance=branch,
-            exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deleted_at"],
+            exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at"],
         )
         emit_audit_event(
             module_key=AuditModuleKey.BRANCH,
@@ -558,7 +559,7 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
     def update(self, instance: Branch, validated_data: Dict[str, Any]) -> Branch:
         before_instance = AuditDiffService.model_instance_to_dict(
             instance,
-            exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deleted_at"],
+            exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at"],
         )
         
         changes = 0
@@ -575,7 +576,7 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
         
         after_instance = AuditDiffService.model_instance_to_dict(
             instance,
-            exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deleted_at"],
+            exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at"],
         )
 
         emit_audit_event(
@@ -968,7 +969,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             _branch_snap = AuditDiffService.from_instances(
                 before_instance=None,
                 after_instance=branch,
-                exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deleted_at"],
+                exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at"],
             )
             emit_audit_event(
                 module_key=AuditModuleKey.BRANCH,
@@ -1098,11 +1099,13 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
 # Lifecycle & Operations serializers (write)
 # -----------------------------------------------------------------------------
 
+# PENDING is deliberately absent: it is the provisioning state, and nothing may
+# travel back to "pending activation". See Branch.ALLOWED_TRANSITIONS for the
+# edges between the states below.
 Branch_Transition_Choice = [
     ("ACTIVE", "Branch Activated"),
     ("SUSPENDED", "Branch Suspended"),
     ("INACTIVE", "Branch Deactivated"),
-    ("PENDING", "Branch Pending"),
     ("CLOSED", "Branch Closed"),
 ]
 
@@ -1118,11 +1121,15 @@ class BranchStateTransitionSerializer(serializers.Serializer):
         reason = self.validated_data.get("reason", "")
 
         if to_state not in [choice[0] for choice in Branch_Transition_Choice]:
-            raise serializers.ValidationError(f"Invalid to_state: {to_state}")
-        
+            raise serializers.ValidationError({"to_state": f"Invalid to_state: {to_state}"})
+
+        # transition() treats this as an idempotent no-op; over the API it is
+        # worth telling the caller their request changed nothing.
         if branch.status == to_state:
-            raise serializers.ValidationError(f"Branch is already {to_state}.", code=400)
-        
+            raise BranchAlreadyInState(state=to_state)
+
+        # Raises InvalidBranchTransition (409) for any edge the lifecycle
+        # disallows, e.g. reopening a CLOSED branch.
         branch.transition(to_state=to_state, actor_id=actor_id, reason=reason)
 
         return branch

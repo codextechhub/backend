@@ -135,12 +135,22 @@ def custom_exception_handler(exc, context):
 
     # Handle all other DRF exceptions
     if response is not None:
+        fallback = "An error occurred. Check the error details for more information."
+        data = response.data
+        if isinstance(data, dict):
+            message = data.get("detail", fallback)
+        elif isinstance(data, list) and len(data) == 1 and isinstance(data[0], str):
+            # DRF renders ValidationError("some text") as a bare list, not a
+            # dict - reading .get() off it used to turn a 400 into a 500.
+            message = data[0]
+        else:
+            message = fallback
         return Response({
             "success": False,
-            "message": response.data.get("detail", "An error occurred. Check the error details for more information."),
+            "message": message,
             "error": {
                 "code": "REQUEST_ERROR",
-                "detail": response.data,
+                "detail": data,
             }
         }, status=response.status_code)
 
