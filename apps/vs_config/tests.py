@@ -318,6 +318,23 @@ class ConfigurationAPISecurityTests(TestCase):
         response = self.client.get(f"/v1/config/values/?branch={other_branch.pk}")
         self.assertEqual(response.status_code, 404)
 
+    def test_malformed_branch_scope_returns_not_found_rather_than_erroring(self):
+        """``?branch=`` addresses an integer key, so junk is a lookup miss.
+
+        Handing the raw value to the ORM made a non-numeric or oversized id a
+        database error (500) instead of the same 404 a foreign branch gets.
+        """
+        permission = make_permission("config.value.view")
+        role = make_role(self.school, name="Value Reader Two")
+        make_role_permission(role, permission)
+        make_assignment(self.school, self.admin, role)
+        self.client.force_authenticate(self.admin)
+
+        for bad in ("not-an-id", "9" * 40, "3f1b2c4d-0000-4000-8000-000000000001"):
+            with self.subTest(branch=bad):
+                response = self.client.get(f"/v1/config/values/?branch={bad}")
+                self.assertEqual(response.status_code, 404, response.content)
+
     def test_tenant_scoped_value_write_lists_and_audits(self):
         role = make_role(self.school, name="Config Writer")
         for key in ("config.value.update", "config.value.view", "config.audit.view"):

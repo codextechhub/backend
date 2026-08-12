@@ -1,6 +1,6 @@
 from rest_framework.exceptions import NotFound
 
-from vs_schools.models import Branch
+from vs_schools.services.references import find_branch_in_tenant
 
 from ..constants import BRANCH_SCOPE, PLATFORM_SCOPE, SCHOOL_SCOPE
 from ..exceptions import InvalidConfigurationScope
@@ -57,11 +57,13 @@ def resolve_request_scope(request, *, allow_platform=True):
     branch = None
     branch_ref = request.query_params.get("branch") or request.data.get("branch")
     if branch_ref:
-        branch = Branch.all_objects.filter(pk=branch_ref).first()
-        # The branch must live under the resolved tenant; foreign/missing
-        # branches return the same 404 to avoid tenant enumeration.
-        target_tenant_id = tenant.pk if tenant is not None else None
-        if branch is None or branch.school.tenant_id != target_tenant_id:
+        # The branch must live under the resolved tenant; foreign, missing and
+        # malformed references all return the same 404 to avoid tenant
+        # enumeration. Scoping the lookup itself (rather than fetching first and
+        # comparing afterwards) is what keeps a non-numeric or oversized id a
+        # 404 instead of a database error.
+        branch = find_branch_in_tenant(tenant, branch_ref)
+        if branch is None:
             raise NotFound("Configuration scope not found.")
         # A branch selection implies its tenant even for platform callers.
         scope_tenant = branch.school.tenant

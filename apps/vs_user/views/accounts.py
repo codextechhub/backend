@@ -48,6 +48,18 @@ def _is_truthy(value) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _as_row_id(value, field):
+    """Validate a filter value that addresses an integer primary key.
+
+    Rejecting a non-numeric or out-of-range id here keeps it out of the query,
+    where it would be a server error rather than the 400 it actually is.
+    """
+    raw = str(value).strip()
+    if not raw.isdigit() or int(raw) > 9_223_372_036_854_775_807:
+        raise ValidationError({field: 'Must be a numeric id.'})
+    return int(raw)
+
+
 # =============================================================================
 # # USER MANAGEMENT VIEWS
 # =============================================================================
@@ -132,12 +144,15 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         if params.get('scope') == 'school':
             qs = qs.exclude(tenant__kind=Tenant.Kind.PLATFORM)
 
+        # Both of these address integer-keyed rows, so a non-numeric or
+        # oversized value is a bad request rather than a lookup - handing it
+        # straight to the ORM turns an empty page into a 500.
         if school_id := params.get('school_id'):
             # school_id query param maps to the tenant's school profile now.
-            qs = qs.filter(tenant__school_profile__id=school_id)
+            qs = qs.filter(tenant__school_profile__id=_as_row_id(school_id, 'school_id'))
 
         if branch_id := params.get('branch_id'):
-            qs = qs.filter(branch_id=branch_id)
+            qs = qs.filter(branch_id=_as_row_id(branch_id, 'branch_id'))
 
         if search := params.get('search'):
             if len(search) > 64:

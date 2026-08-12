@@ -17,7 +17,8 @@ from rest_framework_simplejwt.serializers import (
 
 from vs_rbac.models import TenantRoleTemplate
 from vs_rbac.fls import FieldSecurityMixin
-from vs_schools.models import School, Branch
+from vs_schools.models import School
+from vs_schools.services.references import resolve_branch_reference
 from vs_tenants.models import Tenant
 from .models import (
     User,
@@ -238,9 +239,13 @@ class UserCreateSerializer(serializers.Serializer):
         max_length=32, required=False, allow_blank=True, default='',
         validators=[RegexValidator(r'^\+?[0-9 ()\-]{7,22}$', message='Enter a valid phone number.')],
     )
-    # branch passed as UUID; resolved to an object in validate(). The target
-    # tenant is derived from request context, not a school input.
-    branch      = serializers.UUIDField(required=False, allow_null=True, default=None)
+    # branch passed as its integer id; resolved against the target tenant in
+    # validate(). The target tenant is derived from request context, not a
+    # school input. Declared as a CharField so "3" and 3 are both accepted and
+    # the id is range-checked by the resolver rather than by the database.
+    branch      = serializers.CharField(
+        required=False, allow_null=True, allow_blank=True, default=None,
+    )
     # Required for a real create; optional when saving a draft (context['draft']),
     # where the role can be filled in before the draft is submitted.
     role        = serializers.CharField(
@@ -293,16 +298,11 @@ class UserCreateSerializer(serializers.Serializer):
         # belong to the platform (codex) tenant. A legacy ``school`` input is
         # accepted and ignored so old clients do not 400.
         attrs.pop('school', None)
-        branch_id = attrs.pop('branch', None)
+        branch_ref = attrs.pop('branch', None)
 
-        if branch_id:
-            try:
-                attrs['branch'] = Branch.objects.select_related('school').get(id=branch_id)
-            except Branch.DoesNotExist:
-                raise serializers.ValidationError({'branch': 'Branch not found.'})
-        else:
-            attrs['branch'] = None
-
+        # The target tenant has to be known BEFORE the branch is resolved: the
+        # branch is looked up *inside* that tenant, which is what makes another
+        # tenant's branch indistinguishable from one that does not exist.
         if user_type == User.UserType.CX_STAFF:
             target_tenant = Tenant.objects.filter(
                 slug='codex', kind=Tenant.Kind.PLATFORM,
@@ -314,24 +314,24 @@ class UserCreateSerializer(serializers.Serializer):
         else:
             target_tenant = getattr(self.context['request'], 'tenant', None) or actor.tenant
 
-        # Vision Staff must not have a branch.
+        # Vision Staff must not have a branch. Judged on the raw reference, not
+        # a resolved row: the platform tenant owns no branches, so resolving
+        # first would answer "no such branch" and hide the real reason.
         if user_type == User.UserType.CX_STAFF:
-            if attrs['branch']:
+            if branch_ref not in (None, ''):
                 raise serializers.ValidationError(
                     {'user_type': 'Vision Staff accounts cannot be assigned to a branch.'}
                 )
+            attrs['branch'] = None
         else:
+            # Raises a validation error - never a model-level exception or a
+            # database error - for an unknown, foreign or malformed reference.
+            attrs['branch'] = resolve_branch_reference(target_tenant, branch_ref)
             # Branch-level users must have a branch.
             if user_type not in (User.UserType.SCHOOL_ADMIN,) and not attrs['branch']:
                 raise serializers.ValidationError(
                     {'branch': f'User type {user_type} must be assigned to a branch.'}
                 )
-
-        # Branch must belong to the target tenant.
-        if attrs.get('branch') and attrs['branch'].school.tenant_id != target_tenant.id:
-            raise serializers.ValidationError(
-                {'branch': 'The selected branch does not belong to the target tenant.'}
-            )
 
         attrs['tenant'] = target_tenant
 

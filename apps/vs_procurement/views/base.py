@@ -136,25 +136,14 @@ def _resolve_branch_reference(entity, ref, field="branch"):
 
     A branch belonging to another tenant is reported exactly like an unknown one,
     so the parameter cannot be used to discover ids outside the caller's tenant.
-    """
-    if ref in (None, ""):
-        return None
-    from vs_schools.models import Branch
 
-    raw = str(ref)
-    # Reject a non-numeric or out-of-range id here rather than let it reach the
-    # database, where an oversized bigint is a server error instead of a 400.
-    if raw.isdigit() and int(raw) <= 9_223_372_036_854_775_807:
-        # all_objects deliberately: the explicit tenant filter is the security
-        # boundary, and it must not depend on ambient request-local tenant state.
-        branch = Branch.all_objects.filter(
-            school__tenant=entity.tenant, pk=int(raw),
-        ).first()
-    else:
-        branch = None
-    if branch is None:
-        raise ValidationError({field: "No such branch in this tenant."})
-    return branch
+    The rule itself lives with the model it protects (vs_schools); this wrapper
+    only says which tenant a procurement caller is entitled to, so every app that
+    accepts a branch answers an unknown reference the same way.
+    """
+    from vs_schools.services.references import resolve_branch_reference
+
+    return resolve_branch_reference(entity.tenant, ref, field)
 
 
 def _raised_branch(request, entity, body, *, field="branch"):

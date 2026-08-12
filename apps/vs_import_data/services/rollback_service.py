@@ -23,7 +23,19 @@ def reverse_target_record(row_result):
         return True
 
     try:
-        School.objects.filter(slug=pk).delete()
+        # ``target_object_pk`` is whatever ``School.pk`` was when the row ran.
+        # B23 moved that from the slug to a surrogate integer id, so a numeric
+        # value is an id and anything else is a slug recorded before the
+        # cutover. Matching on slug alone (as this did) silently deleted
+        # nothing for every school imported since, while still reporting the
+        # rollback as successful.
+        ref = str(pk).strip()
+        qs = (
+            School.objects.filter(pk=int(ref))
+            if ref.isdigit() and int(ref) <= 9_223_372_036_854_775_807
+            else School.objects.filter(slug=ref)
+        )
+        qs.delete()
         return True
     except Exception:
         return False

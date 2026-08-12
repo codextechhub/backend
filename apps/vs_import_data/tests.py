@@ -139,3 +139,49 @@ class ImportBatchCancellationTests(TestCase):
         self.assertEqual(response.status_code, 404, response.content)
         batch.refresh_from_db()
         self.assertEqual(batch.status, ImportBatchStatusChoices.READY_TO_IMPORT)
+
+
+class SchoolImportRollbackTests(TestCase):
+    """Rolling back an imported school actually deletes it.
+
+    ``ImportJobRowResult.target_object_pk`` records ``School.pk``. B23 moved that
+    from the slug to a surrogate integer id, but the rollback kept matching on
+    ``slug`` - so for every school imported since, the delete matched no rows and
+    the rollback still reported success. Only the pk shape matters here, so the
+    row result is a stub rather than a full job graph.
+    """
+
+    @staticmethod
+    def _row(pk):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(target_object_pk=str(pk))
+
+    def test_rollback_deletes_a_school_recorded_by_its_surrogate_id(self):
+        from vs_schools.models import School
+        from vs_import_data.services.rollback_service import reverse_target_record
+
+        school = make_school(slug="rollback-by-id", name="Rollback By Id")
+
+        self.assertTrue(reverse_target_record(self._row(school.pk)))
+        self.assertFalse(School.objects.filter(pk=school.pk).exists())
+
+    def test_rollback_still_deletes_a_school_recorded_by_slug_before_b23(self):
+        """Rows written while the slug WAS the primary key must still reverse."""
+        from vs_schools.models import School
+        from vs_import_data.services.rollback_service import reverse_target_record
+
+        school = make_school(slug="rollback-by-slug", name="Rollback By Slug")
+
+        self.assertTrue(reverse_target_record(self._row(school.slug)))
+        self.assertFalse(School.objects.filter(pk=school.pk).exists())
+
+    def test_rollback_of_an_unknown_reference_is_a_no_op_not_an_error(self):
+        from vs_schools.models import School
+        from vs_import_data.services.rollback_service import reverse_target_record
+
+        school = make_school(slug="rollback-untouched", name="Untouched")
+
+        self.assertTrue(reverse_target_record(self._row("9" * 40)))
+        self.assertTrue(reverse_target_record(self._row("")))
+        self.assertTrue(School.objects.filter(pk=school.pk).exists())

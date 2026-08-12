@@ -1508,3 +1508,243 @@ class QueueSummaryTests(TestCase):
 
         res = self.client.get("/v1/user/me/tasks/summary/")
         self.assertEqual(res.json()["data"]["by_status"].get("SUCCEEDED"), 1)
+
+
+class UserBranchAssignmentTests(TestCase):
+    """Creating a user against a branch - the path M9 school onboarding needs.
+
+    Two differently shaped tenants on purpose. ``branched`` is a school with real
+    branches; ``branchless`` is a branch-optional school with none. A fix that
+    only works for the first shape is not a fix, so every rule below is asserted
+    against whichever shape can actually express it.
+    """
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import make_branch, make_school
+
+        self.branched = make_school(slug="branched-academy", name="Branched Academy")
+        self.lekki = make_branch(self.branched, name="Lekki Campus", is_main=True)
+        self.yaba = make_branch(self.branched, name="Yaba Campus", is_main=False)
+
+        # A second tenant that owns a branch of its own. Its branch is the
+        # cross-tenant probe: it exists, so "not found" cannot be explained away
+        # by the id simply being unused.
+        self.rival = make_school(slug="rival-college", name="Rival College")
+        self.rival_branch = make_branch(self.rival, name="Rival Main", is_main=True)
+
+        # A branch-optional school: no branches at all, ever.
+        self.branchless = make_school(slug="solo-centre", name="Solo Learning Centre")
+
+        self.actor = User.objects.create_user(
+            email="head@branched.test", password="Str0ng!pass123",
+            user_type=User.UserType.SCHOOL_ADMIN, status="ACTIVE",
+            first_name="Head", last_name="Teacher", tenant=self.branched.tenant,
+        )
+        self._grant(self.actor, "platform.team.create", tenant=self.branched.tenant)
+        self._grant(self.actor, "platform.team.view", tenant=self.branched.tenant)
+
+        self.role = self._role(self.branched.tenant, "school-staff")
+        self.branchless_role = self._role(self.branchless.tenant, "solo-staff")
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.actor)
+
+    # -- fixtures ---------------------------------------------------------
+
+    @staticmethod
+    def _role(tenant, key):
+        from vs_rbac.models import TenantRoleTemplate
+
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=tenant, key=key, defaults={"name": key.title(), "status": "ACTIVE"},
+        )
+        return role
+
+    @classmethod
+    def _grant(cls, user, permission_key, *, tenant, role_key="team-manager"):
+        from vs_rbac.models import (
+            Permission, PermissionAction, PermissionModule, PermissionResource,
+            TenantRolePermission, TenantUserRoleAssignment,
+        )
+
+        module_name, resource_name, action_name = permission_key.split(".")
+        module, _ = PermissionModule.objects.get_or_create(name=module_name)
+        resource, _ = PermissionResource.objects.get_or_create(
+            module=module, name=resource_name,
+        )
+        action, _ = PermissionAction.objects.get_or_create(name=action_name)
+        permission, _ = Permission.objects.get_or_create(
+            key=permission_key,
+            defaults={"module": module, "resource": resource, "action": action},
+        )
+        role = cls._role(tenant, role_key)
+        TenantRolePermission.objects.get_or_create(
+            role=role, permission=permission, defaults={"granted": True},
+        )
+        TenantUserRoleAssignment.objects.get_or_create(
+            tenant=tenant, user=user, role=role,
+            defaults={"assignment_status": "ACTIVE"},
+        )
+
+    def _post(self, **overrides):
+        body = {
+            "first_name": "New", "last_name": "Person",
+            "email": "new.person@branched.test", "gender": "FEMALE",
+            "user_type": User.UserType.STAFF,
+            "role": self.role.key,
+        }
+        body.update(overrides)
+        return self.client.post("/v1/user/users/", body, format="json")
+
+    @staticmethod
+    def _field_errors(response):
+        """The per-field errors out of the standard error envelope."""
+        return response.json().get("error", {}).get("detail", {})
+
+    @classmethod
+    def _branch_error(cls, response):
+        return cls._field_errors(response).get("branch")
+
+    # -- the happy path ---------------------------------------------------
+
+    def test_user_is_created_against_a_branch_and_the_branch_is_persisted(self):
+        resp = self._post(branch=self.yaba.pk)
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        user = User.objects.get(email="new.person@branched.test")
+        self.assertEqual(user.branch_id, self.yaba.pk)
+        self.assertEqual(user.tenant_id, self.branched.tenant_id)
+
+    def test_branch_id_is_accepted_as_a_string_as_well_as_a_number(self):
+        """Form posts and many JSON clients send the id as a string.
+
+        The old UUID field accepted a JSON *integer* by accident (DRF turned 7
+        into UUID(int=7) and Django turned it back into 7) while rejecting the
+        string "7" outright, so whether a caller worked depended on its encoding.
+        """
+        resp = self._post(branch=str(self.lekki.pk))
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertEqual(
+            User.objects.get(email="new.person@branched.test").branch_id,
+            self.lekki.pk,
+        )
+
+    # -- refusals ---------------------------------------------------------
+
+    def test_branch_from_another_tenant_is_refused_exactly_like_an_unknown_one(self):
+        """A foreign branch must not be distinguishable from a missing one.
+
+        Otherwise the field is an oracle: a caller learns which branch ids exist
+        in other tenants by reading which error comes back.
+        """
+        foreign = self._post(branch=self.rival_branch.pk)
+        unknown = self._post(branch=self.rival_branch.pk + 10_000)
+
+        self.assertEqual(foreign.status_code, 400, foreign.content)
+        self.assertEqual(unknown.status_code, 400, unknown.content)
+        self.assertEqual(self._branch_error(foreign), self._branch_error(unknown))
+        self.assertFalse(
+            User.objects.filter(email="new.person@branched.test").exists()
+        )
+
+    def test_unknown_branch_is_refused(self):
+        resp = self._post(branch=self.yaba.pk + 5_000)
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertFalse(
+            User.objects.filter(email="new.person@branched.test").exists()
+        )
+
+    def test_malformed_branch_reference_is_a_validation_error_not_a_server_error(self):
+        """Anything that is not a decimal id is a 400, never a database error."""
+        import uuid as _uuid
+
+        for bad in (str(_uuid.uuid4()), "not-an-id", "9" * 40, "-3", "1.5"):
+            with self.subTest(branch=bad):
+                resp = self._post(branch=bad)
+                self.assertEqual(resp.status_code, 400, f"{bad}: {resp.content}")
+
+    # -- branchless shapes ------------------------------------------------
+
+    def test_school_admin_may_be_created_without_a_branch(self):
+        resp = self._post(
+            user_type=User.UserType.SCHOOL_ADMIN, branch=None,
+            email="second.head@branched.test",
+        )
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        user = User.objects.get(email="second.head@branched.test")
+        self.assertIsNone(user.branch_id)
+
+    def test_school_admin_is_created_in_a_school_that_has_no_branches_at_all(self):
+        """The branch-optional shape: omitting the branch is the only option."""
+        solo_admin = User.objects.create_user(
+            email="head@solo.test", password="Str0ng!pass123",
+            user_type=User.UserType.SCHOOL_ADMIN, status="ACTIVE",
+            first_name="Solo", last_name="Head", tenant=self.branchless.tenant,
+        )
+        self._grant(solo_admin, "platform.team.create", tenant=self.branchless.tenant)
+        client = APIClient()
+        client.force_authenticate(user=solo_admin)
+
+        resp = client.post("/v1/user/users/", {
+            "first_name": "Only", "last_name": "Admin",
+            "email": "only.admin@solo.test", "gender": "MALE",
+            "user_type": User.UserType.SCHOOL_ADMIN,
+            "role": self.branchless_role.key,
+        }, format="json")
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        user = User.objects.get(email="only.admin@solo.test")
+        self.assertIsNone(user.branch_id)
+        self.assertEqual(user.tenant_id, self.branchless.tenant_id)
+
+    def test_branch_level_user_type_still_requires_a_branch(self):
+        resp = self._post(branch=None)
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn("must be assigned to a branch", str(self._branch_error(resp)))
+
+    def test_vision_staff_may_not_be_given_a_branch(self):
+        """The reason must stay "CX staff take no branch", not "no such branch".
+
+        CX staff resolve against the platform tenant, which owns no branches, so
+        resolving before this check would hide the real reason behind a lookup
+        failure.
+        """
+        resp = self._post(
+            user_type=User.UserType.CX_STAFF, branch=self.lekki.pk,
+            email="cx.hire@codex.test",
+        )
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn("user_type", self._field_errors(resp))
+        self.assertNotIn("branch", self._field_errors(resp))
+
+    # -- authorization ----------------------------------------------------
+
+    def test_creating_a_user_requires_the_create_permission(self):
+        stranger = User.objects.create_user(
+            email="nobody@branched.test", password="Str0ng!pass123",
+            user_type=User.UserType.SCHOOL_ADMIN, status="ACTIVE",
+            first_name="No", last_name="Body", tenant=self.branched.tenant,
+        )
+        client = APIClient()
+        client.force_authenticate(user=stranger)
+
+        resp = client.post("/v1/user/users/", {
+            "first_name": "Sneaky", "last_name": "Hire",
+            "email": "sneaky@branched.test", "gender": "MALE",
+            "user_type": User.UserType.STAFF, "role": self.role.key,
+            "branch": self.lekki.pk,
+        }, format="json")
+
+        self.assertEqual(resp.status_code, 403, resp.content)
+        self.assertFalse(User.objects.filter(email="sneaky@branched.test").exists())
+
+    def test_branch_filter_rejects_a_non_numeric_id_instead_of_erroring(self):
+        """The list filter addresses the same integer key as the create field."""
+        resp = self.client.get("/v1/user/users/?branch_id=not-an-id")
+
+        self.assertEqual(resp.status_code, 400, resp.content)
