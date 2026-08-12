@@ -15,20 +15,24 @@ from rest_framework.viewsets import GenericViewSet, ModelViewSet
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 from vs_rbac.permissions import user_has_rbac_permission
 
+from vs_workflow.exceptions import TemplateInvalidError
 from vs_workflow.constants import (
     PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW,
     PERM_INSTANCE_SUBMIT, PERM_INSTANCE_VIEW, PERM_INSTANCE_CANCEL,
-    PERM_ACTION_REVERSE,
-    ApproverSource, OrganogramTarget,
+    PERM_ACTION_REVERSE, PERM_GROUP_MANAGE, PERM_GROUP_VIEW,
+    ApproverSource, GroupMemberKind, OrganogramTarget,
 )
 from vs_workflow.models import (
-    ApprovalDelegation, WorkflowInstance, WorkflowStage, WorkflowStageAction,
+    ApprovalDelegation, WorkflowApproverGroup, WorkflowApproverGroupMember,
+    WorkflowInstance, WorkflowStage, WorkflowStageAction, WorkflowStageApproverOverride,
     WorkflowStageApprover, WorkflowStageInstance, WorkflowTemplate,
 )
 from vs_workflow.serializers import (
     ApprovalDelegationSerializer, ApproverPreviewRequestSerializer,
     CancelInstanceSerializer, ReverseActionSerializer,
     StageActionWriteSerializer, SubmitForApprovalSerializer,
+    WorkflowApproverGroupMemberWriteSerializer, WorkflowApproverGroupSerializer,
+    WorkflowStageApproverOverrideSerializer,
     WorkflowInstanceDetailSerializer, WorkflowInstanceListSerializer,
     WorkflowTemplatePublishSerializer, WorkflowTemplateReadSerializer,
 )
@@ -37,29 +41,98 @@ from vs_workflow.services import my_queue as my_queue_svc
 from vs_workflow.services import release as release_svc
 from vs_workflow.services import submission as submission_svc
 from vs_workflow.services import templates as templates_svc
-from vs_workflow.services.approvers import resolve_approvers
+from vs_workflow.services.approvers import (
+    describe_group_members, resolve_approvers, resolve_group_users,
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-# Apply school scope only when the request has one.
-def _filter_by_school(qs, school):
-    if school is not None:
-        return qs.filter(tenant=school.tenant)
-    return qs
-
-
 # Apply branch scope only when the user is branch-scoped.
 def _filter_by_branch(qs, branch):
+    """Narrow to what a branch-scoped user may see: their own branch's rows
+    plus the tenant-wide ones.
+
+    Branch-pinned rows are an override of the tenant-wide default, not a
+    replacement for it (see WorkflowTemplate.branch), so an exact-match filter
+    left branch users with an empty list whenever the tenant published at
+    tenant level - which is the normal case.
+    """
     if branch is not None:
-        return qs.filter(branch=branch)
+        return qs.filter(Q(branch=branch) | Q(branch__isnull=True))
     return qs
 
 
-# Resolve school/branch context once for all workflow views.
-class SchoolScopedMixin:
-    def get_school(self):
-        return getattr(self.request, "_cached_school", None)
+# Dry-run a DYNAMIC_ROLE stage's rules against a sample document.
+def _preview_dynamic_role(d, requester, instance, scope):
+    """Return (eligible approvers, rule trace) for unsaved dynamic rules.
+
+    Mirrors what the engine will do at activation - validate each condition,
+    take the first match, resolve that role's assignees - so the builder's
+    answer and the engine's answer come from the same rules. Raises
+    TemplateInvalidError on a malformed rule, which is the point: the builder
+    should learn about a bad operator here, not from a stuck approval.
+    """
+    from vs_rbac.models import TenantRoleTemplate
+    from vs_workflow.conditions import evaluate_condition, validate_condition
+    from vs_workflow.services.approvers import EligibleApprover, _users_for_roles
+
+    document = d.get("sample_document") or {}
+    evaluations, matched = [], None
+
+    for i, raw in enumerate(d["dynamic_role_rules"]):
+        where = f"Rule {i + 1}"
+        key = (raw or {}).get("role_key") or ""
+        if not key:
+            raise TemplateInvalidError(f"{where}: 'role_key' is required.")
+        role = TenantRoleTemplate.objects.filter(
+            tenant=requester.tenant, key=key,
+            status=TenantRoleTemplate.Status.ACTIVE).first()
+        if role is None:
+            raise TemplateInvalidError(
+                f"{where}: no active role with key '{key}' exists in this tenant.")
+        condition = raw.get("condition")
+        validate_condition(condition, where)
+        hit, trace = evaluate_condition(condition, document)
+        evaluations.append({
+            "order": i, "role_key": key, "role_name": role.name,
+            "is_fallback": condition in (None, {}),
+            "trace": trace, "picked": False,
+        })
+        if hit:
+            matched = role
+            evaluations[-1]["picked"] = True
+            break
+
+    if matched is None:
+        return [], {"matched_role_key": None, "matched_role_name": None,
+                    "evaluations": evaluations,
+                    "note": "No rule matched and there is no fallback rule, so "
+                            "this stage would resolve to nobody."}
+
+    branch = instance.branch if scope == "BRANCH" else None
+    users = _users_for_roles([matched.pk], requester.tenant, branch)
+    users = [u for u in users if u.pk != requester.pk]
+    return ([EligibleApprover(user=u) for u in users],
+            {"matched_role_key": matched.key, "matched_role_name": matched.name,
+             "evaluations": evaluations})
+
+
+# Resolve tenant/branch context once for all workflow views.
+class TenantScopedMixin:
+    """Single source of truth for "which tenant is this request about".
+
+    ``request.tenant`` is resolved by TenantJWTAuthentication from the asserted
+    ``?tenant=`` and is always present on an authenticated request. This
+    replaces an earlier ``get_school()`` that read ``request._cached_school`` -
+    an attribute nothing in the codebase ever set, so every scope check built
+    on it silently passed. Models whose default manager is tenant-aware were
+    still scoped by the ambient context; models without one (stage instances,
+    stage actions) were not scoped at all.
+    """
+
+    def get_tenant(self):
+        return getattr(self.request, "tenant", None)
 
     def get_branch(self):
         return getattr(self.request.user, "branch", None)
@@ -68,7 +141,7 @@ class SchoolScopedMixin:
 # ── Templates ────────────────────────────────────────────────────────────────
 
 class WorkflowTemplateViewSet(
-    SchoolScopedMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, GenericViewSet,
+    TenantScopedMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, GenericViewSet,
 ):
     """docstring-name: Workflow templates"""
     serializer_class = WorkflowTemplateReadSerializer
@@ -79,10 +152,15 @@ class WorkflowTemplateViewSet(
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
-        # Templates are explicitly scoped; global manager context is not trusted here.
-        qs = _filter_by_school(WorkflowTemplate.objects.all(), self.get_school())
+        # Explicitly scoped rather than relying on the tenant-aware manager's
+        # ambient context. Global (tenant-less) templates stay visible, which is
+        # what include_global on the manager means.
+        qs = WorkflowTemplate.all_objects.filter(
+            Q(tenant=self.get_tenant()) | Q(tenant__isnull=True))
         qs = _filter_by_branch(qs, self.get_branch())
-        return qs.prefetch_related("stages", "routes")
+        # Explicit ordering: the model has none, and paginating an unordered
+        # queryset returns rows in an undefined order across pages.
+        return qs.prefetch_related("stages", "routes").order_by("document_type", "code")
 
     @action(detail=False, methods=["post"], url_path="preview-approvers")
     def preview_approvers(self, request):
@@ -105,7 +183,7 @@ class WorkflowTemplateViewSet(
             approver_source=d["approver_source"],
             organogram_target=d.get("organogram_target", "") or "",
             organogram_levels=d.get("organogram_levels", 1) or 1,
-            approver_permission_key=d.get("approver_permission_key", "") or "",
+            approver_role_key=d.get("approver_role_key", "") or "",
             approver_scope=d.get("approver_scope"),
         )
         if d["approver_source"] == ApproverSource.ORGANOGRAM and \
@@ -115,6 +193,29 @@ class WorkflowTemplateViewSet(
                 stage.organogram_position = Position.objects.filter(code=d["organogram_position_code"]).first()
             except ImportError:
                 stage.organogram_position = None
+        if d["approver_source"] == ApproverSource.ROLE:
+            from vs_rbac.models import TenantRoleTemplate
+            exists = TenantRoleTemplate.objects.filter(
+                tenant=requester.tenant, key=d["approver_role_key"],
+                status=TenantRoleTemplate.Status.ACTIVE,
+            ).exists()
+            if not exists:
+                # A mistyped role key deserves loud feedback in the builder,
+                # not a silent empty approver list.
+                return Response(
+                    {"detail": f"No active role with key '{d['approver_role_key']}' "
+                               "exists in this tenant."},
+                    status=status.HTTP_404_NOT_FOUND)
+        if d["approver_source"] == ApproverSource.WORKFLOW_GROUP:
+            group = WorkflowApproverGroup.all_objects.filter(
+                tenant=requester.tenant, code=d["approver_group_code"], is_active=True,
+            ).first()
+            if group is None:
+                return Response(
+                    {"detail": f"No active approver group with code "
+                               f"'{d['approver_group_code']}' exists in this tenant."},
+                    status=status.HTTP_404_NOT_FOUND)
+            stage.approver_group = group
 
         # Build a transient instance carrying just the context the resolver reads.
         instance = WorkflowInstance(
@@ -124,7 +225,19 @@ class WorkflowTemplateViewSet(
             document_type=d.get("document_type", "") or "",
         )
 
-        eligible = resolve_approvers(stage, instance)
+        rule_preview = None
+        if d["approver_source"] == ApproverSource.DYNAMIC_ROLE:
+            # Dynamic rules live on stage.dynamic_rules, a reverse FK that an
+            # unsaved stage cannot carry, so the preview evaluates the posted
+            # rules directly instead of persisting a throwaway stage.
+            try:
+                eligible, rule_preview = _preview_dynamic_role(
+                    d, requester, instance, stage.approver_scope)
+            except TemplateInvalidError as exc:
+                return Response({"detail": exc.message},
+                                status=status.HTTP_400_BAD_REQUEST)
+        else:
+            eligible = resolve_approvers(stage, instance)
 
         def _u(user):
             if user is None:
@@ -136,12 +249,15 @@ class WorkflowTemplateViewSet(
             }
 
         approvers = [{"user": _u(e.user), "on_behalf_of": _u(e.on_behalf_of)} for e in eligible]
-        return Response({
+        payload = {
             "approver_source": d["approver_source"],
             "organogram_target": d.get("organogram_target") or None,
             "count": len(approvers),
             "approvers": approvers,
-        }, status=status.HTTP_200_OK)
+        }
+        if rule_preview is not None:
+            payload["dynamic_role"] = rule_preview
+        return Response(payload, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["post"], url_path="publish")
     def publish(self, request):
@@ -164,7 +280,7 @@ class WorkflowTemplateViewSet(
 # ── Instances ────────────────────────────────────────────────────────────────
 
 class WorkflowInstanceViewSet(
-    SchoolScopedMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, GenericViewSet,
+    TenantScopedMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, GenericViewSet,
 ):
     """docstring-name: Workflow instances"""
     def get_permissions(self):
@@ -184,7 +300,7 @@ class WorkflowInstanceViewSet(
 
     def get_queryset(self):
         # Instance lists are tenant-scoped before any user-supplied filters apply.
-        qs = (_filter_by_school(WorkflowInstance.objects.all(), self.get_school())
+        qs = (WorkflowInstance.all_objects.filter(tenant=self.get_tenant())
               .select_related("template", "current_stage")
               .prefetch_related("stage_instances__stage", "stage_instances__actions",
                                 "stage_instances__eligible_approvers", "audit_logs")
@@ -295,7 +411,7 @@ class WorkflowInstanceViewSet(
         return Response(WorkflowInstanceDetailSerializer(instance).data)
 
 
-class ReverseActionView(SchoolScopedMixin, APIView):
+class ReverseActionView(TenantScopedMixin, APIView):
     """docstring-name: Reverse an approval action"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = PERM_ACTION_REVERSE
@@ -308,9 +424,12 @@ class ReverseActionView(SchoolScopedMixin, APIView):
                 "stage_instance__instance").get(pk=action_id)
         except WorkflowStageAction.DoesNotExist:
             raise NotFound("Action not found.")
-        school = self.get_school()
-        if school is not None and row.stage_instance.instance.school_id != school.pk:
-            # Hide cross-school action existence behind the same 404.
+        # WorkflowStageAction has no tenant column and no tenant-aware manager,
+        # so this comparison is the only thing standing between a reverse-capable
+        # admin and another tenant's approval history. It must never be
+        # conditional on a value that can be absent.
+        if row.stage_instance.instance.tenant_id != getattr(self.get_tenant(), "pk", None):
+            # Hide cross-tenant action existence behind the same 404.
             raise NotFound("Action not found.")
         reversal = actions_svc.reverse_action(action_id, request.user, p.validated_data["reason"])
         return Response({"reversal_action_id": str(reversal.id)})
@@ -318,7 +437,7 @@ class ReverseActionView(SchoolScopedMixin, APIView):
 
 # ── Dashboards ────────────────────────────────────────────────────────────────
 
-class PendingApprovalsView(SchoolScopedMixin, APIView):
+class PendingApprovalsView(TenantScopedMixin, APIView):
     """GET /workflow/dashboard/pending/ - instances where the user is eligible to act.
 
     docstring-name: My pending approvals
@@ -328,7 +447,7 @@ class PendingApprovalsView(SchoolScopedMixin, APIView):
     def get(self, request):
         # Which snapshots are actionable lives in services/my_queue so the console
         # landing screen counts this queue by exactly the rules it lists it by.
-        snaps = my_queue_svc.pending_approval_snapshots(request.user, self.get_school())
+        snaps = my_queue_svc.pending_approval_snapshots(request.user, self.get_tenant())
         results = []
         for snap in snaps:
             inst = snap.stage_instance.instance
@@ -340,7 +459,7 @@ class PendingApprovalsView(SchoolScopedMixin, APIView):
         return Response({"results": results, "count": len(results)})
 
 
-class MySubmissionsView(SchoolScopedMixin, APIView):
+class MySubmissionsView(TenantScopedMixin, APIView):
     """GET /workflow/dashboard/submitted/ - instances the user has submitted.
 
     docstring-name: My submissions
@@ -349,8 +468,8 @@ class MySubmissionsView(SchoolScopedMixin, APIView):
 
     def get(self, request):
         # Submitter dashboard is restricted to the caller's own submitted instances.
-        qs = (_filter_by_school(WorkflowInstance.objects.all(), self.get_school())
-              .filter(requested_by=request.user)
+        qs = (WorkflowInstance.all_objects
+              .filter(tenant=self.get_tenant(), requested_by=request.user)
               .select_related("template", "current_stage")
               .order_by("-updated_at", "-created_at"))
         if request.query_params.get("status"):
@@ -358,7 +477,7 @@ class MySubmissionsView(SchoolScopedMixin, APIView):
         return Response(WorkflowInstanceListSerializer(qs, many=True).data)
 
 
-class TeamLoadView(SchoolScopedMixin, APIView):
+class TeamLoadView(TenantScopedMixin, APIView):
     """GET /workflow/dashboard/team-load/ - active instance counts by stage.
 
     docstring-name: Team approval load
@@ -367,12 +486,12 @@ class TeamLoadView(SchoolScopedMixin, APIView):
     rbac_permission = PERM_INSTANCE_VIEW
 
     def get(self, request):
-        school = self.get_school()
-        # Count active stage instances by document type/stage for operational load.
-        base = WorkflowStageInstance.objects.filter(status="ACTIVE")
-        if school is not None:
-            base = base.filter(instance__tenant=school.tenant)
-        qs = (base
+        # Count active stage instances by document type/stage for operational
+        # load. WorkflowStageInstance has no tenant-aware manager, so the join
+        # to the instance's tenant is the scope - unconditionally, or the board
+        # reports every tenant's workload.
+        qs = (WorkflowStageInstance.objects
+              .filter(status="ACTIVE", instance__tenant=self.get_tenant())
               .values("instance__document_type", "stage__code", "stage__label")
               .order_by("instance__document_type", "stage__code"))
         buckets = defaultdict(lambda: {"count": 0, "stage_label": None})
@@ -387,17 +506,179 @@ class TeamLoadView(SchoolScopedMixin, APIView):
         ])
 
 
+# ── Approver groups ───────────────────────────────────────────────────────────
+
+class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
+    """Named approver pools behind the Workflow Approver screen.
+
+    docstring-name: Workflow approver groups
+    """
+    serializer_class = WorkflowApproverGroupSerializer
+
+    _WRITE_ACTIONS = {"create", "update", "partial_update", "destroy",
+                      "add_member", "remove_member"}
+
+    def get_permissions(self):
+        self.rbac_permission = (
+            PERM_GROUP_MANAGE if self.action in self._WRITE_ACTIONS else PERM_GROUP_VIEW
+        )
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get_serializer_context(self):
+        return super().get_serializer_context() | {"tenant": self.request.tenant}
+
+    def get_queryset(self):
+        qs = (WorkflowApproverGroup.all_objects
+              .filter(tenant=self.get_tenant())
+              .prefetch_related("members__user", "members__role", "members__position"))
+        if self.request.query_params.get("is_active") in ("true", "false"):
+            qs = qs.filter(is_active=self.request.query_params["is_active"] == "true")
+        if self.request.query_params.get("search"):
+            term = self.request.query_params["search"]
+            qs = qs.filter(Q(name__icontains=term) | Q(code__icontains=term))
+        return qs.order_by("name")
+
+    def perform_create(self, serializer):
+        serializer.save(tenant=self.request.tenant, created_by=self.request.user)
+
+    def destroy(self, request, *args, **kwargs):
+        """Refuse to delete a group a template still points at.
+
+        The FK is PROTECT, so the alternative is a 500. Deactivating keeps the
+        stage resolvable (to nobody) and preserves audit history.
+        """
+        group = self.get_object()
+        used_by = list(group.workflow_stages.filter(retired_at__isnull=True)
+                       .values_list("template__code", "code")[:10])
+        if used_by:
+            return Response({
+                "success": False,
+                "message": "This group is used by one or more workflow stages. "
+                           "Deactivate it instead, or repoint those stages first.",
+                "error": {
+                    "code": "APPROVER_GROUP_IN_USE",
+                    "detail": {"stages": [f"{t}:{s}" for t, s in used_by]},
+                },
+            }, status=status.HTTP_409_CONFLICT)
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=["get"])
+    def resolve(self, request, pk=None):
+        """Who this group resolves to right now, per member and in total.
+
+        Powers the screen's "resolves to N people" affordance. Runs the same
+        resolution the engine runs at stage activation, so the preview cannot
+        disagree with reality. `?branch=<id>` previews branch narrowing for
+        ROLE members the way a BRANCH-scoped stage would see them.
+        """
+        group = self.get_object()
+        branch = None
+        branch_id = request.query_params.get("branch")
+        if branch_id:
+            from vs_schools.models import Branch
+            branch = Branch.objects.filter(
+                pk=branch_id, school__tenant=request.tenant).first()
+            if branch is None:
+                return Response({"detail": "Branch not found."},
+                                status=status.HTTP_404_NOT_FOUND)
+
+        members = describe_group_members(group, request.tenant, branch)
+        people = resolve_group_users(group, request.tenant, branch)
+        return Response({
+            "group": {"id": str(group.pk), "code": group.code,
+                      "name": group.name, "is_active": group.is_active},
+            "members": members,
+            "resolved_count": len(people),
+            "resolved_users": [
+                {"id": str(u.pk),
+                 "name": getattr(u, "full_name", "") or u.get_username(),
+                 "email": u.email}
+                for u in people
+            ],
+        })
+
+    @action(detail=True, methods=["post"], url_path="members")
+    def add_member(self, request, pk=None):
+        """Add one person, role, or position to the group."""
+        group = self.get_object()
+        s = WorkflowApproverGroupMemberWriteSerializer(
+            data=request.data, context={"tenant": request.tenant})
+        s.is_valid(raise_exception=True)
+        d = s.validated_data
+        target = d["resolved_target"]
+        field = {GroupMemberKind.USER: "user", GroupMemberKind.ROLE: "role",
+                 GroupMemberKind.POSITION: "position"}[d["kind"]]
+
+        member, created = WorkflowApproverGroupMember.objects.get_or_create(
+            group=group, kind=d["kind"], **{field: target},
+            defaults={"added_by": request.user},
+        )
+        serializer = self.get_serializer(group)
+        return Response(serializer.data,
+                        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+    @action(detail=True, methods=["delete"], url_path="members/(?P<member_id>[^/.]+)")
+    def remove_member(self, request, pk=None, member_id=None):
+        """Remove one membership row. Scoped to this group so a member id from
+        another tenant's group cannot be deleted by guessing it."""
+        group = self.get_object()
+        member = WorkflowApproverGroupMember.objects.filter(
+            pk=member_id, group=group).first()
+        if member is None:
+            raise NotFound("Member not found.")
+        member.delete()
+        return Response(self.get_serializer(group).data)
+
+
+# ── Stage approver overrides ──────────────────────────────────────────────────
+
+class WorkflowStageApproverOverrideViewSet(TenantScopedMixin, ModelViewSet):
+    """A tenant's own approver choices on stages it did not author.
+
+    Central templates are published once and shared. Rather than cloning one to
+    change a single approver, a tenant records an override here and the engine
+    consults it at activation. Removing the override restores the template's
+    own approver.
+
+    docstring-name: Workflow stage approver overrides
+    """
+    serializer_class = WorkflowStageApproverOverrideSerializer
+
+    def get_permissions(self):
+        # Repointing an approval step is a template-level decision, so it takes
+        # template manage rights rather than the lighter group rights.
+        self.rbac_permission = (
+            PERM_TEMPLATE_VIEW if self.action in ("list", "retrieve")
+            else PERM_TEMPLATE_MANAGE
+        )
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get_serializer_context(self):
+        return super().get_serializer_context() | {"tenant": self.get_tenant()}
+
+    def get_queryset(self):
+        qs = (WorkflowStageApproverOverride.all_objects
+              .filter(tenant=self.get_tenant())
+              .select_related("stage__template", "approver_group"))
+        if self.request.query_params.get("document_type"):
+            qs = qs.filter(
+                stage__template__document_type=self.request.query_params["document_type"])
+        return qs.order_by("stage__template__document_type", "stage__order")
+
+    def perform_create(self, serializer):
+        serializer.save(tenant=self.get_tenant(), created_by=self.request.user)
+
+
 # ── Delegations ───────────────────────────────────────────────────────────────
 
-class ApprovalDelegationViewSet(SchoolScopedMixin, ModelViewSet):
+class ApprovalDelegationViewSet(TenantScopedMixin, ModelViewSet):
     """docstring-name: Approval delegations"""
     serializer_class = ApprovalDelegationSerializer
     permission_classes = [IsAuthenticatedAndActive]
 
     def get_queryset(self):
         user = self.request.user
-        school = self.get_school()
-        qs = _filter_by_school(ApprovalDelegation.objects.all(), school)
+        qs = ApprovalDelegation.all_objects.filter(tenant=self.get_tenant())
         if not user_has_rbac_permission(user, PERM_TEMPLATE_MANAGE, tenant=user.tenant):
             # Non-admin users can only see delegations they created or receive.
             qs = qs.filter(Q(delegator=user) | Q(delegate=user))
@@ -410,7 +691,6 @@ class ApprovalDelegationViewSet(SchoolScopedMixin, ModelViewSet):
     @action(detail=True, methods=["post"])
     def revoke(self, request, pk=None):
         delegation = self.get_object()
-        school = self.get_school()
         if (delegation.delegator_id != request.user.pk and
                 not user_has_rbac_permission(request.user, PERM_TEMPLATE_MANAGE, tenant=request.tenant)):
             return Response({

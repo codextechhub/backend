@@ -31,8 +31,8 @@ from vs_finance.constants import DocumentStatus, FinanceAuditAction
 
 from .constants import (
     ProcApprovalState,
-    WF_DEFAULT_MANAGER_PERMISSION,
-    WF_DEFAULT_SENIOR_PERMISSION,
+    WF_DEFAULT_MANAGER_ROLE,
+    WF_DEFAULT_SENIOR_ROLE,
     WF_DEFAULT_SENIOR_THRESHOLD,
     WF_DEFAULT_TEMPLATE_CODE,
 )
@@ -62,63 +62,6 @@ def _doc_models():
     return (PurchaseRequisition, PurchaseOrder, VendorInvoice, VendorPayment)
 
 
-def _default_stages_payload(
-    amount_field: str, *, threshold: int, manager_permission: str, senior_permission: str,
-) -> list:
-    """The two-stage default ladder, shared by the platform and per-tenant seeds.
-
-    * **manager** - always runs; any holder of ``manager_permission`` can approve.
-    * **senior**  - gated by ``inclusion_condition`` ``amount >= threshold`` (kobo), so
-      only high-value documents escalate to a holder of ``senior_permission``.
-
-    Both stages set ``skip_if_no_approvers=False``: spend must never approve itself.
-    When nobody currently holds the approving permission the engine activates the stage
-    with an empty approver snapshot and the document *parks* at IN_PROGRESS instead of
-    reaching a terminal APPROVED decision with no human involved. Parked work is made
-    reachable again by :mod:`vs_procurement.approval_parking` once the permission is
-    granted.
-
-    Both stages are ``approver_scope="BRANCH"``, which is what makes a multi-site
-    tenant route correctly: the engine forwards the *document's own* branch to RBAC,
-    so a request raised at one site resolves to that site's approvers plus anybody
-    holding the permission tenant-wide, and never to another site's approvers. A
-    document with no branch (raised for the entity as a whole) forwards ``None`` and
-    therefore resolves to tenant-wide holders only, which is also exactly what a
-    tenant with no branches at all has always done.
-    """
-    return [
-        {
-            "code": "manager",
-            "label": "Manager approval",
-            "kind": "APPROVAL",
-            "order": 10,
-            "approver_permission_key": manager_permission,
-            # Route by the document's own branch - see the docstring above.
-            "approver_scope": "BRANCH",
-            "advance_rule": "ANY",
-            "on_rejection": "TERMINAL",
-            # Never auto-skip: an unstaffed stage must park the document, not
-            # let it approve itself.
-            "skip_if_no_approvers": False,
-        },
-        {
-            "code": "senior",
-            "label": "Senior approval",
-            "kind": "APPROVAL",
-            "order": 20,
-            "approver_permission_key": senior_permission,
-            "approver_scope": "BRANCH",
-            "advance_rule": "ANY",
-            "on_rejection": "TERMINAL",
-            # Never auto-skip - see the manager stage above.
-            "skip_if_no_approvers": False,
-            "inclusion_condition": {
-                "op": "gte", "field": amount_field, "value": int(threshold),
-            },
-        },
-    ]
-
-
 def ensure_default_approval_templates(
     *,
     threshold: int = WF_DEFAULT_SENIOR_THRESHOLD,
@@ -126,30 +69,57 @@ def ensure_default_approval_templates(
     senior_permission: str = WF_DEFAULT_SENIOR_PERMISSION,
     created_by=None,
 ) -> list:
-    """Publish (idempotently) the **platform-wide** default approval templates.
+    """The two-stage default ladder, shared by the platform and per-tenant seeds.
 
-    One template per approvable document type, each the two-stage ladder described in
-    :func:`_default_stages_payload`.
+    * **manager** - always runs; any holder of the ``manager_role_key`` role can approve.
+    * **senior**  - gated by ``inclusion_condition`` ``amount >= threshold`` (kobo), so
+      only high-value documents escalate to a holder of the ``senior_role_key`` role.
 
-    These are the last-resort fallback, not a tenant's rules: they are platform-scoped
-    (``tenant=None, branch=None``) so that no tenant is ever left with an unroutable
-    document, and a tenant's own template overrides them through the engine's
-    branch → tenant → platform cascade (see :func:`ensure_tenant_approval_templates`).
-    Since procurement stages never auto-skip, falling back here parks the document
-    rather than approving it, so the fallback is safe to keep.
+    Both stages name their approver by role *key*. These templates are central
+    (no tenant), so the key is resolved inside whichever tenant raised the
+    document; a tenant can repoint either stage to its own role or approver
+    group without cloning the template.
 
-    Re-running upserts in place (safe to seed often) - which is also why this must only
-    ever be called by platform-level provisioning: it rewrites one shared row that every
-    tenant without its own template reads. ``threshold`` is integer kobo, matching every
-    model's workflow amount field. Returns the published
-    :class:`~vs_workflow.models.WorkflowTemplate` objects.
+    Templates are platform-scoped (``school=None, branch=None``) so they act as the
+    universal fallback; a branch- or school-specific template still wins via the engine's
+    branch → school → platform cascade. Re-running upserts in place (safe to seed often).
+    ``threshold`` is integer kobo, matching every model's workflow amount field. Returns
+    the published :class:`~vs_workflow.models.WorkflowTemplate` objects.
     """
     from vs_workflow.services.templates import publish_template
 
     published = []
     for model in _doc_models():
         document_type = model.workflow_document_type
+        amount_field = model.workflow_amount_field
         label, name = _TEMPLATE_META[document_type]
+        stages_payload = [
+            {
+                "code": "manager",
+                "label": "Manager approval",
+                "kind": "APPROVAL",
+                "order": 10,
+                "approver_permission_key": manager_permission,
+                "approver_scope": "PLATFORM",
+                "advance_rule": "ANY",
+                "on_rejection": "TERMINAL",
+                "skip_if_no_approvers": True,
+            },
+            {
+                "code": "senior",
+                "label": "Senior approval",
+                "kind": "APPROVAL",
+                "order": 20,
+                "approver_permission_key": senior_permission,
+                "approver_scope": "PLATFORM",
+                "advance_rule": "ANY",
+                "on_rejection": "TERMINAL",
+                "skip_if_no_approvers": True,
+                "inclusion_condition": {
+                    "op": "gte", "field": amount_field, "value": int(threshold),
+                },
+            },
+        ]
         template = publish_template(
             tenant=None, branch=None, document_type=document_type,
             code=WF_DEFAULT_TEMPLATE_CODE, name=name,

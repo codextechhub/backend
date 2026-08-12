@@ -31,6 +31,14 @@ WORKFLOW_RESOURCES = [
         ],
     ),
     (
+        "group",
+        "Workflow approver groups",
+        [
+            ("manage", "Create, edit, and delete approver groups and their members", True),
+            ("view",   "View approver groups and their resolved members",             False),
+        ],
+    ),
+    (
         "action",
         "Workflow stage actions",
         [

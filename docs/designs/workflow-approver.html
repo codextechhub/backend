@@ -1,0 +1,1410 @@
+<title>Workflow Approver</title>
+<style>
+/* ============================================================
+   XVS house system, as set by docs/designs/invoice.html:
+   navy + gold, serif text, Georgia micro-labels in caps,
+   hairline rules, 2px radii, bordered status badges.
+   Single visual world on purpose - the house style is a light,
+   printed-document language, so every colour is painted
+   explicitly rather than inherited from the viewer's theme.
+   ============================================================ */
+:root{
+  --navy:      #1B2A4A;
+  --navy-soft: #2C4370;
+  --accent:    #0E4D92;
+  --rule-gold: #B08D57;
+  --ink:       #20242c;
+  --muted:     #6b7280;
+  --hairline:  #d4d8e0;
+  --band:      #f4f6fa;
+  --paper:     #ffffff;
+  --desk:      #e9ebf0;
+
+  --ok-fg:#1d7a4d;  --ok-bg:#e6f4ec;  --ok-bd:#bfe3cd;
+  --warn-fg:#94670a; --warn-bg:#fdf3d6; --warn-bd:#f0dca2;
+  --bad-fg:#b3261e;  --bad-bg:#fbe9e7;  --bad-bd:#f2c5bf;
+
+  /* Entity accents stay inside the house palette: navy for people,
+     accent blue for roles, gold for organogram seats. */
+  --person-fg:#334155; --person-bg:#eef1f6; --person-bd:#d4d8e0;
+  --role-fg:#0E4D92;   --role-bg:#e8eff8;   --role-bd:#c3d4ea;
+  --position-fg:#7a5f2e; --position-bg:#f7f0e2; --position-bd:#e3d2b0;
+
+  --serif:"Hoefler Text","Garamond",Georgia,"Times New Roman",serif;
+  --label:Georgia,"Times New Roman",serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+
+  --rail-w:316px;
+}
+
+*{ box-sizing:border-box; }
+
+body{
+  margin:0;
+  background:var(--desk);
+  color:var(--ink);
+  font-family:var(--serif);
+  font-size:14px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+
+:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+button{ font:inherit; color:inherit; cursor:pointer; }
+
+.app{
+  max-width:1400px;
+  margin:24px auto;
+  background:var(--paper);
+  box-shadow:0 6px 28px rgba(20,30,60,.16);
+  display:flex;
+  flex-direction:column;
+  min-height:calc(100vh - 48px);
+}
+
+/* ---------- LETTERHEAD ---------- */
+.topbar{
+  display:flex; align-items:flex-start; gap:24px; flex-wrap:wrap;
+  padding:26px 32px 14px;
+  border-bottom:2px solid var(--navy);
+}
+.crumb{
+  font-family:var(--label); font-size:10px; letter-spacing:3px;
+  text-transform:uppercase; color:var(--rule-gold); margin:0 0 5px;
+}
+h1{
+  font-size:25px; font-weight:700; letter-spacing:.3px; color:var(--navy);
+  line-height:1.05; margin:0; text-wrap:balance;
+}
+.subtitle{ margin:9px 0 0; font-size:11.5px; color:var(--muted); line-height:1.6; max-width:70ch; }
+.topbar-actions{ margin-left:auto; display:flex; gap:8px; align-items:center; }
+
+.btn{
+  display:inline-flex; align-items:center; gap:7px;
+  border:1px solid var(--navy); border-radius:2px;
+  padding:8px 15px;
+  font-family:var(--label); font-size:10.5px; letter-spacing:1.4px;
+  text-transform:uppercase; font-weight:700; white-space:nowrap;
+  transition:background-color .13s ease,color .13s ease;
+}
+.btn-primary{ background:var(--navy); color:#fff; }
+.btn-primary:hover{ background:var(--navy-soft); }
+.btn-ghost{ background:var(--paper); color:var(--accent); border-color:var(--accent); }
+.btn-ghost:hover{ background:var(--band); }
+.btn-quiet{ background:none; border-color:transparent; color:var(--muted); letter-spacing:1px; }
+.btn-quiet:hover{ color:var(--navy); }
+.btn-sm{ padding:5px 11px; font-size:9.5px; letter-spacing:1.2px; }
+
+/* ---------- TABS ---------- */
+.tabs{ display:flex; gap:0; padding:0 32px; border-bottom:1px solid var(--hairline); background:var(--band); }
+.tab{
+  background:none; border:none; border-bottom:2px solid transparent;
+  padding:11px 16px 10px;
+  font-family:var(--label); font-size:10.5px; letter-spacing:2px;
+  text-transform:uppercase; font-weight:700; color:var(--muted);
+  display:flex; align-items:center; gap:8px;
+}
+.tab:hover{ color:var(--navy); }
+.tab[aria-selected="true"]{ color:var(--navy); border-bottom-color:var(--rule-gold); }
+.tab-soon{
+  font-size:8.5px; letter-spacing:1px; padding:1px 5px; border-radius:2px;
+  border:1px solid var(--hairline); color:var(--muted);
+}
+
+/* ---------- SPLIT ---------- */
+.split{ flex:1; display:grid; grid-template-columns:var(--rail-w) minmax(0,1fr); align-items:start; }
+.rail{ border-right:1px solid var(--hairline); background:var(--band); padding:16px 0 32px; min-width:0; min-height:calc(100vh - 260px); }
+.rail-search{ padding:0 18px 12px; }
+.search-field{
+  display:flex; align-items:center; gap:8px;
+  background:var(--paper); border:1px solid var(--hairline); border-radius:2px; padding:7px 10px;
+}
+.search-field svg{ flex:none; color:var(--muted); }
+.search-field input{ border:none; background:none; outline:none; color:inherit; font:inherit; font-size:12.5px; width:100%; min-width:0; }
+.search-field input::placeholder{ color:var(--muted); }
+
+.rail-label{
+  padding:8px 20px 8px; margin:0;
+  font-family:var(--label); font-size:9.5px; letter-spacing:2.4px;
+  text-transform:uppercase; color:var(--accent);
+  border-bottom:1px solid var(--hairline);
+}
+.rail-list{ list-style:none; margin:0; padding:0; }
+.rail-item{
+  width:100%; text-align:left; background:none; border:none;
+  border-bottom:1px solid var(--hairline); border-left:3px solid transparent;
+  padding:11px 17px; display:flex; gap:10px; align-items:baseline;
+}
+.rail-item:hover{ background:#eaeef5; }
+.rail-item[aria-current="true"]{ background:var(--paper); border-left-color:var(--rule-gold); }
+.rail-body{ min-width:0; flex:1; }
+.rail-name{ font-size:14.5px; font-weight:700; color:var(--navy); display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.rail-meta{ font-size:10.5px; color:var(--muted); display:flex; align-items:center; gap:5px; margin-top:2px; font-variant-numeric:tabular-nums; letter-spacing:.3px; }
+.rail-meta.is-warn{ color:var(--warn-fg); }
+.rail-meta.is-danger{ color:var(--bad-fg); font-weight:700; }
+.dot{ width:6px; height:6px; border-radius:50%; background:currentColor; flex:none; }
+
+/* ---------- DETAIL ---------- */
+.detail{ padding:24px 32px 56px; min-width:0; background:var(--paper); }
+.detail-inner{ max-width:900px; }
+.detail-head{ display:flex; align-items:flex-start; gap:16px; padding-bottom:10px; border-bottom:1px solid var(--hairline); }
+.detail-title{ font-size:21px; font-weight:700; color:var(--navy); margin:0; letter-spacing:.2px; }
+.code-chip{
+  font-family:var(--mono); font-size:10.5px; color:var(--muted);
+  background:var(--band); border:1px solid var(--hairline); border-radius:2px;
+  padding:2px 7px; vertical-align:3px; margin-left:10px; white-space:nowrap;
+}
+.meta-row{ display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:8px; color:var(--muted); font-size:11.5px; }
+.meta-sep{ color:var(--hairline); }
+.effective-btn{
+  background:var(--band); border:1px solid var(--hairline); border-radius:2px;
+  padding:3px 10px; font-family:var(--label); font-size:10.5px; letter-spacing:1px;
+  text-transform:uppercase; font-weight:700; color:var(--navy);
+  display:inline-flex; align-items:center; gap:6px; font-variant-numeric:tabular-nums;
+}
+.effective-btn:hover{ background:#eaeef5; }
+.effective-btn.is-zero{ color:var(--bad-fg); border-color:var(--bad-bd); background:var(--bad-bg); }
+
+/* ---------- BANNERS ---------- */
+.banner{ display:flex; gap:12px; border:1px solid; border-radius:2px; padding:13px 15px; margin-top:16px; align-items:flex-start; }
+.banner svg{ flex:none; margin-top:1px; }
+.banner-title{ font-weight:700; margin:0 0 3px; font-size:13px; }
+.banner p{ margin:0; font-size:11.5px; line-height:1.6; }
+.banner-actions{ display:flex; gap:8px; margin-top:11px; }
+.banner.is-danger{ background:var(--bad-bg); border-color:var(--bad-bd); color:var(--bad-fg); }
+.banner.is-warn{ background:var(--warn-bg); border-color:var(--warn-bd); color:var(--warn-fg); }
+.banner .btn-ghost{ background:var(--paper); border-color:currentColor; color:inherit; }
+
+/* ---------- CARDS ---------- */
+.card{ border:1px solid var(--hairline); border-radius:2px; margin-top:20px; background:var(--paper); }
+.card-head{
+  display:flex; align-items:center; gap:12px; padding:9px 16px;
+  background:var(--navy); color:#fff;
+}
+.card-title{
+  font-family:var(--label); font-size:10px; letter-spacing:2px;
+  text-transform:uppercase; font-weight:700; margin:0; color:#fff;
+}
+.card-title .count{ color:#b9c6dd; font-weight:400; }
+.card-head .btn{ margin-left:auto; }
+.card-head .btn-ghost{ background:transparent; color:#fff; border-color:#5d729b; }
+.card-head .btn-ghost:hover{ background:#2C4370; }
+
+/* ---------- MEMBER ROWS ---------- */
+.members{ list-style:none; margin:0; padding:0; }
+.member{ border-bottom:1px solid var(--hairline); }
+.member:last-child{ border-bottom:none; }
+.member-row{ display:flex; align-items:center; gap:12px; padding:10px 16px; min-height:56px; }
+.member:hover .member-row{ background:var(--band); }
+.member.is-empty .member-row{ box-shadow:inset 3px 0 0 var(--warn-fg); background:var(--warn-bg); }
+
+.tile{ width:34px; height:34px; flex:none; display:grid; place-items:center; font-family:var(--label); font-size:12px; font-weight:700; border:1px solid; }
+.tile.is-person{ border-radius:50%; background:var(--person-bg); color:var(--person-fg); border-color:var(--person-bd); overflow:hidden; }
+.tile.is-person img{ width:100%; height:100%; object-fit:cover; display:block; }
+.tile.is-role{ border-radius:2px; background:var(--role-bg); color:var(--role-fg); border-color:var(--role-bd); }
+.tile.is-position{ border-radius:2px; background:var(--position-bg); color:var(--position-fg); border-color:var(--position-bd); }
+
+.member-body{ min-width:0; flex:1; }
+.member-name{ font-weight:700; color:var(--navy); display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:14px; }
+.member-sub{ font-size:11px; color:var(--muted); margin-top:2px; }
+.member.is-empty .member-sub{ color:var(--warn-fg); font-weight:700; }
+
+.badge{
+  font-family:var(--label); font-size:9px; font-weight:700;
+  border-radius:2px; padding:2px 7px; letter-spacing:1.6px; text-transform:uppercase;
+  border:1px solid;
+}
+.badge.is-person{ background:var(--person-bg); color:var(--person-fg); border-color:var(--person-bd); }
+.badge.is-role{ background:var(--role-bg); color:var(--role-fg); border-color:var(--role-bd); }
+.badge.is-position{ background:var(--position-bg); color:var(--position-fg); border-color:var(--position-bd); }
+.badge.is-central{ background:var(--band); color:var(--navy); border-color:var(--hairline); }
+
+.member-right{ display:flex; align-items:center; gap:6px; flex:none; }
+.stack{ display:flex; align-items:center; gap:3px; }
+.av{
+  width:26px; height:26px; border-radius:50%;
+  background:var(--person-bg); color:var(--person-fg); border:1px solid var(--person-bd);
+  display:grid; place-items:center; font-family:var(--label);
+  font-size:9.5px; font-weight:700; flex:none; overflow:hidden;
+}
+.av img{ width:100%; height:100%; object-fit:cover; display:block; }
+
+.disclose{
+  background:none; border:1px solid transparent; border-radius:2px; padding:4px 7px;
+  color:var(--accent); font-family:var(--label); font-size:10px; letter-spacing:1px;
+  display:inline-flex; align-items:center; gap:5px; font-variant-numeric:tabular-nums;
+}
+.disclose:hover{ border-color:var(--hairline); background:var(--paper); }
+.disclose .chev{ transition:transform .15s ease; }
+.disclose[aria-expanded="true"] .chev{ transform:rotate(90deg); }
+
+.icon-btn{ background:none; border:none; border-radius:2px; padding:5px; color:var(--muted); opacity:0; display:inline-flex; }
+.member:hover .icon-btn,.icon-btn:focus-visible{ opacity:1; }
+.icon-btn:hover{ background:var(--bad-bg); color:var(--bad-fg); }
+
+/* ---------- EXPANSION ---------- */
+.resolved{ margin:0 16px 14px 62px; border-left:2px solid var(--hairline); padding-left:14px; display:flex; flex-direction:column; }
+.resolved.is-role{ border-left-color:var(--role-fg); }
+.resolved.is-position{ border-left-color:var(--position-fg); }
+.resolved.is-empty{ border-left-color:var(--warn-fg); }
+.resolved-person{ display:flex; align-items:center; gap:10px; padding:5px 0; border-bottom:1px dotted var(--hairline); }
+.resolved-person:last-child{ border-bottom:none; }
+.resolved-person .who{ font-size:12.5px; font-weight:700; color:var(--ink); }
+.resolved-person .mail{ font-size:11px; color:var(--muted); }
+.resolved-note{ font-size:11.5px; color:var(--warn-fg); padding:5px 0; }
+.resolved-note a{ color:inherit; }
+
+/* ---------- EFFECTIVE PANEL ---------- */
+.effective-panel{ padding:12px 16px 14px; }
+.effective-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:2px; }
+.effective-person{ display:flex; align-items:center; gap:10px; padding:6px 0; }
+.effective-person .who{ font-size:12.5px; font-weight:700; }
+.via{ font-family:var(--label); font-size:10px; letter-spacing:.6px; color:var(--muted); text-transform:uppercase; }
+.effective-foot{ font-size:11px; color:var(--muted); margin-top:10px; font-style:italic; }
+
+/* ---------- EMPTY STATES ---------- */
+.empty{ margin:16px; border:1px dashed var(--hairline); border-radius:2px; padding:26px 20px; text-align:center; }
+.empty.is-risk{ border-color:var(--warn-bd); background:var(--warn-bg); }
+.empty h3{ margin:0 0 5px; font-size:15px; font-weight:700; color:var(--navy); }
+.empty.is-risk h3,.empty.is-risk p{ color:var(--warn-fg); }
+.empty p{ margin:0 auto 14px; color:var(--muted); max-width:48ch; font-size:11.5px; }
+
+.used-by{ margin-top:14px; font-size:11.5px; color:var(--muted); line-height:1.7; padding-top:10px; border-top:1px solid var(--hairline); }
+.used-by strong{ color:var(--navy); font-weight:700; }
+.recalc{ font-size:10.5px; color:var(--muted); padding:9px 16px; border-top:1px solid var(--hairline); display:flex; align-items:center; gap:7px; font-style:italic; margin:0; }
+
+/* ---------- ADD-MEMBER POPOVER ---------- */
+.pop-wrap{ position:relative; margin-left:auto; }
+.popover{
+  position:absolute; right:0; top:calc(100% + 8px); width:420px; max-width:calc(100vw - 48px);
+  background:var(--paper); border:1px solid var(--navy); border-radius:2px;
+  box-shadow:0 12px 34px rgba(20,30,60,.28); z-index:40; overflow:hidden;
+}
+.popover[hidden]{ display:none; }
+.pop-search{ padding:12px 14px; border-bottom:1px solid var(--hairline); }
+.pop-filters{ display:flex; gap:5px; padding:10px 14px; border-bottom:1px solid var(--hairline); background:var(--band); }
+.chip{
+  background:var(--paper); border:1px solid var(--hairline); border-radius:2px; padding:3px 11px;
+  font-family:var(--label); font-size:9.5px; letter-spacing:1.2px; text-transform:uppercase;
+  font-weight:700; color:var(--muted);
+}
+.chip[aria-pressed="true"]{ background:var(--navy); color:#fff; border-color:var(--navy); }
+.pop-results{ max-height:322px; overflow-y:auto; }
+.pop-group-label{
+  font-family:var(--label); font-size:9px; letter-spacing:2.4px; text-transform:uppercase;
+  color:var(--accent); font-weight:700; padding:11px 14px 4px; margin:0;
+  border-bottom:1px solid var(--hairline);
+}
+.opt{ width:100%; display:flex; align-items:center; gap:10px; padding:7px 14px; background:none; border:none; text-align:left; }
+.opt:hover:not(:disabled){ background:var(--band); }
+.opt:disabled{ opacity:.55; cursor:default; }
+.opt-body{ min-width:0; flex:1; display:flex; flex-direction:column; }
+.opt-name{ font-size:13px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.opt-sub{ font-size:10.5px; color:var(--muted); }
+.opt-count{ font-size:10.5px; color:var(--muted); flex:none; font-variant-numeric:tabular-nums; }
+.opt-count.is-zero{ color:var(--warn-fg); font-weight:700; }
+.opt-added{ font-family:var(--label); font-size:9.5px; letter-spacing:1px; text-transform:uppercase; color:var(--ok-fg); flex:none; }
+.tick{ width:16px; height:16px; border:1px solid var(--hairline); border-radius:2px; flex:none; display:grid; place-items:center; color:transparent; }
+.opt[aria-selected="true"] .tick{ background:var(--navy); border-color:var(--navy); color:#fff; }
+.tick.is-blank{ border-color:transparent; }
+.pop-foot{ display:flex; align-items:center; gap:8px; padding:11px 14px; border-top:1px solid var(--hairline); background:var(--band); }
+.pop-foot .n{ font-family:var(--label); font-size:10px; letter-spacing:1px; text-transform:uppercase; color:var(--muted); margin-right:auto; }
+
+/* ---------- DYNAMIC RULES ---------- */
+.rule{ display:flex; gap:12px; padding:12px 16px; border-bottom:1px solid var(--hairline); align-items:flex-start; }
+.rule:last-child{ border-bottom:none; }
+.rule.is-hit{ background:var(--band); box-shadow:inset 3px 0 0 var(--rule-gold); }
+.rule.is-dead{ opacity:.5; }
+.rule-n{
+  width:22px; height:22px; flex:none; border-radius:2px;
+  background:var(--paper); border:1px solid var(--hairline);
+  display:grid; place-items:center; font-family:var(--label);
+  font-size:10.5px; font-weight:700; color:var(--muted);
+  font-variant-numeric:tabular-nums; margin-top:1px;
+}
+.rule.is-hit .rule-n{ background:var(--navy); border-color:var(--navy); color:#fff; }
+.rule-body{ flex:1; min-width:0; }
+.rule-when{ font-size:13px; }
+.rule-then{ display:flex; align-items:center; gap:8px; margin-top:5px; flex-wrap:wrap; }
+.rule-arrow{ color:var(--rule-gold); }
+.rule-role{ font-weight:700; font-size:13.5px; color:var(--navy); }
+.rule-count{ font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
+.rule-count.is-zero{ color:var(--warn-fg); font-weight:700; }
+.rule-verdict{ font-size:11px; margin-top:5px; color:var(--muted); font-style:italic; }
+.rule-verdict.is-hit{ color:var(--accent); font-weight:700; font-style:normal; }
+.kw{ font-family:var(--label); font-size:9.5px; letter-spacing:2px; text-transform:uppercase; color:var(--accent); font-weight:700; }
+.tok{ font-family:var(--mono); font-size:11.5px; background:var(--band); border:1px solid var(--hairline); border-radius:2px; padding:1px 6px; }
+
+.tester{ padding:14px 16px; display:flex; flex-direction:column; gap:12px; }
+.tester-row{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.tester-row label{ font-family:var(--label); font-size:9.5px; letter-spacing:2px; text-transform:uppercase; color:var(--accent); font-weight:700; }
+.tester-input{ width:170px; background:var(--paper); border:1px solid var(--hairline); border-radius:2px; padding:7px 10px; color:inherit; font:inherit; font-variant-numeric:tabular-nums; }
+.tester-out{ border:1px solid var(--hairline); border-left:3px solid var(--rule-gold); border-radius:2px; padding:12px 14px; background:var(--band); font-size:12.5px; }
+.tester-out strong{ font-weight:700; color:var(--navy); }
+.tester-out.is-none{ border-color:var(--warn-bd); border-left-color:var(--warn-fg); background:var(--warn-bg); color:var(--warn-fg); }
+.tester-people{ display:flex; flex-wrap:wrap; gap:10px; margin-top:9px; }
+.tester-person{ display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:700; }
+
+/* ---------- MOCKUP CONTROLS + API TABLE ---------- */
+.demo{
+  border-top:2px solid var(--navy); padding:14px 32px 22px;
+  display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  color:var(--muted); font-size:11px; background:var(--band);
+}
+.demo strong{ font-family:var(--label); font-size:9.5px; letter-spacing:2px; text-transform:uppercase; color:var(--navy); }
+.switch{ display:inline-flex; border:1px solid var(--hairline); border-radius:2px; overflow:hidden; }
+.switch button{ background:var(--paper); border:none; padding:5px 11px; font-family:var(--label); font-size:9.5px; letter-spacing:1px; text-transform:uppercase; color:var(--muted); }
+.switch button[aria-pressed="true"]{ background:var(--navy); color:#fff; }
+
+.api{ padding:0 32px 40px; background:var(--band); }
+.api-inner{ max-width:900px; padding-top:20px; }
+.api h2{ font-family:var(--label); font-size:9.5px; letter-spacing:2.4px; text-transform:uppercase; color:var(--accent); margin:0 0 4px; border-bottom:1px solid var(--hairline); padding-bottom:5px; }
+.api > .api-inner > p{ color:var(--muted); font-size:11px; margin:8px 0 14px; }
+.api-table{ width:100%; border-collapse:collapse; font-size:11.5px; background:var(--paper); }
+.api-table th{ background:var(--navy); color:#fff; font-family:var(--label); font-size:9px; letter-spacing:1.6px; text-transform:uppercase; font-weight:700; padding:8px 12px; text-align:left; }
+.api-table td{ padding:8px 12px; border-bottom:1px solid var(--hairline); vertical-align:top; color:var(--muted); }
+.api-table code{ font-family:var(--mono); font-size:10.5px; color:var(--ink); }
+.api-scroll{ overflow-x:auto; }
+
+@media (max-width:980px){
+  .app{ margin:0; min-height:100vh; }
+  .split{ grid-template-columns:1fr; }
+  .rail{ border-right:none; border-bottom:1px solid var(--hairline); min-height:0; }
+  .rail-list{ display:flex; overflow-x:auto; }
+  .rail-item{ min-width:210px; border-bottom:none; border-right:1px solid var(--hairline); }
+  .topbar,.tabs,.detail,.demo,.api{ padding-left:18px; padding-right:18px; }
+}
+@media (prefers-reduced-motion:reduce){ *{ transition:none !important; animation:none !important; } }
+
+</style>
+
+<div class="app">
+  <header class="topbar">
+    <div>
+      <p class="crumb">Platform &middot; Workflow engine</p>
+      <h1>Workflow Approver</h1>
+      <p class="subtitle">
+        Define who can approve. Central steps are shared by every tenant and resolve
+        against each tenant&rsquo;s own roles, so a step stays correct as people move,
+        and any tenant can repoint one without touching the shared definition.
+      </p>
+    </div>
+    <div class="topbar-actions">
+      <button class="btn btn-ghost" type="button" id="new-group">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+        </svg>
+        New group
+      </button>
+      <button class="btn btn-ghost" type="button" id="new-ruleset">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+        </svg>
+        New rule set
+      </button>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="Workflow approver sections">
+    <button class="tab" role="tab" aria-selected="true" id="tab-groups" data-tab="groups" type="button">Approver Groups</button>
+    <button class="tab" role="tab" aria-selected="false" id="tab-rules" data-tab="rules" type="button">
+      Dynamic Role
+    </button>
+  </nav>
+
+  <div id="panel-groups" role="tabpanel" aria-labelledby="tab-groups">
+    <div class="split">
+      <aside class="rail" aria-label="Approver groups">
+        <div class="rail-search">
+          <label class="search-field">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <circle cx="7" cy="7" r="4.6" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <input id="rail-search" type="search" placeholder="Search groups" aria-label="Search groups">
+          </label>
+        </div>
+        <p class="rail-label" id="rail-count">4 groups</p>
+        <ul class="rail-list" id="rail-list"></ul>
+      </aside>
+
+      <main class="detail" id="detail" aria-live="polite"></main>
+    </div>
+  </div>
+
+  <div id="panel-rules" role="tabpanel" aria-labelledby="tab-rules" hidden>
+    <div class="split">
+      <aside class="rail" aria-label="Dynamic role rule sets">
+        <p class="rail-label" id="ruleset-count">2 rule sets</p>
+        <ul class="rail-list" id="ruleset-list"></ul>
+      </aside>
+      <main class="detail" id="rules-detail" aria-live="polite"></main>
+    </div>
+  </div>
+
+  <div class="demo">
+    <strong>Mockup controls</strong>
+    <span>Tenant shape:</span>
+    <span class="switch" role="group" aria-label="Tenant shape">
+      <button type="button" data-branches="off" aria-pressed="true">No branches</button>
+      <button type="button" data-branches="on" aria-pressed="false">Multi-branch</button>
+    </span>
+    <span>Branch-optional rule: where a school has no branches the scope control is removed, not shown empty.</span>
+  </div>
+
+  <section class="api">
+    <div class="api-inner">
+      <h2>What each control calls</h2>
+      <p>Endpoints are live on <code>/v1/workflow/</code>. Counts on this screen come from one resolve call, never from client-side arithmetic.</p>
+      <div class="api-scroll">
+        <table class="api-table">
+          <thead>
+            <tr><th>Control</th><th>Request</th><th>Notes</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Rail list, counts</td>
+              <td><code>GET /approver-groups/</code></td>
+              <td>Needs <code>workflow.group.view</code>. Tenant comes from the asserted <code>?tenant=</code>.</td>
+            </tr>
+            <tr>
+              <td>Member list, &ldquo;resolves to N&rdquo;, effective approvers</td>
+              <td><code>GET /approver-groups/{id}/resolve/</code></td>
+              <td>Runs the engine&rsquo;s own resolution, so the screen cannot disagree with an activation. <code>?branch=</code> previews branch narrowing.</td>
+            </tr>
+            <tr>
+              <td>Add member (person, role, or position)</td>
+              <td><code>POST /approver-groups/{id}/members/</code></td>
+              <td><code>{kind, user | role_key | position_code}</code>. Re-adding returns 200, not a duplicate.</td>
+            </tr>
+            <tr>
+              <td>Remove member</td>
+              <td><code>DELETE /approver-groups/{id}/members/{member_id}/</code></td>
+              <td>Scoped to the group, so a member id from another tenant cannot be guessed.</td>
+            </tr>
+            <tr>
+              <td>New group</td>
+              <td><code>POST /approver-groups/</code></td>
+              <td>Code is immutable once created because published templates reference it.</td>
+            </tr>
+            <tr>
+              <td>Delete group</td>
+              <td><code>DELETE /approver-groups/{id}/</code></td>
+              <td>Returns 409 <code>APPROVER_GROUP_IN_USE</code> while a live step routes to it. Deactivate instead.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* Demo data mirrors the API payloads: people, roles with their current
+     assignees, positions with their current holders. Every number on the
+     screen is derived from this, the way the real screen derives its
+     numbers from one resolve call. */
+
+  // A couple of people carry a portrait so both avatar states are visible;
+  // the rest fall back to initials, which is what the console will do until
+  // a photo is uploaded.
+  function portrait(bg, fg) {
+    return "data:image/svg+xml;utf8," + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">' +
+      '<rect width="40" height="40" fill="' + bg + '"/>' +
+      '<circle cx="20" cy="15" r="7" fill="' + fg + '"/>' +
+      '<path d="M6 40c0-8 6.5-13 14-13s14 5 14 13z" fill="' + fg + '"/></svg>');
+  }
+  var PORTRAIT_A = portrait("#c8d3e4", "#6b7fa3");
+  var PORTRAIT_B = portrait("#e0d6c2", "#9a8260");
+
+  var PEOPLE = {
+    u1: { name: "Amina Bello",     email: "amina.bello@tenant.example", photo: PORTRAIT_A },
+    u2: { name: "Chidi Okonkwo",   email: "chidi.okonkwo@tenant.example", photo: PORTRAIT_B },
+    u3: { name: "Folake Adeyemi",  email: "folake.adeyemi@tenant.example" },
+    u4: { name: "Emeka Nwosu",     email: "emeka.nwosu@tenant.example" },
+    u5: { name: "Ngozi Eze",       email: "ngozi.eze@tenant.example" },
+    u6: { name: "Tunde Bakare",    email: "tunde.bakare@tenant.example" },
+    u7: { name: "Hauwa Ibrahim",   email: "hauwa.ibrahim@tenant.example" },
+    u8: { name: "Segun Alabi",     email: "segun.alabi@tenant.example" }
+  };
+
+  var ROLES = {
+    "finance-lead":    { name: "Finance Lead",     holders: ["u2", "u3"] },
+    "finance-officer": { name: "Finance Officer",  holders: ["u4"] },
+    "unit-head":       { name: "Unit Head",        holders: ["u5"] },
+    "compliance":      { name: "Compliance Officer", holders: [] },
+    "people-lead":     { name: "People Lead",      holders: ["u7"] }
+  };
+
+  var POSITIONS = {
+    "POS-FIN":  { title: "Head of Finance",   holders: ["u6"] },
+    "POS-REG":  { title: "Registrar",         holders: [] },
+    "POS-OPS":  { title: "Head of Operations", holders: ["u8"] }
+  };
+
+  var groups = [
+    {
+      id: "g1", code: "po-approvers", name: "PO Approvers", branch: null, active: true,
+      usedBy: ["Finance sign-off (Purchase order)", "Budget check (Purchase order)"],
+      members: [
+        { id: "m1", kind: "USER", target: "u1" },
+        { id: "m2", kind: "ROLE", target: "finance-lead" },
+        { id: "m3", kind: "POSITION", target: "POS-FIN" }
+      ]
+    },
+    {
+      id: "g2", code: "review-board", name: "Review Board", branch: "Lekki Campus", active: true,
+      usedBy: ["Board approval (Publication)"],
+      members: [
+        { id: "m4", kind: "USER", target: "u5" },
+        { id: "m5", kind: "USER", target: "u7" },
+        { id: "m6", kind: "ROLE", target: "unit-head" },
+        { id: "m7", kind: "POSITION", target: "POS-REG" }
+      ]
+    },
+    {
+      id: "g3", code: "leave-committee", name: "Leave Committee", branch: null, active: true,
+      usedBy: ["Committee review (Leave request)", "Extended leave (Leave request)",
+               "Committee review (Study leave)"],
+      members: [
+        { id: "m8", kind: "ROLE", target: "compliance" },
+        { id: "m9", kind: "POSITION", target: "POS-REG" }
+      ]
+    },
+    {
+      id: "g4", code: "capex-review", name: "Capital Review", branch: null, active: true,
+      usedBy: [],
+      members: []
+    }
+  ];
+
+  var state = { groupId: "g1", expanded: {}, showEffective: false, branches: false, picker: null, query: "" };
+
+  /* ── Resolution: the same shape the resolve endpoint returns ── */
+
+  function resolveMember(m) {
+    if (m.kind === "USER") return [m.target];
+    if (m.kind === "ROLE") return (ROLES[m.target] || { holders: [] }).holders.slice();
+    return (POSITIONS[m.target] || { holders: [] }).holders.slice();
+  }
+
+  function memberLabel(m) {
+    if (m.kind === "USER") return PEOPLE[m.target].name;
+    if (m.kind === "ROLE") return ROLES[m.target].name;
+    return POSITIONS[m.target].title;
+  }
+
+  function effective(group) {
+    var seen = {}, order = [];
+    group.members.forEach(function (m) {
+      resolveMember(m).forEach(function (uid) {
+        if (!seen[uid]) { seen[uid] = []; order.push(uid); }
+        seen[uid].push(m);
+      });
+    });
+    return order.map(function (uid) { return { uid: uid, via: seen[uid] }; });
+  }
+
+  function initials(name) {
+    return name.split(" ").slice(0, 2).map(function (p) { return p.charAt(0); }).join("");
+  }
+
+  /* One place decides portrait-or-initials, so every avatar on the screen
+     behaves the same the day photos start arriving. */
+  function avatar(uid, cls) {
+    var p = PEOPLE[uid];
+    if (!p) return "";
+    var inner = p.photo
+      ? '<img src="' + p.photo + '" alt="">'
+      : esc(initials(p.name));
+    return '<span class="' + (cls || "av") + '" title="' + esc(p.name) + '">' + inner + "</span>";
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
+
+  function kindClass(kind) {
+    return kind === "USER" ? "is-person" : kind === "ROLE" ? "is-role" : "is-position";
+  }
+
+  function kindLabel(kind) {
+    return kind === "USER" ? "Person" : kind === "ROLE" ? "Role" : "Position";
+  }
+
+  /* ── Rail ── */
+
+  function renderRail() {
+    var list = document.getElementById("rail-list");
+    var q = state.query.trim().toLowerCase();
+    var shown = groups.filter(function (g) {
+      return !q || g.name.toLowerCase().indexOf(q) > -1 || g.code.indexOf(q) > -1;
+    });
+
+    document.getElementById("rail-count").textContent =
+      q ? plural(shown.length, "match") : plural(groups.length, "group");
+
+    if (!shown.length) {
+      list.innerHTML = '<li style="padding:14px 12px;color:var(--ink-3);font-size:13px">' +
+        "No groups match &ldquo;" + esc(state.query) + "&rdquo;. " +
+        '<button class="btn btn-quiet btn-sm" type="button" id="clear-search">Clear search</button></li>';
+      document.getElementById("clear-search").addEventListener("click", function () {
+        state.query = "";
+        document.getElementById("rail-search").value = "";
+        renderRail();
+      });
+      return;
+    }
+
+    list.innerHTML = shown.map(function (g) {
+      var n = effective(g).length;
+      var stalling = n === 0 && g.usedBy.length > 0;
+      var cls = stalling ? "is-danger" : n === 0 ? "is-warn" : "";
+      var meta = n === 0
+        ? (stalling ? '<span class="dot"></span>' : "") + "0 people"
+        : plural(n, "person").replace("persons", "people");
+      return '<li><button class="rail-item" type="button" data-group="' + g.id + '"' +
+        (g.id === state.groupId ? ' aria-current="true"' : "") + ">" +
+        '<span class="rail-body">' +
+          '<span class="rail-name">' + esc(g.name) + "</span>" +
+          '<span class="rail-meta ' + cls + '">' + meta + "</span>" +
+        "</span></button></li>";
+    }).join("");
+
+    Array.prototype.forEach.call(list.querySelectorAll("[data-group]"), function (btn) {
+      btn.addEventListener("click", function () {
+        state.groupId = btn.getAttribute("data-group");
+        state.expanded = {};
+        state.showEffective = false;
+        state.picker = null;
+        render();
+      });
+    });
+  }
+
+  /* ── Detail ── */
+
+  function renderDetail() {
+    var g = groups.filter(function (x) { return x.id === state.groupId; })[0];
+    var host = document.getElementById("detail");
+    if (!g) { host.innerHTML = ""; return; }
+
+    var eff = effective(g);
+    var emptyMembers = g.members.filter(function (m) { return resolveMember(m).length === 0; });
+    var stalling = eff.length === 0 && g.usedBy.length > 0;
+
+    var html = '<div class="detail-inner">';
+
+    html += '<div class="detail-head"><div>' +
+      '<h2 class="detail-title">' + esc(g.name) +
+      '<span class="code-chip">' + esc(g.code) + "</span></h2>" +
+      '<div class="meta-row">' +
+        (state.branches
+          ? "<span>" + (g.branch ? esc(g.branch) : "All branches") + "</span><span class='meta-sep'>&middot;</span>"
+          : "") +
+        "<span>" + plural(g.members.length, "member") + "</span>" +
+        "<span class='meta-sep'>&middot;</span>" +
+        '<button class="effective-btn' + (eff.length === 0 ? " is-zero" : "") +
+          '" type="button" id="toggle-effective" aria-expanded="' + state.showEffective + '">' +
+          eff.length + " effective approver" + (eff.length === 1 ? "" : "s") +
+          '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+          '<path d="M4 6.5 8 10.5l4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+        "</button>" +
+      "</div></div></div>";
+
+    /* Severity ladder: red only when live steps are actually stalling. */
+    if (stalling) {
+      html += '<div class="banner is-danger" role="alert">' +
+        '<svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">' +
+        '<path d="M10 2.8 18.2 17H1.8L10 2.8Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>' +
+        '<path d="M10 8v3.4M10 14.1h.01" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>' +
+        "<div><p class='banner-title'>This group can&rsquo;t approve anything.</p>" +
+        "<p>It resolves to nobody right now, and " + plural(g.usedBy.length, "live step") +
+        " route" + (g.usedBy.length === 1 ? "s" : "") +
+        " to it. Requests reaching " + (g.usedBy.length === 1 ? "it" : "them") + " will wait.</p>" +
+        '<div class="banner-actions">' +
+        '<button class="btn btn-ghost btn-sm" type="button" data-open-picker="1">Add member</button>' +
+        '<button class="btn btn-ghost btn-sm" type="button">View steps</button></div></div></div>';
+    } else if (emptyMembers.length) {
+      html += '<div class="banner is-warn">' +
+        '<svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">' +
+        '<circle cx="10" cy="10" r="7.6" stroke="currentColor" stroke-width="1.6"/>' +
+        '<path d="M10 6v4.6M10 13.4h.01" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>' +
+        "<div><p class='banner-title'>" + emptyMembers.length + " of " + g.members.length +
+        " members resolves to nobody</p><p>" +
+        esc(emptyMembers.map(memberLabel).join(", ")) +
+        " currently has no one behind it. The rest of the group can still approve.</p></div></div>";
+    }
+
+    /* Effective approvers panel */
+    if (state.showEffective && eff.length) {
+      var dupes = eff.filter(function (e) { return e.via.length > 1; }).length;
+      html += '<div class="card"><div class="card-head"><h3 class="card-title">Who can approve right now ' +
+        '<span class="count">' + eff.length + "</span></h3></div>" +
+        '<div class="effective-panel"><div class="effective-grid">' +
+        eff.map(function (e) {
+          var p = PEOPLE[e.uid];
+          return '<div class="effective-person">' + avatar(e.uid) +
+            "<span><span class='who'>" + esc(p.name) + "</span><br>" +
+            "<span class='via'>" + esc(e.via.map(function (m) {
+              /* Naming the person again as their own route reads as a glitch. */
+              return m.kind === "USER" ? "added directly" : "via " + memberLabel(m);
+            }).join(" + ")) + "</span></span></div>";
+        }).join("") +
+        "</div>" +
+        (dupes ? '<p class="effective-foot">' + plural(dupes, "person").replace("persons", "people") +
+          " reachable through more than one member, counted once.</p>" : "") +
+        "</div></div>";
+    }
+
+    /* Members card */
+    html += '<div class="card"><div class="card-head">' +
+      '<h3 class="card-title">Members <span class="count">' + g.members.length + "</span></h3>" +
+      '<div class="pop-wrap">' +
+      '<button class="btn btn-ghost btn-sm" type="button" id="add-member" aria-expanded="' +
+        (state.picker !== null) + '">' +
+      '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+      '<path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>' +
+      "Add member</button>" + renderPicker(g) + "</div></div>";
+
+    if (!g.members.length) {
+      html += '<div class="empty' + (g.usedBy.length ? " is-risk" : "") + '">' +
+        "<h3>No approvers yet</h3><p>" +
+        (g.usedBy.length
+          ? "Steps routed to this group cannot be approved until someone is added."
+          : "Add people, roles, or positions. Roles and positions keep themselves current as staff change.") +
+        '</p><button class="btn btn-primary btn-sm" type="button" data-open-picker="1">Add member</button></div>';
+    } else {
+      html += '<ul class="members">' + g.members.map(function (m) { return renderMember(g, m); }).join("") + "</ul>";
+      html += '<p class="recalc">' +
+        '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+        '<path d="M13.4 8a5.4 5.4 0 1 1-1.6-3.8M13.4 2.2V5h-2.8" stroke="currentColor" stroke-width="1.5" ' +
+        'stroke-linecap="round" stroke-linejoin="round"/></svg> Recalculated just now</p>';
+    }
+    html += "</div>";
+
+    /* Reverse lookup: what this group is wired into. */
+    html += '<p class="used-by">' + (g.usedBy.length
+      ? "Used by <strong>" + plural(g.usedBy.length, "workflow step") + "</strong>: " +
+        g.usedBy.map(esc).join(" &middot; ")
+      : "Not used by any workflow step yet.") + "</p>";
+
+    html += "</div>";
+    host.innerHTML = html;
+    wireDetail(g);
+  }
+
+  function renderMember(g, m) {
+    var people = resolveMember(m);
+    var isEmpty = people.length === 0;
+    var expandable = m.kind !== "USER";
+    var open = !!state.expanded[m.id];
+    var sub;
+
+    if (m.kind === "USER") {
+      sub = esc(PEOPLE[m.target].email);
+    } else {
+      var noun = m.kind === "ROLE" ? "Role" : "Org position";
+      sub = isEmpty
+        ? noun + " &middot; resolves to nobody"
+        : noun + " &middot; resolves to " + plural(people.length, "person").replace("persons", "people");
+    }
+
+    var tileInner = m.kind === "USER"
+      ? (PEOPLE[m.target].photo
+          ? '<img src="' + PEOPLE[m.target].photo + '" alt="">'
+          : esc(initials(PEOPLE[m.target].name)))
+      : m.kind === "ROLE"
+        ? '<svg width="17" height="17" viewBox="0 0 20 20" fill="none" aria-hidden="true">' +
+          '<path d="M10 2.6 16.4 5v4.6c0 3.5-2.6 6.4-6.4 7.8-3.8-1.4-6.4-4.3-6.4-7.8V5L10 2.6Z" ' +
+          'stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>'
+        : '<svg width="17" height="17" viewBox="0 0 20 20" fill="none" aria-hidden="true">' +
+          '<rect x="7.4" y="2.6" width="5.2" height="4.2" rx="1" stroke="currentColor" stroke-width="1.5"/>' +
+          '<rect x="2.6" y="13.2" width="5.2" height="4.2" rx="1" stroke="currentColor" stroke-width="1.5"/>' +
+          '<rect x="12.2" y="13.2" width="5.2" height="4.2" rx="1" stroke="currentColor" stroke-width="1.5"/>' +
+          '<path d="M10 6.8v3.4M5.2 13.2v-3h9.6v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+
+    var stack = people.slice(0, 3).map(function (uid) { return avatar(uid); }).join("");
+
+    var row = '<li class="member' + (isEmpty ? " is-empty" : "") + '"><div class="member-row">' +
+      '<span class="tile ' + kindClass(m.kind) + '" aria-hidden="true">' + tileInner + "</span>" +
+      '<span class="member-body"><span class="member-name">' + esc(memberLabel(m)) +
+      '<span class="badge ' + kindClass(m.kind) + '">' + kindLabel(m.kind) + "</span></span>" +
+      '<span class="member-sub">' + sub + "</span></span>" +
+      '<span class="member-right">';
+
+    if (expandable) {
+      row += '<span class="stack">' + stack + "</span>" +
+        '<button class="disclose" type="button" data-expand="' + m.id + '" aria-expanded="' + open + '">' +
+        (isEmpty ? "0" : people.length > 3 ? "+" + (people.length - 3) : "") +
+        '<svg class="chev" width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+        '<path d="M6 3.5 10.5 8 6 12.5" stroke="currentColor" stroke-width="1.7" ' +
+        'stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+        '<span class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">' +
+        esc(memberLabel(m)) + " resolves to " + people.length + " people, show them</span></button>";
+    }
+
+    row += '<button class="icon-btn" type="button" data-remove="' + m.id + '" aria-label="Remove ' +
+      esc(memberLabel(m)) + '">' +
+      '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+      '<path d="M3.4 4.6h9.2M6.4 4.6V3.4h3.2v1.2M5 4.6l.5 8h5l.5-8" stroke="currentColor" ' +
+      'stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>';
+
+    row += "</span></div>";
+
+    if (expandable && open) {
+      row += '<div class="resolved ' + (isEmpty ? "is-empty" : kindClass(m.kind)) + '">';
+      if (isEmpty) {
+        row += '<p class="resolved-note">' + (m.kind === "ROLE"
+          ? "No one currently holds this role. <a href=\"#\">Assign it &rsaquo;</a>"
+          : "This seat is vacant. <a href=\"#\">Assign a holder &rsaquo;</a>") + "</p>";
+      } else {
+        row += people.map(function (uid) {
+          var p = PEOPLE[uid];
+          return '<div class="resolved-person">' + avatar(uid) +
+            "<span class='who'>" + esc(p.name) + "</span>" +
+            "<span class='mail'>" + esc(p.email) + "</span></div>";
+        }).join("");
+      }
+      row += "</div>";
+    }
+
+    return row + "</li>";
+  }
+
+  /* ── Add-member picker: one field, all three kinds ── */
+
+  function renderPicker(g) {
+    if (state.picker === null) return "";
+    var filter = state.picker.filter;
+    var q = state.picker.query.trim().toLowerCase();
+    var sel = state.picker.selected;
+
+    function has(kind, target) {
+      return g.members.some(function (m) { return m.kind === kind && m.target === target; });
+    }
+    function match(text) { return !q || text.toLowerCase().indexOf(q) > -1; }
+    function isSel(kind, target) {
+      return sel.some(function (s) { return s.kind === kind && s.target === target; });
+    }
+
+    var out = '<div class="popover" id="picker">' +
+      '<div class="pop-search"><label class="search-field">' +
+      '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+      '<circle cx="7" cy="7" r="4.6" stroke="currentColor" stroke-width="1.5"/>' +
+      '<path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>' +
+      '<input id="pick-search" type="search" placeholder="Search people, roles or positions" ' +
+      'aria-label="Search people, roles or positions" value="' + esc(state.picker.query) + '"></label></div>';
+
+    out += '<div class="pop-filters">' +
+      ["All", "People", "Roles", "Positions"].map(function (f) {
+        return '<button class="chip" type="button" data-filter="' + f + '" aria-pressed="' +
+          (filter === f) + '">' + f + "</button>";
+      }).join("") + "</div>";
+
+    out += '<div class="pop-results">';
+    var any = false;
+
+    if (filter === "All" || filter === "People") {
+      var pids = Object.keys(PEOPLE).filter(function (uid) { return match(PEOPLE[uid].name); });
+      if (pids.length) {
+        any = true;
+        out += '<p class="pop-group-label">People</p>';
+        pids.slice(0, 5).forEach(function (uid) {
+          var added = has("USER", uid);
+          out += '<button class="opt" type="button" data-pick="USER:' + uid + '"' +
+            (added ? " disabled" : "") + ' aria-selected="' + isSel("USER", uid) + '">' +
+            (added ? '<span class="tick is-blank" aria-hidden="true"></span>' : optTick()) +
+            avatar(uid) +
+            '<span class="opt-body"><span class="opt-name">' + esc(PEOPLE[uid].name) + "</span>" +
+            '<span class="opt-sub">' + esc(PEOPLE[uid].email) + "</span></span>" +
+            (added ? '<span class="opt-added">Added &#10003;</span>' : "") + "</button>";
+        });
+        if (pids.length > 5) out += '<p class="pop-group-label" style="text-transform:none;letter-spacing:0;' +
+          'font-size:12px;font-weight:500">Show all ' + pids.length + " &rsaquo;</p>";
+      }
+    }
+
+    if (filter === "All" || filter === "Roles") {
+      var rids = Object.keys(ROLES).filter(function (k) { return match(ROLES[k].name); });
+      if (rids.length) {
+        any = true;
+        out += '<p class="pop-group-label">Roles</p>';
+        rids.forEach(function (k) {
+          var n = ROLES[k].holders.length, added = has("ROLE", k);
+          out += '<button class="opt" type="button" data-pick="ROLE:' + k + '"' +
+            (added ? " disabled" : "") + ' aria-selected="' + isSel("ROLE", k) + '">' +
+            (added ? '<span class="tick is-blank" aria-hidden="true"></span>' : optTick()) +
+            '<span class="tile is-role" style="width:26px;height:26px;border-radius:7px" aria-hidden="true">' +
+            '<svg width="14" height="14" viewBox="0 0 20 20" fill="none">' +
+            '<path d="M10 2.6 16.4 5v4.6c0 3.5-2.6 6.4-6.4 7.8-3.8-1.4-6.4-4.3-6.4-7.8V5L10 2.6Z" ' +
+            'stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></span>' +
+            '<span class="opt-body"><span class="opt-name">' + esc(ROLES[k].name) + "</span></span>" +
+            (added ? '<span class="opt-added">Added &#10003;</span>'
+                   : '<span class="opt-count' + (n === 0 ? " is-zero" : "") + '">' +
+                     (n === 0 ? "&#9888; 0 people" : plural(n, "person").replace("persons", "people")) + "</span>") +
+            "</button>";
+        });
+      }
+    }
+
+    if (filter === "All" || filter === "Positions") {
+      var qids = Object.keys(POSITIONS).filter(function (k) { return match(POSITIONS[k].title); });
+      if (qids.length) {
+        any = true;
+        out += '<p class="pop-group-label">Positions</p>';
+        qids.forEach(function (k) {
+          var n = POSITIONS[k].holders.length, added = has("POSITION", k);
+          out += '<button class="opt" type="button" data-pick="POSITION:' + k + '"' +
+            (added ? " disabled" : "") + ' aria-selected="' + isSel("POSITION", k) + '">' +
+            (added ? '<span class="tick is-blank" aria-hidden="true"></span>' : optTick()) +
+            '<span class="tile is-position" style="width:26px;height:26px;border-radius:7px" aria-hidden="true">' +
+            '<svg width="14" height="14" viewBox="0 0 20 20" fill="none">' +
+            '<rect x="7.4" y="2.6" width="5.2" height="4.2" rx="1" stroke="currentColor" stroke-width="1.5"/>' +
+            '<rect x="2.6" y="13.2" width="5.2" height="4.2" rx="1" stroke="currentColor" stroke-width="1.5"/>' +
+            '<rect x="12.2" y="13.2" width="5.2" height="4.2" rx="1" stroke="currentColor" stroke-width="1.5"/>' +
+            '<path d="M10 6.8v3.4M5.2 13.2v-3h9.6v3" stroke="currentColor" stroke-width="1.5" ' +
+            'stroke-linecap="round"/></svg></span>' +
+            '<span class="opt-body"><span class="opt-name">' + esc(POSITIONS[k].title) + "</span>" +
+            '<span class="opt-sub" style="font-family:var(--mono);font-size:11px">' + esc(k) + "</span></span>" +
+            (added ? '<span class="opt-added">Added &#10003;</span>'
+                   : '<span class="opt-count' + (n === 0 ? " is-zero" : "") + '">' +
+                     (n === 0 ? "&#9888; vacant" : plural(n, "person").replace("persons", "people")) + "</span>") +
+            "</button>";
+        });
+      }
+    }
+
+    if (!any) {
+      out += '<p style="padding:18px 14px;color:var(--ink-3);font-size:13px">' +
+        "Nothing matches &ldquo;" + esc(state.picker.query) + "&rdquo;.</p>";
+    }
+
+    out += "</div>";
+    out += '<div class="pop-foot"><span class="n">' + (sel.length ? sel.length + " selected" : "Nothing selected") +
+      '</span><button class="btn btn-ghost btn-sm" type="button" id="pick-cancel">Cancel</button>' +
+      '<button class="btn btn-primary btn-sm" type="button" id="pick-confirm"' +
+      (sel.length ? "" : " disabled style=\"opacity:.5\"") + ">Add" +
+      (sel.length ? " " + sel.length : "") + "</button></div></div>";
+    return out;
+  }
+
+  function optTick() {
+    return '<span class="tick" aria-hidden="true">' +
+      '<svg width="11" height="11" viewBox="0 0 16 16" fill="none">' +
+      '<path d="M3.4 8.4 6.6 11.6 12.6 4.8" stroke="currentColor" stroke-width="2" ' +
+      'stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
+  }
+
+  /* ── Wiring ── */
+
+  function wireDetail(g) {
+    var eff = document.getElementById("toggle-effective");
+    if (eff) eff.addEventListener("click", function () {
+      state.showEffective = !state.showEffective;
+      renderDetail();
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-expand]"), function (btn) {
+      btn.addEventListener("click", function () {
+        var id = btn.getAttribute("data-expand");
+        state.expanded[id] = !state.expanded[id];
+        renderDetail();
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-remove]"), function (btn) {
+      btn.addEventListener("click", function () {
+        var id = btn.getAttribute("data-remove");
+        g.members = g.members.filter(function (m) { return m.id !== id; });
+        render();
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-open-picker]"), function (btn) {
+      btn.addEventListener("click", openPicker);
+    });
+
+    var add = document.getElementById("add-member");
+    if (add) add.addEventListener("click", function () {
+      if (state.picker === null) { openPicker(); } else { state.picker = null; renderDetail(); }
+    });
+
+    wirePicker(g);
+  }
+
+  function openPicker() {
+    state.picker = { query: "", filter: "All", selected: [] };
+    renderDetail();
+    var input = document.getElementById("pick-search");
+    if (input) input.focus();
+  }
+
+  function wirePicker(g) {
+    if (state.picker === null) return;
+
+    var search = document.getElementById("pick-search");
+    if (search) {
+      search.addEventListener("input", function () {
+        state.picker.query = search.value;
+        renderDetail();
+        var again = document.getElementById("pick-search");
+        if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
+      });
+    }
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-filter]"), function (btn) {
+      btn.addEventListener("click", function () {
+        state.picker.filter = btn.getAttribute("data-filter");
+        renderDetail();
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-pick]"), function (btn) {
+      btn.addEventListener("click", function () {
+        var parts = btn.getAttribute("data-pick").split(":");
+        var kind = parts[0], target = parts[1];
+        var at = -1;
+        state.picker.selected.forEach(function (s, i) {
+          if (s.kind === kind && s.target === target) at = i;
+        });
+        if (at > -1) { state.picker.selected.splice(at, 1); }
+        else { state.picker.selected.push({ kind: kind, target: target }); }
+        renderDetail();
+      });
+    });
+
+    var cancel = document.getElementById("pick-cancel");
+    if (cancel) cancel.addEventListener("click", function () { state.picker = null; renderDetail(); });
+
+    var confirm = document.getElementById("pick-confirm");
+    if (confirm) confirm.addEventListener("click", function () {
+      state.picker.selected.forEach(function (s) {
+        g.members.push({ id: "m" + Math.random().toString(36).slice(2, 8), kind: s.kind, target: s.target });
+      });
+      state.picker = null;
+      render();
+    });
+  }
+
+
+  /* ── Dynamic Role ──────────────────────────────────────────────────────
+     Rule sets mirror a DYNAMIC_ROLE stage: ordered rules, first match wins,
+     a null condition as the fallback. The tester runs the same evaluation
+     the engine runs, which is the whole point of previewing. */
+
+  var RULESETS = [
+    {
+      id: "rs1", name: "Spend Approval", stage: "spend-approval",
+      central: true, overridden: false,
+      document: "Purchase order", field: "amount", fieldLabel: "Amount",
+      money: true, sample: 250000,
+      rules: [
+        { condition: { op: "lt", field: "amount", value: 100000 }, role: "finance-officer" },
+        { condition: { op: "lt", field: "amount", value: 1000000 }, role: "finance-lead" },
+        { condition: null, role: "unit-head" }
+      ]
+    },
+    {
+      id: "rs2", name: "Leave Length", stage: "leave-approval",
+      central: false, overridden: false,
+      document: "Leave request", field: "days", fieldLabel: "Days requested",
+      money: false, sample: 12,
+      rules: [
+        { condition: { op: "lte", field: "days", value: 5 }, role: "people-lead" },
+        { condition: { op: "lte", field: "days", value: 20 }, role: "unit-head" },
+        { condition: { op: "gt", field: "days", value: 20 }, role: "compliance" }
+      ]
+    }
+  ];
+
+  var rulesState = { setId: "rs1", sample: {} };
+
+  function money(n) {
+    return "\u20A6" + Number(n).toLocaleString("en-NG");
+  }
+
+  function fmtValue(set, v) {
+    return set.money ? money(v) : String(v);
+  }
+
+  /* Same operator set the backend accepts, phrased for reading. */
+  function phrase(set, condition) {
+    if (condition === null) return null;
+    if (condition.all) {
+      return condition.all.map(function (c) { return phrase(set, c); }).join(" and ");
+    }
+    var word = {
+      lt: "is less than", lte: "is at most", gt: "is more than",
+      gte: "is at least", eq: "is", ne: "is not"
+    }[condition.op] || condition.op;
+    return "<span class='tok'>" + esc(set.fieldLabel.toLowerCase()) + "</span> " +
+      word + " <span class='tok'>" + esc(fmtValue(set, condition.value)) + "</span>";
+  }
+
+  function evaluate(condition, doc) {
+    if (condition === null || condition === undefined) return true;
+    if (condition.all) return condition.all.every(function (c) { return evaluate(c, doc); });
+    if (condition.any) return condition.any.some(function (c) { return evaluate(c, doc); });
+    if (condition.not) return !evaluate(condition.not, doc);
+    var left = doc[condition.field];
+    if (left === undefined || left === null) return false;
+    var right = condition.value;
+    switch (condition.op) {
+      case "lt":  return left <   right;
+      case "lte": return left <=  right;
+      case "gt":  return left >   right;
+      case "gte": return left >=  right;
+      case "eq":  return left === right;
+      case "ne":  return left !== right;
+      default:    return false;
+    }
+  }
+
+  function firstMatch(set, doc) {
+    for (var i = 0; i < set.rules.length; i++) {
+      if (evaluate(set.rules[i].condition, doc)) return i;
+    }
+    return -1;
+  }
+
+  function roleHolders(key) {
+    return (ROLES[key] || { holders: [] }).holders;
+  }
+
+  function renderRuleRail() {
+    var list = document.getElementById("ruleset-list");
+    document.getElementById("ruleset-count").textContent =
+      plural(RULESETS.length, "rule set");
+    list.innerHTML = RULESETS.map(function (set) {
+      var noFallback = set.rules[set.rules.length - 1].condition !== null;
+      var empties = set.rules.filter(function (r) { return roleHolders(r.role).length === 0; }).length;
+      var meta = plural(set.rules.length, "rule");
+      var cls = "";
+      if (noFallback) { meta += " \u00B7 no fallback"; cls = "is-warn"; }
+      else if (empties) { meta += " \u00B7 " + empties + " with nobody"; cls = "is-warn"; }
+      return '<li><button class="rail-item" type="button" data-ruleset="' + set.id + '"' +
+        (set.id === rulesState.setId ? ' aria-current="true"' : "") + ">" +
+        '<span class="rail-body"><span class="rail-name">' + esc(set.name) + "</span>" +
+        '<span class="rail-meta ' + cls + '">' + meta + "</span></span></button></li>";
+    }).join("");
+
+    Array.prototype.forEach.call(list.querySelectorAll("[data-ruleset]"), function (btn) {
+      btn.addEventListener("click", function () {
+        rulesState.setId = btn.getAttribute("data-ruleset");
+        renderRules();
+      });
+    });
+  }
+
+  function renderRuleDetail() {
+    var set = RULESETS.filter(function (x) { return x.id === rulesState.setId; })[0];
+    var host = document.getElementById("rules-detail");
+    if (!set) { host.innerHTML = ""; return; }
+
+    if (rulesState.sample[set.id] === undefined) rulesState.sample[set.id] = set.sample;
+    var value = rulesState.sample[set.id];
+    var doc = {}; doc[set.field] = value;
+    var hit = firstMatch(set, doc);
+    var noFallback = set.rules[set.rules.length - 1].condition !== null;
+
+    var html = '<div class="detail-inner">';
+    html += '<div class="detail-head"><div>' +
+      '<h2 class="detail-title">' + esc(set.name) +
+      '<span class="code-chip">' + esc(set.stage) + "</span></h2>" +
+      '<div class="meta-row">' +
+      (set.central
+        ? '<span class="badge is-central">Central</span><span class="meta-sep">&middot;</span>'
+        : "") +
+      "<span>" + esc(set.document) + "</span>" +
+      "<span class='meta-sep'>&middot;</span><span>" + plural(set.rules.length, "rule") +
+      "</span><span class='meta-sep'>&middot;</span><span>first match wins</span></div>" +
+      "</div></div>";
+
+    if (set.central) {
+      html += '<div class="card"><div class="card-head">' +
+        '<h3 class="card-title">Shared with every tenant</h3>' +
+        '<button class="btn btn-ghost btn-sm" type="button" id="toggle-override">' +
+        (set.overridden ? "Remove override" : "Use a different approver here") +
+        "</button></div>" +
+        '<div class="tester"><p style="margin:0;font-size:13px;color:var(--ink-2)">' +
+        (set.overridden
+          ? "This tenant sends this step to <strong>Finance Lead</strong> instead. " +
+            "The shared rules below still decide everything else."
+          : "These rules were published centrally. Each tenant resolves the named " +
+            "roles against its own people. Repointing the approver here changes it " +
+            "for this tenant only.") +
+        "</p></div></div>";
+    }
+
+    if (noFallback) {
+      html += '<div class="banner is-warn">' +
+        '<svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">' +
+        '<circle cx="10" cy="10" r="7.6" stroke="currentColor" stroke-width="1.6"/>' +
+        '<path d="M10 6v4.6M10 13.4h.01" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>' +
+        "<div><p class='banner-title'>No fallback rule</p><p>A request that matches none " +
+        "of these rules resolves to nobody. Add a final rule with no condition to catch " +
+        "everything else.</p></div></div>";
+    }
+
+    /* Tester first: it is the reason to open this screen. */
+    html += '<div class="card"><div class="card-head">' +
+      '<h3 class="card-title">Try a request</h3></div>' +
+      '<div class="tester"><div class="tester-row">' +
+      '<label for="sample-input">' + esc(set.fieldLabel) + "</label>" +
+      '<input class="tester-input" id="sample-input" type="number" min="0" value="' + value + '">' +
+      (set.money ? '<span class="rule-count">' + esc(money(value)) + "</span>" : "") +
+      "</div>";
+
+    if (hit === -1) {
+      html += '<div class="tester-out is-none"><strong>No rule matches.</strong> ' +
+        "This request would reach the step and find no approver.</div>";
+    } else {
+      var role = set.rules[hit].role;
+      var people = roleHolders(role);
+      html += '<div class="tester-out"><strong>Rule ' + (hit + 1) + "</strong> wins, so this goes to " +
+        "<strong>" + esc(ROLES[role].name) + "</strong>" +
+        (people.length
+          ? ' <span class="rule-count">(' +
+            plural(people.length, "person").replace("persons", "people") + ")</span>"
+          : ' <span class="rule-count is-zero">&#9888; nobody holds this role</span>') +
+        '<div class="tester-people">' + people.map(function (uid) {
+          return '<span class="tester-person">' + avatar(uid) +
+            esc(PEOPLE[uid].name) + "</span>";
+        }).join("") + "</div></div>";
+    }
+    html += "</div></div>";
+
+    /* Rules, numbered because order is the contract. */
+    html += '<div class="card"><div class="card-head">' +
+      '<h3 class="card-title">Rules <span class="count">' + set.rules.length + "</span></h3>" +
+      '<button class="btn btn-ghost btn-sm" type="button">+ Add rule</button></div>';
+
+    html += set.rules.map(function (r, i) {
+      var people = roleHolders(r.role);
+      var isHit = i === hit;
+      var dead = hit > -1 && i > hit;
+      var when = phrase(set, r.condition);
+      var verdict;
+      if (isHit) {
+        verdict = "Matches this request.";
+      } else if (dead) {
+        verdict = "Not reached - an earlier rule already matched.";
+      } else {
+        verdict = "Does not match: " + esc(set.fieldLabel.toLowerCase()) + " is " +
+          esc(fmtValue(set, value)) + ".";
+      }
+      return '<div class="rule' + (isHit ? " is-hit" : "") + (dead ? " is-dead" : "") + '">' +
+        '<span class="rule-n">' + (i + 1) + "</span>" +
+        '<span class="rule-body">' +
+        '<span class="rule-when">' + (when
+          ? "<span class='kw'>When</span> " + when
+          : "<span class='kw'>Otherwise</span> (catches everything else)") + "</span>" +
+        '<span class="rule-then"><span class="rule-arrow">&rarr;</span>' +
+        '<span class="badge is-role">Role</span>' +
+        '<span class="rule-role">' + esc(ROLES[r.role].name) + "</span>" +
+        '<span class="rule-count' + (people.length ? "" : " is-zero") + '">' +
+        (people.length
+          ? plural(people.length, "person").replace("persons", "people")
+          : "&#9888; nobody holds this role") + "</span></span>" +
+        '<span class="rule-verdict' + (isHit ? " is-hit" : "") + '">' + verdict + "</span>" +
+        "</span></div>";
+    }).join("");
+
+    html += "</div>";
+    html += '<p class="used-by">Evaluated top to bottom. The first rule that matches ' +
+      "picks the role; its current holders become the approvers.</p>";
+    html += "</div>";
+
+    host.innerHTML = html;
+
+    var ovr = document.getElementById("toggle-override");
+    if (ovr) ovr.addEventListener("click", function () {
+      set.overridden = !set.overridden;
+      renderRuleDetail();
+    });
+
+    var input = document.getElementById("sample-input");
+    if (input) {
+      input.addEventListener("input", function () {
+        var n = parseInt(input.value, 10);
+        rulesState.sample[set.id] = isNaN(n) ? 0 : n;
+        renderRuleDetail();
+        // Re-focus after the re-render. Number inputs have no text selection,
+        // so restoring the caret is neither possible nor needed here.
+        var again = document.getElementById("sample-input");
+        if (again) again.focus();
+      });
+    }
+  }
+
+  function renderRules() { renderRuleRail(); renderRuleDetail(); }
+
+  function render() { renderRail(); renderDetail(); }
+
+  // Groups is the tab on load, so its action is the filled one.
+  document.getElementById("new-group").className = "btn btn-primary";
+
+  /* Tabs */
+  Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (tab) {
+    tab.addEventListener("click", function () {
+      var which = tab.getAttribute("data-tab");
+      Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (t) {
+        t.setAttribute("aria-selected", String(t === tab));
+      });
+      document.getElementById("panel-groups").hidden = which !== "groups";
+      document.getElementById("panel-rules").hidden = which !== "rules";
+      // Both create actions stay in the letterhead; the active one is filled
+      // in so the tab you are on still has an obvious primary.
+      document.getElementById("new-group").className =
+        which === "groups" ? "btn btn-primary" : "btn btn-ghost";
+      document.getElementById("new-ruleset").className =
+        which === "rules" ? "btn btn-primary" : "btn btn-ghost";
+      if (which === "rules") renderRules();
+    });
+  });
+
+  /* Rail search */
+  document.getElementById("rail-search").addEventListener("input", function (e) {
+    state.query = e.target.value;
+    renderRail();
+  });
+
+  /* Branch-shape demo toggle */
+  Array.prototype.forEach.call(document.querySelectorAll("[data-branches]"), function (btn) {
+    btn.addEventListener("click", function () {
+      state.branches = btn.getAttribute("data-branches") === "on";
+      Array.prototype.forEach.call(document.querySelectorAll("[data-branches]"), function (b) {
+        b.setAttribute("aria-pressed", String(b === btn));
+      });
+      renderDetail();
+    });
+  });
+
+  /* Dismiss the picker on outside click or Escape.
+     The test runs against the clicked element itself rather than against a
+     freshly queried #picker: every interaction re-renders the detail pane, so
+     by the time this fires the original target is detached and a contains()
+     check against the new DOM would report "outside" and close the picker on
+     its own opening click. closest() still resolves on the detached node. */
+  document.addEventListener("click", function (e) {
+    if (state.picker === null || !e.target.closest) return;
+    if (e.target.closest("#picker, #add-member, [data-open-picker]")) return;
+    state.picker = null;
+    renderDetail();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && state.picker !== null) { state.picker = null; renderDetail(); }
+  });
+
+  render();
+})();
+</script>

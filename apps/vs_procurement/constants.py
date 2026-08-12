@@ -202,8 +202,12 @@ WF_DEFAULT_TEMPLATE_CODE = "standard"
 WF_DEFAULT_SENIOR_THRESHOLD = 50_000_000
 
 #: Default RBAC permission keys the seeded approval stages resolve approvers against.
-WF_DEFAULT_MANAGER_PERMISSION = "procurement.approval.approve"
-WF_DEFAULT_SENIOR_PERMISSION = "procurement.approval.approve_senior"
+# Role keys the central approval ladder names. Resolution happens inside
+# whichever tenant raised the document, so every tenant needs a role with
+# these keys - seed_procurement_permissions creates them, and
+# check_workflow_role_coverage reports tenants that are missing one.
+WF_DEFAULT_MANAGER_ROLE = "procurement-approver"
+WF_DEFAULT_SENIOR_ROLE = "procurement-senior-approver"
 
 #: Permission key that may release a *parked* approval without a vote. Seeded by
 #: ``seed_procurement_permissions`` but deliberately granted to **no** role: it is a

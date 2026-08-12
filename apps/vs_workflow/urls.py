@@ -3,10 +3,14 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from vs_workflow.views import (
     ApprovalDelegationViewSet, MySubmissionsView, PendingApprovalsView,
-    ReverseActionView, TeamLoadView, WorkflowInstanceViewSet, WorkflowTemplateViewSet,
+    ReverseActionView, TeamLoadView, WorkflowApproverGroupViewSet,
+    WorkflowInstanceViewSet, WorkflowStageApproverOverrideViewSet,
+    WorkflowTemplateViewSet,
 )
 router = DefaultRouter()
 router.register(r"templates", WorkflowTemplateViewSet, basename="workflow-template")
+router.register(r"approver-groups", WorkflowApproverGroupViewSet, basename="workflow-approver-group")
+router.register(r"stage-approvers", WorkflowStageApproverOverrideViewSet, basename="workflow-stage-approver")
 router.register(r"instances", WorkflowInstanceViewSet, basename="workflow-instance")
 router.register(r"delegations", ApprovalDelegationViewSet, basename="workflow-delegation")
 urlpatterns = [

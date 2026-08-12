@@ -19,34 +19,19 @@ from vs_workflow.models import WorkflowStageAction, WorkflowStageApprover
 from vs_workflow.services import parking
 
 
-def pending_approval_snapshots(user, school=None) -> list[WorkflowStageApprover]:
+def pending_approval_snapshots(user, tenant=None) -> list[WorkflowStageApprover]:
     """Approver snapshots *user* can still act on, newest activation first.
 
     Starts from snapshots rather than instances so delegated approvals - where
     the actor is not the original approver - are included.
-
-    Parked work is restored before reading. A stage that activated while nobody
-    held its permission has an empty frozen snapshot, so it would never appear
-    here however the permissions changed afterwards; see
-    :mod:`vs_workflow.services.parking`. Repairing at this choke point rather
-    than in one screen is what gives every document type the same treatment -
-    the alternative is each app remembering to do it, which is how payout
-    batches went without it. On healthy data it is one indexed query that
-    matches nothing and takes no locks.
     """
-    # Scope the repair to the books being read, never system-wide: one person
-    # opening their queue must not do work on behalf of other tenants.
-    tenant = school.tenant if school is not None else getattr(user, "tenant", None)
-    if tenant is not None:
-        parking.repair_workflows(tenant=tenant)
-
     snaps_qs = WorkflowStageApprover.objects.filter(
         user=user,
         stage_instance__status="ACTIVE",
         stage_instance__instance__status="IN_PROGRESS",
     )
-    if school is not None:
-        snaps_qs = snaps_qs.filter(stage_instance__instance__tenant=school.tenant)
+    if tenant is not None:
+        snaps_qs = snaps_qs.filter(stage_instance__instance__tenant=tenant)
 
     snaps = snaps_qs.select_related(
         "stage_instance__instance__template", "stage_instance__stage",
@@ -65,7 +50,7 @@ def pending_approval_snapshots(user, school=None) -> list[WorkflowStageApprover]
     ]
 
 
-def pending_approval_count(user, school=None) -> int:
+def pending_approval_count(user, tenant=None) -> int:
     """How many decisions are waiting on *user*.
 
     Deliberately materialises the same list as the screen instead of issuing a
@@ -73,4 +58,4 @@ def pending_approval_count(user, school=None) -> int:
     expressed in the snapshot query, so a count that skipped them would report
     work the user cannot actually action.
     """
-    return len(pending_approval_snapshots(user, school))
+    return len(pending_approval_snapshots(user, tenant))
