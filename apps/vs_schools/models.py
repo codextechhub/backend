@@ -261,9 +261,11 @@ class Branch(TimeStampedModel):
     methods and are logged via `BranchLifecycle`.
 
     Fields:
+        tenant: FK to the owning Tenant. Derived from `school` on save and never
+            supplied by callers; it is what every other app should scope on.
         school: FK back to the owning School (`branches` related name).
         name: Display label such as "Lekki Campus".
-        code: Integer code unique within the school; filled on first save.
+        code: Integer code unique within the tenant; filled on first save.
         is_main: Boolean marker for the canonical branch (unique constraint enforces 1).
         _type: Optional free-form descriptor (e.g., Primary, Secondary).
         address / email / country / state: Contact + location metadata captured today.
@@ -272,13 +274,24 @@ class Branch(TimeStampedModel):
 
     Meta:
         - indexes on (`school`, `is_main`), (`school`, `status`), (`school`, `code`)
-        - unique constraints for non-zero codes per school and single main branch.
+        - unique code per tenant, and at most one `is_main` branch per tenant.
+
+    Both constraints are keyed on `tenant`, not on `school`. They are the same
+    set of rows either way - `School.tenant` is a non-nullable OneToOneField -
+    but keyed on `tenant` they survive the `school` FK being dropped.
 
     Helpers:
-        allocate_next_code() wraps a SELECT .. FOR UPDATE sequence per school.
+        allocate_next_code() locks the tenant row and returns the next code.
         transition()/mark_*() mutate status and append a BranchLifecycle event.
         clean() auto-populates `closed_at` when the status is CLOSED.
     """
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant",
+        on_delete=models.PROTECT,
+        related_name="branches",
+        db_index=True,
+    )
 
     school = models.ForeignKey(
         School,
@@ -291,7 +304,7 @@ class Branch(TimeStampedModel):
     code = models.PositiveIntegerField(
         editable=False,
         null=False,
-        help_text="Branch code unique per school (1..N).",
+        help_text="Branch code unique per tenant (1..N).",
         db_index=True,
     )
     is_main = models.BooleanField(
@@ -333,7 +346,23 @@ class Branch(TimeStampedModel):
             models.Index(fields=["school", "status"]),
             models.Index(fields=["school", "code"]),
         ]
-        constraints = []
+        constraints = [
+            # The uniqueness the docstring has always promised and the table has
+            # never had. Keyed on tenant so it outlives the school FK.
+            models.UniqueConstraint(
+                fields=["tenant", "code"],
+                name="uq_branch_tenant_code",
+            ),
+            # A partial unique index. Every engine this repo runs on supports
+            # them (PostgreSQL local/CI/staging, SQLite in apps.settings.test);
+            # the MariaDB fallback that could not was retired 2026-06-12. Same
+            # shape as vs_notifications.NotificationSetting and vs_user.User.
+            models.UniqueConstraint(
+                fields=["tenant"],
+                condition=Q(is_main=True),
+                name="uq_branch_one_main_per_tenant",
+            ),
+        ]
         ordering = ["-created_at"]
 
     def __str__(self) -> str:
@@ -342,29 +371,77 @@ class Branch(TimeStampedModel):
     def clean(self):
         super().clean()
 
+        self._derive_tenant()
+        self._assert_single_main()
+
         if self.status == BranchStatus.CLOSED and self.closed_at is None:
             self.closed_at = timezone.now()
-    
+
+    def _derive_tenant(self):
+        """Take the owning tenant from the school; never accept it from a caller.
+
+        ``School.tenant`` is a non-nullable OneToOneField, so a branch that has
+        a school has exactly one tenant and this can never leave it null.
+        """
+        if self.school_id and not self.tenant_id:
+            self.tenant_id = self.school.tenant_id
+
+    def _assert_single_main(self):
+        """Reject a second main branch for the same tenant.
+
+        ``uq_branch_one_main_per_tenant`` is what actually makes this race-proof;
+        this check exists so the ordinary path fails as a field error the API can
+        render, instead of surfacing an IntegrityError as a 500.
+        """
+        if not self.is_main or not self.tenant_id:
+            return
+        clash = Branch.all_objects.filter(tenant_id=self.tenant_id, is_main=True)
+        if self.pk:
+            clash = clash.exclude(pk=self.pk)
+        if clash.exists():
+            raise ValidationError({"is_main": "This tenant already has a main branch."})
+
     @staticmethod
-    def allocate_next_code(*, school: School) -> int:
+    def allocate_next_code(*, tenant_id: int) -> int:
+        """Allocate the next branch code (1..N) for one tenant.
+
+        Locks the *tenant* row rather than the branch rows. The previous version
+        locked ``select_for_update().filter(school=school)``, which locks nothing
+        at all when the school has no branches yet, so two concurrent
+        first-branch creates both read max=0 and both wrote code 1. The tenant
+        row always exists (``tenant`` is non-nullable), so locking it serialises
+        allocation for an empty tenant exactly as well as for a full one.
+
+        Reads through ``all_objects`` deliberately: ``objects`` is the
+        ``TenantAwareManager``, and under an ambient tenant context that differs
+        from ``tenant_id`` (platform code creating a branch for a customer) it
+        would aggregate over zero rows and hand back a duplicate code.
+
+        Must run inside a transaction; :meth:`save` opens one.
         """
-        Allocates the next branch code per school safely.
-        Uses row locking to prevent duplicate codes under concurrency.
-        """
-        # Lock rows for this school so two creates don't pick the same Max(code)
-        qs = Branch.objects.select_for_update().filter(school=school)
-        current_max = qs.aggregate(m=Max("code"))["m"] or 0
+        from vs_tenants.models import Tenant
+
+        Tenant.objects.select_for_update().only("id").get(pk=tenant_id)
+        current_max = (
+            Branch.all_objects
+            .filter(tenant_id=tenant_id)
+            .aggregate(m=Max("code"))["m"]
+            or 0
+        )
         return current_max + 1
 
     def save(self, *args, **kwargs):
+        self._derive_tenant()
+        self._assert_single_main()
+
         # Allocate code only on first save if missing/zero.
         if not self.code:
             with transaction.atomic():
-                self.code = Branch.allocate_next_code(school=self.school)
+                self.code = Branch.allocate_next_code(tenant_id=self.tenant_id)
                 super().save(*args, **kwargs)
             return
         return super().save(*args, **kwargs)
-    
+
     # --- Lifecycle helpers ---
 
     def mark_active(self, *, actor_id: str, reason: str = ""):

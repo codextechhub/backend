@@ -1,8 +1,17 @@
 from django.core.management.base import BaseCommand, CommandError
-from django.db.models import F, Q
+from django.db.models import F
 
 
 class Command(BaseCommand):
+    """Assert the invariants the tenant refactor is supposed to hold.
+
+    Every check below must be expressed over fields that still exist. Two
+    checks here were left behind pointing at ``User.school`` and
+    ``LedgerEntity.source_school`` after the refactor dropped both columns,
+    which made the whole command raise ``FieldError`` on the first line it
+    reached, so none of the surviving invariants were ever verified.
+    """
+
     help = "Verify tenant backfill and cross-tenant invariants before contract rollout."
 
     def handle(self, *args, **options):
@@ -19,14 +28,21 @@ class Command(BaseCommand):
             failures.append("schools without tenants")
         if User.objects.filter(tenant__isnull=True).exists():
             failures.append("users without tenants")
-        if User.objects.filter(school__isnull=False).exclude(tenant=F("school__tenant")).exists():
-            failures.append("users whose legacy school and tenant disagree")
-        if Branch.all_objects.exclude(school__tenant__isnull=False).exists():
-            failures.append("branches without a school tenant")
+        # Branch now carries its own tenant, so there are two paths to compare
+        # and this is a real invariant. It replaces a vacuous
+        # "branches without a school tenant" check that could never fail,
+        # School.tenant being non-nullable.
+        if Branch.all_objects.filter(tenant__isnull=True).exists():
+            failures.append("branches without tenants")
+        if Branch.all_objects.exclude(tenant=F("school__tenant")).exists():
+            failures.append("branches whose school and tenant disagree")
         if LedgerEntity.objects.filter(tenant__isnull=True).exists():
             failures.append("ledger entities without tenants")
-        if LedgerEntity.objects.filter(source_school__isnull=False).exclude(tenant=F("source_school__tenant")).exists():
-            failures.append("ledger entities whose source school and tenant disagree")
+        # ``User.school`` and ``LedgerEntity.source_school`` were the other two
+        # legacy links cross-checked here. The refactor dropped both columns, so
+        # there is no second path left to disagree with: ``tenant`` is now the
+        # only statement of ownership on either model and the null checks above
+        # are the whole invariant. Nothing replaces them.
         if TenantRoleTemplate.objects.filter(branch__isnull=False).exclude(tenant=F("branch__school__tenant")).exists():
             failures.append("role templates with cross-tenant branches")
         if TenantUserRoleAssignment.objects.exclude(tenant=F("user__tenant")).exists():

@@ -147,16 +147,6 @@ class LoginService:
     # ── Private helpers ───────────────────────────────────────────────────────
 
     @staticmethod
-    def _resolve_school(slug: str):
-        if not slug:
-            return None
-        from vs_schools.models import School
-        try:
-            return School.objects.get(slug=slug)
-        except School.DoesNotExist:
-            return None
-
-    @staticmethod
     def _check_status(user: User) -> dict | None:
         """Returns an error payload if the account cannot log in, else None."""
         errors = {

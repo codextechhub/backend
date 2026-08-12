@@ -43,7 +43,7 @@ from celery import Task
 logger = logging.getLogger(__name__)
 
 _JOB_KWARGS = (
-    "_job_owner_id", "_job_tenant_id", "_job_school_id", "_job_label",
+    "_job_owner_id", "_job_tenant_id", "_job_label",
     "_job_kind", "_job_notify",
 )
 
@@ -52,9 +52,6 @@ def _resolve_job_tenant_id(meta=None):
     meta = meta or {}
     if meta.get("_job_tenant_id"):
         return meta["_job_tenant_id"]
-    if meta.get("_job_school_id"):
-        from vs_schools.models import School
-        return School.objects.only("tenant_id").get(pk=meta["_job_school_id"]).tenant_id
     if meta.get("_job_owner_id"):
         from vs_user.models import User
         return User.objects.only("tenant_id").get(pk=meta["_job_owner_id"]).tenant_id
