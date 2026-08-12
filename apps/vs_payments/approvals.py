@@ -25,7 +25,7 @@ noted at the point it applies.
 """
 from __future__ import annotations
 
-from .constants import WF_DEFAULT_APPROVE_PERMISSION, WF_DEFAULT_TEMPLATE_CODE
+from .constants import WF_DEFAULT_APPROVE_ROLE, WF_DEFAULT_TEMPLATE_CODE
 
 #: The single approvable document type in this app, and its human labels.
 DOCUMENT_TYPE = "payments.payout_batch"
@@ -33,29 +33,29 @@ TEMPLATE_NAME = "Payout-batch approval"
 TEMPLATE_LABEL = "payout batch"
 
 
-def _default_stages_payload(*, approve_permission: str) -> list:
+def _default_stages_payload(*, approve_role_key: str) -> list:
     """The one-stage ladder, shared by the platform and per-tenant seeds.
 
-    A single always-on APPROVAL stage: any holder of ``approve_permission`` can approve,
-    and that decision releases the batch.
+    A single always-on APPROVAL stage: any holder of the ``approve_role_key`` role can
+    approve, and that decision releases the batch.
 
     **Why one stage and not two.** This started as a threshold-gated pair, mirroring
     procurement: an ordinary stage plus a senior one for large runs. A second signature
-    is only a real control when a second *person* holds the senior key, and in practice
-    the same small finance team held both, so the extra stage bought an extra click
-    rather than an extra reviewer, while doubling the ways a batch could park. The
-    senior permission key is still registered, so a tenant that genuinely separates
-    signing authority can publish its own ladder with that stage restored.
+    is only a real control when a second *person* holds the senior authority, and in
+    practice the same small finance team held both, so the extra stage bought an extra
+    click rather than an extra reviewer, while doubling the ways a batch could park. A
+    tenant that genuinely separates signing authority can publish its own ladder with
+    that stage restored, pointing it at a role of its own.
 
     Two properties are carried over from procurement on purpose.
 
     ``skip_if_no_approvers=False``: money must never approve itself. When nobody holds
-    the approving permission the engine activates the stage with an empty approver
+    the approving role the engine activates the stage with an empty approver
     snapshot and the batch *parks* rather than reaching a terminal APPROVED decision
     with no human involved. That is the safe failure, and it is the reason seeding is
     safe to run before anybody has been appointed. Parking is not a dead end: the
     engine's repair (:mod:`vs_workflow.services.parking`) releases the batch as soon as
-    somebody is granted the key, and the audited override releases it when nobody can be.
+    somebody is appointed to it, and the audited override releases it when nobody can be.
 
     ``advance_rule="ANY"`` and ``on_rejection="TERMINAL"``: one holder's vote carries
     the stage, and a rejection ends the attempt rather than routing onwards.
@@ -72,7 +72,8 @@ def _default_stages_payload(*, approve_permission: str) -> list:
             "label": "Payout approval",
             "kind": "APPROVAL",
             "order": 10,
-            "approver_permission_key": approve_permission,
+            "approver_source": "ROLE",
+            "approver_role_key": approve_role_key,
             # Batches carry no branch; see the docstring above.
             "approver_scope": "SCHOOL",
             "advance_rule": "ANY",
@@ -86,7 +87,7 @@ def _default_stages_payload(*, approve_permission: str) -> list:
 
 def ensure_default_approval_templates(
     *,
-    approve_permission: str = WF_DEFAULT_APPROVE_PERMISSION,
+    approve_role_key: str = WF_DEFAULT_APPROVE_ROLE,
     created_by=None,
 ):
     """Publish (idempotently) the **platform-wide** default payout-batch ladder.
@@ -107,27 +108,27 @@ def ensure_default_approval_templates(
         code=WF_DEFAULT_TEMPLATE_CODE, name=TEMPLATE_NAME,
         description=f"Default approval rule for a {TEMPLATE_LABEL}.",
         created_by=created_by,
-        stages_payload=_default_stages_payload(approve_permission=approve_permission),
+        stages_payload=_default_stages_payload(approve_role_key=approve_role_key),
     )
 
 
 def ensure_tenant_approval_templates(
     tenant,
     *,
-    approve_permission: str = WF_DEFAULT_APPROVE_PERMISSION,
+    approve_role_key: str = WF_DEFAULT_APPROVE_ROLE,
     created_by=None,
 ):
     """Give one tenant its **own** payout-approval rules. Returns ``(template, created)``.
 
     Every tenant sharing one platform ladder means one tenant's administrator editing
-    the permission key changes how every other tenant's payouts are
+    the approving role changes how every other tenant's payouts are
     approved. A tenant-scoped template (``tenant=<tenant>, branch=None``) wins over the
     platform row through the engine's own cascade, and nothing outside this tenant can
     reach it.
 
     **Non-destructive.** A tenant that already has its own ladder is left exactly as it
-    is and reported with ``created=False``: re-running after an administrator pointed the stage at a different permission
-    must not quietly restore the defaults. (Contrast :func:`ensure_default_approval_templates`, which upserts,
+    is and reported with ``created=False``: re-running after an administrator pointed
+    the stage at a different role must not quietly restore the defaults. (Contrast :func:`ensure_default_approval_templates`, which upserts,
     because the platform row is provisioning's to own.)
 
     **Seeded blocked, not seeded open.** The rules arrive with no approver attached, so
@@ -135,6 +136,7 @@ def ensure_tenant_approval_templates(
     onboarding to call on every tenant creation, and for an administrator to call again.
     """
     from vs_workflow.models import WorkflowTemplate
+    from vs_workflow.services.roles import ensure_approver_role
     from vs_workflow.services.templates import publish_template
 
     if tenant is None:
@@ -150,10 +152,19 @@ def ensure_tenant_approval_templates(
     if existing is not None:
         return existing, False
 
+    # A tenant-scoped ROLE stage will not publish against a role key the tenant does
+    # not have, and a brand-new tenant has no roles at all. Create the role (holder-
+    # less) so seeding works on a fresh tenant without inventing approval authority.
+    ensure_approver_role(
+        tenant, approve_role_key,
+        description="Approves payout batches. Nobody holds it until an "
+                    "administrator assigns someone, so batches park until then.",
+    )
+
     return publish_template(
         tenant=tenant, branch=None, document_type=DOCUMENT_TYPE,
         code=WF_DEFAULT_TEMPLATE_CODE, name=TEMPLATE_NAME,
         description=f"Approval rule for a {TEMPLATE_LABEL}.",
         created_by=created_by,
-        stages_payload=_default_stages_payload(approve_permission=approve_permission),
+        stages_payload=_default_stages_payload(approve_role_key=approve_role_key),
     ), True

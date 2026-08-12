@@ -6932,9 +6932,9 @@ class _ParkingFixtureMixin(_P2PFixtureMixin):
     def _grant(user, permission_key, *, tenant, role_key="proc-approver"):
         """Give ``user`` a real RBAC grant for ``permission_key`` in ``tenant``.
 
-        Goes through the registry the way ``seed_procurement_permissions`` does rather
-        than patching ``resolve_approvers``: the point of these tests is that the *live*
-        RBAC answer changes after the stage has already been frozen.
+        Goes through the registry the way ``seed_procurement_permissions`` does, so
+        the permission checks these views run see a genuine grant. Approver
+        *resolution* no longer reads permissions; use :meth:`_appoint` for that.
         """
         from vs_rbac.models import (
             Permission, PermissionAction, PermissionModule, PermissionResource,
@@ -6956,6 +6956,26 @@ class _ParkingFixtureMixin(_P2PFixtureMixin):
         )
         TenantRolePermission.objects.get_or_create(
             role=role, permission=permission, defaults={"granted": True},
+        )
+        TenantUserRoleAssignment.objects.get_or_create(
+            tenant=tenant, user=user, role=role,
+            defaults={"assignment_status": "ACTIVE"},
+        )
+
+    @staticmethod
+    def _appoint(user, role_key, *, tenant):
+        """Appoint ``user`` to ``tenant``'s ``role_key`` role, creating the role if new.
+
+        Approver resolution reads role *assignments*, so appointing someone is what
+        actually changes who can approve. Done through the real RBAC records rather
+        than by patching ``resolve_approvers``: the point of these tests is that the
+        *live* answer changes after the stage has already been frozen.
+        """
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=tenant, key=role_key,
+            defaults={"name": role_key, "status": "ACTIVE"},
         )
         TenantUserRoleAssignment.objects.get_or_create(
             tenant=tenant, user=user, role=role,
@@ -7040,7 +7060,7 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         from vs_workflow.constants import WorkflowInstanceStatus
         from vs_workflow.models import WorkflowStageInstance
         from vs_procurement.constants import (
-            ProcApprovalState, WF_DEFAULT_MANAGER_PERMISSION,
+            ProcApprovalState, WF_DEFAULT_MANAGER_ROLE,
         )
 
         entity, _, _, _, _ = self.build_p2p()
@@ -7052,7 +7072,7 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         # Before the grant: parked, and invisible to everyone.
         self.assertEqual(client.get(queue_url).data["data"], [])
 
-        self._grant(approver, WF_DEFAULT_MANAGER_PERMISSION, tenant=entity.tenant)
+        self._appoint(approver, WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant)
 
         listed = client.get(queue_url)
         self.assertEqual(listed.status_code, 200)
@@ -7087,7 +7107,7 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         from vs_procurement.approvals import (
             ensure_default_approval_templates, submit_for_approval,
         )
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_PERMISSION
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
 
         entity, _, _, _, _ = self.build_p2p()
         ensure_default_approval_templates()
@@ -7105,7 +7125,7 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         )
         # Somebody else is granted the permission after the snapshot was frozen.
         newcomer = self._user("newcomer@t.com", tenant=entity.tenant)
-        self._grant(newcomer, WF_DEFAULT_MANAGER_PERMISSION, tenant=entity.tenant)
+        self._appoint(newcomer, WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant)
 
         self.assertEqual(repair_workflows(tenant=entity.tenant), 0)
         self.assertEqual(
@@ -7121,13 +7141,13 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         from vs_workflow.constants import WorkflowInstanceStatus
         from vs_procurement.approval_parking import repair_workflows
         from vs_procurement.constants import (
-            ProcApprovalState, WF_DEFAULT_MANAGER_PERMISSION,
+            ProcApprovalState, WF_DEFAULT_MANAGER_ROLE,
         )
 
         entity, _, _, _, _ = self.build_p2p()
         req, instance, _ = self._park(entity)
         approver = self._user("passive-approver@t.com", tenant=entity.tenant)
-        self._grant(approver, WF_DEFAULT_MANAGER_PERMISSION, tenant=entity.tenant)
+        self._appoint(approver, WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant)
 
         self.assertEqual(repair_workflows(tenant=entity.tenant), 1)
         instance.refresh_from_db()
@@ -7141,11 +7161,11 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
     def test_requester_as_sole_permission_holder_stays_parked(self):
         """``resolve_approvers`` excludes the requester, so self-approval cannot sneak in."""
         from vs_procurement.approval_parking import is_document_parked, repair_workflows
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_PERMISSION
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
 
         entity, _, _, _, _ = self.build_p2p()
         req, _, requester = self._park(entity)
-        self._grant(requester, WF_DEFAULT_MANAGER_PERMISSION, tenant=entity.tenant)
+        self._appoint(requester, WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant)
 
         self.assertEqual(repair_workflows(tenant=entity.tenant), 0)
         self.assertTrue(is_document_parked(req))
@@ -7157,7 +7177,7 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         from vs_tenants.models import Tenant
         from vs_workflow.models import WorkflowStageApprover
         from vs_procurement.approval_parking import repair_workflows
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_PERMISSION
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
 
         entity, _, _, _, _ = self.build_p2p()
         other_tenant = Tenant.objects.create(name="Other Tenant", slug="other-tenant")
@@ -7171,14 +7191,14 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         other_req, other_instance, _ = self._park(
             other_entity, requester_email="other-requester@t.com",
         )
-        # Both tenants staff the same permission key.
-        self._grant(
+        # Both tenants staff the same role key.
+        self._appoint(
             self._user("own-approver@t.com", tenant=entity.tenant),
-            WF_DEFAULT_MANAGER_PERMISSION, tenant=entity.tenant,
+            WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant,
         )
-        self._grant(
+        self._appoint(
             self._user("other-approver@t.com", tenant=other_tenant),
-            WF_DEFAULT_MANAGER_PERMISSION, tenant=other_tenant,
+            WF_DEFAULT_MANAGER_ROLE, tenant=other_tenant,
         )
 
         self.assertEqual(repair_workflows(tenant=entity.tenant), 1)
@@ -7493,15 +7513,15 @@ class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
         From that moment the answer is a decision, and the override must refuse - even
         though the approver has not voted and the stage snapshot was empty a moment ago.
         """
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_PERMISSION
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
         from vs_procurement.models import ApprovalOverride
 
         entity, _, _, _, _ = self.build_p2p()
         req, instance, _ = self._park(entity)
         actor = self._overrider(entity)
-        self._grant(
+        self._appoint(
             self._user("real-approver@t.com", tenant=entity.tenant),
-            WF_DEFAULT_MANAGER_PERMISSION, tenant=entity.tenant,
+            WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant,
         )
 
         response = self._post_override(actor, entity, instance)
@@ -7662,7 +7682,7 @@ class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
         from core.test_utils import TenantAPIClient
         from vs_procurement.approval_override import is_document_overridden
         from vs_procurement.approvals import submit_for_approval
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_PERMISSION
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
 
         entity, _, _, _, _ = self.build_p2p()
         overridden, instance, requester = self._park(entity)
@@ -7671,7 +7691,7 @@ class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
 
         # A second requisition, decided the ordinary way by a real approver.
         approver = self._user("genuine-approver@t.com", tenant=entity.tenant)
-        self._grant(approver, WF_DEFAULT_MANAGER_PERMISSION, tenant=entity.tenant)
+        self._appoint(approver, WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant)
         reviewed = self._requisition(entity, requester)
         reviewed_instance = submit_for_approval(reviewed, actor_user=requester)
         decision = TenantAPIClient(user=approver).post(
@@ -7766,14 +7786,13 @@ class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
         from vs_procurement.approvals import (
             ensure_default_approval_templates, submit_for_approval,
         )
-        from vs_procurement.constants import WF_DEFAULT_SENIOR_PERMISSION
+        from vs_procurement.constants import WF_DEFAULT_SENIOR_ROLE
 
         entity, _, _, _, _ = self.build_p2p()
         ensure_default_approval_templates()
         requester = self._user("big-spender@t.com", tenant=entity.tenant)
         senior = self._user("senior-approver@t.com", tenant=entity.tenant)
-        self._grant(senior, WF_DEFAULT_SENIOR_PERMISSION, tenant=entity.tenant,
-                    role_key="proc-senior")
+        self._appoint(senior, WF_DEFAULT_SENIOR_ROLE, tenant=entity.tenant)
         # Above the senior threshold, so the second stage is included.
         req = self._requisition(entity, requester, unit_price=60_000_000)
         instance = submit_for_approval(req, actor_user=requester)
@@ -7807,7 +7826,7 @@ class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
         from vs_procurement.approvals import (
             ensure_default_approval_templates, submit_for_approval,
         )
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_PERMISSION
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
         from vs_workflow.models import WorkflowStageApprover, WorkflowStageInstance
 
         entity, _, _, _, _ = self.build_p2p()
@@ -7836,7 +7855,7 @@ class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
         # The repair still works afterwards, and still refuses to rewrite a populated
         # snapshot even though somebody new now holds the permission.
         newcomer = self._user("post-override-approver@t.com", tenant=entity.tenant)
-        self._grant(newcomer, WF_DEFAULT_MANAGER_PERMISSION, tenant=entity.tenant)
+        self._appoint(newcomer, WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant)
         self.assertEqual(repair_workflows(tenant=entity.tenant), 1)
         self.assertFalse(is_document_parked(bystander))
         reviewed_stage = WorkflowStageInstance.objects.get(
@@ -9938,9 +9957,12 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
             WF_DEFAULT_TEMPLATE_CODE, WF_DOCTYPE_REQUISITION,
         )
         from vs_workflow.models import WorkflowInstance
+        from vs_workflow.services.roles import ensure_approver_role
         from vs_workflow.services.templates import publish_template
 
         ensure_default_approval_templates()
+        # A tenant-scoped ROLE stage only publishes against a role the tenant has.
+        ensure_approver_role(self.multi_school.tenant, "campus-manager")
         branch_template = publish_template(
             tenant=self.multi_school.tenant, branch=self.lekki,
             document_type=WF_DOCTYPE_REQUISITION, code=WF_DEFAULT_TEMPLATE_CODE,
@@ -9948,7 +9970,8 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
             description="Campus-specific ladder.",
             stages_payload=[{
                 "code": "manager", "label": "Campus manager", "kind": "APPROVAL",
-                "order": 10, "approver_permission_key": "procurement.requisition.approve",
+                "order": 10, "approver_source": "ROLE",
+                "approver_role_key": "campus-manager",
                 "approver_scope": "PLATFORM", "advance_rule": "ANY",
                 "on_rejection": "TERMINAL", "skip_if_no_approvers": True,
             }],
@@ -10083,6 +10106,24 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
         TenantUserRoleAssignment.objects.get_or_create(
             tenant=tenant, user=user, role=role,
             defaults={"assignment_status": "ACTIVE", "branch": branch},
+        )
+
+    @staticmethod
+    def appoint(user, role_key, *, tenant, branch=None):
+        """Appoint ``user`` to ``role_key``, optionally scoped to one branch.
+
+        Approver resolution reads role assignments, so this - not a permission grant -
+        is what makes somebody eligible. The branch on the *assignment* is what
+        branch-scoped routing honours, which is exactly what these tests exercise.
+        """
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=tenant, key=role_key, defaults={"name": role_key, "status": "ACTIVE"},
+        )
+        TenantUserRoleAssignment.objects.get_or_create(
+            tenant=tenant, user=user, role=role, branch=branch,
+            defaults={"assignment_status": "ACTIVE"},
         )
 
     # -- document builders --------------------------------------------------- #
@@ -10333,15 +10374,18 @@ class ProcurementTenantApprovalRulesTests(_BranchTenantsFixture, TestCase):
         from vs_procurement.constants import (
             WF_DEFAULT_TEMPLATE_CODE, WF_DOCTYPE_REQUISITION,
         )
+        from vs_workflow.services.roles import ensure_approver_role
         from vs_workflow.services.templates import publish_template
 
+        ensure_approver_role(self.multi_tenant, "board-signatory")
         customised = publish_template(
             tenant=self.multi_tenant, branch=None,
             document_type=WF_DOCTYPE_REQUISITION, code=WF_DEFAULT_TEMPLATE_CODE,
             name="Our own ladder", description="Customised by the tenant.",
             stages_payload=[{
                 "code": "board", "label": "Board sign-off", "kind": "APPROVAL",
-                "order": 10, "approver_permission_key": "procurement.approval.approve",
+                "order": 10, "approver_source": "ROLE",
+                "approver_role_key": "board-signatory",
                 "approver_scope": "BRANCH", "advance_rule": "UNANIMOUS",
                 "on_rejection": "TERMINAL", "skip_if_no_approvers": False,
             }],
@@ -10489,7 +10533,8 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
     eligibility "assigned at this branch, or assigned tenant-wide".
     """
 
-    MANAGER_KEY = "procurement.approval.approve"
+    #: The role the seeded manager stage names; see WF_DEFAULT_MANAGER_ROLE.
+    MANAGER_ROLE = "procurement-approver"
 
     def setUp(self):
         super().setUp()
@@ -10507,12 +10552,14 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
         self.tenant_wide_approver = self.user_for(
             self.multi_tenant, "hq-approver@t.com", first_name="Head",
         )
-        self.grant(self.lekki_approver, self.MANAGER_KEY,
-                   tenant=self.multi_tenant, role_key="lekki-approver", branch=self.lekki)
-        self.grant(self.ikeja_approver, self.MANAGER_KEY,
-                   tenant=self.multi_tenant, role_key="ikeja-approver", branch=self.ikeja)
-        self.grant(self.tenant_wide_approver, self.MANAGER_KEY,
-                   tenant=self.multi_tenant, role_key="tenant-wide-approver")
+        # All three hold the *same* role the seeded stage names; only the branch on
+        # the assignment differs, which is what routing is being tested on.
+        self.appoint(self.lekki_approver, self.MANAGER_ROLE,
+                     tenant=self.multi_tenant, branch=self.lekki)
+        self.appoint(self.ikeja_approver, self.MANAGER_ROLE,
+                     tenant=self.multi_tenant, branch=self.ikeja)
+        self.appoint(self.tenant_wide_approver, self.MANAGER_ROLE,
+                     tenant=self.multi_tenant)
 
         self.requester = self.user_for(self.multi_tenant, "r3-routing-requester@t.com")
 
@@ -10577,16 +10624,14 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
     def test_a_tenant_without_branches_routes_exactly_as_before(self):
         flat_approver = self.user_for(self.flat_tenant, "flat-approver@t.com")
         flat_requester = self.user_for(self.flat_tenant, "flat-requester@t.com")
-        self.grant(flat_approver, self.MANAGER_KEY,
-                   tenant=self.flat_tenant, role_key="flat-approver")
+        self.appoint(flat_approver, self.MANAGER_ROLE, tenant=self.flat_tenant)
 
         _, instance = self.submit(self.flat, requester=flat_requester)
         self.assertEqual(self.eligible_ids(instance), {flat_approver.pk})
 
     def test_routing_never_crosses_a_tenant_boundary(self):
         foreign_approver = self.user_for(self.foreign_tenant, "foreign-approver@t.com")
-        self.grant(foreign_approver, self.MANAGER_KEY,
-                   tenant=self.foreign_tenant, role_key="foreign-approver")
+        self.appoint(foreign_approver, self.MANAGER_ROLE, tenant=self.foreign_tenant)
 
         _, instance = self.submit(self.multi, branch=self.lekki)
         self.assertNotIn(foreign_approver.pk, self.eligible_ids(instance))
@@ -10735,7 +10780,8 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
 class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
     """Who can approve spend here is answerable, and the gaps are named as gaps."""
 
-    MANAGER_KEY = "procurement.approval.approve"
+    #: The role the seeded manager stage names; see WF_DEFAULT_MANAGER_ROLE.
+    MANAGER_ROLE = "procurement-approver"
 
     def setUp(self):
         super().setUp()
@@ -10745,8 +10791,8 @@ class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
         self.lekki_approver = self.user_for(
             self.multi_tenant, "cover-lekki@t.com", branch=self.lekki, first_name="Lekki",
         )
-        self.grant(self.lekki_approver, self.MANAGER_KEY,
-                   tenant=self.multi_tenant, role_key="cover-lekki", branch=self.lekki)
+        self.appoint(self.lekki_approver, self.MANAGER_ROLE,
+                     tenant=self.multi_tenant, branch=self.lekki)
 
     def coverage(self, tenant=None, **kwargs):
         from vs_procurement.approval_coverage import approval_coverage
@@ -10795,7 +10841,7 @@ class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
         from vs_procurement.constants import WF_DOCTYPE_PURCHASE_ORDER
 
         holder = self.user_for(self.multi_tenant, "cover-hq@t.com", first_name="Head")
-        self.grant(holder, self.MANAGER_KEY, tenant=self.multi_tenant, role_key="cover-hq")
+        self.appoint(holder, self.MANAGER_ROLE, tenant=self.multi_tenant)
         report = self.coverage()
 
         for branch_id in (None, self.lekki.pk, self.ikeja.pk):
@@ -10860,8 +10906,7 @@ class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_the_endpoint_never_reports_another_tenants_approvers(self, _permission):
         foreign_holder = self.user_for(self.foreign_tenant, "cover-foreign@t.com")
-        self.grant(foreign_holder, self.MANAGER_KEY,
-                   tenant=self.foreign_tenant, role_key="cover-foreign")
+        self.appoint(foreign_holder, self.MANAGER_ROLE, tenant=self.foreign_tenant)
         client = self.client_for(self.multi_tenant, "cover-isolation@t.com")
         response = client.get(
             f"/v1/procurement/approvals/coverage/?entity={self.multi.entity.code}",

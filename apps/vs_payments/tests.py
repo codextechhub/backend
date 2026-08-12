@@ -1287,7 +1287,7 @@ class PayoutBatchApprovalTests(TestCase):
     happens only after approval; with no template, direct submit is unchanged.
     """
 
-    APPROVE_KEY = "payments.payout_batch.approve"
+    APPROVE_ROLE = "payout-approver"
 
     def setUp(self):
         import io
@@ -1390,7 +1390,8 @@ class PayoutBatchApprovalTests(TestCase):
             name="Payout batch approval",
             stages_payload=[{
                 "code": "checker", "label": "Checker approval", "kind": "APPROVAL",
-                "order": 1, "approver_permission_key": self.APPROVE_KEY,
+                "order": 1, "approver_source": "ROLE",
+                "approver_role_key": self.APPROVE_ROLE,
                 "approver_scope": "SCHOOL", "advance_rule": "ANY",
                 "on_rejection": on_rejection, "skip_if_no_approvers": False,
             }])
@@ -1400,12 +1401,10 @@ class PayoutBatchApprovalTests(TestCase):
             email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
             first_name="Apr", last_name="Over", tenant=self.school.tenant,
         )
+        # The stage names this role directly, so staffing it is one assignment.
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
-            tenant=self.school.tenant, key="pba-checker",
+            tenant=self.school.tenant, key=self.APPROVE_ROLE,
             defaults={"name": "Payout Checker", "status": "ACTIVE"},
-        )
-        self.TenantRolePermission.objects.get_or_create(
-            role=role, permission_id=self.APPROVE_KEY, defaults={"granted": True},
         )
         self.TenantUserRoleAssignment.objects.create(
             tenant=self.school.tenant, user=user, role=role, assignment_status="ACTIVE",
@@ -1605,10 +1604,10 @@ class PayoutBatchApprovalTests(TestCase):
         stage_instance = instance.stage_instances.filter(status="ACTIVE").get()
         stage = stage_instance.stage
 
-        # Stand in for whatever replaces or joins RBAC_PERMISSION later.
+        # Stand in for an approver source this code has never been taught.
         stage.approver_source = "GROUP_MEMBERSHIP"
-        stage.approver_permission_key = ""
-        stage.save(update_fields=["approver_source", "approver_permission_key"])
+        stage.approver_role_key = ""
+        stage.save(update_fields=["approver_source", "approver_role_key"])
 
         cache = ResolutionCache()
         self.assertTrue(
@@ -1616,7 +1615,7 @@ class PayoutBatchApprovalTests(TestCase):
             "an unrecognised approver source was written off without resolving it",
         )
 
-    def test_a_permission_stage_with_no_key_is_not_written_off(self):
+    def test_a_role_stage_with_no_key_is_not_written_off(self):
         """Misconfigured is not the same as unstaffable; let the resolver decide."""
         from vs_workflow.services.parking import ResolutionCache
 
@@ -1625,8 +1624,8 @@ class PayoutBatchApprovalTests(TestCase):
         self._submit_for_approval(batch)
         instance = self._instance_for(batch)
         stage = instance.stage_instances.filter(status="ACTIVE").get().stage
-        stage.approver_permission_key = ""
-        stage.save(update_fields=["approver_permission_key"])
+        stage.approver_role_key = ""
+        stage.save(update_fields=["approver_role_key"])
 
         self.assertTrue(ResolutionCache().has_candidates(stage, instance))
 
@@ -1641,18 +1640,18 @@ class PayoutBatchApprovalTests(TestCase):
         stage = instance.stage_instances.filter(status="ACTIVE").get().stage
 
         park = release.describe_park(instance)
-        self.assertEqual(park["approver_source"], "RBAC_PERMISSION")
-        self.assertIn("payments.payout_batch.approve", park["requirement"])
+        self.assertEqual(park["approver_source"], "ROLE")
+        self.assertIn(self.APPROVE_ROLE, park["requirement"])
 
         # An approver model this code has never seen still yields an instruction.
         stage.approver_source = "GROUP_MEMBERSHIP"
-        stage.approver_permission_key = ""
-        stage.save(update_fields=["approver_source", "approver_permission_key"])
+        stage.approver_role_key = ""
+        stage.save(update_fields=["approver_source", "approver_role_key"])
         park = release.describe_park(instance)
         self.assertTrue(park["parked"])
         self.assertTrue(park["requirement"].strip(), "the dialog would render a blank")
         # A key that no longer decides anything must not be shown as if it does.
-        self.assertEqual(park["permission_key"], "")
+        self.assertEqual(park["role_key"], "")
 
     def test_an_organogram_stage_explains_itself_in_org_terms(self):
         """Not every stage is fixed by granting a permission."""
@@ -1669,8 +1668,8 @@ class PayoutBatchApprovalTests(TestCase):
 
         park = release.describe_park(instance)
         self.assertIn("department", park["requirement"])
-        self.assertNotIn("permission", park["requirement"])
-        self.assertEqual(park["permission_key"], "")
+        self.assertNotIn("role", park["requirement"])
+        self.assertEqual(park["role_key"], "")
 
     def test_an_unknown_source_cannot_silently_skip_its_own_approval(self):
         """The dangerous half: a broken template must not approve spend by itself.
@@ -1721,7 +1720,7 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertEqual(
             my_queue.pending_approval_snapshots(self.requester, self.school), [])
 
-    def test_a_permission_stage_with_no_key_still_resolves_to_nobody(self):
+    def test_a_role_stage_with_no_key_still_resolves_to_nobody(self):
         """Not every empty answer is a misconfiguration; this one is legitimate."""
         from vs_workflow.services import approvers as approvers_service
 
@@ -1730,8 +1729,8 @@ class PayoutBatchApprovalTests(TestCase):
         self._submit_for_approval(batch)
         instance = self._instance_for(batch)
         stage = instance.stage_instances.filter(status="ACTIVE").get().stage
-        stage.approver_permission_key = ""
-        stage.save(update_fields=["approver_permission_key"])
+        stage.approver_role_key = ""
+        stage.save(update_fields=["approver_role_key"])
 
         self.assertEqual(approvers_service.resolve_approvers(stage, instance), [])
 
@@ -1748,8 +1747,8 @@ class PayoutBatchApprovalTests(TestCase):
         park = release.approval_block(self._instance_for(batch))
         self.assertTrue(park["parked"])
         self.assertEqual(park["stage_label"], "Payout approval")
-        # Names the key an administrator would grant, rather than just "no approver".
-        self.assertEqual(park["permission_key"], "payments.payout_batch.approve")
+        # Names the role an administrator would fill, rather than just "no approver".
+        self.assertEqual(park["role_key"], self.APPROVE_ROLE)
 
     def test_continuing_without_approval_dispatches_the_batch(self):
         """Choosing to continue takes the batch the whole way, as an approval would."""
@@ -1822,7 +1821,7 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertIsNotNone(row, "the release left no audit row")
         self.assertEqual(row.actor_id, self.requester.pk)
         self.assertEqual(row.context["reason"], "Payroll is due today.")
-        self.assertEqual(row.context["permission_key"], "payments.payout_batch.approve")
+        self.assertEqual(row.context["role_key"], self.APPROVE_ROLE)
 
     def test_a_release_with_no_typed_reason_still_records_one(self):
         """The dialog asks for no text, so the default has to carry the meaning."""
@@ -1958,7 +1957,7 @@ class PayoutApprovalSeedingTests(TestCase):
     than a locked one.
     """
 
-    APPROVE_KEY = "payments.payout_batch.approve"
+    APPROVE_ROLE = "payout-approver"
 
     def setUp(self):
         import io
@@ -1984,7 +1983,8 @@ class PayoutApprovalSeedingTests(TestCase):
         self.assertIsNone(template.tenant)  # Platform-scoped fallback.
         self.assertIsNone(template.branch)
         (only,) = self._stages(template)
-        self.assertEqual(only.approver_permission_key, self.APPROVE_KEY)
+        self.assertEqual(only.approver_role_key, self.APPROVE_ROLE)
+        self.assertEqual(only.approver_source, "ROLE")
         self.assertIsNone(only.inclusion_condition)  # Always runs.
         self.assertEqual(only.advance_rule, "ANY")
 
@@ -2003,12 +2003,12 @@ class PayoutApprovalSeedingTests(TestCase):
             self.assertFalse(stage.skip_if_no_approvers, stage.code)
             self.assertEqual(stage.on_rejection, "TERMINAL", stage.code)
 
-    def test_the_approving_permission_is_configurable(self):
+    def test_the_approving_role_is_configurable(self):
         from vs_payments.approvals import ensure_default_approval_templates
 
-        template = ensure_default_approval_templates(approve_permission="payments.report.view")
+        template = ensure_default_approval_templates(approve_role_key="other-approver")
         (only,) = self._stages(template)
-        self.assertEqual(only.approver_permission_key, "payments.report.view")
+        self.assertEqual(only.approver_role_key, "other-approver")
 
     # --- provisioning semantics -------------------------------------------- #
 
@@ -2025,24 +2025,24 @@ class PayoutApprovalSeedingTests(TestCase):
         from vs_payments.approvals import ensure_tenant_approval_templates
 
         template, _ = ensure_tenant_approval_templates(
-            self.tenant, approve_permission="payments.report.view")
+            self.tenant, approve_role_key="other-approver")
         again, created = ensure_tenant_approval_templates(self.tenant)
         self.assertFalse(created)
         self.assertEqual(again.pk, template.pk)
         (only,) = self._stages(again)
-        self.assertEqual(only.approver_permission_key, "payments.report.view")  # Untouched.
+        self.assertEqual(only.approver_role_key, "other-approver")  # Untouched.
 
     def test_reseeding_the_platform_row_upserts_rather_than_duplicating(self):
         from vs_workflow.models import WorkflowTemplate
         from vs_payments.approvals import ensure_default_approval_templates
 
         ensure_default_approval_templates()
-        ensure_default_approval_templates(approve_permission="payments.report.view")
+        ensure_default_approval_templates(approve_role_key="other-approver")
         rows = WorkflowTemplate.all_objects.filter(
             tenant=None, branch=None, document_type="payments.payout_batch")
         self.assertEqual(rows.count(), 1)  # One shared row, rewritten in place.
         (only,) = self._stages(rows.get())
-        self.assertEqual(only.approver_permission_key, "payments.report.view")
+        self.assertEqual(only.approver_role_key, "other-approver")
 
     def test_a_tenant_is_required(self):
         from vs_payments.approvals import ensure_tenant_approval_templates

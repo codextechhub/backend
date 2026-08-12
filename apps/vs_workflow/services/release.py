@@ -2,9 +2,9 @@
 
 :mod:`vs_workflow.services.parking` explains the state this operates on. A stage whose
 template sets ``skip_if_no_approvers=False`` activates with an empty approver snapshot
-when nobody holds its permission, and the document *parks*: ACTIVE stage, IN_PROGRESS
+when nobody holds its role, and the document *parks*: ACTIVE stage, IN_PROGRESS
 instance, no human able to decide it. Parking is the safe failure - money must never
-approve itself - and the repair frees it as soon as somebody is granted the permission.
+approve itself - and the repair frees it as soon as somebody is appointed to the role.
 
 This module is the other exit: the submitter is told at submission that nobody can
 approve this, and chooses to continue anyway.
@@ -24,7 +24,7 @@ The control this trades away, stated plainly
 What a release still may not do
     * **Bypass a human who exists.** The stage must be genuinely parked, re-checked after
       a repair pass and again under a row lock. If anybody at all can decide the stage -
-      including somebody granted the permission one second ago - the release is refused
+      including somebody appointed to the role one second ago - the release is refused
       and the answer is "get them to decide it". This is the property that keeps the
       dialog from being a self-approval button on a document that has a reviewer.
     * **Release more than one stage.** A ladder's later stages are separate decisions. If
@@ -52,6 +52,7 @@ from vs_workflow.constants import (
     OrganogramTarget,
     WorkflowInstanceStatus,
 )
+from vs_workflow.services import approvers as approvers_service
 from vs_workflow.services import audit as audit_service
 from vs_workflow.services import parking
 from vs_workflow.services import routing as routing_service
@@ -62,7 +63,7 @@ RELEASE_SKIP_REASON = "Released at submission: no approver was available."
 
 #: Used when the caller supplies none. A release is always explicable even when the
 #: person clicking through a dialog is not asked to type anything.
-DEFAULT_REASON = "Continued without approval: nobody held the approving permission."
+DEFAULT_REASON = "Continued without approval: nobody held the approving role."
 
 #: Same ceiling procurement's override uses, so one field's rules do not differ by module.
 MAX_REASON_LENGTH = 500
@@ -95,7 +96,7 @@ def parked_stage(instance):
     """The ACTIVE, unstaffed stage holding ``instance`` up, or ``None``.
 
     Runs a repair pass first, so an instance that only *looked* parked - somebody has
-    since been granted the permission - correctly reports ``None`` and the caller offers
+    since been appointed to the role - correctly reports ``None`` and the caller offers
     review rather than a bypass. Callers that intend to act must still re-assert the
     precondition under a row lock; :func:`release_parked_stage` does.
     """
@@ -124,8 +125,17 @@ def stage_requirement(stage) -> str:
     instruction should be is not.
     """
     source = stage.approver_source
-    if source == ApproverSource.RBAC_PERMISSION and stage.approver_permission_key:
-        return f"grant someone the {stage.approver_permission_key} permission"
+    if source == ApproverSource.ROLE:
+        role_key = approvers_service.stage_role_key(stage)
+        if role_key:
+            return f"assign someone to the {role_key} role"
+    if source == ApproverSource.WORKFLOW_GROUP and stage.approver_group_id:
+        return (f"add someone to the {stage.approver_group.name} approver group")
+    if source == ApproverSource.DYNAMIC_ROLE:
+        # Which rule fires depends on the document, so the sentence names the
+        # rule set rather than guessing at one role.
+        return ("assign someone to the role this step's rules select for this "
+                "document")
     if source == ApproverSource.ORGANOGRAM:
         target = stage.organogram_target
         if target == OrganogramTarget.DIRECT_MANAGER:
@@ -155,12 +165,12 @@ def describe_park(instance) -> dict:
     Shaped for a confirmation dialog: whether the document is stuck, which decision it
     is stuck on, and what would unstick it properly.
 
-    The client is given **facts plus a ready-made sentence**, not just a permission key.
-    ``permission_key`` is only meaningful for an RBAC-sourced stage and is blank
+    The client is given **facts plus a ready-made sentence**, not just a role key.
+    ``role_key`` is only meaningful for a role-sourced stage and is blank
     otherwise, so a client that wants to render it specially must check
     ``approver_source`` first; ``requirement`` is always populated and always safe to
     show. That split is what lets the approver model change without the dialog going
-    blank or, worse, telling somebody to grant a permission that no longer decides
+    blank or, worse, telling somebody to grant something that no longer decides
     anything.
     """
     stage_instance = parked_stage(instance)
@@ -172,10 +182,10 @@ def describe_park(instance) -> dict:
         "stage_code": stage.code,
         "stage_label": stage.label,
         "approver_source": stage.approver_source,
-        # Blank unless this stage really resolves by permission; see the docstring.
-        "permission_key": (
-            stage.approver_permission_key or ""
-            if stage.approver_source == ApproverSource.RBAC_PERMISSION else ""
+        # Blank unless this stage really resolves by a named role; see the docstring.
+        "role_key": (
+            approvers_service.stage_role_key(stage)
+            if stage.approver_source == ApproverSource.ROLE else ""
         ),
         "requirement": stage_requirement(stage),
         "document_type": instance.document_type,
@@ -195,7 +205,7 @@ def release_parked_stage(instance, *, actor_user, reason=None):
     reason_text = _clean_reason(reason)
 
     # A repair pass runs first: if anybody has since been granted the approving
-    # permission this returns None, and the answer is "get them to decide it".
+    # role this returns None, and the answer is "get them to decide it".
     stage_instance = parked_stage(instance)
     if stage_instance is not None:
         # Re-assert the same precondition under a row lock. Between the read above and
@@ -222,7 +232,7 @@ def release_parked_stage(instance, *, actor_user, reason=None):
             # it records the source and the requirement alongside the key rather than
             # relying on a key that may stop being the deciding factor.
             "approver_source": stage_instance.stage.approver_source,
-            "permission_key": stage_instance.stage.approver_permission_key or "",
+            "role_key": approvers_service.stage_role_key(stage_instance.stage),
             "requirement": stage_requirement(stage_instance.stage),
             "reason": reason_text,
         },

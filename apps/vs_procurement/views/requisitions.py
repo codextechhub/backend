@@ -488,7 +488,7 @@ class ApprovalTemplateSetupView(_ProcBase):
     the threshold or the approving permissions for all the others.
 
     Seeded blocked on purpose: the rules arrive with nobody holding the approving
-    permission, so the first document submitted parks and asks for an approver to be
+    role, so the first document submitted parks and asks for an approver to be
     appointed rather than approving itself.
 
     Idempotent and non-destructive: a document type whose ladder already exists is
@@ -496,7 +496,7 @@ class ApprovalTemplateSetupView(_ProcBase):
     tenant's customised rules.
 
     POST body (all optional, applied only to newly created ladders): ``threshold``
-    (kobo), ``manager_permission``, ``senior_permission``.
+    (kobo), ``manager_role_key``, ``senior_role_key``.
 
     docstring-name: Set up approval templates
     """
@@ -509,10 +509,10 @@ class ApprovalTemplateSetupView(_ProcBase):
         kwargs = {}
         if "threshold" in body:
             kwargs["threshold"] = _money(body.get("threshold"), "threshold")
-        if body.get("manager_permission"):
-            kwargs["manager_permission"] = str(body["manager_permission"])
-        if body.get("senior_permission"):
-            kwargs["senior_permission"] = str(body["senior_permission"])
+        if body.get("manager_role_key"):
+            kwargs["manager_role_key"] = str(body["manager_role_key"])
+        if body.get("senior_role_key"):
+            kwargs["senior_role_key"] = str(body["senior_role_key"])
         results = approvals.ensure_tenant_approval_templates(
             entity.tenant, created_by=request.user, **kwargs,
         )

@@ -16,11 +16,11 @@ Two guarantees, both deliberate:
 
 * **Never destructive.** A tenant that already has its own ladder for a document type
   is reported and skipped, so re-running after an administrator customised the
-  threshold or the approving permissions cannot restore the defaults over them. Only
+  threshold or the approving roles cannot restore the defaults over them. Only
   ``--platform`` upserts, because that row is platform provisioning's to own.
-* **Seeded blocked.** The rules arrive with nobody holding the approving permission, so
+* **Seeded blocked.** The rules arrive with nobody holding the approving role, so
   the first document submitted parks and asks for an approver rather than approving
-  itself. Grant the approving permission deliberately, per branch, afterwards.
+  itself. Appoint holders of the approving role deliberately, per branch, afterwards.
 
 Safe to re-run. ``--dry-run`` reports what would change and writes nothing.
 """
@@ -32,8 +32,8 @@ from vs_procurement.approvals import (
     ensure_tenant_approval_templates,
 )
 from vs_procurement.constants import (
-    WF_DEFAULT_MANAGER_PERMISSION,
-    WF_DEFAULT_SENIOR_PERMISSION,
+    WF_DEFAULT_MANAGER_ROLE,
+    WF_DEFAULT_SENIOR_ROLE,
     WF_DEFAULT_SENIOR_THRESHOLD,
 )
 
@@ -59,12 +59,12 @@ class Command(BaseCommand):
             help="Kobo at/above which the senior stage runs (new ladders only).",
         )
         parser.add_argument(
-            "--manager-permission", default=WF_DEFAULT_MANAGER_PERMISSION,
-            help="Permission key the first stage resolves approvers against.",
+            "--manager-role", default=WF_DEFAULT_MANAGER_ROLE,
+            help="Role key the first stage resolves approvers against.",
         )
         parser.add_argument(
-            "--senior-permission", default=WF_DEFAULT_SENIOR_PERMISSION,
-            help="Permission key the threshold-gated second stage resolves against.",
+            "--senior-role", default=WF_DEFAULT_SENIOR_ROLE,
+            help="Role key the threshold-gated second stage resolves against.",
         )
         parser.add_argument(
             "--dry-run", action="store_true", help="Report what would change; write nothing.",
@@ -81,8 +81,8 @@ class Command(BaseCommand):
 
         ladder_kwargs = {
             "threshold": options["threshold"],
-            "manager_permission": options["manager_permission"],
-            "senior_permission": options["senior_permission"],
+            "manager_role_key": options["manager_role"],
+            "senior_role_key": options["senior_role"],
         }
 
         tenants = []

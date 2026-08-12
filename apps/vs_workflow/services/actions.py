@@ -85,7 +85,7 @@ def _check_eligibility(stage_instance, actor) -> WorkflowStageApprover:
 
     Eligibility is determined at stage activation time and stored in
     WorkflowStageApprover. Checking the snapshot (not re-resolving live RBAC)
-    means a permission change mid-workflow doesn't retroactively invalidate
+    means a role change mid-workflow doesn't retroactively invalidate
     an approver who was already notified and is mid-review.
     """
     snap = WorkflowStageApprover.objects.filter(

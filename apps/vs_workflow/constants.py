@@ -45,7 +45,7 @@ class StageOnRejection(models.TextChoices):
     TERMINAL            = "TERMINAL",            "Rejection terminates the workflow"
     RETURN_TO_REQUESTER = "RETURN_TO_REQUESTER", "Rejection returns to requester"
 
-# Scope used when resolving RBAC permission-based approvers.
+# Scope the approver lookup is narrowed to when resolving a stage's approvers.
 class ApproverScope(models.TextChoices):
     BRANCH   = "BRANCH",   "Branch-scoped"
     SCHOOL   = "SCHOOL",   "School-scoped"

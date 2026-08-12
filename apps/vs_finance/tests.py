@@ -7562,6 +7562,8 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
     """
 
     APPROVE_KEY = "finance.journal.approve"
+    #: Approver resolution reads role assignments, not permission grants.
+    APPROVE_ROLE = "checker-role"
 
     # Prepare or verify the setUp test path.
     def setUp(self):
@@ -7626,15 +7628,19 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
 
     # Support the publish standard template workflow.
     def _publish_standard_template(self):
+        from vs_workflow.services.roles import ensure_approver_role
         from vs_workflow.services.templates import publish_template
 
+        # A tenant-scoped ROLE stage only publishes against a role the tenant has.
+        ensure_approver_role(self.school.tenant, self.APPROVE_ROLE)
         return publish_template(
             tenant=self.school.tenant, branch=None,
             document_type="finance.journal", code="standard",
             name="Standard journal approval",
             stages_payload=[{
                 "code": "checker", "label": "Checker approval", "kind": "APPROVAL",
-                "order": 1, "approver_permission_key": self.APPROVE_KEY,
+                "order": 1, "approver_source": "ROLE",
+                "approver_role_key": self.APPROVE_ROLE,
                 "approver_scope": "SCHOOL", "advance_rule": "ANY",
                 "on_rejection": "RETURN_TO_REQUESTER", "skip_if_no_approvers": False,
             }],
@@ -7648,7 +7654,7 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
             first_name="Apro", last_name="Ver", tenant=self.school.tenant,
         )
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
-            tenant=self.school.tenant, key="checker-role",
+            tenant=self.school.tenant, key=self.APPROVE_ROLE,
             defaults={"name": "Journal Checker", "status": "ACTIVE"},
         )
         self.TenantRolePermission.objects.get_or_create(
@@ -7768,14 +7774,17 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
         from vs_workflow.constants import WorkflowStageAction as ActionEnum
 
         # A TERMINAL-on-rejection template so REJECTED ends the instance.
+        from vs_workflow.services.roles import ensure_approver_role
         from vs_workflow.services.templates import publish_template
+        ensure_approver_role(self.school.tenant, self.APPROVE_ROLE)
         publish_template(
             tenant=self.school.tenant, branch=None,
             document_type="finance.journal", code="standard",
             name="Standard journal approval",
             stages_payload=[{
                 "code": "checker", "label": "Checker approval", "kind": "APPROVAL",
-                "order": 1, "approver_permission_key": self.APPROVE_KEY,
+                "order": 1, "approver_source": "ROLE",
+                "approver_role_key": self.APPROVE_ROLE,
                 "approver_scope": "SCHOOL", "advance_rule": "ANY",
                 "on_rejection": "TERMINAL", "skip_if_no_approvers": False,
             }])
@@ -7866,6 +7875,8 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
     """
 
     APPROVE_KEY = "finance.refund.approve"
+    #: Approver resolution reads role assignments, not permission grants.
+    APPROVE_ROLE = "refund-checker-role"
 
     # Prepare or verify the setUp test path.
     def setUp(self):
@@ -7942,15 +7953,19 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
 
     # Support the publish standard template workflow.
     def _publish_standard_template(self, *, on_rejection="RETURN_TO_REQUESTER"):
+        from vs_workflow.services.roles import ensure_approver_role
         from vs_workflow.services.templates import publish_template
 
+        # A tenant-scoped ROLE stage only publishes against a role the tenant has.
+        ensure_approver_role(self.school.tenant, self.APPROVE_ROLE)
         return publish_template(
             tenant=self.school.tenant, branch=None,
             document_type="finance.refund", code="standard",
             name="Standard refund approval",
             stages_payload=[{
                 "code": "checker", "label": "Checker approval", "kind": "APPROVAL",
-                "order": 1, "approver_permission_key": self.APPROVE_KEY,
+                "order": 1, "approver_source": "ROLE",
+                "approver_role_key": self.APPROVE_ROLE,
                 "approver_scope": "SCHOOL", "advance_rule": "ANY",
                 "on_rejection": on_rejection, "skip_if_no_approvers": False,
             }])
@@ -7962,7 +7977,7 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
             first_name="Apro", last_name="Ver", tenant=self.school.tenant,
         )
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
-            tenant=self.school.tenant, key="refund-checker-role",
+            tenant=self.school.tenant, key=self.APPROVE_ROLE,
             defaults={"name": "Refund Checker", "status": "ACTIVE"},
         )
         self.TenantRolePermission.objects.get_or_create(
@@ -8180,6 +8195,8 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
     """
 
     APPROVE_KEY = "finance.writeoff.approve"
+    #: Approver resolution reads role assignments, not permission grants.
+    APPROVE_ROLE = "writeoff-checker-role"
 
     # Prepare or verify the setUp test path.
     def setUp(self):
@@ -8256,15 +8273,19 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
 
     # Support the publish standard template workflow.
     def _publish_standard_template(self, *, on_rejection="RETURN_TO_REQUESTER"):
+        from vs_workflow.services.roles import ensure_approver_role
         from vs_workflow.services.templates import publish_template
 
+        # A tenant-scoped ROLE stage only publishes against a role the tenant has.
+        ensure_approver_role(self.school.tenant, self.APPROVE_ROLE)
         return publish_template(
             tenant=self.school.tenant, branch=None,
             document_type="finance.write_off", code="standard",
             name="Standard write-off approval",
             stages_payload=[{
                 "code": "checker", "label": "Checker approval", "kind": "APPROVAL",
-                "order": 1, "approver_permission_key": self.APPROVE_KEY,
+                "order": 1, "approver_source": "ROLE",
+                "approver_role_key": self.APPROVE_ROLE,
                 "approver_scope": "SCHOOL", "advance_rule": "ANY",
                 "on_rejection": on_rejection, "skip_if_no_approvers": False,
             }])
@@ -8276,7 +8297,7 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
             first_name="Apro", last_name="Ver", tenant=self.school.tenant,
         )
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
-            tenant=self.school.tenant, key="writeoff-checker-role",
+            tenant=self.school.tenant, key=self.APPROVE_ROLE,
             defaults={"name": "Write-off Checker", "status": "ACTIVE"},
         )
         self.TenantRolePermission.objects.get_or_create(

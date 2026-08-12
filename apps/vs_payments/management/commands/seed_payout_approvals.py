@@ -16,12 +16,12 @@ Usage::
 Two guarantees, both deliberate and matching ``seed_procurement_approvals``:
 
 * **Never destructive.** A tenant that already has its own ladder is reported and
-  skipped, so re-running after an administrator customised the approving permission or
+  skipped, so re-running after an administrator customised the approving role or
   added stages of their own cannot restore the defaults over them. Only ``--platform``
   upserts, because that row is platform provisioning's to own.
-* **Seeded blocked.** The rules arrive with nobody holding the approving permission, so
+* **Seeded blocked.** The rules arrive with nobody holding the approving role, so
   the first batch submitted parks and asks for an approver rather than paying itself
-  out. Grant ``payments.payout_batch.approve`` deliberately afterwards.
+  out. Appoint somebody to the ``payout-approver`` role deliberately afterwards.
 
 Safe to re-run. ``--dry-run`` reports what would change and writes nothing.
 """
@@ -32,7 +32,7 @@ from vs_payments.approvals import (
     ensure_default_approval_templates,
     ensure_tenant_approval_templates,
 )
-from vs_payments.constants import WF_DEFAULT_APPROVE_PERMISSION
+from vs_payments.constants import WF_DEFAULT_APPROVE_ROLE
 
 
 class Command(BaseCommand):
@@ -52,8 +52,8 @@ class Command(BaseCommand):
             help="Publish the platform-wide fallback rule (upserts in place).",
         )
         parser.add_argument(
-            "--approve-permission", default=WF_DEFAULT_APPROVE_PERMISSION,
-            help="Permission key the approving stage resolves approvers against.",
+            "--approve-role", default=WF_DEFAULT_APPROVE_ROLE,
+            help="Role key the approving stage resolves approvers against.",
         )
         parser.add_argument(
             "--dry-run", action="store_true", help="Report what would change; write nothing.",
@@ -65,7 +65,7 @@ class Command(BaseCommand):
         slugs = options["tenants"]
         if not (slugs or options["all_tenants"] or options["platform"]):
             raise CommandError("Pass --tenant SLUG, --all-tenants, or --platform.")
-        ladder_kwargs = {"approve_permission": options["approve_permission"]}
+        ladder_kwargs = {"approve_role_key": options["approve_role"]}
 
         tenants = []
         if slugs:
@@ -94,7 +94,7 @@ class Command(BaseCommand):
                 return
 
         self.stdout.write(self.style.SUCCESS(
-            "Done. Payouts now need approval; nobody can approve until "
-            "payments.payout_batch.approve is granted, so the first batch will park "
-            "until it is.",
+            "Done. Payouts now need approval; nobody can approve until somebody "
+            "holds the payout-approver role, so the first batch will park "
+            "until one does.",
         ))

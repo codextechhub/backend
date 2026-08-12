@@ -85,21 +85,24 @@ def _total_amount(events) -> int:
 
 # Find who should hear about an entity's unbooked money.
 def _recipients(tenant, permission_key, scope):
-    """Users holding ``permission_key`` in ``scope``, or [] if the engine is absent.
+    """Users holding ``permission_key`` in ``scope``, or [] if RBAC is absent.
 
-    Uses vs_workflow's supported resolver rather than a second copy of the scope
-    rules, so the people alerted are exactly the people the platform already
-    considers able to act here.
+    This asks RBAC directly rather than going through the workflow engine. The
+    question here is "who may act on this money", which is a permission, not
+    "who approves this document", which is now a role, a group, or a rule. The
+    workflow engine no longer resolves permissions, and routing an alert through
+    an approval concept would have coupled the two for no reason.
+
+    ``scope`` is retained for the caller's vocabulary. Recipients are resolved
+    tenant-wide (``branch=None``), exactly as before.
     """
     try:
-        from vs_workflow.constants import ApproverScope
-        from vs_workflow.services.approvers import users_with_permission
-    except ImportError:  # pragma: no cover - workflow is always installed in practice
-        logger.warning("vs_workflow unavailable; cannot resolve alert recipients.")
+        from vs_rbac.evaluator import resolve_users_with_permission
+    except ImportError:  # pragma: no cover - rbac is always installed in practice
+        logger.warning("vs_rbac unavailable; cannot resolve alert recipients.")
         return []
-    return list(users_with_permission(
+    return list(resolve_users_with_permission(
         tenant=tenant, branch=None, permission_key=permission_key,
-        scope=getattr(ApproverScope, scope),
     ))
 
 

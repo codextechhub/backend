@@ -1,6 +1,6 @@
 """Who can approve spend here, and where nobody can.
 
-An approval ladder is only as real as the people who hold its permissions. A tenant can
+An approval ladder is only as real as the people who hold its roles. A tenant can
 have perfectly good rules and still be unable to buy anything, because the stage that
 runs at one site resolves to nobody: the document then parks (see
 :mod:`vs_procurement.approval_parking`) and the administrator has to work out *why* from
@@ -13,13 +13,13 @@ It is a read-only projection of two things the engine already owns:
   scope, through the engine's own branch → tenant → platform cascade, so the screen
   reports the ladder that would actually run rather than the seeded defaults;
 * **the people** - resolved through
-  :func:`vs_workflow.services.approvers.users_with_permission`, the engine's own
+  :func:`vs_workflow.services.approvers.role_holder_ids`, the engine's own
   eligibility lookup. It is the same call routing makes, so this report and live
   routing can never disagree about who is eligible.
 
 Nothing here writes, and nothing here re-implements scope resolution. Two costs are
 deliberately bounded: templates are loaded once for the whole tenant and cascaded in
-Python, and each ``(permission key, scope, branch)`` holder lookup is memoised across
+Python, and each ``(role key, scope, branch)`` holder lookup is memoised across
 document types, so a four-document, two-stage ladder over N branches costs at most
 ``2 x (N + 1)`` RBAC queries, not ``8 x (N + 1)``.
 
@@ -31,7 +31,7 @@ this report.
 from __future__ import annotations
 
 from vs_workflow.constants import ApproverScope, ApproverSource
-from vs_workflow.services.approvers import users_with_permission
+from vs_workflow.services.approvers import role_holder_ids, stage_role_key
 
 from .constants import (
     PROCUREMENT_APPROVAL_TYPES,
@@ -123,7 +123,7 @@ def _resolve_template(templates, tenant, branch, document_type):
 class _HolderCache:
     """Memoised "who holds this key in this scope" over one report.
 
-    The same permission key appears on the same stage of all four document ladders, so
+    The same role key appears on the same stage of all four document ladders, so
     without this the report would ask RBAC the identical question four times per branch.
     """
 
@@ -131,17 +131,23 @@ class _HolderCache:
         self._tenant = tenant
         self._holders: dict = {}
 
-    def holders(self, *, permission_key: str, scope: str, branch):
-        if not permission_key:
+    def holders(self, *, role_key: str, scope: str, branch):
+        if not role_key:
             return []
-        key = (permission_key, scope, getattr(branch, "pk", None))
+        # Branch only narrows the lookup for a branch-scoped stage; every other
+        # scope counts tenant-wide holders, which is what the engine does.
+        branch_arg = branch if scope == ApproverScope.BRANCH else None
+        key = (role_key, scope, getattr(branch_arg, "pk", None))
         if key not in self._holders:
+            from django.contrib.auth import get_user_model
+            ids = role_holder_ids(
+                role_key=role_key, tenant=self._tenant, branch=branch_arg,
+            )
             self._holders[key] = [
                 _person(user)
-                for user in users_with_permission(
-                    tenant=self._tenant, branch=branch,
-                    permission_key=permission_key, scope=ApproverScope(scope),
-                ).order_by("first_name", "last_name", "pk")
+                for user in get_user_model().objects
+                .filter(pk__in=ids)
+                .order_by("first_name", "last_name", "pk")
             ]
         return self._holders[key]
 
@@ -151,22 +157,25 @@ def _stage_row(stage, *, branch, cache, rules_source) -> dict:
     by_organogram = stage.approver_source == ApproverSource.ORGANOGRAM
     # An organogram stage resolves relative to whoever raises the document, so there is
     # no fixed list of people to report. Say that, rather than reporting a false gap.
-    approvers = [] if by_organogram else cache.holders(
-        permission_key=stage.approver_permission_key,
+    # Only a role-sourced stage has a fixed list of people to report. Groups and
+    # document-driven rules resolve per document, like the organogram does.
+    by_role = stage.approver_source == ApproverSource.ROLE
+    approvers = cache.holders(
+        role_key=stage_role_key(stage),
         scope=stage.approver_scope, branch=branch,
-    )
+    ) if by_role else []
     return {
         "stage_code": stage.code,
         "stage_label": stage.label,
-        "permission_key": "" if by_organogram else stage.approver_permission_key,
+        "role_key": stage_role_key(stage) if by_role else "",
         "approver_scope": stage.approver_scope,
-        "resolved_per_requester": by_organogram,
+        "resolved_per_requester": not by_role,
         "rules_source": rules_source,
         "approvers": approvers,
         "approver_count": len(approvers),
         # The whole point of the screen: a stage with nobody behind it blocks every
         # document that reaches it, and only an administrator can fix that.
-        "has_approver": bool(approvers) or by_organogram,
+        "has_approver": bool(approvers) or not by_role,
     }
 
 
@@ -224,7 +233,7 @@ def approval_coverage(tenant, *, branches=None, include_entity_level=True) -> di
                 "document_type_label": row["document_type_label"],
                 "stage_code": stage["stage_code"],
                 "stage_label": stage["stage_label"],
-                "permission_key": stage["permission_key"],
+                "role_key": stage["role_key"],
             }
             for row in document_rows for stage in row["stages"]
             if not stage["has_approver"]

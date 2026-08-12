@@ -1,6 +1,6 @@
 """Parked approvals: detect them, and make them reachable again.
 
-A stage that activates while nobody holds its approving permission is **parked**: the
+A stage that activates while nobody holds its approving role is **parked**: the
 stage is ACTIVE, the instance is IN_PROGRESS, and its frozen approver snapshot
 (:class:`~vs_workflow.models.WorkflowStageApprover`) is empty. That is the deliberate
 outcome of ``skip_if_no_approvers=False``, which every ladder over money sets: spend
@@ -12,7 +12,7 @@ path afterwards - :func:`~vs_workflow.services.actions._check_eligibility`,
 ``_stage_fully_approved``, :func:`~vs_workflow.services.my_queue.pending_approval_snapshots`
 - consults that frozen snapshot rather than live RBAC. A stage activated with **zero**
 eligible approvers is therefore permanently unreachable for that attempt: granting
-somebody the permission afterwards changes nothing, and only a return-to-requester plus
+somebody the role afterwards changes nothing, and only a return-to-requester plus
 resubmit (a new attempt) would re-snapshot.
 
 This module is the repair for exactly that state, and it lives in the engine because the
@@ -66,7 +66,7 @@ def empty_active_stages(document_types=None):
     """ACTIVE stages whose approver snapshot is empty for this attempt.
 
     One indexed query, no RBAC involvement: on healthy data it matches nothing and every
-    caller short-circuits before resolving a single permission holder.
+    caller short-circuits before resolving a single role holder.
 
     ``document_types`` narrows the scan to a set of workflow document-type tokens; the
     default is every type the engine serves, which is what makes this a repair for the
@@ -131,8 +131,8 @@ class ResolutionCache:
     """Resolve stage approvers, sharing the RBAC holder lookup across stages.
 
     Several parked documents on one page usually share a stage configuration, so the
-    expensive part - "who holds this permission in this scope for this tenant/branch" -
-    is memoised on ``(source, permission key, scope, tenant, branch)``.
+    expensive part - "who holds this role in this scope for this tenant/branch" -
+    is memoised on ``(source, role key, scope, tenant, branch)``.
 
     ``resolve_approvers`` excludes the requester and then expands delegations *from the
     surviving holders*, so an empty holder set after removing the requester provably
@@ -140,9 +140,9 @@ class ResolutionCache:
     lets the memo answer the common case outright and skip the live resolution entirely.
 
     The memo is **opt-in per source, not opt-out**, and that direction matters. Only
-    RBAC_PERMISSION stages carrying a key can be answered from a permission-holder
-    lookup; every other source - organogram today, whatever replaces or joins it later -
-    falls through to the live path. The alternative default, treating an unrecognised
+    ROLE stages carrying a key can be answered from a role-holder lookup; every other
+    source - approver groups, document-driven rules, the organogram - falls through to
+    the live path. The alternative default, treating an unrecognised
     source as "provably nobody", would make the repair silently skip those stages, and a
     stage the repair skips is a document that parks and never un-parks. That is the exact
     failure this module exists to prevent, so an unknown source must cost a query rather
@@ -153,31 +153,35 @@ class ResolutionCache:
         self._holders: dict = {}
 
     def _holder_ids(self, stage, instance):
-        """Memoised set of base permission holders, or None when not memoisable.
+        """Memoised set of base role holders, or None when not memoisable.
 
         ``None`` means "cannot answer from the memo, resolve it live", which is the
         safe answer for every source this function does not explicitly understand.
         """
-        if stage.approver_source != ApproverSource.RBAC_PERMISSION:
+        if stage.approver_source != ApproverSource.ROLE:
             return None
-        if not stage.approver_permission_key:
-            # A permission-sourced stage with no key is misconfigured rather than
+        role_key = approvers_service.stage_role_key(stage)
+        if not role_key:
+            # A role-sourced stage with no key is misconfigured rather than
             # unstaffable. Resolve it live so the engine's own resolver decides,
             # instead of concluding here that nobody can ever approve it.
             return None
+        # A tenant may have repointed this stage at its own role or group, in
+        # which case the stage's own key is not what will resolve. Fall through.
+        if approvers_service.stage_override_for(stage, instance.tenant) is not None:
+            return None
+        branch = (instance.branch
+                  if stage.approver_scope == ApproverScope.BRANCH else None)
         key = (
-            stage.approver_source, stage.approver_permission_key,
+            stage.approver_source, role_key,
             stage.approver_scope, instance.tenant_id, instance.branch_id,
         )
         if key not in self._holders:
-            # The engine's own public helper, so the scope mapping and its graceful
-            # degradation when vs_rbac is absent stay defined in exactly one place.
-            holders = approvers_service.users_with_permission(
-                tenant=instance.tenant, branch=instance.branch,
-                permission_key=stage.approver_permission_key,
-                scope=ApproverScope(stage.approver_scope),
+            # The engine's own public helper, so the scope mapping stays defined
+            # in exactly one place.
+            self._holders[key] = approvers_service.role_holder_ids(
+                role_key=role_key, tenant=instance.tenant, branch=branch,
             )
-            self._holders[key] = frozenset(holders.values_list("pk", flat=True))
         return self._holders[key]
 
     def has_candidates(self, stage, instance) -> bool:
@@ -278,7 +282,7 @@ def repair_workflows(*, tenant=None, instance_id=None, document_types=None) -> i
     """Repair parked stages in one tenant, or one workflow instance.
 
     The read paths call this before consulting the frozen snapshots so a newly
-    permissioned approver finds the parked work waiting in their inbox without the
+    appointed approver finds the parked work waiting in their inbox without the
     requester having to resubmit.
     """
     qs = empty_active_stages(document_types)
@@ -333,7 +337,7 @@ def parked_stage_instance(model, pk, document_types=None):
     """The ACTIVE, unstaffed stage instance blocking one document, or ``None``.
 
     Runs the same repair-then-recheck pass as :func:`parked_object_ids`, so a document
-    that only *looked* parked (somebody has since been granted the permission) yields
+    that only *looked* parked (somebody has since been appointed to the role) yields
     ``None`` here. Callers that intend to act on the stage must still re-assert the
     precondition under a row lock: see :func:`lock_parked_stage`.
     """

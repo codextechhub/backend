@@ -3,7 +3,7 @@ Approver resolution - builds the eligible approver list for a stage at activatio
 
 The list is frozen into WorkflowStageApprover rows the moment a stage activates.
 All subsequent eligibility checks read that snapshot rather than re-querying RBAC
-live, so mid-workflow permission changes don't retroactively affect who can vote.
+live, so mid-workflow role changes don't retroactively affect who can vote.
 """
 
 from __future__ import annotations
@@ -14,7 +14,10 @@ from typing import TYPE_CHECKING, List, Optional
 from django.db.models import Q
 from django.utils import timezone
 
-from vs_workflow.constants import ApproverScope, ApproverSource, OrganogramTarget
+from vs_workflow.constants import (
+    ApproverScope, ApproverSource, GroupMemberKind, OrganogramTarget,
+)
+from vs_workflow.exceptions import UnknownApproverSourceError
 from vs_workflow.models import ApprovalDelegation, WorkflowInstance, WorkflowStage
 
 if TYPE_CHECKING:
@@ -27,7 +30,7 @@ class EligibleApprover:
     """Carries one resolved approver and, when delegation is active, who they act for.
 
     on_behalf_of is set when the approver was added via an ApprovalDelegation row
-    rather than holding the permission themselves. It is stored in the
+    rather than being an approver in their own right. It is stored in the
     WorkflowStageApprover snapshot so the audit trail shows both names.
     """
     user: AbstractBaseUser
@@ -260,21 +263,20 @@ def _group_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
     return resolve_group_users(stage.approver_group, instance.tenant, branch_arg)
 
 
-# Public name for the same lookup, for callers outside the engine.
-def users_with_permission(*, tenant, branch, permission_key: str, scope: ApproverScope):
-    """Who the engine would consider eligible for ``permission_key`` in this scope.
+# Public name for the role lookup, for callers outside the engine.
+def role_holder_ids(*, role_key: str, tenant, branch) -> frozenset:
+    """Ids of the people the engine would treat as holders of ``role_key`` here.
 
-    The supported, read-only entry point to :func:`_users_with_permission` for apps
-    that must answer "who can approve here, and where does nobody?" without guessing
-    at the engine's scope mapping or copying it. Same arguments, same queryset, no
-    side effects: this is an alias, not a second implementation, so an administrative
-    coverage screen can never disagree with live routing.
+    The supported, read-only entry point for apps that must answer "can anybody
+    approve here, and where can nobody?" without copying the engine's scope
+    mapping. Same lookup the resolver uses, so an administrative coverage screen
+    or the parking repair can never disagree with live routing.
 
-    Callers outside ``vs_workflow`` should use this name; the underscored one remains
-    for the engine's own internal use.
+    Returns ids rather than users because every caller so far only needs set
+    arithmetic against the requester, and ids keep the memo cheap.
     """
-    return _users_with_permission(
-        tenant=tenant, branch=branch, permission_key=permission_key, scope=scope,
+    return frozenset(
+        u.pk for u in _users_for_role_key(role_key, tenant, branch)
     )
 
 
@@ -367,24 +369,31 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     appearing twice. A delegate acting for two different delegators intentionally
     appears twice - once per delegator - because the on_behalf_of field differs.
     """
-    if stage.approver_source == ApproverSource.ORGANOGRAM:
-        # Organogram approvers are already relative to the requester; still exclude self-approval.
-        base_users = [
-            u for u in _organogram_base_users(stage, instance)
-            if u and u.pk != instance.requested_by_id
-        ]
+    override = stage_override_for(stage, instance.tenant)
+    if override is not None:
+        base_users = _override_base_users(override, stage, instance)
+    elif stage.approver_source == ApproverSource.ROLE:
+        base_users = _role_base_users(stage, instance)
+    elif stage.approver_source == ApproverSource.WORKFLOW_GROUP:
+        base_users = _group_base_users(stage, instance)
+    elif stage.approver_source == ApproverSource.DYNAMIC_ROLE:
+        base_users = _dynamic_role_base_users(stage, instance)
+    elif stage.approver_source == ApproverSource.ORGANOGRAM:
+        # Organogram approvers are already relative to the requester.
+        base_users = _organogram_base_users(stage, instance)
     else:
-        if not stage.approver_permission_key:
-            return []
-        # RBAC approvers are resolved at activation time and then frozen.
-        base_qs = _users_with_permission(
-            tenant=instance.tenant,
-            branch=instance.branch,
-            permission_key=stage.approver_permission_key,
-            scope=ApproverScope(stage.approver_scope),
+        # Deliberately not a catch-all returning nobody: a skip-enabled stage
+        # would act on that by skipping itself, so an unrecognised source must
+        # fail loudly instead of quietly waving the document through.
+        raise UnknownApproverSourceError(
+            f"Stage '{stage.code}' names approver source "
+            f"'{stage.approver_source}', which the engine cannot resolve.",
+            stage=stage.code, approver_source=stage.approver_source,
         )
-        base_qs = base_qs.exclude(pk=instance.requested_by_id)
-        base_users = list(base_qs.distinct())
+
+    # Self-approval is barred on every source, so the filter lives here once
+    # rather than being repeated (and one day forgotten) per branch.
+    base_users = [u for u in base_users if u is not None and u.pk != instance.requested_by_id]
 
     base_ids = {u.pk for u in base_users}
 
