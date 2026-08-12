@@ -179,6 +179,83 @@ def posting_window(entity, *, today=None) -> dict:
     }
 
 
+# How close to the end of the fiscal calendar counts as "running out".
+# One constant, because the number is a policy (how much notice an operator needs to
+# get a new fiscal year approved and created), not an implementation detail of any
+# one caller. Two months is enough notice for a finance team to raise, review and
+# create the next year without the request becoming an emergency.
+FISCAL_RUNWAY_WARNING_DAYS = 60
+
+# The three states an entity's fiscal calendar can be in, from the runway read.
+FISCAL_RUNWAY_HEALTHY = "HEALTHY"    # Plenty of calendar left; nothing to say.
+FISCAL_RUNWAY_EXPIRING = "EXPIRING"  # Calendar ends within the warning threshold.
+FISCAL_RUNWAY_EXPIRED = "EXPIRED"    # Calendar has run out (or was never created).
+
+
+# Describe how much fiscal calendar an entity has left.
+def fiscal_calendar_runway(entity, *, today=None) -> dict:
+    """Return when ``entity`` runs out of fiscal calendar, and whether to warn now.
+
+    The other read-side mirror of the period guard, alongside :func:`posting_window`.
+    That one answers "which dates may post *today*?"; this one answers "how long
+    until *no* date can post?" - a question nothing else in the engine asks, and the
+    reason it needs asking is that the answer arrives as a hard outage:
+
+    :class:`~vs_finance.models.FiscalPeriod` rows are created a year at a time. Once
+    the last one's ``end_date`` passes with no new year created, :func:`resolve_period`
+    returns ``None`` for every new document date, :func:`ensure_period_open` raises
+    :class:`~vs_finance.exceptions.PeriodClosedError` on the ``None``, and *every*
+    posting in the entity fails at once - invoices, receipts, payroll, gateway
+    webhooks, close journals. Nothing degrades first, so nothing warns unless we read
+    ahead of the date deliberately.
+
+    ``calendar_end`` is the last day any period covers, whatever that period's status:
+    a CLOSED December still bounds the calendar, and creating the next year is the
+    only fix either way. ``days_remaining`` counts from ``today`` and goes negative
+    once the calendar has run out, so a caller can say how long ago it lapsed.
+
+    Three states, each real and each needing different words on screen:
+
+    * ``HEALTHY`` - the calendar ends beyond the threshold; say nothing.
+    * ``EXPIRING`` - it ends within :data:`FISCAL_RUNWAY_WARNING_DAYS`; still posting,
+      but somebody must create the next year before that date.
+    * ``EXPIRED`` - it has already ended, so the entity cannot post at all. An entity
+      with **no periods whatsoever** lands here too (with a ``None`` calendar end): a
+      brand-new entity that was never given a calendar is in exactly the same
+      can't-post position as one that ran off the end of its own, and treating it as
+      an error would hide the very state the caller asked about.
+    """
+    from .models import FiscalPeriod
+
+    today = today or timezone.localdate()
+    last = (  # The period that bounds the calendar, ignoring status entirely.
+        FiscalPeriod.objects
+        .filter(entity=entity)
+        .order_by("-end_date", "-period_no")
+        .first()
+    )
+
+    calendar_end = last.end_date if last is not None else None
+    days_remaining = (calendar_end - today).days if calendar_end is not None else None
+
+    if days_remaining is None or days_remaining < 0:  # No calendar, or it has lapsed.
+        status = FISCAL_RUNWAY_EXPIRED
+    elif days_remaining <= FISCAL_RUNWAY_WARNING_DAYS:  # Ends today or within notice.
+        status = FISCAL_RUNWAY_EXPIRING
+    else:
+        status = FISCAL_RUNWAY_HEALTHY
+
+    return {
+        "today": today,
+        "calendar_end": calendar_end,
+        "days_remaining": days_remaining,
+        "threshold_days": FISCAL_RUNWAY_WARNING_DAYS,
+        "status": status,
+        "should_warn": status != FISCAL_RUNWAY_HEALTHY,
+        "last_period": _period_brief(last),
+    }
+
+
 # Shrink a period to the fields a date picker needs.
 def _period_brief(period) -> dict | None:
     """Serialise a period to the minimum a picker needs: when it is and why."""

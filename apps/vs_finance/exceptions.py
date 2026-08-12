@@ -47,9 +47,16 @@ class PeriodClosedError(PostingError):
     def __init__(self, period_label, status, **kwargs):
         self.period_label = period_label  # Store the period label for diagnostics.
         self.status = status  # Store the period status for diagnostics.
+        # "missing" means no period covers the date at all. The old advice ("choose
+        # another date") is impossible when the real cause is that nobody created
+        # next year's calendar, because then no date works, so name that cause and
+        # the fix. See vs_finance.posting.fiscal_calendar_runway, which warns before
+        # an entity gets here.
         message = (
-            "This date is outside your fiscal periods. "
-            "Choose a date within an open fiscal period."
+            "No fiscal period covers this date. Either the date falls outside your "
+            "fiscal calendar, or the next fiscal year has not been created yet. "
+            "Open Fiscal Periods and create the next fiscal year if the calendar "
+            "has run out."
             if status == "missing"
             else (
                 f"Cannot post into period '{period_label}': it is '{status}'. "

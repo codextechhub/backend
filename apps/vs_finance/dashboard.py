@@ -27,6 +27,7 @@ from .constants import (
 )
 from .models import AccountBalance, BankAccount, Customer, FiscalPeriod, Invoice, Payment
 from .money import format_naira
+from .posting import fiscal_calendar_runway
 
 SPARK_POINTS = 6          # KPI sparkline length (month-end snapshots incl. current)
 TREND_MONTHS = 12         # receivables-vs-collections window
@@ -419,6 +420,25 @@ def _close_progress(entity, period) -> dict | None:
     }
 
 
+# Warn when the entity is about to run out of fiscal calendar.
+def _fiscal_runway(entity) -> dict:
+    """Dashboard shape of :func:`vs_finance.posting.fiscal_calendar_runway`.
+
+    Read as of **today** even when the caller pins a historical period: "can this
+    entity still post?" is a question about now, not about the period being reported
+    on, and a dashboard pinned to last March must not report a runway that has since
+    lapsed as healthy.
+    """
+    runway = fiscal_calendar_runway(entity)  # Same read the posting guard mirrors.
+    end = runway["calendar_end"]  # Last day any period covers (None when none exist).
+    return {  # Return fiscal-runway block.
+        "status": runway["status"],  # HEALTHY / EXPIRING / EXPIRED.
+        "calendar_end": end.isoformat() if end else None,  # ISO last postable day.
+        "days_remaining": runway["days_remaining"],  # Negative once lapsed, None when no calendar.
+        "threshold_days": runway["threshold_days"],  # Notice window the status used.
+    }
+
+
 # Return recent journal activity rows.
 def _recent_journals(entity, limit=5) -> list[dict]:
     from .models import JournalEntry
@@ -484,6 +504,7 @@ def finance_dashboard(entity, *, period=None) -> dict:
         "fiscal_year": _fiscal_year_label(current),  # Fiscal year label.
         "period": getattr(current, "name", None),  # Current period name.
         "as_of": as_of.isoformat(),  # Dashboard as-of date.
+        "fiscal_runway": _fiscal_runway(entity),  # Fiscal-calendar expiry warning.
         "kpis": {  # Executive KPI cards.
             "cash_position": _kpi(cash),  # Cash card.
             "receivables": _kpi(ar),  # Receivables card.

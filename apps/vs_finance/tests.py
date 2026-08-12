@@ -89,10 +89,13 @@ from vs_finance.models import (
 from vs_finance.money import format_naira, to_kobo, to_naira
 from vs_finance.numbering import next_document_number
 from vs_finance.posting import (
+    FISCAL_RUNWAY_WARNING_DAYS,
     ensure_balanced,
     ensure_period_open,
+    fiscal_calendar_runway,
     post_journal,
     posting_window,
+    resolve_period,
     reverse_journal,
 )
 from vs_finance.receivables import (
@@ -521,6 +524,175 @@ class PostingWindowTests(TestCase):
             period = FiscalPeriod.objects.get(pk=brief["id"])
             with self.assertRaises(PeriodClosedError):
                 ensure_period_open(period)
+
+
+# Group tests for Fiscal Calendar Runway Tests.
+class FiscalCalendarRunwayTests(TestCase):
+    """Running out of fiscal periods is a total posting outage on a known date.
+
+    When the last period's ``end_date`` passes with no new year created, every
+    posting in the entity fails at once - nothing degrades first, so nothing warns
+    unless the runway is read deliberately. These cover the three states an operator
+    must be told apart (fine, running out, already out), the boundary at the
+    threshold, the never-had-a-calendar entity (which must read as expired rather
+    than blow up), and the fact that the read is per-entity.
+    """
+
+    # Prepare or verify the build calendar test path.
+    def build_calendar(self, year=None, *, code, status=PeriodStatus.OPEN):
+        """Build an entity with twelve monthly periods over ``year``.
+
+        ``year=None`` builds the entity with no calendar at all, which is what a
+        freshly created entity looks like before anyone provisions its periods.
+        """
+        entity = LedgerEntity.objects.create(
+            name=f"Runway {code}", code=code, kind=LedgerEntity.Kind.TENANT,
+        )
+        if year is None:  # No fiscal year, so no periods.
+            return entity
+        fiscal_year = FiscalYear.objects.create(
+            entity=entity, year=year,
+            start_date=datetime.date(year, 1, 1), end_date=datetime.date(year, 12, 31),
+        )
+        for month in range(1, 13):
+            start = datetime.date(year, month, 1)
+            end = (
+                datetime.date(year, month + 1, 1) - datetime.timedelta(days=1)
+                if month < 12 else datetime.date(year, 12, 31)
+            )
+            FiscalPeriod.objects.create(
+                entity=entity, fiscal_year=fiscal_year, period_no=month,
+                name=f"P{month} {year}", start_date=start, end_date=end, status=status,
+            )
+        return entity
+
+    # Verify plenty of calendar left raises no warning behavior.
+    def test_plenty_of_calendar_left_raises_no_warning(self):
+        entity = self.build_calendar(2026, code="RWOK")
+        runway = fiscal_calendar_runway(entity, today=datetime.date(2026, 8, 12))
+
+        self.assertEqual(runway["status"], "HEALTHY")
+        self.assertFalse(runway["should_warn"])
+        self.assertEqual(runway["calendar_end"], datetime.date(2026, 12, 31))
+        self.assertEqual(runway["days_remaining"], 141)
+
+    # Verify calendar ending within the threshold warns behavior.
+    def test_calendar_ending_within_the_threshold_warns(self):
+        entity = self.build_calendar(2026, code="RWSOON")
+        runway = fiscal_calendar_runway(entity, today=datetime.date(2026, 11, 30))
+
+        self.assertEqual(runway["status"], "EXPIRING")
+        self.assertTrue(runway["should_warn"])
+        self.assertEqual(runway["days_remaining"], 31)
+        self.assertEqual(runway["threshold_days"], FISCAL_RUNWAY_WARNING_DAYS)
+
+    # Verify the threshold boundary follows the constant behavior.
+    def test_the_threshold_boundary_follows_the_constant(self):
+        # Derive the dates from the constant rather than hard-coding them, so tuning
+        # the notice period cannot leave the boundary silently untested.
+        entity = self.build_calendar(2026, code="RWEDGE")
+        end = datetime.date(2026, 12, 31)
+
+        on_threshold = fiscal_calendar_runway(
+            entity, today=end - datetime.timedelta(days=FISCAL_RUNWAY_WARNING_DAYS),
+        )
+        self.assertEqual(on_threshold["status"], "EXPIRING")
+
+        day_before = fiscal_calendar_runway(
+            entity, today=end - datetime.timedelta(days=FISCAL_RUNWAY_WARNING_DAYS + 1),
+        )
+        self.assertEqual(day_before["status"], "HEALTHY")
+
+        # The last postable day itself is still EXPIRING, not EXPIRED: today's
+        # documents post, tomorrow's do not.
+        last_day = fiscal_calendar_runway(entity, today=end)
+        self.assertEqual(last_day["status"], "EXPIRING")
+        self.assertEqual(last_day["days_remaining"], 0)
+
+    # Verify a lapsed calendar reports expired behavior.
+    def test_a_lapsed_calendar_reports_expired(self):
+        entity = self.build_calendar(2026, code="RWOUT")
+        runway = fiscal_calendar_runway(entity, today=datetime.date(2027, 1, 5))
+
+        self.assertEqual(runway["status"], "EXPIRED")
+        self.assertTrue(runway["should_warn"])
+        self.assertEqual(runway["days_remaining"], -5)  # Signed, so screens can say "5 days ago".
+
+        # And the guard agrees: nothing posts on a date past the calendar's end.
+        self.assertIsNone(resolve_period(entity, datetime.date(2027, 1, 5)))
+        with self.assertRaises(PeriodClosedError):
+            ensure_period_open(resolve_period(entity, datetime.date(2027, 1, 5)))
+
+    # Verify an entity with no periods reports expired behavior.
+    def test_an_entity_with_no_periods_reports_expired(self):
+        # A brand-new entity nobody gave a calendar cannot post either, so it is the
+        # same state, not an error - reading it must not raise or return None.
+        entity = self.build_calendar(None, code="RWNONE")
+        runway = fiscal_calendar_runway(entity, today=datetime.date(2026, 8, 12))
+
+        self.assertEqual(runway["status"], "EXPIRED")
+        self.assertTrue(runway["should_warn"])
+        self.assertIsNone(runway["calendar_end"])
+        self.assertIsNone(runway["days_remaining"])
+        self.assertIsNone(runway["last_period"])
+
+    # Verify a closed final period still bounds the calendar behavior.
+    def test_a_closed_final_period_still_bounds_the_calendar(self):
+        # Runway is about the calendar's extent, not any period's status: a CLOSED
+        # December still ends the year, and creating the next year is the only fix
+        # either way. (Whether today can post is posting_window's question.)
+        entity = self.build_calendar(2026, code="RWSHUT", status=PeriodStatus.CLOSED)
+        runway = fiscal_calendar_runway(entity, today=datetime.date(2026, 8, 12))
+
+        self.assertEqual(runway["calendar_end"], datetime.date(2026, 12, 31))
+        self.assertEqual(runway["status"], "HEALTHY")
+        self.assertEqual(runway["last_period"]["name"], "P12 2026")
+
+    # Verify the runway is read per entity behavior.
+    def test_the_runway_is_read_per_entity(self):
+        # Entities keep their own calendars, so one tenant's healthy runway must
+        # never mask another's expiry.
+        near = self.build_calendar(2026, code="RWNEAR")
+        far = self.build_calendar(2027, code="RWFAR")
+        today = datetime.date(2026, 12, 1)
+
+        self.assertEqual(fiscal_calendar_runway(near, today=today)["status"], "EXPIRING")
+        self.assertEqual(fiscal_calendar_runway(far, today=today)["status"], "HEALTHY")
+
+
+# Group tests for Period Closed Message Tests.
+class PeriodClosedMessageTests(TestCase):
+    """The 409 an operator meets must name a fix that exists.
+
+    "Choose another date" is impossible advice when the cause is that nobody created
+    next year's calendar, because then no date works. The missing-period message has
+    to point at creating the fiscal year; the closed/locked message was already
+    correct and must not drift.
+    """
+
+    # Verify the missing period message points at the fiscal calendar behavior.
+    def test_the_missing_period_message_points_at_the_fiscal_calendar(self):
+        with self.assertRaises(PeriodClosedError) as caught:
+            ensure_period_open(None)
+
+        message = str(caught.exception)
+        self.assertIn("No fiscal period covers this date", message)
+        self.assertIn("create the next fiscal year", message)
+        self.assertNotIn("Choose a date within an open fiscal period", message)
+        self.assertEqual(caught.exception.status, "missing")
+
+    # Verify the closed period message is unchanged behavior.
+    def test_the_closed_period_message_is_unchanged(self):
+        closed = FiscalPeriod(
+            name="Jan 2026", start_date=datetime.date(2026, 1, 1),
+            end_date=datetime.date(2026, 1, 31), status=PeriodStatus.CLOSED,
+        )
+        with self.assertRaisesMessage(
+            PeriodClosedError,
+            "Cannot post into period 'Jan 2026 [CLOSED]': it is 'CLOSED'. "
+            "Re-open the period or post into the current open period.",
+        ):
+            ensure_period_open(closed)
 
 
 # Group tests for Posting Window Endpoint Tests.
@@ -6133,8 +6305,16 @@ class FinanceDashboardTests(_ARFixtureMixin, TestCase):
         for key in (
             "kpis", "revenue_vs_budget", "ar_aging", "trend", "top_overdue",
             "vendor_due", "approvals", "close_progress", "recent_journals",
+            "fiscal_runway",
         ):
             self.assertIn(key, d)
+
+        # The fiscal-runway block reads the entity's real calendar end, and is read
+        # as of today even on a dashboard pinned to a past period - "can this entity
+        # still post?" is a question about now.
+        self.assertEqual(d["fiscal_runway"]["calendar_end"], period.end_date.isoformat())
+        self.assertIn(d["fiscal_runway"]["status"], {"HEALTHY", "EXPIRING", "EXPIRED"})
+        self.assertEqual(pinned["fiscal_runway"], d["fiscal_runway"])
 
         # KPI envelope shape.
         for kpi in d["kpis"].values():
