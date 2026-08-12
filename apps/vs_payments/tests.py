@@ -2103,3 +2103,288 @@ class UnattributedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(event.status, "IGNORED")
         self.assertIsNone(event.collection_id)
         self.assertFalse(Payment.objects.filter(entity=entity).exists())
+
+
+class UnbookedReceiptAlertTests(_PaymentsFixtureMixin, TestCase):
+    """A screen is somewhere you look; an alert is something that tells you.
+
+    Failed bookings were already recorded and shown, but nothing announced them, so a
+    payment that failed on a Friday sat unnoticed all weekend. These pin the two
+    alarms: a standing daily digest per entity, and an incident alarm for platform
+    staff when several fail inside one window.
+    """
+
+    def setUp(self):
+        from django.core.management import call_command
+
+        call_command("seed_actions", verbosity=0)
+        call_command("seed_payments_permissions", verbosity=0)
+        call_command("seed_notification_event_types", verbosity=0)
+
+    def _unbooked(self, entity, customer, *, count=1, status="FAILED", error="",
+                  amount=50000):
+        """Create ``count`` webhook events that failed to book, attributed to ``entity``."""
+        from vs_payments.models import CollectionIntent, WebhookEvent
+
+        made = []
+        for _ in range(count):
+            # A CollectionIntent reference is unique platform-wide, so the counter has
+            # to advance across calls within one test, not just within one loop.
+            self._seq = getattr(self, "_seq", 0) + 1
+            intent = CollectionIntent.objects.create(
+                entity=entity, customer=customer, provider="FAKE",
+                reference=f"UNBOOKED-{self._seq}",
+                amount=amount, status=CollectionStatus.PROCESSING,
+            )
+            made.append(WebhookEvent.objects.create(
+                provider="FAKE", event_type="charge.success",
+                dedupe_key=f"DK-{intent.reference}", verified=True,
+                status=status, collection=intent,
+                error=error or "Cannot post into period 'Aug 2026': it is 'CLOSED'.",
+            ))
+        return made
+
+    # --- the daily digest ---------------------------------------------------- #
+
+    def test_a_clean_day_says_nothing(self):
+        """Silence is the correct output when nothing is outstanding."""
+        from vs_payments.alerts import unbooked_digest
+
+        self.build()
+        self.assertEqual(unbooked_digest(),
+                         {"entities": 0, "events": 0, "notified": 0})
+
+    def test_outstanding_events_are_reported_once_per_entity(self):
+        """One message for three failures, not three messages."""
+        from unittest.mock import patch
+
+        from vs_payments.alerts import unbooked_digest
+
+        entity, customer, _vendor = self.build()
+        self._unbooked(entity, customer, count=3)
+
+        with patch("vs_payments.alerts._notify", return_value=["n1"]) as notify:
+            summary = unbooked_digest()
+
+        self.assertEqual(summary["entities"], 1)
+        self.assertEqual(summary["events"], 3)
+        self.assertEqual(notify.call_count, 1)  # per entity, never per event
+
+    def test_the_message_names_the_money_and_the_reason(self):
+        """"3 payments, no fiscal period open" is actionable; "3 failures" is not."""
+        from unittest.mock import patch
+
+        from vs_payments.alerts import unbooked_digest
+
+        entity, customer, _vendor = self.build()
+        self._unbooked(entity, customer, count=2, amount=50000)
+
+        with patch("vs_payments.alerts._notify", return_value=[]) as notify:
+            unbooked_digest()
+
+        context = notify.call_args.kwargs["context"]
+        self.assertEqual(context["count"], 2)
+        self.assertEqual(context["total_amount"], 100000)
+        self.assertIn("CLOSED", context["reason"])
+        self.assertEqual(context["entity_code"], entity.code)
+
+    def test_a_booked_event_is_not_reported(self):
+        from unittest.mock import patch
+
+        from vs_payments.alerts import unbooked_digest
+
+        entity, customer, _vendor = self.build()
+        self._unbooked(entity, customer, status="PROCESSED")
+
+        with patch("vs_payments.alerts._notify", return_value=[]) as notify:
+            self.assertEqual(unbooked_digest()["events"], 0)
+        notify.assert_not_called()
+
+    def test_one_bad_entity_does_not_abort_the_sweep(self):
+        """A sweep that dies on the first tenant is worse than no sweep."""
+        from unittest.mock import patch
+
+        from vs_finance.models import LedgerEntity
+        from vs_payments.alerts import unbooked_digest
+
+        entity, customer, _vendor = self.build()
+        self._unbooked(entity, customer)
+        other = LedgerEntity.objects.create(
+            name="Second Books", code="SECOND", kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant)
+        seed_chart_of_accounts(other)
+        second_customer = Customer.objects.create(
+            entity=other, code="CUST2", name="Beta Ltd",
+            receivable_account=Account.objects.get(entity=other, code="1200"))
+        self._unbooked(other, second_customer)
+
+        with patch("vs_payments.alerts._notify", side_effect=[RuntimeError("boom"), ["ok"]]):
+            summary = unbooked_digest()
+
+        self.assertEqual(summary["entities"], 2)  # both were attempted
+
+    # --- the surge alarm ------------------------------------------------------ #
+
+    def test_a_single_failure_is_not_a_surge(self):
+        """One bad payment is not an incident; the digest will carry it tomorrow."""
+        from vs_payments.alerts import unbooked_surge
+
+        entity, customer, _vendor = self.build()
+        self._unbooked(entity, customer, count=1)
+        self.assertFalse(unbooked_surge()["alarmed"])
+
+    def test_several_failures_in_one_window_alarm_the_platform(self):
+        from unittest.mock import patch
+
+        from vs_payments.alerts import unbooked_surge
+
+        entity, customer, _vendor = self.build()
+        self._unbooked(entity, customer, count=3)
+
+        with patch("vs_payments.alerts._notify", return_value=["n1"]) as notify:
+            summary = unbooked_surge()
+
+        self.assertTrue(summary["alarmed"])
+        self.assertEqual(summary["failures"], 3)
+        context = notify.call_args.kwargs["context"]
+        self.assertIn("CLOSED", context["reason"])
+        self.assertIn(entity.code, context["entities"])
+
+    def test_failures_outside_the_window_do_not_alarm(self):
+        """Windowed on purpose: a resolved outage goes quiet by itself."""
+        import datetime
+
+        from django.utils import timezone
+
+        from vs_payments.alerts import unbooked_surge
+        from vs_payments.models import WebhookEvent
+
+        entity, customer, _vendor = self.build()
+        events = self._unbooked(entity, customer, count=5)
+        stale = timezone.now() - datetime.timedelta(hours=4)
+        WebhookEvent.objects.filter(pk__in=[e.pk for e in events]).update(created_at=stale)
+
+        self.assertFalse(unbooked_surge()["alarmed"])
+
+    def test_unattributable_failures_still_alarm(self):
+        """These are the ones no entity-scoped screen shows, so they matter most."""
+        from unittest.mock import patch
+
+        from vs_payments.alerts import unbooked_surge
+        from vs_payments.models import WebhookEvent
+
+        self.build()
+        for i in range(3):
+            WebhookEvent.objects.create(
+                provider="FAKE", event_type="charge.success",
+                dedupe_key=f"ORPHAN-{i}", verified=True, status="IGNORED",
+                error="No matching collection intent.",
+            )
+        with patch("vs_payments.alerts._notify", return_value=["n1"]) as notify:
+            summary = unbooked_surge()
+
+        self.assertTrue(summary["alarmed"])
+        self.assertIn("unattributed", notify.call_args.kwargs["context"]["entities"])
+
+    def test_a_delivery_failure_never_breaks_the_alarm(self):
+        """An alarm that crashes its own task is the opposite of an alarm."""
+        from unittest.mock import patch
+
+        from vs_payments.alerts import unbooked_digest
+
+        entity, customer, _vendor = self.build()
+        self._unbooked(entity, customer)
+
+        with patch("vs_notifications.notify.send_notification",
+                   side_effect=RuntimeError("smtp down")):
+            summary = unbooked_digest()  # must not raise
+
+        self.assertEqual(summary["events"], 1)
+        self.assertEqual(summary["notified"], 0)
+
+    def _permission_holder(self, entity, permission_key):
+        """A user who genuinely holds ``permission_key`` in this entity's tenant.
+
+        Built through the RBAC tables rather than a super-admin shortcut, because
+        the point of the assertion is that the alert reaches the people the platform
+        considers able to act, and a bypass would prove nothing about that.
+        """
+        from django.contrib.auth import get_user_model
+        from vs_rbac.models import (
+            Permission, TenantRolePermission, TenantRoleTemplate,
+            TenantUserRoleAssignment,
+        )
+
+        user = get_user_model().objects.create_user(
+            email=f"holder-{permission_key}@test.com", password="pw",
+            tenant=entity.tenant, user_type="CX_STAFF", status="ACTIVE",
+            first_name="Alert", last_name="Holder",
+        )
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=entity.tenant, key="alert-holder",
+            defaults={"name": "Alert Holder", "status": "ACTIVE"},
+        )
+        TenantRolePermission.objects.get_or_create(
+            role=role, permission=Permission.objects.get(key=permission_key),
+            defaults={"granted": True},
+        )
+        TenantUserRoleAssignment.objects.create(
+            tenant=entity.tenant, user=user, role=role, assignment_status="ACTIVE")
+        return user
+
+    def test_both_alarms_have_templates_on_every_channel(self):
+        """A registered event with no template dispatches nothing, silently.
+
+        This is not hypothetical: both alarms shipped registered, with recipients
+        resolving correctly, and delivered nothing at all because no default template
+        existed. The dispatcher logs "no active template - channel skipped" and
+        returns success, so the only symptom is silence, which is indistinguishable
+        from the good case an alarm is supposed to detect.
+        """
+        from django.core.management import call_command
+
+        from vs_notifications.models import NotificationEventType, NotificationTemplate
+
+        call_command("seed_notification_templates", verbosity=0)
+        for key in ("payments.unbooked_receipts_digest",
+                    "payments.unbooked_receipts_surge"):
+            event_type = NotificationEventType.objects.get(key=key)
+            for channel in event_type.supported_channels:
+                self.assertTrue(
+                    NotificationTemplate.objects.filter(
+                        event_type=event_type, channel=channel).exists(),
+                    f"{key} has no {channel} template, so it would deliver nothing.",
+                )
+
+    def test_the_digest_actually_delivers(self):
+        """End to end through the real notification stack, not a mock.
+
+        The mocked tests above prove the sweep's arithmetic; this proves the alarm
+        reaches a person. Without it, every template, recipient and registry mistake
+        looks exactly like a quiet day.
+        """
+        from django.core.management import call_command
+
+        from vs_notifications.models import Notification
+
+        call_command("seed_notification_templates", verbosity=0)
+        entity, customer, _vendor = self.build()
+        recipient = self._permission_holder(entity, "payments.webhook.view")
+        self._unbooked(entity, customer, count=2, amount=25000)
+
+        from vs_payments.alerts import unbooked_digest
+        summary = unbooked_digest()
+
+        self.assertEqual(summary["events"], 2)
+        delivered = Notification.objects.filter(
+            event_type__key="payments.unbooked_receipts_digest")
+        self.assertTrue(delivered.exists(), "the digest reached nobody")
+        self.assertEqual({n.recipient_id for n in delivered}, {recipient.pk})
+        in_app = delivered.get(channel="in_app").body
+        email = delivered.get(channel="email").body
+        self.assertIn("2 gateway payment", in_app)
+        self.assertIn("Payments affected: 2", email)
+        self.assertIn("₦500.00", in_app)  # 2 x 25,000 kobo
+        for body in (in_app, email):
+            # format_naira already carries the symbol; a literal one doubles it.
+            self.assertNotIn("₦₦", body)

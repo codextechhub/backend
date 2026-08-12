@@ -966,6 +966,55 @@ def _build_default_templates() -> dict:
             ),
         },
 
+        # ── payments.unbooked_receipts_digest ───────────────────────────────
+        # Operational, not customer-facing: the reader is whoever can replay the
+        # event, so the message leads with the money and names the likely cause.
+        ("payments.unbooked_receipts_digest", C.IN_APP): {
+            "subject": "",
+            "body": (
+                "{{ count }} gateway payment(s) totalling at least "
+                "{{ total_amount_naira }} have not reached the books for "
+                "{{ entity_code }}. Oldest: {{ oldest }}. {{ reason }}"
+            ),
+        },
+        ("payments.unbooked_receipts_digest", C.EMAIL): {
+            "subject": "Unbooked gateway payments - {{ entity_name }}",
+            "body": (
+                "Money has arrived at the payment provider that is not in the "
+                "books.\n\n"
+                "Entity: {{ entity_name }} ({{ entity_code }})\n"
+                "Payments affected: {{ count }}\n"
+                "Value: at least {{ total_amount_naira }}\n"
+                "Oldest outstanding: {{ oldest }}\n"
+                "Most common reason: {{ reason }}\n\n"
+                "Open Finance > Payments > Needs Attention to review and retry "
+                "them. This message repeats daily while any remain.\n"
+            ),
+        },
+
+        # ── payments.unbooked_receipts_surge ────────────────────────────────
+        # Several failures in one window is a systemic cause, not one bad payment.
+        ("payments.unbooked_receipts_surge", C.IN_APP): {
+            "subject": "",
+            "body": (
+                "{{ count }} gateway payment(s) failed to book in the last "
+                "{{ window_minutes }} minutes. {{ reason }}"
+            ),
+        },
+        ("payments.unbooked_receipts_surge", C.EMAIL): {
+            "subject": "Gateway bookings are failing",
+            "body": (
+                "{{ count }} payment(s) failed to book in the last "
+                "{{ window_minutes }} minutes, which points at a systemic cause "
+                "rather than one bad payment.\n\n"
+                "Value: at least {{ total_amount_naira }}\n"
+                "Affected: {{ entities }}\n"
+                "Most common reason: {{ reason }}\n\n"
+                "A closed fiscal period is the usual cause. Check that the "
+                "affected entities have an open period covering today.\n"
+            ),
+        },
+
         # ── billing.invoice_overdue ─────────────────────────────────────────
         ("billing.invoice_overdue", C.IN_APP): {
             "subject": "",

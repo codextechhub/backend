@@ -50,6 +50,22 @@ app.conf.beat_schedule = {
         "schedule": crontab(hour=6, minute=0),
     },
 
+    # --- vs_payments (unbooked gateway money) -----------------------------
+    # A booking that fails is already recorded and shown on Needs Attention, but a
+    # screen is somewhere you look, not something that tells you. These two do the
+    # telling. Both are stateless: the digest reports whatever is outstanding now,
+    # and the surge counts only its own window, so a missed run costs a late notice
+    # and nothing else.
+    "payments-unbooked-digest": {
+        "task": "vs_payments.alert_unbooked_receipts",
+        "schedule": crontab(hour=7, minute=0),
+    },
+    # Hourly, matching the window the alarm looks back over.
+    "payments-unbooked-surge": {
+        "task": "vs_payments.alert_unbooked_surge",
+        "schedule": crontab(minute=5),
+    },
+
     # --- vs_exports (Export Centre) --------------------------------------
     # Nightly: hard-delete storage for produced files past their 30-day
     # availability and mark them purged. Availability itself is derived at read

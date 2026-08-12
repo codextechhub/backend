@@ -404,6 +404,35 @@ EVENT_TYPE_REGISTRY = [
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
     },
+    # Payment gateway operations (vs_payments). Money has already moved at the
+    # provider by the time either of these fires, so they are operational alarms
+    # rather than customer messages: the audience is whoever can replay the event.
+    {
+        "key": "payments.unbooked_receipts_digest",
+        "label": "Unbooked gateway receipts",
+        "description": (
+            "Daily summary of provider events that could not be booked, so money "
+            "sitting outside the books is noticed rather than waiting to be found."
+        ),
+        "source_module": "vs_payments",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
+        "key": "payments.unbooked_receipts_surge",
+        "label": "Gateway bookings failing",
+        "description": (
+            "Fires when several provider events fail to book inside one window, "
+            "which points at a systemic cause rather than one bad payment."
+        ),
+        "source_module": "vs_payments",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+        # A surge means bookings are broken right now. Someone muting the daily
+        # digest should still hear about that, so it must not be silenceable.
+        "is_transactional": True,
+    },
+
     {
         "key": "billing.refund_processed",
         "label": "Refund processed",
