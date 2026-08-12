@@ -40,8 +40,6 @@ NEVER_GRANTED_BY_DEFAULT = frozenset({
 # (resource_name, resource_label, [(action, sensitivity), ...])
 PROCUREMENT_RESOURCES = [
     ("approval",       "spend approvals",       [("approve", "SENSITIVE"), ("approve_senior", "CRITICAL"), ("manage", "SENSITIVE"),
-                                                 # Break-glass: release a parked approval nobody can decide.
-                                                 # Registered here, granted to nobody - see NEVER_GRANTED_BY_DEFAULT.
                                                  ("override", "CRITICAL")]),
     ("settings",       "procurement settings",  [("view", "NORMAL"), ("update", "SENSITIVE")]),
     ("competition",    "competitive bidding policy", [("override", "CRITICAL")]),
@@ -59,13 +57,13 @@ PROCUREMENT_RESOURCES = [
     ("stock",          "stock items",           [("view", "NORMAL"), ("manage", "SENSITIVE"), ("issue", "SENSITIVE"), ("adjust", "SENSITIVE")]),
     ("vendor",         "vendors",               [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"),
                                                  ("manage", "SENSITIVE"), ("view_sensitive", "SENSITIVE")]),
-    # Viewing assessments rides procurement.report.view; only recording one needs this key.
     ("vendor_assessment", "vendor assessments",  [("create", "SENSITIVE")]),
     ("vendor_invoice", "vendor invoices",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("submit", "SENSITIVE"),
                                                  ("match", "SENSITIVE"), ("post", "CRITICAL"), ("override_variance", "CRITICAL")]),
     ("vendor_payment", "vendor payments",       [("view", "NORMAL"), ("create", "CRITICAL"), ("update", "CRITICAL"),
                                                  ("submit", "CRITICAL"), ("post", "CRITICAL"), ("cancel", "CRITICAL"),
-                                                 ("reverse", "CRITICAL")]),
+                                                 ("reverse", "CRITICAL"),
+                                                 ("allocate", "SENSITIVE")]),
 ]
 
 

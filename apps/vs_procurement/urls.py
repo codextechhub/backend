@@ -111,6 +111,8 @@ urlpatterns = [
     path("vendor-payments/<int:pk>/", views.VendorPaymentDetailView.as_view(), name="proc-vendor-payment-detail"),
     path("vendor-payments/<int:pk>/submit/", views.VendorPaymentSubmitView.as_view(), name="proc-vendor-payment-submit"),
     path("vendor-payments/<int:pk>/post/", views.VendorPaymentPostView.as_view(), name="proc-vendor-payment-post"),
+    path("vendor-payments/<int:pk>/allocate/", views.VendorPaymentAllocateAdvanceView.as_view(),
+         name="proc-vendor-payment-allocate"),
     path("vendor-payments/<int:pk>/cancel/", views.VendorPaymentCancelView.as_view(), name="proc-vendor-payment-cancel"),
     path("vendor-payments/<int:pk>/reverse/", views.VendorPaymentReverseView.as_view(), name="proc-vendor-payment-reverse"),
 

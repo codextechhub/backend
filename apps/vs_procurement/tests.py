@@ -11472,3 +11472,154 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
                     ).status_code,
                     403,
                 )
+
+
+class VendorAdvanceDrawdownEndpointTests(_P2PFixtureMixin, TestCase):
+    """An advance needs a door, not just a home.
+
+    Posting a payment ahead of its bill parks the money in the vendor-advance asset,
+    and ``allocate_vendor_payment`` will draw it down - but until this endpoint
+    existed that service had no caller outside the posting path, so nothing in the
+    product could apply an advance once it was sitting there. The AP mirror of
+    ``/finance/payments/<id>/allocate/``.
+    """
+
+    def _client(self, entity, email="advance-drawdown@test.com"):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        user = get_user_model().objects.create_user(
+            email=email, password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="AP", last_name="Tester",
+        )
+        return TenantAPIClient(user=user)
+
+    def _advance(self, entity, vendor, *, amount=1_000_000,
+                 date=datetime.date(2026, 1, 5)):
+        """A posted payment with no bill to settle, so all of it sits in 1240."""
+        payment = VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=date,
+            gross_amount=amount, payment_account=self.acc(entity, "1100"),
+            approval_state=ProcApprovalState.APPROVED,
+        )
+        post_vendor_payment(payment)
+        payment.refresh_from_db()
+        self.assertEqual(payment.advance_remaining, amount)  # nothing to settle yet
+        return payment
+
+    def _bill(self, entity, vendor, *, total=600_000, date=datetime.date(2026, 1, 20)):
+        invoice = self.make_bill(entity, vendor, [("5300", 1, total, None, None)], date=date)
+        post_vendor_invoice(invoice)
+        invoice.refresh_from_db()
+        return invoice
+
+    def _url(self, entity, payment):
+        return f"/v1/procurement/vendor-payments/{payment.pk}/allocate/?entity={entity.code}"
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_an_advance_can_be_applied_to_a_bill_raised_later(self, _permission):
+        """The whole point: money paid ahead now reaches the bill it was paid for."""
+        entity, _, vendor, _, _ = self.build_p2p()
+        payment = self._advance(entity, vendor)
+        invoice = self._bill(entity, vendor, total=600_000)
+
+        resp = self._client(entity).post(
+            self._url(entity, payment),
+            {"allocations": [{"vendor_invoice": invoice.pk, "amount": 600_000}]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        invoice.refresh_from_db()
+        payment.refresh_from_db()
+        self.assertEqual(invoice.balance_due, 0)
+        self.assertEqual(payment.advance_remaining, 400_000)  # the rest stays an advance
+        self.assertIn("Applied", resp.json()["message"])
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_auto_allocation_settles_the_open_bills(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        payment = self._advance(entity, vendor)
+        invoice = self._bill(entity, vendor, total=600_000)
+
+        resp = self._client(entity).post(
+            self._url(entity, payment), {"auto_allocate": True}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.balance_due, 0)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_with_no_open_bill_it_says_so_and_changes_nothing(self, _permission):
+        """An advance with nowhere to go is an ordinary state, not an error."""
+        entity, _, vendor, _, _ = self.build_p2p()
+        payment = self._advance(entity, vendor)
+
+        resp = self._client(entity).post(
+            self._url(entity, payment), {"auto_allocate": True}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIn("No open bill", resp.json()["message"])
+        payment.refresh_from_db()
+        self.assertEqual(payment.advance_remaining, 1_000_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_another_vendors_bill_is_refused(self, _permission):
+        """The bill is resolved against this entity AND this vendor, server-side."""
+        entity, _, vendor, _, _ = self.build_p2p()
+        other = Vendor.objects.create(
+            entity=entity, code="SUPP-OTHER", name="Other Supplier",
+            payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"),
+        )
+        payment = self._advance(entity, vendor)
+        foreign = self._bill(entity, other, total=100_000)
+
+        resp = self._client(entity).post(
+            self._url(entity, payment),
+            {"allocations": [{"vendor_invoice": foreign.pk, "amount": 100_000}]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        foreign.refresh_from_db()
+        self.assertEqual(foreign.balance_due, 100_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_a_draft_payment_holds_no_advance(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        draft = VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 5),
+            gross_amount=500_000, payment_account=self.acc(entity, "1100"),
+        )
+        resp = self._client(entity).post(
+            self._url(entity, draft), {"auto_allocate": True}, format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_a_fully_settled_payment_has_nothing_left_to_apply(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self._bill(entity, vendor, total=500_000, date=datetime.date(2026, 1, 1))
+        payment = VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 5),
+            gross_amount=500_000, payment_account=self.acc(entity, "1100"),
+            approval_state=ProcApprovalState.APPROVED,
+        )
+        post_vendor_payment(payment, allocations=[(invoice, 500_000)])
+        payment.refresh_from_db()
+
+        resp = self._client(entity).post(
+            self._url(entity, payment), {"auto_allocate": True}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("no advance left", str(resp.content).lower())
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_a_body_asking_for_nothing_is_refused(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        payment = self._advance(entity, vendor)
+        resp = self._client(entity).post(self._url(entity, payment), {}, format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=False)
+    def test_drawdown_requires_the_permission(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        payment = self._advance(entity, vendor)
+        resp = self._client(entity).post(
+            self._url(entity, payment), {"auto_allocate": True}, format="json")
+        self.assertEqual(resp.status_code, 403)

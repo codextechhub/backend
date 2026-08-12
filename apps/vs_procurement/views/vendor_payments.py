@@ -357,6 +357,74 @@ class VendorPaymentPostView(_ProcBase):
         )
 
 
+class VendorPaymentAllocateAdvanceView(_ProcBase):
+    """POST /procurement/vendor-payments/<id>/allocate/ - draw a vendor advance down.
+
+    Money paid to a supplier before their bill existed sits in the vendor-advance
+    asset (1240). This applies it to bills that have since been raised, reclassifying
+    it into AP (``Dr AP, Cr vendor advances``) and settling them. No cash moves; the
+    disbursement already happened.
+
+    Body ``{allocations:[{vendor_invoice, amount}]}`` for an explicit split, or
+    ``{auto_allocate:true}`` to settle the vendor's open bills oldest-first. Each
+    amount is capped at the bill's balance and the advance still remaining.
+
+    The AP mirror of ``/finance/payments/<id>/allocate/``. Note the deliberate
+    difference from *posting*: posting refuses to settle a bill dated after the
+    payment, because on that date the liability did not exist. Here a newer bill is
+    the whole point - the advance was paid ahead of it - so the reclassification is
+    dated at the later of the two documents instead of being refused.
+
+    docstring-name: Apply a vendor advance
+    """
+
+    rbac_permission = "procurement.vendor_payment.allocate"
+
+    @transaction.atomic
+    def post(self, request, pk):
+        """Apply the advance, then return the payment with its refreshed figures."""
+        entity = resolve_entity(request)
+        payment = _document_or_404(
+            request, _payment_queryset(entity), pk,
+            "No such vendor payment in this entity.",
+        )
+        if payment.status != DocumentStatus.POSTED:
+            raise ValidationError(
+                {"status": "Only a posted vendor payment holds an advance to apply."})
+        if payment.advance_remaining <= 0:
+            raise ValidationError(
+                {"allocations": "This payment has no advance left to apply."})
+
+        body = request.data or {}
+        raw = body.get("allocations")
+        before = payment.advance_remaining  # Report what this call did, not the total.
+        if raw:
+            # Reuse the draft-plan validator: it resolves each bill against this
+            # entity AND this vendor server-side, so a swapped id cannot reach
+            # another tenant's liability.
+            plan = _allocation_plan(entity, payment.vendor, raw)
+            payables.allocate_vendor_payment(
+                payment, allocations=plan, actor_user=request.user, strict=True)
+        elif body.get("auto_allocate"):
+            payables.allocate_vendor_payment(payment, actor_user=request.user)
+        else:
+            raise ValidationError(
+                {"allocations": "Provide allocations or auto_allocate=true."})
+
+        payment.refresh_from_db()
+        applied = before - payment.advance_remaining
+        message = (
+            f"Applied {format_naira(applied)} of {payment.document_number} to open bills."
+            if applied > 0
+            # Auto-allocation finding nothing eligible is a real outcome, not an error:
+            # the advance is intact and the vendor simply has no open bill yet.
+            else f"No open bill could take {payment.document_number}'s advance."
+        )
+        return success_response(
+            message, data=_serialize_detail(_payment_queryset(entity).get(pk=pk)),
+        )
+
+
 class VendorPaymentCancelView(_ProcBase):
     """Cancel only a non-pending draft; posted history is never deleted here."""
     rbac_permission = "procurement.vendor_payment.cancel"
