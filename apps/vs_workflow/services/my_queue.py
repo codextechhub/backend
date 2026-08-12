@@ -18,19 +18,22 @@ from __future__ import annotations
 from vs_workflow.models import WorkflowStageAction, WorkflowStageApprover
 
 
-def pending_approval_snapshots(user, school=None) -> list[WorkflowStageApprover]:
+def pending_approval_snapshots(user, tenant=None) -> list[WorkflowStageApprover]:
     """Approver snapshots *user* can still act on, newest activation first.
 
     Starts from snapshots rather than instances so delegated approvals - where
-    the actor is not the original approver - are included.
+    the actor is not the original approver - are included. Rows are already
+    limited to snapshots naming *user*, so ``tenant`` narrows a multi-tenant
+    account to the tenant it is currently acting in rather than being the
+    isolation boundary.
     """
     snaps_qs = WorkflowStageApprover.objects.filter(
         user=user,
         stage_instance__status="ACTIVE",
         stage_instance__instance__status="IN_PROGRESS",
     )
-    if school is not None:
-        snaps_qs = snaps_qs.filter(stage_instance__instance__tenant=school.tenant)
+    if tenant is not None:
+        snaps_qs = snaps_qs.filter(stage_instance__instance__tenant=tenant)
 
     snaps = snaps_qs.select_related(
         "stage_instance__instance__template", "stage_instance__stage",
@@ -49,7 +52,7 @@ def pending_approval_snapshots(user, school=None) -> list[WorkflowStageApprover]
     ]
 
 
-def pending_approval_count(user, school=None) -> int:
+def pending_approval_count(user, tenant=None) -> int:
     """How many decisions are waiting on *user*.
 
     Deliberately materialises the same list as the screen instead of issuing a
@@ -57,4 +60,4 @@ def pending_approval_count(user, school=None) -> int:
     expressed in the snapshot query, so a count that skipped them would report
     work the user cannot actually action.
     """
-    return len(pending_approval_snapshots(user, school))
+    return len(pending_approval_snapshots(user, tenant))

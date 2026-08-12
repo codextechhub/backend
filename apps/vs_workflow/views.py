@@ -45,24 +45,36 @@ from vs_workflow.services.approvers import (
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-# Apply school scope only when the request has one.
-def _filter_by_school(qs, school):
-    if school is not None:
-        return qs.filter(tenant=school.tenant)
-    return qs
-
-
 # Apply branch scope only when the user is branch-scoped.
 def _filter_by_branch(qs, branch):
+    """Narrow to what a branch-scoped user may see: their own branch's rows
+    plus the tenant-wide ones.
+
+    Branch-pinned rows are an override of the tenant-wide default, not a
+    replacement for it (see WorkflowTemplate.branch), so an exact-match filter
+    left branch users with an empty list whenever the tenant published at
+    tenant level - which is the normal case.
+    """
     if branch is not None:
-        return qs.filter(branch=branch)
+        return qs.filter(Q(branch=branch) | Q(branch__isnull=True))
     return qs
 
 
-# Resolve school/branch context once for all workflow views.
-class SchoolScopedMixin:
-    def get_school(self):
-        return getattr(self.request, "_cached_school", None)
+# Resolve tenant/branch context once for all workflow views.
+class TenantScopedMixin:
+    """Single source of truth for "which tenant is this request about".
+
+    ``request.tenant`` is resolved by TenantJWTAuthentication from the asserted
+    ``?tenant=`` and is always present on an authenticated request. This
+    replaces an earlier ``get_school()`` that read ``request._cached_school`` -
+    an attribute nothing in the codebase ever set, so every scope check built
+    on it silently passed. Models whose default manager is tenant-aware were
+    still scoped by the ambient context; models without one (stage instances,
+    stage actions) were not scoped at all.
+    """
+
+    def get_tenant(self):
+        return getattr(self.request, "tenant", None)
 
     def get_branch(self):
         return getattr(self.request.user, "branch", None)
@@ -71,7 +83,7 @@ class SchoolScopedMixin:
 # ── Templates ────────────────────────────────────────────────────────────────
 
 class WorkflowTemplateViewSet(
-    SchoolScopedMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, GenericViewSet,
+    TenantScopedMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, GenericViewSet,
 ):
     """docstring-name: Workflow templates"""
     serializer_class = WorkflowTemplateReadSerializer
@@ -82,10 +94,15 @@ class WorkflowTemplateViewSet(
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
-        # Templates are explicitly scoped; global manager context is not trusted here.
-        qs = _filter_by_school(WorkflowTemplate.objects.all(), self.get_school())
+        # Explicitly scoped rather than relying on the tenant-aware manager's
+        # ambient context. Global (tenant-less) templates stay visible, which is
+        # what include_global on the manager means.
+        qs = WorkflowTemplate.all_objects.filter(
+            Q(tenant=self.get_tenant()) | Q(tenant__isnull=True))
         qs = _filter_by_branch(qs, self.get_branch())
-        return qs.prefetch_related("stages", "routes")
+        # Explicit ordering: the model has none, and paginating an unordered
+        # queryset returns rows in an undefined order across pages.
+        return qs.prefetch_related("stages", "routes").order_by("document_type", "code")
 
     @action(detail=False, methods=["post"], url_path="preview-approvers")
     def preview_approvers(self, request):
@@ -191,7 +208,7 @@ class WorkflowTemplateViewSet(
 # ── Instances ────────────────────────────────────────────────────────────────
 
 class WorkflowInstanceViewSet(
-    SchoolScopedMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, GenericViewSet,
+    TenantScopedMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, GenericViewSet,
 ):
     """docstring-name: Workflow instances"""
     def get_permissions(self):
@@ -211,7 +228,7 @@ class WorkflowInstanceViewSet(
 
     def get_queryset(self):
         # Instance lists are tenant-scoped before any user-supplied filters apply.
-        qs = (_filter_by_school(WorkflowInstance.objects.all(), self.get_school())
+        qs = (WorkflowInstance.all_objects.filter(tenant=self.get_tenant())
               .select_related("template", "current_stage")
               .prefetch_related("stage_instances__stage", "stage_instances__actions",
                                 "stage_instances__eligible_approvers", "audit_logs")
@@ -273,7 +290,7 @@ class WorkflowInstanceViewSet(
         return Response(WorkflowInstanceDetailSerializer(instance).data)
 
 
-class ReverseActionView(SchoolScopedMixin, APIView):
+class ReverseActionView(TenantScopedMixin, APIView):
     """docstring-name: Reverse an approval action"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = PERM_ACTION_REVERSE
@@ -286,9 +303,12 @@ class ReverseActionView(SchoolScopedMixin, APIView):
                 "stage_instance__instance").get(pk=action_id)
         except WorkflowStageAction.DoesNotExist:
             raise NotFound("Action not found.")
-        school = self.get_school()
-        if school is not None and row.stage_instance.instance.school_id != school.pk:
-            # Hide cross-school action existence behind the same 404.
+        # WorkflowStageAction has no tenant column and no tenant-aware manager,
+        # so this comparison is the only thing standing between a reverse-capable
+        # admin and another tenant's approval history. It must never be
+        # conditional on a value that can be absent.
+        if row.stage_instance.instance.tenant_id != getattr(self.get_tenant(), "pk", None):
+            # Hide cross-tenant action existence behind the same 404.
             raise NotFound("Action not found.")
         reversal = actions_svc.reverse_action(action_id, request.user, p.validated_data["reason"])
         return Response({"reversal_action_id": str(reversal.id)})
@@ -296,7 +316,7 @@ class ReverseActionView(SchoolScopedMixin, APIView):
 
 # ── Dashboards ────────────────────────────────────────────────────────────────
 
-class PendingApprovalsView(SchoolScopedMixin, APIView):
+class PendingApprovalsView(TenantScopedMixin, APIView):
     """GET /workflow/dashboard/pending/ - instances where the user is eligible to act.
 
     docstring-name: My pending approvals
@@ -306,7 +326,7 @@ class PendingApprovalsView(SchoolScopedMixin, APIView):
     def get(self, request):
         # Which snapshots are actionable lives in services/my_queue so the console
         # landing screen counts this queue by exactly the rules it lists it by.
-        snaps = my_queue_svc.pending_approval_snapshots(request.user, self.get_school())
+        snaps = my_queue_svc.pending_approval_snapshots(request.user, self.get_tenant())
         results = []
         for snap in snaps:
             inst = snap.stage_instance.instance
@@ -318,7 +338,7 @@ class PendingApprovalsView(SchoolScopedMixin, APIView):
         return Response({"results": results, "count": len(results)})
 
 
-class MySubmissionsView(SchoolScopedMixin, APIView):
+class MySubmissionsView(TenantScopedMixin, APIView):
     """GET /workflow/dashboard/submitted/ - instances the user has submitted.
 
     docstring-name: My submissions
@@ -327,8 +347,8 @@ class MySubmissionsView(SchoolScopedMixin, APIView):
 
     def get(self, request):
         # Submitter dashboard is restricted to the caller's own submitted instances.
-        qs = (_filter_by_school(WorkflowInstance.objects.all(), self.get_school())
-              .filter(requested_by=request.user)
+        qs = (WorkflowInstance.all_objects
+              .filter(tenant=self.get_tenant(), requested_by=request.user)
               .select_related("template", "current_stage")
               .order_by("-updated_at", "-created_at"))
         if request.query_params.get("status"):
@@ -336,7 +356,7 @@ class MySubmissionsView(SchoolScopedMixin, APIView):
         return Response(WorkflowInstanceListSerializer(qs, many=True).data)
 
 
-class TeamLoadView(SchoolScopedMixin, APIView):
+class TeamLoadView(TenantScopedMixin, APIView):
     """GET /workflow/dashboard/team-load/ - active instance counts by stage.
 
     docstring-name: Team approval load
@@ -345,12 +365,12 @@ class TeamLoadView(SchoolScopedMixin, APIView):
     rbac_permission = PERM_INSTANCE_VIEW
 
     def get(self, request):
-        school = self.get_school()
-        # Count active stage instances by document type/stage for operational load.
-        base = WorkflowStageInstance.objects.filter(status="ACTIVE")
-        if school is not None:
-            base = base.filter(instance__tenant=school.tenant)
-        qs = (base
+        # Count active stage instances by document type/stage for operational
+        # load. WorkflowStageInstance has no tenant-aware manager, so the join
+        # to the instance's tenant is the scope - unconditionally, or the board
+        # reports every tenant's workload.
+        qs = (WorkflowStageInstance.objects
+              .filter(status="ACTIVE", instance__tenant=self.get_tenant())
               .values("instance__document_type", "stage__code", "stage__label")
               .order_by("instance__document_type", "stage__code"))
         buckets = defaultdict(lambda: {"count": 0, "stage_label": None})
@@ -367,7 +387,7 @@ class TeamLoadView(SchoolScopedMixin, APIView):
 
 # ── Approver groups ───────────────────────────────────────────────────────────
 
-class WorkflowApproverGroupViewSet(SchoolScopedMixin, ModelViewSet):
+class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
     """Named approver pools behind the Workflow Approver screen.
 
     docstring-name: Workflow approver groups
@@ -387,12 +407,8 @@ class WorkflowApproverGroupViewSet(SchoolScopedMixin, ModelViewSet):
         return super().get_serializer_context() | {"tenant": self.request.tenant}
 
     def get_queryset(self):
-        # Scope on request.tenant, which the auth layer always resolves from the
-        # asserted ?tenant=. Note _filter_by_school cannot be used as the tenant
-        # guard here: request._cached_school is never populated, so it is a
-        # no-op, and all_objects bypasses the tenant-aware manager.
         qs = (WorkflowApproverGroup.all_objects
-              .filter(tenant=self.request.tenant)
+              .filter(tenant=self.get_tenant())
               .prefetch_related("members__user", "members__role", "members__position"))
         if self.request.query_params.get("is_active") in ("true", "false"):
             qs = qs.filter(is_active=self.request.query_params["is_active"] == "true")
@@ -495,15 +511,14 @@ class WorkflowApproverGroupViewSet(SchoolScopedMixin, ModelViewSet):
 
 # ── Delegations ───────────────────────────────────────────────────────────────
 
-class ApprovalDelegationViewSet(SchoolScopedMixin, ModelViewSet):
+class ApprovalDelegationViewSet(TenantScopedMixin, ModelViewSet):
     """docstring-name: Approval delegations"""
     serializer_class = ApprovalDelegationSerializer
     permission_classes = [IsAuthenticatedAndActive]
 
     def get_queryset(self):
         user = self.request.user
-        school = self.get_school()
-        qs = _filter_by_school(ApprovalDelegation.objects.all(), school)
+        qs = ApprovalDelegation.all_objects.filter(tenant=self.get_tenant())
         if not user_has_rbac_permission(user, PERM_TEMPLATE_MANAGE, tenant=user.tenant):
             # Non-admin users can only see delegations they created or receive.
             qs = qs.filter(Q(delegator=user) | Q(delegate=user))
@@ -516,7 +531,6 @@ class ApprovalDelegationViewSet(SchoolScopedMixin, ModelViewSet):
     @action(detail=True, methods=["post"])
     def revoke(self, request, pk=None):
         delegation = self.get_object()
-        school = self.get_school()
         if (delegation.delegator_id != request.user.pk and
                 not user_has_rbac_permission(request.user, PERM_TEMPLATE_MANAGE, tenant=request.tenant)):
             return Response({

@@ -116,20 +116,20 @@ def _tasks(user) -> dict:
     }
 
 
-def _approvals(user, school) -> dict:
+def _approvals(user, tenant) -> dict:
     """Decisions waiting on the caller - shares the queue screen's own rules."""
     from vs_workflow.services import my_queue as my_queue_svc
 
-    return {"pending": my_queue_svc.pending_approval_count(user, school)}
+    return {"pending": my_queue_svc.pending_approval_count(user, tenant)}
 
 
-def _submissions(user, school) -> dict:
+def _submissions(user, tenant) -> dict:
     """The caller's own submissions that came back for changes."""
     from vs_workflow.models import WorkflowInstance
 
-    qs = WorkflowInstance.objects.filter(requested_by=user, status="RETURNED")
-    if school is not None:
-        qs = qs.filter(tenant=school.tenant)
+    qs = WorkflowInstance.all_objects.filter(requested_by=user, status="RETURNED")
+    if tenant is not None:
+        qs = qs.filter(tenant=tenant)
     return {"returned": qs.count()}
 
 
@@ -207,7 +207,6 @@ def console_overview(request) -> dict:
     """Assemble every section the caller is allowed to see."""
     user = request.user
     tenant = getattr(request, "tenant", None) or getattr(user, "tenant", None)
-    school = getattr(request, "_cached_school", None)
 
     data: dict = {}
 
@@ -224,8 +223,8 @@ def console_overview(request) -> dict:
 
     # Own queue and own submissions - no key beyond an active account, matching
     # the dashboard endpoints they replace.
-    data["approvals"] = _approvals(user, school)
-    data["submissions"] = _submissions(user, school)
+    data["approvals"] = _approvals(user, tenant)
+    data["submissions"] = _submissions(user, tenant)
     data["notifications"] = _notifications(user)
 
     from vs_tickets.services.visibility import is_support_user
