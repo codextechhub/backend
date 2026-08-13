@@ -1381,9 +1381,24 @@ class PayoutBatchApprovalTests(TestCase):
         ]
         return services.create_payout_batch(entity=self.entity, items=items, title="Run")
 
+    def _ensure_approve_role(self):
+        """Create the approving role, without giving it anybody.
+
+        ``publish_template`` refuses a stage naming a role the tenant does not
+        have, so the role must exist before any template is published. Having no
+        holders is the parked case most of these tests are about, so creating the
+        role deliberately does NOT staff it: that is ``_make_approver``'s job.
+        """
+        role, _ = self.TenantRoleTemplate.objects.get_or_create(
+            tenant=self.school.tenant, key=self.APPROVE_ROLE,
+            defaults={"name": "Payout Checker", "status": "ACTIVE"},
+        )
+        return role
+
     def _publish_template(self, *, on_rejection="RETURN_TO_REQUESTER"):
         from vs_workflow.services.templates import publish_template
 
+        self._ensure_approve_role()
         return publish_template(
             tenant=self.school.tenant, branch=None,
             document_type="payments.payout_batch", code="standard",
@@ -1402,10 +1417,7 @@ class PayoutBatchApprovalTests(TestCase):
             first_name="Apr", last_name="Over", tenant=self.school.tenant,
         )
         # The stage names this role directly, so staffing it is one assignment.
-        role, _ = self.TenantRoleTemplate.objects.get_or_create(
-            tenant=self.school.tenant, key=self.APPROVE_ROLE,
-            defaults={"name": "Payout Checker", "status": "ACTIVE"},
-        )
+        role = self._ensure_approve_role()
         self.TenantUserRoleAssignment.objects.create(
             tenant=self.school.tenant, user=user, role=role, assignment_status="ACTIVE",
         )
@@ -1504,6 +1516,7 @@ class PayoutBatchApprovalTests(TestCase):
         """Publish the real shipped ladder for this tenant."""
         from vs_payments.approvals import ensure_tenant_approval_templates
 
+        self._ensure_approve_role()  # Publishing names it; nobody is in it yet.
         template, _created = ensure_tenant_approval_templates(
             self.school.tenant, **kwargs)
         return template
@@ -1616,7 +1629,12 @@ class PayoutBatchApprovalTests(TestCase):
         )
 
     def test_a_role_stage_with_no_key_is_not_written_off(self):
-        """Misconfigured is not the same as unstaffable; let the resolver decide."""
+        """Misconfigured is not the same as unstaffable; let the resolver decide.
+
+        Both the portable key and the resolved FK have to go: ``stage_role_key``
+        prefers the key and falls back to the relation, so clearing one alone
+        still yields a key and the memo can legitimately answer "nobody".
+        """
         from vs_workflow.services.parking import ResolutionCache
 
         self._seed_tenant_ladder()
@@ -1625,7 +1643,8 @@ class PayoutBatchApprovalTests(TestCase):
         instance = self._instance_for(batch)
         stage = instance.stage_instances.filter(status="ACTIVE").get().stage
         stage.approver_role_key = ""
-        stage.save(update_fields=["approver_role_key"])
+        stage.approver_role = None
+        stage.save(update_fields=["approver_role_key", "approver_role"])
 
         self.assertTrue(ResolutionCache().has_candidates(stage, instance))
 
@@ -1718,7 +1737,7 @@ class PayoutBatchApprovalTests(TestCase):
         # Both the sweep and the queue read it powers stay standing.
         self.assertEqual(parking.repair_workflows(tenant=self.school.tenant), 0)
         self.assertEqual(
-            my_queue.pending_approval_snapshots(self.requester, self.school), [])
+            my_queue.pending_approval_snapshots(self.requester, self.school.tenant), [])
 
     def test_a_role_stage_with_no_key_still_resolves_to_nobody(self):
         """Not every empty answer is a misconfiguration; this one is legitimate."""
@@ -1895,11 +1914,11 @@ class PayoutBatchApprovalTests(TestCase):
             tenant=self.school.tenant,
         )
         # Nobody holds the key yet, so there is nothing to restore and nothing to see.
-        self.assertEqual(my_queue.pending_approval_snapshots(outsider, self.school), [])
+        self.assertEqual(my_queue.pending_approval_snapshots(outsider, self.school.tenant), [])
 
         approver = self._make_approver()  # Appointed after the stage already activated.
         # Reading the queue is what repairs it; no resubmission anywhere.
-        snaps = my_queue.pending_approval_snapshots(approver, self.school)
+        snaps = my_queue.pending_approval_snapshots(approver, self.school.tenant)
         self.assertEqual(len(snaps), 1)
 
         wf_actions.record_action(self._instance_for(batch).id, approver, ActionEnum.APPROVED)

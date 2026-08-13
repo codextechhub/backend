@@ -82,7 +82,19 @@ def empty_active_stages(document_types=None):
         ~Exists(WorkflowStageApprover.objects.filter(
             stage_instance=OuterRef("pk"), attempt=OuterRef("attempt"),
         )),
-    ).select_related("stage", "instance")
+    ).select_related(
+        "stage", "instance",
+        # Everything the resolution cache touches per row, fetched with the scan
+        # rather than lazily. A page of parked documents walks each of these once
+        # per row, so a missing relation here is a descriptor query PER STAGE,
+        # which is exactly the per-row cost this module's cache and its
+        # query-count test exist to prevent. ``instance__tenant`` is the one that
+        # bites hardest: both the override lookup and the role-holder lookup take
+        # the tenant object, not its id.
+        "instance__tenant", "instance__branch",
+        # Read by ``stage_role_key``'s fallback and by ``stage_requirement``.
+        "stage__approver_role", "stage__approver_group",
+    )
 
 
 def lock_parked_stage(stage_instance_id, document_types=None):
@@ -101,7 +113,10 @@ def lock_parked_stage(stage_instance_id, document_types=None):
         # ``of="self"`` locks only the stage-instance row: the joined instance and
         # branch are nullable sides of an outer join, which Postgres refuses to lock.
         WorkflowStageInstance.objects.select_for_update(of=("self",))
-        .select_related("stage", "instance", "instance__tenant", "instance__branch")
+        .select_related(
+            "stage", "instance", "instance__tenant", "instance__branch",
+            "stage__approver_role", "stage__approver_group",
+        )
         .filter(pk=stage_instance_id)
         .first()
     )
@@ -151,6 +166,21 @@ class ResolutionCache:
 
     def __init__(self):
         self._holders: dict = {}
+        self._overrides: dict = {}
+
+    def _override_for(self, stage, tenant):
+        """Memoised tenant override for this stage, or None.
+
+        Memoised for the same reason the holder lookup is: a page of parked
+        documents usually shares one stage, and an unmemoised lookup here costs a
+        query per row, which is precisely the per-stage cost this cache exists to
+        remove. Keyed on (stage, tenant) because that is what an override is
+        scoped to.
+        """
+        key = (stage.pk, getattr(tenant, "pk", None))
+        if key not in self._overrides:
+            self._overrides[key] = approvers_service.stage_override_for(stage, tenant)
+        return self._overrides[key]
 
     def _holder_ids(self, stage, instance):
         """Memoised set of base role holders, or None when not memoisable.
@@ -168,7 +198,7 @@ class ResolutionCache:
             return None
         # A tenant may have repointed this stage at its own role or group, in
         # which case the stage's own key is not what will resolve. Fall through.
-        if approvers_service.stage_override_for(stage, instance.tenant) is not None:
+        if self._override_for(stage, instance.tenant) is not None:
             return None
         branch = (instance.branch
                   if stage.approver_scope == ApproverScope.BRANCH else None)
