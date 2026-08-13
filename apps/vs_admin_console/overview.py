@@ -58,6 +58,11 @@ MY_TASKS_LIMIT = 3
 APPROVAL_ITEMS_LIMIT = 5
 RETURNED_ITEMS_LIMIT = 3
 
+# Same idea for the worklist: the dashboard shows the few decisions and returned
+# submissions a person should act on next; the full queues stay on their screens.
+APPROVAL_ITEMS_LIMIT = 5
+RETURNED_ITEMS_LIMIT = 3
+
 
 def _schools() -> dict:
     """Active-school count - the conditional aggregate SchoolStatsView uses."""
@@ -118,10 +123,60 @@ def _tasks(user) -> dict:
 
 
 def _approvals(user, tenant) -> dict:
-    """Decisions waiting on the caller - shares the queue screen's own rules."""
+    """Decisions waiting on the caller - shares the queue screen's own rules.
+
+    The count already materialises the snapshot list (the already-acted and
+    stale-attempt filters cannot be pushed into SQL), so the worklist items the
+    dashboard renders come from that same list for free. One extra ``in_bulk``
+    resolves requester names; everything else is on rows already fetched.
+    """
+    from vs_user.models import User
     from vs_workflow.services import my_queue as my_queue_svc
 
-    return {"pending": my_queue_svc.pending_approval_count(user, tenant)}
+    snaps = my_queue_svc.pending_approval_snapshots(user, tenant)
+    # The queue screen lists newest first; the worklist is the opposite. It
+    # surfaces the decisions that have waited longest, so a lingering item can
+    # never hide below the cap while fresh arrivals fill the visible rows.
+    top = sorted(
+        snaps,
+        key=lambda snap: (
+            snap.stage_instance.activated_at is None,
+            snap.stage_instance.activated_at,
+        ),
+    )[:APPROVAL_ITEMS_LIMIT]
+
+    # One in_bulk covers requesters and the people delegates are covering for.
+    name_ids = {
+        snap.stage_instance.instance.requested_by_id
+        for snap in top
+        if snap.stage_instance.instance.requested_by_id
+    } | {snap.on_behalf_of_id for snap in top if snap.on_behalf_of_id}
+    people = User.objects.in_bulk(name_ids) if name_ids else {}
+
+    def person_name(pk) -> str:
+        person = people.get(pk)
+        if person is None:
+            return ""
+        return person.full_name or person.email
+
+    items = []
+    for snap in top:
+        instance = snap.stage_instance.instance
+        items.append({
+            # The workflow-instance id: what APPROVAL_DETAIL(id) opens.
+            "id": str(instance.id),
+            "document_type": instance.document_type,
+            "document_object_id": instance.document_object_id,
+            "stage_label": snap.stage_instance.stage.label,
+            "awaiting_since": snap.stage_instance.activated_at,
+            "requested_by_name": person_name(instance.requested_by_id),
+            # Set when the caller is a delegate covering this decision for
+            # someone else - the dashboard splits these into their own box.
+            "on_behalf_of_name": person_name(snap.on_behalf_of_id) if snap.on_behalf_of_id else None,
+        })
+
+    delegated = sum(1 for snap in snaps if snap.on_behalf_of_id)
+    return {"pending": len(snaps), "delegated": delegated, "items": items}
 
 
 def _submissions(user, tenant) -> dict:
@@ -131,7 +186,18 @@ def _submissions(user, tenant) -> dict:
     qs = WorkflowInstance.objects.filter(requested_by=user, status="RETURNED")
     if tenant is not None:
         qs = qs.filter(tenant=tenant)
-    return {"returned": qs.count()}
+
+    items = [
+        {
+            "id": str(row.id),
+            "document_type": row.document_type,
+            "document_object_id": row.document_object_id,
+            "returned_at": row.updated_at,
+        }
+        for row in qs.order_by("-updated_at")[:RETURNED_ITEMS_LIMIT]
+    ]
+
+    return {"returned": qs.count(), "items": items}
 
 
 def _notifications(user) -> dict:
