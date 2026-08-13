@@ -119,6 +119,15 @@ def convert_permission_keys_to_role_keys(apps, schema_editor):
 
 class Migration(migrations.Migration):
 
+    # The data pass below UPDATEs every converted stage, and the RemoveField at
+    # the end ALTERs that same table. Postgres refuses to ALTER a table that
+    # still has pending trigger events from writes in the open transaction
+    # ("cannot ALTER TABLE ... because it has pending trigger events"), so this
+    # migration cannot run as one transaction on any database that actually has
+    # stages to convert. Running non-atomically commits the conversion before
+    # the column is dropped. Same operations, same name: no history rewrite.
+    atomic = False
+
     dependencies = [
         ("vs_rbac", "0003_userpermissionoverride"),
         ("vs_tenants", "0003_tenantdocumentsequence"),
