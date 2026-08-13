@@ -21,7 +21,10 @@ def submit_for_approval(document, requested_by, *,
 
     Template resolution uses a three-level cascade - branch-specific →
     school-wide → platform-wide - so a platform template acts as a fallback
-    without forcing admins to duplicate it at every school and branch.
+    without forcing admins to duplicate it at every school and branch. Only
+    active templates take part: a tenant that adjusted a shared template and
+    then asked for the platform version back has its own switched off, and this
+    cascade is where that decision takes effect.
     Calling code must ensure the document declares workflow_document_type and
     that a matching handler is registered, otherwise InvalidInstanceStateError
     / UnknownDocumentTypeError are raised before anything is written.
@@ -59,8 +62,12 @@ def submit_for_approval(document, requested_by, *,
     template = None
     for scope in scopes:
         try:
+            # is_active is part of the lookup, not a check afterwards: a tenant
+            # that switched its own version off must fall *through* to the next
+            # scope, which is the platform template. Filtering after the fact
+            # would find the inactive one and stop.
             template = WorkflowTemplate.objects.get(
-                document_type=document_type, code=code, **scope,
+                document_type=document_type, code=code, is_active=True, **scope,
             )
             break
         except WorkflowTemplate.DoesNotExist:

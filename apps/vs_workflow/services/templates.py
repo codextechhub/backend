@@ -194,11 +194,15 @@ def publish_template(*, tenant, branch=None, document_type: str, code: str, name
     )
 
     if not created:
+        # Publishing over a version the tenant had switched off brings it back:
+        # they are editing it again, which is the same intent as running it.
+        template.is_active = True
         # Top-level template metadata is updated in place so references remain stable.
         template.name = name
         template.description = description
         template.notification_events = notification_events or {}
-        template.save(update_fields=["name", "description", "notification_events", "updated_at"])
+        template.save(update_fields=["name", "description", "notification_events",
+                                     "is_active", "updated_at"])
 
     # Upsert stages by code. The payload is the desired ACTIVE set: stages in it
     # are created/updated (and un-retired if previously removed); existing stages

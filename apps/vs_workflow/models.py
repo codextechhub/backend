@@ -45,7 +45,12 @@ def _short_id():
 class WorkflowTemplate(models.Model):
     """Reusable blueprint defining the approval stages and routing for a document type.
 
-    A template is identified by the combination of (school, document_type, code).
+    A template with no tenant is the *platform* template: the shared definition
+    every tenant runs until it adjusts its own. A tenant that adjusts one gets a
+    tenant-scoped template with the same (document_type, code), which the
+    submission cascade prefers from then on.
+
+    A template is identified by the combination of (tenant, branch, document_type, code).
     Multiple templates can exist for the same document type under different codes,
     enabling different approval paths (e.g. ``standard`` vs ``high_value``).
     Publishing the same key again updates the template in place - no versioning.
@@ -59,6 +64,12 @@ class WorkflowTemplate(models.Model):
         code: Slug identifying this template variant (e.g. ``standard``, ``high_value``).
         notification_events: Dict of event keys to booleans controlling which lifecycle
             events trigger notifications.
+        is_active: A tenant that has adjusted a shared template and later wants the
+            platform's version back switches its own off rather than deleting it.
+            Deleting is not an option: instances PROTECT the template they ran
+            under, so the copy that has actually been used is exactly the one that
+            cannot be removed. An inactive template is skipped by the submission
+            cascade, so the next request falls through to the platform template.
         created_by: The admin user who last published this template.
     """
 
@@ -77,6 +88,7 @@ class WorkflowTemplate(models.Model):
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True, default="")
     notification_events = models.JSONField(default=dict, blank=True)
+    is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
                                    null=True, blank=True, related_name="+")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -96,6 +108,8 @@ class WorkflowTemplate(models.Model):
         ]
         indexes = [
             models.Index(fields=["tenant", "branch", "document_type"]),
+            # The submission cascade filters on all four, in this order.
+            models.Index(fields=["document_type", "code", "tenant", "is_active"]),
         ]
 
     def __str__(self):
