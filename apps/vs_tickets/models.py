@@ -74,6 +74,9 @@ class Ticket(TimeStampedModel):
         default=TicketSource.CUSTOMER,
         db_index=True,
     )
+    # Privacy-safe product context captured at creation. The API serializer
+    # strictly allowlists keys and rejects live URLs or page values.
+    context = models.JSONField(default=dict, blank=True)
 
     requester = models.ForeignKey(
         settings.AUTH_USER_MODEL,
