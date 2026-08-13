@@ -43,7 +43,7 @@ class Command(BaseCommand):
         # there is no second path left to disagree with: ``tenant`` is now the
         # only statement of ownership on either model and the null checks above
         # are the whole invariant. Nothing replaces them.
-        if TenantRoleTemplate.objects.filter(branch__isnull=False).exclude(tenant=F("branch__school__tenant")).exists():
+        if TenantRoleTemplate.objects.filter(branch__isnull=False).exclude(tenant=F("branch__tenant")).exists():
             failures.append("role templates with cross-tenant branches")
         if TenantUserRoleAssignment.objects.exclude(tenant=F("user__tenant")).exists():
             failures.append("role assignments with cross-tenant users")

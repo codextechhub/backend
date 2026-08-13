@@ -10884,6 +10884,35 @@ class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
         self.assertEqual(len(report["scopes"]), 1)
         self.assertTrue(report["scopes"][0]["is_entity_level"])
 
+    def test_the_report_never_enumerates_another_tenants_branches(self):
+        """The branch enumeration is a tenant filter, so it is a boundary.
+
+        It reads ``Branch.all_objects.filter(tenant=...)`` since Phase C; with
+        the filter weakened it would list every branch on the platform, naming
+        other tenants' sites (and their approver gaps) in this tenant's report.
+        """
+        from vs_rbac.tests.helpers import make_branch
+
+        foreign_branch = make_branch(self.foreign_school, name="Foreign Campus")
+
+        report = self.coverage()
+        branch_ids = [scope["branch_id"] for scope in report["scopes"]]
+
+        self.assertEqual(branch_ids, [None, self.lekki.pk, self.ikeja.pk])
+        self.assertNotIn(foreign_branch.pk, branch_ids)
+
+    def test_a_branchless_tenant_reports_no_branch_scope_even_when_others_exist(self):
+        """The branch-optional shape must stay empty, not inherit the neighbours."""
+        from vs_procurement.approvals import ensure_tenant_approval_templates
+        from vs_rbac.tests.helpers import make_branch
+
+        make_branch(self.foreign_school, name="Foreign Campus")
+        ensure_tenant_approval_templates(self.flat_tenant)
+
+        report = self.coverage(self.flat_tenant)
+
+        self.assertEqual([scope["branch_id"] for scope in report["scopes"]], [None])
+
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_the_endpoint_narrows_to_a_bound_callers_own_branch(self, _permission):
         code = self.multi.entity.code

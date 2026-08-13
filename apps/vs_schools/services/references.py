@@ -48,7 +48,9 @@ def find_branch_in_tenant(tenant, ref):
 
     # all_objects deliberately: the explicit tenant filter is the security
     # boundary, and it must not depend on ambient request-local tenant state.
-    return Branch.all_objects.filter(school__tenant=tenant, pk=int(raw)).first()
+    # ``tenant``, not ``school__tenant``: the branch owns the tenant itself, so
+    # the boundary is one column on the row rather than a join through School.
+    return Branch.all_objects.filter(tenant=tenant, pk=int(raw)).first()
 
 
 def resolve_branch_reference(tenant, ref, field="branch"):

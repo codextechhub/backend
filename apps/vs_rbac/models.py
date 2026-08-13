@@ -400,7 +400,7 @@ class TenantRoleTemplate(TimeStampedModel):
 
     def clean(self):
         super().clean()
-        if self.branch_id and self.branch.school.tenant_id != self.tenant_id:
+        if self.branch_id and self.branch.tenant_id != self.tenant_id:
             raise ValidationError("Role branch must belong to the role tenant.")
 
     def __str__(self):
@@ -504,7 +504,7 @@ class TenantUserRoleAssignment(TimeStampedModel):
             errors["user"] = "User must belong to the assignment tenant."
         if self.role_id and self.role.tenant_id != self.tenant_id:
             errors["role"] = "Role must belong to the assignment tenant."
-        if self.branch_id and self.branch.school.tenant_id != self.tenant_id:
+        if self.branch_id and self.branch.tenant_id != self.tenant_id:
             errors["branch"] = "Branch must belong to the assignment tenant."
         if errors:
             raise ValidationError(errors)

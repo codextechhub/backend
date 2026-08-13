@@ -22,11 +22,14 @@ def scope_name(tenant=None, branch=None):
 # Keep branch-scoped writes tied to their owning tenant before keys are built.
 def normalize_scope(*, tenant=None, branch=None):
     if branch is not None:
-        # branch -> school -> tenant is the only cross-tenant traversal retained.
-        branch_tenant = branch.school.tenant
+        # The branch owns a tenant directly; nothing travels through the school.
+        # Compare ids rather than objects: ``tenant_id`` is a column on the
+        # branch row that is already loaded, so the common case (a caller that
+        # named both) costs no query at all. Only the case that has to *return*
+        # a tenant materialises one.
         if tenant is None:
-            tenant = branch_tenant
-        elif branch_tenant.pk != tenant.pk:
+            tenant = branch.tenant
+        elif branch.tenant_id != tenant.pk:
             raise InvalidConfigurationScope("Branch must belong to the selected tenant.")
     return tenant, branch
 
@@ -66,6 +69,6 @@ def resolve_request_scope(request, *, allow_platform=True):
         if branch is None:
             raise NotFound("Configuration scope not found.")
         # A branch selection implies its tenant even for platform callers.
-        scope_tenant = branch.school.tenant
+        scope_tenant = branch.tenant
 
     return normalize_scope(tenant=scope_tenant, branch=branch)

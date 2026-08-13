@@ -29,7 +29,7 @@ def record_configuration_event(
 
     # Branch-scoped audit rows also carry tenant for tenant filtering.
     if branch is not None and tenant is None:
-        tenant = branch.school.tenant
+        tenant = branch.tenant
     # The local row is authoritative because it is committed with the config change.
     event = ConfigurationAuditEvent(
         action=action,

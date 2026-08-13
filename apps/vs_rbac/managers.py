@@ -55,16 +55,19 @@ class TenantAwareQuerySet(models.QuerySet):
         if "school" in field_names:
             return self.filter(school__tenant=tenant)
         if "branch" in field_names:
-            return self.filter(branch__school__tenant=tenant)
+            # Branch carries its own tenant, so this is one join, not two. The
+            # two are the same value by construction: Branch.save() derives
+            # tenant from school and reconcile_tenants asserts they agree.
+            return self.filter(branch__tenant=tenant)
         raise ValueError(f"{self.model._meta.label} has no tenant ownership path.")
 
     # Apply the requested school scope across direct-school and branch-owned models.
     def for_school(self, school):
         """Scope this queryset to *school*.
 
-        Detects the tenant link automatically: a direct ``school`` FK, or an
-        indirect one via ``branch__school``. Models with neither are returned
-        unfiltered (platform-level data).
+        Detects the tenant link automatically: a direct ``tenant`` FK, a
+        ``school`` FK, or a ``branch`` FK (branches carry their own tenant).
+        Models with none of them are returned unfiltered (platform-level data).
         """
         if school is None:
             raise ValueError("An explicit school is required.")
@@ -90,7 +93,7 @@ class TenantAwareManager(models.Manager.from_queryset(TenantAwareQuerySet)):
         if "school" in field_names:
             return "school"
         if "branch" in field_names:
-            return "branch__school"
+            return "branch"
         return None
 
     # Attach the current tenant filter before callers add their own conditions.
@@ -104,8 +107,10 @@ class TenantAwareManager(models.Manager.from_queryset(TenantAwareQuerySet)):
             return qs
         if lookup == "school":
             lookup = "school__tenant"
-        elif lookup == "branch__school":
-            lookup = "branch__school__tenant"
+        elif lookup == "branch":
+            # ``branch__tenant``, not ``branch__school__tenant``: Branch owns a
+            # tenant of its own since the Phase B backfill.
+            lookup = "branch__tenant"
         condition = Q(**{lookup: tenant})
         if self.include_global:
             # School users also see platform-wide template rows when the model opts in.

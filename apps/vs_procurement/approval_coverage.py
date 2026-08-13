@@ -202,7 +202,7 @@ def approval_coverage(tenant, *, branches=None, include_entity_level=True) -> di
         # all_objects deliberately: the explicit tenant filter is the boundary, and it
         # must not depend on ambient request-local tenant state.
         branches = list(
-            Branch.all_objects.filter(school__tenant=tenant).order_by("code", "pk")
+            Branch.all_objects.filter(tenant=tenant).order_by("code", "pk")
         )
     else:
         branches = list(branches)

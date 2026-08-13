@@ -11,6 +11,7 @@ from io import StringIO
 from datetime import timedelta
 from unittest import mock
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
@@ -1748,3 +1749,75 @@ class UserBranchAssignmentTests(TestCase):
         resp = self.client.get("/v1/user/users/?branch_id=not-an-id")
 
         self.assertEqual(resp.status_code, 400, resp.content)
+
+
+class UserBranchTenantGuardTests(TestCase):
+    """``User._derive_tenant`` and the ``save()`` guard, after Phase C.
+
+    Both read the branch's own ``tenant_id`` now instead of walking
+    ``branch.school.tenant_id``. The save-time guard is the last thing standing
+    between a mis-set ``tenant`` and a user account bound to another tenant's
+    branch, and it is reachable from every writer (API, services, shell,
+    management commands), so it is asserted at the model rather than only
+    through the create endpoint.
+    """
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import make_branch, make_school
+
+        self.branched = make_school(slug="guard-branched", name="Guard Branched")
+        self.lekki = make_branch(self.branched, name="Lekki", is_main=True)
+        self.rival = make_school(slug="guard-rival", name="Guard Rival")
+        self.rival_branch = make_branch(self.rival, name="Rival Main", is_main=True)
+        # Branch-optional shape.
+        self.branchless = make_school(slug="guard-solo", name="Guard Solo")
+
+    def test_a_branch_bound_user_inherits_the_branchs_own_tenant(self):
+        user = User.objects.create_user(
+            email="derive@guard.test", password="Str0ng!pass123",
+            first_name="Der", last_name="Ive", status="ACTIVE",
+            user_type=User.UserType.STAFF, branch=self.lekki,
+        )
+
+        self.assertEqual(user.tenant_id, self.branched.tenant_id)
+        self.assertEqual(user.tenant_id, self.lekki.tenant_id)
+
+    def test_saving_a_user_onto_another_tenants_branch_is_refused(self):
+        """The guard must still deny. Without the comparison this write lands
+        and the account silently straddles two tenants."""
+        user = User.objects.create_user(
+            email="straddle@guard.test", password="Str0ng!pass123",
+            first_name="Stra", last_name="Ddle", status="ACTIVE",
+            user_type=User.UserType.STAFF, branch=self.lekki,
+        )
+        user.branch = self.rival_branch
+
+        with self.assertRaises(DjangoValidationError):
+            user.save()
+
+        user.refresh_from_db()
+        self.assertEqual(user.branch_id, self.lekki.pk)
+
+    def test_a_branchless_tenants_user_cannot_be_moved_onto_a_branch(self):
+        user = User.objects.create_user(
+            email="solo@guard.test", password="Str0ng!pass123",
+            first_name="Sol", last_name="Oh", status="ACTIVE",
+            user_type=User.UserType.SCHOOL_ADMIN, tenant=self.branchless.tenant,
+        )
+        user.branch = self.lekki
+
+        with self.assertRaises(DjangoValidationError):
+            user.save()
+
+    def test_a_branch_in_the_users_own_tenant_still_saves(self):
+        user = User.objects.create_user(
+            email="ok@guard.test", password="Str0ng!pass123",
+            first_name="O", last_name="Kay", status="ACTIVE",
+            user_type=User.UserType.STAFF, branch=self.lekki,
+        )
+        user.first_name = "Okay"
+        user.save()  # must not raise
+
+        user.refresh_from_db()
+        self.assertEqual(user.first_name, "Okay")
+        self.assertEqual(user.tenant_id, self.branched.tenant_id)

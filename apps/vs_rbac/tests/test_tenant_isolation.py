@@ -21,8 +21,10 @@ from .helpers import make_school, make_branch
 
 
 class TenantAwareManagerIsolationTests(TestCase):
-    """The school-owned scoping path: ``Branch`` carries a ``school`` FK, so the
-    TenantAwareManager must scope it via ``school.tenant`` under the contextvar."""
+    """``Branch`` carries its own ``tenant`` FK since the Phase B backfill, so
+    the TenantAwareManager scopes it on that column directly under the
+    contextvar - not through ``school.tenant``, which is the same value but one
+    join further away. The assertions are unchanged; only the path is."""
 
     def setUp(self):
         clear_current_tenant()

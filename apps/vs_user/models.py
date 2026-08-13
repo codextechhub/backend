@@ -239,7 +239,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     def _derive_tenant(self):
         """Fill in the canonical home tenant when one wasn't supplied.
 
-        Branch-bound users inherit their branch's school tenant; CX Staff fall
+        Branch-bound users inherit their branch's own tenant; CX Staff fall
         back to the Codex PLATFORM tenant. Runs from both full_clean() and
         save() so validation and persistence agree on the derived value. A
         non-CX user created with neither an explicit tenant nor a branch is
@@ -248,7 +248,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         if self.tenant_id:
             return
         if self.branch_id:
-            self.tenant_id = self.branch.school.tenant_id
+            self.tenant_id = self.branch.tenant_id
         elif self.user_type == self.UserType.CX_STAFF:
             from vs_tenants.models import Tenant
             self.tenant = Tenant.objects.filter(
@@ -265,7 +265,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     def save(self, *args, **kwargs):
         self._derive_tenant()  # backstop for saves that skip full_clean()
-        if self.branch_id and self.branch.school.tenant_id != self.tenant_id:
+        if self.branch_id and self.branch.tenant_id != self.tenant_id:
             raise ValidationError("User branch must belong to the user's tenant.")
         if self.uid is None:
             with transaction.atomic():

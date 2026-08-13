@@ -115,6 +115,74 @@ class TenantAuthorityTests(TestCase):
         self.assertEqual(get_effective_permissions(user, tenant=school.tenant), set())
 
 
+class ReconcileTenantsInvariantTests(TestCase):
+    """``reconcile_tenants`` asserts the equivalence Phase C now depends on.
+
+    Two checks matter here. The branch check still compares ``Branch.tenant``
+    against ``school.tenant`` deliberately: it is the proof that the two paths
+    agree, and rewriting it to compare ``tenant`` with itself would make it
+    vacuous. The role-template check was rewritten to ``branch__tenant`` and is
+    a real cross-tenant assertion, so it must still fire.
+    """
+
+    def _run(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        out = StringIO()
+        call_command("reconcile_tenants", stdout=out)
+        return out.getvalue()
+
+    def test_a_clean_database_reconciles(self):
+        school = School.objects.create(
+            name="Reconcile School", slug="reconcile-school", code="RECON",
+            status=SchoolStatus.ACTIVE,
+        )
+        school.branches.create(name="Main", code=1, is_main=True, _type="Main")
+
+        self.assertIn("passed", self._run())
+
+    def test_a_role_template_on_another_tenants_branch_is_reported(self):
+        from django.core.management.base import CommandError
+
+        from vs_rbac.models import TenantRoleTemplate
+
+        school = School.objects.create(
+            name="Recon A", slug="recon-a", code="RECONA", status=SchoolStatus.ACTIVE,
+        )
+        rival = School.objects.create(
+            name="Recon B", slug="recon-b", code="RECONB", status=SchoolStatus.ACTIVE,
+        )
+        rival_branch = rival.branches.create(
+            name="Main", code=1, is_main=True, _type="Main",
+        )
+        # Written straight to the table: the model's clean() refuses this, and
+        # the command exists precisely to find rows that got in anyway.
+        TenantRoleTemplate.objects.create(
+            tenant=school.tenant, key="recon-role", name="Recon Role",
+            status="ACTIVE", branch=rival_branch,
+        )
+
+        with self.assertRaises(CommandError) as caught:
+            self._run()
+        self.assertIn("cross-tenant branches", str(caught.exception))
+
+    def test_a_role_template_on_its_own_branch_is_not_reported(self):
+        from vs_rbac.models import TenantRoleTemplate
+
+        school = School.objects.create(
+            name="Recon C", slug="recon-c", code="RECONC", status=SchoolStatus.ACTIVE,
+        )
+        branch = school.branches.create(name="Main", code=1, is_main=True, _type="Main")
+        TenantRoleTemplate.objects.create(
+            tenant=school.tenant, key="recon-ok", name="Recon Ok",
+            status="ACTIVE", branch=branch,
+        )
+
+        self.assertIn("passed", self._run())
+
+
 class ProxyAuditMiddlewareTests(TestCase):
     def setUp(self):
         from vs_admin_console.models import ImpersonationSession

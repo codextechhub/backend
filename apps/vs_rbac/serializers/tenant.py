@@ -96,7 +96,7 @@ class TenantScopedRelatedField(serializers.PrimaryKeyRelatedField):
     """A pk reference resolved inside the serializer's tenant, or not at all.
 
     ``tenant_lookup`` is the ORM path from the referenced model to the tenant
-    (``"tenant"``, ``"school__tenant"``, ...). ``not_found`` replaces *both*
+    (``"tenant"``, ``"entity__tenant"``, ...). ``not_found`` replaces *both*
     DRF failure messages, so an id that is not a plausible bigint, an id that
     does not exist and an id owned by another tenant are indistinguishable.
     """
@@ -253,8 +253,8 @@ class TenantRoleTemplateDetailSerializer(
     # was given is the security boundary, and it must not depend on the ambient
     # request-local tenant state that ``Branch.objects`` reads.
     branch = TenantScopedRelatedField(
-        queryset=Branch.all_objects.select_related("school"),
-        tenant_lookup="school__tenant",
+        queryset=Branch.all_objects.all(),
+        tenant_lookup="tenant",
         not_found=BRANCH_NOT_FOUND,
         required=False,
         allow_null=True,
@@ -321,7 +321,7 @@ class TenantRoleTemplateDetailSerializer(
         if value is None:
             return value
         tenant = self._tenant()
-        if tenant is not None and value.school.tenant_id != tenant.pk:
+        if tenant is not None and value.tenant_id != tenant.pk:
             raise serializers.ValidationError(BRANCH_NOT_FOUND)
         return value
 
@@ -497,8 +497,8 @@ class TenantUserRoleAssignmentSerializer(
     # all_objects + an explicit filter deliberately: see the role template
     # serializer above - ambient tenant state must not be the boundary.
     branch = TenantScopedRelatedField(
-        queryset=Branch.all_objects.select_related("school"),
-        tenant_lookup="school__tenant",
+        queryset=Branch.all_objects.all(),
+        tenant_lookup="tenant",
         not_found=BRANCH_NOT_FOUND,
         required=False,
         allow_null=True,
@@ -629,7 +629,7 @@ class TenantUserRoleAssignmentSerializer(
             raise serializers.ValidationError({"user": USER_NOT_FOUND})
         if role is not None and role.tenant_id != tenant.pk:
             raise serializers.ValidationError({"role": ROLE_NOT_FOUND})
-        if branch is not None and branch.school.tenant_id != tenant.pk:
+        if branch is not None and branch.tenant_id != tenant.pk:
             raise serializers.ValidationError({"branch": BRANCH_NOT_FOUND})
 
         if (

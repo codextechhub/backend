@@ -146,10 +146,10 @@ class ScopedModel(models.Model):
 
     Fields:
         tenant: Optional tenant boundary. Null together with branch means
-            platform scope. A branch's tenant is derived from
-            ``branch.school.tenant`` and must agree when both are supplied.
-        branch: Optional branch boundary. When set it must belong to a school
-            under ``tenant``; if tenant is omitted the branch's own tenant is
+            platform scope. A branch's tenant is read straight off
+            ``branch.tenant`` and must agree when both are supplied.
+        branch: Optional branch boundary. When set it must belong to
+            ``tenant``; if tenant is omitted the branch's own tenant is
             filled in automatically (enforced in ``clean()``).
         scope_key: Normalized scope string described above. Not editable;
             recomputed by ``save()``.
@@ -177,9 +177,8 @@ class ScopedModel(models.Model):
     def clean(self):
         super().clean()
         if self.branch_id:
-            # branch -> school -> tenant is the only cross-tenant traversal kept
-            # after the cutover; the branch's owning school defines the tenant.
-            branch_tenant_id = self.branch.school.tenant_id
+            # The branch states its own tenant; no detour through the school.
+            branch_tenant_id = self.branch.tenant_id
             if self.tenant_id is None:
                 self.tenant_id = branch_tenant_id
             elif self.tenant_id != branch_tenant_id:

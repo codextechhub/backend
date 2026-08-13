@@ -20,7 +20,11 @@ from vs_rbac.tests.helpers import (
     make_vision_user,
 )
 
-from .exceptions import CapabilityNotEntitled, InvalidConfigurationValue
+from .exceptions import (
+    CapabilityNotEntitled,
+    InvalidConfigurationScope,
+    InvalidConfigurationValue,
+)
 from .models import (
     Capability,
     CapabilityDependency,
@@ -1226,3 +1230,79 @@ class ConfigurationAuditSavedViewsAndExportsTests(TestCase):
         self.assertEqual(duplicate.data["data"]["id"], first.data["data"]["id"])
         self.assertEqual(fourth.status_code, 400, fourth.data)
         self.assertEqual(delay.call_count, 3)
+
+
+class BranchScopeTenantBoundaryTests(TestCase):
+    """``normalize_scope`` and the audit tenant derivation, after Phase C.
+
+    Both read the branch's own ``tenant`` column now instead of walking
+    ``branch.school.tenant``. ``normalize_scope`` is a guard - every caller of
+    ``set_value`` / ``resolve_value`` / the capability services passes through
+    it, and several of them can supply a tenant and a branch independently, so
+    a rewrite that stopped comparing them would silently let a caller write a
+    branch-scoped value into another tenant's scope.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="scope-boundary-school")
+        cls.branch = make_branch(cls.school)
+        cls.rival = make_school(slug="scope-boundary-rival")
+        cls.rival_branch = make_branch(cls.rival)
+        # A tenant with no branches at all, so the dimension recedes.
+        cls.branchless = make_school(slug="scope-boundary-solo")
+        cls.actor = make_vision_user(email="scope-boundary@example.com")
+
+    def test_a_branch_from_another_tenant_is_refused(self):
+        from .services.scopes import normalize_scope
+
+        with self.assertRaises(InvalidConfigurationScope):
+            normalize_scope(tenant=self.school.tenant, branch=self.rival_branch)
+
+    def test_a_branchless_tenant_cannot_borrow_a_branch(self):
+        from .services.scopes import normalize_scope
+
+        with self.assertRaises(InvalidConfigurationScope):
+            normalize_scope(tenant=self.branchless.tenant, branch=self.branch)
+
+    def test_a_branch_in_the_same_tenant_is_accepted(self):
+        from .services.scopes import normalize_scope
+
+        tenant, branch = normalize_scope(tenant=self.school.tenant, branch=self.branch)
+        self.assertEqual(tenant, self.school.tenant)
+        self.assertEqual(branch, self.branch)
+
+    def test_an_omitted_tenant_is_filled_in_from_the_branch(self):
+        from .services.scopes import normalize_scope
+
+        tenant, branch = normalize_scope(branch=self.branch)
+        self.assertEqual(tenant, self.school.tenant)
+
+    def test_a_branchless_scope_is_untouched(self):
+        from .services.scopes import normalize_scope
+
+        tenant, branch = normalize_scope(tenant=self.branchless.tenant)
+        self.assertEqual(tenant, self.branchless.tenant)
+        self.assertIsNone(branch)
+
+    def test_set_value_refuses_a_branch_outside_the_named_tenant(self):
+        """The guard through a real caller, not only in isolation."""
+        definition = ConfigurationDefinition.objects.create(
+            key="scope.boundary.flag", label="Flag", description="Flag.",
+            value_type=ConfigurationDefinition.ValueType.STRING,
+            default_value="off", allowed_scopes=["platform", "school", "branch"],
+        )
+        with self.assertRaises(InvalidConfigurationScope):
+            set_value(
+                definition=definition, value="on", actor=self.actor,
+                tenant=self.school.tenant, branch=self.rival_branch,
+            )
+
+    def test_a_branch_scoped_audit_row_takes_the_branchs_own_tenant(self):
+        from .services.audit import record_configuration_event
+
+        event = record_configuration_event(
+            action="UPDATE", target=self.branch, actor=self.actor, branch=self.branch,
+        )
+        self.assertEqual(event.tenant_id, self.school.tenant_id)
+        self.assertEqual(event.branch_id, self.branch.pk)
