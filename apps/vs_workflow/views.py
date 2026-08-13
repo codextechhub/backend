@@ -625,8 +625,13 @@ class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
                       "add_member", "remove_member"}
 
     def get_permissions(self):
+        # Reading the groups travels with template management for the same
+        # reason the role list does: a WORKFLOW_GROUP stage names a group, and
+        # the builder cannot offer one it is not allowed to read. Writing a
+        # group still takes the group's own manage key.
         self.rbac_permission = (
-            PERM_GROUP_MANAGE if self.action in self._WRITE_ACTIONS else PERM_GROUP_VIEW
+            PERM_GROUP_MANAGE if self.action in self._WRITE_ACTIONS
+            else [PERM_GROUP_VIEW, PERM_TEMPLATE_MANAGE]
         )
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 

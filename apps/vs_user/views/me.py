@@ -55,7 +55,11 @@ class CurrentUserView(APIView):
             message="Current user retrieved successfully.",
             data={
                 "user": UserReadSerializer(request.user).data,
-                "tenant": {"slug": tenant.slug, "name": tenant.name},
+                # kind lets the console tell the platform operator apart from a
+                # school without matching on the slug: a platform actor edits
+                # the shared workflow templates, a school edits its own.
+                "tenant": {"slug": tenant.slug, "name": tenant.name,
+                           "kind": tenant.kind},
                 "school": school_public_info(getattr(tenant, "school_profile", None), request),
                 "permissions": permissions,
             },

@@ -53,6 +53,13 @@ from .services import SUPER_ADMIN_ROLE_KEY
 # both already-migrated grants keep working on the unified endpoint. The Vision
 # super admin bypasses these checks via HasRBACPermission.
 ROLE_VIEW_KEYS = ["school.roles.view", "platform.roles.view"]
+# Reading the tenant's role list is a prerequisite of managing workflow
+# templates: an approval stage names the role that approves it, and there is no
+# way to name one without seeing the list. The alternative - making every
+# template manager also a role administrator - grants far more than it needs.
+# Limited to the list endpoint, which carries names, keys and counts; role
+# detail and every write still take the role keys themselves.
+ROLE_LIST_KEYS = ROLE_VIEW_KEYS + ["workflow.template.manage"]
 ROLE_CREATE_KEYS = ["school.roles.create", "platform.roles.create"]
 ROLE_UPDATE_KEYS = ["school.roles.update", "platform.roles.update"]
 ROLE_DELETE_KEYS = ["school.roles.delete", "platform.roles.delete"]
@@ -507,7 +514,7 @@ class TenantRoleTemplateListCreateView(TenantScopedRBACMixin, CreateModelMixin, 
         if self.request.method == "POST":
             self.rbac_permission = ROLE_CREATE_KEYS
         else:
-            self.rbac_permission = ROLE_VIEW_KEYS
+            self.rbac_permission = ROLE_LIST_KEYS
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):

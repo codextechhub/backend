@@ -108,6 +108,37 @@ class ApproverGroupApiTests(TestCase):
         resp = _call(DETAIL, "delete", BASE, self.viewer, self.tenant, pk=self.group.pk)
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_template_manager_can_read_groups_without_group_view(self):
+        """Managing templates carries the group *read* it needs.
+
+        A WORKFLOW_GROUP stage names a group, so a template manager who cannot
+        list groups cannot configure one. Reading travels with template
+        management; writing still takes the group's own manage key.
+        """
+        from vs_workflow.constants import PERM_TEMPLATE_MANAGE
+
+        manager = make_school_admin(self.branch, email=f"tpl-only-{next(_counter)}@test.com")
+        _grant(manager, [PERM_TEMPLATE_MANAGE])
+
+        resp = _call(LIST, "get", BASE, manager, self.tenant)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+        resp = _call(RESOLVE, "get", BASE, manager, self.tenant, pk=self.group.pk)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+    def test_template_manager_still_cannot_change_a_group(self):
+        from vs_workflow.constants import PERM_TEMPLATE_MANAGE
+
+        manager = make_school_admin(self.branch, email=f"tpl-only2-{next(_counter)}@test.com")
+        _grant(manager, [PERM_TEMPLATE_MANAGE])
+
+        resp = _call(LIST, "post", BASE, manager, self.tenant, {"code": "x", "name": "X"})
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+        resp = _call(ADD_MEMBER, "post", BASE, manager, self.tenant,
+                     {"kind": "USER", "user": str(manager.pk)}, pk=self.group.pk)
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
     def test_viewer_can_list(self):
         resp = _call(LIST, "get", BASE, self.viewer, self.tenant)
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
