@@ -22,6 +22,20 @@ can trace endpoints → calculations → output shapes without reading the code 
   `procurement_master_data`, `procurement_sourcing`, `procurement_p2p_chain`,
   `procurement_inventory`, and `procurement_reports`. Every reports §8 decision
   is implemented or justified; full procurement QA is 263 green.
+- 📝 `vs_user` - documented: 6 slices in `docs/user/` - `user_accounts`,
+  `user_authentication`, `user_invitations_activation`, `user_passwords`,
+  `user_organogram`, `user_security_monitoring`. Baseline at the time of writing:
+  **102 tests, 1 error** - `SeedOrganogramCommandTests.test_seed_builds_tree_and_seats_staff`
+  dies on `UnicodeEncodeError` because `seed_organogram` prints a `→` (U+2192) and
+  a Windows cp1252 stream cannot encode it
+  (`vs_user/management/commands/seed_organogram.py:195`). Environmental, not a
+  logic failure, but it makes the suite red on Windows.
+  **§8 gotchas are recorded but NOT yet swept** - the loop stopped at
+  step 3 (docs committed) and steps 4-5 (briefing, fixes) are outstanding. The
+  worst item: `/v1/user/auth-events/` declares `HasRBACPermission` but sets no
+  `rbac_permission`, and identity audit rows are written with a null tenant
+  against a manager configured `include_global=True`, so any authenticated user
+  in any tenant can read the whole platform's identity audit trail.
 
 ## The loop (per slice)
 
