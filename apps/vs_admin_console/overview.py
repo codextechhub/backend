@@ -58,11 +58,6 @@ MY_TASKS_LIMIT = 3
 APPROVAL_ITEMS_LIMIT = 5
 RETURNED_ITEMS_LIMIT = 3
 
-# Same idea for the worklist: the dashboard shows the few decisions and returned
-# submissions a person should act on next; the full queues stay on their screens.
-APPROVAL_ITEMS_LIMIT = 5
-RETURNED_ITEMS_LIMIT = 3
-
 
 def _schools() -> dict:
     """Active-school count - the conditional aggregate SchoolStatsView uses."""
@@ -458,13 +453,36 @@ def _signals(user, tenant) -> dict:
     if failed_jobs:
         signals["jobs_failed_24h"] = {"count": failed_jobs}
 
-    # Finished work ready to collect - the counterpart notice to the failures
-    # above, for completions the live queue toasts may have missed.
-    succeeded_jobs = BackgroundJob.objects.filter(
-        owner=user, status=BackgroundJob.Status.SUCCEEDED, finished_at__gte=since,
+    # Finished work still waiting to be collected. The landing screen's one rule
+    # is that acting on something clears its row, so this may only count outputs
+    # the caller has NOT yet downloaded - a plain "SUCCEEDED in the last 24h"
+    # count sat on the screen for a full day whether or not the person collected
+    # the file, which is precisely the counter-that-cannot-be-cleared this screen
+    # forbids. Scoped to exports because they are the one job kind that produces a
+    # downloadable artefact (imports, emails and system jobs leave nothing to
+    # collect), which is also what the notice's "ready to download" copy promises.
+    #
+    # A file is countable only while it is genuinely collectable: not yet
+    # downloaded, not purged, and not past its availability window. An expired or
+    # purged file is dropped rather than nagged about, because there is no longer
+    # anything to download - the honest state there is silence, not a dead link.
+    # Attribution is by the run's requester (the actor who asked for the export),
+    # which is always set, indexed, and independent of whether the async job row
+    # still exists.
+    #
+    # Cost: one COUNT with a two-table join (ExportFile -> ExportRun), driven by
+    # the requested_by index and the file's unique run FK. No per-row work, no
+    # Python loop, and the result set is bounded by one person's own live exports.
+    from vs_exports.models import ExportFile
+
+    uncollected_exports = ExportFile.objects.filter(
+        run__requested_by=user,
+        download_count=0,
+        purged_at__isnull=True,
+        available_until__gt=timezone.now(),
     ).count()
-    if succeeded_jobs:
-        signals["jobs_succeeded_24h"] = {"count": succeeded_jobs}
+    if uncollected_exports:
+        signals["exports_uncollected"] = {"count": uncollected_exports}
 
     return signals
 

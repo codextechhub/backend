@@ -700,26 +700,41 @@ class OverviewDelegationAndExportTests(OverviewTestBase):
         self.assertIsNone(by_doc["own-doc"]["on_behalf_of_name"])
         self.assertEqual(by_doc["covered-doc"]["on_behalf_of_name"], "Pat Principal")
 
-    def test_succeeded_jobs_are_own_recent_completions_only(self):
-        from datetime import timedelta
-
+    def test_exports_signal_counts_uncollected_exports_only(self):
+        # The landing screen's rule: doing the work clears the card. "Exports
+        # ready to download" therefore counts only a finished export the caller
+        # has NOT downloaded yet - collect the file and its row must go away. A
+        # file already taken, or one that has expired or been purged (there is
+        # nothing left to collect either way), never keeps the notice on-screen.
         from django.utils import timezone
-        from core.models import BackgroundJob
+        from vs_exports.constants import ExportFormat
+        from vs_exports.models import ExportFile, ExportRun
 
         other = make_vision_user(email="ov-done-other@codex.test")
         now = timezone.now()
 
-        def job(owner, status, finished, task_id):
-            BackgroundJob.objects.create(
-                owner=owner, tenant=owner.tenant, status=status,
-                finished_at=finished, celery_task_id=task_id,
+        def export(requester, *, ref, downloads=0,
+                   until_offset=timedelta(days=5), purged=False):
+            run = ExportRun.objects.create(
+                reference=ref, tenant=requester.tenant,
+                frozen_config={"name": "Report"}, requested_by=requester,
             )
+            ExportFile.objects.create(
+                run=run, name="report.xlsx", format=ExportFormat.XLSX,
+                storage_name=f"exports/{ref}.xlsx",
+                available_until=now + until_offset,
+                download_count=downloads,
+                purged_at=(now if purged else None),
+            )
+            return run
 
-        job(self.user, "SUCCEEDED", now, "done-own-recent")
-        job(self.user, "SUCCEEDED", now - timedelta(days=2), "done-own-old")
-        job(other, "SUCCEEDED", now, "done-other")
-        job(self.user, "RUNNING", None, "done-own-running")
+        export(self.user, ref="RUN-UNCOLLECTED")              # the one that counts
+        export(self.user, ref="RUN-TAKEN", downloads=1)       # collected: cleared
+        export(self.user, ref="RUN-EXPIRED",
+               until_offset=timedelta(days=-1))               # window closed: gone
+        export(self.user, ref="RUN-PURGED", purged=True)      # bytes deleted: gone
+        export(other, ref="RUN-OTHER")                        # another user's export
 
         signals = self.fetch()["signals"]
-        self.assertEqual(signals["jobs_succeeded_24h"]["count"], 1)
+        self.assertEqual(signals["exports_uncollected"]["count"], 1)
         self.assertNotIn("jobs_failed_24h", signals)
