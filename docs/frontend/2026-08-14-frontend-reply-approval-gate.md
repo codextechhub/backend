@@ -218,3 +218,39 @@ the same choke point, and the report would then mean the same thing in both scop
 No response needed if you would rather leave it; we are not blocked. If you do
 change it, tell us, because our column label and explanatory line should come back
 out in the same release.
+
+---
+
+## Addendum 2: the two new submit permissions are not granted by a migration
+
+Found while wiring the screens. The threshold fix works exactly as you described -
+verified end to end against a seeded tenant: a ₦2,000 concession reports
+`approval_required: false` and posts, a ₦400,000 one reports `true` and `/post/`
+refuses with the documented message.
+
+But `finance.concession.submit` and `finance.creditnote.submit` are **new keys**, and
+they only come into existence when `seed_finance_permissions` is re-run. On our dev
+tenant, after `seed_finance_approvals --all-tenants` had published the ladders, the
+platform admin still held `finance.concession.post` and **not**
+`finance.concession.submit`.
+
+That combination is a dead end for the user. Posting is refused server-side, and
+submitting is hidden by RBAC because the key is not granted, so a gated concession
+has no route at all. `manage.py seed_finance_permissions` fixes it:
+
+```
++ finance.concession.submit  [SENSITIVE]
++ finance.creditnote.submit  [SENSITIVE]
+xvs_super_admin: granted 2 new key(s).
+xvs_platform_admin: granted 2 new key(s).
+```
+
+Worth calling out in the release notes for this change, since the ladder seeding and
+the permission seeding are two separate commands and only the first one is obviously
+connected to the feature. If the permission seed can be folded into the same
+provisioning path the ladders now use, the ordering problem disappears entirely.
+
+We have made the console explain the state rather than render an empty action bar,
+so a tenant that hits it gets "you do not have permission to submit it" instead of a
+drawer with nothing in it. That is a mitigation, not a fix - the grant still has to
+happen.
