@@ -202,6 +202,34 @@ class OverviewSectionTests(OverviewTestBase):
 
         self.assertEqual(self.fetch()["notifications"]["unread"], 2)
 
+    def test_ticket_counts_drop_finished_work(self):
+        # The landing screen's rule: doing the work clears the card. Both ticket
+        # numbers therefore count unfinished tickets only - a resolved or closed
+        # ticket the caller once owned must not keep a row on the page.
+        from vs_tickets.constants import TicketStatus
+        from vs_tickets.models import Ticket
+
+        grant(self.user, PERM_TICKETS)
+        common = dict(tenant=self.user.tenant, requester=self.user, description="x")
+        Ticket.objects.create(title="Untouched", status=TicketStatus.OPEN, **common)
+        Ticket.objects.create(
+            title="Mine, live", status=TicketStatus.IN_PROGRESS,
+            assignee=self.user, **common,
+        )
+        Ticket.objects.create(
+            title="Mine, resolved", status=TicketStatus.RESOLVED,
+            assignee=self.user, **common,
+        )
+        Ticket.objects.create(
+            title="Mine, closed", status=TicketStatus.CLOSED,
+            assignee=self.user, **common,
+        )
+
+        tickets = self.fetch()["tickets"]
+        self.assertEqual(tickets["assigned_to_me"], 1)
+        # Live work is not just OPEN: a ticket someone picked up still counts.
+        self.assertEqual(tickets["active"], 2)
+
     def test_health_reports_posture_not_the_whole_command_centre(self):
         grant(self.user, PERM_HEALTH)
         health = self.fetch()["health"]

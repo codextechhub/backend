@@ -215,15 +215,24 @@ def _notifications(user) -> dict:
 
 
 def _tickets(user) -> dict:
-    """Open tickets, inside the same visibility boundary as the ticket list."""
-    from vs_tickets.constants import TicketStatus
+    """Unfinished tickets, inside the same visibility boundary as the list.
+
+    Both numbers count live work only (ACTIVE_TICKET_STATUSES): the landing
+    screen's contract is that acting on something makes it go away, so a
+    resolved or closed ticket may never keep a card on the page.
+    """
+    from vs_tickets.constants import ACTIVE_TICKET_STATUSES
     from vs_tickets.services import visibility
 
-    row = visibility.visible_tickets_qs(user).aggregate(
-        open=Count("id", filter=Q(status=TicketStatus.OPEN)),
-        assigned_to_me=Count("id", filter=Q(assignee=user)),
+    row = (
+        visibility.visible_tickets_qs(user)
+        .filter(status__in=ACTIVE_TICKET_STATUSES)
+        .aggregate(
+            active=Count("id"),
+            assigned_to_me=Count("id", filter=Q(assignee=user)),
+        )
     )
-    return {"open": row["open"] or 0, "assigned_to_me": row["assigned_to_me"] or 0}
+    return {"active": row["active"] or 0, "assigned_to_me": row["assigned_to_me"] or 0}
 
 
 def _health() -> dict:

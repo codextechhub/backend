@@ -15,6 +15,7 @@ from core.response import success_response
 from vs_user.models import User
 
 from .constants import (
+    ACTIVE_TICKET_STATUSES,
     CommentVisibility,
     TicketCategory,
     TicketPermission,
@@ -81,12 +82,23 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         params = self.request.query_params
         if value := params.get("status"):
             qs = qs.filter(status=value)
+        # `state=active` is the list-shaped twin of the workload counters: the
+        # dashboard cards link here, and a card must land on exactly the rows
+        # it counted.
+        if params.get("state") == "active":
+            qs = qs.filter(status__in=ACTIVE_TICKET_STATUSES)
         if value := params.get("priority"):
             qs = qs.filter(priority=value)
         if value := params.get("category"):
             qs = qs.filter(category=value)
         if value := params.get("assignee"):
-            qs = qs.filter(assignee_id=value)
+            # `me` spares callers a round trip for their own id, and keeps the
+            # "assigned to me" deep-link a static URL.
+            qs = (
+                qs.filter(assignee=self.request.user)
+                if value == "me"
+                else qs.filter(assignee_id=value)
+            )
         if value := params.get("requester"):
             qs = qs.filter(requester_id=value)
         if value := params.get("school"):
@@ -297,10 +309,15 @@ class TicketDashboardView(APIView):
     def get(self, request):
         # Dashboard numbers must use the same visibility boundary as the ticket list.
         qs = visibility.visible_tickets_qs(request.user)
+        # The per-person counters are workload, not history: they answer "what
+        # is still on me", so finished tickets are excluded. `total` and the
+        # by_status/by_priority/by_category breakdowns stay whole-population -
+        # a per-status count that filtered by status would be nonsense.
+        active = Q(status__in=ACTIVE_TICKET_STATUSES)
         aggregates = {
             "total": Count("id"),
-            "assigned_to_me": Count("id", filter=Q(assignee=request.user)),
-            "requested_by_me": Count("id", filter=Q(requester=request.user)),
+            "assigned_to_me": Count("id", filter=Q(assignee=request.user) & active),
+            "requested_by_me": Count("id", filter=Q(requester=request.user) & active),
         }
         for key, _ in TicketStatus.choices:
             # Build stable keys for every enum value, even when the count is zero.

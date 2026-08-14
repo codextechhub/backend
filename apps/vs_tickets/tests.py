@@ -518,6 +518,61 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
         self.assertEqual(data["requested_by_me"], 1)
         self.assertEqual(data["by_status"][TicketStatus.OPEN], 1)
 
+    def _assigned_to_support(self, title, status):
+        """One ticket assigned to ``self.support``, parked at *status*."""
+        ticket = ticket_svc.create_ticket(
+            actor=self.requester, title=title, description="x",
+            category="SUPPORT", priority="LOW",
+        )
+        ticket = ticket_svc.assign_ticket(ticket, actor=self.support, assignee=self.support)
+        if status != TicketStatus.ASSIGNED:
+            ticket = ticket_svc.transition_ticket(ticket, actor=self.support, status=status)
+        return ticket
+
+    def test_assigned_to_me_counts_live_work_not_finished_tickets(self):
+        # The defect this pins: clearing your queue left the counter unchanged,
+        # because every ticket you had ever been assigned kept counting.
+        self._assigned_to_support("Still mine", TicketStatus.IN_PROGRESS)
+        self._assigned_to_support("Just picked up", TicketStatus.ASSIGNED)
+        self._assigned_to_support("Done with it", TicketStatus.RESOLVED)
+        self._assigned_to_support("Shut", TicketStatus.CLOSED)
+
+        self.client_api.force_authenticate(self.support)
+        data = self.client_api.get("/v1/support/dashboard/").json()["data"]
+        self.assertEqual(data["assigned_to_me"], 2)
+        # The population totals still see all of them - only the personal
+        # workload counters are scoped to unfinished work.
+        self.assertEqual(data["by_status"][TicketStatus.RESOLVED], 1)
+        self.assertEqual(data["by_status"][TicketStatus.CLOSED], 1)
+
+    def test_requested_by_me_counts_live_work_only(self):
+        self._assigned_to_support("Mine, open", TicketStatus.IN_PROGRESS)
+        self._assigned_to_support("Mine, closed", TicketStatus.CLOSED)
+        self.client_api.force_authenticate(self.requester)
+        data = self.client_api.get("/v1/support/dashboard/").json()["data"]
+        # The setUp ticket plus the in-progress one; the closed one drops out.
+        self.assertEqual(data["requested_by_me"], 2)
+
+    def test_list_state_active_and_assignee_me_match_the_counters(self):
+        live = self._assigned_to_support("Live one", TicketStatus.IN_PROGRESS)
+        self._assigned_to_support("Finished one", TicketStatus.RESOLVED)
+
+        self.client_api.force_authenticate(self.support)
+        payload = self.client_api.get(
+            "/v1/support/tickets/?assignee=me&state=active"
+        ).json()["data"]
+        rows = payload.get("results", []) if isinstance(payload, dict) else payload
+        self.assertEqual([str(row["id"]) for row in rows], [str(live.pk)])
+
+    def test_assignee_me_cannot_be_used_to_read_another_users_queue(self):
+        # `me` resolves from the request, never from the value, so it can only
+        # ever narrow the caller's own visible set.
+        self._assigned_to_support("Support's ticket", TicketStatus.IN_PROGRESS)
+        self.client_api.force_authenticate(self.peer)
+        payload = self.client_api.get("/v1/support/tickets/?assignee=me").json()["data"]
+        rows = payload.get("results", []) if isinstance(payload, dict) else payload
+        self.assertEqual(list(rows), [])
+
 
 class TicketPermissionSeedTests(TestCase):
     def test_seed_ticket_permissions_registers_and_attaches_school_defaults(self):
