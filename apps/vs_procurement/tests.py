@@ -134,9 +134,7 @@ class _P2PFixtureMixin:
         # subject under test is AP, reporting or branch scope rather than the match, so
         # the opt-in is made explicit here instead of riding on what the default
         # happens to be. Tests that exercise the policy itself set their own row.
-        ProcurementSettings.objects.update_or_create(
-            entity=entity, defaults={"allow_non_po_invoices": True},
-        )
+        self.allow_non_po_bills(entity)
         # Every real entity gets a default stock location, either from migration 0028
         # or from the first one an administrator creates. The fixture mirrors that, so
         # stock tests exercise the same shape production has rather than an entity with
@@ -168,6 +166,27 @@ class _P2PFixtureMixin:
             collected_account=self.acc(entity, "2300"),
         )
         return entity, period, vendor, input_vat, wht
+
+    @staticmethod
+    def allow_non_po_bills(entity):
+        """Opt ``entity`` into bills raised without a purchase order.
+
+        The product blocks those by default (migration 0027): nothing three-way
+        matches a non-PO bill - no ordered quantity, no receipt, no agreed price -
+        so approval is its only control, and a school must ask for it deliberately.
+
+        Fixtures need the opt-in because most of them bill without a PO while
+        testing something else entirely (AP reporting, entity isolation, branch
+        scope). It lives here, in one place every builder calls, because the last
+        time this default changed only ``build_p2p`` was updated and the four
+        hand-rolled entity builders were missed - which left three tests failing on
+        main. Tests that exercise the policy itself build their own bare entity and
+        must not call this.
+        """
+        ProcurementSettings.objects.update_or_create(
+            entity=entity, defaults={"allow_non_po_invoices": True},
+        )
+        return entity
 
     @staticmethod
     def acc(entity, code):
@@ -3486,6 +3505,7 @@ class ProcurementAnalyticsReportAPITests(_P2PFixtureMixin, TestCase):
             default_expense_account=self.acc(entity, "5300"),
             kyc_status="VERIFIED",
         )
+        self.allow_non_po_bills(entity)
         return entity, vendor
 
     def _posted_bill(self, entity, vendor, *, amount=1_000_000, date=datetime.date(2026, 1, 10)):
@@ -3637,6 +3657,7 @@ class VendorAssessmentTests(_P2PFixtureMixin, TestCase):
             default_expense_account=self.acc(entity, "5300"),
             kyc_status="VERIFIED",
         )
+        self.allow_non_po_bills(entity)
         return entity, vendor
 
     def _payload(self, vendor, **over):
@@ -3809,6 +3830,7 @@ class AnalyticsDrawerEndpointTests(_P2PFixtureMixin, TestCase):
             default_expense_account=self.acc(entity, "5300"),
             kyc_status="VERIFIED",
         )
+        self.allow_non_po_bills(entity)
         return entity, vendor
 
     def _posted_bill(self, entity, vendor, *, amount=1_000_000, date=datetime.date(2026, 1, 10)):
@@ -3963,6 +3985,7 @@ class GRIRPoLinesTests(_P2PFixtureMixin, TestCase):
             default_expense_account=self.acc(entity, "5300"),
             kyc_status="VERIFIED",
         )
+        self.allow_non_po_bills(entity)
         return entity, vendor
 
     def _post_bill(self, entity, vendor, po, po_line, qty, *, grn_line=None, allow_variance=False):
@@ -9661,6 +9684,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
             default_expense_account=self.acc(entity, "5300"),
             kyc_status="VERIFIED",
         )
+        self.allow_non_po_bills(entity)
         return types.SimpleNamespace(entity=entity, vendor=vendor)
 
     def client_for(self, tenant, email, *, branch=None):
@@ -10220,6 +10244,7 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
             default_expense_account=self.acc(entity, "5300"),
             kyc_status="VERIFIED",
         )
+        self.allow_non_po_bills(entity)
         return types.SimpleNamespace(entity=entity, vendor=vendor)
 
     def user_for(self, tenant, email, *, branch=None, first_name="Branch"):
