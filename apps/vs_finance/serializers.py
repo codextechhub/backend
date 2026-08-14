@@ -143,6 +143,7 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
         from django.db import transaction
         from django.utils import timezone
 
+        from .provisioning import provision_entity
         from .seed import seed_chart_of_accounts, seed_currencies, seed_fiscal_year
 
         fiscal_year = validated_data.pop("fiscal_year", None)
@@ -159,7 +160,8 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
             validated_data["tenant"] = request_tenant
 
         # Provision a fully usable set of books in one call: the entity, the default
-        # currencies, a starter chart of accounts, and open fiscal periods.
+        # currencies, a starter chart of accounts, open fiscal periods, and whatever
+        # dependent apps register (the procurement and payout approval ladders).
         # This keeps the bootstrap API-driven (no CLI seed_finance step required).
         # The fiscal anchors let a school open e.g. a Sept–Aug year on a chosen day.
         with transaction.atomic():
@@ -175,6 +177,10 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
                 fiscal_period_frequency=period_frequency,
                 fiscal_start_day=start_day,
             )
+            # Inside the transaction on purpose: books without their approval ladders
+            # are the open door this closes, so a failure here takes the entity with
+            # it rather than leaving an ungated tenant behind.
+            provision_entity(entity)
         return entity
 
     def to_representation(self, instance):

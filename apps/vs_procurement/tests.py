@@ -128,6 +128,14 @@ class _P2PFixtureMixin:
             name="Test Books", code="TBOOK", kind=LedgerEntity.Kind.TENANT,
         )
         seed_chart_of_accounts(entity)
+        # Non-PO bills are refused by default now: a bill with no order has nothing to
+        # three-way match against. Most fixtures here bill without a PO because the
+        # subject under test is AP, reporting or branch scope rather than the match, so
+        # the opt-in is made explicit here instead of riding on what the default
+        # happens to be. Tests that exercise the policy itself set their own row.
+        ProcurementSettings.objects.update_or_create(
+            entity=entity, defaults={"allow_non_po_invoices": True},
+        )
         year = FiscalYear.objects.create(
             entity=entity, year=2026,
             start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
@@ -4224,8 +4232,8 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
 
     def test_issue_enforces_competitive_minimum_and_audits_exception(self):
         entity, _, vendor, _, _ = self.build_p2p()
-        ProcurementSettings.objects.create(
-            entity=entity, minimum_rfq_invited_vendors=2,
+        ProcurementSettings.objects.update_or_create(
+            entity=entity, defaults={"minimum_rfq_invited_vendors": 2},
         )
         rfq = self._make_rfq(entity, invite=[vendor])
 
@@ -4305,8 +4313,8 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
 
     def test_award_enforces_submitted_bid_minimum_and_audits_exception(self):
         entity, _, vendor, _, _ = self.build_p2p()
-        ProcurementSettings.objects.create(
-            entity=entity, minimum_submitted_quotations_before_award=2,
+        ProcurementSettings.objects.update_or_create(
+            entity=entity, defaults={"minimum_submitted_quotations_before_award": 2},
         )
         rfq = self._make_rfq(entity)
         issue_rfq(rfq)
@@ -4762,8 +4770,8 @@ class SourcingConsoleAPITests(_P2PFixtureMixin, TestCase):
         self, _ordinary_permission, _competition_permission, _super_admin,
     ):
         entity, _, vendor, _, _ = self.build_p2p()
-        ProcurementSettings.objects.create(
-            entity=entity, minimum_rfq_invited_vendors=2,
+        ProcurementSettings.objects.update_or_create(
+            entity=entity, defaults={"minimum_rfq_invited_vendors": 2},
         )
         rfq = RequestForQuotation.objects.create(
             entity=entity, title="Limited market", issue_date=datetime.date(2026, 1, 3),
@@ -4792,8 +4800,8 @@ class SourcingConsoleAPITests(_P2PFixtureMixin, TestCase):
         self, _ordinary_permission, competition_permission, _super_admin,
     ):
         entity, _, vendor, _, _ = self.build_p2p()
-        ProcurementSettings.objects.create(
-            entity=entity, minimum_rfq_invited_vendors=2,
+        ProcurementSettings.objects.update_or_create(
+            entity=entity, defaults={"minimum_rfq_invited_vendors": 2},
         )
         rfq = RequestForQuotation.objects.create(
             entity=entity, title="Limited market", issue_date=datetime.date(2026, 1, 3),
@@ -11697,3 +11705,185 @@ class VendorAdvanceDrawdownEndpointTests(_P2PFixtureMixin, TestCase):
         resp = self._client(entity).post(
             self._url(entity, payment), {"auto_allocate": True}, format="json")
         self.assertEqual(resp.status_code, 403)
+
+
+class ProcurementCloseCheckTests(_P2PFixtureMixin, TestCase):
+    """The AP and GR/IR checks a period close only ran when nobody passed them in.
+
+    Finance's ``extra_checks`` argument existed for exactly these two and no production
+    caller ever supplied it, so every close ran without them: a period could be sealed
+    over an AP sub-ledger that disagreed with its control account and report success.
+    These cover the registry that replaced it.
+    """
+
+    def test_both_checks_are_registered_at_startup(self):
+        from vs_finance.close import registered_close_checks
+
+        from vs_procurement.close_checks import ap_reconciled, grir_explained
+
+        registered = registered_close_checks()
+        self.assertIn(ap_reconciled, registered)
+        self.assertIn(grir_explained, registered)
+
+    def test_the_close_checklist_carries_them_without_being_asked(self):
+        """The real assertion: a plain close_checklist call now includes payables."""
+        from vs_finance.close import close_checklist
+        from vs_finance.models import FiscalPeriod
+
+        entity, _, _, _, _ = self.build_p2p()
+        period = FiscalPeriod.objects.get(entity=entity, period_no=1)
+
+        names = [i.name for i in close_checklist(entity, period).items]
+        self.assertIn("ap_reconciled", names)
+        self.assertIn("grir_explained", names)
+
+    def test_an_entity_with_no_vendors_is_not_given_payables_checks(self):
+        """A school that has never bought anything gets no meaningless rows."""
+        from vs_finance.close import close_checklist
+        from vs_finance.models import FiscalPeriod, LedgerEntity
+        from vs_finance.seed import seed_chart_of_accounts, seed_fiscal_year
+
+        entity = LedgerEntity.objects.create(
+            name="No Purchases", code="NOPUR", kind=LedgerEntity.Kind.TENANT,
+        )
+        seed_chart_of_accounts(entity)
+        seed_fiscal_year(entity, year=2026)
+        period = FiscalPeriod.objects.filter(entity=entity).order_by("period_no").first()
+
+        names = [i.name for i in close_checklist(entity, period).items]
+        self.assertNotIn("ap_reconciled", names)
+        self.assertNotIn("grir_explained", names)
+
+    def test_ap_drift_blocks_the_close_and_grir_only_warns(self):
+        """The two are deliberately different strengths.
+
+        AP drift means a posting bypassed the sub-ledger and must be found. A GR/IR
+        balance is normal at month end - goods in, bill not yet here - so failing the
+        close on it would make month-end impossible; it is surfaced, not blocked.
+        """
+        from vs_finance.close import ChecklistItem
+
+        from vs_procurement.close_checks import ap_reconciled, grir_explained
+
+        entity, _, _, _, _ = self.build_p2p()
+        ap = ap_reconciled(entity, None)
+        grir = grir_explained(entity, None)
+        self.assertIsInstance(ap, ChecklistItem)
+        self.assertTrue(ap.blocking)
+        self.assertFalse(grir.blocking)
+
+
+class ProcurementOnboardingSeedTests(TestCase):
+    """The ladders arrive with the books, rather than with a remembered command."""
+
+    def _entity_payload(self, code="ONBRD"):
+        return {"name": "Onboarded Books", "code": code}
+
+    def test_creating_books_publishes_this_tenants_spend_ladders(self):
+        from vs_finance.models import LedgerEntity
+        from vs_finance.provisioning import provision_entity
+        from vs_schools.models import School
+        from vs_workflow.models import WorkflowTemplate
+
+        from vs_procurement.constants import PROCUREMENT_APPROVAL_TYPES
+
+        school = School.objects.create(
+            name="Rowan", slug="rowan-onboard", code="RWNON", status="ACTIVE")
+        entity = LedgerEntity.objects.create(
+            name="Rowan Books", code="RWNBK", kind=LedgerEntity.Kind.TENANT,
+            tenant=school.tenant,
+        )
+        provision_entity(entity)
+
+        published = set(WorkflowTemplate.all_objects.filter(
+            tenant=school.tenant).values_list("document_type", flat=True))
+        for document_type in PROCUREMENT_APPROVAL_TYPES:
+            self.assertIn(document_type, published)
+
+    def test_the_seeded_ladder_has_nobody_in_it(self):
+        """Seeded blocked, not seeded open: the role exists, unheld."""
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_finance.models import LedgerEntity
+        from vs_finance.provisioning import provision_entity
+        from vs_schools.models import School
+
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
+
+        school = School.objects.create(
+            name="Ash", slug="ash-onboard", code="ASHON", status="ACTIVE")
+        entity = LedgerEntity.objects.create(
+            name="Ash Books", code="ASHBK", kind=LedgerEntity.Kind.TENANT,
+            tenant=school.tenant,
+        )
+        provision_entity(entity)
+
+        role = TenantRoleTemplate.objects.get(
+            tenant=school.tenant, key=WF_DEFAULT_MANAGER_ROLE)
+        self.assertFalse(
+            TenantUserRoleAssignment.objects.filter(role=role).exists())
+
+    def test_a_second_entity_in_one_tenant_does_not_republish(self):
+        from vs_finance.models import LedgerEntity
+        from vs_finance.provisioning import provision_entity
+        from vs_schools.models import School
+        from vs_workflow.models import WorkflowTemplate
+
+        school = School.objects.create(
+            name="Birch", slug="birch-onboard", code="BRCON", status="ACTIVE")
+        first = LedgerEntity.objects.create(
+            name="Birch Books", code="BRCB1", kind=LedgerEntity.Kind.TENANT,
+            tenant=school.tenant,
+        )
+        provision_entity(first)
+        before = set(WorkflowTemplate.all_objects.filter(
+            tenant=school.tenant).values_list("pk", flat=True))
+
+        second = LedgerEntity.objects.create(
+            name="Birch Annex", code="BRCB2", kind=LedgerEntity.Kind.TENANT,
+            tenant=school.tenant,
+        )
+        provision_entity(second)
+
+        after = set(WorkflowTemplate.all_objects.filter(
+            tenant=school.tenant).values_list("pk", flat=True))
+        self.assertEqual(before, after)  # Non-destructive, and no duplicates.
+
+
+class NonPoInvoicePolicyDefaultTests(TestCase):
+    """A bill with no purchase order is refused unless the tenant opts in.
+
+    Nothing three-way matches a non-PO bill: there is no ordered quantity, no receipt
+    and no agreed price, so approval is its only control. Allowing that by default was
+    the wrong way round, and the setting stays available for an entity that genuinely
+    bills without orders.
+    """
+
+    def test_a_fresh_entity_refuses_bills_with_no_purchase_order(self):
+        from vs_procurement.models import ProcurementSettings
+
+        settings_row = ProcurementSettings()
+        self.assertFalse(settings_row.allow_non_po_invoices)
+
+    def test_the_resolved_policy_says_the_same(self):
+        from vs_finance.models import LedgerEntity
+
+        from vs_procurement.settings import resolve_procurement_settings
+
+        entity = LedgerEntity.objects.create(
+            name="Quince Books", code="QNCBK", kind=LedgerEntity.Kind.TENANT,
+        )
+        self.assertFalse(resolve_procurement_settings(entity).allow_non_po_invoices)
+
+    def test_a_tenant_can_still_turn_it_on(self):
+        from vs_finance.models import LedgerEntity
+
+        from vs_procurement.models import ProcurementSettings
+        from vs_procurement.settings import resolve_procurement_settings
+
+        entity = LedgerEntity.objects.create(
+            name="Rowan Books", code="RWNQB", kind=LedgerEntity.Kind.TENANT,
+        )
+        ProcurementSettings.objects.update_or_create(
+            entity=entity, defaults={"allow_non_po_invoices": True},
+        )
+        self.assertTrue(resolve_procurement_settings(entity).allow_non_po_invoices)

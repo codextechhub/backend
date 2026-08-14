@@ -3882,6 +3882,80 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
             close_period(entity, periods[0], extra_checks=[failing_check])
         self.assertTrue(calls)  # the injected check actually ran
 
+    # --- the registry, which is what production actually uses ---------------- #
+
+    def test_a_registered_check_runs_without_the_caller_knowing_about_it(self):
+        """The seam that matters: nothing in the product passes extra_checks.
+
+        ``extra_checks`` existed for procurement's AP and GR/IR reconciliations and
+        only a test ever used it, so in practice every close ran without them. The
+        registry is what the close view relies on now, so it is what must be covered.
+        """
+        from vs_finance.close import (
+            ChecklistItem, close_checklist, register_close_check,
+            registered_close_checks,
+        )
+
+        entity, _, periods = self.build_books()
+        seen = []
+
+        def contributed(entity_arg, period_arg):
+            seen.append((entity_arg.pk, period_arg.pk))
+            return ChecklistItem(name="contributed", passed=False, detail="nope")
+
+        register_close_check(contributed)
+        self.addCleanup(registered_close_checks().clear)
+        try:
+            checklist = close_checklist(entity, periods[0])
+        finally:
+            from vs_finance import close as close_mod
+            close_mod._REGISTERED_CHECKS.remove(contributed)
+
+        self.assertEqual(seen, [(entity.pk, periods[0].pk)])
+        self.assertIn("contributed", [i.name for i in checklist.items])
+        self.assertFalse(checklist.passed)  # a failing contributed check blocks
+
+    def test_a_registered_check_that_raises_fails_the_close_rather_than_vanishing(self):
+        """A check that cannot answer is not the same as a check that passed."""
+        from vs_finance import close as close_mod
+        from vs_finance.close import close_checklist, register_close_check
+
+        entity, _, periods = self.build_books()
+
+        def exploding(entity_arg, period_arg):
+            raise RuntimeError("subledger unavailable")
+
+        register_close_check(exploding)
+        try:
+            checklist = close_checklist(entity, periods[0])
+        finally:
+            close_mod._REGISTERED_CHECKS.remove(exploding)
+
+        item = next(i for i in checklist.items if i.name == "exploding")
+        self.assertFalse(item.passed)
+        self.assertIn("subledger unavailable", item.detail)
+        self.assertFalse(checklist.passed)
+
+    def test_registering_the_same_check_twice_runs_it_once(self):
+        from vs_finance import close as close_mod
+        from vs_finance.close import ChecklistItem, close_checklist, register_close_check
+
+        entity, _, periods = self.build_books()
+        runs = []
+
+        def counted(entity_arg, period_arg):
+            runs.append(1)
+            return ChecklistItem(name="counted", passed=True)
+
+        register_close_check(counted)
+        register_close_check(counted)
+        try:
+            close_checklist(entity, periods[0])
+        finally:
+            close_mod._REGISTERED_CHECKS.remove(counted)
+
+        self.assertEqual(len(runs), 1)
+
 
 # Group tests for Financial Statement Tests.
 class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
@@ -9835,3 +9909,129 @@ class VoidedDocumentHistoryTests(_ARFixtureMixin, TestCase):
         # Five document queries (one per type) plus one bulk reversal lookup.
         with self.assertNumQueries(6):
             customer_account_movements(customer)
+
+
+class AdjustmentApprovalSeedTests(TestCase):
+    """The ladders over receivable adjustments, and where the threshold bites.
+
+    Refunds and write-offs carried a submit endpoint and a handler from the start, but
+    finance published no templates at all, so ``approval_required`` answered False and
+    both posted directly: the gate was built and never switched on. Concessions and
+    credit notes had no gate at all, which meant one permission holder could reduce a
+    receivable to nil while the same amount as a refund needed two people.
+    """
+
+    def _tenant(self, slug, code):
+        from vs_schools.models import School
+
+        return School.objects.create(
+            name=code.title(), slug=slug, code=code, status="ACTIVE").tenant
+
+    def _seeded(self, slug="holly-adj", code="HLYAD"):
+        from vs_finance.approvals import ensure_tenant_approval_templates
+
+        tenant = self._tenant(slug, code)
+        ensure_tenant_approval_templates(tenant)
+        return tenant
+
+    def _stages(self, tenant, document_type):
+        from vs_workflow.models import WorkflowTemplate
+
+        template = WorkflowTemplate.all_objects.get(
+            tenant=tenant, document_type=document_type)
+        return list(template.stages.filter(retired_at__isnull=True).order_by("order"))
+
+    def test_all_four_adjustment_types_get_a_ladder(self):
+        tenant = self._seeded()
+        for document_type in ("finance.refund", "finance.write_off",
+                              "finance.concession", "finance.credit_note"):
+            self.assertTrue(self._stages(tenant, document_type), document_type)
+
+    def test_cash_out_and_conceded_income_are_always_gated(self):
+        """A refund and a write-off need a second person at any size."""
+        tenant = self._seeded(slug="ivy-adj", code="IVYAD")
+        for document_type in ("finance.refund", "finance.write_off"):
+            stages = self._stages(tenant, document_type)
+            self.assertEqual(len(stages), 1, document_type)
+            self.assertIsNone(stages[0].inclusion_condition, document_type)
+
+    def test_a_waiver_is_gated_only_above_the_threshold(self):
+        """Small goodwill stays frictionless; a large one needs a second person."""
+        from vs_finance.constants import WF_ADJUSTMENT_THRESHOLD
+
+        tenant = self._seeded(slug="juniper-adj", code="JNPAD")
+        for document_type, amount_field in (("finance.concession", "amount"),
+                                            ("finance.credit_note", "total")):
+            stages = self._stages(tenant, document_type)
+            self.assertEqual(len(stages), 2, document_type)
+            self.assertIsNone(stages[0].inclusion_condition, document_type)
+            self.assertEqual(
+                stages[1].inclusion_condition,
+                {"op": "gte", "field": amount_field,
+                 "value": WF_ADJUSTMENT_THRESHOLD},
+                document_type,
+            )
+
+    def test_no_adjustment_stage_may_auto_skip_itself(self):
+        """An unstaffed stage must park the adjustment, not post it."""
+        tenant = self._seeded(slug="kola-adj", code="KLAAD")
+        for document_type in ("finance.refund", "finance.write_off",
+                              "finance.concession", "finance.credit_note"):
+            for stage in self._stages(tenant, document_type):
+                self.assertFalse(stage.skip_if_no_approvers,
+                                 f"{document_type}:{stage.code}")
+
+    def test_the_approving_roles_exist_and_nobody_holds_them(self):
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+
+        from vs_finance.constants import (
+            WF_ADJUSTMENT_APPROVER_ROLE, WF_SENIOR_ADJUSTMENT_APPROVER_ROLE,
+        )
+
+        tenant = self._seeded(slug="larch-adj", code="LRCAD")
+        for key in (WF_ADJUSTMENT_APPROVER_ROLE, WF_SENIOR_ADJUSTMENT_APPROVER_ROLE):
+            role = TenantRoleTemplate.objects.get(tenant=tenant, key=key)
+            self.assertFalse(
+                TenantUserRoleAssignment.objects.filter(role=role).exists(), key)
+
+    def test_the_threshold_is_configurable_down_to_every_one(self):
+        from vs_finance.approvals import ensure_tenant_approval_templates
+
+        tenant = self._tenant("maple-adj", "MPLAD")
+        ensure_tenant_approval_templates(tenant, threshold=0)
+        senior = self._stages(tenant, "finance.concession")[1]
+        self.assertEqual(senior.inclusion_condition["value"], 0)
+
+    def test_reseeding_never_overwrites_what_an_admin_configured(self):
+        from vs_finance.approvals import ensure_tenant_approval_templates
+
+        tenant = self._tenant("nutmeg-adj", "NTMAD")
+        ensure_tenant_approval_templates(tenant, threshold=123_400)
+        again = ensure_tenant_approval_templates(tenant)
+        self.assertTrue(all(not created for _t, created in again))
+        senior = self._stages(tenant, "finance.concession")[1]
+        self.assertEqual(senior.inclusion_condition["value"], 123_400)
+
+    def test_a_tenant_is_required(self):
+        from vs_finance.approvals import ensure_tenant_approval_templates
+
+        with self.assertRaises(ValueError):
+            ensure_tenant_approval_templates(None)
+
+    def test_creating_books_publishes_them(self):
+        """The point of the whole change: no remembered command."""
+        from vs_finance.models import LedgerEntity
+        from vs_finance.provisioning import provision_entity
+        from vs_workflow.models import WorkflowTemplate
+
+        tenant = self._tenant("olive-adj", "OLVAD")
+        entity = LedgerEntity.objects.create(
+            name="Olive Books", code="OLVBK", kind=LedgerEntity.Kind.TENANT,
+            tenant=tenant,
+        )
+        provision_entity(entity)
+
+        published = set(WorkflowTemplate.all_objects.filter(
+            tenant=tenant).values_list("document_type", flat=True))
+        self.assertIn("finance.concession", published)
+        self.assertIn("finance.credit_note", published)

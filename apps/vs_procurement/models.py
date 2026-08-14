@@ -130,7 +130,11 @@ class ProcurementSettings(TimeStampedModel):
         default=0, validators=[MaxValueValidator(10000)],
         help_text="Allowed unit-price variance in basis points.",
     )
-    allow_non_po_invoices = models.BooleanField(default=True)
+    allow_non_po_invoices = models.BooleanField(
+        default=False,
+        help_text="Allow bills with no purchase order. Off by default: a non-PO bill "
+                  "has no three-way match, so approval is its only control.",
+    )
     vendor_purchase_kyc_requirement = models.CharField(
         max_length=20, choices=VendorPurchaseKycRequirement.choices,
         default=VendorPurchaseKycRequirement.PENDING_OR_VERIFIED,

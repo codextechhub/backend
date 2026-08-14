@@ -1392,9 +1392,16 @@ class CreditNotePostView(_CreditNoteActionBase):
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
+        from .approvals import approval_required
         from .credit_notes import post_credit_note
 
         entity, note = self._note(request, pk)
+        # Same opt-in gate as refunds and write-offs.
+        if approval_required(note):
+            raise ValidationError({
+                "detail": "This note is approval-gated; submit it for approval "
+                          "instead of posting directly.",
+            })
         body = request.data or {}
         plan = _allocation_plan(entity, body.get("allocations"))
         auto = bool(body.get("auto_allocate", plan is None))
@@ -1431,6 +1438,40 @@ class CreditNoteAllocateView(_CreditNoteActionBase):
         return success_response(
             f"Credit note {note.document_number} allocated.",
             data=CreditNoteSerializer(note).data,
+        )
+
+
+
+# Group endpoint behavior for Credit Note Submit View.
+class CreditNoteSubmitView(_CreditNoteActionBase):
+    """POST /finance/credit-notes/<id>/submit/ - submit a draft note for approval.
+
+    Covers both directions: a credit note reduces a receivable, a debit note increases
+    it, and one gate serves both because the risk is a mistaken note either way. The
+    handler's ``validate_document`` runs the write-free guards now so a note with no
+    lines, or a customer with no AR control, is refused before it reaches a queue.
+
+    Only meaningful when a template exists for ``finance.credit_note`` at this note's
+    scope; the seeded ladder gates it at or above the configured threshold.
+
+    docstring-name: Submit a credit note for approval
+    """
+    rbac_permission = "finance.creditnote.submit"
+
+    @transaction.atomic
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk):
+        from vs_workflow.services import release as release_svc
+        from vs_workflow.services.submission import submit_for_approval
+
+        _, note = self._note(request, pk)
+        instance = submit_for_approval(note, requested_by=request.user)
+        note.refresh_from_db()
+        return success_response(
+            f"{note.get_kind_display()} note {note.document_number} submitted "
+            f"for approval.",
+            data=CreditNoteSerializer(note).data
+            | {"approval": release_svc.approval_block(instance)},
         )
 
 
@@ -2547,14 +2588,60 @@ class ConcessionPostView(_ConcessionActionBase):
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
+        from .approvals import approval_required
         from .installments import post_concession
 
         _, concession = self._concession(request, pk)
+        # Same opt-in gate as refunds and write-offs: with a template published for
+        # this concession's scope, the only route to the ledger is through approval.
+        if approval_required(concession):
+            raise ValidationError({
+                "detail": "This concession is approval-gated; submit it for approval "
+                          "instead of posting directly.",
+            })
         post_concession(concession, actor_user=request.user)
         concession.refresh_from_db()
         return success_response(
             f"{concession.get_kind_display()} {concession.document_number} posted.",
             data=ConcessionSerializer(concession).data,
+        )
+
+
+
+# Group endpoint behavior for Concession Submit View.
+class ConcessionSubmitView(_ConcessionActionBase):
+    """POST /finance/concessions/<id>/submit/ - submit a draft concession for approval.
+
+    A concession forgives revenue, so above the seeded threshold it needs a second
+    person exactly as a refund does. The handler's ``validate_document`` runs the
+    concession preflight now - posted invoice, not backdated before it, a positive
+    amount within the outstanding balance - so a doomed waiver is refused before it
+    reaches an approver's queue, and the GL is untouched until final approval.
+
+    Only meaningful when a template exists for ``finance.concession`` at this
+    concession's scope; the seeded ladder gates it at or above the configured
+    threshold and lets smaller allowances post directly.
+
+    docstring-name: Submit a concession for approval
+    """
+    rbac_permission = "finance.concession.submit"
+
+    @transaction.atomic
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk):
+        from vs_workflow.services import release as release_svc
+        from vs_workflow.services.submission import submit_for_approval
+
+        _, concession = self._concession(request, pk)
+        instance = submit_for_approval(concession, requested_by=request.user)
+        concession.refresh_from_db()
+        return success_response(
+            f"{concession.get_kind_display()} {concession.document_number} "
+            f"submitted for approval.",
+            data=ConcessionSerializer(concession).data
+            # Same contract as refunds, procurement and payouts: the client learns
+            # here that nobody can approve this, and can offer to continue.
+            | {"approval": release_svc.approval_block(instance)},
         )
 
 
