@@ -45,6 +45,7 @@ class CurrentUserView(APIView):
 
     def get(self, request):
         from vs_rbac.evaluator import get_effective_permissions
+        from vs_tenants.context import tenant_context_block
         # request.tenant is bound by TenantJWTAuthentication; fall back to the
         # user's home tenant for auth paths that bypass it (e.g. force_authenticate).
         tenant = getattr(request, "tenant", None) or request.user.tenant
@@ -55,11 +56,9 @@ class CurrentUserView(APIView):
             message="Current user retrieved successfully.",
             data={
                 "user": UserReadSerializer(request.user).data,
-                # kind lets the console tell the platform operator apart from a
-                # school without matching on the slug: a platform actor edits
-                # the shared workflow templates, a school edits its own.
-                "tenant": {"slug": tenant.slug, "name": tenant.name,
-                           "kind": tenant.kind},
+                # Same builder as the login response: the console skips its
+                # /me sync straight after a login, so the two must not drift.
+                "tenant": tenant_context_block(tenant),
                 "school": school_public_info(getattr(tenant, "school_profile", None), request),
                 "permissions": permissions,
             },

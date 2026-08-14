@@ -103,3 +103,16 @@ def clear_current_audit_identity():
 def clear_request_context():
     """Clear every request-local tenant and dual-identity value."""
     clear_current_tenant()
+
+
+def tenant_context_block(tenant) -> dict:
+    """The tenant fields the console caches for the signed-in session.
+
+    Built in one place because two callers must agree: the login response and
+    ``/user/auth/me/``. The console treats a fresh login as equivalent to a
+    ``/me`` sync and skips the round trip, so any field present in one and
+    missing from the other is silently absent for a whole session.
+    """
+    if tenant is None:
+        return {}
+    return {"slug": tenant.slug, "name": tenant.name, "kind": tenant.kind}

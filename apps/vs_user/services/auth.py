@@ -132,6 +132,7 @@ class LoginService:
         )
 
         from vs_rbac.evaluator import get_effective_permissions
+        from vs_tenants.context import tenant_context_block
         permissions = sorted(get_effective_permissions(authed, tenant=authed.tenant))
 
         return {
@@ -139,7 +140,7 @@ class LoginService:
             'refresh':     tokens['refresh'],
             'session_id':  session.id,
             'user':        UserReadSerializer(authed).data,
-            'tenant':      {'slug': authed.tenant.slug, 'name': authed.tenant.name},
+            'tenant':      tenant_context_block(authed.tenant),
             'school':      school_public_info(getattr(authed.tenant, 'school_profile', None), request),
             'permissions': permissions,
         }

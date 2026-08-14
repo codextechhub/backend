@@ -1821,3 +1821,58 @@ class UserBranchTenantGuardTests(TestCase):
         user.refresh_from_db()
         self.assertEqual(user.first_name, "Okay")
         self.assertEqual(user.tenant_id, self.branched.tenant_id)
+
+
+class AuthContextParityTests(TestCase):
+    """The login response and /me must describe the tenant identically.
+
+    The console treats a fresh login as equivalent to a /me sync and skips the
+    round trip for that mount, so a field one carries and the other does not is
+    absent for a whole session. That is how a platform operator came to be told
+    they were a school until the next page reload.
+    """
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import make_branch, make_school, make_school_admin
+
+        self.school = make_school(slug="parity-school", name="Parity School")
+        self.branch = make_branch(self.school)
+        self.user = make_school_admin(self.branch, email="parity-admin@test.com")
+
+    def _me_tenant(self):
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_user.views.me import CurrentUserView
+
+        request = APIRequestFactory().get("/v1/user/auth/me/")
+        request.tenant = self.user.tenant
+        request.rbac_tenant = self.user.tenant
+        force_authenticate(request, user=self.user)
+        resp = CurrentUserView.as_view()(request)
+        body = resp.data.get("data", resp.data)
+        return body["tenant"]
+
+    def test_me_matches_the_shared_builder(self):
+        from vs_tenants.context import tenant_context_block
+
+        self.assertEqual(self._me_tenant(), tenant_context_block(self.user.tenant))
+
+    def test_the_block_carries_kind(self):
+        """Without kind the console cannot tell the platform from a customer."""
+        from vs_rbac.tests.helpers import codex_tenant
+        from vs_tenants.context import tenant_context_block
+
+        self.assertEqual(tenant_context_block(self.user.tenant)["kind"], "SCHOOL")
+        self.assertEqual(tenant_context_block(codex_tenant())["kind"], "PLATFORM")
+
+    def test_login_response_carries_the_same_tenant_keys(self):
+        """The login payload is what the console caches when it skips /me."""
+        import inspect
+
+        from vs_user.services.auth import LoginService
+        from vs_tenants.context import tenant_context_block
+
+        source = inspect.getsource(LoginService)
+        self.assertIn("tenant_context_block", source,
+                      "login must build its tenant block with the shared helper")
+        self.assertEqual(set(tenant_context_block(self.user.tenant)),
+                         set(self._me_tenant()))
