@@ -58,6 +58,30 @@ can trace endpoints → calculations → output shapes without reading the code 
   construction, and exposes every tenant's job `result`, `error` and
   `traceback`.
 
+- 📝 `vs_audit` - documented: 3 slices in `docs/audit/` - `audit_event_stream`
+  (the central `AuditEvent` table, `emit_audit_event`, proxy attribution, the
+  Event Explorer and the two `/me/` self-service routes), `audit_security_dashboard`
+  (the one-request Security Dashboard aggregate), and `audit_compliance_exports`
+  (compliance rules, the in-app CSV export, and the `audit.events` Export Centre
+  dataset). Baseline at the time of writing: **10 tests, all green**.
+  **§8 gotchas are recorded but NOT yet swept** - the loop stopped at
+  step 3 (docs written) and steps 4-5 (briefing, fixes) are outstanding.
+  The worst item is a hard bug: `POST /v1/audit/exports/` writes the entire CSV
+  body into `AuditExportJob.file_path`, a `varchar(500)`, so any export past
+  roughly three rows raises a PostgreSQL `DataError`, 500s, and leaves an
+  orphaned `RUNNING` job row (no atomic block, `mark_failed` never called).
+  Second: the Event Explorer has no tenant filter and `platform.audit.view` is
+  seeded unrestricted/NORMAL, while nothing in the RBAC write path stops a
+  `platform.*` key being attached to a school-tenant role - so a school admin
+  holding `school.roles.create` can mint themselves a role that reads every
+  tenant's audit trail, `metadata` included. Third: exporting the trail writes
+  no audit event, though `EXPORT_REQUESTED`/`COMPLETED`/`FAILED` exist and are
+  templated for it, and every holder of `platform.audit.export` can read every
+  other holder's export file body. Fourth: only three of eighteen writer files
+  pass `tenant=` to `emit_audit_event`, so most rows carry `tenant = NULL` -
+  which is why the tenant-scoped Export Centre dataset returns almost nothing
+  and why scoping the console is blocked until the column is backfilled.
+
 ## The loop (per slice)
 
 1. **Trace the real code** - models, service functions, views (rbac keys + request
