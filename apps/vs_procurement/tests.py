@@ -7933,6 +7933,134 @@ class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
         )
 
 
+class ParkedOverrideAcrossDocumentTypesTests(_ParkingFixtureMixin, TestCase):
+    """The override on the three document types the suite never exercised.
+
+    The release service is deliberately type-generic - it reads the parked stage
+    off the workflow instance and never asks what kind of document raised it - but
+    only requisitions were ever tested through it, so nothing held the other three
+    to that promise. A purchase order, a vendor bill and a vendor payment are the
+    documents that actually commit and move money, and each reaches the ledger by
+    a different field, so "it works for requisitions" was never evidence for them.
+    """
+
+    OVERRIDE_KEY = "procurement.approval.override"
+
+    def _overrider(self, entity, email="multi-overrider@t.com"):
+        user = self._user(email, tenant=entity.tenant)
+        self._grant(user, self.OVERRIDE_KEY, tenant=entity.tenant,
+                    role_key="proc-breakglass")
+        return user
+
+    def _override_url(self, entity, instance):
+        return (f"/v1/procurement/approvals/{instance.id}/override/"
+                f"?entity={entity.code}")
+
+    def _release(self, actor, entity, instance, reason="Only approver has left."):
+        from core.test_utils import TenantAPIClient
+
+        return TenantAPIClient(user=actor).post(
+            self._override_url(entity, instance), {"reason": reason}, format="json",
+        )
+
+    def _park_document(self, document, requester):
+        """Submit into the seeded ladder, which nobody is appointed to."""
+        from vs_procurement.approvals import (
+            ensure_default_approval_templates, submit_for_approval,
+        )
+
+        ensure_default_approval_templates()
+        return submit_for_approval(document, actor_user=requester)
+
+    def _assert_released(self, instance, document, *, document_type, actor, amount):
+        from vs_workflow.constants import WorkflowInstanceStatus, WorkflowStageStatus
+        from vs_workflow.models import WorkflowStageAction, WorkflowStageInstance
+        from vs_procurement.constants import WF_OVERRIDE_SKIP_REASON
+        from vs_procurement.models import ApprovalOverride
+
+        instance.refresh_from_db()
+        document.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.APPROVED)
+        self.assertIsNone(instance.current_stage_id)
+        self.assertEqual(document.approval_state, ProcApprovalState.APPROVED)
+
+        # No vote was manufactured - the stage is recorded as one nobody ran.
+        released = WorkflowStageInstance.objects.filter(
+            instance=instance, status=WorkflowStageStatus.SKIPPED,
+            skip_reason=WF_OVERRIDE_SKIP_REASON,
+        )
+        self.assertTrue(released.exists())
+        self.assertFalse(WorkflowStageAction.objects.filter(
+            stage_instance__instance=instance).exists())
+
+        override = ApprovalOverride.objects.get(workflow_instance_id=str(instance.id))
+        self.assertEqual(override.document_type, document_type)
+        self.assertEqual(override.document_object_id, document.pk)
+        self.assertEqual(override.overridden_by_id, actor.pk)
+        # The amount is frozen at release time, from whichever field this type
+        # carries its money in.
+        self.assertEqual(override.amount, amount)
+
+    def test_override_releases_a_parked_purchase_order(self):
+        entity, _period, vendor, _vat, _wht = self.build_p2p()
+        requester = self._user("po-req@t.com", tenant=entity.tenant)
+        po = self.make_po(entity, vendor, [("5300", 2, 30_000, None)])
+        po.status = DocumentStatus.DRAFT
+        po.save(update_fields=["status"])
+        instance = self._park_document(po, requester)
+        actor = self._overrider(entity, email="po-over@t.com")
+
+        response = self._release(actor, entity, instance)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        po.refresh_from_db()
+        self._assert_released(
+            instance, po, document_type="procurement.purchase_order",
+            actor=actor, amount=po.total,
+        )
+
+    def test_override_releases_a_parked_vendor_invoice(self):
+        entity, _period, vendor, _vat, _wht = self.build_p2p()
+        requester = self._user("vi-req@t.com", tenant=entity.tenant)
+        bill = self.make_bill(entity, vendor, [("5300", 1, 40_000, None, None)])
+        bill.approval_state = ProcApprovalState.NOT_SUBMITTED
+        bill.save(update_fields=["approval_state"])
+        bill.recompute_totals(save=True)
+        instance = self._park_document(bill, requester)
+        actor = self._overrider(entity, email="vi-over@t.com")
+
+        response = self._release(actor, entity, instance)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        bill.refresh_from_db()
+        self._assert_released(
+            instance, bill, document_type="procurement.vendor_invoice",
+            actor=actor, amount=bill.total,
+        )
+
+    def test_override_releases_a_parked_vendor_payment(self):
+        from vs_procurement.models import VendorPayment
+
+        entity, _period, vendor, _vat, _wht = self.build_p2p()
+        requester = self._user("vp-req@t.com", tenant=entity.tenant)
+        payment = VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 20),
+            gross_amount=50_000, wht_amount=0, net_amount=50_000, allocated_amount=0,
+        )
+        instance = self._park_document(payment, requester)
+        actor = self._overrider(entity, email="vp-over@t.com")
+
+        response = self._release(actor, entity, instance)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        payment.refresh_from_db()
+        self._assert_released(
+            instance, payment, document_type="procurement.vendor_payment",
+            actor=actor, amount=payment.net_amount,
+        )
+
+
+
 class ProcurementApprovalQueueTests(_P2PFixtureMixin, TestCase):
     """The Procurement inbox narrows generic workflows to actor + ledger entity."""
 

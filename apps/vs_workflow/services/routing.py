@@ -30,8 +30,15 @@ from vs_workflow.services import audit as audit_service
 # Enqueue a lifecycle notification after the surrounding transaction commits,
 # so a rolled-back transition never notifies. Dispatch itself is best-effort
 # (vs_workflow/tasks.py) and Celery runs eagerly outside production.
-def _notify(instance: WorkflowInstance, event_key: str,
-            recipient_user_ids: list, context: dict) -> None:
+#
+# Public because the parking repair also has to tell people their queue changed:
+# when a role is finally staffed, ``services.parking`` fills the frozen approver
+# snapshot of an already-active stage, and without a notification the newly
+# eligible approver only learns of the waiting document by opening the queue on
+# spec. Every lifecycle message in this engine is built here so they cannot
+# drift apart.
+def notify(instance: WorkflowInstance, event_key: str,
+           recipient_user_ids: list, context: dict) -> None:
     if not recipient_user_ids:
         return
     from vs_workflow.tasks import dispatch_notification
@@ -238,7 +245,7 @@ def _activate_stage(instance: WorkflowInstance, stage: WorkflowStage,
     audit_service.write(instance, AuditEventType.STAGE_ACTIVATED,
                         stage_instance=stage_instance, context=audit_context)
     # Tell the stage's approvers their decision is awaited (bell + inbox).
-    _notify(instance, NOTIF_EVENT_STAGE_ACTIVATED,
+    notify(instance, NOTIF_EVENT_STAGE_ACTIVATED,
             recipient_user_ids=list({str(ea.user.id) for ea in eligible}),
             context={"stage_name": stage.label, "stage_label": stage.label,
                      "submitter_name": instance.requested_by.full_name})
@@ -377,7 +384,7 @@ def _terminate_approved(instance: WorkflowInstance) -> WorkflowInstance:
             or "an approver"
         )
     # Tell the requester their submission is fully approved.
-    _notify(instance, NOTIF_EVENT_FINAL_APPROVED,
+    notify(instance, NOTIF_EVENT_FINAL_APPROVED,
             recipient_user_ids=[str(instance.requested_by_id)],
             context={"final_approver_name": final_approver_name})
     return instance
@@ -401,7 +408,7 @@ def _terminate_rejected(instance: WorkflowInstance, actor, comment: str) -> Work
                         actor=actor, context={"comment": comment})
     get_handler(instance.document_type).on_rejected(instance, {"comment": comment})
     # Tell the requester their submission was terminally rejected.
-    _notify(instance, NOTIF_EVENT_REJECTED,
+    notify(instance, NOTIF_EVENT_REJECTED,
             recipient_user_ids=[str(instance.requested_by_id)],
             context={"rejected_by_name": getattr(actor, "full_name", ""),
                      "rejection_reason": comment})
@@ -425,7 +432,7 @@ def _return_to_requester(instance: WorkflowInstance, actor, comment: str,
     })
     get_handler(instance.document_type).on_returned(instance, {"comment": comment})
     # Tell the requester their submission needs changes and resubmission.
-    _notify(instance, NOTIF_EVENT_RETURNED,
+    notify(instance, NOTIF_EVENT_RETURNED,
             recipient_user_ids=[str(instance.requested_by_id)],
             context={"returned_by_name": getattr(actor, "full_name", ""),
                      "return_comment": comment})

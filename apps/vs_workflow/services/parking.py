@@ -272,6 +272,28 @@ def _repair_one(stage_instance_id, cache: ResolutionCache, document_types=None) 
             },
             message="Approvers became available for a parked stage.",
         )
+        # Tell the people who just became eligible. Until this existed a repaired
+        # document waited silently: the stage was already ACTIVE, so no activation
+        # notification had ever fired for it, and the audit row nobody reads was the
+        # only trace. Whoever was appointed to the role discovered the waiting work
+        # only by opening the queue on spec, which can be days after it became
+        # approvable. Same event and recipients as a stage activating normally,
+        # because that is exactly what it means to them; the audit entry above
+        # carries the marker distinguishing a repair from a real activation.
+        # Imported here rather than at module load: routing imports this module's
+        # siblings and the notifier is only needed on the rare repairing pass.
+        from vs_workflow.constants import NOTIF_EVENT_STAGE_ACTIVATED
+        from vs_workflow.services.routing import notify
+
+        notify(
+            instance, NOTIF_EVENT_STAGE_ACTIVATED,
+            recipient_user_ids=list({str(approver.user.id) for approver in eligible}),
+            context={
+                "stage_name": stage_instance.stage.label,
+                "stage_label": stage_instance.stage.label,
+                "submitter_name": instance.requested_by.full_name,
+            },
+        )
         return len(eligible)
 
 
