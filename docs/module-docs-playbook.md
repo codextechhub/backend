@@ -36,6 +36,27 @@ can trace endpoints → calculations → output shapes without reading the code 
   `rbac_permission`, and identity audit rows are written with a null tenant
   against a manager configured `include_global=True`, so any authenticated user
   in any tenant can read the whole platform's identity audit trail.
+- 📝 `vs_admin_console` - documented: 3 slices in `docs/console/` -
+  `console_impersonation` (proxy sessions, the two permission namespaces, the
+  auth-layer identity swap and the middleware access trail), `console_overview`
+  (the one-request landing screen and its per-section gating), and
+  `console_task_monitor` (the BackgroundJob engine-room views). Baseline at the
+  time of writing: **104 tests, all green**.
+  **§8 gotchas are recorded but NOT yet swept** - the loop stopped at
+  step 3 (docs written) and steps 4-5 (briefing, fixes) are outstanding.
+  The worst item: `ImpersonationSessionViewSet` is a plain `ModelViewSet`, so
+  the router publishes `POST`/`PATCH`/`DELETE` on `/v1/admin/impersonations/`
+  that fall through `get_permissions` to the **view** key, with every field of
+  the session writable and `Model.clean()` never called. A School Admin holding
+  the seeded `school.impersonation.view` can create an ACTIVE session targeting
+  any active user in any tenant - a Vision Super Admin included - and ride it,
+  with no justification, no tenant pinning and no audit bookend. Second: nine of
+  the thirteen `console_overview` signals count every tenant's finance,
+  procurement and payments documents, because those models are entity-scoped and
+  `TenantAwareManager` never engages. Third: the task monitor is gated on
+  Django's `is_staff` flag, which every CX staff account carries by
+  construction, and exposes every tenant's job `result`, `error` and
+  `traceback`.
 
 ## The loop (per slice)
 
