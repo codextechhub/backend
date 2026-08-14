@@ -59,6 +59,7 @@ from vs_procurement.models import (
     RfqInvitation,
     RfqLine,
     StockItem,
+    StockLocation,
     StockMovement,
     Vendor,
     VendorAdvanceAllocationJournal,
@@ -136,6 +137,14 @@ class _P2PFixtureMixin:
         ProcurementSettings.objects.update_or_create(
             entity=entity, defaults={"allow_non_po_invoices": True},
         )
+        # Every real entity gets a default stock location, either from migration 0028
+        # or from the first one an administrator creates. The fixture mirrors that, so
+        # stock tests exercise the same shape production has rather than an entity with
+        # nowhere to put anything.
+        StockLocation.objects.get_or_create(
+            entity=entity, code="MAIN",
+            defaults={"name": "Main store", "is_default": True},
+        )
         year = FiscalYear.objects.create(
             entity=entity, year=2026,
             start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
@@ -194,6 +203,27 @@ class _P2PFixtureMixin:
                 accepted_qty=qty, unit_price=po_line.unit_price, line_no=i,
             )
         return grn
+
+    def _seed_stock(self, item, *, on_hand_qty, stock_value, location=None):
+        """Put an item into a known state without going through the ledger.
+
+        Writing the item's totals alone no longer describes a reachable state: the
+        location balance is the authority and the totals are its roll-up, so a test
+        that seeds only the roll-up describes stock standing nowhere. This writes both,
+        exactly as a movement would.
+        """
+        from vs_procurement.models import StockBalance, StockItem, StockLocation
+
+        location = location or StockLocation.objects.get(
+            entity=item.entity, is_default=True)
+        StockBalance.objects.update_or_create(
+            stock_item=item, location=location,
+            defaults={"on_hand_qty": on_hand_qty, "stock_value": stock_value},
+        )
+        StockItem.objects.filter(pk=item.pk).update(
+            on_hand_qty=on_hand_qty, stock_value=stock_value)
+        item.refresh_from_db()
+        return item
 
     def make_bill(self, entity, vendor, lines, *, po=None, date=datetime.date(2026, 1, 10)):
         """lines: [(expense_code, qty, unit_price, tax_code|None, po_line|None)]."""
@@ -8313,12 +8343,12 @@ class StockLedgerTests(_P2PFixtureMixin, TestCase):
         entity, _, _, _, _ = self.build_p2p()
 
         derived = self._stock_item(entity, code="ROUND-UNIT")
-        StockItem.objects.filter(pk=derived.pk).update(on_hand_qty=2, stock_value=1)
+        self._seed_stock(derived, on_hand_qty=2, stock_value=1)
         derived.refresh_from_db()
         self.assertEqual(derived.unit_cost, 1)               # 1 / 2 = 0.5 → 1 kobo
 
         issued = self._stock_item(entity, code="ROUND-ISSUE")
-        StockItem.objects.filter(pk=issued.pk).update(on_hand_qty=2, stock_value=3)
+        self._seed_stock(issued, on_hand_qty=2, stock_value=3)
         first = issue_stock(
             issued, quantity=1, movement_date=datetime.date(2026, 1, 12),
         )
@@ -8339,7 +8369,7 @@ class StockLedgerTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(explicit_move.value_amount, 1)      # 1 × 0.5 → 1 kobo
 
         average = self._stock_item(entity, code="ROUND-AVERAGE")
-        StockItem.objects.filter(pk=average.pk).update(on_hand_qty=2, stock_value=1)
+        self._seed_stock(average, on_hand_qty=2, stock_value=1)
         average_move = adjust_stock(
             average, quantity_delta=1, movement_date=datetime.date(2026, 1, 15),
         )
@@ -8757,7 +8787,7 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(changed.data["data"]["inventory_code"], "1410")
 
         quantity_only = self._item(entity, code="QTY-ONLY")
-        StockItem.objects.filter(pk=quantity_only.pk).update(on_hand_qty=1, stock_value=0)
+        self._seed_stock(quantity_only, on_hand_qty=1, stock_value=0)
         quantity_url = (
             f"/v1/procurement/stock-items/{quantity_only.pk}/?entity={entity.code}"
         )
@@ -8773,7 +8803,7 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
         )
 
         value_only = self._item(entity, code="VALUE-ONLY")
-        StockItem.objects.filter(pk=value_only.pk).update(on_hand_qty=0, stock_value=1)
+        self._seed_stock(value_only, on_hand_qty=0, stock_value=1)
         value_url = f"/v1/procurement/stock-items/{value_only.pk}/?entity={entity.code}"
         blocked_value = client.patch(
             value_url, {"inventory_account": alternate.pk}, format="json",
@@ -11774,7 +11804,28 @@ class ProcurementCloseCheckTests(_P2PFixtureMixin, TestCase):
 
 
 class ProcurementOnboardingSeedTests(TestCase):
-    """The ladders arrive with the books, rather than with a remembered command."""
+    """The ladders and a stock location arrive with the books."""
+
+    def test_creating_books_gives_the_entity_somewhere_to_put_stock(self):
+        """Every movement needs a location, so an entity must never have none."""
+        from vs_finance.models import LedgerEntity
+        from vs_finance.provisioning import provision_entity
+        from vs_schools.models import School
+
+        from vs_procurement.models import StockLocation
+
+        school = School.objects.create(
+            name="Larch", slug="larch-stock", code="LRCST", status="ACTIVE")
+        entity = LedgerEntity.objects.create(
+            name="Larch Books", code="LRCSB", kind=LedgerEntity.Kind.TENANT,
+            tenant=school.tenant,
+        )
+        provision_entity(entity)
+
+        location = StockLocation.objects.get(entity=entity)
+        self.assertEqual(location.code, "MAIN")
+        self.assertTrue(location.is_default)
+        self.assertIsNone(location.branch)  # Entity-wide until a campus needs its own.
 
     def _entity_payload(self, code="ONBRD"):
         return {"name": "Onboarded Books", "code": code}
@@ -11886,4 +11937,182 @@ class NonPoInvoicePolicyDefaultTests(TestCase):
         ProcurementSettings.objects.update_or_create(
             entity=entity, defaults={"allow_non_po_invoices": True},
         )
+        # Every real entity gets a default stock location, either from migration 0028
+        # or from the first one an administrator creates. The fixture mirrors that, so
+        # stock tests exercise the same shape production has rather than an entity with
+        # nowhere to put anything.
+        StockLocation.objects.get_or_create(
+            entity=entity, code="MAIN",
+            defaults={"name": "Main store", "is_default": True},
+        )
         self.assertTrue(resolve_procurement_settings(entity).allow_non_po_invoices)
+
+
+class StockLocationTests(_P2PFixtureMixin, TestCase):
+    """Stock is held per location, and one campus cannot spend another's.
+
+    Before this, an item carried a single quantity and a single value for the whole
+    entity. A thousand books existed; nothing recorded that seven hundred stood at one
+    campus. An issue at the other drew against stock it did not physically have and the
+    availability check allowed it, because it was checking the entity total.
+    """
+
+    def setUp(self):
+        from vs_procurement.models import StockItem, StockLocation
+
+        self.entity, _, _, _, _ = self.build_p2p()
+        self.main = StockLocation.objects.get(entity=self.entity, code="MAIN")
+        self.item = StockItem.objects.create(
+            entity=self.entity, code="BOOK", name="Exercise book",
+            inventory_account=self.acc(self.entity, "1400"),
+            default_expense_account=self.acc(self.entity, "5300"),
+        )
+
+    def _location(self, code, name):
+        from vs_procurement.models import StockLocation
+
+        return StockLocation.objects.create(
+            entity=self.entity, code=code, name=name)
+
+    def _receive(self, location, qty, value):
+        from vs_procurement.stock import receive_stock
+
+        return receive_stock(
+            self.item, quantity=qty, value=value,
+            movement_date=datetime.date(2026, 1, 5), location=location,
+        )
+
+    def _balance(self, location):
+        from vs_procurement.models import StockBalance
+
+        return StockBalance.objects.get(stock_item=self.item, location=location)
+
+    # --- the defect this exists to fix -------------------------------------- #
+
+    def test_one_campus_cannot_issue_stock_standing_at_another(self):
+        """700 at Lekki, 300 at Ikeja. Ikeja issuing 500 must be refused."""
+        from vs_procurement.exceptions import InsufficientStockError
+        from vs_procurement.stock import issue_stock
+
+        lekki = self._location("LEKKI", "Lekki store")
+        ikeja = self._location("IKEJA", "Ikeja store")
+        self._receive(lekki, 700, 175_000_00)
+        self._receive(ikeja, 300, 75_000_00)
+
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.on_hand_qty, 1000)  # The roll-up still says 1,000.
+
+        with self.assertRaises(InsufficientStockError):
+            issue_stock(
+                self.item, quantity=500, movement_date=datetime.date(2026, 1, 10),
+                location=ikeja,
+            )
+
+    def test_each_location_issues_at_its_own_average_cost(self):
+        """A campus that bought dearer relieves inventory at its own price."""
+        from vs_procurement.stock import issue_stock
+
+        lekki = self._location("LEKKI", "Lekki store")
+        ikeja = self._location("IKEJA", "Ikeja store")
+        self._receive(lekki, 100, 30_000_00)   # 300.00 each
+        self._receive(ikeja, 100, 20_000_00)   # 200.00 each
+
+        self.assertEqual(self._balance(lekki).unit_cost, 300_00)
+        self.assertEqual(self._balance(ikeja).unit_cost, 200_00)
+
+        dear = issue_stock(self.item, quantity=10, location=lekki,
+                           movement_date=datetime.date(2026, 1, 10))
+        cheap = issue_stock(self.item, quantity=10, location=ikeja,
+                            movement_date=datetime.date(2026, 1, 10))
+        # Blended, both would have relieved 2,500.00.
+        self.assertEqual(dear.value_amount, -3_000_00)
+        self.assertEqual(cheap.value_amount, -2_000_00)
+
+    # --- the roll-up the rest of the app reads ------------------------------ #
+
+    def test_the_item_total_stays_the_sum_of_its_locations(self):
+        from decimal import Decimal
+
+        from vs_procurement.models import StockBalance
+        from vs_procurement.stock import adjust_stock, issue_stock
+
+        lekki = self._location("LEKKI", "Lekki store")
+        self._receive(self.main, 40, 10_000_00)
+        self._receive(lekki, 60, 18_000_00)
+        issue_stock(self.item, quantity=5, location=lekki,
+                    movement_date=datetime.date(2026, 1, 10))
+        adjust_stock(self.item, quantity_delta=-3, location=self.main,
+                     movement_date=datetime.date(2026, 1, 11))
+
+        rows = StockBalance.objects.filter(stock_item=self.item)
+        self.item.refresh_from_db()
+        self.assertEqual(
+            self.item.on_hand_qty,
+            sum((Decimal(r.on_hand_qty) for r in rows), Decimal(0)))
+        self.assertEqual(
+            int(self.item.stock_value), sum(int(r.stock_value) for r in rows))
+
+    def test_a_movement_snapshots_its_own_location_not_the_entity(self):
+        """The history must reconstruct a site's position, not a blend."""
+        lekki = self._location("LEKKI", "Lekki store")
+        self._receive(self.main, 40, 10_000_00)
+        movement = self._receive(lekki, 60, 18_000_00)
+
+        self.assertEqual(movement.location_id, lekki.pk)
+        self.assertEqual(movement.balance_qty, 60)          # not 100
+        self.assertEqual(int(movement.balance_value), 18_000_00)
+
+    # --- branch-optional: the dimension recedes ----------------------------- #
+
+    def test_a_single_location_entity_needs_no_location_at_all(self):
+        """A school with one store calls exactly as it always did."""
+        from vs_procurement.stock import issue_stock, receive_stock
+
+        receive_stock(self.item, quantity=10, value=2_500_00,
+                      movement_date=datetime.date(2026, 1, 5))
+        movement = issue_stock(self.item, quantity=4,
+                               movement_date=datetime.date(2026, 1, 10))
+        self.assertEqual(movement.location_id, self.main.pk)
+
+    def test_two_locations_and_no_choice_is_refused_rather_than_guessed(self):
+        from vs_procurement.exceptions import StockError
+        from vs_procurement.stock import issue_stock
+
+        self._location("LEKKI", "Lekki store")
+        self._receive(self.main, 10, 2_500_00)
+
+        with self.assertRaises(StockError) as caught:
+            issue_stock(self.item, quantity=1,
+                        movement_date=datetime.date(2026, 1, 10))
+        self.assertIn("more than one stock location", str(caught.exception))
+
+    def test_a_location_from_another_entity_is_refused(self):
+        from vs_finance.models import LedgerEntity
+
+        from vs_procurement.exceptions import StockError
+        from vs_procurement.models import StockLocation
+        from vs_procurement.stock import receive_stock
+
+        other = LedgerEntity.objects.create(
+            name="Other Books", code="OTHBK", kind=LedgerEntity.Kind.TENANT)
+        foreign = StockLocation.objects.create(
+            entity=other, code="FOREIGN", name="Somebody else's store")
+
+        with self.assertRaises(StockError):
+            receive_stock(self.item, quantity=1, value=100,
+                          movement_date=datetime.date(2026, 1, 5), location=foreign)
+
+    # --- reporting ----------------------------------------------------------- #
+
+    def test_valuation_narrows_to_one_location_and_still_totals_the_entity(self):
+        from vs_procurement.stock import stock_valuation
+
+        lekki = self._location("LEKKI", "Lekki store")
+        self._receive(self.main, 40, 10_000_00)
+        self._receive(lekki, 60, 18_000_00)
+
+        whole = stock_valuation(self.entity)
+        just_lekki = stock_valuation(self.entity, location=lekki)
+        self.assertEqual(whole["total_value"], 28_000_00)
+        self.assertEqual(just_lekki["total_value"], 18_000_00)
+        self.assertEqual(just_lekki["location_id"], lekki.pk)

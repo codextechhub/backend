@@ -131,6 +131,12 @@ urlpatterns = [
          name="proc-approval-override"),
 
     # Inventory / stock ledger
+    path("stock-locations/", views.StockLocationListCreateView.as_view(),
+         name="proc-stock-locations"),
+    path("stock-locations/<int:pk>/", views.StockLocationDetailView.as_view(),
+         name="proc-stock-location-detail"),
+    path("stock-balances/", views.StockBalanceListView.as_view(),
+         name="proc-stock-balances"),
     path("stock-items/", views.StockItemListCreateView.as_view(), name="proc-stock-items"),
     # "summary" is registered before "<pk>" so the literal is not captured as an id.
     path("stock-items/summary/", views.StockItemSummaryView.as_view(), name="proc-stock-item-summary"),

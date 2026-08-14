@@ -35,6 +35,11 @@ class VsProcurementConfig(AppConfig):
         # so the gate is on from onboarding rather than from a remembered command.
         from vs_finance.provisioning import register_entity_provisioner
 
-        from .provisioning import provision_approval_ladders
+        from .provisioning import (
+            provision_approval_ladders,
+            provision_default_stock_location,
+        )
 
         register_entity_provisioner(provision_approval_ladders)
+        # Stock lives at a location now, so every entity needs one to receive into.
+        register_entity_provisioner(provision_default_stock_location)

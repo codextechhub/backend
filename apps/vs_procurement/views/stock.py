@@ -19,18 +19,23 @@ from vs_finance.views import resolve_entity
 
 from .. import stock
 from ..models import (
+    StockBalance,
     StockItem,
+    StockLocation,
     StockMovement,
 )
 from ..serializers import (
+    StockBalanceSerializer,
     StockItemDetailSerializer,
     StockItemListSerializer,
+    StockLocationSerializer,
     StockMovementSerializer,
 )
 
 
 from .base import (
     _kobo,
+    _resolve_branch_reference,
     _ProcBase,
     _date,
     _nonneg_qty,
@@ -75,6 +80,180 @@ def _stock_detail(entity, pk):
             .order_by("-id")[:50]
         )
     return item
+
+
+def _flag(raw, field, default=False):
+    """Read a boolean from a query string, where everything arrives as text."""
+    if raw in (None, ""):
+        return default
+    if isinstance(raw, bool):
+        return raw
+    lowered = str(raw).strip().lower()
+    if lowered in ("true", "1", "yes"):
+        return True
+    if lowered in ("false", "0", "no"):
+        return False
+    raise ValidationError({field: "Enter a valid boolean value."})
+
+
+def _resolve_location(entity, raw, field="location"):
+    """Resolve a caller-supplied location reference inside this entity.
+
+    Accepts a primary key or a code, like the other entity-safe resolvers here, and
+    refuses one belonging to another entity before any service sees it. ``None`` is
+    returned when nothing was given, so the stock service applies its own defaulting.
+    """
+    if raw in (None, ""):
+        return None
+    lookup = {"pk": raw} if str(raw).isdigit() else {"code": str(raw)}
+    location = StockLocation.objects.filter(entity=entity, **lookup).first()
+    if location is None:
+        raise ValidationError({field: "No such stock location in this entity."})
+    return location
+
+
+class StockLocationListCreateView(_ProcBase):
+    """GET (list) / POST (create) the places stock physically sits.
+
+    A location may name a branch or none. An entity-wide store leaves it blank; a
+    two-campus school gives each campus its own, and a campus with a main store and a
+    lab store gives each of those one. Exactly one location per entity is the default,
+    which is what a single-store school relies on to keep moving stock without naming
+    one.
+
+    docstring-name: Stock locations
+    """
+
+    @property
+    def rbac_permission(self):
+        return ("procurement.stock.view" if self.request.method == "GET"
+                else "procurement.stock.manage")
+
+    def get(self, request):
+        """List this entity's locations, newest default first."""
+        entity = resolve_entity(request)
+        qs = StockLocation.objects.filter(entity=entity).select_related("branch")
+        if (active := request.query_params.get("is_active")) not in (None, ""):
+            qs = qs.filter(is_active=_flag(active, "is_active"))
+        return self.paginate(
+            request, qs.order_by("-is_default", "code"), StockLocationSerializer)
+
+    @transaction.atomic
+    def post(self, request):
+        """Create a location, keeping exactly one default in the entity."""
+        entity = resolve_entity(request)
+        body = request.data or {}
+        serializer = StockLocationSerializer(data=body)
+        serializer.is_valid(raise_exception=True)
+        branch = _resolve_branch_reference(entity, body.get("branch"))
+
+        # The first location an entity has must be its default, otherwise nothing
+        # resolves for a caller that names none and the entity cannot move stock.
+        has_any = StockLocation.objects.filter(entity=entity).exists()
+        wants_default = _strict_bool(body.get("is_default", not has_any), "is_default")
+        if wants_default:
+            StockLocation.objects.filter(entity=entity, is_default=True).update(
+                is_default=False)
+        try:
+            location = StockLocation.objects.create(
+                entity=entity, branch=branch,
+                is_default=wants_default or not has_any,
+                **{k: serializer.validated_data.get(k, "")
+                   for k in ("code", "name", "description")},
+                is_active=_strict_bool(body.get("is_active", True), "is_active"),
+            )
+        except IntegrityError:
+            raise ValidationError(
+                {"code": "A stock location with this code already exists here."})
+        return success_response(
+            "Stock location created.",
+            data=StockLocationSerializer(location).data, status=201,
+        )
+
+
+class StockLocationDetailView(_ProcBase):
+    """GET / PATCH one stock location.
+
+    docstring-name: Stock location detail
+    """
+
+    @property
+    def rbac_permission(self):
+        return ("procurement.stock.view" if self.request.method == "GET"
+                else "procurement.stock.manage")
+
+    def _location(self, request, pk):
+        entity = resolve_entity(request)
+        location = StockLocation.objects.filter(entity=entity, pk=pk).first()
+        if location is None:
+            raise NotFound("No such stock location in this entity.")
+        return entity, location
+
+    def get(self, request, pk):
+        _entity, location = self._location(request, pk)
+        return success_response(
+            "Stock location retrieved.", data=StockLocationSerializer(location).data)
+
+    @transaction.atomic
+    def patch(self, request, pk):
+        """Edit a location. Deactivating one that still holds stock is refused."""
+        entity, location = self._location(request, pk)
+        body = request.data or {}
+        for field, limit in (("name", 200), ("description", 255)):
+            if field in body:
+                setattr(location, field, _text(body[field], field, limit))
+        if "branch" in body:
+            location.branch = _resolve_branch_reference(entity, body.get("branch"))
+        if "is_default" in body and _strict_bool(body["is_default"], "is_default"):
+            StockLocation.objects.filter(entity=entity, is_default=True).exclude(
+                pk=location.pk).update(is_default=False)
+            location.is_default = True
+        if "is_active" in body:
+            active = _strict_bool(body["is_active"], "is_active")
+            if not active:
+                # Stock cannot be issued from an inactive location, so deactivating one
+                # that still holds any would strand it where nobody can reach it.
+                held = StockBalance.objects.filter(location=location).exclude(
+                    on_hand_qty=0, stock_value=0).exists()
+                if held:
+                    raise ValidationError({"is_active":
+                        "This location still holds stock. Move it out first."})
+                if location.is_default:
+                    raise ValidationError({"is_active":
+                        "The default location cannot be deactivated. Make another "
+                        "location the default first."})
+            location.is_active = active
+        location.save()
+        return success_response(
+            "Stock location updated.", data=StockLocationSerializer(location).data)
+
+
+class StockBalanceListView(_ProcBase):
+    """GET - what each item holds at each location.
+
+    The rows that add up to the item totals every other stock screen shows.
+
+    docstring-name: Stock balances by location
+    """
+
+    rbac_permission = "procurement.stock.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = StockBalance.objects.filter(
+            stock_item__entity=entity,
+        ).select_related("stock_item", "location")
+        if (item_ref := request.query_params.get("stock_item")):
+            qs = qs.filter(stock_item_id=item_ref) if str(item_ref).isdigit() \
+                else qs.filter(stock_item__code=item_ref)
+        if (loc := _resolve_location(entity, request.query_params.get("location"))):
+            qs = qs.filter(location=loc)
+        if _flag(request.query_params.get("held_only"), "held_only"):
+            qs = qs.exclude(on_hand_qty=0, stock_value=0)
+        return self.paginate(
+            request, qs.order_by("stock_item__code", "location__code"),
+            StockBalanceSerializer)
+
 
 class StockItemListCreateView(_ProcBase):
     """GET (list) / POST (create) stock items - perpetual-inventory masters.
@@ -253,6 +432,9 @@ class StockIssueView(_ProcBase):
             quantity=_quantity(body.get("quantity"), "quantity"),
             movement_date=_date(body.get("movement_date"), "movement_date")
             or datetime.date.today(),
+            # Which store it left. Optional for an entity with one; required once it
+            # has more, so nobody has to guess which campus the stock came from.
+            location=_resolve_location(entity, body.get("location")),
             # An override expense account, if given, must be an active postable EXPENSE.
             expense_account=_resolve_expense_account(
                 entity, body.get("expense_account"), "expense_account"),
@@ -293,6 +475,8 @@ class StockAdjustView(_ProcBase):
             quantity_delta=_signed_qty(body.get("quantity_delta"), "quantity_delta"),
             movement_date=_date(body.get("movement_date"), "movement_date")
             or datetime.date.today(),
+            # A count corrects one shelf; say which.
+            location=_resolve_location(entity, body.get("location")),
             # Adjustment account, if given, must be active postable EXPENSE (defaults to 5150).
             adjustment_account=_resolve_expense_account(
                 entity, body.get("adjustment_account"), "adjustment_account"),
@@ -362,12 +546,14 @@ class StockMovementListView(_ProcBase):
         """List the entity movement ledger with optional item/type filters."""
         entity = resolve_entity(request)
         qs = StockMovement.objects.filter(entity=entity).select_related(
-            "stock_item", "created_by")
+            "stock_item", "created_by", "location")
         if (item_ref := request.query_params.get("stock_item")):
             qs = qs.filter(stock_item_id=item_ref) if str(item_ref).isdigit() \
                 else qs.filter(stock_item__code=item_ref)
         if (mtype := request.query_params.get("movement_type")):
             qs = qs.filter(movement_type=mtype)
+        if (loc := _resolve_location(entity, request.query_params.get("location"))):
+            qs = qs.filter(location=loc)
         return self.paginate(request, qs.order_by("-id"), StockMovementSerializer)
 
 
@@ -380,9 +566,11 @@ class StockReorderReportView(_ProcBase):
         from core.pagination import XVSPagination
 
         entity = resolve_entity(request)
+        location = _resolve_location(entity, request.query_params.get("location"))
         paginator = XVSPagination()
         paginator.page_size = 25
-        page = paginator.paginate_queryset(stock.reorder_items(entity), request, view=self)
+        page = paginator.paginate_queryset(
+            stock.reorder_items(entity, location=location), request, view=self)
         rows = [stock.reorder_row(item) for item in page]
         response = paginator.get_paginated_response({
                 "entity": entity.code,
@@ -397,6 +585,7 @@ class StockReorderReportView(_ProcBase):
                     for r in rows
                 ],
         })
+        response.data["data"]["location"] = location.code if location else None
         response.data["message"] = "Stock reorder report retrieved."
         return response
 
@@ -410,10 +599,12 @@ class StockValuationReportView(_ProcBase):
         from core.pagination import XVSPagination
 
         entity = resolve_entity(request)
+        location = _resolve_location(entity, request.query_params.get("location"))
         paginator = XVSPagination()
         paginator.page_size = 25
-        page = paginator.paginate_queryset(stock.valuation_items(entity), request, view=self)
-        rows = [stock.valuation_row(item) for item in page]
+        page = paginator.paginate_queryset(
+            stock.valuation_items(entity, location=location), request, view=self)
+        rows = [stock.valuation_row(row) for row in page]
         response = paginator.get_paginated_response({
                 "entity": entity.code,
                 "rows": [
@@ -425,7 +616,9 @@ class StockValuationReportView(_ProcBase):
                     }
                     for r in rows
                 ],
-                "total_value": _kobo(stock.stock_valuation_total(entity)),
+                "total_value": _kobo(
+                    stock.stock_valuation_total(entity, location=location)),
+                "location": location.code if location else None,
         })
         response.data["message"] = "Stock valuation retrieved."
         return response

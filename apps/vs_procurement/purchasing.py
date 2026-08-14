@@ -315,7 +315,7 @@ def _post_grn_atomic(grn, *, actor_user=None):
     # Stock rows are the authoritative perpetual-ledger counters. Lock every referenced
     # item once, in primary-key order, before constructing the journal so concurrent GRNs
     # cannot overwrite one another and two multi-item receipts cannot invert lock order.
-    from .stock import lock_stock_items, receive_stock
+    from .stock import location_for_branch, lock_stock_items, receive_stock
 
     stock_item_ids = sorted({line.stock_item_id for line in lines if line.stock_item_id})
     locked_stock_items = lock_stock_items(stock_item_ids)
@@ -400,13 +400,17 @@ def _post_grn_atomic(grn, *, actor_user=None):
     # Raise the perpetual stock ledger for any stock-tracked lines. The GL inventory
     # debit belongs to this GRN journal; receive_stock must therefore update only the
     # quantity/value sub-ledger, otherwise the same receipt would hit inventory twice.
+    # Goods land where they physically arrived: the receipt's own branch picks the
+    # store, so a two-campus school does not have to be told twice where a delivery
+    # went. A single-store entity resolves to its one location either way.
+    receipt_location = location_for_branch(grn.entity, grn.branch)
     for line in lines:
         if line.stock_item_id and line.value_amount > 0:
             receive_stock(
                 locked_stock_items[line.stock_item_id],
                 quantity=line.accepted_qty, value=line.value_amount,
-                movement_date=grn.received_date, grn=grn, journal=entry,
-                actor_user=actor_user,
+                movement_date=grn.received_date, location=receipt_location,
+                grn=grn, journal=entry, actor_user=actor_user,
                 narration=f"GRN {grn.document_number or grn.pk}",
             )
 
