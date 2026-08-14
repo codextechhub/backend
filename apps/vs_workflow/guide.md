@@ -179,6 +179,66 @@ created, because published templates reference it.
 
 ---
 
+### Platform templates and a tenant's own version
+
+A template published with **no tenant** is the *platform* template: one shared
+definition every tenant runs until it adjusts its own. Publishing it is a
+platform act, so the publish payload carries `scope`:
+
+| `scope` | Writes | Who may |
+|---|---|---|
+| `TENANT` (default) | a template owned by the calling tenant | anyone with `workflow.template.manage` |
+| `PLATFORM` | the shared, tenant-less template | only an actor whose tenant is `PLATFORM` |
+
+This distinction is load-bearing. The platform (Codex) is itself a tenant, so
+without `scope=PLATFORM` every "master" it published would have been its own
+private template that no other tenant inherits, and the cascade's last step -
+`tenant=None` - would never be reached.
+
+When a tenant publishes over a shared template's `(document_type, code)`, it
+gets its own version, which the cascade prefers from then on. That is the
+intended flexibility, not an accident: the tenant adjusts the flow it runs
+without touching anybody else's. The consequence to be honest about on screen
+is that later changes to the platform template no longer reach that tenant.
+`GET /templates/` says where each one stands:
+
+| Field | Meaning |
+|---|---|
+| `is_platform` | This row is the shared definition. |
+| `tenant_has_own` | On a platform row: this tenant is running its own version instead. |
+| `platform_updated_at` | On a tenant row: when the shared version it came from last changed. |
+| `platform_changed_since` | On a tenant row: the shared version moved on after this tenant last saved. |
+
+**Seeing who runs it** (platform actors only, read-only):
+
+| Method | Path | Answers |
+|---|---|---|
+| `GET` | `/templates/{id}/adoption/` | How many tenants run this as published, and which ones run their own. |
+| `GET` | `/templates/{id}/compare/?with=<template id>` | How one tenant's version differs from the shared one. |
+
+Both refuse a caller whose own tenant is not `PLATFORM` (`PLATFORM_ONLY`) and
+refuse a subject that is not the shared template (`NOT_PLATFORM_TEMPLATE`).
+`compare` additionally checks that the other template is an active tenant
+version of the *same* `(document_type, code)`, so it cannot be used to read an
+arbitrary tenant's template by guessing an id, and it answers the same 404 for
+"no such template" and "not a version of this one". It returns configuration
+only - stages, approvers, rules, routing - never documents, approvals or people.
+`adoption` counts tenants rather than templates: a tenant with both a
+branch-level and a tenant-level version has still adjusted the path once.
+
+**Going back to the shared version**: `POST /templates/{id}/use-platform-version/`
+switches the tenant's own version off (`is_active=False`) rather than deleting
+it - instances PROTECT the template they ran under, so the version that has
+actually been used is precisely the one that cannot be deleted. Inactive
+templates are skipped by the cascade, so the next request falls through to the
+platform template; publishing again brings the tenant's version back. The call
+returns the platform template now in force. It refuses on a platform template
+(`ALREADY_PLATFORM`) and when no platform version exists to fall back to
+(`NO_PLATFORM_VERSION`, 409) - switching off in that case would leave the
+document type with no template at all.
+
+---
+
 ### Central templates and tenant overrides
 
 A template published with **no tenant** is *central*: one definition, shared by

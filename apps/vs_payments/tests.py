@@ -2970,3 +2970,80 @@ class UnbookedReceiptAlertTests(_PaymentsFixtureMixin, TestCase):
         for body in (in_app, email):
             # format_naira already carries the symbol; a literal one doubles it.
             self.assertNotIn("₦₦", body)
+
+
+class PayoutOnboardingSeedTests(TestCase):
+    """The payout gate arrives with the tenant's books.
+
+    Batch approval is opt-in by template, so a tenant whose ladder was never published
+    had no maker-checker at all on the highest-risk cash-out path: one person could
+    send a whole salary run to the bank. Publishing it was a management command
+    somebody had to remember. It is now provisioned with the entity.
+    """
+
+    def _tenant(self, slug="cedar-onboard", code="CDRON"):
+        from vs_schools.models import School
+
+        return School.objects.create(
+            name="Cedar", slug=slug, code=code, status="ACTIVE").tenant
+
+    def _entity(self, tenant, code):
+        from vs_finance.models import LedgerEntity
+
+        return LedgerEntity.objects.create(
+            name=f"{code} Books", code=code, kind=LedgerEntity.Kind.TENANT,
+            tenant=tenant,
+        )
+
+    def test_creating_books_publishes_the_payout_ladder(self):
+        from vs_finance.provisioning import provision_entity
+        from vs_workflow.models import WorkflowTemplate
+
+        tenant = self._tenant()
+        provision_entity(self._entity(tenant, "CDRBK"))
+
+        self.assertTrue(WorkflowTemplate.all_objects.filter(
+            tenant=tenant, document_type="payments.payout_batch").exists())
+
+    def test_the_seeded_stage_never_auto_skips(self):
+        """An unstaffed stage must park the batch, not pay it out."""
+        from vs_finance.provisioning import provision_entity
+        from vs_workflow.models import WorkflowTemplate
+
+        tenant = self._tenant(slug="elm-onboard", code="ELMON")
+        provision_entity(self._entity(tenant, "ELMBK"))
+
+        template = WorkflowTemplate.all_objects.get(
+            tenant=tenant, document_type="payments.payout_batch")
+        stages = template.stages.filter(retired_at__isnull=True)
+        self.assertTrue(stages.exists())
+        for stage in stages:
+            self.assertFalse(stage.skip_if_no_approvers, stage.code)
+
+    def test_the_approving_role_exists_and_nobody_holds_it(self):
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_finance.provisioning import provision_entity
+
+        from vs_payments.constants import WF_DEFAULT_APPROVE_ROLE
+
+        tenant = self._tenant(slug="fir-onboard", code="FIRON")
+        provision_entity(self._entity(tenant, "FIRBK"))
+
+        role = TenantRoleTemplate.objects.get(
+            tenant=tenant, key=WF_DEFAULT_APPROVE_ROLE)
+        self.assertFalse(
+            TenantUserRoleAssignment.objects.filter(role=role).exists())
+
+    def test_provisioning_a_second_entity_changes_nothing(self):
+        from vs_finance.provisioning import provision_entity
+        from vs_workflow.models import WorkflowTemplate
+
+        tenant = self._tenant(slug="gum-onboard", code="GUMON")
+        provision_entity(self._entity(tenant, "GUMB1"))
+        before = set(WorkflowTemplate.all_objects.filter(
+            tenant=tenant).values_list("pk", flat=True))
+
+        provision_entity(self._entity(tenant, "GUMB2"))
+        after = set(WorkflowTemplate.all_objects.filter(
+            tenant=tenant).values_list("pk", flat=True))
+        self.assertEqual(before, after)

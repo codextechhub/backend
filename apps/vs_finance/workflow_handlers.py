@@ -380,3 +380,171 @@ class WriteOffHandler(_FinancePostOnApprove):
             ],
             "link": f"/finance/write-offs/{document.pk}/",  # Frontend deep link.
         }
+
+
+@register_handler("finance.concession")
+# Workflow handler for concession approvals.
+class ConcessionHandler(_FinancePostOnApprove):
+    """Approval handler for a :class:`~vs_finance.models.Concession`.
+
+    A concession forgives revenue outright. Refunds and write-offs have been
+    approvable since the gate was built; concessions were not, so a single permission
+    holder could reduce a receivable to nil and the posting was the only record. The
+    seeded ladder gates them above a threshold rather than always, because a small
+    goodwill allowance should not need a second person and a full waiver should.
+
+    :func:`post_concession` guards ``status == DRAFT``, so the default
+    ``_mark_approved`` (flip to APPROVED first) would break it. This mirrors the refund
+    handler and hands the service a DRAFT document instead.
+    """
+
+    @property
+    # Concrete model for finance.concession instances.
+    def document_model(self):
+        from .models import Concession
+        return Concession  # Return concession model class.
+
+    # Concession posting service requires a draft document.
+    def _mark_approved(self, doc) -> None:
+        # post_concession owns the DRAFT → POSTED transition and re-guards it, so the
+        # document is handed over DRAFT rather than pre-flipped. If the post raises,
+        # this write rolls back with the whole approval action.
+        if doc.status != DocumentStatus.DRAFT:  # Reset only when currently pending/approved.
+            doc.status = DocumentStatus.DRAFT  # Hand draft state to post_concession.
+            doc.save(update_fields=["status", "updated_at"])
+
+    # Validate the concession can post before it enters workflow.
+    def preflight(self, document) -> None:
+        """Run the concession-posting guards without writing anything.
+
+        Mirrors :func:`vs_finance.installments._post_concession_atomic` (posted
+        invoice, not dated before the invoice, an outstanding balance, a positive
+        amount within that balance, a resolvable AR control) with the same
+        ``PostingError`` messages, so the preflight and the eventual post agree.
+
+        Checking the date here matters: an approval queue is exactly where a backdated
+        waiver would otherwise sit looking valid and fail at the final step.
+        """
+        from .chronology import ensure_on_or_after
+        from .exceptions import PostingError
+
+        invoice = document.invoice  # Invoice the concession reduces.
+        if invoice.status != DocumentStatus.POSTED:  # Only posted invoices carry AR.
+            raise PostingError(
+                f"Invoice {invoice.document_number or invoice.pk} is '{invoice.status}'; "
+                f"a concession can only reduce a posted invoice.",
+            )
+
+        ensure_on_or_after(  # A discount cannot predate the charge it discounts.
+            subject=f"Concession {document.document_number or document.pk}",
+            subject_date=document.concession_date,
+            source=f"invoice {invoice.document_number or invoice.pk}",
+            source_date=invoice.invoice_date,
+            remedy=f"Date the concession {invoice.invoice_date} or later.",
+        )
+
+        balance = invoice.balance_due  # Outstanding balance available to concede.
+        if balance <= 0:  # Nothing left to forgive.
+            raise PostingError("Invoice has no outstanding balance to concede.")
+        amount = int(document.amount)  # Concession magnitude in kobo.
+        if amount <= 0:  # Must forgive a positive amount.
+            raise PostingError("A concession must have a positive amount to post.")
+        if amount > balance:  # Cannot forgive more than is owed.
+            raise PostingError(
+                f"Concession amount ({amount} kobo) exceeds the outstanding balance "
+                f"({balance} kobo).",
+            )
+        if document.customer.receivable_account is None:  # AR control must resolve.
+            raise PostingError(
+                f"Customer {document.customer.code} has no receivable (AR control) "
+                f"account set.",
+            )
+
+    # Post an approved concession.
+    def post(self, document, *, actor_user) -> None:
+        from .installments import post_concession
+
+        post_concession(document, actor_user=actor_user)  # Delegate to the service.
+
+    # Build approval summary for a concession.
+    def summary(self, document) -> dict:
+        return {  # Workflow summary payload.
+            "title": document.document_number or str(document.pk),  # Document number or id.
+            "subtitle": f"Concession ({document.get_kind_display()})",  # Discount, waiver, scholarship.
+            "fields": [  # Key facts shown to approvers.
+                {"label": "Date", "value": document.concession_date.isoformat()},  # Effective date.
+                {"label": "Customer", "value": document.customer.code},  # Customer code.
+                {"label": "Invoice", "value": document.invoice.document_number or ""},  # Target invoice.
+                {"label": "Amount", "value": format_naira(document.amount)},  # Amount forgiven.
+                {"label": "Reason", "value": document.reason or "-"},  # Stated grounds.
+            ],
+            "link": f"/finance/concessions/{document.pk}/",  # Frontend deep link.
+        }
+
+
+@register_handler("finance.credit_note")
+# Workflow handler for credit- and debit-note approvals.
+class CreditNoteHandler(_FinancePostOnApprove):
+    """Approval handler for a :class:`~vs_finance.models.CreditNote`.
+
+    Covers both directions. A credit note reduces a receivable without cash moving; a
+    debit note increases it. One document type and one gate, because the risk is a
+    mistaken note either way and two gates would be twice the administration for the
+    same control.
+
+    :func:`post_credit_note` guards ``status == DRAFT``, so the document is handed over
+    DRAFT rather than pre-flipped, as for refunds and concessions.
+    """
+
+    @property
+    # Concrete model for finance.credit_note instances.
+    def document_model(self):
+        from .models import CreditNote
+        return CreditNote  # Return credit-note model class.
+
+    # Credit-note posting service requires a draft document.
+    def _mark_approved(self, doc) -> None:
+        if doc.status != DocumentStatus.DRAFT:  # Reset only when currently pending/approved.
+            doc.status = DocumentStatus.DRAFT  # Hand draft state to post_credit_note.
+            doc.save(update_fields=["status", "updated_at"])
+
+    # Validate the note can post before it enters workflow.
+    def preflight(self, document) -> None:
+        """Run the write-free guards a credit note must satisfy.
+
+        The pricing and allocation rules live in the posting service and depend on
+        state that can move while the note sits in the queue, so this checks what is
+        knowable up front: the note has lines and a customer with an AR control. The
+        service re-guards everything under its own locks at post time.
+        """
+        from .exceptions import PostingError
+
+        if not document.lines.exists():  # A note with no lines has nothing to post.
+            raise PostingError(
+                f"Credit note {document.document_number or document.pk} has no lines.",
+            )
+        if document.customer.receivable_account is None:  # AR control must resolve.
+            raise PostingError(
+                f"Customer {document.customer.code} has no receivable (AR control) "
+                f"account set.",
+            )
+
+    # Post an approved credit or debit note.
+    def post(self, document, *, actor_user) -> None:
+        from .credit_notes import post_credit_note
+
+        post_credit_note(document, actor_user=actor_user)  # Delegate to the service.
+
+    # Build approval summary for a credit or debit note.
+    def summary(self, document) -> dict:
+        return {  # Workflow summary payload.
+            "title": document.document_number or str(document.pk),  # Document number or id.
+            "subtitle": f"{document.get_kind_display()} note",  # Credit or debit.
+            "fields": [  # Key facts shown to approvers.
+                {"label": "Date", "value": document.note_date.isoformat()},  # Note date.
+                {"label": "Customer", "value": document.customer.code},  # Customer code.
+                {"label": "Total", "value": format_naira(document.total)},  # Note total.
+                {"label": "Reason", "value": getattr(document, "reason", "") or "-"},  # Grounds.
+            ],
+            "link": f"/finance/credit-notes/{document.pk}/",  # Frontend deep link.
+        }

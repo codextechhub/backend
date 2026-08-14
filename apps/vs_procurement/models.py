@@ -130,7 +130,11 @@ class ProcurementSettings(TimeStampedModel):
         default=0, validators=[MaxValueValidator(10000)],
         help_text="Allowed unit-price variance in basis points.",
     )
-    allow_non_po_invoices = models.BooleanField(default=True)
+    allow_non_po_invoices = models.BooleanField(
+        default=False,
+        help_text="Allow bills with no purchase order. Off by default: a non-PO bill "
+                  "has no three-way match, so approval is its only control.",
+    )
     vendor_purchase_kyc_requirement = models.CharField(
         max_length=20, choices=VendorPurchaseKycRequirement.choices,
         default=VendorPurchaseKycRequirement.PENDING_OR_VERIFIED,
@@ -461,6 +465,66 @@ class CatalogItem(_AutoMasterCodeMixin, TimeStampedModel):
 # Inventory / stock ledger (perpetual, weighted-average cost)                 #
 # --------------------------------------------------------------------------- #
 
+class StockLocation(TimeStampedModel):
+    """Somewhere stock physically sits: a campus store, a lab, a kitchen.
+
+    Stock used to be one pool per entity, which is wrong the moment a school has two
+    campuses. The pool told you a thousand books existed; it could not tell you that
+    seven hundred were at one site and three hundred at the other, so an issue at the
+    smaller site drew against stock it did not have and the availability check allowed
+    it. Worse quietly: one blended average cost meant a campus that bought at a higher
+    price and one that bought lower both issued at the middle, so each site's expense
+    was wrong in opposite directions.
+
+    ``branch`` is optional on purpose. A school with no branches has one location and
+    the dimension recedes; a branch may hold several locations, because "which campus"
+    and "which store on that campus" are different questions and the second one does
+    not disappear just because a school is single-site.
+
+    Exactly one location per entity carries ``is_default``, which is what lets a
+    single-location entity keep calling the stock services without naming one.
+    """
+
+    entity = models.ForeignKey(
+        "vs_finance.LedgerEntity", on_delete=models.PROTECT,
+        related_name="stock_locations",
+    )
+    branch = models.ForeignKey(
+        "vs_schools.Branch", on_delete=models.PROTECT,
+        related_name="stock_locations", null=True, blank=True,
+        help_text="Campus this store belongs to. Blank for an entity-wide store.",
+    )
+    code = models.CharField(max_length=40, help_text="Location code, unique within the entity.")
+    name = models.CharField(max_length=200)
+    description = models.CharField(max_length=255, blank=True, default="")
+    is_default = models.BooleanField(
+        default=False,
+        help_text="The location used when a caller names none. One per entity.",
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "code"], name="uniq_proc_stocklocation_entity_code",
+            ),
+            # One default per entity. A second would make "the default" ambiguous at
+            # exactly the moment a caller relies on it.
+            models.UniqueConstraint(
+                fields=["entity"], condition=models.Q(is_default=True),
+                name="uniq_proc_stocklocation_one_default",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "is_active"]),
+            models.Index(fields=["entity", "branch"]),
+        ]
+        ordering = ["entity", "code"]
+
+    def __str__(self) -> str:
+        return f"{self.code} · {self.name}"
+
+
 class StockItem(_AutoMasterCodeMixin, TimeStampedModel):
     """A physically stocked good - carries live on-hand quantity and its GL value.
 
@@ -554,13 +618,70 @@ class StockItem(_AutoMasterCodeMixin, TimeStampedModel):
         return f"{self.code} · {self.name}"
 
 
+class StockBalance(TimeStampedModel):
+    """What one stock item holds at one location, and what it is worth there.
+
+    This is where the perpetual sub-ledger actually lives now. The item's own
+    ``on_hand_qty`` and ``stock_value`` are kept as the roll-up across every location,
+    so the reports, serializers and reorder logic that read them continue to read the
+    same numbers; the difference is that those numbers are now a sum of these rows
+    rather than the only record.
+
+    Weighted-average cost is held per row, which is the correctness point: a campus
+    that bought at a higher price values its own stock at that price instead of at a
+    blend with the other campus.
+    """
+
+    stock_item = models.ForeignKey(
+        StockItem, on_delete=models.PROTECT, related_name="balances",
+    )
+    location = models.ForeignKey(
+        StockLocation, on_delete=models.PROTECT, related_name="balances",
+    )
+    on_hand_qty = models.DecimalField(
+        max_digits=16, decimal_places=4, default=0,
+        help_text="Live quantity at this location (maintained by the stock ledger).",
+    )
+    # Denormalized, exactly like the item roll-up above it: the stock services update
+    # this under a row lock and append the matching StockMovement. Ordinary model or
+    # API writes must not own it.
+    stock_value = MoneyField(
+        help_text="Value of stock at this location, in kobo (weighted-average basis).",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["stock_item", "location"],
+                name="uniq_proc_stockbalance_item_location",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["location", "stock_item"]),
+        ]
+        ordering = ["stock_item", "location"]
+
+    @property
+    def unit_cost(self) -> int:
+        """Weighted-average unit cost at this location, in kobo (0 when empty)."""
+        if self.on_hand_qty and self.on_hand_qty > 0:
+            from .stock import round_stock_kobo
+
+            return round_stock_kobo(Decimal(self.stock_value) / Decimal(self.on_hand_qty))
+        return 0
+
+    def __str__(self) -> str:
+        return f"{self.stock_item_id}@{self.location_id}"
+
+
 class StockMovement(TimeStampedModel):
     """One immutable line of the perpetual stock ledger for a :class:`StockItem`.
 
     Signed in both quantity and value (``+`` in, ``-`` out) so a running sum reproduces
-    the on-hand balance. ``balance_qty`` / ``balance_value`` snapshot the item's state
-    *after* this movement for audit and aged-stock reporting, and ``journal`` links the
-    GL entry the movement posted (a stock-tracked GRN line, an issue, or an adjustment).
+    the on-hand balance. ``balance_qty`` / ``balance_value`` snapshot the state of this
+    movement's **location** afterwards, so the history reconstructs one site's position
+    rather than a blend of every site. ``journal`` links the GL entry the movement
+    posted (a stock-tracked GRN line, an issue, or an adjustment).
     """
 
     entity = models.ForeignKey(
@@ -568,6 +689,13 @@ class StockMovement(TimeStampedModel):
     )
     stock_item = models.ForeignKey(
         StockItem, on_delete=models.PROTECT, related_name="movements",
+    )
+    # Nullable only so historical rows can be backfilled by migration; every movement
+    # written from now on carries one.
+    location = models.ForeignKey(
+        StockLocation, on_delete=models.PROTECT, related_name="movements",
+        null=True, blank=True,
+        help_text="Where the stock moved. Set on every movement written after 0028.",
     )
     movement_type = models.CharField(max_length=16, choices=StockMovementType.choices)
     movement_date = models.DateField()

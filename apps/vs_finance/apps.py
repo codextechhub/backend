@@ -17,4 +17,12 @@ class VsFinanceConfig(AppConfig):
         from .export_datasets import register_screens
 
         register_screens()
+        # Publish this tenant's adjustment-approval ladders when its books are
+        # created. Finance registers its own provisioner through the same seam
+        # procurement and payments use, rather than calling itself from the
+        # serializer, so all three arrive by one mechanism.
+        from .provisioning import register_entity_provisioner
+        from .provisioning_hooks import provision_adjustment_approvals
+
+        register_entity_provisioner(provision_adjustment_approvals)
 

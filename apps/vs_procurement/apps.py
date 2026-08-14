@@ -25,3 +25,21 @@ class VsProcurementConfig(AppConfig):
         from .export_datasets import register_screens
 
         register_screens()
+        # Contribute the AP and GR/IR reconciliations to the finance period close.
+        # Registered here, not imported by finance, so the dependency keeps running
+        # procurement to finance and never back.
+        from .close_checks import register as register_close_checks
+
+        register_close_checks()
+        # Publish this tenant's spend-approval ladders when its books are created,
+        # so the gate is on from onboarding rather than from a remembered command.
+        from vs_finance.provisioning import register_entity_provisioner
+
+        from .provisioning import (
+            provision_approval_ladders,
+            provision_default_stock_location,
+        )
+
+        register_entity_provisioner(provision_approval_ladders)
+        # Stock lives at a location now, so every entity needs one to receive into.
+        register_entity_provisioner(provision_default_stock_location)

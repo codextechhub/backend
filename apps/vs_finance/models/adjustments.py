@@ -43,6 +43,15 @@ class CreditNote(FinanceDocument):
 
     DOC_TYPE = DocType.CREDIT_NOTE  # overridden per-instance for DEBIT notes (DRN)
 
+    #: Approval-gate identity. A credit note reduces a receivable without cash moving,
+    #: which above a threshold deserves the same second pair of eyes a refund gets.
+    #: A DEBIT note increases the receivable and is deliberately covered by the same
+    #: type: the risk is a mistaken note either way, and one gate is simpler to
+    #: administer than two. The gate is opt-in by template.
+    workflow_document_type = "finance.credit_note"
+    #: The field a threshold-gated stage reads to decide whether it applies.
+    workflow_amount_field = "total"
+
     customer = models.ForeignKey(
         Customer, on_delete=models.PROTECT, related_name="credit_notes",
     )
@@ -338,6 +347,8 @@ class Refund(FinanceDocument):
     #: ``amount`` (kobo) is the plain magnitude field threshold conditions read via
     #: ``{"op": "gte", "field": "amount", ...}``.
     workflow_document_type = "finance.refund"
+    #: The field a threshold-gated stage reads to decide whether it applies.
+    workflow_amount_field = "amount"
 
     customer = models.ForeignKey(
         Customer, on_delete=models.PROTECT, related_name="refunds",
@@ -477,6 +488,8 @@ class WriteOffRequest(FinanceDocument):
     #: (opt-in by template); otherwise the direct-post path is unchanged. ``amount``
     #: (kobo) is the magnitude threshold conditions read.
     workflow_document_type = "finance.write_off"
+    #: The field a threshold-gated stage reads to decide whether it applies.
+    workflow_amount_field = "amount"
 
     invoice = models.ForeignKey(
         Invoice, on_delete=models.PROTECT, related_name="write_off_requests",
@@ -528,6 +541,13 @@ class Concession(FinanceDocument):
     """
 
     DOC_TYPE = DocType.CONCESSION
+
+    #: Approval-gate identity. A concession forgives revenue outright, so above a
+    #: threshold it should need a second person exactly as a refund does. The gate is
+    #: opt-in by template; see :mod:`vs_finance.approvals`.
+    workflow_document_type = "finance.concession"
+    #: The field a threshold-gated stage reads to decide whether it applies.
+    workflow_amount_field = "amount"
 
     customer = models.ForeignKey(
         Customer, on_delete=models.PROTECT, related_name="concessions",

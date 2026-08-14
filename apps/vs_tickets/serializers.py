@@ -61,17 +61,22 @@ class TicketSerializer(serializers.ModelSerializer):
     branch_name = serializers.CharField(source="branch.name", read_only=True, default="")
     comments_count = serializers.IntegerField(read_only=True)
     attachments_count = serializers.IntegerField(read_only=True)
+    context = serializers.SerializerMethodField()
+
+    def get_context(self, obj):
+        allowed = {"guide_id", "route_pattern", "product_area", "app_version"}
+        return {key: value for key, value in (obj.context or {}).items() if key in allowed}
 
     class Meta:
         model = Ticket
         fields = [
             "id", "ticket_number", "title", "description", "category", "priority",
-            "status", "source", "requester", "assignee", "tenant",
+            "status", "source", "context", "requester", "assignee", "tenant",
             "branch", "branch_name", "resolved_at", "closed_at", "comments_count",
             "attachments_count", "created_at", "updated_at",
         ]
         read_only_fields = [
-            "ticket_number", "status", "source", "requester", "assignee",
+            "ticket_number", "status", "source", "context", "requester", "assignee",
             "resolved_at", "closed_at", "created_at", "updated_at",
         ]
 
@@ -113,11 +118,44 @@ class TicketDetailSerializer(TicketSerializer):
         }
 
 
+class TicketContextSerializer(serializers.Serializer):
+    guide_id = serializers.RegexField(r"^[a-z0-9][a-z0-9.-]{0,119}$", required=False)
+    route_pattern = serializers.RegexField(
+        r"^/[a-z0-9_./:-]{0,199}$",
+        required=False,
+    )
+    product_area = serializers.ChoiceField(choices=[
+        "Account", "Audit and security", "Console", "Data imports", "Exports",
+        "Finance", "Health", "Notifications", "Organogram", "Permissions",
+        "Platform health", "Procurement", "Roles", "School management",
+        "Settings", "Support", "Tasks", "Users", "Workflow",
+    ], required=False)
+    app_version = serializers.RegexField(r"^[A-Za-z0-9._+-]{1,40}$", required=False)
+
+    def to_internal_value(self, data):
+        if not isinstance(data, dict):
+            raise serializers.ValidationError("Context must be an object.")
+        unknown = sorted(set(data) - set(self.fields))
+        if unknown:
+            raise serializers.ValidationError({
+                key: ["This context field is not allowed."] for key in unknown
+            })
+        return super().to_internal_value(data)
+
+    def validate_route_pattern(self, value):
+        # Parameter placeholders prove that record identifiers were removed.
+        # Reject query strings and fragments even if a future regex is relaxed.
+        if "?" in value or "#" in value or any(character.isdigit() for character in value):
+            raise serializers.ValidationError("Use a normalized route pattern without query or fragment data.")
+        return value
+
+
 class TicketCreateSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=220)
     description = serializers.CharField()
     category = serializers.ChoiceField(choices=TicketCategory.choices, default=TicketCategory.SUPPORT)
     priority = serializers.ChoiceField(choices=TicketPriority.choices, default=TicketPriority.MEDIUM)
+    context = TicketContextSerializer(required=False, default=dict)
 
 
 class TicketUpdateSerializer(serializers.Serializer):

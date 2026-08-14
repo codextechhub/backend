@@ -33,7 +33,7 @@ def _branch_for_actor(actor):
 
 
 # Create the ticket, audit the opening state, and notify support triage.
-def create_ticket(*, actor, title, description, category, priority, branch=None) -> Ticket:
+def create_ticket(*, actor, title, description, category, priority, branch=None, context=None) -> Ticket:
     branch = branch if branch is not None else _branch_for_actor(actor)
     # Source distinguishes support-entered issues from customer/self-service tickets.
     source = TicketSource.INTERNAL if is_support_user(actor) else TicketSource.CUSTOMER
@@ -48,6 +48,7 @@ def create_ticket(*, actor, title, description, category, priority, branch=None)
             tenant=actor.tenant,
             branch=branch,
             source=source,
+            context=context or {},
         )
         record_ticket_audit(
             ticket=ticket,

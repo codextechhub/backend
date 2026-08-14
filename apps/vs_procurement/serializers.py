@@ -33,7 +33,9 @@ from .models import (
     PurchaseRequisitionLine,
     RequestForQuotation,
     RfqLine,
+    StockBalance,
     StockItem,
+    StockLocation,
     StockMovement,
     Vendor,
     VendorContact,
@@ -419,6 +421,50 @@ class StockItemDetailSerializer(StockItemListSerializer):
         return _sourcing_activity(obj.entity_id, "StockItem", obj.pk)
 
 
+class StockLocationSerializer(serializers.ModelSerializer):
+    """A place stock physically sits, and the campus it belongs to if any."""
+
+    branch_name = serializers.CharField(
+        source="branch.name", read_only=True, default=None,
+    )
+
+    class Meta:
+        model = StockLocation
+        fields = [
+            "id", "code", "name", "description",
+            "branch_id", "branch_name", "is_default", "is_active",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class StockBalanceSerializer(serializers.ModelSerializer):
+    """What one item holds at one location, with its own weighted-average cost.
+
+    The item's own totals stay the roll-up across locations; these are the rows that
+    add up to them.
+    """
+
+    stock_item_code = serializers.CharField(
+        source="stock_item.code", read_only=True, default=None,
+    )
+    stock_item_name = serializers.CharField(
+        source="stock_item.name", read_only=True, default=None,
+    )
+    location_code = serializers.CharField(
+        source="location.code", read_only=True, default=None,
+    )
+    unit_cost = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = StockBalance
+        fields = [
+            "id", "stock_item_id", "stock_item_code", "stock_item_name",
+            "location_id", "location_code",
+            "on_hand_qty", "stock_value", "unit_cost", "updated_at",
+        ]
+
+
 class StockMovementSerializer(serializers.ModelSerializer):
     """One immutable stock-ledger event with signed and running-balance values.
 
@@ -429,6 +475,9 @@ class StockMovementSerializer(serializers.ModelSerializer):
     stock_item_code = serializers.CharField(
         source="stock_item.code", read_only=True, default=None,
     )
+    location_code = serializers.CharField(
+        source="location.code", read_only=True, default=None,
+    )
     created_by_name = serializers.SerializerMethodField()
     value_amount_naira = serializers.SerializerMethodField()
     balance_value_naira = serializers.SerializerMethodField()
@@ -436,7 +485,8 @@ class StockMovementSerializer(serializers.ModelSerializer):
     class Meta:
         model = StockMovement
         fields = [
-            "id", "stock_item_id", "stock_item_code", "movement_type",
+            "id", "stock_item_id", "stock_item_code",
+            "location_id", "location_code", "movement_type",
             "movement_date", "quantity", "value_amount", "value_amount_naira",
             "balance_qty", "balance_value", "balance_value_naira",
             "grn_id", "journal_id", "reference", "narration",

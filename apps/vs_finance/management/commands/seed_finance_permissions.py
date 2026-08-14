@@ -58,9 +58,14 @@ FINANCE_RESOURCES = [
     ("budget",       "budgets",                [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("edit", "SENSITIVE"), ("approve", "SENSITIVE"),
                                                 ("delete", "SENSITIVE")]),
+    # ``submit`` hands a draft to the approval engine. Both types are gated above a
+    # threshold by the seeded ladder, so the submit key is the ordinary route for a
+    # large waiver or note and the post key only reaches the ledger below it.
     ("concession",   "concessions",            [("view", "NORMAL"), ("create", "SENSITIVE"),
+                                                ("submit", "SENSITIVE"),
                                                 ("post", "SENSITIVE"), ("reverse", "CRITICAL")]),
     ("creditnote",   "credit/debit notes",     [("view", "NORMAL"), ("create", "SENSITIVE"),
+                                                ("submit", "SENSITIVE"),
                                                 ("post", "CRITICAL"), ("allocate", "SENSITIVE"),
                                                 ("reverse", "CRITICAL")]),
     ("dunning",      "dunning notices",        [("view", "NORMAL"), ("generate", "SENSITIVE"),

@@ -669,3 +669,29 @@ class AccountMappingKey(models.TextChoices):
 #: Reserved code for CodeX's own platform set of books (the operator's entity).
 #: An uppercase identifier (like all entity codes); the display name is "CodeX".
 PLATFORM_ENTITY_CODE = "CODEX"
+
+# --------------------------------------------------------------------------- #
+# Adjustment-approval defaults (see vs_finance.approvals)                      #
+# --------------------------------------------------------------------------- #
+
+#: Template code for the seeded finance ladders. One per document type, matching
+#: procurement and payouts so a tenant holds one mental model for approval.
+WF_DEFAULT_TEMPLATE_CODE = "standard"
+
+#: Roles the seeded adjustment stages name. Resolved inside whichever tenant raised
+#: the document, so one central definition serves every tenant. Created by the seed
+#: with nobody appointed: a ladder arrives blocked, not open.
+WF_ADJUSTMENT_APPROVER_ROLE = "finance-adjustment-approver"
+WF_SENIOR_ADJUSTMENT_APPROVER_ROLE = "finance-senior-adjustment-approver"
+
+#: Kobo at or above which a concession or credit note needs a second person.
+#:
+#: ₦50,000. Deliberately far below procurement's ₦500,000 senior bar, because these
+#: are different risks. A purchase at ₦400,000 still buys the entity something; a
+#: waiver at ₦400,000 is income given away, and a term's fees can sit well under
+#: procurement's bar. Small goodwill allowances stay frictionless, which is the only
+#: reason not to gate everything.
+#:
+#: Overridable per call to ``ensure_tenant_approval_templates`` and on the seed
+#: command, so a tenant that wants every waiver approved sets it to zero.
+WF_ADJUSTMENT_THRESHOLD = 5_000_000

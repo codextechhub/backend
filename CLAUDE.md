@@ -91,6 +91,9 @@ How to write it:
 - Size things honestly in both directions - say when something feared turns out to
   be a one-line fix, and say when something small turns out to be load-bearing.
 - Put the worst finding where it cannot be missed, even if that breaks the order.
+- Never place resolved problems under a heading that suggests they remain broken.
+  When all reported defects were fixed, say so plainly and omit any unresolved-
+  findings section.
 - Keep file/line references out of the breakdown; they belong in `todo.md` and in
   the detail above it.
 - Don't re-explain what I already know from the conversation.

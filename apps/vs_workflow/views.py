@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 from rest_framework.viewsets import GenericViewSet, ModelViewSet
 
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
+from vs_tenants.models import Tenant
 from vs_rbac.permissions import user_has_rbac_permission
 
 from vs_workflow.exceptions import TemplateInvalidError
@@ -37,6 +38,7 @@ from vs_workflow.serializers import (
     WorkflowTemplatePublishSerializer, WorkflowTemplateReadSerializer,
 )
 from vs_workflow.services import actions as actions_svc
+from vs_workflow.services import comparison as comparison_svc
 from vs_workflow.services import my_queue as my_queue_svc
 from vs_workflow.services import release as release_svc
 from vs_workflow.services import submission as submission_svc
@@ -148,8 +150,56 @@ class WorkflowTemplateViewSet(
 
     def get_permissions(self):
         # Publishing templates requires manage rights; read endpoints use view rights.
-        self.rbac_permission = PERM_TEMPLATE_MANAGE if self.action == "publish" else PERM_TEMPLATE_VIEW
+        self.rbac_permission = (
+            PERM_TEMPLATE_MANAGE
+            if self.action in ("publish", "use_platform_version", "adoption", "compare")
+            else PERM_TEMPLATE_VIEW
+        )
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get_serializer(self, *args, **kwargs):
+        """Attach the platform/tenant counterpart map before anything serializes.
+
+        The pairing is a property of the page as a whole, so it is resolved in
+        one query here rather than per row inside the serializer, which would be
+        one query per template.
+        """
+        if args:
+            objs = args[0]
+            objs = list(objs) if isinstance(objs, (list, tuple)) else [objs]
+            kwargs.setdefault("context", self.get_serializer_context())
+            kwargs["context"] = kwargs["context"] | {
+                "counterparts": self._counterparts(objs),
+            }
+        return super().get_serializer(*args, **kwargs)
+
+    def _counterparts(self, objs):
+        """Map (document_type, code) -> {"platform": row|None, "mine": row|None}."""
+        keys = {(o.document_type, o.code) for o in objs if isinstance(o, WorkflowTemplate)}
+        if not keys:
+            return {}
+        match = Q()
+        for document_type, code in keys:
+            match |= Q(document_type=document_type, code=code)
+        rows = (WorkflowTemplate.all_objects
+                .filter(match)
+                .filter(Q(tenant=self.get_tenant()) | Q(tenant__isnull=True))
+                .only("id", "tenant", "branch", "document_type", "code",
+                      "updated_at", "is_active"))
+        out = {}
+        for row in rows:
+            pair = out.setdefault((row.document_type, row.code),
+                                  {"platform": None, "mine": None})
+            # An inactive tenant version is not "their own" any more: they asked
+            # for the platform's back, so the screen must not claim otherwise.
+            if row.tenant_id is None:
+                # The shared definition belongs to no branch; a branch-scoped
+                # row with no tenant would be a data error, not a platform one.
+                if row.branch_id is None:
+                    pair["platform"] = row
+            elif row.is_active:
+                pair["mine"] = row
+        return out
 
     def get_queryset(self):
         # Explicitly scoped rather than relying on the tenant-aware manager's
@@ -157,7 +207,13 @@ class WorkflowTemplateViewSet(
         # what include_global on the manager means.
         qs = WorkflowTemplate.all_objects.filter(
             Q(tenant=self.get_tenant()) | Q(tenant__isnull=True))
-        qs = _filter_by_branch(qs, self.get_branch())
+        # Branch-wide is *narrowing*, not exclusive: the cascade a branch user
+        # runs under is branch → tenant → platform, so all three have to be
+        # listable. Filtering to branch=<theirs> hid the tenant-wide and shared
+        # templates that actually decide most of their documents.
+        branch = self.get_branch()
+        if branch is not None:
+            qs = qs.filter(Q(branch=branch) | Q(branch__isnull=True))
         # Explicit ordering: the model has none, and paginating an unordered
         # queryset returns rows in an undefined order across pages.
         return qs.prefetch_related("stages", "routes").order_by("document_type", "code")
@@ -259,22 +315,155 @@ class WorkflowTemplateViewSet(
             payload["dynamic_role"] = rule_preview
         return Response(payload, status=status.HTTP_200_OK)
 
+    def _platform_oversight(self, template):
+        """Refuse anything but a platform actor reading a shared template.
+
+        These two endpoints are the only place the console reads across tenant
+        boundaries, so the gate is explicit and in one place rather than implied
+        by the queryset: the caller's own tenant must be the platform one, and
+        the subject must be the shared template. Returns an error Response, or
+        None when the caller may proceed.
+        """
+        if getattr(self.request.tenant, "kind", None) != Tenant.Kind.PLATFORM:
+            return Response({
+                "success": False,
+                "message": "Only the platform can see how tenants have adjusted a template.",
+                "error": {"code": "PLATFORM_ONLY", "detail": {}},
+            }, status=status.HTTP_403_FORBIDDEN)
+        if template.tenant_id is not None:
+            return Response({
+                "success": False,
+                "message": "Only a shared template has tenant versions to compare.",
+                "error": {"code": "NOT_PLATFORM_TEMPLATE", "detail": {}},
+            }, status=status.HTTP_400_BAD_REQUEST)
+        return None
+
+    @action(detail=True, methods=["get"])
+    def adoption(self, request, pk=None):
+        """Who runs this shared template as published, and who runs their own.
+
+        Editing a shared template reaches only the tenants still following it.
+        This is that number, so the person editing knows whether they are
+        changing the path for forty tenants or for four.
+        """
+        template = self.get_object()
+        refusal = self._platform_oversight(template)
+        if refusal is not None:
+            return refusal
+        return Response({
+            "template": {
+                "id": template.pk, "name": template.name,
+                "document_type": template.document_type, "code": template.code,
+                "updated_at": template.updated_at,
+            },
+            **comparison_svc.adoption_for(template),
+        })
+
+    @action(detail=True, methods=["get"])
+    def compare(self, request, pk=None):
+        """How one tenant's version of this template differs from the shared one.
+
+        `?with=<template id>`. The other template must be an active tenant
+        version of this same (document_type, code) - the pairing is checked
+        server-side, so this cannot be used to read an arbitrary tenant
+        template by guessing an id. Configuration only: no documents, no
+        approvals, no people.
+        """
+        template = self.get_object()
+        refusal = self._platform_oversight(template)
+        if refusal is not None:
+            return refusal
+
+        other_id = request.query_params.get("with")
+        if not other_id:
+            return Response({"detail": "Pass ?with=<template id>."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        other = (WorkflowTemplate.all_objects
+                 .filter(pk=other_id, document_type=template.document_type,
+                         code=template.code, tenant__isnull=False)
+                 .select_related("tenant").first())
+        if other is None:
+            # Same answer for "no such template" and "not a version of this
+            # one", so the endpoint cannot be used to probe which ids exist.
+            raise NotFound("No tenant version of this template with that id.")
+
+        return Response({
+            "base": {"id": template.pk, "name": template.name,
+                     "updated_at": template.updated_at},
+            "other": {"id": other.pk, "name": other.name,
+                      "tenant_slug": other.tenant.slug,
+                      "tenant_name": other.tenant.name,
+                      "updated_at": other.updated_at},
+            **comparison_svc.compare_templates(template, other),
+        })
+
     @action(detail=False, methods=["post"], url_path="publish")
     def publish(self, request):
         p = WorkflowTemplatePublishSerializer(data=request.data)
         p.is_valid(raise_exception=True)
         d = p.validated_data
+
+        # Publishing the shared definition is a platform act. Codex is itself a
+        # tenant, so without this every "master" it published would have been
+        # its own private template that no other tenant inherits.
+        as_platform = d.get("scope") == "PLATFORM"
+        if as_platform and getattr(request.tenant, "kind", None) != Tenant.Kind.PLATFORM:
+            return Response({
+                "success": False,
+                "message": "Only the platform can publish a shared template.",
+                "error": {"code": "PLATFORM_SCOPE_DENIED", "detail": {}},
+            }, status=status.HTTP_403_FORBIDDEN)
+
         # Template publishing replaces stage/route configuration through the service layer.
         t = templates_svc.publish_template(
-            tenant=request.tenant,
-            branch=self.get_branch(),
+            tenant=None if as_platform else request.tenant,
+            # A shared template belongs to no branch; carrying the publisher's
+            # own branch would scope it out of every tenant that inherits it.
+            branch=None if as_platform else self.get_branch(),
             document_type=d["document_type"], code=d["code"], name=d["name"],
             description=d.get("description", ""),
             notification_events=d.get("notification_events", {}),
             created_by=request.user,
             stages_payload=d["stages"], routes_payload=d.get("routes", []),
         )
-        return Response(WorkflowTemplateReadSerializer(t).data, status=status.HTTP_201_CREATED)
+        return Response(self.get_serializer(t).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="use-platform-version")
+    def use_platform_version(self, request, pk=None):
+        """Stop running this tenant's own version and follow the platform's again.
+
+        The tenant's version is switched off rather than deleted: an instance
+        PROTECTs the template it ran under, so the version that has actually
+        been used is precisely the one that cannot be removed. Switched off, it
+        drops out of the submission cascade and the next request falls through
+        to the platform template. Publishing again brings it back.
+        """
+        template = self.get_object()
+        if template.tenant_id is None:
+            return Response({
+                "success": False,
+                "message": "This is the platform's own template, so there is nothing to fall back to.",
+                "error": {"code": "ALREADY_PLATFORM", "detail": {}},
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        platform = (WorkflowTemplate.all_objects
+                    .filter(tenant__isnull=True, branch__isnull=True, is_active=True,
+                            document_type=template.document_type, code=template.code)
+                    .first())
+        if platform is None:
+            # Refusing is the honest answer: switching this off would leave the
+            # document type with no template at all, and every submission of it
+            # would fail at the point of submitting.
+            return Response({
+                "success": False,
+                "message": "There is no platform version of this template to fall back to. "
+                           "Adjust this one instead.",
+                "error": {"code": "NO_PLATFORM_VERSION", "detail": {}},
+            }, status=status.HTTP_409_CONFLICT)
+
+        template.is_active = False
+        template.save(update_fields=["is_active", "updated_at"])
+        return Response(self.get_serializer(platform).data)
 
 
 # ── Instances ────────────────────────────────────────────────────────────────
@@ -519,8 +708,13 @@ class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
                       "add_member", "remove_member"}
 
     def get_permissions(self):
+        # Reading the groups travels with template management for the same
+        # reason the role list does: a WORKFLOW_GROUP stage names a group, and
+        # the builder cannot offer one it is not allowed to read. Writing a
+        # group still takes the group's own manage key.
         self.rbac_permission = (
-            PERM_GROUP_MANAGE if self.action in self._WRITE_ACTIONS else PERM_GROUP_VIEW
+            PERM_GROUP_MANAGE if self.action in self._WRITE_ACTIONS
+            else [PERM_GROUP_VIEW, PERM_TEMPLATE_MANAGE]
         )
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 

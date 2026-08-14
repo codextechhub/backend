@@ -5,11 +5,18 @@ period is sealed, the close runs a **checklist** of integrity checks and posts t
 auto-entries a period needs (depreciation), then transitions the period's status
 through the 4-state lock (OPEN → SOFT_CLOSED → CLOSED → LOCKED).
 
-Decoupling note: this lives in ``vs_finance`` and therefore checks only finance-native
+Decoupling note: this lives in ``vs_finance`` and therefore knows only finance-native
 invariants (trial balance balanced, AR sub-ledger == control, all due depreciation
 posted). The AP / GR-IR reconciliations live in ``vs_procurement`` - which depends on
-finance, not the other way round - so a caller passes those in via ``extra_checks``
-rather than finance importing procurement.
+finance, not the other way round - so finance must never import them.
+
+They reach the close through :func:`register_close_check`, which a dependent app calls
+from its ``AppConfig.ready``. The registry inverts the dependency the same way the
+workflow handlers and export datasets already do. It replaced an ``extra_checks``
+argument that only a test ever passed: the seam existed, no caller used it, so in
+practice *every* close ran without the payables checks and could seal a period over an
+unreconciled AP position while reporting success. ``extra_checks`` is still accepted
+for a caller that needs a one-off check, and the registry is applied on top of it.
 """
 from __future__ import annotations
 
@@ -28,6 +35,33 @@ from .constants import (
     PeriodStatus,
 )
 from .exceptions import PeriodCloseError
+
+#: Checks contributed by dependent apps, in registration order. Populated at startup
+#: from each app's ``ready()``; see :func:`register_close_check`.
+_REGISTERED_CHECKS: list = []
+
+
+def register_close_check(check):
+    """Register a close check contributed by an app that depends on finance.
+
+    ``check`` is called as ``check(entity, period)`` and returns a
+    :class:`ChecklistItem`, an iterable of them, or ``None`` when it has nothing to say
+    for that entity. Registration is idempotent, so a module imported twice does not
+    double the check.
+
+    A check that raises is reported as a *failed* blocking item rather than being
+    allowed to escape. A close is a control: a check that cannot answer is not the same
+    as a check that passed, and silently dropping it would recreate the defect this
+    registry exists to fix.
+    """
+    if check not in _REGISTERED_CHECKS:
+        _REGISTERED_CHECKS.append(check)
+    return check
+
+
+def registered_close_checks() -> list:
+    """The registered checks, for tests and diagnostics."""
+    return list(_REGISTERED_CHECKS)
 
 
 @dataclass
@@ -68,10 +102,10 @@ def _date_in_period(period, date) -> bool:
 def close_checklist(entity, period, *, extra_checks=None) -> CloseChecklist:
     """Run the pre-close integrity checks for ``period`` and return the results.
 
-    ``extra_checks`` is an optional iterable of zero-arg callables returning a
-    :class:`ChecklistItem` (or ``(name, passed, detail)`` tuples) - used to inject
-    checks from dependent apps (e.g. procurement's AP / GR-IR reconciliations) without
-    finance importing them.
+    Every check registered through :func:`register_close_check` runs, plus anything
+    passed in ``extra_checks`` for a one-off. ``extra_checks`` entries are zero-arg
+    callables returning a :class:`ChecklistItem` (or ``(name, passed, detail)`` tuple);
+    registered checks are called with ``(entity, period)``.
     """
     from .models import JournalEntry, FixedAsset
     from .reports import reconcile_ar, trial_balance
@@ -121,6 +155,22 @@ def close_checklist(entity, period, *, extra_checks=None) -> CloseChecklist:
             name, passed, *rest = result  # Unpack tuple-style check result.
             items.append(ChecklistItem(name=name, passed=passed,
                                        detail=rest[0] if rest else ""))  # Normalize tuple to ChecklistItem.
+
+    # Checks contributed by dependent apps (procurement's AP and GR/IR reconciliations
+    # today). A check that raises fails the close rather than vanishing from it.
+    for check in _REGISTERED_CHECKS:
+        try:
+            result = check(entity, period)
+        except Exception as exc:  # noqa: BLE001 - a broken check must not pass silently.
+            items.append(ChecklistItem(
+                name=getattr(check, "check_name", getattr(check, "__name__", "registered_check")),
+                passed=False,
+                detail=f"check raised {type(exc).__name__}: {exc}",
+            ))
+            continue
+        if result is None:
+            continue
+        items.extend([result] if isinstance(result, ChecklistItem) else list(result))
 
     return CloseChecklist(period_id=period.id, items=items)  # Return checklist summary.
 

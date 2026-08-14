@@ -17,4 +17,12 @@ class VsPaymentsConfig(AppConfig):
         from .export_datasets import register_screens
 
         register_screens()
+        # Publish this tenant's payout-approval ladder when its books are created, so
+        # the gate over the highest-risk cash-out path is on from onboarding rather
+        # than from a remembered command.
+        from vs_finance.provisioning import register_entity_provisioner
+
+        from .provisioning import provision_payout_approval
+
+        register_entity_provisioner(provision_payout_approval)
 

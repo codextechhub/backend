@@ -66,23 +66,76 @@ class WorkflowRoutePathReadSerializer(serializers.ModelSerializer):
 
 
 class WorkflowTemplateReadSerializer(serializers.ModelSerializer):
+    """One template, plus where it stands between the platform and this tenant.
+
+    A screen has to be able to say "you are running the platform's version" or
+    "you are running your own, and the platform's has moved on since" without
+    guessing. Those answers need the *other* template of the same
+    (document_type, code), which the view resolves once for the whole page and
+    passes in as ``counterparts`` - computing it per row would be a query per
+    template.
+    """
+
     stages = serializers.SerializerMethodField()
     routes = WorkflowRoutePathReadSerializer(many=True, read_only=True)
+    is_platform = serializers.SerializerMethodField()
+    tenant_has_own = serializers.SerializerMethodField()
+    platform_updated_at = serializers.SerializerMethodField()
+    platform_changed_since = serializers.SerializerMethodField()
 
     def get_stages(self, obj):
         active = obj.stages.filter(retired_at__isnull=True).order_by("order")
         return WorkflowStageReadSerializer(active, many=True).data
 
+    def _counterpart(self, obj, which):
+        pair = self.context.get("counterparts", {}).get((obj.document_type, obj.code))
+        return (pair or {}).get(which)
+
+    def get_is_platform(self, obj):
+        """True when this is the shared definition rather than a tenant's own."""
+        return obj.tenant_id is None
+
+    def get_tenant_has_own(self, obj):
+        """Only meaningful on a platform row: has this tenant adjusted it?"""
+        if obj.tenant_id is not None:
+            return None
+        return self._counterpart(obj, "mine") is not None
+
+    def get_platform_updated_at(self, obj):
+        """When the shared version this one came from last changed."""
+        if obj.tenant_id is None:
+            return None
+        platform = self._counterpart(obj, "platform")
+        return platform.updated_at if platform else None
+
+    def get_platform_changed_since(self, obj):
+        """True when the shared version moved on after this tenant last saved.
+
+        The signal a tenant needs: their own version is running, and the
+        platform has since changed the one it was based on.
+        """
+        if obj.tenant_id is None:
+            return False
+        platform = self._counterpart(obj, "platform")
+        return bool(platform and platform.updated_at > obj.updated_at)
+
     class Meta:
         model = WorkflowTemplate
         fields = [
             "id", "tenant", "branch", "document_type", "code",
-            "name", "description", "notification_events",
+            "name", "description", "notification_events", "is_active",
+            "is_platform", "tenant_has_own",
+            "platform_updated_at", "platform_changed_since",
             "created_at", "updated_at", "stages", "routes",
         ]
 
 
 class WorkflowTemplatePublishSerializer(serializers.Serializer):
+    # PLATFORM publishes the shared definition every tenant starts on, and only
+    # a platform actor may ask for it; the view enforces that. TENANT (the
+    # default) writes the caller's own version.
+    scope               = serializers.ChoiceField(
+        choices=["TENANT", "PLATFORM"], required=False, default="TENANT")
     document_type       = serializers.CharField(max_length=100)
     code                = serializers.SlugField(max_length=100)
     name                = serializers.CharField(max_length=200)

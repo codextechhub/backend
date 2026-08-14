@@ -189,6 +189,65 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
         )
         self.assertEqual(reply.status_code, 201)
 
+    def test_ticket_creation_keeps_only_validated_product_context(self):
+        client = APIClient()
+        client.force_authenticate(self.requester)
+        response = client.post("/v1/support/tickets/", {
+            "title": "Guide did not resolve the issue",
+            "description": "I still need help.",
+            "category": "HELP",
+            "priority": "LOW",
+            "context": {
+                "guide_id": "getting-started.console-basics",
+                "route_pattern": "/support/tickets/:id",
+                "product_area": "Support",
+                "app_version": "2026.8.13",
+            },
+        }, format="json")
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["data"]["context"], {
+            "guide_id": "getting-started.console-basics",
+            "route_pattern": "/support/tickets/:id",
+            "product_area": "Support",
+            "app_version": "2026.8.13",
+        })
+
+        export_response = client.post("/v1/support/tickets/", {
+            "title": "Export guide did not resolve the issue",
+            "description": "I still need help.",
+            "category": "HELP",
+            "priority": "LOW",
+            "context": {
+                "route_pattern": "/export/files",
+                "product_area": "Exports",
+            },
+        }, format="json")
+        self.assertEqual(export_response.status_code, 201, export_response.content)
+
+    def test_ticket_context_rejects_unknown_keys_and_live_url_data(self):
+        client = APIClient()
+        client.force_authenticate(self.requester)
+        base = {
+            "title": "Unsafe context",
+            "description": "This payload must fail.",
+            "category": "HELP",
+            "priority": "LOW",
+        }
+
+        unknown = client.post("/v1/support/tickets/", {
+            **base,
+            "context": {"route_pattern": "/overview", "email": "person@example.test"},
+        }, format="json")
+        live_url = client.post("/v1/support/tickets/", {
+            **base,
+            "context": {"route_pattern": "/support/tickets/4831?tab=activity"},
+        }, format="json")
+
+        self.assertEqual(unknown.status_code, 400)
+        self.assertIn("email", str(unknown.json()))
+        self.assertEqual(live_url.status_code, 400)
+
     def test_requester_reply_on_unassigned_ticket_notifies_support_queue(self):
         ticket = ticket_svc.create_ticket(
             actor=self.requester,
@@ -477,3 +536,67 @@ class TicketPermissionSeedTests(TestCase):
                 permission_id="tickets.ticket.view",
             ).exists()
         )
+
+
+class TicketBranchTenantGuardTests(TestCase):
+    """``Ticket.clean`` - the branch tenancy guard, after Phase C.
+
+    The guard reads ``self.branch.tenant_id`` now instead of walking
+    ``branch.school.tenant_id``. A rewrite that stopped comparing would let a
+    ticket be filed against another tenant's branch, so the denial is asserted
+    directly rather than only through the API.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = _school("guard-alpha", "Guard Alpha")
+        cls.branch = _branch(cls.school, "Main")
+        cls.rival = _school("guard-beta", "Guard Beta")
+        cls.rival_branch = _branch(cls.rival, "Main")
+        # Branch-optional shape: this tenant owns no branches at all.
+        cls.branchless = _school("guard-solo", "Guard Solo")
+        cls.requester = _user(
+            "guard.requester@alpha.test", "Gina", "Guard",
+            user_type=User.UserType.STAFF, branch=cls.branch,
+        )
+        # SCHOOL_ADMIN, not STAFF: a branch-level user must have a branch, and
+        # this tenant has none - which is exactly the shape being tested.
+        cls.branchless_requester = User.objects.create_user(
+            email="guard.solo@solo.test", first_name="Solo", last_name="Guard",
+            user_type=User.UserType.SCHOOL_ADMIN, status=User.Status.ACTIVE,
+            tenant=cls.branchless.tenant,
+        )
+
+    def _ticket(self, **kwargs):
+        from .models import Ticket
+
+        defaults = {
+            "tenant": self.school.tenant,
+            "requester": self.requester,
+            "title": "Guard",
+            "description": "Guard",
+        }
+        defaults.update(kwargs)
+        return Ticket(**defaults)
+
+    def test_a_branch_from_another_tenant_is_rejected(self):
+        from django.core.exceptions import ValidationError
+
+        with self.assertRaises(ValidationError):
+            self._ticket(branch=self.rival_branch).clean()
+
+    def test_a_branch_in_the_same_tenant_is_accepted(self):
+        self._ticket(branch=self.branch).clean()  # must not raise
+
+    def test_a_ticket_without_a_branch_is_accepted(self):
+        self._ticket(branch=None).clean()  # must not raise
+
+    def test_a_branchless_tenant_cannot_borrow_a_branch(self):
+        from django.core.exceptions import ValidationError
+
+        with self.assertRaises(ValidationError):
+            self._ticket(
+                tenant=self.branchless.tenant,
+                requester=self.branchless_requester,
+                branch=self.branch,
+            ).clean()
