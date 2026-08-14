@@ -489,7 +489,37 @@ class CreditNoteLineSerializer(serializers.ModelSerializer):
         ]
 
 
-class CreditNoteSerializer(serializers.ModelSerializer):
+class ApprovalGatedMixin(serializers.Serializer):
+    """Adds a read-only ``approval_required`` to an adjustment document read.
+
+    Without it a client cannot tell whether to offer **Post** or **Submit for
+    approval** except by refetching the workflow templates and reimplementing the
+    branch → tenant → platform cascade itself, which is a second copy of the gate
+    that drifts the first time the cascade changes. Same
+    :class:`~vs_finance.approvals.ApprovalGate` the post views consult, so the
+    button a client renders and the answer it gets back always agree.
+
+    The gate is cached on the serializer instance rather than rebuilt per row:
+    ``many=True`` reuses one child serializer for the whole list, so a page of
+    refunds costs one template lookup for their shared scope, not one each.
+    """
+
+    approval_required = serializers.SerializerMethodField()
+
+    # Report whether this document must go through approval before it posts.
+    def get_approval_required(self, obj) -> bool:
+        from .approvals import ApprovalGate
+
+        gate = self.context.get("approval_gate")  # A view batching several reads may pass its own.
+        if gate is None:
+            gate = getattr(self, "_approval_gate", None)
+            if gate is None:
+                gate = ApprovalGate()
+                self._approval_gate = gate
+        return gate.required(obj)
+
+
+class CreditNoteSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     invoice_number = serializers.CharField(source="invoice.document_number", read_only=True, default=None)
@@ -506,13 +536,14 @@ class CreditNoteSerializer(serializers.ModelSerializer):
             "subtotal", "tax_total", "total", "total_naira",
             "allocated_amount", "unallocated_amount", "refunded_amount",
             "credit_remaining", "reason", "reference", "lines",
+            "approval_required",
         ]
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total)
 
 
-class RefundSerializer(serializers.ModelSerializer):
+class RefundSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     amount_naira = serializers.SerializerMethodField()
@@ -522,14 +553,14 @@ class RefundSerializer(serializers.ModelSerializer):
         fields = [
             "id", "document_number", "customer_id", "customer_code", "customer_name",
             "refund_date", "method", "status", "amount", "amount_naira",
-            "bank_account_id", "reference", "narration",
+            "bank_account_id", "reference", "narration", "approval_required",
         ]
 
     def get_amount_naira(self, obj) -> str:
         return format_naira(obj.amount)
 
 
-class WriteOffRequestSerializer(serializers.ModelSerializer):
+class WriteOffRequestSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
     invoice_number = serializers.CharField(source="invoice.document_number", read_only=True)
     customer_code = serializers.CharField(source="invoice.customer.code", read_only=True)
     customer_name = serializers.CharField(source="invoice.customer.name", read_only=True)
@@ -541,7 +572,7 @@ class WriteOffRequestSerializer(serializers.ModelSerializer):
             "id", "document_number", "status", "invoice_id", "invoice_number",
             "customer_code", "customer_name", "amount", "amount_naira",
             "write_off_account_id", "write_off_date", "narration", "reason",
-            "journal_id",
+            "journal_id", "approval_required",
         ]
 
     def get_amount_naira(self, obj) -> str:
@@ -590,7 +621,7 @@ class PaymentSerializer(serializers.ModelSerializer):
         return "PARTIAL"
 
 
-class ConcessionSerializer(serializers.ModelSerializer):
+class ConcessionSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     invoice_number = serializers.CharField(source="invoice.document_number", read_only=True)
@@ -605,7 +636,7 @@ class ConcessionSerializer(serializers.ModelSerializer):
             "id", "document_number", "kind", "customer_id", "customer_code",
             "customer_name", "invoice_id", "invoice_number", "concession_date",
             "status", "amount", "amount_naira", "allowance_account",
-            "reason", "reference",
+            "reason", "reference", "approval_required",
         ]
 
     def get_amount_naira(self, obj) -> str:

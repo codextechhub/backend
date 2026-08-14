@@ -114,8 +114,14 @@ def _pick_next_stage(instance: WorkflowInstance,
 
 
 # Preview the next route without writing route-audit entries.
-def _readonly_next_stage(template, document, from_stage, stages, has_routes):
+def readonly_next_stage(template, document, from_stage, stages, has_routes):
     """Pure (no-write) sibling of _pick_next_stage for previews.
+
+    Public because it is the step function two read-only walks share: the
+    next-stage label preview below, and ``services.resolution``'s "would any
+    stage actually run" predicate, which the finance direct-post gate asks
+    before letting a document skip approval. Both have to step exactly as
+    ``advance_instance`` does or they describe a route the engine will not take.
 
     Raises TemplateInvalidError when routing is genuinely undecidable, so the
     caller can fall back to "moves forward" rather than guessing.
@@ -165,7 +171,7 @@ def preview_next_approval_stage(instance: WorkflowInstance):
         has_routes = WorkflowRoutePath.objects.filter(template=template).exists()
         cursor = from_stage
         for _ in range(50):  # mirror advance_instance's MAX_HOPS cycle guard
-            nxt = _readonly_next_stage(template, document, cursor, stages, has_routes)
+            nxt = readonly_next_stage(template, document, cursor, stages, has_routes)
             if nxt is None:
                 # No next stage means the current approval would complete the workflow.
                 return {"label": None, "is_final": True}

@@ -537,7 +537,7 @@ class PayoutBatchListCreateView(APIView):
         # is left DRAFT to be routed via /payout-batches/<id>/submit-for-approval/.
         from vs_finance.approvals import approval_required
         wants_submit = body.get("submit") in (True, "1", "true", "True")
-        gated = approval_required(batch)  # True iff a workflow template exists for the batch's scope.
+        gated = approval_required(batch)  # True iff a stage of the batch's resolved template would actually run.
         if wants_submit and not gated:
             batch = services.submit_payout_batch(batch, actor_user=request.user)  # Submit the draft batch immediately.
         message = (  # Tell the caller whether they still need to route it for approval.

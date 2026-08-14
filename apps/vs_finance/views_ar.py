@@ -1283,8 +1283,12 @@ class CreditNoteListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
+        # entity__tenant and branch: the serializer's approval_required scopes
+        # through the ledger entity's owning tenant and the document's branch,
+        # both of which would otherwise load per row on a multi-branch school.
         qs = (CreditNote.objects.filter(entity=entity)
-              .select_related("customer", "invoice").prefetch_related("lines"))
+              .select_related("customer", "invoice", "entity__tenant", "branch")
+              .prefetch_related("lines"))
         if (kind := request.query_params.get("kind")):
             qs = qs.filter(kind=kind)
         if (customer := request.query_params.get("customer")):
@@ -1559,7 +1563,11 @@ class RefundListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = Refund.objects.filter(entity=entity).select_related("customer")
+        # entity__tenant and branch: the serializer's approval_required scopes
+        # through the ledger entity's owning tenant and the document's branch,
+        # both of which would otherwise load per row on a multi-branch school.
+        qs = Refund.objects.filter(entity=entity).select_related(
+            "customer", "entity__tenant", "branch")
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
         if (customer := request.query_params.get("customer")):
@@ -1798,8 +1806,11 @@ class WriteOffRequestListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
+        # entity__tenant and branch: the serializer's approval_required scopes
+        # through the ledger entity's owning tenant and the document's branch,
+        # both of which would otherwise load per row on a multi-branch school.
         qs = WriteOffRequest.objects.filter(entity=entity).select_related(
-            "invoice", "invoice__customer")
+            "invoice", "invoice__customer", "entity__tenant", "branch")
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
         if (invoice := request.query_params.get("invoice")):
@@ -2104,10 +2115,13 @@ class ARAdjustmentBatchView(_FinanceBase):
 
     @transaction.atomic
     def post(self, request):
-        from .approvals import approval_required
+        from .approvals import ApprovalGate
         from .credit_notes import post_refund, post_write_off_request
         from vs_workflow.services.submission import submit_for_approval
 
+        # Every document in a batch shares one entity, so the batch is one
+        # template lookup rather than one per line.
+        gate = ApprovalGate()
         entity = resolve_entity(request)
         body = request.data or {}
         kind = _normalise_batch_kind(body.get("kind"))
@@ -2164,7 +2178,7 @@ class ARAdjustmentBatchView(_FinanceBase):
                 ))
 
             if action == "POST":
-                if any(approval_required(document) for document in documents):
+                if any(gate.required(document) for document in documents):
                     raise ValidationError({
                         "action": "One or more refunds are approval-gated; submit this "
                                   "batch for approval instead of posting it.",
@@ -2235,7 +2249,7 @@ class ARAdjustmentBatchView(_FinanceBase):
                 ))
 
             if action == "POST":
-                if any(approval_required(document) for document in documents):
+                if any(gate.required(document) for document in documents):
                     raise ValidationError({
                         "action": "One or more write-offs are approval-gated; submit "
                                   "this batch for approval instead of posting it.",
@@ -2269,7 +2283,7 @@ class ARAdjustmentBatchView(_FinanceBase):
 
 
 # Support the writeoff rows workflow.
-def _writeoff_rows(entity, *, limit=1000):
+def _writeoff_rows(entity, *, limit=1000, gate=None):
     """Normalised bad-debt write-off rows, from two disjoint sources.
 
     * POSTED write-offs come from the finance audit log (``INVOICE_WRITTEN_OFF``
@@ -2283,7 +2297,14 @@ def _writeoff_rows(entity, *, limit=1000):
 
     The two sources are disjoint (posted ⇒ audit log; non-posted ⇒ table), so no
     write-off is double-counted.
+
+    ``gate`` is an :class:`~vs_finance.approvals.ApprovalGate` shared with the
+    caller's other row builders, so the ``approval_required`` each actionable row
+    carries costs one template lookup for the whole page rather than one per row.
     """
+    from .approvals import ApprovalGate
+
+    gate = ApprovalGate() if gate is None else gate
     logs = list(
         FinanceAuditLog.objects.filter(
             entity=entity, action=FinanceAuditAction.INVOICE_WRITTEN_OFF,
@@ -2305,13 +2326,16 @@ def _writeoff_rows(entity, *, limit=1000):
             "reason": l.metadata.get("narration") or "Bad-debt write-off",
             "amount": int(l.metadata.get("amount") or 0), "amount_naira": format_naira(int(l.metadata.get("amount") or 0)),
             "status": "POSTED", "refund_id": None, "write_off_id": None,
+            # An audit-log row is a write-off that already reached the ledger and
+            # carries no document id to act on, so no gate applies to it.
+            "approval_required": False,
         })
 
     # Non-posted write-off requests (drafts + awaiting approval). The audit log
     # only records POSTED write-offs, so these would otherwise never surface.
     for w in (WriteOffRequest.objects
               .filter(entity=entity).exclude(status=DocumentStatus.POSTED)
-              .select_related("invoice", "invoice__customer")
+              .select_related("invoice", "invoice__customer", "entity__tenant", "branch")
               .order_by("-id")[:limit]):
         wo_date = w.write_off_date or w.created_at.date()
         rows.append({
@@ -2321,6 +2345,7 @@ def _writeoff_rows(entity, *, limit=1000):
             "reason": w.reason or w.narration or "Bad-debt write-off",
             "amount": w.amount, "amount_naira": format_naira(w.amount),
             "status": w.status, "refund_id": None, "write_off_id": w.id,
+            "approval_required": gate.required(w),
         })
     return rows
 
@@ -2344,12 +2369,25 @@ class ARAdjustmentListView(_FinanceBase):
         from rest_framework.response import Response
         from django.utils import timezone
 
+        from .approvals import ApprovalGate
+
         entity = resolve_entity(request)
         type_f = (request.query_params.get("type") or "").lower()
         search = (request.query_params.get("search") or "").strip().lower()
 
+        # One gate for the whole page. This view pulls up to 1000 refunds plus
+        # the write-offs into memory before paginating, and the gate's answer
+        # varies only by (document_type, tenant, branch) - so it is resolved once
+        # per scope here instead of once per row.
+        gate = ApprovalGate()
+
         refund_rows = []
-        for r in (Refund.objects.filter(entity=entity).select_related("customer")
+        # entity__tenant and branch are selected for the gate: it scopes a finance
+        # document through its ledger entity's owning tenant and its branch, and
+        # without these every row would lazy-load them back - on a multi-branch
+        # school that is two extra queries a row for a handful of distinct scopes.
+        for r in (Refund.objects.filter(entity=entity)
+                  .select_related("customer", "entity__tenant", "branch")
                   .order_by("-refund_date", "-id")[:1000]):
             refund_rows.append({
                 "key": f"R{r.id}", "kind": "REFUND", "reference": r.document_number,
@@ -2357,8 +2395,9 @@ class ARAdjustmentListView(_FinanceBase):
                 "customer_code": r.customer.code, "customer_name": r.customer.name,
                 "reason": r.narration or "Customer refund", "amount": r.amount,
                 "amount_naira": format_naira(r.amount), "status": r.status, "refund_id": r.id,
+                "approval_required": gate.required(r),
             })
-        writeoff_rows = _writeoff_rows(entity)
+        writeoff_rows = _writeoff_rows(entity, gate=gate)
 
         # KPI totals - from the full sets, independent of the type filter / page.
         year = timezone.now().year
@@ -2508,7 +2547,11 @@ class ConcessionListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = Concession.objects.filter(entity=entity).select_related("customer", "invoice")
+        # entity__tenant and branch: the serializer's approval_required scopes
+        # through the ledger entity's owning tenant and the document's branch,
+        # both of which would otherwise load per row on a multi-branch school.
+        qs = Concession.objects.filter(entity=entity).select_related(
+            "customer", "invoice", "entity__tenant", "branch")
         if (kind := request.query_params.get("kind")):
             qs = qs.filter(kind=kind)
         if (status_val := request.query_params.get("status")):

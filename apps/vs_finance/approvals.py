@@ -7,52 +7,116 @@ platform cascade the engine's ``submit_for_approval`` uses. When no template
 exists, the direct-post path behaves exactly as it did before - so approvals can
 be switched on one document type and one school at a time, with zero migration.  # Keep the gate template-driven.
 
+**A template existing is not the same question as a stage running.** The gate
+answered on existence alone, which is right only while every ladder's first stage
+is unconditional. Concessions and credit notes are meant to be gated only above a
+threshold, so existence answered "approval required" for a ₦2,000 goodwill waiver
+at every amount: the direct post was refused and no threshold was ever consulted.
+The gate now asks the engine's own question - *would any stage of the resolved
+template actually apply to this document* - via
+:func:`vs_workflow.services.resolution.template_requires_approval`.
+
+That is the half of the fix that generalises: any future ladder whose stages are
+all conditional inherited the same bug, and journals, payouts and procurement
+escaped it only because their first stage happens to be unconditional. The other
+half is in :func:`_stages_payload` below, which now puts the threshold on the
+first stage as well - while it was unconditional *something* always applied, so
+no gate implementation could have let a small waiver through.
+
 :func:`approval_required` is the single place that decision is made; both the
 submit endpoint and the direct-post view read it so they can never disagree.  # Single source of truth.
+:class:`ApprovalGate` is the same answer for many documents at one query per
+distinct scope, for list endpoints that would otherwise ask per row.
 """
 from __future__ import annotations
+
+
+# Cache template resolution across many documents on one request.
+class ApprovalGate:
+    """Answers :func:`approval_required` for many documents without a query per row.
+
+    The template a document resolves to varies only by
+    ``(document_type, tenant, branch, code)``, so it is looked up once per
+    distinct scope and reused; the stage list and route flag are cached with it.
+    Whether a *particular* document clears the ladder's inclusion conditions is
+    then decided in memory, because it depends on the document's own amount.
+
+    Build one per request and throw it away. It deliberately holds no
+    invalidation: a template published mid-request would not be seen, which is
+    the right trade for a read that would otherwise cost 1000 queries.
+    """
+
+    def __init__(self):
+        self._scopes = {}  # (document_type, tenant_id, branch_id, code) -> resolved or None
+
+    # Resolve and memoise the template that routes this document's scope.
+    def _resolved(self, document, document_type):
+        from vs_workflow.exceptions import WorkflowError
+        from vs_workflow.handlers import get_handler
+        from vs_workflow.models import WorkflowRoutePath
+        from vs_workflow.services.resolution import document_scope, resolve_template
+
+        tenant, branch = document_scope(document)
+        try:
+            # The engine resolves by code, so the gate must too: a tenant whose
+            # ladder sits under a different code is not gated by the one the
+            # engine would never load.
+            code = get_handler(document_type).resolve_default_template_code(document)
+        except WorkflowError:
+            # No handler registered - the type cannot be submitted at all, so
+            # match on any code rather than inventing one.
+            code = None
+
+        key = (document_type, getattr(tenant, "pk", None),
+               getattr(branch, "pk", None), code)
+        if key not in self._scopes:
+            template = resolve_template(
+                document_type, tenant=tenant, branch=branch, code=code)
+            if template is None:
+                self._scopes[key] = None
+            else:
+                self._scopes[key] = (
+                    template,
+                    list(template.stages.order_by("order")),
+                    WorkflowRoutePath.objects.filter(template=template).exists(),
+                )
+        return self._scopes[key]
+
+    # Decide the gate for one document.
+    def required(self, document) -> bool:
+        """``True`` iff ``document`` must go through workflow approval."""
+        from vs_workflow.services.resolution import template_requires_approval
+
+        document_type = getattr(document, "workflow_document_type", None)  # Read the document type if the model exposes one.
+        if not document_type:  # Documents without a workflow type never require approval.
+            return False
+
+        resolved = self._resolved(document, document_type)
+        if resolved is None:  # No matching template means direct posting stays allowed.
+            return False
+        template, stages, has_routes = resolved
+        return template_requires_approval(
+            template, document, stages=stages, has_routes=has_routes)
 
 
 # Handle the approval required workflow.
 def approval_required(document) -> bool:
     """Return ``True`` iff ``document`` must go through workflow approval.
 
-    True when a published :class:`~vs_workflow.models.WorkflowTemplate` exists for
+    True when a published :class:`~vs_workflow.models.WorkflowTemplate` resolves for
     the document's ``workflow_document_type`` at its ``(school, branch)`` scope -
     matched with the same branch-specific → school-wide → platform-wide cascade as
-    :func:`vs_workflow.services.submission.submit_for_approval`, so the gate and the
-    engine always resolve the same template. ``False`` when the document declares no
-    ``workflow_document_type`` or no matching template is published.
+    :func:`vs_workflow.services.submission.submit_for_approval`, both going through
+    :func:`vs_workflow.services.resolution.resolve_template` so the gate and the
+    engine cannot resolve different templates - **and** at least one stage of that
+    template would actually activate for this document. ``False`` when the document
+    declares no ``workflow_document_type``, no matching template is published, or
+    every stage of the resolved template is one this document skips.
 
-    ``WorkflowTemplate`` is imported lazily to avoid an import cycle at app load.
+    Resolving many documents? Use :class:`ApprovalGate`, which is this answer at
+    one query per distinct scope instead of per document.
     """
-    document_type = getattr(document, "workflow_document_type", None)  # Read the document type if the model exposes one.
-    if not document_type:  # Documents without a workflow type never require approval.
-        return False
-
-    from vs_workflow.models import WorkflowTemplate
-
-    # Direct tenant attribute wins - including an explicit None (platform
-    # documents gate on the platform template only). Finance documents scope
-    # through their ledger entity's owning tenant. Must resolve identically to
-    # submission.submit_for_approval or the gate and engine disagree.
-    if hasattr(document, "tenant"):
-        tenant = document.tenant
-    else:
-        tenant = getattr(getattr(document, "entity", None), "tenant", None)
-    branch = getattr(document, "branch", None)  # The document's branch scope, if any.
-
-    # Cascade: branch-specific → tenant-wide → platform-wide (mirrors submission.py).  # Match the workflow engine order.
-    scopes = [{"tenant": tenant, "branch": branch}]  # Start with the most specific scope.
-    if branch is not None:  # Fall back to tenant-wide when a branch is present.
-        scopes.append({"tenant": tenant, "branch": None})  # Add the tenant-wide scope.
-    if tenant is not None or branch is not None:  # Finally fall back to platform-wide.
-        scopes.append({"tenant": None, "branch": None})  # Add the global scope.
-
-    for scope in scopes:  # Test each scope in order until a template is found.
-        if WorkflowTemplate.objects.filter(document_type=document_type, **scope).exists():
-            return True  # Approval is required when a matching template exists.
-    return False  # No matching template means direct posting stays allowed.
+    return ApprovalGate().required(document)
 
 
 # --------------------------------------------------------------------------- #
@@ -86,9 +150,16 @@ def _stages_payload(*, amount_field, threshold, gated, approver_role_key,
     """The stage list for one adjustment ladder.
 
     An always-gated type gets a single always-on stage. A threshold-gated type gets
-    the same first stage plus a senior stage whose ``inclusion_condition`` only admits
-    documents at or above ``threshold``, which is the engine's own mechanism and the
-    same shape procurement uses for high-value spend.
+    **both** stages conditioned on ``threshold``, which is the engine's own mechanism
+    and the same shape procurement uses for high-value spend.
+
+    The first stage carries the condition too, and that is the whole point of the
+    threshold. It used to be unconditional, so *something* always applied and every
+    concession was gated at every amount: a ₦2,000 goodwill allowance was refused at
+    ``/post/`` exactly as a ₦400,000 waiver was, which is the opposite of what this
+    constant is for. Below ``threshold`` no stage applies, ``approval_required``
+    answers False, and the allowance posts directly. At or above it the ladder is
+    unchanged - the adjustment approver, then the senior one.
 
     ``skip_if_no_approvers=False`` on every stage: an adjustment must never approve
     itself because nobody happens to hold the role. An unstaffed stage parks the
@@ -110,6 +181,9 @@ def _stages_payload(*, amount_field, threshold, gated, approver_role_key,
     }]
     if not gated:
         return stages
+    stages[0]["inclusion_condition"] = {
+        "op": "gte", "field": amount_field, "value": int(threshold),
+    }
     stages.append({
         "code": "senior",
         "label": "Senior adjustment approval",

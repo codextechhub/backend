@@ -17,7 +17,6 @@ from vs_rbac.tests.helpers import (
 )
 from vs_workflow.constants import PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW
 from vs_workflow.models import WorkflowTemplate
-from vs_workflow.services.submission import WorkflowTemplate as _T  # noqa: F401
 from vs_workflow.views import WorkflowTemplateViewSet
 
 _counter = itertools.count(1)
@@ -124,7 +123,7 @@ class PlatformTemplateTests(TestCase):
     # ── The fallback ─────────────────────────────────────────────────────────
 
     def test_tenant_version_wins_then_falls_back_when_switched_off(self):
-        from vs_workflow.services.submission import WorkflowTemplate as Model  # noqa: F811
+        Model = WorkflowTemplate
 
         self._publish(self.platform_admin, self.codex, scope="PLATFORM", name="Platform")
         self._publish(self.tenant_admin, self.tenant, name="Ours")

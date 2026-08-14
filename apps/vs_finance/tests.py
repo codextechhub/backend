@@ -9956,7 +9956,15 @@ class AdjustmentApprovalSeedTests(TestCase):
             self.assertIsNone(stages[0].inclusion_condition, document_type)
 
     def test_a_waiver_is_gated_only_above_the_threshold(self):
-        """Small goodwill stays frictionless; a large one needs a second person."""
+        """Small goodwill stays frictionless; a large one needs a second person.
+
+        **Every** stage carries the threshold, the first one included. While the
+        first was unconditional something always applied, so the ladder gated a
+        concession at every amount - the structure this test asserted looked right
+        and the behaviour it described never happened. See
+        ``AdjustmentThresholdGateTests`` for the endpoint-level cover that would
+        have caught it.
+        """
         from vs_finance.constants import WF_ADJUSTMENT_THRESHOLD
 
         tenant = self._seeded(slug="juniper-adj", code="JNPAD")
@@ -9964,13 +9972,10 @@ class AdjustmentApprovalSeedTests(TestCase):
                                             ("finance.credit_note", "total")):
             stages = self._stages(tenant, document_type)
             self.assertEqual(len(stages), 2, document_type)
-            self.assertIsNone(stages[0].inclusion_condition, document_type)
-            self.assertEqual(
-                stages[1].inclusion_condition,
-                {"op": "gte", "field": amount_field,
-                 "value": WF_ADJUSTMENT_THRESHOLD},
-                document_type,
-            )
+            threshold = {"op": "gte", "field": amount_field,
+                         "value": WF_ADJUSTMENT_THRESHOLD}
+            self.assertEqual(stages[0].inclusion_condition, threshold, document_type)
+            self.assertEqual(stages[1].inclusion_condition, threshold, document_type)
 
     def test_no_adjustment_stage_may_auto_skip_itself(self):
         """An unstaffed stage must park the adjustment, not post it."""
@@ -10035,3 +10040,495 @@ class AdjustmentApprovalSeedTests(TestCase):
             tenant=tenant).values_list("document_type", flat=True))
         self.assertIn("finance.concession", published)
         self.assertIn("finance.credit_note", published)
+
+
+# Group tests for Adjustment Threshold Gate Tests.
+class AdjustmentThresholdGateTests(TestCase):
+    """Where the threshold actually bites: the endpoints, not the stage list.
+
+    The seed tests above assert the *shape* of the ladder - two stages, the second
+    carrying the threshold - and never call ``/post/``. That was enough to let a
+    real defect through: the gate answered on template existence alone, so with the
+    ladder seeded a ₦20 goodwill waiver was refused at the post endpoint exactly as
+    a ₦60,000 one was, while the engine would have routed the small one past every
+    approval stage and terminated it APPROVED with nobody looking. Every test here
+    goes through the endpoint or the gate, never the stage rows.
+    """
+
+    # Prepare or verify the setUp test path.
+    def setUp(self):
+        import io
+
+        from django.core.management import call_command
+        from vs_schools.models import School
+
+        from core.test_utils import TenantAPIClient
+        from vs_finance.approvals import ensure_tenant_approval_templates
+
+        call_command("seed_finance_permissions", verbosity=0, stdout=io.StringIO())
+        seed_currencies()
+
+        self.school = School.objects.create(
+            name="Threshold High", slug="threshold-high", code="THRHI", status="ACTIVE")
+        self.entity = LedgerEntity.objects.create(
+            name="Threshold Books", code="THRBK", kind=LedgerEntity.Kind.TENANT,
+            tenant=self.school.tenant,
+        )
+        seed_chart_of_accounts(self.entity)
+        year = FiscalYear.objects.create(
+            entity=self.entity, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        FiscalPeriod.objects.create(
+            entity=self.entity, fiscal_year=year, period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+            status=PeriodStatus.OPEN,
+        )
+        self.bank = Account.objects.get(entity=self.entity, code="1100")
+        self.customer = Customer.objects.create(
+            entity=self.entity, code="CUSTT", name="Thresholder Ltd",
+            receivable_account=Account.objects.get(entity=self.entity, code="1200"),
+        )
+        ensure_tenant_approval_templates(self.school.tenant)
+
+        self.requester = _school_finance_requester(self.school, "req-thr@test.com")
+        self.client = TenantAPIClient(user=self.requester)
+
+    # --- fixtures ---------------------------------------------------------- #
+
+    # Support the invoice workflow.
+    def _invoice(self, amount):
+        """A posted invoice with ``amount`` kobo outstanding to concede against."""
+        invoice = Invoice.objects.create(
+            entity=self.entity, customer=self.customer,
+            invoice_date=datetime.date(2026, 1, 10), due_date=datetime.date(2026, 1, 25),
+        )
+        InvoiceLine.objects.create(
+            invoice=invoice, line_no=1, quantity=1, unit_price=amount,
+            revenue_account=Account.objects.get(entity=self.entity, code="4100"),
+        )
+        post_invoice(invoice)
+        return invoice
+
+    # Support the concession workflow.
+    def _concession(self, amount):
+        return Concession.objects.create(
+            entity=self.entity, customer=self.customer, invoice=self._invoice(amount * 2),
+            kind="WAIVER", concession_date=datetime.date(2026, 1, 16),
+            amount=amount, reason="Goodwill", created_by=self.requester,
+        )
+
+    # Support the credit note workflow.
+    def _credit_note(self, amount):
+        """A priced draft note.
+
+        The gate reads the stored ``total``, which the create endpoint fills by
+        pricing the lines; a note built straight through the ORM carries a zero
+        total and would answer the gate on the wrong number.
+        """
+        from vs_finance.credit_notes import price_credit_note
+
+        note = CreditNote.objects.create(
+            entity=self.entity, customer=self.customer, kind=CreditNoteKind.CREDIT,
+            note_date=datetime.date(2026, 1, 15), reason="Returned goods",
+            created_by=self.requester,
+        )
+        CreditNoteLine.objects.create(
+            note=note, line_no=1, quantity=1, unit_price=amount, tax_code=None,
+            revenue_account=Account.objects.get(entity=self.entity, code="4900"),
+        )
+        price_credit_note(note)
+        note.refresh_from_db()
+        return note
+
+    # Support the refund workflow.
+    def _refund(self, amount):
+        payment = Payment.objects.create(
+            entity=self.entity, customer=self.customer, amount=amount,
+            payment_date=datetime.date(2026, 1, 5), deposit_account=self.bank,
+        )
+        post_payment(payment)
+        return Refund.objects.create(
+            entity=self.entity, customer=self.customer, amount=amount,
+            refund_date=datetime.date(2026, 1, 18), deposit_account=self.bank,
+            created_by=self.requester,
+        )
+
+    # Support the post workflow.
+    def _post(self, kind, document):
+        return self.client.post(
+            f"/v1/finance/{kind}/{document.pk}/post/?entity={self.entity.code}",
+            {}, format="json")
+
+    # --- the defect --------------------------------------------------------- #
+
+    # Verify a small waiver still posts directly behavior.
+    def test_a_small_waiver_still_posts_directly(self):
+        """₦200 of goodwill must not need a meeting, ladder seeded or not."""
+        concession = self._concession(20_000)  # ₦200, well under the ₦50,000 bar
+
+        response = self._post("concessions", concession)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        concession.refresh_from_db()
+        self.assertEqual(concession.status, DocumentStatus.POSTED)
+        self.assertIsNotNone(concession.journal_id)
+
+    # Verify a large waiver is refused at the post endpoint behavior.
+    def test_a_large_waiver_is_refused_at_the_post_endpoint(self):
+        from vs_finance.constants import WF_ADJUSTMENT_THRESHOLD
+
+        concession = self._concession(WF_ADJUSTMENT_THRESHOLD)  # exactly at the bar
+
+        response = self._post("concessions", concession)
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("approval-gated", str(response.json()))
+        concession.refresh_from_db()
+        self.assertEqual(concession.status, DocumentStatus.DRAFT)
+        self.assertIsNone(concession.journal_id)
+
+    # Verify a small credit note still posts directly behavior.
+    def test_a_small_credit_note_still_posts_directly(self):
+        note = self._credit_note(20_000)
+
+        response = self._post("credit-notes", note)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        note.refresh_from_db()
+        self.assertEqual(note.status, DocumentStatus.POSTED)
+
+    # Verify a large credit note is refused at the post endpoint behavior.
+    def test_a_large_credit_note_is_refused_at_the_post_endpoint(self):
+        from vs_finance.constants import WF_ADJUSTMENT_THRESHOLD
+
+        note = self._credit_note(WF_ADJUSTMENT_THRESHOLD + 100_000)
+
+        response = self._post("credit-notes", note)
+
+        self.assertEqual(response.status_code, 400, response.content)
+        note.refresh_from_db()
+        self.assertEqual(note.status, DocumentStatus.DRAFT)
+
+    # Verify cash out is gated at every amount behavior.
+    def test_cash_out_is_gated_at_every_amount(self):
+        """The threshold is a concession/credit-note rule, not a general one.
+
+        A refund's ladder has one unconditional stage, so the same gate must
+        still refuse a ₦200 payout - otherwise this fix would have opened one.
+        """
+        refund = self._refund(20_000)
+
+        response = self._post("refunds", refund)
+
+        self.assertEqual(response.status_code, 400, response.content)
+        refund.refresh_from_db()
+        self.assertEqual(refund.status, DocumentStatus.DRAFT)
+
+    # --- gate and engine must answer the same question ---------------------- #
+
+    # Verify an ungated waiver would meet no approver in the engine behavior.
+    def test_an_ungated_waiver_would_meet_no_approver_in_the_engine(self):
+        """The invariant the gate exists to keep.
+
+        If ``approval_required`` says False, submitting the same document must
+        not stop at an approval stage; if it says True, it must. The old gate
+        broke the first half - it refused the direct post for a document the
+        engine routed straight past every stage to APPROVED.
+        """
+        from vs_workflow.constants import WorkflowInstanceStatus
+        from vs_workflow.services.submission import submit_for_approval
+
+        from vs_finance.approvals import approval_required
+
+        small = self._concession(20_000)
+        self.assertFalse(approval_required(small))
+        instance = submit_for_approval(small, requested_by=self.requester)
+        self.assertEqual(instance.status, WorkflowInstanceStatus.APPROVED)
+
+    # Verify a gated waiver stops at an approval stage behavior.
+    def test_a_gated_waiver_stops_at_an_approval_stage(self):
+        from vs_workflow.constants import WorkflowInstanceStatus
+        from vs_workflow.services.submission import submit_for_approval
+
+        from vs_finance.approvals import approval_required
+        from vs_finance.constants import WF_ADJUSTMENT_THRESHOLD
+
+        large = self._concession(WF_ADJUSTMENT_THRESHOLD)
+        self.assertTrue(approval_required(large))
+        instance = submit_for_approval(large, requested_by=self.requester)
+        self.assertNotEqual(instance.status, WorkflowInstanceStatus.APPROVED)
+
+    # Verify a tenant that wants every waiver approved sets the bar to zero behavior.
+    def test_a_tenant_that_wants_every_waiver_approved_sets_the_bar_to_zero(self):
+        """Branch-optional, threshold-optional: the fix must not hard-code ₦50,000."""
+        from vs_workflow.models import WorkflowTemplate
+
+        from vs_finance.approvals import (
+            approval_required, ensure_tenant_approval_templates,
+        )
+
+        WorkflowTemplate.all_objects.filter(
+            tenant=self.school.tenant, document_type="finance.concession").delete()
+        ensure_tenant_approval_templates(self.school.tenant, threshold=0)
+
+        self.assertTrue(approval_required(self._concession(20_000)))
+
+    # Verify no template at all leaves the direct path open behavior.
+    def test_no_template_at_all_leaves_the_direct_path_open(self):
+        from vs_workflow.models import WorkflowTemplate
+
+        from vs_finance.approvals import approval_required
+
+        WorkflowTemplate.all_objects.filter(
+            tenant=self.school.tenant, document_type="finance.concession").delete()
+
+        self.assertFalse(approval_required(self._concession(9_000_000)))
+
+    # --- what the console reads --------------------------------------------- #
+
+    # Verify a branch scoped waiver resolves on the same threshold behavior.
+    def test_a_branch_scoped_waiver_resolves_on_the_same_threshold(self):
+        """A multi-branch school must behave like a branchless one here.
+
+        The seeded ladder is tenant-wide, so a branch-scoped concession has to
+        fall through branch → tenant to find it. If that fall-through broke, a
+        branched school would silently lose its gate on large waivers.
+        """
+        from vs_schools.models import Branch
+
+        from vs_finance.approvals import approval_required
+        from vs_finance.constants import WF_ADJUSTMENT_THRESHOLD
+
+        branch = Branch.objects.create(
+            school=self.school, name="Second Campus", is_main=False, status="ACTIVE")
+
+        small = self._concession(20_000)
+        large = self._concession(WF_ADJUSTMENT_THRESHOLD)
+        for document in (small, large):
+            document.branch = branch
+            document.save(update_fields=["branch"])
+
+        self.assertFalse(approval_required(small))
+        self.assertTrue(approval_required(large))
+
+    # Verify the read serializers carry the gate behavior.
+    def test_the_read_serializers_carry_the_gate(self):
+        """A client must not have to reimplement the cascade to pick a button."""
+        from vs_finance.constants import WF_ADJUSTMENT_THRESHOLD
+        from vs_finance.serializers import ConcessionSerializer, RefundSerializer
+
+        small = ConcessionSerializer(self._concession(20_000)).data
+        large = ConcessionSerializer(self._concession(WF_ADJUSTMENT_THRESHOLD)).data
+        self.assertFalse(small["approval_required"])
+        self.assertTrue(large["approval_required"])
+        # A refund is gated at any amount, and says so on the same field.
+        self.assertTrue(RefundSerializer(self._refund(20_000)).data["approval_required"])
+
+    # Verify the detail endpoint agrees with the post endpoint behavior.
+    def test_the_detail_endpoint_agrees_with_the_post_endpoint(self):
+        from vs_finance.constants import WF_ADJUSTMENT_THRESHOLD
+
+        for amount, gated, expected_status in ((20_000, False, 200),
+                                               (WF_ADJUSTMENT_THRESHOLD, True, 400)):
+            concession = self._concession(amount)
+            read = self.client.get(
+                f"/v1/finance/concessions/{concession.pk}/?entity={self.entity.code}")
+            self.assertEqual(read.status_code, 200, read.content)
+            self.assertEqual(read.json()["data"]["approval_required"], gated, amount)
+            # The button that read implies is the one the action honours.
+            self.assertEqual(self._post("concessions", concession).status_code,
+                             expected_status, amount)
+
+    # Verify the adjustments list carries the gate on every actionable row behavior.
+    def test_the_adjustments_list_carries_the_gate_on_every_actionable_row(self):
+        """The screen the Post button lives on hand-builds its rows.
+
+        Adding the field to the serializers alone would leave this list - the one
+        the action is actually rendered on - without it.
+        """
+        self._refund(20_000)
+        WriteOffRequest.objects.create(
+            entity=self.entity, invoice=self._invoice(80_000),
+            amount=80_000, write_off_date=datetime.date(2026, 1, 20),
+            reason="Uncollectable", created_by=self.requester,
+        )
+
+        response = self.client.get(
+            f"/v1/finance/ar-adjustments/?entity={self.entity.code}")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        rows = response.json()["data"]
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertIn("approval_required", row, row)
+        actionable = [r for r in rows if r["refund_id"] or r["write_off_id"]]
+        self.assertEqual(len(actionable), 2)
+        # Both ladders are unconditional, so both rows are gated.
+        self.assertTrue(all(r["approval_required"] for r in actionable))
+
+    # Verify the list does not ask the gate once per row behavior.
+    def test_the_list_does_not_ask_the_gate_once_per_row(self):
+        """Up to 1000 refunds are pulled into memory before paginating.
+
+        The answer varies only by (document_type, tenant, branch), so it is
+        resolved per scope and reused. Ten refunds must cost the same number of
+        queries as one, or this list is 1000+ template lookups on one request.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def _count(n):
+            for _ in range(n):
+                self._refund(20_000)
+            with CaptureQueriesContext(connection) as ctx:
+                response = self.client.get(
+                    f"/v1/finance/ar-adjustments/?entity={self.entity.code}")
+            self.assertEqual(response.status_code, 200, response.content)
+            return len(ctx.captured_queries)
+
+        one = _count(1)
+        ten = _count(9)
+        self.assertEqual(ten, one, "the gate is being resolved per row")
+
+    # Verify the paginated refund list does not ask the gate once per row behavior.
+    def test_the_paginated_refund_list_does_not_ask_the_gate_once_per_row(self):
+        """Same trap one level down: the serializer carries the field too.
+
+        The gate scopes a finance document through its ledger entity's owning
+        tenant, so without that pair eagerly loaded each row fetches it back for
+        a value the whole page shares.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def _count(n):
+            for _ in range(n):
+                self._refund(20_000)
+            with CaptureQueriesContext(connection) as ctx:
+                response = self.client.get(
+                    f"/v1/finance/refunds/?entity={self.entity.code}")
+            self.assertEqual(response.status_code, 200, response.content)
+            self.assertTrue(response.json()["data"][0]["approval_required"])
+            return len(ctx.captured_queries)
+
+        self.assertEqual(_count(9), _count(1), "the gate is being resolved per row")
+
+
+# Group tests for Adjustment Threshold Repair Migration Tests.
+class AdjustmentThresholdRepairMigrationTests(TestCase):
+    """Migration 0021, which moves the threshold onto already-seeded ladders.
+
+    The seed is deliberately non-destructive and never revisits a ladder it
+    published, so without this every tenant provisioned before the fix would keep
+    gating a ₦200 waiver forever. The repair is narrow on purpose: only a ladder
+    still in the exact seeded shape is rewritten.
+    """
+
+    # Support the migration module workflow.
+    def _migration(self):
+        import importlib
+
+        return importlib.import_module(
+            "vs_finance.migrations.0021_adjustment_threshold_on_first_stage")
+
+    # Support the ladder workflow.
+    def _ladder(self, slug, *, senior_condition, first_condition=None,
+                with_senior=True, document_type="finance.concession",
+                code="standard"):
+        from vs_schools.models import School
+        from vs_workflow.models import WorkflowStage, WorkflowTemplate
+
+        # School codes are globally unique, so number them rather than deriving
+        # from the slug - two slugs sharing a five-character prefix collide.
+        self._school_no = getattr(self, "_school_no", 0) + 1
+        school = School.objects.create(
+            name=slug.title(), slug=slug, code=f"MIG{self._school_no:02d}",
+            status="ACTIVE")
+        template = WorkflowTemplate.objects.create(
+            tenant=school.tenant, branch=None, document_type=document_type,
+            code=code, name="Ladder")
+        WorkflowStage.objects.create(
+            template=template, code="approver", label="Adjustment approval",
+            order=10, inclusion_condition=first_condition)
+        if with_senior:
+            WorkflowStage.objects.create(
+                template=template, code="senior", label="Senior adjustment approval",
+                order=20, inclusion_condition=senior_condition)
+        return template
+
+    # Support the forward workflow.
+    def _forward(self):
+        from django.apps import apps
+
+        self._migration().apply_threshold_to_first_stage(apps, None)
+
+    # Support the first condition workflow.
+    def _first(self, template):
+        return template.stages.get(code="approver").inclusion_condition
+
+    THRESHOLD = {"op": "gte", "field": "amount", "value": 5_000_000}
+
+    # Verify the seeded shape gets the threshold behavior.
+    def test_the_seeded_shape_gets_the_threshold(self):
+        template = self._ladder("mig-seeded", senior_condition=self.THRESHOLD)
+
+        self._forward()
+
+        self.assertEqual(self._first(template), self.THRESHOLD)
+
+    # Verify an admin edited ladder is left alone behavior.
+    def test_an_admin_edited_ladder_is_left_alone(self):
+        """A rewritten senior condition is a decision, not a bug to repair."""
+        custom = dict(self.THRESHOLD, note="hand-edited")
+        template = self._ladder("mig-edited", senior_condition=custom)
+
+        self._forward()
+
+        self.assertIsNone(self._first(template))
+
+    # Verify a ladder with no senior stage is left alone behavior.
+    def test_a_ladder_with_no_senior_stage_is_left_alone(self):
+        template = self._ladder("mig-onestage", senior_condition=None,
+                                with_senior=False)
+
+        self._forward()
+
+        self.assertIsNone(self._first(template))
+
+    # Verify an always gated type is never touched behavior.
+    def test_an_always_gated_type_is_never_touched(self):
+        """A refund must stay gated at every amount; this fix must not open it."""
+        template = self._ladder("mig-refund", senior_condition=self.THRESHOLD,
+                                document_type="finance.refund")
+
+        self._forward()
+
+        self.assertIsNone(self._first(template))
+
+    # Verify running it twice changes nothing more behavior.
+    def test_running_it_twice_changes_nothing_more(self):
+        template = self._ladder("mig-twice", senior_condition=self.THRESHOLD)
+
+        self._forward()
+        self._forward()
+
+        self.assertEqual(self._first(template), self.THRESHOLD)
+
+    # Verify it reverses only what it created behavior.
+    def test_it_reverses_only_what_it_created(self):
+        from django.apps import apps
+
+        repaired = self._ladder("mig-rev", senior_condition=self.THRESHOLD)
+        # An admin who set their own first-stage bar keeps it through a rollback.
+        admin_set = self._ladder(
+            "mig-revkept", senior_condition=self.THRESHOLD,
+            first_condition={"op": "gte", "field": "amount", "value": 99},
+        )
+
+        self._forward()
+        self._migration().clear_threshold_from_first_stage(apps, None)
+
+        self.assertIsNone(self._first(repaired))
+        self.assertEqual(self._first(admin_set),
+                         {"op": "gte", "field": "amount", "value": 99})
