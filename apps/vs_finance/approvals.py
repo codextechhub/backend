@@ -137,6 +137,91 @@ _ADJUSTMENT_TEMPLATES = {
 }
 
 
+#: The submit keys a published adjustment ladder makes load-bearing, and the
+#: sensitivity each is registered at. Mirrors ``seed_finance_permissions``.
+_ADJUSTMENT_SUBMIT_KEYS = {
+    "concession": ("concessions", "submit", "SENSITIVE"),
+    "creditnote": ("credit/debit notes", "submit", "SENSITIVE"),
+}
+
+
+def ensure_adjustment_submit_permissions():
+    """Register the submit keys the ladders make load-bearing, and grant them.
+
+    Publishing a ladder closes the direct-post route: ``/post/`` refuses while the
+    gate applies, so ``finance.concession.submit`` becomes the *only* way a large
+    waiver reaches the ledger. Those two keys were added with the gate, which means
+    they exist only once ``seed_finance_permissions`` has run - and that is a separate
+    command from the one that publishes the ladders.
+
+    A deploy that ran one and not the other left a gated concession with **no route at
+    all**: posting refused by the server, submitting hidden because the key was never
+    registered or granted. Doing it here ties the two together at the only place that
+    turns the gate on, so the ordering cannot be got wrong again.
+
+    Idempotent and cheap: every write is a ``get_or_create`` on rows that almost always
+    already exist. Grants go to the platform admin roles, the same ones the seed
+    command grants to; a tenant's own roles receive keys through their own
+    administration, not from here.
+    """
+    from vs_rbac.models import (
+        Permission, PermissionAction, PermissionModule, PermissionResource,
+        TenantRolePermission, TenantRoleTemplate,
+    )
+    from vs_tenants.models import Tenant
+
+    module, _ = PermissionModule.objects.get_or_create(
+        name="finance",
+        defaults={"description": "General ledger, receivables, banking, payroll, "
+                                 "tax and reporting.", "is_active": True},
+    )
+    action, _ = PermissionAction.objects.get_or_create(
+        name="submit",
+        defaults={"description": "Submit a record for review or approval by another "
+                                 "party.", "is_active": True},
+    )
+
+    permissions = []
+    for resource_name, resource_label, action_name, sensitivity in (
+        (name, label, verb, level)
+        for name, (label, verb, level) in _ADJUSTMENT_SUBMIT_KEYS.items()
+    ):
+        resource, _ = PermissionResource.objects.get_or_create(
+            module=module, name=resource_name,
+            defaults={"description": f"{resource_label.capitalize()} (finance).",
+                      "is_active": True},
+        )
+        key = f"finance.{resource_name}.{action_name}"
+        permission = Permission.objects.filter(key=key).first()
+        if permission is None:
+            permission = Permission(
+                module=module, resource=resource, action=action,
+                description=f"Submit {resource_label}.",
+                sensitivity_level=sensitivity, is_restricted=True, is_active=True,
+            )
+            permission.save()
+        permissions.append(permission)
+
+    platform = Tenant.objects.filter(
+        slug="codex", kind=Tenant.Kind.PLATFORM).first()
+    if platform is None:
+        # Nothing to grant to yet. The keys exist, which is the half that matters;
+        # create_superuser and the seed command own the roles.
+        return permissions
+
+    for role_key in ("xvs_super_admin", "xvs_platform_admin"):
+        role = TenantRoleTemplate.objects.filter(
+            tenant=platform, key=role_key).first()
+        if role is None:
+            continue
+        for permission in permissions:
+            TenantRolePermission.objects.get_or_create(
+                role=role, permission=permission,
+                defaults={"granted": True, "granted_by": None},
+            )
+    return permissions
+
+
 def _adjustment_models():
     """The finance documents these ladders route, keyed by their workflow type."""
     from .models import Concession, CreditNote, Refund, WriteOffRequest
@@ -289,4 +374,7 @@ def ensure_tenant_approval_templates(
             ),
             True,
         ))
+    # The gate is now on for this tenant, so the key that lets somebody through it
+    # must exist. See the function's docstring for why this lives here.
+    ensure_adjustment_submit_permissions()
     return results

@@ -503,8 +503,15 @@ def reorder_items(entity, *, location=None):
     """SQL-filtered, deterministic source for reorder services and API pagination.
 
     With no location this measures the entity roll-up, which is what a single-store
-    school means by "running out". Narrowed to a location it measures that store, so a
-    campus can be short of something the entity as a whole still holds plenty of.
+    school means by "running out", and yields stock masters. Narrowed to a location it
+    measures that store and yields that store's **balances**, so the rows report the
+    quantity and cost of the place they are short at.
+
+    Returning balances rather than masters is what stops the report contradicting
+    itself: selecting on the store's quantity while reporting the entity's produced a
+    row flagged as needing reorder beside an on-hand figure above its own reorder
+    level. :func:`reorder_row` accepts either shape, the way :func:`valuation_row`
+    already does.
     """
     from django.db.models import F
     from .models import StockBalance, StockItem
@@ -518,24 +525,35 @@ def reorder_items(entity, *, location=None):
             )
             .order_by("code")
         )
-    low_at_location = StockBalance.objects.filter(
-        location=location, stock_item=models.OuterRef("pk"),
-        on_hand_qty__lte=models.OuterRef("reorder_level"),
-    )
     return (
-        StockItem.objects
-        .filter(entity=entity, is_active=True)
-        .filter(models.Exists(low_at_location))
-        .order_by("code")
+        StockBalance.objects
+        .filter(
+            location=location,
+            stock_item__entity=entity, stock_item__is_active=True,
+            on_hand_qty__lte=F("stock_item__reorder_level"),
+        )
+        .select_related("stock_item")
+        .order_by("stock_item__code")
     )
 
 
-def reorder_row(item) -> dict:
-    """Map one stock master to the stable service-level reorder row contract."""
+def reorder_row(row) -> dict:
+    """Map a stock master or a location balance to one reorder row.
+
+    Both shapes are accepted so the report reads the same whether it is showing the
+    entity roll-up or one store, and the caller does not branch on which it asked for.
+
+    ``on_hand_qty`` and ``unit_cost`` come from whichever was given - the store's own
+    quantity and its own weighted average when narrowed to one. ``reorder_level`` and
+    ``reorder_qty`` always come from the master: a reorder policy is set per item, not
+    per shelf, so the same threshold applies at every store that holds it.
+    """
+    item = getattr(row, "stock_item", row)
     return {
         "stock_item_id": item.id, "code": item.code, "name": item.name,
-        "on_hand_qty": item.on_hand_qty, "reorder_level": item.reorder_level,
-        "reorder_qty": item.reorder_qty, "unit_cost": item.unit_cost,
+        "on_hand_qty": row.on_hand_qty, "reorder_level": item.reorder_level,
+        "reorder_qty": item.reorder_qty, "unit_cost": row.unit_cost,
+        "location_id": getattr(row, "location_id", None),
     }
 
 

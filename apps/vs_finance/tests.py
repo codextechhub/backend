@@ -9986,6 +9986,56 @@ class AdjustmentApprovalSeedTests(TestCase):
                 self.assertFalse(stage.skip_if_no_approvers,
                                  f"{document_type}:{stage.code}")
 
+    def test_publishing_the_ladders_registers_the_submit_keys(self):
+        """Turning the gate on must not leave the document with no way through it.
+
+        A published ladder refuses ``/post/``, so the submit key becomes the only route
+        to the ledger. The two keys arrived with the gate, and registering them is a
+        separate command - so a deploy that published the ladders without re-running it
+        left a gated concession refused at the server and hidden behind RBAC at once.
+        """
+        from vs_rbac.models import Permission
+
+        keys = ["finance.concession.submit", "finance.creditnote.submit"]
+        Permission.objects.filter(key__in=keys).delete()
+        self.assertEqual(Permission.objects.filter(key__in=keys).count(), 0)
+
+        self._seeded(slug="olive-adj", code="OLVAD")
+
+        self.assertEqual(
+            sorted(Permission.objects.filter(key__in=keys).values_list("key", flat=True)),
+            sorted(keys),
+        )
+
+    def test_registering_the_submit_keys_is_idempotent(self):
+        from vs_rbac.models import Permission
+
+        from vs_finance.approvals import ensure_adjustment_submit_permissions
+
+        ensure_adjustment_submit_permissions()
+        before = Permission.objects.filter(key__endswith=".submit").count()
+        ensure_adjustment_submit_permissions()
+        self.assertEqual(Permission.objects.filter(key__endswith=".submit").count(), before)
+
+    def test_the_submit_keys_are_granted_to_the_platform_roles(self):
+        from vs_rbac.models import Permission, TenantRolePermission, TenantRoleTemplate
+        from vs_tenants.models import Tenant
+
+        from vs_finance.approvals import ensure_adjustment_submit_permissions
+
+        platform = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
+        if platform is None:
+            self.skipTest("No platform tenant in this fixture.")
+        ensure_adjustment_submit_permissions()
+        permission = Permission.objects.get(key="finance.concession.submit")
+        roles = TenantRoleTemplate.objects.filter(
+            tenant=platform, key__in=["xvs_super_admin", "xvs_platform_admin"])
+        for role in roles:
+            self.assertTrue(
+                TenantRolePermission.objects.filter(role=role, permission=permission).exists(),
+                role.key,
+            )
+
     def test_the_approving_roles_exist_and_nobody_holds_them(self):
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
 

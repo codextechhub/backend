@@ -12140,6 +12140,51 @@ class StockLocationTests(_P2PFixtureMixin, TestCase):
 
         return StockBalance.objects.get(stock_item=self.item, location=location)
 
+    def test_a_store_scoped_reorder_report_reports_that_store(self):
+        """The rows must not contradict themselves.
+
+        Selecting on the store's shortfall while reporting the entity's roll-up put an
+        item on the list beside an on-hand figure *above* its own reorder level, which
+        reads as a bug to anybody looking at it.
+        """
+        from vs_procurement.stock import reorder_report
+
+        self.item.reorder_level = 20
+        self.item.reorder_qty = 50
+        self.item.save(update_fields=["reorder_level", "reorder_qty"])
+
+        annex = self._location("ANNEX", "Annex store")
+        self._receive(self.main, 15, 27_750_00)   # plenty here, at 1,850.00 each
+        self._receive(annex, 10, 20_000_00)       # short here, at 2,000.00 each
+
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.on_hand_qty, 25)  # The roll-up is above the level...
+
+        # ...so entity-wide the item is not short and does not appear at all.
+        self.assertEqual([r["code"] for r in reorder_report(self.entity)], [])
+
+        # At the annex it is short, and the row describes the annex.
+        rows = reorder_report(self.entity, location=annex)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["code"], "BOOK")
+        self.assertEqual(row["on_hand_qty"], 10)            # not the roll-up's 25
+        self.assertEqual(row["unit_cost"], 2_000_00)        # the annex's own average
+        self.assertEqual(row["reorder_level"], 20)          # policy stays per item
+        self.assertEqual(row["reorder_qty"], 50)
+        self.assertLess(row["on_hand_qty"], row["reorder_level"])  # internally consistent
+
+    def test_a_store_holding_enough_is_not_listed_as_short(self):
+        from vs_procurement.stock import reorder_report
+
+        self.item.reorder_level = 5
+        self.item.save(update_fields=["reorder_level"])
+        annex = self._location("ANNEX2", "Second annex")
+        self._receive(self.main, 100, 100_000_00)
+        self._receive(annex, 50, 50_000_00)
+
+        self.assertEqual([r["code"] for r in reorder_report(self.entity, location=annex)], [])
+
     # --- the defect this exists to fix -------------------------------------- #
 
     def test_one_campus_cannot_issue_stock_standing_at_another(self):
