@@ -268,17 +268,52 @@ class StockItemListCreateView(_ProcBase):
             else "procurement.stock.view"
 
     def get(self, request):
-        """List inventory masters for users with explicit stock visibility."""
+        """List inventory masters for users with explicit stock visibility.
+
+        ``?location=`` narrows the list to one store, and the rows then report **that
+        store's** quantity, value, unit cost and reorder state rather than the entity
+        roll-up. Reporting the roll-up under a store filter is the contradiction this
+        avoids: an item listed because one campus is short of it, showing a healthy
+        total held at another.
+
+        ``?needs_reorder=true`` is measured against whichever scope is in force, so a
+        store filter answers "what is this campus short of" rather than "what is the
+        school short of, that this campus happens to stock".
+        """
         entity = resolve_entity(request)
+        location = _resolve_location(entity, request.query_params.get("location"))
         qs = StockItem.objects.filter(entity=entity).select_related(
             "inventory_account", "default_expense_account", "catalog_item")
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         if (search := request.query_params.get("q")):
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
+
+        held = None
+        if location is not None:
+            held = StockBalance.objects.filter(
+                location=location, stock_item__entity=entity)
+            qs = qs.filter(pk__in=held.values("stock_item_id"))
         if request.query_params.get("needs_reorder") == "true":
-            qs = qs.filter(is_active=True, on_hand_qty__lte=F("reorder_level"))
-        return self.paginate(request, qs.order_by("code"), StockItemListSerializer)
+            if held is not None:
+                qs = qs.filter(is_active=True, pk__in=held.filter(
+                    on_hand_qty__lte=F("stock_item__reorder_level"),
+                ).values("stock_item_id"))
+            else:
+                qs = qs.filter(is_active=True, on_hand_qty__lte=F("reorder_level"))
+
+        # One query for the page's balances rather than one per row; the serializer
+        # overlays them so every derived figure describes the same store.
+        def page_balances(page):
+            if held is None:
+                return {}
+            rows = held.filter(stock_item_id__in=[item.pk for item in page])
+            return {"location_balances": {row.stock_item_id: row for row in rows}}
+
+        return self.paginate(
+            request, qs.order_by("code"), StockItemListSerializer,
+            page_context=page_balances,
+        )
 
     def post(self, request):
         """Create a stock master with validated asset/expense accounting defaults."""
@@ -497,7 +532,12 @@ class StockAdjustView(_ProcBase):
 
 
 class StockItemSummaryView(_ProcBase):
-    """GET - entity-wide stock-item KPI strip (tracked / active / low / out / value).
+    """GET - stock-item KPI strip (tracked / active / low / out / value).
+
+    ``?location=`` scopes every figure to one store, so the strip cannot disagree
+    with the list it sits above. Without that, filtering the list to a campus while
+    the KPIs kept reporting the school would put two different answers to the same
+    question on one screen.
 
     docstring-name: Stock items summary
     """
@@ -505,19 +545,37 @@ class StockItemSummaryView(_ProcBase):
     rbac_permission = "procurement.stock.view"
 
     def get(self, request):
-        """Return entity-wide stock counts and carried value in integer kobo."""
+        """Return stock counts and carried value in integer kobo, entity or store."""
         entity = resolve_entity(request)
-        # ONE aggregate over the item rows - conditional counts avoid loading any rows.
+        location = _resolve_location(entity, request.query_params.get("location"))
+        # ONE aggregate either way - conditional counts avoid loading any rows.
         # low_stock: active, at/below its reorder level but still holding something;
         # out_of_stock: active with nothing on hand. total_value sums the carried kobo.
-        agg = StockItem.objects.filter(entity=entity).aggregate(
-            tracked=Count("id"),
-            active=Count("id", filter=Q(is_active=True)),
-            low_stock=Count("id", filter=Q(
-                is_active=True, on_hand_qty__lte=F("reorder_level"), on_hand_qty__gt=0)),
-            out_of_stock=Count("id", filter=Q(is_active=True, on_hand_qty__lte=0)),
-            total_value=Sum("stock_value"),
-        )
+        if location is not None:
+            # Counted over that store's balances, and the reorder level still comes
+            # from the master because the policy is per item, not per shelf.
+            agg = StockBalance.objects.filter(
+                location=location, stock_item__entity=entity,
+            ).aggregate(
+                tracked=Count("id"),
+                active=Count("id", filter=Q(stock_item__is_active=True)),
+                low_stock=Count("id", filter=Q(
+                    stock_item__is_active=True,
+                    on_hand_qty__lte=F("stock_item__reorder_level"),
+                    on_hand_qty__gt=0)),
+                out_of_stock=Count("id", filter=Q(
+                    stock_item__is_active=True, on_hand_qty__lte=0)),
+                total_value=Sum("stock_value"),
+            )
+        else:
+            agg = StockItem.objects.filter(entity=entity).aggregate(
+                tracked=Count("id"),
+                active=Count("id", filter=Q(is_active=True)),
+                low_stock=Count("id", filter=Q(
+                    is_active=True, on_hand_qty__lte=F("reorder_level"), on_hand_qty__gt=0)),
+                out_of_stock=Count("id", filter=Q(is_active=True, on_hand_qty__lte=0)),
+                total_value=Sum("stock_value"),
+            )
         # total_value is a flat kobo integer (+ a formatted naira string), matching the
         # ContractSummary KPI shape the FE strip consumes with formatMoney().
         total_value = agg["total_value"] or 0
@@ -555,70 +613,3 @@ class StockMovementListView(_ProcBase):
         if (loc := _resolve_location(entity, request.query_params.get("location"))):
             qs = qs.filter(location=loc)
         return self.paginate(request, qs.order_by("-id"), StockMovementSerializer)
-
-
-class StockReorderReportView(_ProcBase):
-    """Report active items at/below reorder policy, with explicit money units."""
-    rbac_permission = "procurement.report.view"
-
-    def get(self, request):
-        """Return quantity strings and {kobo, naira} unit-cost objects."""
-        from core.pagination import XVSPagination
-
-        entity = resolve_entity(request)
-        location = _resolve_location(entity, request.query_params.get("location"))
-        paginator = XVSPagination()
-        paginator.page_size = 25
-        page = paginator.paginate_queryset(
-            stock.reorder_items(entity, location=location), request, view=self)
-        rows = [stock.reorder_row(item) for item in page]
-        response = paginator.get_paginated_response({
-                "entity": entity.code,
-                "rows": [
-                    {
-                        "stock_item_id": r["stock_item_id"], "code": r["code"],
-                        "name": r["name"], "on_hand_qty": str(r["on_hand_qty"]),
-                        "reorder_level": str(r["reorder_level"]),
-                        "reorder_qty": str(r["reorder_qty"]),
-                        "unit_cost": _kobo(r["unit_cost"]),
-                    }
-                    for r in rows
-                ],
-        })
-        response.data["data"]["location"] = location.code if location else None
-        response.data["message"] = "Stock reorder report retrieved."
-        return response
-
-
-class StockValuationReportView(_ProcBase):
-    """Report moving-average stock valuation with explicit money units."""
-    rbac_permission = "procurement.report.view"
-
-    def get(self, request):
-        """Return entity rows and total as {kobo, naira} report values."""
-        from core.pagination import XVSPagination
-
-        entity = resolve_entity(request)
-        location = _resolve_location(entity, request.query_params.get("location"))
-        paginator = XVSPagination()
-        paginator.page_size = 25
-        page = paginator.paginate_queryset(
-            stock.valuation_items(entity, location=location), request, view=self)
-        rows = [stock.valuation_row(row) for row in page]
-        response = paginator.get_paginated_response({
-                "entity": entity.code,
-                "rows": [
-                    {
-                        "stock_item_id": r["stock_item_id"], "code": r["code"],
-                        "name": r["name"], "on_hand_qty": str(r["on_hand_qty"]),
-                        "unit_cost": _kobo(r["unit_cost"]),
-                        "stock_value": _kobo(r["stock_value"]),
-                    }
-                    for r in rows
-                ],
-                "total_value": _kobo(
-                    stock.stock_valuation_total(entity, location=location)),
-                "location": location.code if location else None,
-        })
-        response.data["message"] = "Stock valuation retrieved."
-        return response

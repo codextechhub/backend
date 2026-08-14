@@ -114,8 +114,6 @@ from vs_procurement.models import VendorCategory
 from vs_procurement.stock import (
     adjust_stock,
     issue_stock,
-    reorder_report,
-    stock_valuation,
 )
 from vs_procurement.exceptions import InsufficientStockError, StockError
 
@@ -8573,23 +8571,6 @@ class StockLedgerTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(item.on_hand_qty, 5)
         self.assertEqual(item.stock_value, 250_000)
 
-    def test_reorder_report_and_valuation(self):
-        entity, _, vendor, _, _ = self.build_p2p()
-        low = self._stock_item(entity, code="LOW", reorder_level=20, reorder_qty=50)
-        ok = self._stock_item(entity, code="OK", reorder_level=2, reorder_qty=10)
-        self._receive_via_grn(entity, vendor, low, qty=10, unit_price=100_000)
-        self._receive_via_grn(entity, vendor, ok, qty=10, unit_price=50_000)
-
-        report = reorder_report(entity)
-        codes = {r["code"] for r in report}
-        self.assertEqual(codes, {"LOW"})                    # only LOW is at/below level
-
-        valuation = stock_valuation(entity)
-        self.assertEqual(valuation["total_value"], 1_500_000)
-        by_code = {r["code"]: r for r in valuation["rows"]}
-        self.assertEqual(by_code["LOW"]["stock_value"], 1_000_000)
-        self.assertEqual(by_code["OK"]["stock_value"], 500_000)
-
 
 class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
     """Security-first coverage for the stock-item / movement REST surface."""
@@ -8656,8 +8637,6 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
             ("post", f"/v1/procurement/stock-items/{item.pk}/issue/{e}"),
             ("post", f"/v1/procurement/stock-items/{item.pk}/adjust/{e}"),
             ("get", f"/v1/procurement/stock-movements/{e}"),
-            ("get", f"/v1/procurement/reports/stock-reorder/{e}"),
-            ("get", f"/v1/procurement/reports/stock-valuation/{e}"),
         ]
         for method, url in denied:
             response = getattr(client, method)(url, {}, format="json")
@@ -8686,12 +8665,6 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(
             client.post(f"/v1/procurement/stock-items/{item.pk}/adjust/{e}",
                         {"quantity_delta": 1, "unit_cost": 1000}, format="json").status_code, 403)
-        # reports resolve on report.view - denied even when stock.view is held.
-        mock_has.side_effect = _deny_keys("procurement.report.view")
-        self.assertEqual(
-            client.get(f"/v1/procurement/reports/stock-reorder/{e}").status_code, 403)
-        self.assertEqual(
-            client.get(f"/v1/procurement/reports/stock-valuation/{e}").status_code, 403)
 
     # --- entity isolation -------------------------------------------------- #
 
@@ -9142,76 +9115,6 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(data["low_stock"], 1)            # LOW only (> 0 and <= level)
         self.assertEqual(data["out_of_stock"], 1)         # OUT only
         self.assertEqual(data["total_value"], 1_500_000)  # 1,000,000 + 500,000
-
-    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
-    def test_reorder_and_valuation_reports_carry_real_state(self, _perm):
-        entity, _, vendor, _, _ = self.build_p2p()
-        low = self._item(entity, code="LOW", reorder_level=20, reorder_qty=50)
-        ok = self._item(entity, code="OK", reorder_level=2, reorder_qty=10)
-        self._receive(entity, vendor, low, qty=10, unit_price=100_000)
-        self._receive(entity, vendor, ok, qty=10, unit_price=50_000)
-        client = self._client(entity)
-        reorder = client.get(f"/v1/procurement/reports/stock-reorder/?entity={entity.code}")
-        self.assertEqual({r["code"] for r in reorder.data["data"]["rows"]}, {"LOW"})
-        valuation = client.get(f"/v1/procurement/reports/stock-valuation/?entity={entity.code}")
-        self.assertEqual(valuation.data["data"]["total_value"]["kobo"], 1_500_000)
-
-    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
-    def test_stock_reports_paginate_sql_sources_and_keep_whole_entity_total(self, _perm):
-        entity, _, _, _, _ = self.build_p2p()
-        client = self._client(entity)
-        reorder_url = f"/v1/procurement/reports/stock-reorder/?entity={entity.code}"
-        valuation_url = f"/v1/procurement/reports/stock-valuation/?entity={entity.code}"
-
-        for url in (reorder_url, valuation_url):
-            empty = client.get(url)
-            self.assertEqual(empty.status_code, 200)
-            self.assertEqual(empty.data["data"]["rows"], [])
-            self.assertEqual(empty.data["pagination"]["totalItems"], 0)
-
-        inventory = self.acc(entity, "1400")
-        StockItem.objects.bulk_create([
-            StockItem(
-                entity=entity, code=f"PAGE-{index:03d}", name=f"Paged stock {index}",
-                inventory_account=inventory,
-                on_hand_qty=0, stock_value=index + 1,
-                reorder_level=0, reorder_qty=10,
-            )
-            for index in range(105)
-        ])
-        expected_total = sum(range(1, 106))
-
-        reorder_page_1 = client.get(reorder_url)
-        reorder_page_2 = client.get(f"{reorder_url}&page=2")
-        self.assertEqual(reorder_page_1.data["pagination"]["pageSize"], 25)
-        self.assertEqual(reorder_page_1.data["pagination"]["totalItems"], 105)
-        self.assertEqual(
-            [row["code"] for row in reorder_page_1.data["data"]["rows"]],
-            [f"PAGE-{index:03d}" for index in range(25)],
-        )
-        self.assertEqual(
-            [row["code"] for row in reorder_page_2.data["data"]["rows"]],
-            [f"PAGE-{index:03d}" for index in range(25, 50)],
-        )
-        capped = client.get(f"{reorder_url}&page_size=999")
-        self.assertEqual(capped.data["pagination"]["pageSize"], 100)
-        self.assertEqual(len(capped.data["data"]["rows"]), 100)
-
-        valuation_page_1 = client.get(valuation_url)
-        valuation_page_2 = client.get(f"{valuation_url}&page=2")
-        self.assertEqual(valuation_page_1.data["pagination"]["totalItems"], 105)
-        self.assertEqual(
-            valuation_page_1.data["data"]["total_value"]["kobo"],
-            expected_total,
-        )
-        self.assertEqual(
-            valuation_page_2.data["data"]["total_value"]["kobo"],
-            expected_total,
-        )
-        self.assertEqual(
-            [row["code"] for row in valuation_page_2.data["data"]["rows"]],
-            [f"PAGE-{index:03d}" for index in range(25, 50)],
-        )
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_movements_ledger_preserves_grn_receipt_and_is_empty_shape_stable(self, _perm):
@@ -12140,52 +12043,16 @@ class StockLocationTests(_P2PFixtureMixin, TestCase):
 
         return StockBalance.objects.get(stock_item=self.item, location=location)
 
-    def test_a_store_scoped_reorder_report_reports_that_store(self):
-        """The rows must not contradict themselves.
+    def _api(self, email):
+        """An authenticated console client on this entity's tenant."""
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
 
-        Selecting on the store's shortfall while reporting the entity's roll-up put an
-        item on the list beside an on-hand figure *above* its own reorder level, which
-        reads as a bug to anybody looking at it.
-        """
-        from vs_procurement.stock import reorder_report
-
-        self.item.reorder_level = 20
-        self.item.reorder_qty = 50
-        self.item.save(update_fields=["reorder_level", "reorder_qty"])
-
-        annex = self._location("ANNEX", "Annex store")
-        self._receive(self.main, 15, 27_750_00)   # plenty here, at 1,850.00 each
-        self._receive(annex, 10, 20_000_00)       # short here, at 2,000.00 each
-
-        self.item.refresh_from_db()
-        self.assertEqual(self.item.on_hand_qty, 25)  # The roll-up is above the level...
-
-        # ...so entity-wide the item is not short and does not appear at all.
-        self.assertEqual([r["code"] for r in reorder_report(self.entity)], [])
-
-        # At the annex it is short, and the row describes the annex.
-        rows = reorder_report(self.entity, location=annex)
-        self.assertEqual(len(rows), 1)
-        row = rows[0]
-        self.assertEqual(row["code"], "BOOK")
-        self.assertEqual(row["on_hand_qty"], 10)            # not the roll-up's 25
-        self.assertEqual(row["unit_cost"], 2_000_00)        # the annex's own average
-        self.assertEqual(row["reorder_level"], 20)          # policy stays per item
-        self.assertEqual(row["reorder_qty"], 50)
-        self.assertLess(row["on_hand_qty"], row["reorder_level"])  # internally consistent
-
-    def test_a_store_holding_enough_is_not_listed_as_short(self):
-        from vs_procurement.stock import reorder_report
-
-        self.item.reorder_level = 5
-        self.item.save(update_fields=["reorder_level"])
-        annex = self._location("ANNEX2", "Second annex")
-        self._receive(self.main, 100, 100_000_00)
-        self._receive(annex, 50, 50_000_00)
-
-        self.assertEqual([r["code"] for r in reorder_report(self.entity, location=annex)], [])
-
-    # --- the defect this exists to fix -------------------------------------- #
+        user = get_user_model().objects.create_user(
+            email=email, password="pw", tenant=self.entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Stock", last_name="Tester",
+        )
+        return TenantAPIClient(user=user)
 
     def test_one_campus_cannot_issue_stock_standing_at_another(self):
         """700 at Lekki, 300 at Ikeja. Ikeja issuing 500 must be refused."""
@@ -12302,15 +12169,72 @@ class StockLocationTests(_P2PFixtureMixin, TestCase):
 
     # --- reporting ----------------------------------------------------------- #
 
-    def test_valuation_narrows_to_one_location_and_still_totals_the_entity(self):
-        from vs_procurement.stock import stock_valuation
+    def test_the_item_list_narrowed_to_a_store_reports_that_store(self):
+        """The store filter replaced two separate report screens.
 
-        lekki = self._location("LEKKI", "Lekki store")
-        self._receive(self.main, 40, 10_000_00)
-        self._receive(lekki, 60, 18_000_00)
+        Stock Items already carried on-hand, reorder level, unit cost and value plus a
+        "needs reorder" filter, so the reorder and valuation reports were the same
+        figures behind another menu. What they had and it lacked was the store, and a
+        filter that changed *which* rows appeared while reporting the entity roll-up
+        would reintroduce the contradiction those reports were fixed for.
+        """
+        self.item.reorder_level = 20
+        self.item.save(update_fields=["reorder_level"])
+        annex = self._location("ANNEX", "Annex store")
+        self._receive(self.main, 15, 27_750_00)   # 1,850.00 each here
+        self._receive(annex, 10, 20_000_00)       # 2,000.00 each here, and short
 
-        whole = stock_valuation(self.entity)
-        just_lekki = stock_valuation(self.entity, location=lekki)
-        self.assertEqual(whole["total_value"], 28_000_00)
-        self.assertEqual(just_lekki["total_value"], 18_000_00)
-        self.assertEqual(just_lekki["location_id"], lekki.pk)
+        client = self._api("stock-store-filter@test.com")
+        with patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True):
+            base = f"/v1/procurement/stock-items/?entity={self.entity.code}"
+            whole = client.get(base)
+            self.assertEqual(whole.status_code, 200)
+            row = next(r for r in whole.data["data"] if r["code"] == "BOOK")
+            self.assertEqual(Decimal(row["on_hand_qty"]), 25)      # the roll-up
+            self.assertEqual(row["stock_value"], 47_750_00)
+            self.assertFalse(row["needs_reorder"])                 # 25 > 20
+
+            at_annex = client.get(f"{base}&location={annex.code}")
+            self.assertEqual(at_annex.status_code, 200)
+            row = next(r for r in at_annex.data["data"] if r["code"] == "BOOK")
+            self.assertEqual(Decimal(row["on_hand_qty"]), 10)      # that store's
+            self.assertEqual(row["stock_value"], 20_000_00)
+            self.assertEqual(row["unit_cost"], 2_000_00)           # its own average
+            self.assertTrue(row["needs_reorder"])                  # 10 <= 20, consistent
+
+    def test_needs_reorder_is_measured_against_the_store_in_force(self):
+        self.item.reorder_level = 20
+        self.item.save(update_fields=["reorder_level"])
+        annex = self._location("ANNEX2", "Second annex")
+        self._receive(self.main, 100, 100_000_00)   # plenty here
+        self._receive(annex, 5, 5_000_00)           # short here
+
+        client = self._api("stock-store-reorder@test.com")
+        with patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True):
+            base = f"/v1/procurement/stock-items/?entity={self.entity.code}&needs_reorder=true"
+            # Entity-wide the item is not short, so it is not listed.
+            self.assertEqual(
+                [r["code"] for r in client.get(base).data["data"]], [])
+            # At the annex it is, and the row describes the annex.
+            rows = client.get(f"{base}&location={annex.code}").data["data"]
+            self.assertEqual([r["code"] for r in rows], ["BOOK"])
+            self.assertEqual(Decimal(rows[0]["on_hand_qty"]), 5)
+
+    def test_a_store_filter_hides_items_that_store_does_not_hold(self):
+        from vs_procurement.models import StockItem
+
+        StockItem.objects.create(
+            entity=self.entity, code="ELSEWHERE", name="Held only at main",
+            inventory_account=self.acc(self.entity, "1400"),
+        )
+        annex = self._location("ANNEX3", "Third annex")
+        self._receive(annex, 5, 5_000_00)
+
+        client = self._api("stock-store-hidden@test.com")
+        with patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True):
+            codes = [r["code"] for r in client.get(
+                f"/v1/procurement/stock-items/?entity={self.entity.code}"
+                f"&location={annex.code}").data["data"]]
+        self.assertEqual(codes, ["BOOK"])
+
+

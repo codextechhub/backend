@@ -375,6 +375,25 @@ class StockItemListSerializer(serializers.ModelSerializer):
     stock_value_naira = serializers.SerializerMethodField()
     needs_reorder = serializers.BooleanField(read_only=True)
 
+    def to_representation(self, instance):
+        """Report one store's slice of the item when the list was narrowed to one.
+
+        ``unit_cost`` and ``needs_reorder`` are model properties derived from
+        ``on_hand_qty``, ``stock_value`` and ``reorder_level``, so swapping the first
+        two is enough to make every figure on the row describe the same place. Doing it
+        anywhere else invites the contradiction this exists to avoid: a row selected
+        because a store is short of it, reporting a healthy quantity held elsewhere.
+
+        The instance is **never saved** - this is a per-response view of it. The
+        balances come from ``location_balances`` in context, resolved once for the whole
+        page by the list view rather than a query per row.
+        """
+        balance = (self.context.get("location_balances") or {}).get(instance.pk)
+        if balance is not None:
+            instance.on_hand_qty = balance.on_hand_qty
+            instance.stock_value = balance.stock_value
+        return super().to_representation(instance)
+
     class Meta:
         model = StockItem
         fields = [

@@ -164,6 +164,4 @@ urlpatterns = [
     path("reports/spend-analysis/", views.SpendAnalysisView.as_view(), name="proc-spend-analysis"),
     path("reports/vendor-performance/", views.VendorPerformanceView.as_view(), name="proc-vendor-performance"),
     path("reports/cycle-time/", views.ProcurementCycleTimeView.as_view(), name="proc-cycle-time"),
-    path("reports/stock-reorder/", views.StockReorderReportView.as_view(), name="proc-stock-reorder"),
-    path("reports/stock-valuation/", views.StockValuationReportView.as_view(), name="proc-stock-valuation"),
 ]
