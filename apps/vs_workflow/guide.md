@@ -209,6 +209,23 @@ is that later changes to the platform template no longer reach that tenant.
 | `platform_updated_at` | On a tenant row: when the shared version it came from last changed. |
 | `platform_changed_since` | On a tenant row: the shared version moved on after this tenant last saved. |
 
+**Seeing who runs it** (platform actors only, read-only):
+
+| Method | Path | Answers |
+|---|---|---|
+| `GET` | `/templates/{id}/adoption/` | How many tenants run this as published, and which ones run their own. |
+| `GET` | `/templates/{id}/compare/?with=<template id>` | How one tenant's version differs from the shared one. |
+
+Both refuse a caller whose own tenant is not `PLATFORM` (`PLATFORM_ONLY`) and
+refuse a subject that is not the shared template (`NOT_PLATFORM_TEMPLATE`).
+`compare` additionally checks that the other template is an active tenant
+version of the *same* `(document_type, code)`, so it cannot be used to read an
+arbitrary tenant's template by guessing an id, and it answers the same 404 for
+"no such template" and "not a version of this one". It returns configuration
+only - stages, approvers, rules, routing - never documents, approvals or people.
+`adoption` counts tenants rather than templates: a tenant with both a
+branch-level and a tenant-level version has still adjusted the path once.
+
 **Going back to the shared version**: `POST /templates/{id}/use-platform-version/`
 switches the tenant's own version off (`is_active=False`) rather than deleting
 it - instances PROTECT the template they ran under, so the version that has

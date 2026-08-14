@@ -38,6 +38,7 @@ from vs_workflow.serializers import (
     WorkflowTemplatePublishSerializer, WorkflowTemplateReadSerializer,
 )
 from vs_workflow.services import actions as actions_svc
+from vs_workflow.services import comparison as comparison_svc
 from vs_workflow.services import my_queue as my_queue_svc
 from vs_workflow.services import release as release_svc
 from vs_workflow.services import submission as submission_svc
@@ -151,7 +152,7 @@ class WorkflowTemplateViewSet(
         # Publishing templates requires manage rights; read endpoints use view rights.
         self.rbac_permission = (
             PERM_TEMPLATE_MANAGE
-            if self.action in ("publish", "use_platform_version")
+            if self.action in ("publish", "use_platform_version", "adoption", "compare")
             else PERM_TEMPLATE_VIEW
         )
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
@@ -313,6 +314,88 @@ class WorkflowTemplateViewSet(
         if rule_preview is not None:
             payload["dynamic_role"] = rule_preview
         return Response(payload, status=status.HTTP_200_OK)
+
+    def _platform_oversight(self, template):
+        """Refuse anything but a platform actor reading a shared template.
+
+        These two endpoints are the only place the console reads across tenant
+        boundaries, so the gate is explicit and in one place rather than implied
+        by the queryset: the caller's own tenant must be the platform one, and
+        the subject must be the shared template. Returns an error Response, or
+        None when the caller may proceed.
+        """
+        if getattr(self.request.tenant, "kind", None) != Tenant.Kind.PLATFORM:
+            return Response({
+                "success": False,
+                "message": "Only the platform can see how tenants have adjusted a template.",
+                "error": {"code": "PLATFORM_ONLY", "detail": {}},
+            }, status=status.HTTP_403_FORBIDDEN)
+        if template.tenant_id is not None:
+            return Response({
+                "success": False,
+                "message": "Only a shared template has tenant versions to compare.",
+                "error": {"code": "NOT_PLATFORM_TEMPLATE", "detail": {}},
+            }, status=status.HTTP_400_BAD_REQUEST)
+        return None
+
+    @action(detail=True, methods=["get"])
+    def adoption(self, request, pk=None):
+        """Who runs this shared template as published, and who runs their own.
+
+        Editing a shared template reaches only the tenants still following it.
+        This is that number, so the person editing knows whether they are
+        changing the path for forty tenants or for four.
+        """
+        template = self.get_object()
+        refusal = self._platform_oversight(template)
+        if refusal is not None:
+            return refusal
+        return Response({
+            "template": {
+                "id": template.pk, "name": template.name,
+                "document_type": template.document_type, "code": template.code,
+                "updated_at": template.updated_at,
+            },
+            **comparison_svc.adoption_for(template),
+        })
+
+    @action(detail=True, methods=["get"])
+    def compare(self, request, pk=None):
+        """How one tenant's version of this template differs from the shared one.
+
+        `?with=<template id>`. The other template must be an active tenant
+        version of this same (document_type, code) - the pairing is checked
+        server-side, so this cannot be used to read an arbitrary tenant
+        template by guessing an id. Configuration only: no documents, no
+        approvals, no people.
+        """
+        template = self.get_object()
+        refusal = self._platform_oversight(template)
+        if refusal is not None:
+            return refusal
+
+        other_id = request.query_params.get("with")
+        if not other_id:
+            return Response({"detail": "Pass ?with=<template id>."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        other = (WorkflowTemplate.all_objects
+                 .filter(pk=other_id, document_type=template.document_type,
+                         code=template.code, tenant__isnull=False)
+                 .select_related("tenant").first())
+        if other is None:
+            # Same answer for "no such template" and "not a version of this
+            # one", so the endpoint cannot be used to probe which ids exist.
+            raise NotFound("No tenant version of this template with that id.")
+
+        return Response({
+            "base": {"id": template.pk, "name": template.name,
+                     "updated_at": template.updated_at},
+            "other": {"id": other.pk, "name": other.name,
+                      "tenant_slug": other.tenant.slug,
+                      "tenant_name": other.tenant.name,
+                      "updated_at": other.updated_at},
+            **comparison_svc.compare_templates(template, other),
+        })
 
     @action(detail=False, methods=["post"], url_path="publish")
     def publish(self, request):

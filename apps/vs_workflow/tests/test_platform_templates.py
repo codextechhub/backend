@@ -203,3 +203,138 @@ class PlatformTemplateTests(TestCase):
         resp = _call(LIST, "get", self.tenant_admin, self.tenant)
         platform_row = next(r for r in _body(resp) if r["is_platform"])
         self.assertFalse(platform_row["tenant_has_own"])
+
+
+ADOPTION = WorkflowTemplateViewSet.as_view({"get": "adoption"})
+COMPARE = WorkflowTemplateViewSet.as_view({"get": "compare"})
+
+
+class PlatformOversightTests(TestCase):
+    """Reading across tenants: who runs the shared template, and how theirs differs.
+
+    This is the only place the console crosses a tenant boundary, so the denial
+    cases come first and are exhaustive: a school must not reach it at all, and
+    a platform actor must not reach an arbitrary template through it.
+    """
+
+    def setUp(self):
+        self.codex = codex_tenant()
+        self.platform_admin = make_vision_user(email=f"ovr-{next(_counter)}@codex.com")
+        _grant(self.platform_admin, [PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW], self.codex)
+        make_role(self.codex, name="Approver", key="approver")
+
+        self.school = make_school(slug=f"ovr-school-{next(_counter)}", name="Ovr School")
+        self.branch = make_branch(self.school)
+        self.tenant = self.school.tenant
+        self.tenant_admin = make_school_admin(self.branch, email=f"ovr-adm-{next(_counter)}@t.com")
+        _grant(self.tenant_admin, [PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW])
+        make_role(self.tenant, name="Approver", key="approver")
+        make_role(self.tenant, name="Second", key="second")
+
+        payload = {"document_type": "probe.request", "code": "standard",
+                   "name": "Shared", "stages": _stages(), "scope": "PLATFORM"}
+        _call(PUBLISH, "post", self.platform_admin, self.codex, payload)
+        self.shared = WorkflowTemplate.all_objects.get(tenant__isnull=True,
+                                                       document_type="probe.request")
+
+    def _adjust(self, stages=None, name="Ours"):
+        _call(PUBLISH, "post", self.tenant_admin, self.tenant,
+              {"document_type": "probe.request", "code": "standard", "name": name,
+               "stages": stages or _stages(role_key="second")})
+        return WorkflowTemplate.all_objects.get(tenant=self.tenant,
+                                                document_type="probe.request")
+
+    # ── Denials ──────────────────────────────────────────────────────────────
+
+    def test_school_cannot_see_adoption(self):
+        resp = _call(ADOPTION, "get", self.tenant_admin, self.tenant, pk=self.shared.pk)
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_school_cannot_compare(self):
+        mine = self._adjust()
+        resp = _call(COMPARE, "get", self.tenant_admin, self.tenant, pk=self.shared.pk)
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(mine.pk)
+
+    def test_adoption_refuses_on_a_tenant_template(self):
+        mine = self._adjust()
+        resp = _call(ADOPTION, "get", self.platform_admin, self.codex, pk=mine.pk)
+        # Not found or refused, but never a listing: a tenant template is not
+        # in the platform actor's own queryset.
+        self.assertIn(resp.status_code,
+                      (status.HTTP_400_BAD_REQUEST, status.HTTP_404_NOT_FOUND))
+
+    def test_compare_refuses_a_template_from_another_path(self):
+        """The pairing is checked, so an id from elsewhere cannot be read."""
+        other_school = make_school(slug=f"ovr-other-{next(_counter)}", name="Other")
+        stray = WorkflowTemplate.all_objects.create(
+            tenant=other_school.tenant, document_type="unrelated.doc",
+            code="standard", name="Stray")
+        request = factory.get(f"{BASE}?with={stray.pk}")
+        request.tenant = self.codex
+        request.rbac_tenant = self.codex
+        force_authenticate(request, user=self.platform_admin)
+        resp = COMPARE(request, pk=self.shared.pk)
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    # ── The answers ──────────────────────────────────────────────────────────
+
+    def test_adoption_counts_followers_and_names_the_adjusted(self):
+        before = _body(_call(ADOPTION, "get", self.platform_admin, self.codex,
+                             pk=self.shared.pk))
+        self.assertEqual(before["adjusted_count"], 0)
+        self.assertEqual(before["following_count"], before["customer_count"])
+
+        self._adjust()
+        after = _body(_call(ADOPTION, "get", self.platform_admin, self.codex,
+                            pk=self.shared.pk))
+        self.assertEqual(after["adjusted_count"], 1)
+        self.assertEqual(after["following_count"], after["customer_count"] - 1)
+        self.assertEqual(after["adjusted"][0]["tenant_slug"], self.tenant.slug)
+
+    def test_a_switched_off_version_counts_as_following_again(self):
+        mine = self._adjust()
+        _call(USE_PLATFORM, "post", self.tenant_admin, self.tenant, pk=mine.pk)
+        body = _body(_call(ADOPTION, "get", self.platform_admin, self.codex,
+                           pk=self.shared.pk))
+        self.assertEqual(body["adjusted_count"], 0)
+
+    def test_compare_reports_the_changed_field(self):
+        mine = self._adjust()
+        request = factory.get(f"{BASE}?with={mine.pk}")
+        request.tenant = self.codex
+        request.rbac_tenant = self.codex
+        force_authenticate(request, user=self.platform_admin)
+        body = _body(COMPARE(request, pk=self.shared.pk))
+
+        self.assertFalse(body["identical"])
+        changed = body["stages"]["changed"]
+        self.assertEqual(len(changed), 1)
+        fields = {f["field"]: f for f in changed[0]["fields"]}
+        self.assertIn("approver_role_key", fields)
+        self.assertEqual(fields["approver_role_key"]["base"], "approver")
+        self.assertEqual(fields["approver_role_key"]["other"], "second")
+
+    def test_compare_reports_an_added_stage(self):
+        extra = _stages() + [{
+            "code": "second-look", "label": "Second look", "kind": "APPROVAL", "order": 2,
+            "approver_source": "ROLE", "approver_role_key": "second",
+            "approver_scope": "SCHOOL", "advance_rule": "ANY",
+            "on_rejection": "TERMINAL", "skip_if_no_approvers": True,
+        }]
+        mine = self._adjust(stages=extra)
+        request = factory.get(f"{BASE}?with={mine.pk}")
+        request.tenant = self.codex
+        request.rbac_tenant = self.codex
+        force_authenticate(request, user=self.platform_admin)
+        body = _body(COMPARE(request, pk=self.shared.pk))
+        self.assertEqual([s["code"] for s in body["stages"]["added"]], ["second-look"])
+
+    def test_identical_copy_reports_no_differences(self):
+        mine = self._adjust(stages=_stages(), name="Shared")
+        request = factory.get(f"{BASE}?with={mine.pk}")
+        request.tenant = self.codex
+        request.rbac_tenant = self.codex
+        force_authenticate(request, user=self.platform_admin)
+        body = _body(COMPARE(request, pk=self.shared.pk))
+        self.assertTrue(body["identical"], body)
