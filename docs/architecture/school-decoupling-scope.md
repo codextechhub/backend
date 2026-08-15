@@ -1,9 +1,51 @@
 # Removing the school coupling from the engine apps
 
-Scoping document. Analysis only, no code changed.
+Originally a scoping document. **The work it proposed is done** — kept as the
+record of why it was done this way, and of what was found along the route.
 
-Status: proposal, awaiting a decision.
-Subject: `vs_schools.Branch` and the 39 foreign keys that point at it.
+Status: **delivered, 2026-08-13.** Engine references to `vs_schools` fell from
+23 to 3, and all three are dev seed commands (the exclusion §11.1 allows).
+Subject: `vs_schools.Branch` and the foreign keys that pointed at it.
+
+## What actually shipped
+
+| Phase | What | Commit |
+|---|---|---|
+| A | Dead school shims removed (`_resolve_school`, `_job_school_id`, two `reconcile_tenants` checks querying dropped columns) | `2c09191` |
+| B | `Branch` gained its own `tenant`, backfilled; the unique-code and single-main constraints the docstring always promised; a code-allocation race closed | `2c09191` |
+| C | Nothing travels `branch.school.tenant` any more | `8d82460`, `fd1575b` |
+| D | `Branch` moved to `vs_tenants`, `school` FK dropped | `ddacb64` |
+
+## Where this document was wrong
+
+Corrections worth keeping, because they are the parts a reader would otherwise
+trust:
+
+- **The count was 39; it is 41.** `vs_workflow.WorkflowApproverGroup.branch` and
+  `vs_procurement.StockLocation.branch` postdate the survey.
+- **MariaDB portability (R1) is moot.** It was retired 2026-06-12
+  (`apps/apps/settings/local.py:37`), so a real partial unique index was
+  available and was used; the weaker save-only guard this document recommended
+  would have left "one main branch" unenforced under concurrency.
+- **`reconcile_tenants` had two broken checks, not one**, and the *other* one ran
+  first — so the command was dying before it ever reached the line named here.
+- **`SeparateDatabaseAndState` is narrower than described.** Preserving
+  `db_table` is what makes the retargets free: Django skips the field comparison
+  when the table is unchanged. The wrapper is load-bearing only for the
+  `CreateModel`/`DeleteModel` pair — which, unwrapped, drops the table and every
+  row.
+- **A migration data-repair needs `connection.check_constraints()`** before
+  adding a constraint on PostgreSQL, or the queued trigger events fail the rest
+  of the transaction. Clean data never reveals it, because the repair writes
+  nothing.
+
+## The lesson about proving this kind of change
+
+Phases C and D are *equivalence-preserving*: `branch.tenant` and
+`branch.school.tenant` are the same value for every row. So reverting a rewrite
+proves nothing — the tests pass either way. The control that means something is
+to **break the guard** and confirm the tests fail by name. Anything similar in
+future should be proven that way.
 
 ---
 

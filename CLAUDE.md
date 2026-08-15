@@ -19,6 +19,23 @@ Two rules follow, and they are separate:
    `vs_finance` and friends. That leak is precisely what the FAL exists to
    prevent; if you find yourself adding a `student` or `term` field to a generic
    app, stop.
+   **The engines must not import `vs_schools`** (or anything under
+   `apps/schools/`). The site primitive is `vs_tenants.Branch`, owned directly by
+   `Tenant`: reach it as `row.branch` or `tenant.branches`, never as
+   `branch.school.tenant`. If an engine needs a school-only fact, it belongs
+   behind the FAL, not behind an import. This also covers enumerations — school
+   choices imported into an engine are the same leak wearing a different hat.
+   The check, which must return nothing:
+
+   ```bash
+   grep -rnE "from vs_schools|import vs_schools|['\"]vs_schools\.[A-Z]|get_model\(['\"]vs_schools" \
+     --include="*.py" apps/vs_finance apps/vs_procurement apps/vs_payments \
+     apps/vs_rbac apps/vs_workflow apps/vs_notifications apps/vs_audit apps/core \
+     | grep -vE "/migrations/|/test|/management/commands/seed_"
+   ```
+
+   Background and the full record: `docs/architecture/school-decoupling-scope.md`.
+
 2. **Within XVS, build for every school, not the first one.** XVS is multi-tenant;
    Corona Secondary School (at `xvs.codexng.com`) is simply the first tenant.
    Nothing may be special-cased to one tenant's arrangement - if a feature only
