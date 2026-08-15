@@ -76,6 +76,7 @@ class _ExportFixture:
         call_command("seed_actions", verbosity=0)
         call_command("seed_exports_permissions", verbosity=0)
         call_command("seed_finance_permissions", verbosity=0)
+        call_command("seed_notification_event_types", verbosity=0)
 
         self.tenant = Tenant.objects.get(slug="codex")
         seed_currencies()
