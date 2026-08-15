@@ -436,7 +436,7 @@ class PurchaseOrderSubmitApprovalView(_ProcBase):
         if auto_email:
             allowed = is_vision_super_admin(request.user) or user_has_rbac_permission(
                 request.user, "procurement.purchase_order.email_vendor",
-                tenant=po.entity.tenant, branch=getattr(request, "branch", None),
+                tenant=po.entity.tenant,
             )
             if not allowed:
                 raise PermissionDenied("You do not have permission to email purchase orders to vendors.")

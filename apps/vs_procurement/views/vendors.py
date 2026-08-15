@@ -122,7 +122,7 @@ def _has_sensitive_access(request):
     tenant = getattr(request, "rbac_tenant", None) or getattr(request, "tenant", None)
     return user_has_rbac_permission(
         request.user, "procurement.vendor.view_sensitive",
-        tenant=tenant or getattr(request.user, "tenant", None), branch=getattr(request, "branch", None),
+        tenant=tenant or getattr(request.user, "tenant", None),
     )
 
 
@@ -139,7 +139,7 @@ def _has_vendor_manage_access(request):
     tenant = getattr(request, "rbac_tenant", None) or getattr(request, "tenant", None)
     return user_has_rbac_permission(
         request.user, "procurement.vendor.manage",
-        tenant=tenant or getattr(request.user, "tenant", None), branch=getattr(request, "branch", None),
+        tenant=tenant or getattr(request.user, "tenant", None),
     )
 
 

@@ -2013,7 +2013,6 @@ def _require_batch_permissions(request, entity, kind, action):
             request.user,
             key,
             tenant=entity.tenant,
-            branch=getattr(request, "branch", None),
         )
     ]
     if missing:

@@ -45,11 +45,17 @@ def _users_for_roles(role_ids, tenant, branch) -> list:
     user must be active. ``branch`` narrows to branch-limited assignments for
     that branch (plus tenant-wide ones); pass None to count tenant-wide
     assignments only.
+
+    The branch condition comes from ``vs_rbac`` rather than being spelled out
+    here. It was a fourth copy of one rule, and a copy is free to drift from the
+    permission gate - which would mean nominating an approver that
+    ``has_permission`` then refuses, parking the document nobody can explain.
     """
     role_ids = [r for r in role_ids if r]
     if not role_ids:
         return []
 
+    from vs_rbac.evaluator import _assignment_branch_q
     from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
 
     assignments = (
@@ -60,7 +66,7 @@ def _users_for_roles(role_ids, tenant, branch) -> list:
             assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
             user__is_active=True,
         )
-        .filter(Q(branch__isnull=True) | Q(branch=branch))
+        .filter(_assignment_branch_q(branch))
         .select_related("user")
     )
     # De-dup by user id - a user can hold tenant-wide and branch-limited

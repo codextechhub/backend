@@ -779,7 +779,6 @@ class RfqDetailSerializer(serializers.ModelSerializer):
             or user_has_rbac_permission(
                 request.user, "procurement.vendor.view_sensitive",
                 tenant=getattr(request, "rbac_tenant", None) or getattr(request, "tenant", None),
-                branch=getattr(request, "branch", None),
             )
         ))
         rows = []

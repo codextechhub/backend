@@ -486,10 +486,27 @@ class TenantUserRoleAssignment(TimeStampedModel):
 
     class Meta:
         constraints = [
+            # Split in two on purpose. One constraint over (tenant, user, role)
+            # made the same role at two sites unstorable, so "Storekeeper at
+            # Ikeja" *and* "Storekeeper at Lekki" - the arrangement a single
+            # ``User.branch`` cannot express, and the reason branch scope is a
+            # set of grants - could not be recorded at all. Splitting keeps both
+            # guarantees intact rather than trading one away: at most one active
+            # whole-tenant grant of a role per person, and at most one active
+            # grant of a role per person per branch.
+            #
+            # A single constraint including ``branch`` would not do: PostgreSQL
+            # treats NULLs as distinct, so it would silently permit duplicate
+            # whole-tenant grants that are refused today.
             models.UniqueConstraint(
                 fields=["tenant", "user", "role"],
-                condition=Q(assignment_status="ACTIVE"),
+                condition=Q(assignment_status="ACTIVE", branch__isnull=True),
                 name="uq_active_tenant_user_role",
+            ),
+            models.UniqueConstraint(
+                fields=["tenant", "user", "role", "branch"],
+                condition=Q(assignment_status="ACTIVE", branch__isnull=False),
+                name="uq_active_tenant_user_role_branch",
             ),
         ]
         indexes = [

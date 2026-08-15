@@ -4,6 +4,7 @@ from django.core.exceptions import ImproperlyConfigured
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission, SAFE_METHODS
 from .evaluator import (
+    ANY_BRANCH,
     _group_permission_keys,
     get_effective_permissions,
     has_permission,
@@ -45,7 +46,9 @@ def is_vision_super_admin(user):
 
 
 # Check a raw permission key against active school or platform role assignments.
-def user_has_rbac_permission(user, permission_key, tenant=None, branch=None, school=None):
+def user_has_rbac_permission(
+    user, permission_key, tenant=None, branch=ANY_BRANCH, school=None,
+):
     """
     Check whether *user* holds *permission_key* through any active role.
 
@@ -53,6 +56,12 @@ def user_has_rbac_permission(user, permission_key, tenant=None, branch=None, sch
     For Vision staff the check runs against platform roles.
 
     Returns True if any active assignment grants the permission.
+
+    ``branch`` defaults to :data:`~vs_rbac.evaluator.ANY_BRANCH`: unless a caller
+    names a scope, every grant the user holds counts, branch-pinned ones
+    included. It used to default to ``None``, which asks the narrower question
+    "may they do this for the entity as a whole?" - and since no caller ever
+    passed anything else, a branch-pinned grant answered no everywhere.
     """
     if not user or not user.is_authenticated:
         return False
@@ -178,7 +187,13 @@ class HasRBACPermission(BasePermission):
             or getattr(request, "tenant", None)
             or getattr(u, "tenant", None)
         )
-        branch = getattr(request, "branch", None)
+        # No branch is named here, deliberately. This used to read
+        # ``request.branch``, an attribute no middleware has ever set, so the
+        # evaluator was always asked for the "entity as a whole" scope and every
+        # branch-pinned grant was discarded - a role granted for one site let its
+        # holder do nothing anywhere. Access is now "any grant I hold covers this
+        # key"; which rows that same holder may see is answered separately and
+        # once by ``vs_rbac.scoping.visible_branch_ids``.
 
         if rbac_perms is not None and rbac_perms != "":
             if isinstance(rbac_perms, list) and not rbac_perms:
@@ -189,7 +204,7 @@ class HasRBACPermission(BasePermission):
                 rbac_perms = [rbac_perms]
             # Direct permissions are any-of so views can accept equivalent operation grants.
             if not any(
-                has_permission(u, perm_key, tenant=tenant, branch=branch)
+                has_permission(u, perm_key, tenant=tenant)
                 for perm_key in rbac_perms
             ):
                 passed = False
@@ -204,7 +219,7 @@ class HasRBACPermission(BasePermission):
             
             perm_keys = _group_permission_keys(rbac_group_perms)  # Group checks require every key in the bundle.
 
-            if not has_all_permissions(u, perm_keys, tenant=tenant, branch=branch):
+            if not has_all_permissions(u, perm_keys, tenant=tenant):
                 passed = False
 
         return passed
@@ -252,9 +267,9 @@ class HasAnyModuleAccess(BasePermission):
             or getattr(request, "tenant", None)
             or getattr(u, "tenant", None)
         )
-        branch = getattr(request, "branch", None)
-
-        keys = get_effective_permissions(u, tenant=tenant, branch=branch)
+        # As in HasRBACPermission: no branch is named, so every grant this user
+        # holds counts towards module membership.
+        keys = get_effective_permissions(u, tenant=tenant)
         prefixes = tuple(f"{m}." for m in modules)  # "finance." must not match "financex.".
         return any(key.startswith(prefixes) for key in keys)
 

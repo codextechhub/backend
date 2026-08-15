@@ -96,7 +96,6 @@ def _competition_exception_reason(request):
     allowed = is_vision_super_admin(request.user) or user_has_rbac_permission(
         request.user, "procurement.competition.override",
         tenant=tenant or getattr(request.user, "tenant", None),
-        branch=getattr(request, "branch", None),
     )
     if not allowed:
         raise PermissionDenied(

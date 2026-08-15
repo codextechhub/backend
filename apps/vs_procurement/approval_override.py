@@ -52,6 +52,7 @@ from django.db import transaction
 
 from vs_finance.audit import record
 from vs_finance.constants import FinanceAuditAction
+from vs_rbac.evaluator import ANY_BRANCH
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 from vs_workflow.constants import AuditEventType
 from vs_workflow.services import audit as audit_service
@@ -74,7 +75,7 @@ MAX_REASON_LENGTH = 2000
 # Authorisation                                                                #
 # --------------------------------------------------------------------------- #
 
-def can_override(actor_user, *, tenant, branch=None) -> bool:
+def can_override(actor_user, *, tenant, branch=ANY_BRANCH) -> bool:
     """Whether ``actor_user`` may release a parked approval in ``tenant``.
 
     Scoped to the *document's own* tenant rather than to whatever tenant the caller
@@ -101,7 +102,7 @@ def _actor_label(user) -> str:
 
 
 @transaction.atomic
-def release_parked_document(document, *, actor_user, reason, branch=None):
+def release_parked_document(document, *, actor_user, reason, branch=ANY_BRANCH):
     """Release ``document``'s parked approval stage without a vote, and record it.
 
     Returns the created :class:`~vs_procurement.models.ApprovalOverride`. The document

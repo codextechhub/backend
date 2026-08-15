@@ -28,7 +28,6 @@ class HasImportBatchRBACPermission(HasRBACPermission):
             request.user,
             "finance.bankaccount.import",
             tenant=tenant,
-            branch=getattr(request, "branch", None),
         ):
             return False
 

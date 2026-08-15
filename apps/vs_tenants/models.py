@@ -286,6 +286,16 @@ class Branch(models.Model):
         BranchStatus.CLOSED,
     })
 
+    #: The complement of :attr:`OUT_OF_SERVICE_STATES`: a branch somebody may
+    #: still be posted to. Stated positively because the authorisation filters
+    #: in ``vs_rbac`` join through a *nullable* branch column, where a negative
+    #: filter would also drop the whole-tenant grants (``branch IS NULL``) that
+    #: must always count. Derived from the choices rather than written out, so a
+    #: new lifecycle state cannot be silently treated as in service.
+    #: Written as a set difference rather than a comprehension because a
+    #: comprehension in a class body cannot see the class-level name above it.
+    IN_SERVICE_STATES = frozenset(BranchStatus.values) - OUT_OF_SERVICE_STATES
+
     # The lifecycle edges a branch may travel. Two rules shape it: CLOSED is
     # terminal (a shut-down branch is re-created, not resurrected), and PENDING
     # is never a target, because "pending activation" is a fact about a branch

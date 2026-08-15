@@ -27,13 +27,20 @@ def is_support_user(user) -> bool:
 def eligible_support_users_qs():
     """Active platform users whose effective RBAC grants ticket management."""
     # Match effective tenant-level roles without pulling every role into Python.
+    from vs_rbac.evaluator import ANY_BRANCH, _assignment_branch_q
+
     active_roles = TenantUserRoleAssignment.objects.filter(
         user_id=OuterRef("pk"),
         tenant_id=OuterRef("tenant_id"),
-        branch__isnull=True,
         assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
         role__status="ACTIVE",
-    )
+        # Was a bare ``branch__isnull=True``. That is the same question
+        # ``is_support_user`` asks one function above, and the two must not answer
+        # differently: somebody the gate admits as a ticket manager has to appear
+        # in the list of people a ticket can be assigned to. No platform tenant
+        # has branches today, so this widens nothing now - it stops the two
+        # drifting the moment one does.
+    ).filter(_assignment_branch_q(ANY_BRANCH))
     grants_manage = active_roles.filter(
         Q(
             role__role_permissions__permission_id=TicketPermission.MANAGE,

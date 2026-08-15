@@ -512,7 +512,6 @@ class CancelImportBatchView(ImportBatchContextMixin, APIView):
                     request.user,
                     key,
                     tenant=tenant,
-                    branch=getattr(request, "branch", None),
                 )
                 for key in (
                     ImportPermission.BATCH_UPDATE,

@@ -347,7 +347,10 @@ class HasRBACPermissionTests(TestCase):
         # as a truthy-but-invalid tenant and short-circuit the evaluator).
         request.rbac_tenant = tenant or getattr(user, "tenant", None)
         request.tenant = request.rbac_tenant
-        request.branch = None
+        # No ``request.branch``: the permission class no longer reads one, and
+        # setting it here would suggest the request carries branch scope. It
+        # never did - nothing populated the attribute in production, which is
+        # precisely why branch-scoped grants conferred nothing.
         return request
 
     def test_granted_single_permission(self):

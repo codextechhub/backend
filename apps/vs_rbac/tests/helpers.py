@@ -193,11 +193,19 @@ def make_role_group(role, group, **kwargs):
 
 
 def make_assignment(school_or_tenant, user, role, **kwargs):
+    """Assign ``role`` to ``user``.
+
+    The assignment inherits the role template's branch unless the caller names
+    one. Pinning the *assignment* is the case that matters: one person can hold
+    the same role at two sites, which is a fact about the assignment, not the
+    template.
+    """
     tenant = _as_tenant(school_or_tenant)
     defaults = {"assignment_status": "ACTIVE"}
     defaults.update(kwargs)
+    branch = defaults.pop("branch", role.branch)
     return TenantUserRoleAssignment.objects.create(
-        tenant=tenant, user=user, role=role, branch=role.branch, **defaults
+        tenant=tenant, user=user, role=role, branch=branch, **defaults
     )
 
 

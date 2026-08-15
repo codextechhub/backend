@@ -97,8 +97,8 @@ def _resolve_cost_center(entity, ref, field="cost_center"):
 # single place procurement decides what goes in it, so the rules below hold for
 # every document type rather than one endpoint at a time:
 #
-#   * a document that *starts* a chain captures the branch from the person
-#     raising it (:func:`_raised_branch`);
+#   * a document that *starts* a chain captures the branch the person raising it
+#     works in (:func:`_raised_branch`);
 #   * a document that *continues* a chain takes the branch from its source
 #     document and nothing else (:func:`_inherited_branch_id`);
 #   * every read narrows to the caller's branch, whether it is a list, a KPI
@@ -114,21 +114,46 @@ def _resolve_cost_center(entity, ref, field="cost_center"):
 # all therefore behaves exactly as it did before: every value here stays ``None``.
 
 
-def _caller_branch(request):
-    """The branch the caller is bound to, or ``None`` when they are not bound to one.
+def _caller_branch_ids(request):
+    """The branches this caller may work in, or ``None`` for the whole entity.
 
-    Branch context is **not** carried by a header or a query parameter.  The
-    authoritative source is the effective user's own ``branch`` assignment
-    (``vs_user.User.branch``): it is fixed when the account is provisioned, it is
-    validated against the user's tenant on save, and DRF's ``request.user`` is the
-    *effective* user, so it stays correct through impersonation.  Note that
-    ``request.branch`` - which ``vs_rbac`` reads when scoring a permission - is
-    never populated by any middleware, so it must not be trusted to carry scope.
+    Branch context is **not** carried by a header or a query parameter.  It is
+    derived from what the caller has actually been granted, by the one function
+    that also decides whether they may open the screen at all
+    (:func:`vs_rbac.scoping.visible_branch_ids`) - so "may I?" and "whose rows?"
+    cannot give different answers.  DRF's ``request.user`` is the *effective*
+    user, so this stays correct through impersonation.
+
+    A frozenset is the answer rather than one branch because a person can hold
+    "Storekeeper at Ikeja" *and* "Storekeeper at Lekki", which the single
+    ``vs_user.User.branch`` column this used to read cannot express.  That column
+    is still the fallback for a caller whose access is whole-tenant, so a tenant
+    that has never used branch-scoped grants behaves exactly as it did.
+
+    Resolved against the caller's **own** tenant: branch grants only exist there,
+    and cross-tenant reads are refused by entity scoping, which is untouched.
     """
     user = getattr(request, "user", None)
     if user is None or not getattr(user, "is_authenticated", False):
         return None
-    return getattr(user, "branch", None)
+
+    from vs_rbac.scoping import visible_branch_ids
+
+    return visible_branch_ids(user, getattr(user, "tenant", None))
+
+
+def _sole_caller_branch(request, entity):
+    """The one branch a caller works in, or ``None`` when that is not a single branch.
+
+    Used only where a *default* is needed (raising a document without naming a
+    branch).  It is never used to decide what a caller may reach: answering
+    ``None`` for a caller entitled to two branches would read as "unbound", and
+    unbound means the whole entity.
+    """
+    ids = _caller_branch_ids(request)
+    if ids is None or len(ids) != 1:
+        return None
+    return _resolve_branch_reference(entity, next(iter(ids)))
 
 
 def _resolve_branch_reference(entity, ref, field="branch"):
@@ -149,25 +174,39 @@ def _resolve_branch_reference(entity, ref, field="branch"):
 def _raised_branch(request, entity, body, *, field="branch"):
     """The branch a newly raised document belongs to.
 
-    A caller bound to a branch always raises for that branch; naming a different
-    one is refused rather than silently retargeted.  A caller who is not bound to
-    a branch may name one belonging to this entity's tenant, or leave it out -
-    leaving it out means the purchase belongs to the entity as a whole and is a
-    valid answer, not missing data.
+    A caller bound to one branch always raises for that branch; naming a
+    different one is refused rather than silently retargeted.  A caller bound to
+    several must say which of *theirs* it is, because there is no longer an
+    obvious default - and naming one outside their set is refused exactly as a
+    single-branch caller's would be.  A caller who is not bound at all may name
+    any branch belonging to this entity's tenant, or leave it out - leaving it
+    out means the purchase belongs to the entity as a whole and is a valid
+    answer, not missing data.
     """
-    own = _caller_branch(request)
+    ids = _caller_branch_ids(request)
     raw = body.get(field) if hasattr(body, "get") else None
-    if own is None:
+    if ids is None:
         return _resolve_branch_reference(entity, raw, field)
     if request.user.tenant_id != entity.tenant_id:
-        # ``User.save`` refuses a branch outside the user's own tenant, so the
-        # caller's tenant is an exact, query-free proxy for their branch's tenant.
+        # A caller's grants live in their own tenant, so the caller's tenant is an
+        # exact, query-free proxy for the tenant their branches belong to.
         # Unreachable through the API (entity resolution already pins the caller's
         # tenant), but fail closed rather than write a foreign tenant's branch.
         raise PermissionDenied("Your branch does not belong to this entity.")
-    if raw not in (None, "") and str(raw) != str(own.pk):
+    if not ids:
+        # Every branch they were granted has since been suspended or closed.
+        raise PermissionDenied("You are not assigned to a branch that can raise this.")
+    if raw in (None, ""):
+        own = _sole_caller_branch(request, entity)
+        if own is None:
+            raise ValidationError(
+                {field: "Name the branch this is for; you work in more than one."},
+            )
+        return own
+    chosen = _resolve_branch_reference(entity, raw, field)
+    if chosen is None or chosen.pk not in ids:
         raise PermissionDenied("You can only raise documents for your own branch.")
-    return own
+    return chosen
 
 
 def _inherited_branch_id(request, *sources, field="branch"):
@@ -182,8 +221,8 @@ def _inherited_branch_id(request, *sources, field="branch"):
     """
     known = {getattr(s, f"{field}_id") for s in sources if s is not None}
     branch_id = known.pop() if len(known) == 1 else None
-    own = _caller_branch(request)
-    if own is not None and branch_id != own.pk:
+    ids = _caller_branch_ids(request)
+    if ids is not None and branch_id not in ids:
         raise PermissionDenied("This document belongs to another branch.")
     return branch_id
 
@@ -196,23 +235,28 @@ def _branch_lookups(request, entity=None, params=None, *, field="branch"):
     what lets a list, a KPI header and a report aggregate agree even though each reaches
     the branch column by a different route.
 
-    A caller bound to a branch only ever sees that branch's documents - branch narrows
-    *within* the entity and can never widen what the entity scope already allows.  A
-    caller who is not bound to one sees the whole entity and may narrow it with
-    ``?branch=<id>``, or with ``?branch=none`` for the documents raised for the entity as
-    a whole.  The pairs are ANDed by every renderer, so a bound caller asking for somebody
-    else's branch gets an empty answer rather than that branch's rows; the three lookup
-    names used here are distinct, so no term can overwrite another.  An unknown branch is
-    a 400 rather than a silent empty page, so the filter cannot be used to probe ids in
+    A caller bound to one or more branches only ever sees those branches' documents -
+    branch narrows *within* the entity and can never widen what the entity scope already
+    allows.  A caller who is not bound to any sees the whole entity and may narrow it
+    with ``?branch=<id>``, or with ``?branch=none`` for the documents raised for the
+    entity as a whole.  The pairs are ANDed by every renderer, so a bound caller asking
+    for somebody else's branch gets an empty answer rather than that branch's rows, while
+    one asking for a branch that *is* theirs narrows to it; the three lookup names used
+    here are distinct, so no term can overwrite another.  An unknown branch is a 400
+    rather than a silent empty page, so the filter cannot be used to probe ids in
     another tenant.
 
     ``params`` may be omitted (detail reads take no filter input); the result is then
     empty for an unbound caller, which filters nothing at all.
     """
     lookups = {}
-    own = _caller_branch(request)
-    if own is not None:
-        lookups[f"{field}_id"] = own.pk
+    ids = _caller_branch_ids(request)
+    if ids is not None:
+        # ``__in`` rather than an equality term: a caller may hold grants for
+        # several branches, and an empty set is a real answer (every branch they
+        # were granted has been withdrawn) that must show nothing rather than
+        # everything.
+        lookups[f"{field}_id__in"] = tuple(sorted(ids))
     raw = str((params.get(field) if params else "") or "").strip()
     if not raw:
         return lookups

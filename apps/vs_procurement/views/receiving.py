@@ -859,7 +859,6 @@ class VendorInvoicePostView(_ProcBase):
         return user_has_rbac_permission(
             request.user, "procurement.vendor_invoice.override_variance",
             tenant=tenant or getattr(request.user, "tenant", None),
-            branch=getattr(request, "branch", None),
         )
 
     def post(self, request, pk):

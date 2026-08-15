@@ -16,6 +16,7 @@ from core.pagination import XVSPagination
 from core.response import success_response
 from vs_finance.views import resolve_entity
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+from vs_tenants.models import Branch
 from vs_workflow.models import (
     WorkflowStageAction,
     WorkflowStageApprover,
@@ -25,7 +26,7 @@ from vs_workflow.serializers import StageActionWriteSerializer
 from vs_workflow.services import actions as workflow_actions
 from vs_workflow.services.routing import preview_next_approval_stage
 
-from .base import _ProcBase, _branch_q, _caller_branch
+from .base import _ProcBase, _branch_q, _caller_branch_ids
 from .. import approval_coverage, approval_override, approval_parking
 from ..constants import (
     PROCUREMENT_APPROVAL_TYPES,
@@ -309,13 +310,15 @@ class ProcurementApprovalCoverageView(_ProcBase):
     def get(self, request):
         """Report approver coverage per branch for the caller's own tenant."""
         entity = resolve_entity(request)
-        own = _caller_branch(request)
+        ids = _caller_branch_ids(request)
         return success_response("Approval coverage retrieved.", data=approval_coverage.approval_coverage(
             entity.tenant,
-            branches=None if own is None else [own],
-            # A caller who only works in one branch is reported that branch alone;
+            branches=None if ids is None else list(
+                Branch.all_objects.filter(tenant=entity.tenant, pk__in=ids).order_by("code"),
+            ),
+            # A caller who only works in certain branches is reported those alone;
             # the entity-level scope is somebody else's to staff.
-            include_entity_level=own is None,
+            include_entity_level=ids is None,
         ))
 
 
@@ -345,7 +348,6 @@ class ProcurementApprovalOverrideView(APIView):
         override = approval_override.release_parked_document(
             document, actor_user=request.user,
             reason=request.data.get("reason"),
-            branch=getattr(request, "branch", None),
         )
         instance.refresh_from_db()
         return success_response("Parked approval released by override.", data={

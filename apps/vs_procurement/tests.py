@@ -12507,3 +12507,246 @@ class VendorDocumentAttachmentTests(_P2PFixtureMixin, TestCase):
                         {"file": self._upload("bill.pdf", self.PDF)},
                         format="multipart").status_code, 405,
         )
+
+
+class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
+    """A branch-scoped role grant actually reaches the product.
+
+    Every other branch test in this file patches ``HasRBACPermission`` to True and
+    then checks the narrowing. These deliberately do not: whether the grant opens
+    the screen at all is half of what is under test. Before this, a role granted
+    for one campus let its holder do nothing anywhere - the permission gate asked
+    the evaluator for whole-tenant grants only, so the branch column was stored,
+    shown back to administrators, and ignored.
+
+    Named for the two people in the acceptance criteria, so a failure says which
+    arrangement broke rather than which function did.
+    """
+
+    PO_VIEW = "procurement.purchase_order.view"
+
+    def setUp(self):
+        super().setUp()
+        from vs_rbac.tests.helpers import make_branch
+
+        # A third campus nobody in these tests is ever granted. Two branches can
+        # only show that a narrowing happened; the third shows it stopped in the
+        # right place.
+        self.yaba = make_branch(self.multi_school, name="Yaba Campus", is_main=False)
+
+    @staticmethod
+    def as_client(user):
+        """A real-JWT client for an existing user (the permission gate is under test)."""
+        from core.test_utils import TenantAPIClient
+
+        return TenantAPIClient(user=user)
+
+    # -- fixtures ------------------------------------------------------------ #
+
+    def grant_at(self, user, permission_key, *, tenant, role_key, branch=None):
+        """Grant ``role_key`` at one branch, allowing the same role at several.
+
+        ``_BranchTenantsFixture.grant`` keys its ``get_or_create`` on
+        (tenant, user, role), so a second call for another campus would find the
+        first row and silently change nothing - which is the very arrangement
+        these tests exist to prove works.
+        """
+        from vs_rbac.models import (
+            Permission, PermissionAction, PermissionModule, PermissionResource,
+            TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment,
+        )
+
+        module_name, resource_name, action_name = permission_key.split(".")
+        module, _ = PermissionModule.objects.get_or_create(name=module_name)
+        resource, _ = PermissionResource.objects.get_or_create(module=module, name=resource_name)
+        action, _ = PermissionAction.objects.get_or_create(name=action_name)
+        permission, _ = Permission.objects.get_or_create(
+            key=permission_key,
+            defaults={"module": module, "resource": resource, "action": action},
+        )
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=tenant, key=role_key, defaults={"name": role_key, "status": "ACTIVE"},
+        )
+        TenantRolePermission.objects.get_or_create(
+            role=role, permission=permission, defaults={"granted": True},
+        )
+        TenantUserRoleAssignment.objects.get_or_create(
+            tenant=tenant, user=user, role=role, branch=branch,
+            defaults={"assignment_status": "ACTIVE"},
+        )
+
+    def orders_in_every_branch(self):
+        """One purchase order per campus, plus one for the entity as a whole."""
+        return {
+            "ikeja": self.purchase_order(self.multi, branch=self.ikeja),
+            "lekki": self.purchase_order(self.multi, branch=self.lekki),
+            "yaba": self.purchase_order(self.multi, branch=self.yaba),
+            "entity": self.purchase_order(self.multi, branch=None),
+        }
+
+    def listed_order_ids(self, client):
+        response = client.get(
+            f"/v1/procurement/purchase-orders/?entity={self.multi.entity.code}",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return {row["id"] for row in response.data["data"]}
+
+    # -- acceptance ---------------------------------------------------------- #
+
+    def test_mrs_adebayo_with_only_a_branch_grant_can_open_the_purchases_screen(self):
+        """Acceptance 1a. She holds "Bursar at Ikeja" and nothing else.
+
+        The defect stated as behaviour: the grant her administrator can see on
+        her account used to deny her the screen outright.
+        """
+        adebayo = self.user_for(self.multi_tenant, "adebayo@multi.test")
+        self.grant_at(
+            adebayo, self.PO_VIEW, tenant=self.multi_tenant,
+            role_key="bursar", branch=self.ikeja,
+        )
+
+        response = self.as_client(user=adebayo).get(
+            f"/v1/procurement/purchase-orders/?entity={self.multi.entity.code}",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_mrs_adebayo_sees_only_ikejas_purchases(self):
+        """Acceptance 1b. Opening the screen must not mean seeing the school."""
+        orders = self.orders_in_every_branch()
+        adebayo = self.user_for(self.multi_tenant, "adebayo-list@multi.test")
+        self.grant_at(
+            adebayo, self.PO_VIEW, tenant=self.multi_tenant,
+            role_key="bursar", branch=self.ikeja,
+        )
+
+        visible = self.listed_order_ids(self.as_client(user=adebayo))
+        self.assertEqual(visible, {orders["ikeja"].pk})
+        self.assertNotIn(orders["lekki"].pk, visible)
+        self.assertNotIn(orders["yaba"].pk, visible)
+        # A purchase raised for the entity as a whole is not hers either.
+        self.assertNotIn(orders["entity"].pk, visible)
+
+    def test_mr_sunday_sees_both_his_branches_and_only_those_two(self):
+        """Acceptance 2. The arrangement one ``User.branch`` column cannot hold.
+
+        He is a storekeeper at Ikeja *and* at Lekki. Not a third campus, and not
+        the school at large - which is exactly why branch scope had to become a
+        set of grants rather than a single field.
+        """
+        orders = self.orders_in_every_branch()
+        sunday = self.user_for(self.multi_tenant, "sunday@multi.test")
+        for branch in (self.ikeja, self.lekki):
+            self.grant_at(
+                sunday, self.PO_VIEW, tenant=self.multi_tenant,
+                role_key="storekeeper", branch=branch,
+            )
+
+        visible = self.listed_order_ids(self.as_client(user=sunday))
+        self.assertEqual(visible, {orders["ikeja"].pk, orders["lekki"].pk})
+        self.assertNotIn(orders["yaba"].pk, visible)
+        self.assertNotIn(orders["entity"].pk, visible)
+
+    def test_a_whole_tenant_grant_still_shows_the_whole_tenant(self):
+        """Acceptance 3."""
+        orders = self.orders_in_every_branch()
+        officer = self.user_for(self.multi_tenant, "officer@multi.test")
+        self.grant_at(
+            officer, self.PO_VIEW, tenant=self.multi_tenant, role_key="finance-officer",
+        )
+
+        visible = self.listed_order_ids(self.as_client(user=officer))
+        self.assertEqual(visible, {order.pk for order in orders.values()})
+
+    def test_todays_arrangement_keeps_behaving_exactly_as_it_does(self):
+        """Acceptance 4. Access from a whole-tenant grant, visibility from ``User.branch``.
+
+        This is how everybody currently working holds their access, so it is the
+        case that must not move by a single row.
+        """
+        orders = self.orders_in_every_branch()
+        legacy = self.user_for(self.multi_tenant, "legacy@multi.test", branch=self.lekki)
+        self.grant_at(
+            legacy, self.PO_VIEW, tenant=self.multi_tenant, role_key="finance-officer",
+        )
+
+        visible = self.listed_order_ids(self.as_client(user=legacy))
+        self.assertEqual(visible, {orders["lekki"].pk})
+
+    def test_a_rival_tenants_purchases_stay_unreachable(self):
+        """Acceptance 5. A branch grant narrows within a tenant, never across one."""
+        self.purchase_order(self.foreign, branch=None)
+        adebayo = self.user_for(self.multi_tenant, "adebayo-rival@multi.test")
+        self.grant_at(
+            adebayo, self.PO_VIEW, tenant=self.multi_tenant,
+            role_key="bursar", branch=self.ikeja,
+        )
+
+        response = self.as_client(user=adebayo).get(
+            f"/v1/procurement/purchase-orders/?entity={self.foreign.entity.code}",
+        )
+        self.assertIn(response.status_code, (403, 404), response.data)
+
+    def test_a_withdrawn_branch_does_not_widen_what_its_holder_sees(self):
+        """Acceptance 6. Losing the site must not be a way of gaining the school."""
+        self.orders_in_every_branch()
+        adebayo = self.user_for(self.multi_tenant, "adebayo-closed@multi.test")
+        self.grant_at(
+            adebayo, self.PO_VIEW, tenant=self.multi_tenant,
+            role_key="bursar", branch=self.ikeja,
+        )
+        self.ikeja.suspend(actor_id="test", reason="Campus closed")
+
+        response = self.as_client(user=adebayo).get(
+            f"/v1/procurement/purchase-orders/?entity={self.multi.entity.code}",
+        )
+        # It was her only grant, so withdrawing the campus withdraws her access
+        # rather than promoting her to the whole school.
+        self.assertEqual(response.status_code, 403, response.data)
+
+    # -- the rest of the guardrails ------------------------------------------ #
+
+    def test_without_any_grant_the_purchases_screen_is_forbidden(self):
+        """The 403 that a branch grant has to be the thing that lifts."""
+        stranger = self.user_for(self.multi_tenant, "stranger@multi.test")
+        response = self.as_client(user=stranger).get(
+            f"/v1/procurement/purchase-orders/?entity={self.multi.entity.code}",
+        )
+        self.assertEqual(response.status_code, 403, response.data)
+
+    def test_a_tenant_with_no_branches_at_all_is_unchanged(self):
+        """Where a school has no branches the dimension recedes entirely."""
+        order = self.purchase_order(self.flat, branch=None)
+        solo = self.user_for(self.flat_tenant, "solo@flat.test")
+        self.grant_at(
+            solo, self.PO_VIEW, tenant=self.flat_tenant, role_key="finance-officer",
+        )
+
+        response = self.as_client(user=solo).get(
+            f"/v1/procurement/purchase-orders/?entity={self.flat.entity.code}",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual({row["id"] for row in response.data["data"]}, {order.pk})
+
+    def test_a_two_branch_caller_may_filter_down_to_one_of_their_own(self):
+        """``?branch=`` narrows within what the grants already allow, never past it."""
+        orders = self.orders_in_every_branch()
+        sunday = self.user_for(self.multi_tenant, "sunday-filter@multi.test")
+        for branch in (self.ikeja, self.lekki):
+            self.grant_at(
+                sunday, self.PO_VIEW, tenant=self.multi_tenant,
+                role_key="storekeeper", branch=branch,
+            )
+        client = self.as_client(user=sunday)
+        code = self.multi.entity.code
+
+        mine = client.get(
+            f"/v1/procurement/purchase-orders/?entity={code}&branch={self.lekki.pk}",
+        )
+        self.assertEqual(mine.status_code, 200, mine.data)
+        self.assertEqual({row["id"] for row in mine.data["data"]}, {orders["lekki"].pk})
+
+        theirs = client.get(
+            f"/v1/procurement/purchase-orders/?entity={code}&branch={self.yaba.pk}",
+        )
+        self.assertEqual(theirs.status_code, 200, theirs.data)
+        self.assertEqual(list(theirs.data["data"]), [])

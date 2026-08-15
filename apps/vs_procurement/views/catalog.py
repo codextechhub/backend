@@ -29,7 +29,6 @@ def _has_permission(request, permission):
     return user_has_rbac_permission(
         request.user, permission,
         tenant=tenant or getattr(request.user, "tenant", None),
-        branch=getattr(request, "branch", None),
     )
 
 
