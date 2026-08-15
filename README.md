@@ -41,7 +41,7 @@ normalised by `core.exceptions.custom_exception_handler`.
 | `apps.settings.local`    | PostgreSQL | day-to-day development (DB `cx_db`, Homebrew postgresql@16) |
 | `apps.settings.ci`       | PostgreSQL | GitHub Actions (service container)      |
 | `apps.settings.staging`  | PostgreSQL | deployed staging (env-var driven)       |
-| `apps.settings.test`     | SQLite     | lightweight tests only - the full migration chain does NOT run on SQLite (vendor-specific raw-SQL migrations); use `local` for full suites |
+| `apps.settings.test`     | PostgreSQL | the test suite. Celery runs eager, so no broker is needed. Set `DB_NAME=<something-unique>` to run two suites on one machine at once (SQLite was retired here 2026-08-15: threading, row locks and the finance audit trigger all behaved differently, so a green run proved nothing) |
 
 PostgreSQL is the only supported engine (MariaDB retired 2026-06-12; the old
 local data lives in `~/cx_db_mariadb_final_backup.sql.gz`). Rebuild the local

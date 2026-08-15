@@ -15,7 +15,6 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.conf import settings
-from django.contrib import admin
 from django.urls import path, include
 
 from core.views import MediaView
@@ -37,7 +36,6 @@ urlpatterns = [
     path("v1/todo/", include("vs_todo.urls")),
     path("v1/support/", include("vs_tickets.urls")),
     path("v1/health/", include("vs_health.urls")),
-    # path("admin/", admin.site.urls),
 ]
 
 # Media is database-backed (core.storage.DatabaseStorage) and served with

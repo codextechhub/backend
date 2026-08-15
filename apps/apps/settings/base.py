@@ -69,11 +69,13 @@ SIMPLE_JWT = {
 # Application definition
 
 INSTALLED_APPS = [
-    "django.contrib.admin",
+    # django.contrib.admin and django.contrib.messages are deliberately absent.
+    # This is an API serving its own console: the admin site was never routed,
+    # no app ships an admin.py, and messages is a server-rendered flash
+    # framework that nothing here imports - the frontend owns its own toasts.
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
-    "django.contrib.messages",
     "django.contrib.staticfiles",
     "core",  # Custom management commands
 
@@ -119,7 +121,6 @@ MIDDLEWARE = [
     'vs_health.middleware.RequestMetricsMiddleware',
     # --- End of custom middleware ---
 
-    "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
@@ -178,7 +179,6 @@ TEMPLATES = [
                 "django.template.context_processors.debug",
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
-                "django.contrib.messages.context_processors.messages",
             ],
         },
     },
