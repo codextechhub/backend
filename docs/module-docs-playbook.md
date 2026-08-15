@@ -16,8 +16,14 @@ can trace endpoints → calculations → output shapes without reading the code 
   (collections + virtual accounts), `payment_settlement` (payouts, batches,
   settlement reconciliation + movements/transactions feeds),
   `payment_webhooks_providers` (async webhook pipeline + OPay/Paystack/Fake
-  adapters). Gotchas swept; suite 70 green. One OPEN operational item (`todo.md`):
-  seed a `payments.payout_batch` approval template per live entity before go-live.
+  adapters). Gotchas swept; full `vs_payments` app suite 139 green. The payout
+  maker-checker item is **closed in code** by `681456f`: `vs_payments.provisioning`
+  registers the payout ladder against finance's entity provisioning, so a new
+  entity is gated from onboarding and seeded blocked (the stage never auto-skips
+  and the
+  `payout-approver` role starts with nobody in it). The residual is install-time
+  only: an entity provisioned before that commit gets no ladder retroactively and
+  needs a one-time `seed_payout_approvals --platform --all-tenants`.
 - ✅ `vs_procurement` - complete: all 5 slices written:
   `procurement_master_data`, `procurement_sourcing`, `procurement_p2p_chain`,
   `procurement_inventory`, and `procurement_reports`. Every reports §8 decision
