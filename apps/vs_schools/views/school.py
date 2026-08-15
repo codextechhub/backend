@@ -141,19 +141,23 @@ class SchoolDetailView(ActorContextMixin, generics.RetrieveAPIView):
     lookup_field = "slug"
 
     def retrieve(self, request, *args, **kwargs):
-        import traceback as tb
-        try:
-            instance = self.get_object()
-            serializer = self.get_serializer(instance)
-            return success_response(
-                message="Data retrieved successfully.",
-                data=serializer.data,
-            )
-        except Exception as exc:
-            return error_response(
-                message=f"DEBUG: {type(exc).__name__}: {exc}",
-                data={"trace": tb.format_exc()},
-            )
+        """Return one school, letting a missing slug 404 the way it should.
+
+        This used to wrap the whole method in ``except Exception`` and answer with
+        a ``DEBUG:`` message plus ``traceback.format_exc()``. Left-over debugging,
+        and it did real harm: it swallowed the ``Http404`` that ``get_object``
+        raises for an unknown slug, so a school that does not exist came back as a
+        500 rather than a 404 - and it tried to hand a full Python stack trace,
+        file paths and all, to whoever asked. Every other failure is better served
+        by the project's exception handler, which already maps DRF errors to the
+        standard envelope and logs the trace server-side instead of shipping it.
+        """
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        return success_response(
+            message="Data retrieved successfully.",
+            data=serializer.data,
+        )
 
 
 class SchoolUpdateView(ActorContextMixin, generics.UpdateAPIView):
