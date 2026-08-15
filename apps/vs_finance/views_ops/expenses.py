@@ -208,10 +208,17 @@ class ExpenseClaimReceiptView(_ExpenseClaimActionBase):
     def post(self, request, pk, line_id):
         from rest_framework.exceptions import ValidationError
 
+        from core.uploads import validate_upload
+
         claim, line = self._line(request, pk, line_id)
         upload = request.FILES.get("file")
         if upload is None:
             raise ValidationError({"file": "A receipt file is required."})
+        # Validate before saving. DatabaseStorage re-checks type and size, but it raises
+        # from inside _save, which surfaces as a 500 rather than a 400, and it never
+        # inspects content - so a corrupt or mislabelled receipt was stored and only
+        # discovered when somebody tried to read it.
+        validate_upload(upload)
         line.receipt.save(upload.name, upload, save=True)
         claim.refresh_from_db()
         return success_response(

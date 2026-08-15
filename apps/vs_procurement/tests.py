@@ -12238,3 +12238,272 @@ class StockLocationTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(codes, ["BOOK"])
 
 
+
+
+class VendorDocumentAttachmentTests(_P2PFixtureMixin, TestCase):
+    """Supplier evidence on bills and payments: upload, isolation, and validation.
+
+    These endpoints exist because a recurring vendor charge whose only paper trail is a
+    ``vendor_reference`` string cannot be audited back to its source document. The
+    security-critical cases come first: the verb gate, cross-entity reach, and the
+    content check that stops a renamed HTML payload being stored and later served.
+    """
+
+    PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+    PDF = b"%PDF-1.4\n" + b"0" * 64
+
+    def _upload(self, name, content):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        return SimpleUploadedFile(name, content)
+
+    def _client(self, entity, email="attachments@test.com"):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        user = get_user_model().objects.create_user(
+            email=email, password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Attach", last_name="Tester",
+        )
+        return TenantAPIClient(user=user)
+
+    def _payment(self, entity, vendor):
+        return VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 15),
+            gross_amount=100_000, payment_account=self.acc(entity, "1100"),
+        )
+
+    # -- security ---------------------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=False)
+    def test_upload_requires_the_attach_permission(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+        response = self._client(entity).post(
+            f"/v1/procurement/vendor-invoices/{invoice.id}/attachments/?entity={entity.code}",
+            {"file": self._upload("bill.pdf", self.PDF)}, format="multipart",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_upload_uses_attach_not_update_so_a_posted_bill_still_accepts_evidence(self, _perm):
+        """The supplier's invoice routinely arrives after we have booked the charge."""
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+        invoice.status = DocumentStatus.POSTED
+        invoice.save(update_fields=["status", "updated_at"])
+
+        response = self._client(entity).post(
+            f"/v1/procurement/vendor-invoices/{invoice.id}/attachments/?entity={entity.code}",
+            {"file": self._upload("bill.pdf", self.PDF)}, format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(invoice.attachments.count(), 1)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_upload_does_not_cross_entity_scope(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+        other = LedgerEntity.objects.create(
+            name="Other Books", code="OTHER-ATT", kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant,
+        )
+
+        response = self._client(entity).post(
+            f"/v1/procurement/vendor-invoices/{invoice.id}/attachments/?entity={other.code}",
+            {"file": self._upload("bill.pdf", self.PDF)}, format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(invoice.attachments.count(), 0)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_delete_cannot_reach_another_documents_attachment(self, _permission):
+        """The id alone must not be the authority - it is scoped through its parent."""
+        entity, _, vendor, _, _ = self.build_p2p()
+        mine = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+        theirs = self.make_bill(entity, vendor, [("5300", 1, 200_000, None, None)])
+        client = self._client(entity)
+        created = client.post(
+            f"/v1/procurement/vendor-invoices/{theirs.id}/attachments/?entity={entity.code}",
+            {"file": self._upload("bill.pdf", self.PDF)}, format="multipart",
+        )
+        attachment_id = created.data["data"]["id"]
+
+        response = client.delete(
+            f"/v1/procurement/vendor-invoices/{mine.id}/attachments/{attachment_id}/"
+            f"?entity={entity.code}",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(theirs.attachments.count(), 1)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_renamed_payload_is_refused_by_content_check(self, _permission):
+        """Defence in depth: MediaView's nosniff already stops such a file executing,
+        but a mislabelled upload should never reach storage in the first place."""
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+
+        response = self._client(entity).post(
+            f"/v1/procurement/vendor-invoices/{invoice.id}/attachments/?entity={entity.code}",
+            {"file": self._upload("evil.png", b"<html><script>alert(1)</script></html>")},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(invoice.attachments.count(), 0)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_unsupported_extension_is_refused_with_400_not_500(self, _permission):
+        """Storage would raise from inside _save; the first-line check answers 400."""
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+
+        response = self._client(entity).post(
+            f"/v1/procurement/vendor-invoices/{invoice.id}/attachments/?entity={entity.code}",
+            {"file": self._upload("payload.exe", b"MZ" + b"0" * 64)}, format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_oversized_file_is_refused(self, _permission):
+        from core.uploads import MAX_DOCUMENT_BYTES
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+        oversized = self.PNG + b"0" * (MAX_DOCUMENT_BYTES + 1)
+
+        response = self._client(entity).post(
+            f"/v1/procurement/vendor-invoices/{invoice.id}/attachments/?entity={entity.code}",
+            {"file": self._upload("huge.png", oversized)}, format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(invoice.attachments.count(), 0)
+
+    # -- behaviour --------------------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_upload_list_and_delete_round_trip_on_a_bill(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+        client = self._client(entity)
+        base = f"/v1/procurement/vendor-invoices/{invoice.id}/attachments/"
+
+        created = client.post(
+            f"{base}?entity={entity.code}",
+            {"file": self._upload("acme-invoice.pdf", self.PDF), "caption": "Supplier bill"},
+            format="multipart",
+        )
+        self.assertEqual(created.status_code, 201)
+        row = created.data["data"]
+        self.assertEqual(row["name"], "acme-invoice.pdf")
+        self.assertEqual(row["content_type"], "application/pdf")
+        self.assertEqual(row["caption"], "Supplier bill")
+
+        listed = client.get(f"{base}?entity={entity.code}")
+        self.assertEqual(len(listed.data["data"]["attachments"]), 1)
+
+        removed = client.delete(f"{base}{row['id']}/?entity={entity.code}")
+        self.assertEqual(removed.status_code, 200)
+        self.assertEqual(removed.data["data"]["attachments"], [])
+        self.assertEqual(invoice.attachments.count(), 0)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_receipt_attaches_to_a_vendor_payment(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        payment = self._payment(entity, vendor)
+
+        response = self._client(entity).post(
+            f"/v1/procurement/vendor-payments/{payment.id}/attachments/?entity={entity.code}",
+            {"file": self._upload("receipt.png", self.PNG), "caption": "Vendor receipt"},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["data"]["content_type"], "image/png")
+        self.assertEqual(payment.attachments.count(), 1)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_document_detail_carries_its_attachments(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+        client = self._client(entity)
+        client.post(
+            f"/v1/procurement/vendor-invoices/{invoice.id}/attachments/?entity={entity.code}",
+            {"file": self._upload("bill.pdf", self.PDF)}, format="multipart",
+        )
+
+        detail = client.get(f"/v1/procurement/vendor-invoices/{invoice.id}/?entity={entity.code}")
+
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(len(detail.data["data"]["attachments"]), 1)
+        self.assertTrue(detail.data["data"]["attachments"][0]["url"].startswith("/media/"))
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_stored_name_is_not_guessable_from_the_uploaded_name(self, _permission):
+        """The /media/ URL is the capability; a predictable path would leak the file."""
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+
+        response = self._client(entity).post(
+            f"/v1/procurement/vendor-invoices/{invoice.id}/attachments/?entity={entity.code}",
+            {"file": self._upload("bill.pdf", self.PDF)}, format="multipart",
+        )
+
+        url = response.data["data"]["url"]
+        self.assertNotIn("/bill.pdf", url)
+        self.assertTrue(url.endswith(".pdf"))
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_attachment_cap_is_enforced(self, _permission):
+        from vs_procurement.attachments import MAX_ATTACHMENTS_PER_DOCUMENT
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+        client = self._client(entity)
+        url = f"/v1/procurement/vendor-invoices/{invoice.id}/attachments/?entity={entity.code}"
+        for i in range(MAX_ATTACHMENTS_PER_DOCUMENT):
+            self.assertEqual(
+                client.post(url, {"file": self._upload(f"bill{i}.pdf", self.PDF)},
+                            format="multipart").status_code, 201,
+            )
+
+        response = client.post(url, {"file": self._upload("one-too-many.pdf", self.PDF)},
+                               format="multipart")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(invoice.attachments.count(), MAX_ATTACHMENTS_PER_DOCUMENT)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_list_endpoint_omits_attachments(self, _permission):
+        """The list must not pay a query per row for evidence the drawer fetches."""
+        entity, _, vendor, _, _ = self.build_p2p()
+        self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+
+        listed = self._client(entity).get(
+            f"/v1/procurement/vendor-invoices/?entity={entity.code}",
+        )
+
+        self.assertEqual(listed.status_code, 200)
+        self.assertNotIn("attachments", listed.data["data"][0])
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_route_shape_mismatches_answer_405_not_500(self, _permission):
+        """Both URLs resolve to one view, so each verb must reject the wrong shape."""
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+        client = self._client(entity)
+        base = f"/v1/procurement/vendor-invoices/{invoice.id}/attachments/"
+
+        self.assertEqual(
+            client.delete(f"{base}?entity={entity.code}").status_code, 405,
+        )
+        self.assertEqual(
+            client.post(f"{base}1/?entity={entity.code}",
+                        {"file": self._upload("bill.pdf", self.PDF)},
+                        format="multipart").status_code, 405,
+        )

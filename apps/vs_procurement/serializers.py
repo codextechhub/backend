@@ -1334,6 +1334,7 @@ class VendorInvoiceSerializer(serializers.ModelSerializer):
     total_naira = serializers.SerializerMethodField()
     is_overdue = serializers.SerializerMethodField()
     display_status = serializers.SerializerMethodField()
+    attachments = serializers.SerializerMethodField()
 
     class Meta:
         model = VendorInvoice
@@ -1344,11 +1345,16 @@ class VendorInvoiceSerializer(serializers.ModelSerializer):
             "vendor_id", "vendor_code", "vendor_name", "purchase_order_id", "purchase_order_number",
             "invoice_date", "due_date", "vendor_reference", "narration",
             "subtotal", "tax_total", "total", "total_naira",
-            "amount_paid", "balance_due", "journal_id", "lines",
+            "amount_paid", "balance_due", "journal_id", "lines", "attachments",
         ]
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total)
+
+    def get_attachments(self, obj):
+        from .attachments import serialize_attachments
+
+        return serialize_attachments(obj)
 
     def get_is_overdue(self, obj) -> bool:
         # Overdue is a date/payment overlay, never a replacement for POSTED ledger status.
@@ -1376,12 +1382,16 @@ class VendorInvoiceSerializer(serializers.ModelSerializer):
 
 
 class VendorInvoiceListSerializer(VendorInvoiceSerializer):
-    """List rows omit line arrays; the detail drawer fetches those separately."""
+    """List rows omit line and attachment arrays; the detail drawer fetches those."""
 
     lines = None
+    attachments = None
 
     class Meta(VendorInvoiceSerializer.Meta):
-        fields = [f for f in VendorInvoiceSerializer.Meta.fields if f != "lines"]
+        fields = [
+            f for f in VendorInvoiceSerializer.Meta.fields
+            if f not in ("lines", "attachments")
+        ]
 
 
 # --------------------------------------------------------------------------- #
@@ -1438,6 +1448,7 @@ class VendorPaymentSerializer(serializers.ModelSerializer):
     advance_remaining = serializers.IntegerField(read_only=True)
     allocation_status = serializers.SerializerMethodField()
     net_naira = serializers.SerializerMethodField()
+    attachments = serializers.SerializerMethodField()
 
     class Meta:
         model = VendorPayment
@@ -1451,11 +1462,16 @@ class VendorPaymentSerializer(serializers.ModelSerializer):
             "payment_account_id", "payment_code",
             "payment_account_name", "bank_account_id", "bank_account_name",
             "wht_tax_code_id", "wht_tax_code_value", "reference", "narration",
-            "journal_id", "created_at", "created_by_name", "allocations",
+            "journal_id", "created_at", "created_by_name", "allocations", "attachments",
         ]
 
     def get_net_naira(self, obj) -> str:
         return format_naira(obj.net_amount)
+
+    def get_attachments(self, obj):
+        from .attachments import serialize_attachments
+
+        return serialize_attachments(obj)
 
     def get_created_by_name(self, obj) -> str:
         if not obj.created_by_id:
@@ -1479,4 +1495,14 @@ class VendorPaymentSerializer(serializers.ModelSerializer):
 
 
 class VendorPaymentListSerializer(VendorPaymentSerializer):
-    """List contract retains invoice references but omits detail-only activity/GL data."""
+    """List contract retains invoice references but omits detail-only activity/GL data.
+
+    Attachments are dropped here rather than merely left unprefetched: the list source
+    (``_payment_list_queryset``) does not prefetch them, so serializing the field would
+    cost one query per row.
+    """
+
+    attachments = None
+
+    class Meta(VendorPaymentSerializer.Meta):
+        fields = [f for f in VendorPaymentSerializer.Meta.fields if f != "attachments"]

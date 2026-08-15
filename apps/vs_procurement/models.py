@@ -1779,6 +1779,50 @@ class VendorInvoiceLine(TimeStampedModel):
         return f"{self.description or self.expense_account_id}: {self.line_total}"
 
 
+def vendor_invoice_attachment_path(instance, filename: str) -> str:
+    """Group supplier evidence by tenant, entity, and bill; storage adds the token."""
+    invoice = instance.vendor_invoice
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(filename).rsplit("/", 1)[-1])
+    return (
+        f"procurement/invoice-attachments/{invoice.entity.tenant_id}/"
+        f"{invoice.entity_id}/{invoice.pk}/{safe}"
+    )
+
+
+class VendorInvoiceAttachment(TimeStampedModel):
+    """The supplier's own bill - their PDF or a photo of it - held against ours.
+
+    Evidence, not accounting: nothing here participates in matching or posting, and a
+    bill with no attachment is still a valid bill. It exists because a recurring
+    supplier charge that our books record only as a ``vendor_reference`` string has no
+    paper trail an auditor (or the person who paid it) can follow back to the source.
+
+    Attachable at any point in the bill's life, including after POSTED. A supplier
+    frequently sends the formal invoice after the charge has already been booked, and
+    a document that locks its own evidence out at posting time collects nothing.
+    """
+
+    vendor_invoice = models.ForeignKey(
+        VendorInvoice, on_delete=models.CASCADE, related_name="attachments",
+    )
+    file = models.FileField(upload_to=vendor_invoice_attachment_path)
+    original_name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=120)
+    size = models.PositiveIntegerField()
+    caption = models.CharField(max_length=255, blank=True, default="")
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        related_name="vendor_invoice_attachments", null=True, blank=True,
+    )
+
+    class Meta:
+        ordering = ["vendor_invoice", "id"]
+        indexes = [models.Index(fields=["vendor_invoice"])]
+
+    def __str__(self) -> str:
+        return f"{self.vendor_invoice_id}: {self.original_name}"
+
+
 # --------------------------------------------------------------------------- #
 # Vendor payment (posts Dr AP, Cr Bank net, Cr WHT)                           #
 # --------------------------------------------------------------------------- #
@@ -1926,6 +1970,47 @@ class VendorPaymentAllocation(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.payment_id}→{self.vendor_invoice_id}: {self.amount}"
+
+
+def vendor_payment_attachment_path(instance, filename: str) -> str:
+    """Group settlement evidence by tenant, entity, and payment; storage adds the token."""
+    payment = instance.payment
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(filename).rsplit("/", 1)[-1])
+    return (
+        f"procurement/payment-attachments/{payment.entity.tenant_id}/"
+        f"{payment.entity_id}/{payment.pk}/{safe}"
+    )
+
+
+class VendorPaymentAttachment(TimeStampedModel):
+    """Proof that the money moved: the supplier's receipt, or the bank's.
+
+    The counterpart to :class:`VendorInvoiceAttachment` at the other end of the chain.
+    A receipt necessarily arrives *after* the payment is posted, so unlike the draft
+    fields on this document there is no lifecycle state in which attaching one is
+    disallowed - refusing the upload on a POSTED payment would reject every receipt
+    that actually exists.
+    """
+
+    payment = models.ForeignKey(
+        VendorPayment, on_delete=models.CASCADE, related_name="attachments",
+    )
+    file = models.FileField(upload_to=vendor_payment_attachment_path)
+    original_name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=120)
+    size = models.PositiveIntegerField()
+    caption = models.CharField(max_length=255, blank=True, default="")
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        related_name="vendor_payment_attachments", null=True, blank=True,
+    )
+
+    class Meta:
+        ordering = ["payment", "id"]
+        indexes = [models.Index(fields=["payment"])]
+
+    def __str__(self) -> str:
+        return f"{self.payment_id}: {self.original_name}"
 
 
 class VendorAdvanceAllocationJournal(TimeStampedModel):

@@ -40,6 +40,7 @@ def _payment_queryset(entity):
         "journal", "created_by", "branch",
     ).prefetch_related(
         "allocations__vendor_invoice", "journal__lines__account",
+        "attachments__uploaded_by",
     )
 
 

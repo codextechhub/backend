@@ -311,6 +311,7 @@ def _invoice_queryset(entity):
         "lines__expense_account", "lines__tax_code__paid_account",
         "lines__po_line", "lines__grn_line__grn", "lines__cost_center",
         "allocations__payment", "journal__lines__account",
+        "attachments__uploaded_by",
     )
 
 

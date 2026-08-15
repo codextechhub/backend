@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-import os
-
 from rest_framework import serializers
 from rest_framework.reverse import reverse
 
-from core.storage import ALLOWED_EXTENSIONS
+from core.uploads import MAX_TICKET_ATTACHMENT_BYTES, TICKET_EXTENSIONS, validate_upload
 from vs_user.models import User
 
 from .constants import CommentVisibility, TicketCategory, TicketPriority, TicketStatus
 from .models import Ticket, TicketAttachment, TicketAuditLog, TicketComment
 from .services.visibility import can_view_internal_notes
-
-MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 
 
 class TicketUserSerializer(serializers.ModelSerializer):
@@ -190,16 +186,17 @@ class TicketAttachmentCreateSerializer(serializers.Serializer):
     comment_id = serializers.IntegerField(required=False, allow_null=True)
 
     def validate_file(self, value):
-        # First-line validation; core.storage.DatabaseStorage re-checks both
-        # rules as defense-in-depth but raises an unhandled 500 if hit.
-        ext = os.path.splitext(value.name or "")[1].lower()
-        if ext not in ALLOWED_EXTENSIONS:
-            raise serializers.ValidationError(
-                f"File type '{ext or 'unknown'}' is not accepted - only "
-                f"spreadsheets (csv/xlsx), images and PDFs."
-            )
-        if value.size > MAX_ATTACHMENT_BYTES:
-            raise serializers.ValidationError("Attachments are limited to 10 MB.")
+        # First-line validation through the shared checker, which also verifies the
+        # bytes match the extension. core.storage.DatabaseStorage re-checks type and
+        # size as defense-in-depth but raises an unhandled 500 if hit.
+        validate_upload(
+            value,
+            allowed=TICKET_EXTENSIONS,
+            max_bytes=MAX_TICKET_ATTACHMENT_BYTES,
+            size_message="Attachments are limited to 10 MB.",
+            type_message="File type is not accepted - only spreadsheets "
+                         "(csv/xls/xlsx), images and PDFs.",
+        )
         return value
 
 

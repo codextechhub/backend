@@ -98,6 +98,7 @@ ACTIONS: list[tuple[str, str]] = [
     ("override_variance", "Override a blocking vendor-invoice match variance for an audited post."),
     ("override",   "Override a policy control through a dedicated, audited exception."),
     ("adjust",     "Record a manual adjustment (stock revaluation, corrections)."),
+    ("attach",     "Attach or remove supporting evidence files on a record (supplier invoices, receipts)."),
 
     # ── Library-specific ──────────────────────────────────────────────────────
     ("return",     "Record the return of a borrowed item."),

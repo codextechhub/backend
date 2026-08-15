@@ -17,6 +17,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
 
+from core.uploads import validate_upload
 from vs_config.conf import get_config
 from vs_finance.documents import _issuer_block
 from vs_notifications.notify import UnregisteredRecipient, send_notification
@@ -576,26 +577,15 @@ def decline(invitation: RfqInvitation, reason: str) -> dict:
 
 
 def validate_attachment(upload) -> tuple[str, str]:
-    name = "".join(ch for ch in str(upload.name or "attachment") if ch.isprintable() and ch not in {'"', "\\"})
-    suffix = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-    allowed = {"pdf", "png", "jpg", "jpeg", "webp"}
-    if suffix not in allowed:
-        raise ValidationError({"file": "Upload a PDF, PNG, JPG, JPEG, or WebP file."})
-    if upload.size > MAX_ATTACHMENT_BYTES:
-        raise ValidationError({"file": "Each attachment must be 500KB or smaller."})
-    head = upload.read(16)
-    upload.seek(0)
-    valid = (
-        (suffix == "pdf" and head.startswith(b"%PDF"))
-        or (suffix == "png" and head.startswith(b"\x89PNG\r\n\x1a\n"))
-        or (suffix in {"jpg", "jpeg"} and head.startswith(b"\xff\xd8\xff"))
-        or (suffix == "webp" and head.startswith(b"RIFF") and b"WEBP" in head)
+    """Portal policy on top of the shared upload check: the same file types, a
+    deliberately tighter 500KB ceiling because this endpoint is public and
+    token-authenticated rather than RBAC-gated."""
+    return validate_upload(
+        upload,
+        max_bytes=MAX_ATTACHMENT_BYTES,
+        size_message="Each attachment must be 500KB or smaller.",
+        type_message="Upload a PDF, PNG, JPG, JPEG, or WebP file.",
     )
-    if not valid:
-        raise ValidationError({"file": "The file content does not match its extension."})
-    content_type = {"pdf": "application/pdf", "png": "image/png", "jpg": "image/jpeg",
-                    "jpeg": "image/jpeg", "webp": "image/webp"}[suffix]
-    return name[:255], content_type
 
 
 @transaction.atomic

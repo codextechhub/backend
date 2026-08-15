@@ -4,6 +4,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
+from core.uploads import MAX_TICKET_ATTACHMENT_BYTES, TICKET_EXTENSIONS, validate_upload
 from vs_user.models import User
 
 from ..constants import (
@@ -205,6 +206,17 @@ def add_attachment(ticket: Ticket, *, actor, file_obj, comment: TicketComment | 
         # Prevent a foreign comment id from linking files across ticket threads.
         raise ValidationError("Comment does not belong to this ticket.")
 
+    # Derive the stored content type from the file's own bytes, never from the
+    # multipart part's declared type. That declaration is attacker-controlled, and the
+    # download view serves the stored value back as the response Content-Type with
+    # inline disposition for anything image/*, so trusting it let a caller upload
+    # SVG markup named .png declared as image/svg+xml and have it rendered - and
+    # executed - in the next reader's session. The bytes have to agree now.
+    _, verified_content_type = validate_upload(
+        file_obj, allowed=TICKET_EXTENSIONS, max_bytes=MAX_TICKET_ATTACHMENT_BYTES,
+        size_message="Attachments are limited to 10 MB.",
+    )
+
     with transaction.atomic():
         attachment = TicketAttachment.objects.create(
             ticket=ticket,
@@ -212,7 +224,7 @@ def add_attachment(ticket: Ticket, *, actor, file_obj, comment: TicketComment | 
             uploaded_by=actor,
             file=file_obj,
             original_filename=getattr(file_obj, "name", ""),
-            content_type=getattr(file_obj, "content_type", "") or "",
+            content_type=verified_content_type,
             size=getattr(file_obj, "size", 0) or 0,
         )
         record_ticket_audit(

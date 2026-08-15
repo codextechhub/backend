@@ -490,7 +490,9 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
         attachment = ticket_svc.add_attachment(
             self.ticket,
             actor=self.requester,
-            file_obj=SimpleUploadedFile("screen.png", b"fake-png", content_type="image/png"),
+            file_obj=SimpleUploadedFile(
+                "screen.png", b"\x89PNG\r\n\x1a\n" + b"0" * 32, content_type="image/png",
+            ),
         )
         url = f"/v1/support/tickets/{self.ticket.pk}/attachments/{attachment.pk}/download/"
 
@@ -501,6 +503,58 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
 
         self.client_api.force_authenticate(self.peer)
         self.assertEqual(self.client_api.get(url).status_code, 404)
+
+    def test_declared_content_type_cannot_decide_how_a_file_is_served(self):
+        """The stored type must come from the bytes, not the multipart declaration.
+
+        The download view serves the stored content type back and uses inline
+        disposition for anything image/*, so a caller who could name the type could
+        have SVG markup rendered - and its script executed - in the next reader's
+        session. Two independent guards now: the bytes must match the extension, and
+        the stored type is derived rather than accepted.
+        """
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from rest_framework.exceptions import ValidationError
+
+        with self.assertRaises(ValidationError):
+            ticket_svc.add_attachment(
+                self.ticket,
+                actor=self.requester,
+                file_obj=SimpleUploadedFile(
+                    "harmless.png",
+                    b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+                    content_type="image/svg+xml",
+                ),
+            )
+
+        # A genuine PNG that merely lies about its type is stored under the real one.
+        attachment = ticket_svc.add_attachment(
+            self.ticket,
+            actor=self.requester,
+            file_obj=SimpleUploadedFile(
+                "real.png", b"\x89PNG\r\n\x1a\n" + b"0" * 32, content_type="image/svg+xml",
+            ),
+        )
+        self.assertEqual(attachment.content_type, "image/png")
+
+    def test_spreadsheet_and_csv_attachments_are_still_accepted(self):
+        """Tightening the check must not cost tickets the file types they rely on."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        csv_row = ticket_svc.add_attachment(
+            self.ticket, actor=self.requester,
+            file_obj=SimpleUploadedFile("export.csv", b"id,name\n1,Ada\n"),
+        )
+        self.assertEqual(csv_row.content_type, "text/csv")
+
+        xlsx_row = ticket_svc.add_attachment(
+            self.ticket, actor=self.requester,
+            file_obj=SimpleUploadedFile("book.xlsx", b"PK\x03\x04" + b"0" * 32),
+        )
+        self.assertEqual(
+            xlsx_row.content_type,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
     def test_empty_comment_list_shape(self):
         self.client_api.force_authenticate(self.requester)

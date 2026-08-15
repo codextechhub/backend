@@ -104,6 +104,10 @@ urlpatterns = [
     path("vendor-invoices/<int:pk>/submit/", views.VendorInvoiceSubmitApprovalView.as_view(),
          name="proc-vendor-invoice-submit"),
     path("vendor-invoices/<int:pk>/post/", views.VendorInvoicePostView.as_view(), name="proc-vendor-invoice-post"),
+    path("vendor-invoices/<int:pk>/attachments/", views.VendorInvoiceAttachmentView.as_view(),
+         name="proc-vendor-invoice-attachments"),
+    path("vendor-invoices/<int:pk>/attachments/<int:attachment_id>/",
+         views.VendorInvoiceAttachmentView.as_view(), name="proc-vendor-invoice-attachment-detail"),
 
     # Vendor payments
     path("vendor-payments/", views.VendorPaymentListCreateView.as_view(), name="proc-vendor-payments"),
@@ -115,6 +119,10 @@ urlpatterns = [
          name="proc-vendor-payment-allocate"),
     path("vendor-payments/<int:pk>/cancel/", views.VendorPaymentCancelView.as_view(), name="proc-vendor-payment-cancel"),
     path("vendor-payments/<int:pk>/reverse/", views.VendorPaymentReverseView.as_view(), name="proc-vendor-payment-reverse"),
+    path("vendor-payments/<int:pk>/attachments/", views.VendorPaymentAttachmentView.as_view(),
+         name="proc-vendor-payment-attachments"),
+    path("vendor-payments/<int:pk>/attachments/<int:attachment_id>/",
+         views.VendorPaymentAttachmentView.as_view(), name="proc-vendor-payment-attachment-detail"),
 
     # Spend approvals (vs_workflow)
     path("approvals/default-templates/", views.ApprovalTemplateSetupView.as_view(),

@@ -39,6 +39,8 @@ API currently restricts physical counts to whole units (`views/receiving.py:65-7
 | `VendorInvoiceLine` | optional PO/GRN line, expense/tax, quantity/unit price, net/tax, cost center | Cascades with invoice; source/account/tax/cost-center references protected (`models.py:1228-1270`) |
 | `VendorPayment` | vendor/date/method, approval state, gross/WHT/net/allocated kobo, payment account, WHT tax code, journal | Entity-protected document; database checks require positive gross and WHT/allocation within gross; entity/status, entity/approval, vendor, entity/date indexes (`models.py:1285-1354`) |
 | `VendorPaymentAllocation` | payment, vendor invoice, gross amount applied | Payment cascades; invoice protected; unique `(payment, vendor_invoice)` and non-negative amount (`models.py:1363-1398`) |
+| `VendorInvoiceAttachment` | file, original_name, content_type, size, caption, uploaded_by | Evidence only, no GL effect. Cascades with its bill; uploader `SET_NULL`; indexed by invoice (`models.py`) |
+| `VendorPaymentAttachment` | same shape, parented on `VendorPayment` | Evidence only. Cascades with its payment; uploader `SET_NULL`; indexed by payment (`models.py`) |
 
 PO, invoice, and payment approval are overlays owned by `vs_workflow`; ledger `status`
 remains independently authoritative (`models.py:918-922,1170-1178,1308-1316`). A posted
@@ -71,6 +73,9 @@ standard paginated `{pagination, data}` envelope (`views/base.py:281-298`).
 | `POST /vendor-invoices/<pk>/match/` | `procurement.vendor_invoice.match` | Reprice and run three-way match without GL posting | - | Full invoice with match result/comparisons (`views/receiving.py:607-627`) |
 | `POST /vendor-invoices/<pk>/submit/` | `procurement.vendor_invoice.submit` | Reprice/match, then submit current evidence to workflow | - | Workflow id/status, approval state, document (`views/requisitions.py:378-397`) |
 | `POST /vendor-invoices/<pk>/post/` | `procurement.vendor_invoice.post`; additionally `procurement.vendor_invoice.override_variance` when overriding | Post an approved bill; optionally override a blocking match | `allow_variance?` (JSON boolean only) | Posted full invoice detail (`views/receiving.py:630-669`) |
+| `GET /vendor-invoices/<pk>/attachments/` | `procurement.vendor_invoice.view` | List the supplier's own bill files | - | `{attachments:[…]}` (`views/attachments.py`) |
+| `POST /vendor-invoices/<pk>/attachments/` | `procurement.vendor_invoice.attach` | Attach the supplier's invoice PDF/photo. Allowed in **any** document status, posted included | multipart `file`, `caption?` | `201` attachment row |
+| `DELETE /vendor-invoices/<pk>/attachments/<attachment_id>/` | `procurement.vendor_invoice.attach` | Remove one attachment | - | `{attachments:[…]}` |
 | `GET /vendor-payments/` | `procurement.vendor_payment.view` | List/search payment instructions | Query `status`, `approval_state`, `search` | Paginated payment headers with allocations (`views/vendor_payments.py:165-185`; `serializers.py:1071-1130`) |
 | `POST /vendor-payments/` | `procurement.vendor_payment.create` | Create a gated DRAFT allocation plan; server derives money | `vendor`, `bank_account`, `payment_date`, `method?`, `wht_amount?`, `wht_tax_code?`, `reference?`, `narration?`; `allocations[]`: `vendor_invoice`, `amount` | `201` payment detail + workflow/posting/activity overlays (`views/vendor_payments.py:187-214`) |
 | `GET /vendor-payments/eligible-invoices/` | `procurement.vendor_payment.view` | Return at most 100 posted open bills, oldest due first | Query `vendor?` | Array of invoice settlement snapshots (`views/vendor_payments.py:217-239`) |
@@ -80,6 +85,9 @@ standard paginated `{pagination, data}` envelope (`views/base.py:281-298`).
 | `POST /vendor-payments/<pk>/post/` | `procurement.vendor_payment.post` | Post the approved persisted plan and settle its invoices | - | Posted payment detail (`views/vendor_payments.py:318-336`) |
 | `POST /vendor-payments/<pk>/cancel/` | `procurement.vendor_payment.cancel` | Cancel a non-pending, unposted DRAFT | - | Cancelled payment (`views/vendor_payments.py:339-354`) |
 | `POST /vendor-payments/<pk>/reverse/` | `procurement.vendor_payment.reverse` | Reverse a posted payment and restore invoice balances | `date?` | Reversed payment detail (`views/vendor_payments.py:357-372`) |
+| `GET /vendor-payments/<pk>/attachments/` | `procurement.vendor_payment.view` | List settlement evidence | - | `{attachments:[…]}` (`views/attachments.py`) |
+| `POST /vendor-payments/<pk>/attachments/` | `procurement.vendor_payment.attach` | Attach the vendor's receipt or the bank's. Allowed in any status - a receipt necessarily follows posting | multipart `file`, `caption?` | `201` attachment row |
+| `DELETE /vendor-payments/<pk>/attachments/<attachment_id>/` | `procurement.vendor_payment.attach` | Remove one attachment | - | `{attachments:[…]}` |
 
 The cross-cutting `/approvals/` endpoints act on PO, invoice, and payment workflow
 instances; they are documented once with sourcing's approval model rather than repeated
@@ -338,6 +346,23 @@ and journal path are exercised end-to-end in
   equal-price and direct-expense bills remain independent of it. GR/IR reports use the
   identical basis (`payables.py:205-282`; `reports.py:284-380`;
   `seed.py:54-57,98-112`).
+- ✅ **Bills and payments now hold the counterparty's paper.** `VendorInvoiceAttachment`
+  and `VendorPaymentAttachment` (`models.py`) store the supplier's own invoice and the
+  receipt they issue; before this the entire trail for a non-PO recurring charge was the
+  `vendor_reference` string. Deliberately **not** gated on document status - the formal
+  invoice often follows the booked charge, and a receipt always follows the payment, so
+  refusing uploads after POSTED would reject the documents worth keeping. Uploads use
+  the dedicated `attach` verb rather than `update`, which is refused on a posted
+  document and in any case conflates rewriting a bill's amounts with filing its
+  evidence. Capped at 10 files per document under a row lock (`attachments.py`).
+- ✅ **Upload validation is one shared choke point.** `core.uploads.validate_upload`
+  checks extension, size, **and leading magic bytes** before the file reaches storage.
+  `DatabaseStorage` re-checks type and size as defense-in-depth but raises from inside
+  `_save` (a 500, not a 400) and never inspects content. The magic-byte check is itself
+  defence in depth rather than a live vulnerability fix: `MediaView` already sets
+  `nosniff` and forces `Content-Disposition: attachment` on non-images, so a renamed
+  payload is served as a broken image, not executed. The vendor portal keeps its tighter
+  500KB public ceiling and its exact wording by passing `max_bytes`/`type_message`.
 - **Justified by design:** rejected delivery quantity is evidence only and does not
   advance PO received quantity, value inventory, or post to the GL, allowing a later
   replacement delivery (`purchasing.py:283-335,368-386`).
@@ -381,6 +406,9 @@ activity, but not raw audit metadata (`serializers.py:740-1130`;
 | `views/orders.py` | PO CRUD, filters, summary, contract validation |
 | `views/receiving.py` | GRN/invoice CRUD, line validation, matching/post endpoints, detail overlays |
 | `views/vendor_payments.py` | Payment plan CRUD, vendor/bank gates, eligible bills, post/cancel/reverse |
+| `views/attachments.py` | Bill/payment evidence endpoints - one base, two parents, `attach` verb |
+| `attachments.py` | Attachment add/remove/serialize for both documents, cap under row lock |
+| `core/uploads.py` | Shared first-line upload validation (extension, size, magic bytes) |
 | `purchasing.py` | PO creation/pricing/approval and GRN accounting/quantity effects |
 | `payables.py` | Invoice pricing/matching/posting and payment posting/allocation/reversal |
 | `reports.py` | AP/GR/IR read models; GR/IR detail uses the invoice-posting clearing basis |
