@@ -1170,3 +1170,248 @@ class StageApproverOverrideTests(TestCase):
         with self.assertRaises(IntegrityError):
             # ROLE source with no role key is not a usable override.
             self._override(approver_source="ROLE", approver_role_key="")
+
+
+# ── ORGANOGRAM approver source ───────────────────────────────────────────────
+
+class OrganogramSourceResolutionTests(TestCase):
+    """An ORGANOGRAM stage takes the live path, and parks when the climb is empty.
+
+    :class:`~vs_workflow.services.parking.ResolutionCache` memoises exactly one
+    thing: "who holds this role key in this scope". That memo is opt-in per source
+    and ORGANOGRAM is deliberately not in it, because an organogram climb is
+    relative to the *requester* - two documents on one page sharing a stage do not
+    share an answer, so a memo keyed on the stage would be wrong rather than merely
+    slow. Everything here pins that the un-memoised path stays un-memoised.
+
+    The second half matters more than the first. Every ladder over money sets
+    ``skip_if_no_approvers=False``, so a climb that reaches nobody has to leave the
+    document ACTIVE and unstaffed (parked) and wait for a human. The failure mode
+    being excluded is the opposite one: a silent auto-skip that walks spend to a
+    terminal APPROVED decision because the requester happens to have no manager.
+    """
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import make_branch, make_school
+
+        self.school = make_school(slug="organogram-school")
+        self.branch = make_branch(self.school)
+        self.tenant = self.school.tenant
+        self.requester = _make_user_in_branch("org-req@test.com", self.branch)
+        self.template = _make_template(doc_type="ORG_DOC")
+        self.instance = _make_instance(self.template, self.requester)
+        self.instance.branch = self.branch
+        self.instance.save(update_fields=["branch"])
+
+    # -- fixtures ------------------------------------------------------------ #
+
+    def _node(self):
+        from vs_user.models import OrgNode
+
+        node, _ = OrgNode.objects.get_or_create(
+            code="DV-ORG", defaults={"name": "Operations", "kind": "DIVISION"},
+        )
+        return node
+
+    def _seat(self, code, *, title="Seat", reports_to=None, holder=None,
+              primary=True):
+        """One organogram seat, optionally filled.
+
+        ``primary`` distinguishes the seat that drives the climb (a user has one)
+        from a second seat the same person also occupies, which is how somebody
+        ends up above themselves in the chart.
+        """
+        from vs_user.models import Position, PositionAssignment
+
+        position = Position.objects.create(
+            title=title, code=code, org_node=self._node(), reports_to=reports_to,
+        )
+        if holder is not None:
+            PositionAssignment.objects.create(
+                position=position, user=holder, is_primary=primary,
+            )
+        return position
+
+    def _stage(self, *, code="org-stage", target="DIRECT_MANAGER",
+               skip_if_no_approvers=False):
+        stage = _make_stage(
+            self.template, code=code, skip_if_no_approvers=skip_if_no_approvers,
+        )
+        stage.approver_source = "ORGANOGRAM"
+        stage.organogram_target = target
+        stage.approver_role_key = ""
+        stage.save(update_fields=[
+            "approver_source", "organogram_target", "approver_role_key",
+        ])
+        return stage
+
+    def _reporting_line(self, *, manager_email=None):
+        """Seat the requester under a manager seat, filled or vacant."""
+        manager = (
+            None if manager_email is None
+            else _make_user_in_branch(manager_email, self.branch)
+        )
+        top = self._seat("ORG-MGR", title="Head of Operations", holder=manager)
+        self._seat("ORG-STAFF", title="Officer", reports_to=top,
+                   holder=self.requester)
+        return manager
+
+    # -- the live path -------------------------------------------------------- #
+
+    def test_an_organogram_stage_resolves_live_and_is_never_memoised(self):
+        """The cache must answer "I cannot say" and leave the memo untouched.
+
+        ``_holder_ids`` returning ``None`` is what routes the stage to the live
+        resolver. If it ever started answering from the role-holder memo, an
+        organogram stage would be resolved once and that one answer reused for
+        every requester on the page, which is not the same question.
+        """
+        from vs_workflow.services.parking import ResolutionCache
+
+        manager = self._reporting_line(manager_email="org-manager@test.com")
+        stage = self._stage()
+        cache = ResolutionCache()
+
+        self.assertTrue(cache.has_candidates(stage, self.instance))
+        self.assertEqual(
+            [approver.user.pk for approver in cache.resolve(stage, self.instance)],
+            [manager.pk],
+        )
+        # Nothing was written into the role-holder memo: there is no role key here
+        # to memoise on, and inventing one would key the answer on the wrong thing.
+        self.assertEqual(cache._holders, {})
+
+    def test_an_empty_climb_is_still_offered_to_the_live_resolver(self):
+        """"Provably nobody" is a claim the memo is not entitled to make here.
+
+        The requester holds no seat at all, so the climb reaches nobody. The cache
+        must still say "resolve it live": treating an unanswerable source as
+        unstaffable is what would make the repair skip the stage forever, and a
+        stage the repair skips is a document that parks and never un-parks.
+        """
+        from vs_workflow.services.parking import ResolutionCache
+
+        stage = self._stage(code="org-empty")
+        cache = ResolutionCache()
+
+        self.assertTrue(
+            cache.has_candidates(stage, self.instance),
+            "an organogram stage was written off without resolving it",
+        )
+        self.assertEqual(cache.resolve(stage, self.instance), [])
+        self.assertEqual(cache._holders, {})
+
+    def test_a_vacant_manager_seat_resolves_to_nobody_rather_than_raising(self):
+        """A seat that exists but is empty is a normal answer, not a template fault."""
+        self._reporting_line(manager_email=None)
+        self.assertEqual(
+            resolve_approvers(self._stage(code="org-vacant"), self.instance), [],
+        )
+
+    def test_the_requester_is_never_their_own_organogram_approver(self):
+        """The climb can lead back to the submitter; self-approval still cannot.
+
+        A small school really does put one person in two seats, so the manager
+        seat above the requester's own seat is held by the requester. The climb
+        finds them and the resolver must then drop them, leaving the stage parked
+        rather than handing somebody their own submission to approve.
+        """
+        top = self._seat("ORG-SOLO", title="Principal",
+                         holder=self.requester, primary=False)
+        self._seat("ORG-SOLO-STAFF", title="Officer", reports_to=top,
+                   holder=self.requester)
+
+        self.assertEqual(
+            resolve_approvers(self._stage(code="org-self"), self.instance), [],
+        )
+
+    # -- what an empty climb must do ------------------------------------------ #
+
+    def test_an_unstaffed_organogram_stage_parks_instead_of_auto_approving(self):
+        """The invariant that keeps spend from approving itself on an empty chart."""
+        stage = self._stage(code="org-park")
+
+        routing_svc.advance_instance(self.instance, current_attempt=1)
+
+        self.instance.refresh_from_db()
+        # Emphatically *not* APPROVED: no stage ran, so nothing has been decided.
+        self.assertEqual(self.instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        stage_instance = WorkflowStageInstance.objects.get(
+            instance=self.instance, stage=stage,
+        )
+        self.assertEqual(stage_instance.status, WorkflowStageStatus.ACTIVE)
+        self.assertFalse(
+            WorkflowStageApprover.objects.filter(
+                stage_instance=stage_instance, attempt=stage_instance.attempt,
+            ).exists(),
+        )
+
+    def test_filling_the_manager_seat_lets_the_repair_staff_a_parked_stage(self):
+        """The live path is what the repair reads, so appointing somebody is enough.
+
+        This is the organogram equivalent of granting a role after the snapshot was
+        frozen: no resubmission, no new attempt, and the person appointed becomes
+        the eligible approver on the attempt that is already running.
+        """
+        from vs_workflow.services import parking as parking_service
+
+        stage = self._stage(code="org-repair")
+        routing_svc.advance_instance(self.instance, current_attempt=1)
+        stage_instance = WorkflowStageInstance.objects.get(
+            instance=self.instance, stage=stage,
+        )
+        # Nobody to climb to yet, so the repair has nothing it can do.
+        self.assertEqual(parking_service.repair_workflows(tenant=self.tenant), 0)
+
+        manager = self._reporting_line(manager_email="org-late@test.com")
+
+        self.assertEqual(parking_service.repair_workflows(tenant=self.tenant), 1)
+        self.assertEqual(
+            list(
+                WorkflowStageApprover.objects
+                .filter(stage_instance=stage_instance,
+                        attempt=stage_instance.attempt)
+                .values_list("user_id", flat=True)
+            ),
+            [manager.pk],
+        )
+        # Reachability was restored; nothing was decided or advanced.
+        self.instance.refresh_from_db()
+        self.assertEqual(self.instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        stage_instance.refresh_from_db()
+        self.assertEqual(stage_instance.status, WorkflowStageStatus.ACTIVE)
+
+    # -- graceful degradation ------------------------------------------------- #
+
+    def test_an_unavailable_organogram_degrades_to_parking_not_to_approval(self):
+        """``_organogram_base_users`` swallows an ImportError; that must not approve.
+
+        The defensive branch exists so a deployment without ``vs_user`` does not
+        crash the engine. Returning an empty list there is only safe while an empty
+        list means "park" - which it does for every ladder over money, because they
+        all set ``skip_if_no_approvers=False``. The degraded answer is asserted next
+        to the outcome so the two can never be changed apart.
+
+        Unavailability is simulated the way Python itself reports it: a ``None``
+        entry in ``sys.modules`` makes the import raise, without unloading a module
+        the rest of the suite still needs.
+        """
+        import sys
+
+        self._reporting_line(manager_email="org-unavailable@test.com")
+        stage = self._stage(code="org-degraded")
+
+        with patch.dict(sys.modules, {"vs_user.services.organogram": None}):
+            self.assertEqual(resolve_approvers(stage, self.instance), [])
+            routing_svc.advance_instance(self.instance, current_attempt=1)
+
+        self.instance.refresh_from_db()
+        self.assertEqual(self.instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        stage_instance = WorkflowStageInstance.objects.get(
+            instance=self.instance, stage=stage,
+        )
+        self.assertEqual(stage_instance.status, WorkflowStageStatus.ACTIVE)
+        self.assertFalse(
+            WorkflowStageApprover.objects.filter(
+                stage_instance=stage_instance).exists(),
+        )

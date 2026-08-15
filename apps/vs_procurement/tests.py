@@ -7469,6 +7469,168 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         )
 
 
+class ProcurementNeverAutoSkipMigrationTests(TestCase):
+    """Migration 0023, which stops already-published procurement stages auto-skipping.
+
+    ``ensure_default_approval_templates`` publishes both seeded stages with
+    ``skip_if_no_approvers=False``, but it runs only from the demo seed command and
+    the approval-setup endpoint, never on deploy. Every environment provisioned
+    before that change therefore still holds stages that auto-skip when nobody holds
+    the approving role, which is exactly how spend reaches a terminal APPROVED
+    decision with no human involved. The data function is the only thing that closes
+    that on existing rows, and until now nothing exercised it.
+
+    Its whole safety story is the *filter*: it must move procurement's four document
+    types and nothing else, because finance ladders and payout batches share the
+    ``WorkflowStage`` table and their skip policy is their own module's decision.
+    """
+
+    #: Document types 0023 declares as its scope. Written out rather than imported
+    #: for the same reason the migration copies them: this test pins what the
+    #: migration claimed, not what the constants happen to say today.
+    PROCUREMENT_TYPES = (
+        "procurement.requisition",
+        "procurement.purchase_order",
+        "procurement.vendor_invoice",
+        "procurement.vendor_payment",
+    )
+    #: Neighbours on the same table that the migration must never touch. The payout
+    #: batch is the one that matters most: it is the path that sends money to a bank.
+    FOREIGN_TYPES = ("payments.payout_batch", "finance.refund")
+
+    def _migration(self):
+        import importlib
+
+        return importlib.import_module(
+            "vs_procurement.migrations.0023_procurement_stages_never_auto_skip",
+        )
+
+    def _stage(self, document_type, *, skip, code="s1"):
+        """One published stage of ``document_type`` in a known skip state."""
+        from vs_workflow.models import WorkflowStage, WorkflowTemplate
+
+        self._template_no = getattr(self, "_template_no", 0) + 1
+        template = WorkflowTemplate.objects.create(
+            document_type=document_type, code=f"mig23-{self._template_no}",
+            name="Published ladder",
+        )
+        return WorkflowStage.objects.create(
+            template=template, code=code, label=code, order=10,
+            skip_if_no_approvers=skip,
+        )
+
+    @staticmethod
+    def _skip(stage):
+        stage.refresh_from_db()
+        return stage.skip_if_no_approvers
+
+    def _forward(self):
+        from django.apps import apps as global_apps
+
+        self._migration().block_when_unstaffed(global_apps, None)
+
+    def _reverse(self):
+        from django.apps import apps as global_apps
+
+        self._migration().restore_auto_skip(global_apps, None)
+
+    # -- rows it must change ------------------------------------------------- #
+
+    def test_every_procurement_document_type_stops_auto_skipping(self):
+        """The whole point: spend must park rather than approve itself.
+
+        Asserted per document type rather than in aggregate, because the filter is
+        a literal tuple - a type missing from it fails silently and forever.
+        """
+        stages = {
+            document_type: self._stage(document_type, skip=True)
+            for document_type in self.PROCUREMENT_TYPES
+        }
+
+        self._forward()
+
+        for document_type, stage in stages.items():
+            with self.subTest(document_type=document_type):
+                self.assertIs(self._skip(stage), False)
+
+    def test_a_ladder_with_several_stages_has_every_stage_closed(self):
+        """A threshold ladder auto-approves through whichever stage was left open."""
+        from vs_workflow.models import WorkflowStage, WorkflowTemplate
+
+        template = WorkflowTemplate.objects.create(
+            document_type="procurement.requisition", code="mig23-ladder",
+            name="Two-step ladder",
+        )
+        manager = WorkflowStage.objects.create(
+            template=template, code="manager", label="Manager", order=10,
+            skip_if_no_approvers=True,
+        )
+        senior = WorkflowStage.objects.create(
+            template=template, code="senior", label="Senior", order=20,
+            skip_if_no_approvers=True,
+        )
+
+        self._forward()
+
+        self.assertEqual([self._skip(manager), self._skip(senior)], [False, False])
+
+    # -- rows it must leave alone -------------------------------------------- #
+
+    def test_another_modules_ladder_keeps_its_own_skip_policy(self):
+        """Finance and payments share the table; their policy is not this migration's."""
+        foreign = {
+            document_type: self._stage(document_type, skip=True)
+            for document_type in self.FOREIGN_TYPES
+        }
+
+        self._forward()
+
+        for document_type, stage in foreign.items():
+            with self.subTest(document_type=document_type):
+                self.assertIs(self._skip(stage), True)
+
+    def test_a_procurement_stage_already_closed_survives_a_re_run(self):
+        """Idempotent forward: re-running is a no-op, not a flip back and forth.
+
+        Environments provisioned after the seed fix already hold ``False``, and a
+        migration that is re-applied (a squash, a restored dump, a replayed deploy)
+        must leave them exactly where they are.
+        """
+        already = self._stage("procurement.requisition", skip=False)
+
+        self._forward()
+        self._forward()
+
+        self.assertIs(self._skip(already), False)
+
+    # -- reversibility -------------------------------------------------------- #
+
+    def test_the_reverse_reopens_procurement_only_and_is_a_true_inverse(self):
+        """Rolling back re-opens the self-approval hole, by design, and only here.
+
+        The migration's own docstring states that price openly; this pins that it is
+        paid by procurement alone and never by the payout batch alongside it.
+        """
+        procurement = self._stage("procurement.purchase_order", skip=True)
+        foreign = self._stage("payments.payout_batch", skip=False)
+
+        self._forward()
+        self._reverse()
+
+        self.assertIs(self._skip(procurement), True)
+        self.assertIs(self._skip(foreign), False)
+
+    def test_reversing_twice_changes_nothing_more(self):
+        """Idempotent in both directions, which is what makes a rollback re-runnable."""
+        stage = self._stage("procurement.vendor_invoice", skip=False)
+
+        self._forward()
+        self._reverse()
+        self._reverse()
+
+        self.assertIs(self._skip(stage), True)
+
+
 class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
     """Releasing a parked approval: who may, when, and what it leaves behind.
 
@@ -8080,6 +8242,242 @@ class ParkedOverrideAcrossDocumentTypesTests(_ParkingFixtureMixin, TestCase):
             actor=actor, amount=payment.net_amount,
         )
 
+
+
+class ParkedApprovalRaceTests(_ParkingFixtureMixin, TransactionTestCase):
+    """The row lock on a parked stage, exercised by real simultaneous callers.
+
+    Everything else about parking is pinned sequentially: a second repair pass that
+    neither restaffs nor renotifies, an override refused because somebody can still
+    decide, an override refused on an already-decided document. Those prove the
+    precondition re-check is *written*, but none of them can prove the lock is what
+    makes it hold, because in a sequential test the first caller has already
+    committed before the second one looks - the re-check would pass on a plain
+    re-read with no lock at all.
+
+    These two do. Each starts a caller that reaches ``lock_parked_stage``, takes the
+    row lock and then stops **inside its still-open transaction**; the second caller
+    then runs for real and provably blocks on Postgres, not on a Python event. What
+    the second caller sees when the lock is finally released is the whole subject:
+    the winner's committed state, and a refusal.
+
+    Determinism comes from the block being a genuine row lock rather than an
+    interleaving: the loser cannot proceed until the winner commits, whatever the
+    scheduler does. The 250ms "still blocked" assertion can only fail if the loser
+    never reached the lock at all, which is a real failure and not a flake.
+    """
+
+    #: The codex platform tenant that ``LedgerEntity`` falls back to is
+    #: migration-seeded, and TransactionTestCase flushes it between methods.
+    serialized_rollback = True
+
+    OVERRIDE_KEY = "procurement.approval.override"
+    REASON = "The only approver has left and the term starts on Monday."
+
+    # -- fixtures ------------------------------------------------------------ #
+
+    def _overrider(self, entity, email, role_key):
+        """A user holding only the break-glass key, in ``entity``'s tenant."""
+        user = self._user(email, tenant=entity.tenant)
+        self._grant(user, self.OVERRIDE_KEY, tenant=entity.tenant, role_key=role_key)
+        return user
+
+    def _race(self, blocking_target, holder, contender):
+        """Run ``holder`` until it holds the lock, then run ``contender`` against it.
+
+        ``blocking_target`` names a callable the holder reaches *after* taking the row
+        lock and *before* committing; it is replaced with a gate. Returns the two
+        outcomes and the gate mock, so a caller can assert how many times the guarded
+        side effect actually ran.
+        """
+        holder_holds_lock = threading.Event()
+        release_holder = threading.Event()
+        contender_started = threading.Event()
+        contender_done = threading.Event()
+        outcomes = {}
+
+        def gate(*args, **kwargs):
+            holder_holds_lock.set()
+            if not release_holder.wait(5):
+                raise TimeoutError("the parked-approval race never released the holder")
+
+        def run(name, work, *, started=None, done=None):
+            close_old_connections()
+            try:
+                if started is not None:
+                    started.set()
+                outcomes[name] = work()
+            except Exception as exc:  # Recorded, then asserted on by the caller.
+                outcomes[f"{name}_error"] = exc
+            finally:
+                close_old_connections()
+                if done is not None:
+                    done.set()
+
+        holder_thread = threading.Thread(
+            target=run, args=("holder", holder), daemon=True,
+        )
+        contender_thread = threading.Thread(
+            target=run, args=("contender", contender),
+            kwargs={"started": contender_started, "done": contender_done}, daemon=True,
+        )
+        with patch(blocking_target, side_effect=gate) as guarded:
+            holder_thread.start()
+            try:
+                self.assertTrue(
+                    holder_holds_lock.wait(5),
+                    "the holder never reached the guarded call, so it never held the lock",
+                )
+                contender_thread.start()
+                self.assertTrue(contender_started.wait(5))
+                # The contender is inside a real ``SELECT ... FOR UPDATE`` on the row
+                # the holder locked. It cannot finish until the holder commits.
+                self.assertFalse(
+                    contender_done.wait(0.25),
+                    "the contender did not block on the parked stage's row lock",
+                )
+            finally:
+                release_holder.set()
+            holder_thread.join(5)
+            contender_thread.join(5)
+        self.assertFalse(holder_thread.is_alive())
+        self.assertFalse(contender_thread.is_alive())
+        return outcomes, guarded
+
+    # -- two overrides at once ------------------------------------------------ #
+
+    def test_two_simultaneous_overrides_release_the_stage_exactly_once(self):
+        """Break-glass is not idempotent by luck: the loser is refused, not duplicated.
+
+        Two administrators clicking "release" on the same stuck requisition at the same
+        moment is the realistic way this endpoint is used, and both callers see the
+        stage as parked when they start. Without the lock both would write an
+        ``ApprovalOverride``, skip the same stage twice and advance the instance twice.
+        The loser must instead be told the document is no longer parked.
+        """
+        from vs_workflow.constants import WorkflowInstanceStatus, WorkflowStageStatus
+        from vs_workflow.models import WorkflowStageInstance
+        from vs_procurement.approval_override import release_parked_document
+        from vs_procurement.constants import WF_OVERRIDE_SKIP_REASON
+        from vs_procurement.exceptions import ApprovalNotParkedError
+        from vs_procurement.models import ApprovalOverride
+
+        entity, _, _, _, _ = self.build_p2p()
+        req, instance, _ = self._park(entity)
+        first = self._overrider(entity, "race-first@t.com", "breakglass-first")
+        second = self._overrider(entity, "race-second@t.com", "breakglass-second")
+
+        def release_as(actor):
+            def work():
+                # Each thread reads its own copy: a model instance carries the
+                # connection state of whoever loaded it.
+                document = PurchaseRequisition.objects.get(pk=req.pk)
+                return release_parked_document(
+                    document, actor_user=actor, reason=self.REASON,
+                )
+            return work
+
+        outcomes, guarded = self._race(
+            # Reached after ``lock_parked_stage`` and after the workflow has already
+            # been advanced, so the gate holds the lock across the whole release.
+            "vs_procurement.approval_override.record",
+            release_as(first), release_as(second),
+        )
+
+        self.assertIsInstance(outcomes.get("holder"), ApprovalOverride)
+        self.assertIsInstance(
+            outcomes.get("contender_error"), ApprovalNotParkedError,
+            f"the second override was not refused: {outcomes!r}",
+        )
+        # One release, one record, one finance audit write attempted.
+        self.assertEqual(ApprovalOverride.objects.count(), 1)
+        self.assertEqual(guarded.call_count, 1)
+        # One skip, carrying the override's own reason, and no second attempt.
+        released = WorkflowStageInstance.objects.get(
+            instance=instance, stage__code="manager",
+        )
+        self.assertEqual(released.status, WorkflowStageStatus.SKIPPED)
+        self.assertEqual(released.skip_reason, WF_OVERRIDE_SKIP_REASON)
+        self.assertEqual(
+            set(
+                WorkflowStageInstance.objects
+                .filter(instance=instance).values_list("attempt", flat=True)
+            ),
+            {1},
+        )
+        instance.refresh_from_db()
+        req.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.APPROVED)
+        self.assertEqual(req.approval_state, ProcApprovalState.APPROVED)
+
+    # -- an override racing the repair ---------------------------------------- #
+
+    def test_a_repair_that_lands_first_denies_the_concurrent_override(self):
+        """The safety property, under the race it was written for.
+
+        The override exists only for a document *nobody* can decide, so the instant a
+        repair staffs the stage the override must stop being available: otherwise it
+        is a way to skip past an approver who is standing right there. Sequentially
+        that is easy. Here the repair is still uncommitted when the override starts,
+        so the override sees an empty snapshot, decides the document is parked, and
+        only the row lock stops it acting on a reading that is already stale.
+
+        The repair also gets exactly one notification out of this, not two: the
+        override's own repair pass finds the snapshot populated and does nothing.
+        """
+        from vs_workflow.constants import WorkflowInstanceStatus
+        from vs_workflow.models import WorkflowStageApprover
+        from vs_procurement.approval_override import release_parked_document
+        from vs_procurement.approval_parking import repair_workflows
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
+        from vs_procurement.exceptions import ApprovalNotParkedError
+        from vs_procurement.models import ApprovalOverride
+
+        entity, _, _, _, _ = self.build_p2p()
+        req, instance, _ = self._park(entity)
+        # Appointed *before* the race, so the repair has somebody to resolve; the
+        # override still starts from a snapshot that is empty on disk.
+        approver = self._user("race-approver@t.com", tenant=entity.tenant)
+        self._appoint(approver, WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant)
+        breaker = self._overrider(entity, "race-breaker@t.com", "breakglass-race")
+
+        def repair():
+            return repair_workflows(tenant=entity.tenant)
+
+        def override():
+            document = PurchaseRequisition.objects.get(pk=req.pk)
+            return release_parked_document(
+                document, actor_user=breaker, reason=self.REASON,
+            )
+
+        outcomes, guarded = self._race(
+            # The repair's last act before committing, so the gate holds the lock
+            # with the refilled snapshot written but not yet visible.
+            "vs_workflow.services.routing.notify",
+            repair, override,
+        )
+
+        self.assertEqual(outcomes.get("holder"), 1, f"the repair did not staff: {outcomes!r}")
+        self.assertIsInstance(
+            outcomes.get("contender_error"), ApprovalNotParkedError,
+            f"the override was allowed past a repaired stage: {outcomes!r}",
+        )
+        # Nothing was released, and nothing was written to say it was.
+        self.assertFalse(ApprovalOverride.objects.exists())
+        instance.refresh_from_db()
+        req.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        self.assertEqual(req.approval_state, ProcApprovalState.PENDING)
+        # Staffed once, announced once: the loser must not restaff or renotify.
+        self.assertEqual(
+            list(
+                WorkflowStageApprover.objects
+                .filter(stage_instance__instance=instance, attempt=1)
+                .values_list("user_id", flat=True)
+            ),
+            [approver.pk],
+        )
+        self.assertEqual(guarded.call_count, 1)
 
 
 class ProcurementApprovalQueueTests(_P2PFixtureMixin, TestCase):
@@ -10869,6 +11267,237 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
         self.assertEqual(released.status_code, 200, released.data)
         req.refresh_from_db()
         self.assertEqual(req.approval_state, ProcApprovalState.APPROVED)
+
+
+class ParkedAndOverrideFilterBranchScopeTests(_BranchTenantsFixture, TestCase):
+    """``?parked=`` and ``?approved_by_override=`` under a branch-scoped caller.
+
+    Both filters are written as unbounded subqueries over *the whole model* - every
+    parked requisition anywhere, every released requisition anywhere - and are then
+    ANDed onto a queryset that has already been narrowed to the caller's entity and
+    branches. That is the right shape (it keeps the filter bounded however much a
+    misconfigured tenant has parked) but it means the narrowing is doing all the
+    isolation work, and nothing until now asserted the two compose.
+
+    The failure being excluded is specific: a filter that *widens*. ``?parked=1``
+    must never surface a neighbouring campus's stuck spend, and its negation must
+    never surface the rest of the school either, because ``exclude()`` on a
+    tenant-wide subquery is just as capable of reaching outside the caller's set.
+
+    The caller here holds a branch-pinned role grant and nothing else, which is the
+    arrangement ``vs_rbac.scoping.visible_branch_ids`` resolves through its grant
+    arm. ``HasRBACPermission`` is deliberately not patched: whether that grant opens
+    the screen at all is part of what makes the narrowing meaningful.
+    """
+
+    OVERRIDE_KEY = "procurement.approval.override"
+    VIEW_KEY = "procurement.requisition.view"
+
+    def setUp(self):
+        super().setUp()
+        from vs_procurement.approvals import ensure_tenant_approval_templates
+
+        ensure_tenant_approval_templates(self.multi_tenant)
+        ensure_tenant_approval_templates(self.flat_tenant)
+        # Nobody is ever appointed to the approving role, so everything submitted
+        # here parks and stays parked: the repair pass the list runs has nothing
+        # it could staff.
+        self.requester = self.user_for(self.multi_tenant, "parkfilter-req@t.com")
+        self.breaker = self.user_for(self.multi_tenant, "parkfilter-breaker@t.com")
+        self.grant(self.breaker, self.OVERRIDE_KEY, tenant=self.multi_tenant,
+                   role_key="parkfilter-breakglass")
+
+    # -- fixtures ------------------------------------------------------------ #
+
+    def park(self, branch, *, books=None, requester=None):
+        """A submitted requisition nobody can decide, in ``branch``."""
+        from vs_procurement.approval_parking import is_document_parked
+        from vs_procurement.approvals import submit_for_approval
+
+        books = books or self.multi
+        requester = requester or self.requester
+        req = self.requisition(books, branch=branch, requester=requester)
+        submit_for_approval(req, actor_user=requester)
+        req.refresh_from_db()
+        self.assertTrue(
+            is_document_parked(req),
+            "the fixture did not park, so the filter under test has nothing to find",
+        )
+        return req
+
+    def release(self, req):
+        """Release a parked requisition by override, so it is approved without review."""
+        from vs_procurement.approval_override import release_parked_document
+
+        release_parked_document(
+            req, actor_user=self.breaker,
+            reason="The approving role is vacant and term starts on Monday.",
+        )
+        req.refresh_from_db()
+        return req
+
+    def reader_at(self, branch, email, role_key):
+        """A caller whose only access is one branch-pinned grant of the view key."""
+        from core.test_utils import TenantAPIClient
+
+        user = self.user_for(self.multi_tenant, email)
+        self.grant(user, self.VIEW_KEY, tenant=self.multi_tenant,
+                   role_key=role_key, branch=branch)
+        return TenantAPIClient(user=user)
+
+    def ids(self, client, query="", *, books=None):
+        books = books or self.multi
+        response = client.get(
+            f"/v1/procurement/requisitions/?entity={books.entity.code}{query}",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return {row["id"] for row in response.data["data"]}
+
+    # -- the parked filter ---------------------------------------------------- #
+
+    def test_the_parked_filter_shows_only_the_callers_own_branchs_stuck_spend(self):
+        """``?parked=1`` narrows to the campus, and reports it as parked there."""
+        mine = self.park(self.lekki)
+        theirs = self.park(self.ikeja)
+        entity_wide = self.park(None)
+        client = self.reader_at(self.lekki, "parked-lekki@t.com", "lekki-reader")
+
+        listed = self.ids(client, "&parked=1")
+
+        self.assertEqual(listed, {mine.pk})
+        self.assertNotIn(theirs.pk, listed)
+        # A purchase raised for the school as a whole belongs to no campus, so a
+        # campus-scoped caller does not inherit it either.
+        self.assertNotIn(entity_wide.pk, listed)
+
+    def test_the_negated_parked_filter_cannot_reach_past_the_callers_branch(self):
+        """``exclude()`` on a tenant-wide subquery is the easier half to get wrong."""
+        parked = self.park(self.lekki)
+        draft = self.requisition(self.multi, branch=self.lekki,
+                                 requester=self.requester)
+        self.park(self.ikeja)
+        other_draft = self.requisition(self.multi, branch=self.ikeja,
+                                       requester=self.requester)
+        client = self.reader_at(self.lekki, "unparked-lekki@t.com", "lekki-reader-2")
+
+        listed = self.ids(client, "&parked=0")
+
+        self.assertEqual(listed, {draft.pk})
+        self.assertNotIn(parked.pk, listed)
+        self.assertNotIn(other_draft.pk, listed)
+
+    def test_both_answers_together_are_exactly_what_the_caller_can_already_see(self):
+        """The filter partitions the visible set; it never adds to it.
+
+        Stated as set arithmetic on purpose: it is the one assertion that fails for
+        *any* way of widening, including ones nobody has thought of yet.
+        """
+        self.park(self.lekki)
+        self.requisition(self.multi, branch=self.lekki, requester=self.requester)
+        self.park(self.ikeja)
+        self.park(None)
+        self.requisition(self.multi, branch=self.ikeja, requester=self.requester)
+        client = self.reader_at(self.lekki, "partition-lekki@t.com", "lekki-reader-3")
+
+        everything = self.ids(client)
+        parked = self.ids(client, "&parked=1")
+        unparked = self.ids(client, "&parked=0")
+
+        self.assertEqual(parked | unparked, everything)
+        self.assertEqual(parked & unparked, set())
+        self.assertTrue(parked, "the fixture left nothing parked in the caller's branch")
+
+    def test_naming_another_branch_in_the_query_string_widens_nothing(self):
+        """``?branch=`` narrows within the grant; it is not a way out of it."""
+        self.park(self.lekki)
+        theirs = self.park(self.ikeja)
+        client = self.reader_at(self.lekki, "probe-lekki@t.com", "lekki-reader-4")
+
+        listed = self.ids(client, f"&parked=1&branch={self.ikeja.pk}")
+
+        # Both terms are ANDed, so asking for somebody else's campus yields an empty
+        # answer rather than that campus's rows.
+        self.assertEqual(listed, set())
+        self.assertNotIn(theirs.pk, listed)
+
+    # -- the override filter --------------------------------------------------- #
+
+    def test_the_override_filter_shows_only_the_callers_own_branchs_releases(self):
+        """Spend released without review is the last thing that should cross a campus."""
+        mine = self.release(self.park(self.lekki))
+        theirs = self.release(self.park(self.ikeja))
+        still_parked = self.park(self.lekki)
+        client = self.reader_at(self.lekki, "override-lekki@t.com", "lekki-reader-5")
+
+        released = self.ids(client, "&approved_by_override=1")
+
+        self.assertEqual(released, {mine.pk})
+        self.assertNotIn(theirs.pk, released)
+        self.assertNotIn(still_parked.pk, released)
+
+    def test_the_negated_override_filter_cannot_reach_past_the_callers_branch(self):
+        overridden = self.release(self.park(self.lekki))
+        reviewed_elsewhere = self.release(self.park(self.ikeja))
+        untouched = self.requisition(self.multi, branch=self.lekki,
+                                     requester=self.requester)
+        client = self.reader_at(self.lekki, "override-neg@t.com", "lekki-reader-6")
+
+        listed = self.ids(client, "&approved_by_override=0")
+
+        self.assertEqual(listed, {untouched.pk})
+        self.assertNotIn(overridden.pk, listed)
+        self.assertNotIn(reviewed_elsewhere.pk, listed)
+
+    def test_the_two_filters_compose_with_each_other_and_with_the_branch(self):
+        """Both subqueries plus the narrowing, in one query string."""
+        self.release(self.park(self.lekki))
+        parked_here = self.park(self.lekki)
+        self.release(self.park(self.ikeja))
+        self.park(self.ikeja)
+        client = self.reader_at(self.lekki, "compose-lekki@t.com", "lekki-reader-7")
+
+        listed = self.ids(client, "&parked=1&approved_by_override=0")
+
+        self.assertEqual(listed, {parked_here.pk})
+
+    # -- the other shape of school -------------------------------------------- #
+
+    def test_a_tenant_with_no_branches_filters_exactly_as_it_always_did(self):
+        """Where a school has no campuses the dimension recedes rather than narrows.
+
+        A single-tenant, single-shape test proves nothing about tenancy, so the same
+        filters are asserted on the school that has no branches at all: the caller is
+        unbound, so ``visible_branch_ids`` answers "the whole tenant" and the filters
+        must behave byte-identically to how they did before branch scope existed.
+        """
+        from core.test_utils import TenantAPIClient
+
+        flat_requester = self.user_for(self.flat_tenant, "flat-parkfilter@t.com")
+        parked = self.park(None, books=self.flat, requester=flat_requester)
+        draft = self.requisition(self.flat, requester=flat_requester)
+
+        reader = self.user_for(self.flat_tenant, "flat-reader@t.com")
+        self.grant(reader, self.VIEW_KEY, tenant=self.flat_tenant,
+                   role_key="flat-reader")
+        client = TenantAPIClient(user=reader)
+
+        self.assertEqual(self.ids(client, "&parked=1", books=self.flat), {parked.pk})
+        self.assertEqual(self.ids(client, "&parked=0", books=self.flat), {draft.pk})
+
+    def test_another_tenants_parked_spend_is_unreachable_through_the_filter(self):
+        """The subqueries span the model, so the tenant boundary is worth restating."""
+        from vs_procurement.approvals import ensure_tenant_approval_templates
+
+        ensure_tenant_approval_templates(self.foreign_tenant)
+        foreign_requester = self.user_for(self.foreign_tenant, "foreign-parkfilter@t.com")
+        foreign_parked = self.park(None, books=self.foreign, requester=foreign_requester)
+        mine = self.park(self.lekki)
+        client = self.reader_at(self.lekki, "tenant-lekki@t.com", "lekki-reader-8")
+
+        listed = self.ids(client, "&parked=1")
+
+        self.assertEqual(listed, {mine.pk})
+        self.assertNotIn(foreign_parked.pk, listed)
 
 
 class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
