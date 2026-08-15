@@ -9,8 +9,8 @@
 # settings API (effective matrix shape + source, upsert, IN_APP + transactional
 # rejections), and the empty-list response shape.
 #
-# Runs on SQLite (apps.settings.test) and Postgres (apps.settings.local) - the
-# conditional UniqueConstraints exercise on both.
+# Runs on Postgres, the only engine the platform uses - so the conditional
+# UniqueConstraints here are exercised the way production enforces them.
 # =============================================================================
 
 from unittest import mock
@@ -787,6 +787,489 @@ class HistoryScopingTests(_NotifFixture):
     def test_cx_requires_a_filter(self):
         resp = self._client(self.cx).get("/v1/notify/history/")
         self.assertEqual(resp.status_code, 422)
+
+    def test_search_narrows_history_and_counts_as_a_filter(self):
+        resp = self._client(self.admin_a).get("/v1/notify/history/?search=a")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        ids = {r["id"] for r in resp.json()["data"]}
+        self.assertEqual(ids, {str(self.n_a.id)})
+
+    def test_history_search_stays_inside_the_callers_tenant(self):
+        resp = self._client(self.admin_a).get("/v1/notify/history/?search=b@test.com")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["data"], [])
+
+
+# ---------------------------------------------------------------------------
+# Inbox order + server-side search
+#
+# The inbox opens on what still needs attention, and searching must narrow the
+# QUERYSET - a page of results that was filtered in the browser reports the
+# wrong totals on every page after the first.
+# ---------------------------------------------------------------------------
+
+class FeedOrderAndSearchTests(_NotifFixture):
+
+    def setUp(self):
+        super().setUp()
+        self.et = self._event("ticket.created")
+        self.old_unread = self._notif("Invoice INV-9001 needs approval", read=False)
+        self.new_read = self._notif("Payment received for INV-7777", read=True)
+        self.newest_unread = self._notif("Stock count due", read=False)
+
+    def _notif(self, body, *, read, recipient=None):
+        return Notification.objects.create(
+            tenant=self.school_a.tenant, recipient=recipient or self.admin_a,
+            event_type=self.et, channel=ChannelChoices.IN_APP, body=body,
+            is_read=read, status=NotificationStatus.SENT,
+        )
+
+    def _ids(self, response):
+        return [row["id"] for row in response.json()["data"]]
+
+    def test_unread_comes_first_then_newest(self):
+        response = self._client(self.admin_a).get("/v1/notify/")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            self._ids(response),
+            [str(self.newest_unread.id), str(self.old_unread.id), str(self.new_read.id)],
+        )
+
+    def test_read_filter_still_narrows_to_one_tab(self):
+        response = self._client(self.admin_a).get("/v1/notify/?is_read=true")
+        self.assertEqual(self._ids(response), [str(self.new_read.id)])
+
+    def test_search_narrows_the_queryset_so_totals_match(self):
+        for index in range(4):
+            self._notif(f"Unrelated notice {index}", read=False)
+
+        response = self._client(self.admin_a).get("/v1/notify/?search=INV-&page_size=1")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        # Two records match; the page carries one and the pagination block has
+        # to describe the SEARCH result, not the whole inbox.
+        self.assertEqual(payload["pagination"]["totalItems"], 2)
+        self.assertEqual(payload["pagination"]["totalPages"], 2)
+        self.assertEqual(len(payload["data"]), 1)
+
+    def test_search_matches_the_event_label_as_well_as_the_message(self):
+        response = self._client(self.admin_a).get("/v1/notify/?search=Ticket created")
+        self.assertEqual(len(self._ids(response)), 3)
+
+    def test_search_cannot_reach_another_users_inbox(self):
+        theirs = self._notif("Invoice INV-9001 for someone else", read=False,
+                             recipient=self.plain_a)
+        response = self._client(self.admin_a).get("/v1/notify/?search=INV-9001")
+        self.assertNotIn(str(theirs.id), self._ids(response))
+        self.assertEqual(self._ids(response), [str(self.old_unread.id)])
+
+    def test_search_combines_with_the_unread_filter(self):
+        response = self._client(self.admin_a).get("/v1/notify/?search=INV-&is_read=false")
+        self.assertEqual(self._ids(response), [str(self.old_unread.id)])
+
+    def test_pagination_is_stable_when_created_at_ties(self):
+        from django.utils import timezone
+
+        rows = [self._notif(f"Batch row {index}", read=False) for index in range(6)]
+        # A dispatch batch writes every record with the same timestamp; without
+        # a unique tiebreaker the database may order those ties differently per
+        # query, and rows then repeat or vanish between pages.
+        stamped = timezone.now()
+        Notification.objects.filter(
+            id__in=[row.id for row in rows] + [self.old_unread.id, self.newest_unread.id]
+        ).update(created_at=stamped)
+
+        client = self._client(self.admin_a)
+        seen = []
+        for page in (1, 2, 3):
+            response = client.get(f"/v1/notify/?page={page}&page_size=3")
+            self.assertEqual(response.status_code, 200, response.content)
+            seen.extend(self._ids(response))
+
+        self.assertEqual(len(seen), len(set(seen)))
+        self.assertEqual(len(seen), Notification.objects.filter(
+            recipient=self.admin_a, channel=ChannelChoices.IN_APP).count())
+
+
+# ---------------------------------------------------------------------------
+# Email layout - one shared visual, composed from plain text
+# ---------------------------------------------------------------------------
+
+class EmailLayoutTests(_NotifFixture):
+
+    def setUp(self):
+        super().setUp()
+        from .models import NotificationTemplate
+        self.template = NotificationTemplate.objects.get(
+            event_type=self._event("ticket.created"), channel=ChannelChoices.EMAIL,
+        )
+
+    def _render(self, **fields):
+        """
+        Apply editor-style changes, save, and return the HTML a recipient gets.
+
+        The save matters: markup is stored, so it is save() that regenerates the
+        standard document. Supplying html_body means hand-written markup, which
+        is preserved instead of regenerated.
+        """
+        from .services.render import render_notification_template
+
+        context = fields.pop("context", {})
+        if "html_body" in fields:
+            fields["html_is_custom"] = True
+        for name, value in fields.items():
+            setattr(self.template, name, value)
+        self.template.save()
+        return render_notification_template(self.template, context)[2]
+
+    def test_plain_text_body_becomes_a_structured_document(self):
+        html = self._render(
+            subject="Ticket {{ number }} raised",
+            body=(
+                "Hello Ada,\n\n"
+                "TICKET DETAILS\n"
+                "Reference: {{ number }}\n"
+                "Priority: High\n\n"
+                "- Review the request\n"
+                "- Assign an owner\n"
+            ),
+            context={"number": "TCK-0001"},
+        )
+        self.assertIn("<html", html.lower())
+        self.assertIn("TICKET DETAILS", html)
+        self.assertIn("<h2", html)          # the caps line is a heading
+        self.assertIn("<table", html)       # the Label: value run is a table
+        self.assertIn("<ul", html)          # the dashes are a list
+        self.assertIn("TCK-0001", html)
+        self.assertIn("Ticket TCK-0001 raised", html)  # headline
+
+    def test_rendered_values_cannot_inject_markup(self):
+        """A value substituted into the stored markup is escaped, every time."""
+        html = self._render(
+            subject="Ticket raised",
+            body="Reason: {{ reason }}",
+            context={"reason": "<script>alert('x')</script>"},
+        )
+        self.assertIn("&lt;script&gt;", html)
+        self.assertNotIn("<script>alert", html)
+
+    def test_hand_written_markup_escapes_its_values_too(self):
+        """The escaping is in the render, so custom HTML inherits it."""
+        html = self._render(
+            html_body="<html><body><p>{{ reason }}</p></body></html>",
+            context={"reason": "<img src=x onerror=alert(1)>"},
+        )
+        self.assertIn("&lt;img", html)
+        self.assertNotIn("<img src=x", html)
+
+    def test_call_to_action_becomes_a_button_and_absorbs_the_bare_link(self):
+        html = self._render(
+            subject="Ticket raised",
+            body="Open the ticket:\n\n{{ link }}",
+            cta_label="Open the ticket",
+            cta_url="{{ link }}",
+            context={"link": "https://xvs.codexng.com/support/tickets/1"},
+        )
+        self.assertIn('href="https://xvs.codexng.com/support/tickets/1"', html)
+        self.assertIn(">Open the ticket<", html)
+        # Twice only: the button's href and the "paste this link" line. The
+        # naked URL paragraph in the body is dropped, since the button has it.
+        self.assertEqual(html.count("https://xvs.codexng.com/support/tickets/1"), 2)
+
+    def test_a_non_http_cta_never_becomes_a_link(self):
+        html = self._render(
+            subject="Ticket raised",
+            body="Body text.",
+            cta_label="Do the thing",
+            cta_url="javascript:alert(1)",
+            context={},
+        )
+        self.assertNotIn("javascript:", html)
+        self.assertNotIn(">Do the thing<", html)
+
+    def test_custom_html_body_still_overrides_the_layout(self):
+        html = self._render(
+            subject="Ticket raised",
+            body="Body text.",
+            html_body="<html><body>bespoke {{ number }}</body></html>",
+            context={"number": "TCK-1"},
+        )
+        self.assertEqual(html, "<html><body>bespoke TCK-1</body></html>")
+
+    def test_in_app_templates_carry_no_html(self):
+        from .models import NotificationTemplate
+        from .services.render import render_notification_template
+
+        in_app = NotificationTemplate.objects.get(
+            event_type=self._event("ticket.created"), channel=ChannelChoices.IN_APP,
+        )
+        in_app.html_body = "<html>should be ignored</html>"
+        self.assertEqual(render_notification_template(in_app, {})[2], "")
+
+    def test_seeded_email_templates_all_compose_a_document(self):
+        """Every shipped email default must render through the shared shell."""
+        from .models import NotificationTemplate
+        from .services.preview import sample_context, template_variables
+        from .services.render import render_notification_template
+
+        templates = NotificationTemplate.objects.filter(
+            channel=ChannelChoices.EMAIL, is_active=True,
+        ).select_related("event_type")
+        self.assertGreater(templates.count(), 10)
+        for template in templates:
+            with self.subTest(event=template.event_type.key):
+                variables = template_variables(
+                    template.subject, template.body, template.cta_label,
+                    template.cta_url, template.html_body,
+                )
+                _, _, html = render_notification_template(
+                    template, sample_context(variables),
+                )
+                self.assertIn("<html", html.lower())
+
+
+# ---------------------------------------------------------------------------
+# Stored email HTML - the database holds what gets sent
+#
+# The console edits html_body directly, so the invariant these pin is: what an
+# administrator reads there is what a recipient receives. A standard template
+# tracks the shared layout; a hand-edited one is left exactly as written.
+# ---------------------------------------------------------------------------
+
+class StoredEmailHtmlTests(_NotifFixture):
+
+    def setUp(self):
+        super().setUp()
+        from .models import NotificationTemplate
+        self.template = NotificationTemplate.objects.get(
+            event_type=self._event("ticket.created"), channel=ChannelChoices.EMAIL,
+        )
+
+    def test_every_seeded_email_template_stores_its_markup(self):
+        from .models import NotificationTemplate
+
+        emails = NotificationTemplate.objects.filter(channel=ChannelChoices.EMAIL)
+        self.assertGreater(emails.count(), 10)
+        for template in emails:
+            with self.subTest(event=template.event_type.key):
+                self.assertIn("<html", template.html_body.lower())
+
+    def test_in_app_templates_store_no_markup(self):
+        from .models import NotificationTemplate
+
+        for template in NotificationTemplate.objects.filter(channel=ChannelChoices.IN_APP):
+            self.assertEqual(template.html_body, "")
+
+    def test_stored_markup_keeps_its_placeholders(self):
+        self.assertIn("{{ ticket_number }}", self.template.html_body)
+        self.assertNotIn("{{ ticket_number }}", self.template.html_body.replace(
+            "{{ ticket_number }}", "", 1,
+        ).split("</head>")[0])  # not only in the <title>
+
+    def test_conditional_tags_survive_html_escaping(self):
+        """The quotes inside {% if x == 'Y' %} must not be escaped into entities."""
+        self.template.body = "{% if origin == 'ADMIN' %}Reset by an admin{% endif %} Hello."
+        self.template.save()
+        self.assertIn("{% if origin == 'ADMIN' %}", self.template.html_body)
+        self.assertNotIn("&#x27;ADMIN&#x27;", self.template.html_body)
+
+    def test_a_standard_template_follows_its_message(self):
+        self.template.body = "A brand new sentence."
+        self.template.save()
+        self.assertIn("A brand new sentence.", self.template.html_body)
+
+    def test_a_hand_edited_template_is_left_alone(self):
+        self.template.html_body = "<html><body>my own markup {{ ticket_number }}</body></html>"
+        self.template.html_is_custom = True
+        self.template.save()
+        self.template.body = "Changing the message must not touch the markup."
+        self.template.save()
+        self.assertEqual(
+            self.template.html_body,
+            "<html><body>my own markup {{ ticket_number }}</body></html>",
+        )
+
+    def test_clearing_the_custom_flag_restores_the_standard_design(self):
+        self.template.html_body = "<html>mine</html>"
+        self.template.html_is_custom = True
+        self.template.save()
+        self.template.html_is_custom = False
+        self.template.save()
+        self.assertEqual(self.template.html_body, self.template.standard_html())
+
+    def test_dispatch_sends_the_stored_markup(self):
+        self.template.html_body = "<html><body>SENTINEL {{ ticket_number }}</body></html>"
+        self.template.html_is_custom = True
+        self.template.save()
+
+        rcpt = self._recipient()
+        with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
+            NotificationService.send(
+                event_key="ticket.created",
+                context={"ticket_number": "TCK-77"},
+                recipients=[rcpt],
+                tenant=self.school_a.tenant,
+            )
+        email = Notification.objects.get(
+            recipient=rcpt, channel=ChannelChoices.EMAIL, event_type=self.template.event_type,
+        )
+        self.assertEqual(email.html_body, "<html><body>SENTINEL TCK-77</body></html>")
+
+    def _recipient(self):
+        return self.admin_a
+
+
+# ---------------------------------------------------------------------------
+# Template management + preview (Vision Staff)
+# ---------------------------------------------------------------------------
+
+class TemplatePreviewApiTests(_NotifFixture):
+
+    def setUp(self):
+        super().setUp()
+        from .models import NotificationTemplate
+        self.template = NotificationTemplate.objects.get(
+            event_type=self._event("user.invited"), channel=ChannelChoices.EMAIL,
+        )
+        self.url = f"/v1/notify/templates/{self.template.id}/preview/"
+
+    def test_preview_requires_the_template_permission(self):
+        self.assertEqual(self._client(self.plain_a).get(self.url).status_code, 403)
+
+    def test_get_preview_renders_the_visual_without_a_payload(self):
+        response = self._client(self.cx).get(self.url)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        data = response.json()["data"]
+        self.assertIn("<html", data["html_body"].lower())
+        self.assertIn("invitation_url", data["variables"])
+        self.assertFalse(data["html_is_custom"])
+        self.assertEqual(data["channel"], ChannelChoices.EMAIL)
+        # Every variable the template uses got a stand-in value.
+        self.assertEqual(set(data["variables"]) - set(data["context_used"]), set())
+        self.assertNotIn("{{", data["body"])
+
+    def test_post_preview_context_overrides_the_samples(self):
+        response = self._client(self.cx).post(
+            self.url, {"context": {"user_first_name": "Ngozi"}}, format="json",
+        )
+        data = response.json()["data"]
+        self.assertIn("Ngozi", data["body"])
+        self.assertEqual(data["context_used"]["user_first_name"], "Ngozi")
+
+    def test_preview_sends_nothing_and_stores_nothing(self):
+        before = Notification.all_objects.count()
+        self._client(self.cx).get(self.url)
+        self.assertEqual(Notification.all_objects.count(), before)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_template_list_reports_variables_and_supports_search(self):
+        response = self._client(self.cx).get(
+            "/v1/notify/templates/?search=user.invited&channel=email"
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        rows = response.json()["data"]
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertEqual(row["event_type_key"], "user.invited")
+            self.assertIn("invitation_url", row["variables"])
+
+    def test_preview_renders_unsaved_draft_edits_without_saving(self):
+        before = self.template.body
+        response = self._client(self.cx).post(
+            self.url,
+            {"draft": {"body": "A line typed in the editor {{ school_name }}."}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        data = response.json()["data"]
+        self.assertIn("A line typed in the editor", data["body"])
+        self.assertIn("A line typed in the editor", data["html_body"])
+        self.template.refresh_from_db()
+        self.assertEqual(self.template.body, before)
+
+    def test_preview_returns_the_markup_as_well_as_the_rendered_email(self):
+        """The editor's HTML box needs the source, not the sample-filled copy."""
+        response = self._client(self.cx).get(self.url)
+        data = response.json()["data"]
+
+        self.assertIn("{{ invitation_url }}", data["html_source"])
+        self.assertNotIn("{{", data["html_body"])
+        self.assertEqual(data["html_source"], self.template.html_body)
+
+    def test_a_draft_that_only_changes_the_message_refreshes_the_markup(self):
+        """Otherwise the preview would show new text inside the old HTML."""
+        response = self._client(self.cx).post(
+            self.url, {"draft": {"body": "Fresh wording."}}, format="json",
+        )
+        html = response.json()["data"]["html_body"]
+        self.assertIn("Fresh wording.", html)
+        self.assertNotIn("You have been invited to join", html)
+
+    def test_editing_the_markup_claims_ownership_of_it(self):
+        response = self._client(self.cx).patch(
+            f"/v1/notify/templates/{self.template.id}/",
+            {"html_body": "<html><body>hand written</body></html>"}, format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(response.json()["data"]["html_is_custom"])
+        self.template.refresh_from_db()
+        self.assertEqual(self.template.html_body, "<html><body>hand written</body></html>")
+
+    def test_saving_the_standard_markup_back_is_not_a_hand_edit(self):
+        """The editor posts its whole form; that must not freeze the design."""
+        response = self._client(self.cx).patch(
+            f"/v1/notify/templates/{self.template.id}/",
+            {"body": "Reworded message.", "html_body": self.template.html_body},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        data = response.json()["data"]
+        self.assertFalse(data["html_is_custom"])
+        self.assertIn("Reworded message.", data["html_body"])
+
+    def test_resetting_restores_the_standard_design(self):
+        client = self._client(self.cx)
+        client.patch(
+            f"/v1/notify/templates/{self.template.id}/",
+            {"html_body": "<html>mine</html>"}, format="json",
+        )
+        response = client.patch(
+            f"/v1/notify/templates/{self.template.id}/",
+            {"html_is_custom": False}, format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.template.refresh_from_db()
+        self.assertFalse(self.template.html_is_custom)
+        self.assertEqual(self.template.html_body, self.template.standard_html())
+
+    def test_available_events_lists_only_uncovered_pairs(self):
+        from .models import NotificationTemplate
+
+        response = self._client(self.cx).get("/v1/notify/templates/available-events/")
+        self.assertEqual(response.status_code, 200, response.content)
+        rows = response.json()["data"]
+        covered = {
+            (t.event_type.key, t.channel)
+            for t in NotificationTemplate.objects.select_related("event_type")
+        }
+        for row in rows:
+            for channel in row["channels"]:
+                self.assertNotIn((row["event_type_key"], channel), covered)
+
+    def test_available_events_requires_the_template_permission(self):
+        response = self._client(self.plain_a).get("/v1/notify/templates/available-events/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_a_cta_label_without_a_destination_is_rejected(self):
+        response = self._client(self.cx).patch(
+            f"/v1/notify/templates/{self.template.id}/",
+            {"cta_label": "Press me", "cta_url": ""}, format="json",
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("cta_url", str(response.json()))
 
 
 # ---------------------------------------------------------------------------

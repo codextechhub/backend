@@ -26,6 +26,7 @@
 import logging
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -69,6 +70,20 @@ logger = logging.getLogger("vs_notifications.views")
 # Sentinel used by history + settings to mean "the platform (school IS NULL) rows".
 _PLATFORM_SCOPE = "platform"
 
+# Longer terms are noise, not search: a 100k-character icontains scan is a free
+# way to make the database work for nothing.
+SEARCH_MAX_LENGTH = 120
+
+
+# Match a free-text term against what the reader can actually see on a row.
+def _feed_search_q(term: str) -> Q:
+    """Search the rendered message and the event's label, nothing internal."""
+    return (
+        Q(subject__icontains=term)
+        | Q(body__icontains=term)
+        | Q(event_type__label__icontains=term)
+    )
+
 
 # ---------------------------------------------------------------------------
 # 1.  Notification feed (user-facing)
@@ -88,6 +103,11 @@ class NotificationViewSet(viewsets.GenericViewSet):
         POST /notifications/acknowledge-route/ - mark viewed destination events
         GET  /notifications/{id}/         - single record detail
 
+    Feed order: UNREAD FIRST, newest first within each group. Opening the inbox
+    should show what still needs attention, not what happens to be newest.
+    ``?is_read=`` narrows to one group (the Unread / Read tabs); the default,
+    unfiltered call is the All tab and keeps unread on top.
+
     docstring-name: My notifications
     """
     permission_classes = [IsAuthenticated]
@@ -96,7 +116,13 @@ class NotificationViewSet(viewsets.GenericViewSet):
     def get_queryset(self):
         """
         Scope to the requesting user's in-app notifications only.
-        Prefetch event_type to avoid N+1 on serialization.
+
+        Ordering is (unread first, newest first, id) and the trailing id is not
+        decoration: dispatch bulk-creates a batch of records with identical
+        created_at values, and without a unique tiebreaker the database is free
+        to order those ties differently per query - which makes rows repeat or
+        vanish between page 1 and page 2. The
+        (recipient, channel, is_read, -created_at) index covers this order.
         """
         # Feed access is recipient-owned; email/history rows are excluded here.
         return (
@@ -106,7 +132,7 @@ class NotificationViewSet(viewsets.GenericViewSet):
                 channel=ChannelChoices.IN_APP,
             )
             .select_related("event_type")
-            .order_by("-created_at")
+            .order_by("is_read", "-created_at", "id")
         )
 
     def list(self, request):
@@ -128,6 +154,13 @@ class NotificationViewSet(viewsets.GenericViewSet):
         created_before = request.query_params.get("created_before")
         if created_before:
             qs = qs.filter(created_at__lte=created_before)
+
+        # Search is a QUERYSET filter, deliberately: filtering the page in the
+        # browser instead leaves the page count, the totals and every page after
+        # the first describing the unsearched list.
+        search = (request.query_params.get("search") or "").strip()
+        if search:
+            qs = qs.filter(_feed_search_q(search[:SEARCH_MAX_LENGTH]))
 
         page = self.paginate_queryset(qs)
         if page is not None:
@@ -276,10 +309,12 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
         """
         user = self.request.user
         # History uses the unscoped manager so platform rows are visible only when allowed.
+        # The id tiebreaker keeps pagination stable across bulk-created rows that
+        # share a created_at - see NotificationViewSet.get_queryset.
         qs = (
             Notification.all_objects
             .select_related("recipient", "event_type")
-            .order_by("-created_at")
+            .order_by("-created_at", "id")
         )
         return qs.filter(tenant=self.request.tenant)
 
@@ -292,13 +327,15 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
         status_param    = params.get("status")
         created_after   = params.get("created_after")
         created_before  = params.get("created_before")
+        search          = (params.get("search") or "").strip()
 
         # Everyone (school admins included, who have an implicit school filter)
         # must narrow the log with at least one explicit filter, so a school-less
-        # CX user cannot dump the entire table unfiltered.
+        # CX user cannot dump the entire table unfiltered. A search term is a
+        # filter like any other.
         if not any([
             scope, recipient_email, event_type_key,
-            channel, status_param, created_after, created_before,
+            channel, status_param, created_after, created_before, search,
         ]):
             raise FilterRequiredError()
 
@@ -306,6 +343,14 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
             qs = qs.filter(tenant__kind="PLATFORM")
         if recipient_email:
             qs = qs.filter(recipient__email__icontains=recipient_email)
+        if search:
+            # Applied to the queryset, so page counts describe the search result.
+            term = search[:SEARCH_MAX_LENGTH]
+            qs = qs.filter(
+                _feed_search_q(term)
+                | Q(recipient__email__icontains=term)
+                | Q(unregistered_email__icontains=term)
+            )
         if event_type_key:
             qs = qs.filter(event_type__key=event_type_key)
         if channel:
@@ -419,7 +464,6 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
         # One settings query for the whole matrix. Materialised to a list so it
         # feeds both the provenance sets below and the bulk resolver without
         # re-querying.
-        from django.db.models import Q
         scope_q = Q(tenant__isnull=True) | Q(tenant=tenant)
         rows = list(
             NotificationSetting.all_objects.filter(
@@ -605,7 +649,8 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
     POST  /notifications/templates/             - create template
     GET   /notifications/templates/{id}/        - retrieve single
     PATCH /notifications/templates/{id}/        - update
-    POST  /notifications/templates/{id}/preview/- render preview (incl. html_body)
+    GET   /notifications/templates/{id}/preview/- render preview with sample data
+    POST  /notifications/templates/{id}/preview/- render preview with own context
 
     Permission: communication.notification_templates.configure (RBAC).
 
@@ -623,7 +668,7 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
         )
 
     def list(self, request):
-        """GET /notifications/templates/"""
+        """GET /notifications/templates/ - filters: event_type_key, channel, search."""
         qs = self.get_queryset()
 
         event_type_key = request.query_params.get("event_type_key")
@@ -633,6 +678,16 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
         channel = request.query_params.get("channel")
         if channel:
             qs = qs.filter(channel=channel)
+
+        search = (request.query_params.get("search") or "").strip()
+        if search:
+            term = search[:SEARCH_MAX_LENGTH]
+            qs = qs.filter(
+                Q(event_type__key__icontains=term)
+                | Q(event_type__label__icontains=term)
+                | Q(subject__icontains=term)
+                | Q(body__icontains=term)
+            )
 
         serializer = NotificationTemplateSerializer(qs, many=True)
         return success_response("Templates retrieved.", data=serializer.data)
@@ -710,11 +765,53 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
             data=NotificationTemplateSerializer(updated).data,
         )
 
-    @action(detail=True, methods=["post"], url_path="preview")
+    @action(detail=False, methods=["get"], url_path="available-events")
+    def available_events(self, request):
+        """
+        GET /notifications/templates/available-events/
+
+        The (event type, channel) pairs that have no template yet - what the
+        "new template" screen can actually offer. An event exists only when code
+        somewhere fires it, so this is the whole creatable set.
+        """
+        taken = set(
+            NotificationTemplate.objects.values_list("event_type_id", "channel")
+        )
+        rows = []
+        for event_type in NotificationEventType.objects.filter(is_active=True).order_by(
+            "source_module", "key",
+        ):
+            missing = [
+                channel for channel in event_type.supported_channels
+                if (event_type.id, channel) not in taken
+            ]
+            if missing:
+                rows.append({
+                    "event_type":       str(event_type.id),
+                    "event_type_key":   event_type.key,
+                    "event_type_label": event_type.label,
+                    "source_module":    event_type.source_module,
+                    "description":      event_type.description,
+                    "channels":         missing,
+                })
+        return success_response("Available events retrieved.", data=rows)
+
+    @action(detail=True, methods=["get", "post"], url_path="preview")
     def preview(self, request, pk=None):
         """
-        POST /notifications/templates/{id}/preview/
-        Render the template with sample context. Does not send anything.
+        GET|POST /notifications/templates/{id}/preview/
+
+        Returns the message as a recipient would see it: subject, plain body
+        and - for email - the stored HTML rendered with sample data. GET needs
+        no payload: sample values are generated from the variables the template
+        uses. POST accepts ``{"context": {...}}`` to override any of them, and
+        ``{"draft": {...}}`` to preview unsaved editor content (nothing is
+        written, which is what makes live editing safe).
+
+        The HTML comes back as a JSON string rather than an HTML response on
+        purpose: the console renders it inside a sandboxed iframe, so a preview
+        can never execute against the API origin. Nothing is sent and no
+        Notification record is created.
         """
         try:
             template = self.get_queryset().get(pk=pk)
@@ -724,7 +821,9 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        serializer = NotificationTemplatePreviewSerializer(data=request.data)
+        serializer = NotificationTemplatePreviewSerializer(
+            data=request.data if request.method == "POST" else {},
+        )
         if not serializer.is_valid():
             return error_response(
                 "Invalid preview request.",

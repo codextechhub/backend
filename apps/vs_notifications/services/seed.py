@@ -169,19 +169,24 @@ def seed_school_settings(school) -> dict:
 
 
 # Seed default templates without overwriting Vision Staff customizations.
-def seed_notification_templates() -> dict:
+def seed_notification_templates(overwrite: bool = False) -> dict:
     """
     Create default NotificationTemplate records for all active event types
     and their supported channels.
 
-    Uses get_or_create - does NOT overwrite templates that Vision Staff have
-    already customised.
+    Templates are plain text plus an optional call to action (cta_label +
+    cta_url); the email visual is composed by services/layout.py, so a default
+    carries no markup. Every default references the event's context variables,
+    which is also where the editor reads the variable list from.
 
-    Default templates use all available context variables so Vision Staff can
-    see exactly what variables are available when they customise content.
+    Args:
+        overwrite:  False (default) uses get_or_create, so anything Vision
+                    Staff customised is left alone. True resyncs every seeded
+                    template back to the shipped default - the deliberate way
+                    to adopt new default copy or drop stale bespoke HTML.
 
     Returns:
-        {"created": N, "skipped": N}
+        {"created": N, "updated": N, "skipped": N}
     """
     from ..models import NotificationEventType, NotificationTemplate
 
@@ -190,6 +195,7 @@ def seed_notification_templates() -> dict:
     active_event_types = NotificationEventType.objects.filter(is_active=True)
 
     created_count = 0
+    updated_count = 0
     skipped_count = 0
 
     for event_type in active_event_types:
@@ -205,250 +211,41 @@ def seed_notification_templates() -> dict:
                 skipped_count += 1
                 continue
 
-            _, created = NotificationTemplate.objects.get_or_create(
-                event_type=event_type,
-                channel=channel,
-                defaults=defaults,
-            )
+            if overwrite:
+                # Blank the fields the default omits, so a resync cannot leave
+                # a stale CTA or a stale html_body override behind.
+                full_defaults = {
+                    "subject": "", "body": "", "html_body": "",
+                    "cta_label": "", "cta_url": "",
+                    **defaults,
+                }
+                _, created = NotificationTemplate.objects.update_or_create(
+                    event_type=event_type, channel=channel, defaults=full_defaults,
+                )
+            else:
+                _, created = NotificationTemplate.objects.get_or_create(
+                    event_type=event_type, channel=channel, defaults=defaults,
+                )
+
             if created:
                 created_count += 1
                 logger.info(
                     "Created default template for %s / %s", event_type.key, channel
                 )
+            elif overwrite:
+                updated_count += 1
             else:
                 skipped_count += 1
 
     logger.info(
-        "seed_notification_templates complete - created: %d, skipped: %d",
-        created_count, skipped_count,
+        "seed_notification_templates complete - created: %d, updated: %d, skipped: %d",
+        created_count, updated_count, skipped_count,
     )
-    return {"created": created_count, "skipped": skipped_count}
-
-
-# ---------------------------------------------------------------------------
-# Ported HTML email bodies (transactional events)
-#
-# Faithful ports of vs_user/templates/vs_user/emails/*.html with the nested
-# Django-template variables ({{ user.first_name }} etc.) flattened to the flat
-# context keys the render engine receives. Copy is preserved; only variable
-# references and a couple of account-detail fields (which the flat context does
-# not carry) were adjusted.
-# ---------------------------------------------------------------------------
-
-_INVITATION_HTML = """<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Welcome to {{ school_name }}</title>
-  </head>
-  <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f5f5f5;">
-    <table role="presentation" style="width: 100%; border-collapse: collapse">
-      <tr>
-        <td align="center" style="padding: 40px 0">
-          <table role="presentation" style="width: 600px; max-width: 100%; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);">
-            <!-- Header -->
-            <tr>
-              <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 30px; text-align: center; border-radius: 8px 8px 0 0;">
-                <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 600;">Welcome to {{ school_name }}</h1>
-              </td>
-            </tr>
-            <!-- Body -->
-            <tr>
-              <td style="padding: 40px 30px">
-                <p style="margin: 0 0 20px; color: #333333; font-size: 16px; line-height: 1.6;">Hello <strong>{{ user_first_name }}</strong>,</p>
-                <p style="margin: 0 0 20px; color: #333333; font-size: 16px; line-height: 1.6;">You have been invited to join <strong>{{ school_name }}</strong> on XVision System. To get started, please activate your account by setting up your password.</p>
-                <!-- Account Details Box -->
-                <div style="background-color: #f8f9fa; border-left: 4px solid #667eea; padding: 20px; margin: 30px 0; border-radius: 4px;">
-                  <p style="margin: 0 0 10px; color: #666666; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Your Account Details</p>
-                  <p style="margin: 0 0 8px; color: #333333; font-size: 15px;"><strong>Name:</strong> {{ user_full_name }}</p>
-                  <p style="margin: 0; color: #333333; font-size: 15px;"><strong>Institution:</strong> {{ school_name }}</p>
-                </div>
-                <!-- CTA Button -->
-                <table role="presentation" style="margin: 30px 0">
-                  <tr>
-                    <td align="center">
-                      <a href="{{ invitation_url }}" style="display: inline-block; padding: 16px 40px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px; box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);">Activate Your Account</a>
-                    </td>
-                  </tr>
-                </table>
-                <p style="margin: 30px 0 20px; color: #666666; font-size: 14px; line-height: 1.6;">Or copy and paste this URL into your browser:</p>
-                <p style="margin: 0 0 30px; padding: 15px; background-color: #f8f9fa; border-radius: 4px; word-break: break-all; font-size: 13px; color: #667eea; font-family: 'Courier New', monospace;">{{ invitation_url }}</p>
-                <!-- Important Notice -->
-                <div style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 30px 0; border-radius: 4px;">
-                  <p style="margin: 0; color: #856404; font-size: 14px; line-height: 1.6;"><strong>⏰ Important:</strong> This invitation link will expire in <strong>{{ expiry_days }} days</strong>. Please activate your account before then.</p>
-                </div>
-                <p style="margin: 30px 0 0; color: #666666; font-size: 14px; line-height: 1.6;">If you didn't expect this invitation or have any questions, please contact your administrator.</p>
-              </td>
-            </tr>
-            <!-- Footer -->
-            <tr>
-              <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-radius: 0 0 8px 8px; border-top: 1px solid #e9ecef;">
-                <p style="margin: 0 0 10px; color: #999999; font-size: 13px">XVision System</p>
-                <p style="margin: 0; color: #999999; font-size: 13px">Powering Smart Institutions</p>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>
-"""
-
-
-_PASSWORD_RESET_HTML = """<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Reset Your Password</title>
-  </head>
-  <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f5f5f5;">
-    <table role="presentation" style="width: 100%; border-collapse: collapse">
-      <tr>
-        <td align="center" style="padding: 40px 0">
-          <table role="presentation" style="width: 600px; max-width: 100%; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);">
-            <!-- Header -->
-            <tr>
-              <td style="{% if origin == 'ADMIN' %}background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);{% else %}background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);{% endif %} padding: 40px 30px; text-align: center; border-radius: 8px 8px 0 0;">
-                <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 600;">{% if origin == 'ADMIN' %}Password Reset Requested{% else %}Reset Your Password{% endif %}</h1>
-              </td>
-            </tr>
-            <!-- Body -->
-            <tr>
-              <td style="padding: 40px 30px">
-                <p style="margin: 0 0 20px; color: #333333; font-size: 16px; line-height: 1.6;">Hello <strong>{{ user_first_name }}</strong>,</p>
-                {% if origin == 'ADMIN' %}
-                <p style="margin: 0 0 20px; color: #333333; font-size: 16px; line-height: 1.6;">Your administrator has initiated a password reset for your CodeX Vision account. Use the link below to create a new password.</p>
-                {% else %}
-                <p style="margin: 0 0 20px; color: #333333; font-size: 16px; line-height: 1.6;">We received a request to reset the password for your CodeX Vision account. Click the button below to create a new password.</p>
-                {% endif %}
-                <!-- CTA Button -->
-                <table role="presentation" style="margin: 30px 0">
-                  <tr>
-                    <td align="center">
-                      <a href="{{ reset_url }}" style="display: inline-block; padding: 16px 40px; {% if origin == 'ADMIN' %}background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);{% else %}background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);{% endif %} color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px; {% if origin == 'ADMIN' %}box-shadow: 0 4px 12px rgba(240, 147, 251, 0.4);{% else %}box-shadow: 0 4px 12px rgba(79, 172, 254, 0.4);{% endif %}">Reset Password</a>
-                    </td>
-                  </tr>
-                </table>
-                <p style="margin: 30px 0 20px; color: #666666; font-size: 14px; line-height: 1.6;">Or copy and paste this URL into your browser:</p>
-                <p style="margin: 0 0 30px; padding: 15px; background-color: #f8f9fa; border-radius: 4px; word-break: break-all; font-size: 13px; {% if origin == 'ADMIN' %}color: #f5576c;{% else %}color: #4facfe;{% endif %} font-family: 'Courier New', monospace;">{{ reset_url }}</p>
-                <!-- Expiry Notice -->
-                <div style="{% if origin == 'ADMIN' %}background-color: #fff0f6; border-left: 4px solid #f5576c;{% else %}background-color: #e7f7ff; border-left: 4px solid #4facfe;{% endif %} padding: 15px; margin: 30px 0; border-radius: 4px;">
-                  <p style="margin: 0; {% if origin == 'ADMIN' %}color: #c41d3a;{% else %}color: #0066cc;{% endif %} font-size: 14px; line-height: 1.6;"><strong>⏰ This link will expire in {{ expiry_hours }} hour{% if expiry_hours > 1 %}s{% endif %}.</strong> After that, you'll need to request a new password reset.</p>
-                </div>
-                <!-- Security Notice -->
-                <div style="background-color: #f8f9fa; padding: 20px; margin: 30px 0; border-radius: 4px;">
-                  <p style="margin: 0 0 10px; color: #666666; font-size: 14px; font-weight: 600;">🔒 Security Notice</p>
-                  <p style="margin: 0; color: #666666; font-size: 14px; line-height: 1.6;">If you didn't request this password reset, please ignore this email. Your password will remain unchanged. For security concerns, contact your administrator immediately.</p>
-                </div>
-              </td>
-            </tr>
-            <!-- Footer -->
-            <tr>
-              <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-radius: 0 0 8px 8px; border-top: 1px solid #e9ecef;">
-                <p style="margin: 0 0 10px; color: #999999; font-size: 13px">XVision System</p>
-                <p style="margin: 0; color: #999999; font-size: 13px">Empowering education through technology</p>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>
-"""
-
-
-_ACCOUNT_ADJUSTMENT_HTML = """<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{{ title|escape }}</title>
-  </head>
-  <body style="margin:0; padding:0; background-color:#f4f6f8; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; color:#182230;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%; border-collapse:collapse; background-color:#f4f6f8;">
-      <tr>
-        <td align="center" style="padding:32px 12px;">
-          <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="width:100%; max-width:600px; border-collapse:separate; background-color:#ffffff; border:1px solid #e4e7ec; border-radius:12px; overflow:hidden;">
-            <tr>
-              <td style="height:6px; background-color:{{ accent_color }}; font-size:0; line-height:0;">&nbsp;</td>
-            </tr>
-            <tr>
-              <td style="padding:28px 32px 22px; border-bottom:1px solid #eaecf0;">
-                <p style="margin:0 0 12px; color:#667085; font-size:13px; font-weight:600;">{{ issuer_name|escape }}</p>
-                <span style="display:inline-block; padding:5px 9px; border-radius:999px; background-color:{{ accent_soft }}; border:1px solid {{ accent_border }}; color:{{ accent_color }}; font-size:11px; font-weight:700; letter-spacing:.6px;">{{ badge|escape }}</span>
-                <h1 style="margin:14px 0 8px; color:#101828; font-size:24px; line-height:1.3; font-weight:700;">{{ title|escape }}</h1>
-                <p style="margin:0; color:#475467; font-size:15px; line-height:1.6;">Hello {{ customer_name|escape }}, {{ summary|escape }}</p>
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:24px 32px;">
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%; border-collapse:separate; background-color:{{ accent_soft }}; border:1px solid {{ accent_border }}; border-radius:10px;">
-                  <tr>
-                    <td style="padding:22px; text-align:center;">
-                      <p style="margin:0 0 6px; color:{{ accent_color }}; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px;">{{ amount_label|escape }}</p>
-                      <p style="margin:0; color:#101828; font-size:30px; line-height:1.2; font-weight:750;">₦{{ note_amount|escape }}</p>
-                    </td>
-                  </tr>
-                </table>
-
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%; margin-top:18px; border-collapse:separate; border:1px solid #eaecf0; border-radius:10px;">
-                  <tr>
-                    <td width="50%" valign="top" style="padding:16px; border-right:1px solid #eaecf0;">
-                      <p style="margin:0 0 5px; color:#667085; font-size:12px;">Before this note</p>
-                      <p style="margin:0 0 4px; color:#344054; font-size:12px; font-weight:600;">{{ previous_balance_label|escape }}</p>
-                      <p style="margin:0; color:#101828; font-size:18px; font-weight:700;">₦{{ previous_balance_amount|escape }}</p>
-                    </td>
-                    <td width="50%" valign="top" style="padding:16px;">
-                      <p style="margin:0 0 5px; color:#667085; font-size:12px;">Current position</p>
-                      <p style="margin:0 0 4px; color:#344054; font-size:12px; font-weight:600;">{{ current_balance_label|escape }}</p>
-                      <p style="margin:0; color:{{ accent_color }}; font-size:18px; font-weight:700;">₦{{ current_balance_amount|escape }}</p>
-                    </td>
-                  </tr>
-                </table>
-
-                <h2 style="margin:26px 0 10px; color:#101828; font-size:15px; font-weight:700;">Note details</h2>
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%; border-collapse:collapse; font-size:14px;">
-                  <tr>
-                    <td style="padding:10px 0; color:#667085; border-bottom:1px solid #eaecf0;">Document</td>
-                    <td align="right" style="padding:10px 0; color:#101828; font-weight:600; border-bottom:1px solid #eaecf0;">{{ note_number|escape }}</td>
-                  </tr>
-                  <tr>
-                    <td style="padding:10px 0; color:#667085; border-bottom:1px solid #eaecf0;">Date issued</td>
-                    <td align="right" style="padding:10px 0; color:#101828; font-weight:600; border-bottom:1px solid #eaecf0;">{{ note_date|escape }}</td>
-                  </tr>
-                  <tr>
-                    <td style="padding:10px 0; color:#667085; border-bottom:1px solid #eaecf0;">Related invoice</td>
-                    <td align="right" style="padding:10px 0; color:#101828; font-weight:600; border-bottom:1px solid #eaecf0;">{{ related_invoice|escape }}</td>
-                  </tr>
-                  <tr>
-                    <td valign="top" style="padding:10px 0; color:#667085;">Reason</td>
-                    <td align="right" style="padding:10px 0 10px 24px; color:#101828; font-weight:600; line-height:1.45;">{{ reason|escape }}</td>
-                  </tr>
-                </table>
-
-                <div style="margin-top:22px; padding:16px 18px; background-color:#f9fafb; border-left:4px solid {{ accent_color }}; border-radius:6px;">
-                  <p style="margin:0 0 5px; color:#101828; font-size:14px; font-weight:700;">{{ action_title|escape }}</p>
-                  <p style="margin:0; color:#475467; font-size:14px; line-height:1.55;">{{ action_message|escape }}</p>
-                </div>
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:20px 32px; background-color:#f9fafb; border-top:1px solid #eaecf0;">
-                <p style="margin:0 0 5px; color:#475467; font-size:13px; line-height:1.5;">If anything in this adjustment is unclear, please contact the finance team before making payment.</p>
-                <p style="margin:0; color:#98a2b3; font-size:12px;">This notice was issued by {{ issuer_name|escape }} via CodeX Vision.</p>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>
-"""
+    return {
+        "created": created_count,
+        "updated": updated_count,
+        "skipped": skipped_count,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -478,20 +275,6 @@ def _build_default_templates() -> dict:
                 "Payment terms: {{ payment_terms }}\n\n{{ buyer_message }}\n\n"
                 "Contact: {{ buyer_name }} {{ buyer_email }}"
             ),
-            "html_body": (
-                "<!doctype html><html><body style=\"margin:0;background:#f4f7fb;font-family:Arial,sans-serif;color:#1d2939\">"
-                "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td style=\"padding:28px 12px\">"
-                "<table role=\"presentation\" width=\"620\" align=\"center\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:100%;background:#fff;border:1px solid #d5dfea;border-radius:10px;overflow:hidden\">"
-                "<tr><td style=\"padding:24px 28px;background:#0f2747;color:#fff\"><div style=\"font-size:13px;opacity:.8\">{{ issuer_name|escape }}</div><div style=\"font-size:24px;font-weight:700;margin-top:5px\">Purchase order {{ po_number|escape }}</div></td></tr>"
-                "<tr><td style=\"padding:28px\"><p style=\"margin-top:0\">Hello {{ vendor_name|escape }},</p><p>{{ issuer_name|escape }} has issued this approved purchase order to you. The signed business copy is attached as a PDF.</p>"
-                "<table role=\"presentation\" width=\"100%\" cellpadding=\"8\" cellspacing=\"0\" style=\"margin:20px 0;background:#f8fafc;border-radius:7px;font-size:14px\">"
-                "<tr><td><b>Order date</b><br>{{ order_date|escape }}</td><td><b>Expected date</b><br>{{ expected_date|escape }}</td></tr>"
-                "<tr><td><b>Total</b><br>{{ total|escape }}</td><td><b>Payment terms</b><br>{{ payment_terms|escape }}</td></tr>"
-                "<tr><td colspan=\"2\"><b>Delivery address</b><br>{{ delivery_address|linebreaksbr }}</td></tr></table>"
-                "{% if buyer_message %}<div style=\"padding:14px 16px;border-left:4px solid #2f6fed;background:#f4f7fb\">{{ buyer_message|linebreaksbr }}</div>{% endif %}"
-                "<p style=\"margin-bottom:0;margin-top:22px;font-size:13px;color:#667085\">Questions? Contact {{ buyer_name|escape }}{% if buyer_email %} at {{ buyer_email|escape }}{% endif %}.</p>"
-                "</td></tr></table></td></tr></table></body></html>"
-            ),
         },
         ("procurement.rfq_invitation", C.EMAIL): {
             "subject": "Quotation requested: {{ rfq_number }}",
@@ -500,6 +283,8 @@ def _build_default_templates() -> dict:
                 "to submit a quotation for {{ rfq_number }}: {{ rfq_title }}.\n\n"
                 "Deadline: {{ deadline }}\n\nOpen the secure quotation form:\n{{ invitation_url }}\n"
             ),
+            "cta_label": "Open the quotation form",
+            "cta_url": "{{ invitation_url }}",
         },
         ("procurement.rfq_verification_code", C.EMAIL): {
             "subject": "Your quotation verification code",
@@ -514,6 +299,8 @@ def _build_default_templates() -> dict:
                 "Hello {{ recipient_name }},\n\nYour quotation for {{ rfq_number }} has not been "
                 "submitted or declined. The deadline is {{ deadline }}.\n\n{{ invitation_url }}"
             ),
+            "cta_label": "Submit your quotation",
+            "cta_url": "{{ invitation_url }}",
         },
         ("procurement.quotation_receipt", C.EMAIL): {
             "subject": "Quotation received: {{ quotation_number }}",
@@ -521,6 +308,8 @@ def _build_default_templates() -> dict:
                 "Hello {{ recipient_name }},\n\nWe received revision {{ revision }} of your quotation "
                 "for {{ rfq_number }} at {{ submitted_at }}.\n\nView your read-only receipt:\n{{ invitation_url }}"
             ),
+            "cta_label": "View your receipt",
+            "cta_url": "{{ invitation_url }}",
         },
         ("procurement.rfq_amended", C.EMAIL): {
             "subject": "RFQ amended: {{ rfq_number }} version {{ rfq_version }}",
@@ -529,6 +318,8 @@ def _build_default_templates() -> dict:
                 "Summary: {{ amendment_summary }}\nResponse required: {{ response_required }}\n\n"
                 "{{ invitation_url }}"
             ),
+            "cta_label": "Review the amendment",
+            "cta_url": "{{ invitation_url }}",
         },
         ("procurement.rfq_deadline_extended", C.EMAIL): {
             "subject": "Quotation deadline extended: {{ rfq_number }}",
@@ -536,6 +327,8 @@ def _build_default_templates() -> dict:
                 "Hello {{ recipient_name }},\n\nThe deadline for {{ vendor_name }} to respond to "
                 "{{ rfq_number }} is now {{ deadline }}.\n\n{{ invitation_url }}"
             ),
+            "cta_label": "Open the quotation form",
+            "cta_url": "{{ invitation_url }}",
         },
 
         # ── support tickets ─────────────────────────────────────────────────
@@ -876,6 +669,8 @@ def _build_default_templates() -> dict:
                 "Pay online: {{ payment_link }}\n\n"
                 "{{ school_name }} via CodeX Vision"
             ),
+            "cta_label": "Pay online",
+            "cta_url": "{{ payment_link }}",
         },
 
         # ── billing.debit_note_issued ──────────────────────────────────────
@@ -908,7 +703,6 @@ def _build_default_templates() -> dict:
                 "team before making payment.\n\n"
                 "{{ issuer_name }} via CodeX Vision"
             ),
-            "html_body": _ACCOUNT_ADJUSTMENT_HTML,
         },
 
         # ── billing.credit_note_issued ─────────────────────────────────────
@@ -941,7 +735,6 @@ def _build_default_templates() -> dict:
                 "team before making payment.\n\n"
                 "{{ issuer_name }} via CodeX Vision"
             ),
-            "html_body": _ACCOUNT_ADJUSTMENT_HTML,
         },
 
         # ── billing.payment_received ────────────────────────────────────────
@@ -1128,7 +921,8 @@ def _build_default_templates() -> dict:
                 "XVision System\n"
                 "Powering Smart Institutions"
             ),
-            "html_body": _INVITATION_HTML,
+            "cta_label": "Activate your account",
+            "cta_url": "{{ invitation_url }}",
         },
 
         # ── user.account_locked ─────────────────────────────────────────────
@@ -1226,7 +1020,8 @@ def _build_default_templates() -> dict:
                 "XVision System\n"
                 "Empowering education through technology"
             ),
-            "html_body": _PASSWORD_RESET_HTML,
+            "cta_label": "Reset your password",
+            "cta_url": "{{ reset_url }}",
         },
 
         # ── task.completed / task.failed (core background jobs, IN_APP) ──────

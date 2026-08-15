@@ -17,14 +17,28 @@ class Command(BaseCommand):
     help = (
         "Seed default NotificationTemplate records for all active event types "
         "and their supported channels. Uses get_or_create - Vision Staff "
-        "customisations are never overwritten."
+        "customisations are never overwritten. Pass --overwrite to resync every "
+        "seeded template back to the shipped default (this DOES discard staff "
+        "edits, including any bespoke html_body)."
     )
 
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--overwrite",
+            action="store_true",
+            help="Reset every seeded template to the shipped default copy.",
+        )
+
     def handle(self, *args, **options):
-        self.stdout.write("Seeding default notification templates...")
-        result = seed_notification_templates()
+        overwrite = options["overwrite"]
+        self.stdout.write(
+            "Resyncing notification templates to defaults..." if overwrite
+            else "Seeding default notification templates..."
+        )
+        result = seed_notification_templates(overwrite=overwrite)
         self.stdout.write(
             self.style.SUCCESS(
-                f"Done. Created: {result['created']}, Skipped: {result['skipped']}."
+                f"Done. Created: {result['created']}, "
+                f"Updated: {result['updated']}, Skipped: {result['skipped']}."
             )
         )

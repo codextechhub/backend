@@ -16,8 +16,9 @@
 #   /notifications/settings/               - effective settings matrix (GET)
 #   /notifications/settings/update/        - settings override upsert (PATCH)
 #   /notifications/templates/               - template list (GET) / create (POST)
+#   /notifications/templates/available-events/ - (event, channel) pairs with no template
 #   /notifications/templates/<uuid>/        - template retrieve (GET) / update (PATCH)
-#   /notifications/templates/<uuid>/preview/- template preview (POST)
+#   /notifications/templates/<uuid>/preview/- template preview (GET sample / POST context)
 #   /notifications/event-types/             - event type list (GET)
 #   /notifications/event-types/<uuid>/      - event type retrieve (GET)
 # =============================================================================
@@ -90,10 +91,15 @@ urlpatterns = [
 
     # Templates
     path("templates/",           template_list,   name="notification-template-list"),
+    path(
+        "templates/available-events/",
+        NotificationTemplateViewSet.as_view({"get": "available_events"}),
+        name="notification-template-available-events",
+    ),
     path("templates/<uuid:pk>/", template_detail, name="notification-template-detail"),
     path(
         "templates/<uuid:pk>/preview/",
-        NotificationTemplateViewSet.as_view({"post": "preview"}),
+        NotificationTemplateViewSet.as_view({"get": "preview", "post": "preview"}),
         name="notification-template-preview",
     ),
 

@@ -128,9 +128,27 @@ class NotificationTemplate(models.Model):
     Vision Staff create and edit templates via the API or admin console.
     School users have no access to template management.
 
-    Bodies support Django template syntax with {{ variable }} substitution.
-    The available variables are defined per event type in constants.py and
-    the FRD Section 8 Event Type Registry.
+    A template is plain text plus an optional call to action:
+        subject   - the email subject / the feed headline
+        body      - the message itself, written as text
+        cta_label + cta_url - the button, when the message has a destination
+
+    All four support Django template syntax with {{ variable }} substitution;
+    the variables a template uses are discoverable from its own content (see
+    services/preview.template_variables), not from a separate list.
+
+    THE EMAIL HTML IS STORED, NOT COMPOSED AT SEND TIME. html_body always holds
+    the exact markup that will be delivered, so an administrator can read it and
+    edit it from the console without going near the code. Two modes decide who
+    maintains it:
+
+        html_is_custom = False (standard)  - the row is REGENERATED from the
+            shared layout (services/layout.py) on every save, so a template
+            nobody has touched keeps following the platform design.
+        html_is_custom = True  (hand-edited) - the stored markup is left exactly
+            as written and stops inheriting design changes. Set automatically
+            the first time someone saves their own html_body; clear it to have
+            the standard design regenerated.
 
     Rendered content is stored on Notification records at dispatch time,
     so history remains stable even when the template is later updated.
@@ -167,13 +185,41 @@ class NotificationTemplate(models.Model):
             "using Django template syntax. Stored rendered at dispatch time."
         ),
     )
+    cta_label = models.CharField(
+        max_length=80,
+        blank=True,
+        default="",
+        help_text=(
+            "Button text for the email's call to action, e.g. 'Activate your "
+            "account'. Only used when cta_url is set. Supports {{ variable }}."
+        ),
+    )
+    cta_url = models.CharField(
+        max_length=500,
+        blank=True,
+        default="",
+        help_text=(
+            "Button destination, normally a single {{ variable }} such as "
+            "{{ invitation_url }}. Empty means the email carries no button. "
+            "Non-http(s) values are dropped at render time."
+        ),
+    )
     html_body = models.TextField(
         blank=True,
         default="",
         help_text=(
-            "Optional HTML body for the email channel. Supports {{ variable }} "
-            "substitution. When present, email delivery becomes multipart "
-            "(plain-text body + HTML alternative). Ignored for in-app."
+            "The email HTML exactly as it will be delivered, with {{ variable }} "
+            "placeholders still in it. Regenerated from the shared layout on "
+            "every save while html_is_custom is False. Unused for in-app."
+        ),
+    )
+    html_is_custom = models.BooleanField(
+        default=False,
+        help_text=(
+            "False: html_body is maintained by the platform layout and refreshed "
+            "whenever the message changes. True: someone edited the markup by "
+            "hand, so it is preserved verbatim and no longer inherits design "
+            "changes. Clear it to restore the standard design."
         ),
     )
     is_active = models.BooleanField(
@@ -210,6 +256,48 @@ class NotificationTemplate(models.Model):
 
     def __str__(self):
         return f"{self.event_type.key} / {self.channel}"
+
+    # Keep the stored markup honest on every write path.
+    def save(self, *args, **kwargs):
+        """
+        Refresh html_body from the shared layout for standard email templates.
+
+        This sits on save() rather than in the serializer on purpose: the API,
+        the Django admin, the seed command and any future data migration all
+        write through here, and a standard template whose markup disagreed with
+        its message would be a lie the preview could not detect.
+        """
+        if self.channel == ChannelChoices.EMAIL and not self.html_is_custom:
+            self.html_body = self.standard_html()
+        elif self.channel != ChannelChoices.EMAIL:
+            # In-app records render from subject/body; markup would be dead data.
+            self.html_body = ""
+            self.html_is_custom = False
+
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            # A partial save must still persist the markup it just recomputed.
+            kwargs["update_fields"] = set(update_fields) | {"html_body", "html_is_custom"}
+        super().save(*args, **kwargs)
+
+    # Build the platform-standard markup for this template's current content.
+    def standard_html(self) -> str:
+        """
+        Return the shared-layout HTML for this template, placeholders intact.
+
+        The layout is fed the RAW (unrendered) subject and body, so the result
+        is a reusable template document: {{ variable }} survives into the stored
+        markup and is substituted per recipient at dispatch time.
+        """
+        from .services.layout import compose_email_html
+
+        return compose_email_html(
+            subject=self.subject,
+            body=self.body,
+            cta_label=self.cta_label,
+            cta_url=self.cta_url,
+            as_template=True,
+        )
 
 
 # ---------------------------------------------------------------------------
