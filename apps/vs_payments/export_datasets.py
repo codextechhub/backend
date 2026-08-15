@@ -41,6 +41,7 @@ def _payouts(scope):
 
 
 _COLLECTION_STATUS = choice_labels("vs_payments.constants.CollectionStatus")
+_PAYOUT_STATUS = choice_labels("vs_payments.constants.PayoutStatus")
 _PROVIDER = choice_labels("vs_payments.constants.PaymentProvider")
 
 
@@ -124,7 +125,16 @@ def register_datasets():
         filters=(
             FilterDef("created_at", "Created", FILTER_DATE_RANGE, required=True,
                       is_primary_date=True),
-            FilterDef("status", "Status", FILTER_TEXT),
+            # A choice rather than free text: the payouts screen filters by status
+            # GROUP, and a group is several statuses ("Pending" is PENDING and
+            # PROCESSING). Only an "is any of" filter can carry that faithfully.
+            FilterDef("status", "Status", FILTER_CHOICE, choices=_PAYOUT_STATUS),
+            FilterDef("provider", "Provider", FILTER_CHOICE, choices=_PROVIDER),
+            FilterDef("search", "Search", FILTER_SEARCH, searches=(
+                ("reference", "Our reference"),
+                ("provider_reference", "Provider reference"),
+                ("batch__reference", "Batch"),
+            ), description="Matches any one of these, the way the search box does."),
         ),
     ))
 
@@ -136,8 +146,22 @@ def register_datasets():
 def _translate_collections(params):
     from vs_exports.catalogue import Unmapped
 
+    from .constants import COLLECTION_GROUPS
+
     filters, unmapped = [], []
-    if value := params.get("status"):
+    # The screen's status pill is a GROUP, not a status: "Settled" is SUCCEEDED,
+    # "Failed" is FAILED *and* ABANDONED. Expanding it through the same map the
+    # list endpoint uses is what makes the file match the table. Mapping the
+    # group to its literal name instead would silently return nothing.
+    if (group := params.get("group")) in COLLECTION_GROUPS:
+        filters.append({"id": "status", "values": list(COLLECTION_GROUPS[group])})
+    elif group:
+        unmapped.append(Unmapped(
+            "group", group,
+            "This status group is not one the export recognises, so the file is not "
+            "limited by it.",
+        ))
+    elif value := params.get("status"):
         filters.append({"id": "status", "values": [value]})
     if value := params.get("provider"):
         filters.append({"id": "provider", "values": [value]})
@@ -157,6 +181,36 @@ def _translate_collections(params):
     return filters, unmapped
 
 
+# Translate the payouts list screen's filters into export filters.
+def _translate_payouts(params):
+    from vs_exports.catalogue import Unmapped
+
+    from .constants import PAYOUT_GROUPS
+
+    filters, unmapped = [], []
+    if (group := params.get("group")) in PAYOUT_GROUPS:
+        filters.append({"id": "status", "values": list(PAYOUT_GROUPS[group])})
+    elif group:
+        unmapped.append(Unmapped(
+            "group", group,
+            "This status group is not one the export recognises, so the file is not "
+            "limited by it.",
+        ))
+    elif value := params.get("status"):
+        filters.append({"id": "status", "values": [value]})
+    if value := params.get("provider"):
+        filters.append({"id": "provider", "values": [value]})
+    if value := params.get("search"):
+        filters.append({"id": "search", "value": value})
+    if value := params.get("batch"):
+        unmapped.append(Unmapped(
+            "batch", value,
+            "The payouts export does not filter by batch yet; the file covers every "
+            "batch the other filters allow.",
+        ))
+    return filters, unmapped
+
+
 # Register the payments screens. Called once from AppConfig.ready().
 def register_screens():
     from vs_exports.catalogue import ScreenBinding, register_screen
@@ -164,9 +218,18 @@ def register_screens():
     register_screen(ScreenBinding(
         key="payments.collections",
         handles=(
-            "status", "provider", "search", "customer", "succeeded",
+            "group", "status", "provider", "search", "customer", "succeeded",
         ),
         label="Payments - Collections",
         dataset_key="payments.collections",
         translate=_translate_collections,
+    ))
+    register_screen(ScreenBinding(
+        key="payments.payouts",
+        handles=(
+            "group", "status", "provider", "search", "batch",
+        ),
+        label="Payments - Payouts",
+        dataset_key="payments.payouts",
+        translate=_translate_payouts,
     ))

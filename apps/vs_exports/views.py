@@ -40,6 +40,8 @@ from .constants import (
     ScheduleState,
     Sharing,
     SUCCESSFUL_RUN_STATUSES,
+    SYNC_EXPORT_MAX_BYTES,
+    TERMINAL_RUN_STATUSES,
     ValuesMode,
 )
 from .engine import ExportError, estimate, may_export_dataset, plain_sentence, sample_rows
@@ -553,6 +555,9 @@ class FromScreenView(_ExportBase):
             raise PermissionDenied(f"You cannot export the {dataset.name} dataset.")
         scope = self.resolve_scope(dataset)
 
+        include_sensitive = services.capabilities(
+            request.user, self.tenant,
+        )["can_export_sensitive"]
         resolved = resolve_screen(binding, request.query_params.dict())
         config = {
             "dataset_key": dataset.key,
@@ -574,6 +579,20 @@ class FromScreenView(_ExportBase):
             {
                 "screen": binding.describe(),
                 "config": config,
+                # The drawer offers a format picker, so it needs the dataset's
+                # own list rather than assuming the two-value default. Every
+                # dataset publishes both today; that is not a promise the UI
+                # should be hardcoding.
+                "supported_formats": [str(f) for f in dataset.formats],
+                # Every column the caller could pick, so the drawer can offer a
+                # column chooser without a second round trip. Filtered by the
+                # SAME sensitive-field gate the catalogue uses: a column this
+                # user may not export is never offered, rather than offered and
+                # then silently dropped from the file as an omission.
+                "fields": [
+                    f.describe() for f in dataset.fields
+                    if include_sensitive or not f.sensitive
+                ],
                 "carried": resolved["carried"],
                 "unmapped": resolved["unmapped"],
                 "added": resolved["added"],
@@ -609,6 +628,7 @@ class QuickExportView(_ExportBase):
         payload.is_valid(raise_exception=True)
         config = dict(payload.validated_data)
         client_key = config.pop("client_key", "")
+        wants_sync = config.pop("sync", False)
 
         dataset = get_dataset(config["dataset_key"])
         if not may_export_dataset(request.user, dataset, self.tenant):
@@ -619,16 +639,45 @@ class QuickExportView(_ExportBase):
                 "columns": "Choose at least one column before running this export.",
             })
 
+        # A small export is worth producing inline: the caller waits a moment and
+        # gets the file, instead of queueing and then going to look for it. The
+        # SERVER decides, by re-running its own estimate - the drawer's claim that
+        # the file will be small is a hint, not an authorisation, and an inline
+        # run holds a web worker for its whole duration.
+        run_inline = False
+        if wants_sync:
+            try:
+                figures = estimate(request.user, dataset, scope, config, self.tenant)
+            except ExportError as exc:
+                raise ValidationError({"detail": exc.message, "code": exc.code})
+            run_inline = figures["estimated_bytes"] <= SYNC_EXPORT_MAX_BYTES
+
         try:
             run, created = services.trigger_quick_run(
                 config=config, entity=scope.entity, tenant=self.tenant, actor=request.user,
                 client_key=client_key,
+                # Not queued when we are about to run it here ourselves; queueing
+                # as well would produce the same file twice.
+                queue=not run_inline,
             )
         except ExportServiceError as exc:
             raise ValidationError({"detail": str(exc)})
+
+        if run_inline and created:
+            # Errors are recorded ON the run by execute_run (status FAILED plus a
+            # user-safe failure block), so a failure here is still a 200 carrying
+            # a run the drawer can explain - not a 500.
+            run = services.execute_run(run.pk) or run
+
+        if not created:
+            message = "This export is already running - showing the run in progress."
+        elif run_inline and run.status in TERMINAL_RUN_STATUSES:
+            message = "Export ready."
+        else:
+            message = "Export queued successfully."
+
         return success_response(
-            "Export queued successfully." if created
-            else "This export is already running - showing the run in progress.",
+            message,
             ExportRunDetailSerializer(run, context={"request": request}).data,
             status=201 if created else 200,
         )

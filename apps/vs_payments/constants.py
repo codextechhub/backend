@@ -162,3 +162,29 @@ WF_DEFAULT_TEMPLATE_CODE = "standard"
 #: team held both, so it bought a click rather than a reviewer. A tenant that does
 #: have a separate signing authority can publish its own ladder with that stage back.
 WF_DEFAULT_APPROVE_ROLE = "payout-approver"
+
+
+# --------------------------------------------------------------------------- #
+# Console status groups                                                       #
+# --------------------------------------------------------------------------- #
+# The console's list screens filter by GROUP, not by raw status: one pill means
+# several underlying states. They live here rather than in views.py because two
+# callers now need the same expansion - the list endpoints, and the Export
+# Centre's screen bindings, which have to turn "?group=PAID" back into the exact
+# status set the table was showing. A second copy of these maps is how an export
+# quietly stops matching the screen it came from.
+
+#: Console group -> underlying CollectionStatus values.
+COLLECTION_GROUPS = {
+    "PENDING": ["PENDING", "PROCESSING"],
+    "PAID": ["SUCCEEDED"],
+    "FAILED": ["FAILED", "ABANDONED"],
+    "REFUNDED": ["REFUNDED"],
+}
+
+#: Console group -> underlying PayoutStatus values.
+PAYOUT_GROUPS = {
+    "PENDING": ["PENDING", "PROCESSING"],
+    "PAID": ["PAID"],
+    "FAILED": ["FAILED", "REVERSED"],
+}

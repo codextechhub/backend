@@ -269,6 +269,17 @@ CONCURRENT_RUN_LIMIT = 3
 #: same run, not a second one.
 IDEMPOTENCY_WINDOW_SECONDS = 60
 
+#: A quick export whose ESTIMATE is at or below this runs inline and hands the
+#: file straight back, instead of queueing and making the user go and fetch it.
+#: Small files are the common case from a filtered list screen, and a round trip
+#: through the queue for a 40 KB spreadsheet is all cost and no benefit.
+#:
+#: The ceiling exists because an inline run occupies a web worker for its whole
+#: duration - that is the resource being protected, which is why the server
+#: re-estimates and enforces this itself rather than trusting the caller's claim
+#: that the file will be small.
+SYNC_EXPORT_MAX_BYTES = 4 * 1024 * 1024
+
 #: Rows returned by the preview endpoint.
 PREVIEW_ROWS = 10
 

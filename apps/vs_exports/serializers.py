@@ -453,6 +453,11 @@ class QuickExportSerializer(PreviewSerializer):
     client_key = serializers.CharField(
         required=False, allow_blank=True, max_length=64,
     )
+    #: Ask for the file inline rather than queued. Honoured only when the server's
+    #: own estimate is at or under :data:`SYNC_EXPORT_MAX_BYTES` - a request for a
+    #: large export falls back to the queue rather than being refused, because
+    #: the caller wanted the data either way.
+    sync = serializers.BooleanField(required=False, default=False)
 
 
 class RunRequestSerializer(serializers.Serializer):

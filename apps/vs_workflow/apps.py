@@ -16,3 +16,9 @@ class VsWorkflowConfig(AppConfig):
         from .export_datasets import register_datasets
 
         register_datasets()
+
+        # Bind this app's list screens so "Export what this table is showing"
+        # can translate their filters. Separate call, same reason.
+        from .export_datasets import register_screens
+
+        register_screens()

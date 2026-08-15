@@ -1623,6 +1623,61 @@ class FromScreenTests(_ExportFixture, TestCase):
                     silent.append(f"{screen.key}.{param}")
         self.assertEqual(silent, [], "; ".join(silent))
 
+    def test_school_users_tab_filters_on_tenant_kind_not_user_type(self):
+        """The Users console splits CX from School by tenant KIND, not user type.
+
+        Mapping ``?scope=school`` to "every user_type except CX_STAFF" looks
+        equivalent and is not: the rows that tab shows live in *other tenants*,
+        so that mapping produced an empty file while the table showed people.
+        The filter has to name the same column the list view filters on.
+        """
+        from vs_exports.catalogue import get_screen, resolve_screen
+
+        resolved = resolve_screen(get_screen("admin.users"), {"scope": "school"})
+        by_id = {f["id"]: f for f in resolved["filters"]}
+        self.assertIn("tenant_kind", by_id)
+        self.assertNotIn("PLATFORM", by_id["tenant_kind"]["values"])
+        self.assertNotIn(
+            "user_type", by_id,
+            "scope=school must not be expressed as a user_type complement",
+        )
+
+    def test_a_non_platform_caller_still_only_reads_its_own_tenants_users(self):
+        """The users dataset lets a PLATFORM caller read across tenants, because the
+        console it serves does. That widening must not reach anyone else.
+
+        ``self.tenant`` (codex) IS the platform tenant, so it is the wrong subject
+        for this assertion - ``self.other_tenant`` is an ORGANIZATION.
+        """
+        from vs_exports.catalogue import ScopeContext, get_dataset
+        from vs_user.models import User
+
+        dataset = get_dataset("admin.users")
+
+        # The fence, for everyone who is not the platform.
+        fenced = dataset.base(ScopeContext(tenant=self.other_tenant))
+        self.assertEqual(
+            fenced.exclude(tenant=self.other_tenant).count(), 0,
+            "a non-platform caller read another tenant's users out of admin.users",
+        )
+        self.assertTrue(fenced.exists(), "the fence removed the caller's own rows too")
+
+        # The deliberate widening, for the platform console that needs it.
+        platform_rows = dataset.base(ScopeContext(tenant=self.tenant))
+        self.assertTrue(
+            platform_rows.filter(tenant=self.other_tenant).exists(),
+            "a platform caller must see other tenants' users - the School Users tab "
+            "lists exactly those, and an export of it was empty without this",
+        )
+
+        # Statuses the console hides everywhere must not leak through an export.
+        self.assertFalse(
+            platform_rows.filter(status__in=[
+                User.Status.PENDING_APPROVAL, User.Status.REJECTED,
+            ]).exists(),
+            "statuses the console hides everywhere must not appear in an export",
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Schedules                                                                   #

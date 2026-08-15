@@ -11,6 +11,7 @@ Money columns are integer kobo in the database and are rendered by
 from __future__ import annotations
 
 from vs_exports.catalogue import (
+    FILTER_BOOLEAN,
     FILTER_CHOICE,
     FILTER_DATE_RANGE,
     FILTER_NUMBER_RANGE,
@@ -58,6 +59,13 @@ def _payments(scope):
     return Payment.objects.filter(entity=scope.entity)
 
 
+# Build the entity-scoped base queryset for staff expense claims.
+def _expense_claims(scope):
+    from .models import ExpenseClaim
+
+    return ExpenseClaim.objects.filter(entity=scope.entity)
+
+
 # Build the entity-scoped base queryset for the AR customer master.
 def _customers(scope):
     from .models import Customer
@@ -67,6 +75,7 @@ def _customers(scope):
 
 _DOC_STATUS = choice_labels("vs_finance.constants.DocumentStatus")
 _PAY_STATUS = choice_labels("vs_finance.constants.InvoicePaymentStatus")
+_JOURNAL_SOURCE = choice_labels("vs_finance.constants.JournalSource")
 
 
 # Register every finance dataset. Called once from AppConfig.ready().
@@ -196,12 +205,25 @@ def register_datasets():
             Field("credit", "Credit", "Amounts", KIND_MONEY),
             Field("description", "Description", "Line", KIND_TEXT),
             Field("cost_center", "Cost centre", "Analysis", KIND_TEXT, source="cost_center__code"),
+            Field("entry_source", "Source", "Journal", KIND_CHOICE, source="entry__source",
+                  choices=_JOURNAL_SOURCE,
+                  description="What raised the entry - manual, or a posting module."),
         ),
         filters=(
             FilterDef("entry_date", "Entry date", FILTER_DATE_RANGE, required=True,
                       source="entry__date", is_primary_date=True),
             FilterDef("entry_status", "Entry status", FILTER_CHOICE, source="entry__status",
                       choices=_DOC_STATUS),
+            # The ledger screen filters by source, so the export has to be able to
+            # as well: without it every quick export off that screen would be
+            # wider than the table and say so, which is honest but not useful.
+            FilterDef("entry_source", "Source", FILTER_CHOICE, source="entry__source",
+                      choices=_JOURNAL_SOURCE),
+            FilterDef("search", "Search", FILTER_SEARCH, searches=(
+                ("entry__document_number", "Entry number"),
+                ("entry__narration", "Narration"),
+                ("entry__reference", "Reference"),
+            ), description="Matches any one of these, the way the search box does."),
             FilterDef("account", "Account code", FILTER_TEXT, source="account__code"),
         ),
     ))
@@ -238,6 +260,63 @@ def register_datasets():
                       is_primary_date=True),
             FilterDef("status", "Status", FILTER_CHOICE, choices=_DOC_STATUS),
             FilterDef("customer", "Customer", FILTER_TEXT, source="customer__name"),
+            FilterDef("method", "Method", FILTER_TEXT),
+            FilterDef("search", "Search", FILTER_SEARCH, searches=(
+                ("document_number", "Receipt number"),
+                ("customer__name", "Customer"),
+                ("reference", "Reference"),
+            ), description="Matches any one of these, the way the search box does."),
+        ),
+    ))
+
+    register(Dataset(
+        key="finance.expense_claims",
+        module="Finance",
+        name="Expense claims",
+        description=(
+            "Staff reimbursement claims, one row per claim, with what has been paid "
+            "back so far. The answer to 'what do we still owe our own people'."
+        ),
+        base=_expense_claims,
+        permission="finance.expenseclaim.view",
+        row_cap=200_000,
+        default_columns=("document_number", "claimant_name", "claim_date", "total", "status"),
+        fields=(
+            Field("document_number", "Claim number", "Claim", KIND_TEXT, locked=True),
+            Field("claimant_name", "Claimant", "Claim", KIND_TEXT),
+            Field("claim_date", "Claim date", "Claim", KIND_DATE),
+            Field("title", "Purpose", "Claim", KIND_TEXT),
+            Field("narration", "Narration", "Claim", KIND_TEXT),
+            Field("status", "Status", "Claim", KIND_CHOICE, choices=_DOC_STATUS),
+            Field("payment_status", "Reimbursement", "Claim", KIND_CHOICE,
+                  choices=_PAY_STATUS),
+            Field("subtotal", "Net", "Amounts", KIND_MONEY),
+            Field("tax_total", "Recoverable tax", "Amounts", KIND_MONEY),
+            Field("total", "Total", "Amounts", KIND_MONEY),
+            Field("amount_paid", "Reimbursed", "Amounts", KIND_MONEY),
+            Field("currency", "Currency", "Amounts", KIND_TEXT, source="currency__code"),
+            Field("reimbursement_account", "Liability account", "Claim", KIND_TEXT,
+                  source="reimbursement_account__code"),
+            Field("journal_number", "Journal", "Record", KIND_TEXT,
+                  source="journal__document_number"),
+            Field("claimant_email", "Claimant email", "Claim", KIND_TEXT,
+                  source="claimant__email", sensitive=True,
+                  description="Restricted: personal contact data."),
+            Field("created_at", "Created", "Record", KIND_DATETIME),
+        ),
+        filters=(
+            FilterDef("claim_date", "Claim date", FILTER_DATE_RANGE, required=True,
+                      is_primary_date=True,
+                      description="Required so an export can never mean 'every claim ever'."),
+            FilterDef("status", "Status", FILTER_CHOICE, choices=_DOC_STATUS),
+            FilterDef("payment_status", "Reimbursement", FILTER_CHOICE, choices=_PAY_STATUS),
+            FilterDef("search", "Search", FILTER_SEARCH, searches=(
+                ("document_number", "Claim number"),
+                ("claimant_name", "Claimant"),
+                ("title", "Purpose"),
+            ), description="Matches any one of these, the way the search box does."),
+            FilterDef("total", "Total", FILTER_NUMBER_RANGE,
+                      description="Amounts are in kobo."),
         ),
     ))
 
@@ -274,6 +353,7 @@ def register_datasets():
                 ("code", "Customer code"), ("name", "Name"),
             ), description="Matches either one, the way the search box does."),
             FilterDef("name", "Name", FILTER_TEXT),
+            FilterDef("is_active", "Active", FILTER_BOOLEAN),
         ),
     ))
 
@@ -345,11 +425,111 @@ def _translate_customers(params):
     if value := params.get("search"):
         filters.append({"id": "search", "value": value})
     if (value := params.get("is_active")) is not None:
+        filters.append({"id": "is_active", "value": str(value).lower() == "true"})
+
+    # The screen's status tabs are not one column. ACTIVE and INACTIVE are the
+    # stored flag, but OVERDUE and CREDIT are computed from the customer's live
+    # AR balance, which no stored field carries - so they are reported rather
+    # than quietly ignored, and the drawer says the file is wider.
+    status = params.get("status")
+    if status in ("ACTIVE", "INACTIVE"):
+        filters.append({"id": "is_active", "value": status == "ACTIVE"})
+    elif status in ("OVERDUE", "CREDIT"):
         unmapped.append(Unmapped(
-            "is_active", value,
-            "The customer export does not filter on the active flag yet; the file "
-            "includes inactive customers too.",
+            "status", status,
+            "Overdue and In-credit are worked out from each customer's live balance, "
+            "not stored on the customer, so the export cannot filter on them. Export "
+            "Invoices instead if you need the overdue set.",
         ))
+    elif status:
+        unmapped.append(Unmapped(
+            "status", status,
+            "This status is not one the customer export recognises.",
+        ))
+    return filters, unmapped
+
+
+# Translate the general-ledger screen's filters into export filters.
+#
+# One caveat this translator cannot fix, and the drawer states instead: the screen
+# lists one row per ENTRY, the dataset produces one row per LINE. The filters match
+# exactly; the row counts will not, and that is the dataset doing its job (a trial
+# balance needs the lines).
+def _translate_gl_postings(params):
+    filters, unmapped = [], []
+    if value := params.get("status"):
+        filters.append({"id": "entry_status", "values": [value]})
+    if value := params.get("source"):
+        filters.append({"id": "entry_source", "values": [value]})
+    # The screen sends its date window as two flat params; the export wants one
+    # range object. Either end on its own is still a real narrowing (the range
+    # compiles to gte/lte independently), so a half-open window is carried rather
+    # than dropped - dropping it would widen the file in silence.
+    window = {}
+    if value := params.get("date_from"):
+        window["start"] = value
+    if value := params.get("date_to"):
+        window["end"] = value
+    if window:
+        filters.append({"id": "entry_date", **window})
+    if value := params.get("search"):
+        filters.append({"id": "search", "value": value})
+    if value := params.get("account"):
+        filters.append({"id": "account", "value": value})
+    return filters, unmapped
+
+
+# Translate the receipts and allocation screen's filters into export filters.
+def _translate_receipts(params):
+    filters, unmapped = [], []
+    if value := params.get("status"):
+        filters.append({"id": "status", "values": [value]})
+    if value := params.get("method"):
+        filters.append({"id": "method", "value": value})
+    if value := params.get("search"):
+        filters.append({"id": "search", "value": value})
+    if value := params.get("customer"):
+        filters.append({"id": "customer", "value": value})
+    return filters, unmapped
+
+
+# Translate the expense-claims screen's filters into export filters.
+#
+# The screen's status chip is a DISPLAY status: it collapses (status ×
+# payment_status) into four words a person actually uses. The list view expands
+# it server-side, and so does this - the same four branches, so a quick export
+# and the table agree. "Approved" is the interesting one: it means posted but
+# NOT fully reimbursed, which an "is any of" filter expresses as the payment
+# states other than PAID.
+def _translate_expense_claims(params):
+    from vs_exports.catalogue import Unmapped
+
+    from .constants import DocumentStatus, InvoicePaymentStatus
+
+    filters, unmapped = [], []
+    disp = params.get("display_status") or params.get("status")
+    if disp == "DRAFT":
+        filters.append({"id": "status", "values": [str(DocumentStatus.DRAFT)]})
+    elif disp == "REJECTED":
+        filters.append({"id": "status", "values": [str(DocumentStatus.CANCELLED)]})
+    elif disp == "PAID":
+        filters.append({"id": "status", "values": [str(DocumentStatus.POSTED)]})
+        filters.append({"id": "payment_status", "values": [str(InvoicePaymentStatus.PAID)]})
+    elif disp == "APPROVED":
+        filters.append({"id": "status", "values": [str(DocumentStatus.POSTED)]})
+        filters.append({"id": "payment_status", "values": [
+            str(s) for s in InvoicePaymentStatus.values if s != InvoicePaymentStatus.PAID
+        ]})
+    elif disp:
+        unmapped.append(Unmapped(
+            "display_status", disp,
+            "This status is not one the expense-claim export recognises, so the file "
+            "is not limited by it.",
+        ))
+    for key in ("q", "search"):
+        if value := params.get(key):
+            filters.append({"id": "search", "value": value})
+            break
     return filters, unmapped
 
 
@@ -369,9 +549,40 @@ def register_screens():
     register_screen(ScreenBinding(
         key="finance.customers",
         handles=(
-            "search", "is_active",
+            "search", "is_active", "status",
         ),
         label="Finance - Customers",
         dataset_key="finance.customers",
         translate=_translate_customers,
+    ))
+    register_screen(ScreenBinding(
+        key="finance.gl_postings",
+        handles=(
+            "status", "source", "date_from", "date_to", "search", "account",
+        ),
+        label="Finance - General ledger",
+        dataset_key="finance.gl_postings",
+        translate=_translate_gl_postings,
+        # The ledger's own default view is the current period, and postings are
+        # the highest-cardinality table in the platform. 31 days matches the
+        # dataset's advisory span rather than the app-wide 365.
+        default_window_days=31,
+    ))
+    register_screen(ScreenBinding(
+        key="finance.expense_claims",
+        handles=(
+            "display_status", "status", "q", "search",
+        ),
+        label="Finance - Expense claims",
+        dataset_key="finance.expense_claims",
+        translate=_translate_expense_claims,
+    ))
+    register_screen(ScreenBinding(
+        key="finance.receipts",
+        handles=(
+            "search", "status", "method", "customer",
+        ),
+        label="Finance - Receipts",
+        dataset_key="finance.customer_receipts",
+        translate=_translate_receipts,
     ))

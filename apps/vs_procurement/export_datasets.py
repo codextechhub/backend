@@ -225,6 +225,11 @@ def register_datasets():
             FilterDef("request_date", "Requested on", FILTER_DATE_RANGE, required=True,
                       is_primary_date=True),
             FilterDef("status", "Status", FILTER_CHOICE, choices=_DOC_STATUS),
+            FilterDef("search", "Search", FILTER_SEARCH, searches=(
+                ("document_number", "Requisition number"), ("title", "Title"),
+            ), description="Matches any one of these, the way the search box does."),
+            FilterDef("cost_center", "Cost centre", FILTER_TEXT,
+                      source="cost_center__code"),
         ),
     ))
 
@@ -301,6 +306,20 @@ def _translate_vendor_invoices(params):
     return filters, unmapped
 
 
+# Translate the requisition list screen's filters into export filters.
+def _translate_requisitions(params):
+    filters, unmapped = [], []
+    if value := params.get("status"):
+        filters.append({"id": "status", "values": [value]})
+    for key in ("q", "search"):
+        if value := params.get(key):
+            filters.append({"id": "search", "value": value})
+            break
+    if value := params.get("cost_center"):
+        filters.append({"id": "cost_center", "value": value})
+    return filters, unmapped
+
+
 # Register the procurement screens. Called once from AppConfig.ready().
 def register_screens():
     from vs_exports.catalogue import ScreenBinding, register_screen
@@ -331,4 +350,13 @@ def register_screens():
         label="Procurement - Vendor invoices",
         dataset_key="procurement.vendor_invoices",
         translate=_translate_vendor_invoices,
+    ))
+    register_screen(ScreenBinding(
+        key="procurement.requisitions",
+        handles=(
+            "status", "q", "search", "cost_center",
+        ),
+        label="Procurement - Requisitions",
+        dataset_key="procurement.requisitions",
+        translate=_translate_requisitions,
     ))

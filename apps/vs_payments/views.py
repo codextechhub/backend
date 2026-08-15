@@ -35,7 +35,12 @@ from vs_rbac.permissions import (
 )
 
 from . import reconciliation, services, webhooks
-from .constants import VirtualAccountStatus, WebhookStatus
+from .constants import (
+    COLLECTION_GROUPS,
+    PAYOUT_GROUPS,
+    VirtualAccountStatus,
+    WebhookStatus,
+)
 from .exceptions import DuplicateWebhookError
 from .models import (
     CollectionIntent,
@@ -91,13 +96,11 @@ def _entity_obj(entity, model, ref, field):
 # Collections                                                                 #
 # --------------------------------------------------------------------------- #
 
-# Console status groups → underlying CollectionStatus values (the UI filters by group).  # Keep UI filters aligned with storage.
-COLLECTION_GROUPS = {
-    "PENDING": ["PENDING", "PROCESSING"],
-    "PAID": ["SUCCEEDED"],
-    "FAILED": ["FAILED", "ABANDONED"],
-    "REFUNDED": ["REFUNDED"],
-}
+# Console status groups → underlying CollectionStatus values (the UI filters by
+# group). Defined in constants.py: the Export Centre's screen bindings need the
+# same expansion to make a quick export match the table it was started from.
+# Re-exported here so the existing references in this module keep reading the
+# way they always have.
 
 
 # Group endpoint behavior for Collection List Create View.
@@ -348,12 +351,8 @@ class VirtualAccountDetailView(APIView):
 # Payouts                                                                     #
 # --------------------------------------------------------------------------- #
 
-# Console status groups → underlying PayoutStatus values (PAID shows as "Settled").
-PAYOUT_GROUPS = {
-    "PENDING": ["PENDING", "PROCESSING"],
-    "PAID": ["PAID"],
-    "FAILED": ["FAILED", "REVERSED"],
-}
+# Console status groups → underlying PayoutStatus values (PAID shows as
+# "Settled"). Defined in constants.py alongside COLLECTION_GROUPS.
 
 
 # Group endpoint behavior for Payout List Create View.
@@ -676,6 +675,92 @@ class PayoutBatchSubmitForApprovalView(APIView):
 # Settlement reconciliation (read-side report)                                #
 # --------------------------------------------------------------------------- #
 
+#: Which settlement view a ``?view=`` value renders, and the columns it carries.
+_SETTLEMENT_VIEWS = ("matched", "unsettled", "unmatched")
+
+
+# Render one settlement view as a downloadable file, or None when not asked for.
+def _maybe_export_settlement(request, recon, entity):
+    """``?export=csv|xlsx|pdf&view=matched|unsettled|unmatched`` on the settlement report.
+
+    Reuses vs_finance's report renderer so a settlement file looks like every other
+    finance export - this app already depends on vs_finance for money formatting and
+    entity resolution, so no new coupling is introduced.
+    """
+    if not request.query_params.get("export"):
+        return None
+
+    from vs_finance.exports import ReportTable
+    from vs_finance.views import _maybe_export
+
+    view = (request.query_params.get("view") or "matched").lower()
+    if view not in _SETTLEMENT_VIEWS:
+        raise ValidationError({
+            "view": f"Expected one of {', '.join(_SETTLEMENT_VIEWS)}.",
+        })
+
+    window = " to ".join(
+        d.isoformat() for d in (recon.start_date, recon.end_date) if d
+    ) or "All dates"
+    subtitle = f"{recon.entity_code} · {window}"
+    kind = {"COLLECTION": "Collection"}
+
+    if view == "unmatched":
+        table = ReportTable(
+            title="Settlement - Unmatched bank lines",
+            subtitle=subtitle,
+            columns=["Date", "Description", "Reference", "Amount"],
+            rows=[
+                [b.txn_date.isoformat(), b.description, b.reference, b.amount_naira]
+                for b in recon.unmatched_bank_lines
+            ],
+            summary_rows=[["", "TOTAL", "", format_naira(recon.unmatched_bank_total)]],
+        )
+    elif view == "unsettled":
+        rows = [r for r in recon.rows if not r.settled]
+        table = ReportTable(
+            title="Settlement - Awaiting bank",
+            subtitle=subtitle,
+            columns=["Date", "Type", "Provider", "Reference", "Gross", "Status"],
+            rows=[
+                [
+                    r.confirmed_at.isoformat() if r.confirmed_at else "",
+                    kind.get(r.kind, "Payout"), r.provider, r.reference,
+                    r.amount_naira, "Awaiting bank",
+                ]
+                for r in rows
+            ],
+            summary_rows=[["", "TOTAL", "", "", format_naira(recon.unsettled_total), ""]],
+        )
+    else:
+        rows = [r for r in recon.rows if r.settled]
+        table = ReportTable(
+            title="Settlement - Matched",
+            subtitle=subtitle,
+            columns=[
+                "Date", "Type", "Provider", "Reference", "Gross", "Fees",
+                "Net settled", "Settlement ref", "Match basis",
+            ],
+            rows=[
+                [
+                    r.confirmed_at.isoformat() if r.confirmed_at else "",
+                    kind.get(r.kind, "Payout"), r.provider, r.reference,
+                    r.amount_naira,
+                    format_naira(r.fee_amount or 0),
+                    format_naira(abs(r.settled_amount if r.settled_amount is not None else r.amount)),
+                    r.settlement_reference or "",
+                    # The screen says "By amount" for an amount-only match, which is
+                    # the one a reviewer must look at twice. The file says the same.
+                    f"By {r.match_basis}" if r.match_basis else "",
+                ]
+                for r in rows
+            ],
+            summary_rows=[["", "TOTAL", "", "", "", "", format_naira(recon.settled_total), "", ""]],
+        )
+
+    return _maybe_export(request, table, filename=f"settlement_{view}_{entity.code}")
+
+
 # Group endpoint behavior for Settlement Reconciliation View.
 class SettlementReconciliationView(APIView):
     """GET a settlement reconciliation of gateway records vs. imported bank lines.
@@ -751,6 +836,21 @@ class SettlementReconciliationView(APIView):
                 for b in recon.unmatched_bank_lines  # Iterate through the relevant records.
             ],
         }
+
+        # ``?export=csv|xlsx|pdf`` renders one of the three views as a file, the
+        # same way every finance report does. This report is a computed snapshot
+        # rather than a queryset, so it has no Export Centre dataset and cannot
+        # be a quick export - a server-rendered file is the equivalent.
+        #
+        # ``?view=`` follows the screen's tab, because the three tabs are three
+        # different shapes: matched rows carry fees and a settlement reference,
+        # unsettled rows have neither, and unmatched bank lines are not gateway
+        # records at all. One file of all three would be three tables stacked
+        # under one header.
+        export = _maybe_export_settlement(request, recon, entity)
+        if export is not None:
+            return export
+
         return success_response("Settlement reconciliation retrieved.", data=data)
 
 

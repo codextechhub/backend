@@ -66,3 +66,34 @@ def register_datasets():
             FilterDef("document_type", "Document type", FILTER_TEXT),
         ),
     ))
+
+
+# --------------------------------------------------------------------------- #
+# Screen bindings                                                             #
+# --------------------------------------------------------------------------- #
+# Translate the all-instances list screen's filters into export filters.
+#
+# The rare happy case: every filter the screen offers has an exact counterpart on
+# the dataset, so a quick export from this table matches it row for row.
+def _translate_instances(params):
+    filters, unmapped = [], []
+    if value := params.get("status"):
+        filters.append({"id": "status", "value": value})
+    if value := params.get("document_type"):
+        filters.append({"id": "document_type", "value": value})
+    return filters, unmapped
+
+
+# Register the workflow screens. Called once from AppConfig.ready().
+def register_screens():
+    from vs_exports.catalogue import ScreenBinding, register_screen
+
+    register_screen(ScreenBinding(
+        key="workflow.instances",
+        handles=(
+            "status", "document_type",
+        ),
+        label="Workflow - Approval requests",
+        dataset_key="workflow.approvals",
+        translate=_translate_instances,
+    ))

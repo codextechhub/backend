@@ -97,9 +97,25 @@ def _translate_tickets(params):
     """
     from vs_exports.catalogue import Unmapped
 
+    from .constants import ACTIVE_TICKET_STATUSES
+
     filters, unmapped = [], []
-    for param, filter_id in (("status", "status"), ("priority", "priority"),
-                             ("category", "category")):
+    # `state=active` is not a status - it is the unresolved set the workload
+    # counters use (OPEN, ASSIGNED, IN_PROGRESS). Expanding it through the same
+    # constant the list view filters on is what keeps the file equal to the
+    # table; treating "active" as a literal status would match nothing.
+    if state := params.get("state"):
+        if state == "active":
+            filters.append({"id": "status", "values": [str(s) for s in ACTIVE_TICKET_STATUSES]})
+        else:
+            unmapped.append(Unmapped(
+                "state", state,
+                "This view is not one the ticket export recognises, so the file is not "
+                "limited by it.",
+            ))
+    elif value := params.get("status"):
+        filters.append({"id": "status", "values": [value]})
+    for param, filter_id in (("priority", "priority"), ("category", "category")):
         if value := params.get(param):
             filters.append({"id": filter_id, "values": [value]})
 
@@ -132,7 +148,7 @@ def register_screens():
     register_screen(ScreenBinding(
         key="support.tickets",
         handles=(
-            "status", "priority", "category", "created_from", "created_to",
+            "state", "status", "priority", "category", "created_from", "created_to",
             "q", "assignee", "requester", "assigned_to_me", "school",
         ),
         label="Support - Tickets",
