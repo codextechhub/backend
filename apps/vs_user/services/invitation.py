@@ -128,11 +128,11 @@ class InvitationService:
           3. Set the password on the user
           4. Set is_active=True, status=ACTIVE
           5. Consume the invitation (is_used=True)
-          6. Issue JWT tokens so the user is logged in immediately
-          7. Write audit log
+          6. Write audit log
 
-        Returns a dict with access token, refresh token, and user data
-        so the frontend can log the user in without a separate login call.
+        Returns a dict with a single 'message' key confirming the account is
+        active. No tokens are issued here: the frontend must send the user
+        through the normal login flow afterwards.
         """
         # 1. Validate invitation
         invitation = InvitationService.get_valid_invitation(activation_key)
@@ -163,7 +163,7 @@ class InvitationService:
         # 5. Consume the invitation - link is now dead
         invitation.consume()
 
-        # 7. Audit log
+        # 6. Audit log
         log_auth_event(
             actor=user,
             subject=user,
