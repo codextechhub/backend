@@ -270,7 +270,18 @@ class BranchTenantMigrationTests(TransactionTestCase):
 
     def tearDown(self):
         # Always leave the database at the latest state for the rest of the run.
-        self._migrate(self.AFTER)
+        #
+        # Every LEAF, not just this app's: rewinding vs_schools 0003 also
+        # unapplies the migrations that depend on it - vs_workflow 0007, which
+        # adds WorkflowTemplate.is_active, and migrations in vs_finance and
+        # vs_procurement. Migrating only this app forward left their columns
+        # missing for the rest of the run, so the serialized-rollback restore
+        # and every later test that touched those tables failed on a column
+        # that does not exist.
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        executor.loader.build_graph()
         super().tearDown()
 
     def _migrate(self, target):
