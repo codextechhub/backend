@@ -25,6 +25,25 @@ pre-existing changes in the worktree or work completed in an earlier request.
 - Documentation-only changes do not require application tests; validate only
   the documentation or formatting affected, when such validation exists.
 
+## Running the test suite on this machine
+
+This box cannot run two suites at once. A parallel run from another session
+starved a running suite until the OS killed it (exit 144, with the machine down
+to roughly 16 MB free). It is not a code failure and retrying the same way just
+repeats it.
+
+- **Run one app at a time**, not several app labels in one command, and **never
+  `--parallel`**. Sequential runs survive contention; combined ones get killed.
+- **Always pass a unique `DB_NAME`** - for example
+  `cd apps && DB_NAME=cx_myslice ../cx/bin/python manage.py test <one_app> --settings=apps.settings.local --noinput`.
+  Sessions otherwise share `test_cx_db`, and one recreating it mid-run makes
+  another report phantom failures - 204 of them, once.
+- **In a worktree, use the absolute path to the venv.** `./cx` is gitignored, so
+  it does not exist there, and a relative path produces **empty output with a
+  zero exit code** - which reads exactly like a passing run with no summary.
+- Treat an exit code alone as insufficient evidence. Quote the `Ran N tests` line.
+  If it is missing, the run did not finish and must be repeated.
+
 ## Pre-ship review (`ship-check`)
 
 When I say **`ship-check`** (or "run the ship-check") on a change, answer these
