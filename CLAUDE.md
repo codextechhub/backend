@@ -15,7 +15,8 @@ Two rules follow, and they are separate:
 
 1. **Keep the engines domain-neutral.** School concepts - students, guardians,
    classes, terms, sessions - live in the school apps (`apps/schools/`) and reach
-   the engines through the FAL (`core/fal/`). Never leak school vocabulary into
+   the engines through the FAL (which lives under `apps/schools/`, not in `core/`:
+   it is school-specific by design). Never leak school vocabulary into
    `vs_finance` and friends. That leak is precisely what the FAL exists to
    prevent; if you find yourself adding a `student` or `term` field to a generic
    app, stop.
