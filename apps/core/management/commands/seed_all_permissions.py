@@ -19,8 +19,8 @@ Seed order
 2b. seed_school_permissions  - school + academics modules → prebuilt-role defaults
                                + backfill existing school role templates
 3. seed_platform_permissions - platform module (registry, roles, team, staff,
-                               organogram, schools, branches, audit, dashboard)
-                               → both platform roles
+                               organogram, schools, branches, audit, dashboard,
+                               documents) → both platform roles
 4. seed_import_permissions   - all import permissions → super-admin;
                                template management only → platform-admin
 4b. seed_import              - canonical bulk-upload templates, including CX staff
