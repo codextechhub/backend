@@ -769,9 +769,12 @@ class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
         branch = None
         branch_id = request.query_params.get("branch")
         if branch_id:
-            from vs_schools.models import Branch
-            branch = Branch.objects.filter(
-                pk=branch_id, school__tenant=request.tenant).first()
+            # The shared resolver, not a hand-rolled filter: it was the last
+            # site still travelling ``school__tenant``, and it also handed a
+            # non-numeric or oversized ``?branch=`` straight to the database,
+            # which is a 500 where a 404 belongs.
+            from vs_tenants.references import find_branch_in_tenant
+            branch = find_branch_in_tenant(request.tenant, branch_id)
             if branch is None:
                 return Response({"detail": "Branch not found."},
                                 status=status.HTTP_404_NOT_FOUND)

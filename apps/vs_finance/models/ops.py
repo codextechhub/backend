@@ -53,7 +53,7 @@ class BankAccount(TimeStampedModel):
         LedgerEntity, on_delete=models.PROTECT, related_name="bank_accounts",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="finance_bank_accounts", null=True, blank=True,
     )
     gl_account = models.OneToOneField(
@@ -499,7 +499,7 @@ class PettyCashFund(TimeStampedModel):
         LedgerEntity, on_delete=models.PROTECT, related_name="petty_cash_funds",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="finance_petty_cash_funds", null=True, blank=True,
     )
     gl_account = models.OneToOneField(

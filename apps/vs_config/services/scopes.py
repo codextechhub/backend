@@ -1,6 +1,6 @@
 from rest_framework.exceptions import NotFound
 
-from vs_schools.services.references import find_branch_in_tenant
+from vs_tenants.references import find_branch_in_tenant
 
 from ..constants import BRANCH_SCOPE, PLATFORM_SCOPE, SCHOOL_SCOPE
 from ..exceptions import InvalidConfigurationScope

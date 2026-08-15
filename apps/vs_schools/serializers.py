@@ -11,18 +11,16 @@ from .models import (
     ContactInfo,
     SchoolPackageSetup,
     InviteStatus,
-    BranchStatus,
     RESERVED_TENANT_SLUGS,
     School,
-    Branch,
     BranchPrimaryAdmin,
     SchoolPrimaryAdmin,
     SchoolBranding,
-    BranchLifecycle,
     SchoolStatus,
     PackagePlan,
 )
-from .exceptions import BranchAlreadyInState
+from vs_tenants.exceptions import BranchAlreadyInState
+from vs_tenants.models import Branch, BranchLifecycle, BranchStatus
 from vs_audit.models import AuditModuleKey, AuditActionType
 from vs_audit.services import AuditDiffService, emit_audit_event
 from vs_config.models import Capability, CapabilityEntitlement
@@ -332,8 +330,36 @@ class SchoolPrimaryAdminReadSerializer(serializers.Serializer):
 # Branch serializers (read)
 # -----------------------------------------------------------------------------
 
+def branch_school_slug(branch) -> Optional[str]:
+    """The slug of the school that owns ``branch``, or ``None``.
+
+    ``Branch`` no longer holds a school foreign key; it reaches its school
+    through the tenant that owns both, which is the same value and the same
+    wire contract. Two things make this a function rather than a serializer
+    ``source="tenant.school_profile.slug"``:
+
+    * ``Branch`` is a platform model now, so a tenant that is not a school can
+      own one. The dotted source raises on the missing reverse one-to-one, and
+      DRF answers that by dropping the key from the payload rather than by
+      nulling it, silently changing the response shape.
+    * The value costs a query per row unless the queryset carries
+      ``select_related("tenant__school_profile")``. Saying it once here is the
+      reminder; the branch querysets in ``views/branch.py`` do carry it.
+
+    Declared on each serializer rather than through a mixin on purpose: DRF's
+    ``SerializerMetaclass`` only collects declared fields from bases that are
+    themselves serializers, so a field on a plain mixin is silently ignored and
+    ``Meta.fields`` then fails with "not valid for model Branch".
+    """
+    school = getattr(branch.tenant, "school_profile", None)
+    return school.slug if school is not None else None
+
+
 class BranchListSerializer(serializers.ModelSerializer):
-    school_slug = serializers.CharField(source="school.slug", read_only=True)
+    school_slug = serializers.SerializerMethodField()
+
+    def get_school_slug(self, obj) -> Optional[str]:
+        return branch_school_slug(obj)
 
     class Meta:
         model = Branch
@@ -352,8 +378,11 @@ class BranchListSerializer(serializers.ModelSerializer):
 
 
 class BranchDetailSerializer(serializers.ModelSerializer):
-    school_slug = serializers.CharField(source="school.slug", read_only=True)
+    school_slug = serializers.SerializerMethodField()
     primary_admin = BranchPrimaryAdminReadSerializer(read_only=True)
+
+    def get_school_slug(self, obj) -> Optional[str]:
+        return branch_school_slug(obj)
 
     class Meta:
         model = Branch
@@ -424,7 +453,7 @@ class BranchCreateSerializer(serializers.ModelSerializer):
         school = self.context.get("school")
         is_main = attrs.get("is_main", False)
         if school and is_main:
-            if Branch.objects.filter(school=school, is_main=True).exists():
+            if Branch.all_objects.filter(tenant=school.tenant, is_main=True).exists():
                 raise serializers.ValidationError({"is_main": "This school already has a main branch."})
 
         primary_admin_data = attrs.get("primary_admin_data")
@@ -444,8 +473,10 @@ class BranchCreateSerializer(serializers.ModelSerializer):
         school = self.context.get("school")
         
         # Set default lifecycle state if you want it always created as pending
+        # ``tenant`` is supplied explicitly: Branch no longer has a school to
+        # derive it from, so every creation path has to name the owner.
         branch = Branch.objects.create(
-            school=school,
+            tenant=school.tenant,
             **validated_data,
             status=BranchStatus.PENDING,
         )
@@ -547,8 +578,8 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
         branch: Branch = self.instance
         # Friendly guard: if turning this branch into main, ensure no other main exists
         if "is_main" in attrs and attrs["is_main"] is True:
-            exists_other_main = Branch.objects.filter(
-                school=branch.school,
+            exists_other_main = Branch.all_objects.filter(
+                tenant_id=branch.tenant_id,
                 is_main=True,
             ).exclude(code=branch.code).exists()
             if exists_other_main:
@@ -909,7 +940,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             branch_admin_data = branch_data.pop("primary_admin_data", None)
 
             branch = Branch.objects.create(
-                school=school,
+                tenant=school.tenant,
                 status=BranchStatus.PENDING,
                 opened_at=branch_data.pop("opened_at", None) or timezone.now(),
                 **branch_data,

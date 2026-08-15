@@ -544,8 +544,10 @@ def _validate_branches_rules(import_batch) -> list[dict]:
                         else School.objects.filter(code=code_val).first() if code_val
                         else None
                     )
-                from vs_schools.models import Branch as BranchModel
-                if check_school and BranchModel.objects.filter(school=check_school, is_main=True).exists():
+                from vs_tenants.models import Branch as BranchModel
+                if check_school and BranchModel.all_objects.filter(
+                    tenant=check_school.tenant, is_main=True,
+                ).exists():
                     issues.append({
                         "severity": "error",
                         "code": "business_rule",

@@ -179,7 +179,8 @@ from vs_finance.close import (
     reopen_period,
 )
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies, seed_tax_obligations
-from vs_schools.models import Branch, School
+from vs_schools.models import School
+from vs_tenants.models import Branch
 
 
 # Group tests for Money Tests.
@@ -297,7 +298,9 @@ class NumberingTests(TestCase):
     # Prepare or verify the setUp test path.
     def setUp(self):
         self.school = School.objects.create(name="Test Org", slug="test-org")
-        self.branch = Branch.objects.create(school=self.school, name="HQ", _type="Main")
+        self.branch = Branch.objects.create(
+            tenant=self.school.tenant, name="HQ", _type="Main",
+        )
         self.entity = LedgerEntity.objects.create(
             name="Test Org Books", code="LEKKI",
             kind=LedgerEntity.Kind.TENANT, tenant=self.school.tenant,
@@ -7599,10 +7602,12 @@ def _school_finance_requester(school, email, *, exclude_approve=True):
         Permission, TenantRolePermission, TenantRoleTemplate,
         TenantUserRoleAssignment,
     )
-    from vs_schools.models import Branch
+    from vs_tenants.models import Branch
 
-    branch = Branch.all_objects.filter(school=school, is_main=True).first() or (
-        Branch.objects.create(school=school, name="Main", is_main=True, status="ACTIVE")
+    branch = Branch.all_objects.filter(tenant=school.tenant, is_main=True).first() or (
+        Branch.objects.create(
+            tenant=school.tenant, name="Main", is_main=True, status="ACTIVE",
+        )
     )
     user = get_user_model().objects.create_user(
         email=email, password="pw", user_type="STAFF", status="ACTIVE",
@@ -10345,13 +10350,14 @@ class AdjustmentThresholdGateTests(TestCase):
         fall through branch → tenant to find it. If that fall-through broke, a
         branched school would silently lose its gate on large waivers.
         """
-        from vs_schools.models import Branch
+        from vs_tenants.models import Branch
 
         from vs_finance.approvals import approval_required
         from vs_finance.constants import WF_ADJUSTMENT_THRESHOLD
 
         branch = Branch.objects.create(
-            school=self.school, name="Second Campus", is_main=False, status="ACTIVE")
+            tenant=self.school.tenant, name="Second Campus", is_main=False,
+            status="ACTIVE")
 
         small = self._concession(20_000)
         large = self._concession(WF_ADJUSTMENT_THRESHOLD)

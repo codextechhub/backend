@@ -197,7 +197,7 @@ def approval_coverage(tenant, *, branches=None, include_entity_level=True) -> di
     cache = _HolderCache(tenant)
 
     if branches is None:
-        from vs_schools.models import Branch
+        from vs_tenants.models import Branch
 
         # all_objects deliberately: the explicit tenant filter is the boundary, and it
         # must not depend on ambient request-local tenant state.

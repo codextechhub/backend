@@ -7,7 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from vs_schools.models import Branch
+from vs_tenants.models import Branch
 from vs_rbac.managers import TenantAwareManager
 
 

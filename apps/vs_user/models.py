@@ -25,7 +25,7 @@ from django.db import models, transaction
 from django.db.models import Q, Max
 from django.utils import timezone
 
-from vs_schools.models import Branch
+from vs_tenants.models import Branch
 from vs_rbac.managers import TenantAwareManager
 
 

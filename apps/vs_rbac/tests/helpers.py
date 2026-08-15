@@ -8,9 +8,9 @@ preserved for existing callers, but they now return the tenant objects.
 """
 import itertools
 from django.utils.text import slugify
-from vs_schools.models import School, Branch
+from vs_schools.models import School
 from vs_user.models import User
-from vs_tenants.models import Tenant
+from vs_tenants.models import Branch, Tenant
 from vs_rbac.models import (
     Permission,
     PermissionDependency,
@@ -55,10 +55,18 @@ def make_school(slug="test-school", name="Test School", **kwargs):
     return School.objects.create(slug=slug, name=name, **defaults)
 
 
-def make_branch(school, name="Main Branch", is_main=True, **kwargs):
+def make_branch(school_or_tenant, name="Main Branch", is_main=True, **kwargs):
+    """Build a site under a School *or* a bare Tenant.
+
+    Taking a Tenant is the point: these engine tests no longer need a school to
+    exist in order to have a branch, which is the clearest evidence that the
+    decoupling is real. Existing callers pass a School and are unaffected.
+    """
     defaults = {"status": "ACTIVE"}
     defaults.update(kwargs)
-    return Branch.objects.create(school=school, name=name, is_main=is_main, **defaults)
+    return Branch.objects.create(
+        tenant=_as_tenant(school_or_tenant), name=name, is_main=is_main, **defaults
+    )
 
 
 def make_vision_user(email="vision@test.com", password="testpass123",

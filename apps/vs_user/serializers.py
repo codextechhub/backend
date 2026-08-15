@@ -17,8 +17,7 @@ from rest_framework_simplejwt.serializers import (
 
 from vs_rbac.models import TenantRoleTemplate
 from vs_rbac.fls import FieldSecurityMixin
-from vs_schools.models import School
-from vs_schools.services.references import resolve_branch_reference
+from vs_tenants.references import resolve_branch_reference
 from vs_tenants.models import Tenant
 from .models import (
     User,
@@ -71,12 +70,6 @@ def school_public_info(school, request=None) -> dict | None:
 # =============================================================================
 # Helpers -- UNCHANGED FROM ORIGINAL
 # =============================================================================
-
-class SchoolSlimSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = School
-        fields = ('id', 'name', 'slug')
-
 
 class TenantSlimSerializer(serializers.Serializer):
     """Minimal tenant identity for session/security-log payloads."""

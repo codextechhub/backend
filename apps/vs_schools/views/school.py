@@ -8,7 +8,8 @@ from rest_framework.permissions import IsAuthenticated
 from core.mixins import RetrieveModelMixin, CreateModelMixin
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
-from ..models import Branch, School, SchoolStatus
+from ..models import School, SchoolStatus
+from vs_tenants.models import Branch
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 from ..serializers import (
     SchoolCreateSerializer,
@@ -38,7 +39,9 @@ class SchoolListView(ActorContextMixin, generics.ListAPIView):
     queryset = (
         School.objects.all()
         .select_related("branding",)
-        .prefetch_related("branches")
+        # "tenant__branches", not "branches": School.branches is now a property
+        # over the tenant's sites, so the prefetch has to name the real path.
+        .prefetch_related("tenant__branches")
     )
 
     def get_queryset(self):
@@ -63,9 +66,9 @@ class SchoolListView(ActorContextMixin, generics.ListAPIView):
                 Q(name__icontains=q)
                 | Q(ownership_type__iexact=q)
                 | Q(status__iexact=q)
-                | Q(branches__state__icontains=q)
-                | Q(branches__country__icontains=q)
-                | Q(branches__name__icontains=q)
+                | Q(tenant__branches__state__icontains=q)
+                | Q(tenant__branches__country__icontains=q)
+                | Q(tenant__branches__name__icontains=q)
             ).distinct()
 
         ordering = (self.request.query_params.get("ordering") or "").strip()
@@ -131,7 +134,7 @@ class SchoolDetailView(ActorContextMixin, generics.RetrieveAPIView):
         )
         .prefetch_related(
             Prefetch(
-                "branches",
+                "tenant__branches",
                 queryset=Branch.objects.select_related(
                     "primary_admin", "primary_admin__contact"
                 ),
@@ -182,7 +185,7 @@ class SchoolUpdateView(ActorContextMixin, generics.UpdateAPIView):
         )
         .prefetch_related(
             Prefetch(
-                "branches",
+                "tenant__branches",
                 queryset=Branch.objects.select_related(
                     "primary_admin", "primary_admin__contact"
                 ),

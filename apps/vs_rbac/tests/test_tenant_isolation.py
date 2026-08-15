@@ -15,7 +15,7 @@ to tenant-shaped ownership) were dropped with those fields.
 from django.test import TestCase
 
 from vs_tenants.context import set_current_tenant, clear_current_tenant
-from vs_schools.models import Branch
+from vs_tenants.models import Branch
 
 from .helpers import make_school, make_branch
 

@@ -1,11 +1,14 @@
 """The shared branch-reference resolver is a tenant boundary, so test it directly.
 
-``vs_schools.services.references.find_branch_in_tenant`` is the single place
-``vs_config``, ``vs_procurement`` and ``vs_user`` resolve a caller-supplied
-branch id. Phase C changed the filter it applies from ``school__tenant`` to the
-branch's own ``tenant`` column. Both express the same set of rows, but only one
-of them is still a filter if it is written wrongly, so the boundary is asserted
-here rather than only through the three callers.
+``vs_tenants.references.find_branch_in_tenant`` is the single place
+``vs_config``, ``vs_procurement``, ``vs_user`` and ``vs_workflow`` resolve a
+caller-supplied branch id. Phase C changed the filter it applies from
+``school__tenant`` to the branch's own ``tenant`` column; phase D moved the
+module here, out of the schools app, because four platform apps importing a
+product app to resolve a site was the coupling this work exists to remove.
+Both filters express the same set of rows, but only one of them is still a
+filter if it is written wrongly, so the boundary is asserted here rather than
+only through the callers.
 
 Two shapes of tenant on purpose, per the multi-tenancy rule: one school with
 several branches and one with none at all.
@@ -13,8 +16,9 @@ several branches and one with none at all.
 from django.test import TestCase
 from rest_framework.exceptions import ValidationError
 
-from vs_schools.models import Branch, School
-from vs_schools.services.references import (
+from vs_schools.models import School
+from vs_tenants.models import Branch
+from vs_tenants.references import (
     BRANCH_NOT_FOUND,
     find_branch_in_tenant,
     resolve_branch_reference,
@@ -25,13 +29,13 @@ class FindBranchInTenantTests(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.branched = School.objects.create(name="Branched", slug="ref-branched")
-        cls.hq = Branch.objects.create(school=cls.branched, name="HQ", is_main=True)
-        cls.lekki = Branch.objects.create(school=cls.branched, name="Lekki")
+        cls.hq = Branch.objects.create(tenant=cls.branched.tenant, name="HQ", is_main=True)
+        cls.lekki = Branch.objects.create(tenant=cls.branched.tenant, name="Lekki")
 
         # A second tenant that owns a branch of its own: the row every check
         # below must refuse to hand to the first tenant.
         cls.rival = School.objects.create(name="Rival", slug="ref-rival")
-        cls.rival_branch = Branch.objects.create(school=cls.rival, name="Rival Main", is_main=True)
+        cls.rival_branch = Branch.objects.create(tenant=cls.rival.tenant, name="Rival Main", is_main=True)
 
         # A tenant with no branches at all - the dimension must simply recede.
         cls.branchless = School.objects.create(name="Branchless", slug="ref-branchless")
@@ -81,9 +85,9 @@ class ResolveBranchReferenceTests(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.school = School.objects.create(name="Resolve", slug="ref-resolve")
-        cls.branch = Branch.objects.create(school=cls.school, name="Main", is_main=True)
+        cls.branch = Branch.objects.create(tenant=cls.school.tenant, name="Main", is_main=True)
         cls.rival = School.objects.create(name="Resolve Rival", slug="ref-resolve-rival")
-        cls.rival_branch = Branch.objects.create(school=cls.rival, name="Main", is_main=True)
+        cls.rival_branch = Branch.objects.create(tenant=cls.rival.tenant, name="Main", is_main=True)
 
     def test_a_foreign_branch_raises_the_same_error_an_unknown_one_does(self):
         with self.assertRaises(ValidationError) as foreign:

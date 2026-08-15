@@ -116,13 +116,15 @@ class TenantAuthorityTests(TestCase):
 
 
 class ReconcileTenantsInvariantTests(TestCase):
-    """``reconcile_tenants`` asserts the equivalence Phase C now depends on.
+    """``reconcile_tenants`` asserts the invariants that survived phase D.
 
-    Two checks matter here. The branch check still compares ``Branch.tenant``
-    against ``school.tenant`` deliberately: it is the proof that the two paths
-    agree, and rewriting it to compare ``tenant`` with itself would make it
-    vacuous. The role-template check was rewritten to ``branch__tenant`` and is
-    a real cross-tenant assertion, so it must still fire.
+    The check that compared ``Branch.tenant`` against ``school.tenant`` went
+    with the ``school`` column: with a single statement of ownership there is
+    no second path left to disagree with it, and comparing ``tenant`` with
+    itself would have been vacuous. What remains for branches is the null
+    check. The role-template check reads ``branch__tenant`` and is a real
+    cross-tenant assertion, so it must still fire - that is what the failing
+    case below proves.
     """
 
     def _run(self):

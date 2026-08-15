@@ -8,7 +8,8 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from core.mixins import RetrieveModelMixin, CreateModelMixin
 from core.response import success_response, error_response
 
-from ..models import Branch, BranchStatus, School
+from ..models import School
+from vs_tenants.models import Branch, BranchStatus
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 from ..serializers import (
     BranchCreateSerializer,
@@ -32,13 +33,13 @@ class BranchListView(ActorContextMixin, generics.ListAPIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.branches.view"
     serializer_class = BranchListSerializer
-    queryset = Branch.objects.all().select_related("school")
+    queryset = Branch.objects.all().select_related("tenant__school_profile")
 
     def get_queryset(self):
         qs = super().get_queryset()
 
         # Filter by school (tenant)
-        qs = qs.filter(school__slug=self.kwargs.get("slug"))
+        qs = qs.filter(tenant__school_profile__slug=self.kwargs.get("slug"))
 
         status_param = (self.request.query_params.get("status") or "").strip()
         if status_param:
@@ -77,8 +78,8 @@ class BranchListView(ActorContextMixin, generics.ListAPIView):
                 | Q(state__icontains=q)
                 | Q(country__icontains=q)
                 | Q(email__icontains=q)
-                | Q(school__name__icontains=q)
-                | Q(school__slug__icontains=q)
+                | Q(tenant__school_profile__name__icontains=q)
+                | Q(tenant__school_profile__slug__icontains=q)
             )
 
         ordering = (self.request.query_params.get("ordering") or "").strip()
@@ -117,7 +118,7 @@ class BranchStatsView(generics.GenericAPIView):
         qs = Branch.objects.all()
 
         i_slug = self.kwargs.get("slug")
-        qs = qs.filter(school__slug=i_slug)
+        qs = qs.filter(tenant__school_profile__slug=i_slug)
 
         result = qs.aggregate(
             all=Count("id"),
@@ -158,7 +159,7 @@ class BranchDetailView(RetrieveModelMixin, ActorContextMixin, generics.RetrieveA
     serializer_class = BranchDetailSerializer
 
     queryset = Branch.objects.all().select_related(
-        "school", "primary_admin", "primary_admin__contact"
+        "tenant__school_profile", "primary_admin", "primary_admin__contact"
     )
     lookup_field = "code"
 
@@ -166,7 +167,7 @@ class BranchDetailView(RetrieveModelMixin, ActorContextMixin, generics.RetrieveA
         qs = super().get_queryset()
         slug = self.kwargs.get("slug")
         if slug:
-            qs = qs.filter(school__slug=slug)
+            qs = qs.filter(tenant__school_profile__slug=slug)
         return qs
 
 
@@ -181,7 +182,7 @@ class BranchUpdateView(ActorContextMixin, generics.UpdateAPIView):
     serializer_class = BranchUpdateSerializer
 
     queryset = Branch.objects.all().select_related(
-        "school", "primary_admin", "primary_admin__contact"
+        "tenant__school_profile", "primary_admin", "primary_admin__contact"
     )
     lookup_field = "code"
 
@@ -189,7 +190,7 @@ class BranchUpdateView(ActorContextMixin, generics.UpdateAPIView):
         qs = super().get_queryset()
         slug = self.kwargs.get("slug")
         if slug:
-            qs = qs.filter(school__slug=slug)
+            qs = qs.filter(tenant__school_profile__slug=slug)
         return qs
 
     def update(self, request, *args, **kwargs):

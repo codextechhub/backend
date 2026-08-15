@@ -242,7 +242,7 @@ class Vendor(_AutoMasterCodeMixin, TimeStampedModel):
         "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="vendors",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="vendors", null=True, blank=True,
     )
     code = models.CharField(max_length=32, help_text="Vendor code, unique within the entity.")
@@ -490,7 +490,7 @@ class StockLocation(TimeStampedModel):
         related_name="stock_locations",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="stock_locations", null=True, blank=True,
         help_text="Campus this store belongs to. Blank for an entity-wide store.",
     )

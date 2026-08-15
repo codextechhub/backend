@@ -6,7 +6,7 @@ from django.db import models
 from django.utils import timezone
 
 from vs_rbac.managers import TenantAwareManager
-from vs_schools.models import Branch
+from vs_tenants.models import Branch
 from vs_user.models import TimeStampedModel
 
 from .constants import (

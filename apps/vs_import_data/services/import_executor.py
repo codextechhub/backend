@@ -362,8 +362,9 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
         branch_admin_role       optional – defaults to "Head Teacher"
     """
     from types import SimpleNamespace
-    from vs_schools.models import Branch, School
+    from vs_schools.models import School
     from vs_schools.serializers import BranchCreateSerializer
+    from vs_tenants.models import Branch
 
     def _s(key: str) -> str:
         return (payload.get(key) or "").strip()
@@ -390,7 +391,7 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
 
     # --- Duplicate check ---
     branch_name = _s("name")
-    if branch_name and Branch.objects.filter(school=school, name=branch_name).exists():
+    if branch_name and Branch.all_objects.filter(tenant=school.tenant, name=branch_name).exists():
         return ImportExecutionResult(
             action=ImportRowActionChoices.SKIP,
             instance=None,

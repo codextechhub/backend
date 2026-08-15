@@ -4,7 +4,7 @@ from rest_framework import generics
 
 from core.response import success_response, error_response
 
-from ..models import Branch
+from vs_tenants.models import Branch
 from vs_rbac.permissions import (
     HasRBACPermission,
     IsAuthenticatedAndActive,
@@ -32,7 +32,7 @@ class BranchTransitionView(ActorContextMixin, generics.GenericAPIView):
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff & HasRBACPermission]
     rbac_permission = "platform.branches.manage"
     serializer_class = BranchStateTransitionSerializer
-    queryset = Branch.objects.all().select_related("school")
+    queryset = Branch.objects.all().select_related("tenant__school_profile")
     lookup_field = "code"
 
     def get_queryset(self):
@@ -41,12 +41,17 @@ class BranchTransitionView(ActorContextMixin, generics.GenericAPIView):
         qs = super().get_queryset()
         slug = self.kwargs.get("slug")
         if slug:
-            qs = qs.filter(school__slug=slug)
+            qs = qs.filter(tenant__school_profile__slug=slug)
         return qs
 
     def post(self, request, *args, **kwargs):
         branch = self.get_object()
-        serializer = self.get_serializer(data=request.data, context={**self.get_serializer_context(), "branch": branch, "school": branch.school})
+        # No "school" in the context: the transition serializer never read it,
+        # and reaching one now would be a query for nothing.
+        serializer = self.get_serializer(
+            data=request.data,
+            context={**self.get_serializer_context(), "branch": branch},
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
         branch.refresh_from_db()

@@ -30,7 +30,7 @@ BRANCH_NOT_FOUND = "No such branch in this tenant."
 
 
 def find_branch_in_tenant(tenant, ref):
-    """Return the :class:`~vs_schools.models.Branch` ``ref`` names in ``tenant``.
+    """Return the :class:`~vs_tenants.models.Branch` ``ref`` names in ``tenant``.
 
     Returns ``None`` for a blank reference, a reference that is not a plausible
     integer id, a branch that does not exist, and a branch owned by another
@@ -40,7 +40,7 @@ def find_branch_in_tenant(tenant, ref):
     if tenant is None or ref in (None, ""):
         return None
 
-    from vs_schools.models import Branch
+    from vs_tenants.models import Branch
 
     raw = str(ref).strip()
     if not raw.isdigit() or int(raw) > _MAX_BIGINT:
@@ -48,8 +48,8 @@ def find_branch_in_tenant(tenant, ref):
 
     # all_objects deliberately: the explicit tenant filter is the security
     # boundary, and it must not depend on ambient request-local tenant state.
-    # ``tenant``, not ``school__tenant``: the branch owns the tenant itself, so
-    # the boundary is one column on the row rather than a join through School.
+    # The branch owns the tenant itself, so the boundary is one column on the
+    # row; there is no school to travel through any more.
     return Branch.all_objects.filter(tenant=tenant, pk=int(raw)).first()
 
 

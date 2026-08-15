@@ -1343,9 +1343,11 @@ class PayoutBatchApprovalTests(TestCase):
         # Requester: a school user holding every payments/finance key at this
         # school (the entity is school-owned, so only its tenant may address it;
         # approve verbs excluded so SoD scenarios stay meaningful).
-        from vs_schools.models import Branch
+        from vs_tenants.models import Branch
         from vs_rbac.models import Permission, TenantRolePermission
-        branch = Branch.objects.create(school=self.school, name="Main", is_main=True, status="ACTIVE")
+        branch = Branch.objects.create(
+            tenant=self.school.tenant, name="Main", is_main=True, status="ACTIVE",
+        )
         self.requester = self.User.objects.create_user(
             email="req-pba@test.com", password="pw", user_type="STAFF", status="ACTIVE",
             first_name="Req", last_name="Ester", branch=branch,

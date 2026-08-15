@@ -9,10 +9,10 @@ is scoped without any per-call machinery.
 
 Usage in models:
 
-    class Student(models.Model):
-        school = models.ForeignKey(School, ...)
+    class Ticket(models.Model):
+        tenant = models.ForeignKey(Tenant, ...)
 
-        objects = TenantAwareManager()      # scoped by ambient school context
+        objects = TenantAwareManager()      # scoped by ambient tenant context
         all_objects = models.Manager()      # unscoped escape hatch
 
         class Meta:
@@ -22,19 +22,26 @@ Usage in models:
 Options:
 
     TenantAwareManager(include_global=True)
-        For models where a NULL school means "platform-wide / applies to
-        every school" (e.g. global workflow templates, global compliance
-        rules): a school-scoped request sees its own rows PLUS the global
-        ones. Without the flag, NULL-school rows are platform-only and
-        hidden from school users.
+        For models where a NULL tenant means "platform-wide / applies to
+        every tenant" (e.g. global workflow templates, global compliance
+        rules): a tenant-scoped request sees its own rows PLUS the global
+        ones. Without the flag, NULL-tenant rows are platform-only and
+        hidden from tenant users.
 
     TenantAwareManager(tenant_field="institution")
-        For models whose tenant FK isn't named ``school``.
+        For models whose tenant FK isn't named ``tenant``.
 
-Vision (CX) staff requests never set a school context, so their queries are
+Vision (CX) staff requests never set a tenant context, so their queries are
 never filtered. Celery tasks have no thread-local context either - they see
 everything and must scope explicitly, which is the correct default for
 platform jobs.
+
+There is deliberately no ``school`` ownership path here. ``Branch`` was the
+last model that reached its tenant through one, and it now carries its own
+column; a school-shaped fallback in a domain-neutral engine app is the exact
+leak the FAL exists to prevent, and
+``vs_rbac.tests.test_branch_tenant_boundary.TenantLookupInvariantTests``
+fails if a model ever regrows one.
 """
 from __future__ import annotations
 
@@ -52,22 +59,20 @@ class TenantAwareQuerySet(models.QuerySet):
         field_names = {f.name for f in self.model._meta.get_fields()}
         if "tenant" in field_names:
             return self.filter(tenant=tenant)
-        if "school" in field_names:
-            return self.filter(school__tenant=tenant)
         if "branch" in field_names:
-            # Branch carries its own tenant, so this is one join, not two. The
-            # two are the same value by construction: Branch.save() derives
-            # tenant from school and reconcile_tenants asserts they agree.
+            # Branch carries its own tenant, so this is one join, not two.
             return self.filter(branch__tenant=tenant)
         raise ValueError(f"{self.model._meta.label} has no tenant ownership path.")
 
-    # Apply the requested school scope across direct-school and branch-owned models.
+    # Apply the requested school's tenant scope. Kept for callers that hold a
+    # School; it resolves to the tenant immediately and never looks at a
+    # ``school`` column.
     def for_school(self, school):
         """Scope this queryset to *school*.
 
-        Detects the tenant link automatically: a direct ``tenant`` FK, a
-        ``school`` FK, or a ``branch`` FK (branches carry their own tenant).
-        Models with none of them are returned unfiltered (platform-level data).
+        Detects the tenant link automatically: a direct ``tenant`` FK or a
+        ``branch`` FK (branches carry their own tenant). Models with neither
+        raise, rather than silently returning every row.
         """
         if school is None:
             raise ValueError("An explicit school is required.")
@@ -90,8 +95,6 @@ class TenantAwareManager(models.Manager.from_queryset(TenantAwareQuerySet)):
         # Direct tenant ownership wins - every converted model carries it.
         if "tenant" in field_names:
             return "tenant"
-        if "school" in field_names:
-            return "school"
         if "branch" in field_names:
             return "branch"
         return None
@@ -105,11 +108,9 @@ class TenantAwareManager(models.Manager.from_queryset(TenantAwareQuerySet)):
         lookup = self._tenant_lookup()
         if lookup is None:
             return qs
-        if lookup == "school":
-            lookup = "school__tenant"
-        elif lookup == "branch":
+        if lookup == "branch":
             # ``branch__tenant``, not ``branch__school__tenant``: Branch owns a
-            # tenant of its own since the Phase B backfill.
+            # tenant of its own, and no longer has a school to travel through.
             lookup = "branch__tenant"
         condition = Q(**{lookup: tenant})
         if self.include_global:

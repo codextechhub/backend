@@ -21,7 +21,8 @@ from vs_rbac.tests.helpers import (
     make_role,
     make_role_permission,
 )
-from vs_schools.models import Branch, School, SchoolStatus
+from vs_schools.models import School, SchoolStatus
+from vs_tenants.models import Branch
 from vs_user.models import User
 
 from .constants import CommentVisibility, TicketPermission, TicketStatus
@@ -41,7 +42,9 @@ def _school(slug, name):
 
 
 def _branch(school, name):
-    return Branch.objects.create(school=school, name=name, _type="Primary", is_main=True)
+    return Branch.objects.create(
+        tenant=school.tenant, name=name, _type="Primary", is_main=True,
+    )
 
 
 def _user(email, first, last, *, user_type, school=None, branch=None):

@@ -80,7 +80,7 @@ class WorkflowTemplate(models.Model):
         help_text="Null only for global templates.",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         null=True, blank=True, related_name="workflow_templates",
     )
     document_type = models.CharField(max_length=100, db_index=True)
@@ -148,7 +148,7 @@ class WorkflowApproverGroup(models.Model):
         related_name="workflow_approver_groups",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         null=True, blank=True, related_name="workflow_approver_groups",
     )
     code = models.SlugField(max_length=100)
@@ -545,7 +545,7 @@ class WorkflowInstance(models.Model):
         "vs_tenants.Tenant", on_delete=models.PROTECT,
         related_name="workflow_instances",
     )
-    branch = models.ForeignKey("vs_schools.Branch", on_delete=models.PROTECT,
+    branch = models.ForeignKey("vs_tenants.Branch", on_delete=models.PROTECT,
                                related_name="workflow_instances", null=True, blank=True)
     template = models.ForeignKey(WorkflowTemplate, on_delete=models.PROTECT, related_name="instances")
     # Generic FK to the business document (E1).

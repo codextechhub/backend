@@ -16,7 +16,7 @@ from django.db import transaction
 from django.utils.text import slugify
 from rest_framework import serializers
 
-from vs_schools.models import Branch
+from vs_tenants.models import Branch
 
 from ..models import (
     Permission,

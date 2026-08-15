@@ -166,7 +166,7 @@ class ScopedModel(models.Model):
         related_name="+",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.CASCADE, null=True, blank=True,
+        "vs_tenants.Branch", on_delete=models.CASCADE, null=True, blank=True,
         related_name="+",
     )
     scope_key = models.CharField(max_length=80, editable=False, db_index=True)

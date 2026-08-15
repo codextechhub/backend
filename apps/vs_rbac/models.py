@@ -9,7 +9,7 @@ from django.db.models import Q
 from django.utils import timezone
 from django.utils.text import slugify
 
-from vs_schools.models import Branch, School
+from vs_tenants.models import Branch
 
 from .managers import TenantAwareManager
 

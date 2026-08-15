@@ -141,7 +141,7 @@ def _resolve_branch_reference(entity, ref, field="branch"):
     only says which tenant a procurement caller is entitled to, so every app that
     accepts a branch answers an unknown reference the same way.
     """
-    from vs_schools.services.references import resolve_branch_reference
+    from vs_tenants.references import resolve_branch_reference
 
     return resolve_branch_reference(entity.tenant, ref, field)
 

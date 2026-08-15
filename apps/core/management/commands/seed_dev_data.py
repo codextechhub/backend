@@ -310,9 +310,10 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------ #
     def _schools(self):
         from vs_schools.models import (
-            Branch, ContactInfo, PackagePlan, School, SchoolBranding,
+            ContactInfo, PackagePlan, School, SchoolBranding,
             SchoolPackageSetup, SchoolPrimaryAdmin, SchoolStatus,
         )
+        from vs_tenants.models import Branch
 
         self.stdout.write(self.style.MIGRATE_HEADING("Schools and branches..."))
         plan = PackagePlan.objects.order_by("-max_students").first()
@@ -331,10 +332,10 @@ class Command(BaseCommand):
                 ),
             )
             for bname, btag, is_main in spec["branches"]:
-                # Branch.code is an auto-allocated integer (per school) - key
+                # Branch.code is an auto-allocated integer (per tenant) - key
                 # on the name and let save() assign the code.
                 Branch.all_objects.get_or_create(
-                    school=school, name=bname,
+                    tenant=school.tenant, name=bname,
                     defaults=dict(
                         is_main=is_main, status="ACTIVE",
                         country="Nigeria", state="Lagos",
@@ -379,7 +380,7 @@ class Command(BaseCommand):
     # 3. School users                                                    #
     # ------------------------------------------------------------------ #
     def _school_users(self, schools):
-        from vs_schools.models import Branch
+        from vs_tenants.models import Branch
         from vs_user.models import User
 
         self.stdout.write(self.style.MIGRATE_HEADING("School users..."))
@@ -388,7 +389,7 @@ class Command(BaseCommand):
         result = {}
         total = 0
         for school in schools:
-            branches = list(Branch.all_objects.filter(school=school).order_by("-is_main"))
+            branches = list(Branch.all_objects.filter(tenant=school.tenant).order_by("-is_main"))
             main = branches[0]
             domain = f"{school.slug}.example.com"
 

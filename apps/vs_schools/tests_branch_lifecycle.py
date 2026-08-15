@@ -19,8 +19,8 @@ from vs_rbac.tests.helpers import (
     make_vision_user,
 )
 
-from .exceptions import InvalidBranchTransition
-from .models import Branch, BranchLifecycle, BranchStatus
+from vs_tenants.exceptions import InvalidBranchTransition
+from vs_tenants.models import Branch, BranchLifecycle, BranchStatus
 
 
 class BranchTransitionModelTests(TestCase):
@@ -228,7 +228,7 @@ class BranchTransitionEndpointTests(TestCase):
 
         self.school_a = make_school(slug="branch-tx-a", name="Tx School A")
         self.school_b = make_school(slug="branch-tx-b", name="Tx School B")
-        # Codes are allocated per school, so both of these are branch 1.
+        # Codes are allocated per tenant, so both of these are branch 1.
         self.branch_a = make_branch(
             self.school_a, name="A Main", status=BranchStatus.PENDING
         )

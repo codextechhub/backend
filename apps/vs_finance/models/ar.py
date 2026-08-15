@@ -34,8 +34,10 @@ class Customer(TimeStampedModel):
     Generic on purpose: a customer may be a parent/student in a school tenant, a
     client in another, or an internal counterparty in Codex's own books. The optional
     ``source_type``/``source_id`` pair is a *loose* reference to the originating
-    domain record (e.g. ``"vs_schools.Student"`` + the student's pk) - stored as plain
-    strings, never an FK, so the ledger stays decoupled from any product app.
+    domain record (e.g. ``"<product_app>.<Model>"`` + that record's pk) - stored as
+    plain strings, never an FK, so the ledger stays decoupled from any product app.
+    The example is deliberately unnamed: this app must not know which products
+    exist, and naming one in a docstring is how that knowledge creeps back in.
 
     ``receivable_account`` is the AR control account this customer's balance rolls up
     into; the customer itself is the sub-ledger detail behind that control.
@@ -48,7 +50,7 @@ class Customer(TimeStampedModel):
         LedgerEntity, on_delete=models.PROTECT, related_name="customers",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="finance_customers", null=True, blank=True,
     )
     code = models.CharField(max_length=32, help_text="Customer code, unique within the entity.")
@@ -64,7 +66,7 @@ class Customer(TimeStampedModel):
     opening_balance = MoneyField(help_text="Opening AR balance in kobo (informational; not auto-posted).")
     source_type = models.CharField(
         max_length=64, blank=True, default="",
-        help_text="Loose reference to the originating domain record's model, e.g. 'vs_schools.Student'.",
+        help_text="Loose reference to the originating domain record's model, as 'app_label.Model'.",
     )
     source_id = models.CharField(max_length=64, blank=True, default="")
     is_active = models.BooleanField(default=True)
@@ -375,7 +377,7 @@ class FeeStructure(TimeStampedModel):
         LedgerEntity, on_delete=models.PROTECT, related_name="fee_structures",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="finance_fee_structures", null=True, blank=True,
     )
     code = models.CharField(max_length=32, help_text="Unique within the entity.")

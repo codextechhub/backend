@@ -226,7 +226,7 @@ class DocumentSequence(models.Model):
         related_name="doc_sequences",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="finance_doc_sequences", null=True, blank=True,
     )
     doc_type = models.CharField(max_length=8, choices=DocType.choices)
@@ -277,7 +277,7 @@ class FinanceDocument(TimeStampedModel):
         related_name="%(app_label)s_%(class)s_set",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="%(app_label)s_%(class)s_set", null=True, blank=True,
     )
     document_number = models.CharField(max_length=48, blank=True, db_index=True)
