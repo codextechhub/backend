@@ -657,20 +657,44 @@ def _build_default_templates() -> dict:
                 "{{ customer_name }} by {{ due_date }}."
             ),
         },
+        # Neutral wording on purpose. The same event now carries every invoice the
+        # finance console sends - a school billing a guardian, and CodeX billing a
+        # school - so it addresses the customer rather than assuming a parent. It
+        # also names the attached PDF, which vs_finance.document_email attaches.
         ("billing.invoice_issued", C.EMAIL): {
-            "subject": "New fee invoice - {{ customer_name }}",
+            "subject": "Invoice {{ invoice_number }} from {{ issuer_name }}",
             "body": (
-                "Dear Parent/Guardian,\n\n"
-                "A new invoice has been issued for your child's school fees.\n\n"
-                "Bill to: {{ customer_name }}\n"
+                "Hello {{ customer_name }},\n\n"
+                "An invoice has been issued to your account. A PDF copy is attached.\n\n"
                 "Invoice number: {{ invoice_number }}\n"
-                "Amount due: ₦{{ invoice_amount }}\n"
+                "Amount: ₦{{ invoice_amount }}\n"
                 "Due date: {{ due_date }}\n\n"
+                "{{ note }}\n\n"
                 "Pay online: {{ payment_link }}\n\n"
-                "{{ school_name }} via CodeX Vision"
+                "{{ issuer_name }} via CodeX Vision"
             ),
             "cta_label": "Pay online",
             "cta_url": "{{ payment_link }}",
+        },
+
+        # ── billing.statement_issued ───────────────────────────────────────
+        # Always requested by a person, so the body says who sent it and over what
+        # period; the figures a customer will check are in the attached PDF.
+        ("billing.statement_issued", C.EMAIL): {
+            "subject": "Statement of account from {{ issuer_name }}",
+            "body": (
+                "Hello {{ customer_name }},\n\n"
+                "Your statement of account is attached as a PDF.\n\n"
+                "Period: {{ period_start }} to {{ period_end }}\n"
+                "Opening balance: ₦{{ opening_balance }}\n"
+                "Charges in period: ₦{{ total_charges }}\n"
+                "Payments and credits in period: ₦{{ total_payments }}\n"
+                "Closing balance: ₦{{ closing_balance }}\n\n"
+                "{{ note }}\n\n"
+                "If anything on this statement looks wrong, please contact the finance "
+                "team before making payment.\n\n"
+                "{{ issuer_name }} via CodeX Vision"
+            ),
         },
 
         # ── billing.debit_note_issued ──────────────────────────────────────
@@ -746,16 +770,16 @@ def _build_default_templates() -> dict:
             ),
         },
         ("billing.payment_received", C.EMAIL): {
-            "subject": "Payment confirmed - {{ customer_name }}",
+            "subject": "Receipt {{ receipt_number }} from {{ issuer_name }}",
             "body": (
-                "Dear Parent/Guardian,\n\n"
-                "We have received your payment. Thank you.\n\n"
-                "Bill to: {{ customer_name }}\n"
-                "Invoice number: {{ invoice_number }}\n"
+                "Hello {{ customer_name }},\n\n"
+                "We have received your payment. Thank you. A PDF receipt is attached.\n\n"
+                "Receipt number: {{ receipt_number }}\n"
                 "Amount paid: ₦{{ amount_paid }}\n"
                 "Payment date: {{ payment_date }}\n"
-                "Receipt number: {{ receipt_number }}\n\n"
-                "{{ school_name }} via CodeX Vision"
+                "Applied to invoice: {{ invoice_number }}\n\n"
+                "{{ note }}\n\n"
+                "{{ issuer_name }} via CodeX Vision"
             ),
         },
 

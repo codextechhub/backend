@@ -43,13 +43,21 @@ FINANCE_RESOURCES = [
                                                 ("submit", "SENSITIVE"), ("approve", "CRITICAL"),
                                                 ("approve_high_value", "CRITICAL")]),
     ("directentry",  "direct entries",         [("view", "NORMAL"), ("post", "CRITICAL")]),
-    ("customer",     "customers / payers",     [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE")]),
+    # email_statement sends a customer their own account position, so it is a
+    # disclosure of financial data to an outside party, not a read.
+    ("customer",     "customers / payers",     [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"),
+                                                ("email_statement", "SENSITIVE")]),
     ("feestructure", "fee structures",         [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("edit", "SENSITIVE"), ("generate", "CRITICAL")]),
+    # email on invoice/payment sends the document to the customer. Separate from
+    # .view because reading a document internally and putting it in a customer's
+    # inbox are different acts with different blast radius.
     ("invoice",      "customer invoices",      [("view", "NORMAL"), ("create", "SENSITIVE"),
-                                                ("writeoff", "SENSITIVE"), ("reverse", "CRITICAL")]),
+                                                ("writeoff", "SENSITIVE"), ("reverse", "CRITICAL"),
+                                                ("email", "SENSITIVE")]),
     ("payment",      "customer receipts",      [("view", "NORMAL"), ("create", "CRITICAL"),
-                                                ("allocate", "SENSITIVE"), ("reverse", "CRITICAL")]),
+                                                ("allocate", "SENSITIVE"), ("reverse", "CRITICAL"),
+                                                ("email", "SENSITIVE")]),
     ("report",       "financial reports",      [("view", "NORMAL")]),
     ("audit",        "finance audit logs",     [("view", "SENSITIVE")]),
     ("bankaccount",  "bank accounts",          [("view", "NORMAL"), ("create", "SENSITIVE"),

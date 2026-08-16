@@ -41,6 +41,12 @@ from .views import (
     StatutoryPackView,
     TrialBalanceView,
 )
+from .views_document_email import (
+    CustomerStatementEmailView,
+    FinanceDeliveryRetryView,
+    InvoiceEmailView,
+    PaymentEmailView,
+)
 from .views_ar import (
     ARAdjustmentBatchView,
     ConcessionDetailView,
@@ -220,6 +226,13 @@ urlpatterns = [
     path("invoices/<int:pk>/document/", InvoiceDocumentView.as_view(), name="finance-invoice-document"),
     path("invoices/<int:pk>/pay/", InvoicePayView.as_view(), name="finance-invoice-pay"),
     path("invoices/<int:pk>/remind/", InvoiceRemindView.as_view(), name="finance-invoice-remind"),
+    # Customer document email: GET previews recipients and lists history, POST sends.
+    path("invoices/<int:pk>/email/", InvoiceEmailView.as_view(), name="finance-invoice-email"),
+    path("payments/<int:pk>/email/", PaymentEmailView.as_view(), name="finance-payment-email"),
+    path("customers/<str:pk>/statement-email/", CustomerStatementEmailView.as_view(),
+         name="finance-customer-statement-email"),
+    path("document-deliveries/<int:pk>/retry/", FinanceDeliveryRetryView.as_view(),
+         name="finance-document-delivery-retry"),
     path("invoices/<int:pk>/void/", InvoiceVoidView.as_view(), name="finance-invoice-void"),
 
     # AR adjustments - credit/debit notes, refunds, write-offs

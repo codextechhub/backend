@@ -13,6 +13,9 @@ from vs_finance.constants import (
     AccountType,
     DocType,
     DocumentStatus,
+    FinanceDeliveryDocument,
+    FinanceDeliverySource,
+    FinanceDeliveryStatus,
     NormalBalance,
     PeriodStatus,
     PLATFORM_ENTITY_CODE,
@@ -50,6 +53,7 @@ from vs_finance.exceptions import (
 from vs_finance.models import (
     Account,
     AccountBalance,
+    FinanceDocumentDelivery,
     BankAccount,
     BankStatementLine,
     Budget,
@@ -10588,3 +10592,363 @@ class AdjustmentThresholdRepairMigrationTests(TestCase):
         self.assertIsNone(self._first(repaired))
         self.assertEqual(self._first(admin_set),
                          {"op": "gte", "field": "amount", "value": 99})
+
+
+# Group tests for Document Email Tests.
+class DocumentEmailTests(_ARFixtureMixin, TestCase):
+    """Emailing invoices, receipts and statements to customers.
+
+    Security first: a caller without the send key must be refused, and a document
+    belonging to another entity's books must not be reachable by id. Only then the
+    delivery mechanics - what is recorded, what is attached, what a retry does.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        """Seed the registries these sends depend on, once for the whole class.
+
+        No migration creates NotificationEventType rows - only
+        ``seed_notification_event_types``, which build.sh runs on every deploy - so a
+        fresh test database has none and every send would raise UnknownEventTypeError.
+        Seeding is what makes these tests exercise the real dispatch path rather than
+        a swallowed failure. Permission rows carry module/resource/action FKs, so they
+        come from the real seeder too rather than being invented row by row.
+
+        Class-level and stdout-captured deliberately: per-test seeding ran three
+        commands 13 times and buried the results under hundreds of lines of seeder
+        output, which is exactly what makes a failing run unreadable.
+        """
+        super().setUpTestData()
+        import io
+
+        from django.core.management import call_command
+
+        quiet = io.StringIO()
+        call_command("seed_notification_event_types", verbosity=0, stdout=quiet)
+        call_command("seed_notification_templates", verbosity=0, stdout=quiet)
+        call_command("seed_finance_permissions", verbosity=0, stdout=quiet)
+
+    def _user(self, email, *, keys=None, tenant_slug="codex"):
+        """A user holding exactly ``keys``, or a super admin when keys is None."""
+        from django.contrib.auth import get_user_model
+        from vs_rbac.models import (
+            Permission, TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment,
+        )
+        from vs_tenants.models import Tenant
+
+        tenant = Tenant.objects.get(slug=tenant_slug)
+        user = get_user_model().objects.create_user(
+            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Mail", last_name="Tester",
+        )
+        role_key = "xvs_super_admin" if keys is None else f"limited_{email.split('@')[0]}"
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=tenant, key=role_key,
+            defaults={"name": role_key, "status": "ACTIVE"},
+        )
+        for key in keys or []:
+            permission = Permission.objects.get(key=key)
+            TenantRolePermission.objects.get_or_create(role=role, permission=permission)
+        TenantUserRoleAssignment.objects.create(
+            tenant=tenant, user=user, role=role, assignment_status="ACTIVE",
+        )
+        return user
+
+    def _call(self, view, user, entity, pk, *, method="post", body=None, query=None):
+        import json
+
+        from rest_framework.test import APIRequestFactory, force_authenticate
+
+        factory = APIRequestFactory()
+        params = {"entity": entity.code, **(query or {})}
+        request = (
+            factory.post(f"/v1/finance/x/{pk}/email/", body or {}, format="json")
+            if method == "post" else factory.get(f"/v1/finance/x/{pk}/email/", params)
+        )
+        if method == "post":
+            # The factory does not merge query params into a POST, so rebuild the URL.
+            request = factory.post(
+                f"/v1/finance/x/{pk}/email/?entity={entity.code}", body or {}, format="json",
+            )
+        force_authenticate(request, user=user)
+        request.tenant = user.tenant
+        response = view.as_view()(request, pk=pk)
+        response.render()
+        return response, json.loads(response.content or b"{}")
+
+    def _manual_deliveries(self):
+        """Deliveries somebody asked for, as opposed to the automatic copy a posting
+        records on its own."""
+        return FinanceDocumentDelivery.objects.exclude(
+            source=FinanceDeliverySource.AUTOMATIC,
+        )
+
+    def _posted_invoice(self, entity, customer):
+        invoice = self.make_invoice(entity, customer, lines=[("4100", 1, 500000, None)])
+        post_invoice(invoice)
+        invoice.refresh_from_db()
+        return invoice
+
+    # ── Authorization ──────────────────────────────────────────────────────
+
+    def test_send_without_the_key_is_forbidden(self):
+        from vs_finance.views_document_email import InvoiceEmailView
+
+        entity, _period, customer, _vat = self.build_ar()
+        customer.billing_email = "payer@example.com"
+        customer.save(update_fields=["billing_email"])
+        invoice = self._posted_invoice(entity, customer)
+        # Holds every other invoice key, but not the one that emails a customer.
+        user = self._user("no-email@test.com", keys=["finance.invoice.view", "finance.invoice.create"])
+
+        response, _body = self._call(InvoiceEmailView, user, entity, invoice.pk)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(self._manual_deliveries().exists())
+
+    def test_reading_the_preview_needs_the_send_key(self):
+        from vs_finance.views_document_email import InvoiceEmailView
+
+        entity, _period, customer, _vat = self.build_ar()
+        invoice = self._posted_invoice(entity, customer)
+        user = self._user("view-only@test.com", keys=["finance.invoice.view"])
+
+        response, _body = self._call(InvoiceEmailView, user, entity, invoice.pk, method="get")
+
+        # The preview names the customer's address and lists what they have been
+        # told, so it is gated with the send rather than the read.
+        self.assertEqual(response.status_code, 403)
+
+    def test_another_entitys_invoice_is_not_reachable(self):
+        from vs_finance.views_document_email import InvoiceEmailView
+
+        entity, _period, customer, _vat = self.build_ar()
+        customer.billing_email = "payer@example.com"
+        customer.save(update_fields=["billing_email"])
+        invoice = self._posted_invoice(entity, customer)
+        other = LedgerEntity.objects.create(
+            name="Other Books", code="OTHER", kind=LedgerEntity.Kind.TENANT,
+        )
+        user = self._user("cross-entity@test.com")
+
+        # Same invoice id, asserted against an entity that does not own it.
+        response, _body = self._call(InvoiceEmailView, user, other, invoice.pk)
+
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(self._manual_deliveries().exists())
+
+    def test_retry_needs_the_key_for_that_document_kind(self):
+        from vs_finance.views_document_email import FinanceDeliveryRetryView
+
+        entity, _period, customer, _vat = self.build_ar()
+        customer.billing_email = "payer@example.com"
+        customer.save(update_fields=["billing_email"])
+        invoice = self._posted_invoice(entity, customer)
+        delivery = FinanceDocumentDelivery.objects.create(
+            entity=entity, customer=customer,
+            document_type=FinanceDeliveryDocument.INVOICE,
+            document_id=str(invoice.pk), document_number=invoice.document_number,
+            source=FinanceDeliverySource.MANUAL, status=FinanceDeliveryStatus.FAILED,
+            recipients=["payer@example.com"], failure_reason="Mailbox full.",
+        )
+        # Can email a statement, cannot email an invoice. Holding one send key must
+        # not let them re-send a kind they were never granted.
+        user = self._user("statement-only@test.com", keys=["finance.customer.email_statement"])
+
+        response, _body = self._call(FinanceDeliveryRetryView, user, entity, delivery.pk)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(FinanceDocumentDelivery.objects.filter(
+            source=FinanceDeliverySource.RETRY).exists())
+
+    # ── Sending ────────────────────────────────────────────────────────────
+
+    def test_sending_an_invoice_records_the_delivery_and_attaches_a_pdf(self):
+        from django.core import mail
+        from django.test import override_settings
+
+        from vs_finance.views_document_email import InvoiceEmailView
+
+        entity, _period, customer, _vat = self.build_ar()
+        customer.billing_email = "payer@example.com"
+        customer.save(update_fields=["billing_email"])
+        invoice = self._posted_invoice(entity, customer)
+        user = self._user("sender@test.com")
+
+        # vs_notifications enqueues the email on transaction commit, and a TestCase
+        # never commits, so without capturing the callbacks the outbox stays empty
+        # and the attachment assertions below would pass vacuously.
+        with self.captureOnCommitCallbacks(execute=True):
+            response, body = self._call(
+                InvoiceEmailView, user, entity, invoice.pk, body={"note": "Due on Friday."},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        delivery = FinanceDocumentDelivery.objects.get(pk=body["data"]["id"])
+        self.assertEqual(delivery.document_type, FinanceDeliveryDocument.INVOICE)
+        self.assertEqual(delivery.recipients, ["payer@example.com"])
+        self.assertEqual(delivery.requested_by, user)
+        self.assertEqual(delivery.note, "Due on Friday.")
+        self.assertTrue(delivery.pdf_file)
+
+        sent = [m for m in mail.outbox if "payer@example.com" in m.to]
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(len(sent[0].attachments), 1)
+        filename, content, content_type = sent[0].attachments[0]
+        self.assertTrue(filename.endswith(".pdf"))
+        self.assertEqual(content_type, "application/pdf")
+        self.assertTrue(content.startswith(b"%PDF"))
+
+    def test_a_customer_without_a_billing_email_is_refused_with_a_reason(self):
+        from vs_finance.views_document_email import InvoiceEmailView
+
+        entity, _period, customer, _vat = self.build_ar()
+        customer.billing_email = ""
+        customer.save(update_fields=["billing_email"])
+        invoice = self._posted_invoice(entity, customer)
+        user = self._user("no-address@test.com")
+
+        response, body = self._call(InvoiceEmailView, user, entity, invoice.pk)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("billing email", str(body).lower())
+        self.assertFalse(self._manual_deliveries().exists())
+
+    def test_preview_reports_why_it_cannot_send(self):
+        from vs_finance.views_document_email import InvoiceEmailView
+
+        entity, _period, customer, _vat = self.build_ar()
+        customer.billing_email = ""
+        customer.save(update_fields=["billing_email"])
+        invoice = self._posted_invoice(entity, customer)
+        user = self._user("preview@test.com")
+
+        response, body = self._call(InvoiceEmailView, user, entity, invoice.pk, method="get")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(body["data"]["can_send"])
+        self.assertTrue(body["data"]["blocked_reason"])
+
+    def test_a_draft_invoice_cannot_be_emailed(self):
+        from vs_finance.views_document_email import InvoiceEmailView
+
+        entity, _period, customer, _vat = self.build_ar()
+        customer.billing_email = "payer@example.com"
+        customer.save(update_fields=["billing_email"])
+        draft = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
+        user = self._user("draft-sender@test.com")
+
+        response, _body = self._call(InvoiceEmailView, user, entity, draft.pk)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(self._manual_deliveries().exists())
+
+    def test_statement_send_records_the_period_it_covered(self):
+        import datetime
+
+        from django.test import override_settings
+
+        from vs_finance.views_document_email import CustomerStatementEmailView
+
+        entity, _period, customer, _vat = self.build_ar()
+        customer.billing_email = "payer@example.com"
+        customer.save(update_fields=["billing_email"])
+        self._posted_invoice(entity, customer)
+        user = self._user("statement-sender@test.com")
+
+        with override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend"):
+            response, body = self._call(
+                CustomerStatementEmailView, user, entity, customer.code,
+                body={"start": "2026-01-01", "end": "2026-01-31"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        delivery = FinanceDocumentDelivery.objects.get(pk=body["data"]["id"])
+        self.assertEqual(delivery.document_type, FinanceDeliveryDocument.STATEMENT)
+        # Stored so a retry reproduces this statement rather than re-cutting it
+        # against today's balances.
+        self.assertEqual(delivery.period_start, datetime.date(2026, 1, 1))
+        self.assertEqual(delivery.period_end, datetime.date(2026, 1, 31))
+
+    # ── Outcome and retry ──────────────────────────────────────────────────
+
+    def test_retry_creates_a_new_attempt_and_keeps_the_failed_one(self):
+        from django.test import override_settings
+
+        from vs_finance.views_document_email import FinanceDeliveryRetryView
+
+        entity, _period, customer, _vat = self.build_ar()
+        customer.billing_email = "payer@example.com"
+        customer.save(update_fields=["billing_email"])
+        invoice = self._posted_invoice(entity, customer)
+        failed = FinanceDocumentDelivery.objects.create(
+            entity=entity, customer=customer,
+            document_type=FinanceDeliveryDocument.INVOICE,
+            document_id=str(invoice.pk), document_number=invoice.document_number,
+            source=FinanceDeliverySource.MANUAL, status=FinanceDeliveryStatus.FAILED,
+            recipients=["payer@example.com"], failure_reason="Mailbox full.",
+        )
+        user = self._user("retrier@test.com")
+
+        with override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend"):
+            response, body = self._call(FinanceDeliveryRetryView, user, entity, failed.pk)
+
+        self.assertEqual(response.status_code, 200)
+        retry_row = FinanceDocumentDelivery.objects.get(pk=body["data"]["id"])
+        self.assertEqual(retry_row.source, FinanceDeliverySource.RETRY)
+        self.assertEqual(retry_row.parent_id, failed.pk)
+        failed.refresh_from_db()
+        # The record of a failure is not something a retry should erase.
+        self.assertEqual(failed.status, FinanceDeliveryStatus.FAILED)
+        self.assertEqual(failed.failure_reason, "Mailbox full.")
+
+    def test_only_a_failed_delivery_can_be_retried(self):
+        from vs_finance.views_document_email import FinanceDeliveryRetryView
+
+        entity, _period, customer, _vat = self.build_ar()
+        customer.billing_email = "payer@example.com"
+        customer.save(update_fields=["billing_email"])
+        invoice = self._posted_invoice(entity, customer)
+        sent = FinanceDocumentDelivery.objects.create(
+            entity=entity, customer=customer,
+            document_type=FinanceDeliveryDocument.INVOICE,
+            document_id=str(invoice.pk), document_number=invoice.document_number,
+            source=FinanceDeliverySource.MANUAL, status=FinanceDeliveryStatus.SENT,
+            recipients=["payer@example.com"],
+        )
+        user = self._user("double-send@test.com")
+
+        response, _body = self._call(FinanceDeliveryRetryView, user, entity, sent.pk)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(FinanceDocumentDelivery.objects.filter(
+            source=FinanceDeliverySource.RETRY).exists())
+
+    def test_posting_an_invoice_records_the_automatic_copy(self):
+        from django.test import override_settings
+
+        entity, _period, customer, _vat = self.build_ar()
+        customer.billing_email = "payer@example.com"
+        customer.save(update_fields=["billing_email"])
+
+        with override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend"):
+            invoice = self._posted_invoice(entity, customer)
+
+        # History must start at the automatic copy, not at the first manual re-send,
+        # or a reader concludes nothing went out when the invoice posted.
+        delivery = FinanceDocumentDelivery.objects.get(document_id=str(invoice.pk))
+        self.assertEqual(delivery.source, FinanceDeliverySource.AUTOMATIC)
+        self.assertIsNone(delivery.requested_by)
+
+    def test_a_delivery_failure_never_rolls_back_the_posting(self):
+        from unittest.mock import patch
+
+        entity, _period, customer, _vat = self.build_ar()
+        customer.billing_email = "payer@example.com"
+        customer.save(update_fields=["billing_email"])
+
+        with patch("vs_finance.document_email._queue", side_effect=RuntimeError("mail server down")):
+            invoice = self._posted_invoice(entity, customer)
+
+        # The ledger is the thing that must survive.
+        self.assertEqual(invoice.status, "POSTED")

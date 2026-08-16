@@ -373,6 +373,16 @@ EVENT_TYPE_REGISTRY = [
         "default_enabled": True,
     },
     {
+        "key": "billing.statement_issued",
+        "label": "Statement of account",
+        "description": "Sends a customer their statement of account with a PDF copy attached.",
+        "source_module": "vs_finance",
+        # Email only: the recipient is a paying customer who has no console account,
+        # so there is no in-app inbox to deliver a statement to.
+        "supported_channels": [ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
         "key": "billing.debit_note_issued",
         "label": "Debit note issued",
         "description": "Fires when a posted debit note adds a charge to a customer's account.",

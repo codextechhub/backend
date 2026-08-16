@@ -293,6 +293,43 @@ class DunningNoticeStatus(models.TextChoices):
     CANCELLED = "CANCELLED", "Cancelled"
 
 
+# Define which customer-facing document a delivery carried.
+class FinanceDeliveryDocument(models.TextChoices):
+    """The kinds of finance document that can be emailed to a customer.
+
+    STATEMENT is not a stored document: it is a report over a customer and a date
+    range, so its delivery row carries the period rather than a document id.
+    """
+    INVOICE = "INVOICE", "Invoice"
+    RECEIPT = "RECEIPT", "Receipt"
+    STATEMENT = "STATEMENT", "Statement of account"
+
+
+# Define Finance Delivery Status values.
+class FinanceDeliveryStatus(models.TextChoices):
+    """Outcome of one attempt to email a customer document.
+
+    PENDING -> handed to vs_notifications, no outcome yet.
+    SENT    -> every notification for the attempt reported success.
+    FAILED  -> at least one reported failure; the attempt can be retried.
+
+    There is deliberately no AWAITING_APPROVAL state (unlike a purchase order):
+    a finance document is emailed on demand, with nothing to wait for.
+    """
+    PENDING = "PENDING", "Pending"
+    SENT = "SENT", "Sent"
+    FAILED = "FAILED", "Failed"
+
+
+# Define how a customer document email was requested.
+class FinanceDeliverySource(models.TextChoices):
+    """Why the delivery happened, so history distinguishes the automatic copy sent
+    on posting from a re-send somebody asked for."""
+    AUTOMATIC = "AUTOMATIC", "Automatic on posting"
+    MANUAL = "MANUAL", "Manual send"
+    RETRY = "RETRY", "Retry"
+
+
 # Define Payment Method values.
 class PaymentMethod(models.TextChoices):
     """How a customer receipt was tendered (operational detail, not posting logic)."""
@@ -489,6 +526,9 @@ class FinanceAuditAction(models.TextChoices):
     PURCHASE_ORDER_EMAIL_SENT = "PO_EMAIL_SENT", "Purchase order email sent"
     PURCHASE_ORDER_EMAIL_FAILED = "PO_EMAIL_FAILED", "Purchase order email failed"
     PURCHASE_ORDER_EMAIL_CANCELLED = "PO_EMAIL_CANCELLED", "Purchase order email cancelled"
+    DOCUMENT_EMAIL_QUEUED = "DOC_EMAIL_QUEUED", "Customer document email queued"
+    DOCUMENT_EMAIL_SENT = "DOC_EMAIL_SENT", "Customer document email sent"
+    DOCUMENT_EMAIL_FAILED = "DOC_EMAIL_FAILED", "Customer document email failed"
     GRN_POSTED = "GRN_POSTED", "Goods receipt posted"
     GRN_POST_REJECTED = "GRN_POST_REJECTED", "Goods receipt posting rejected"
     VENDOR_INVOICE_MATCHED = "VENDOR_INVOICE_MATCHED", "Vendor invoice matched"

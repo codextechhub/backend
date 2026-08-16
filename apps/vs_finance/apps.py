@@ -25,4 +25,7 @@ class VsFinanceConfig(AppConfig):
         from .provisioning_hooks import provision_adjustment_approvals
 
         register_entity_provisioner(provision_adjustment_approvals)
+        # Settle customer document deliveries when vs_notifications reports the
+        # outcome of an email it sent on our behalf.
+        from . import receivers  # noqa: F401
 

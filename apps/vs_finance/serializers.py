@@ -38,6 +38,7 @@ from .models import (
     FeeItem,
     FeeStructure,
     FinanceAuditLog,
+    FinanceDocumentDelivery,
     FixedAsset,
     FiscalPeriod,
     FiscalYear,
@@ -1316,3 +1317,52 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
             "id", "action", "action_display", "status", "actor", "target_type",
             "target_id", "document_number", "message", "before", "after", "created_at",
         ]
+
+
+# --------------------------------------------------------------------------- #
+# Customer document email deliveries                                          #
+# --------------------------------------------------------------------------- #
+
+class FinanceDocumentDeliverySerializer(serializers.ModelSerializer):
+    """One attempt to email a customer document.
+
+    ``recipients`` and ``bcc`` are the addresses the send actually used, which is the
+    point of the history: a user asking "did this reach them" needs the address, not
+    just a status. They are the customer's own billing address and the finance CC, so
+    nothing here discloses a third party. ``notification_ids`` stays internal - it is a
+    correlation handle for support, with no reader value.
+    """
+
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    customer_code = serializers.CharField(source="customer.code", read_only=True)
+    document_type_display = serializers.CharField(source="get_document_type_display", read_only=True)
+    source_display = serializers.CharField(source="get_source_display", read_only=True)
+    requested_by_name = serializers.SerializerMethodField()
+    recipient_count = serializers.SerializerMethodField()
+    can_retry = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FinanceDocumentDelivery
+        fields = [
+            "id", "customer_id", "customer_code", "customer_name",
+            "document_type", "document_type_display", "document_id", "document_number",
+            "period_start", "period_end", "source", "source_display", "status",
+            "requested_by_name", "recipients", "recipient_count", "bcc", "note",
+            "queued_at", "sent_at", "failure_reason", "can_retry", "created_at",
+        ]
+
+    def get_requested_by_name(self, obj) -> str:
+        user = obj.requested_by
+        if user is None:
+            # Automatic sends have no actor. Saying so beats an empty cell that
+            # reads as missing data.
+            return "System"
+        return (getattr(user, "full_name", "") or getattr(user, "email", "")).strip()
+
+    def get_recipient_count(self, obj) -> int:
+        return len(obj.recipients or [])
+
+    def get_can_retry(self, obj) -> bool:
+        from .constants import FinanceDeliveryStatus
+
+        return obj.status == FinanceDeliveryStatus.FAILED
