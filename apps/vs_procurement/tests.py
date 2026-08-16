@@ -401,26 +401,26 @@ class VendorQuotationPortalTests(_P2PFixtureMixin, TestCase):
         from vs_procurement.vendor_portal import _safe_notify
 
         self._verified()
-        with self.settings(PROCUREMENT_VENDOR_EMAIL_CC=["backend-test@codexng.com"]):
+        with self.settings(PROCUREMENT_VENDOR_EMAIL_BCC=["backend-test@codexng.com"]):
             with patch("vs_procurement.vendor_portal.send_notification") as send:
                 self.assertTrue(_safe_notify(
                     event_key="procurement.rfq_invitation",
                     context={},
                     invitation=self.invitation,
                 ))
-        self.assertEqual(send.call_args.kwargs["metadata"]["cc"], ["backend-test@codexng.com"])
+        self.assertEqual(send.call_args.kwargs["metadata"]["bcc"], ["backend-test@codexng.com"])
 
         self.invitation.recipients.create(
             name="Backend Test", email="backend-test@codexng.com",
         )
-        with self.settings(PROCUREMENT_VENDOR_EMAIL_CC=["backend-test@codexng.com"]):
+        with self.settings(PROCUREMENT_VENDOR_EMAIL_BCC=["backend-test@codexng.com"]):
             with patch("vs_procurement.vendor_portal.send_notification") as send:
                 _safe_notify(
                     event_key="procurement.rfq_invitation",
                     context={},
                     invitation=self.invitation,
                 )
-        self.assertEqual(send.call_args.kwargs["metadata"]["cc"], [])
+        self.assertEqual(send.call_args.kwargs["metadata"]["bcc"], [])
 
     def test_expired_invitation_blocks_draft_but_preserves_existing_data(self):
         from rest_framework.exceptions import ValidationError
@@ -6426,7 +6426,7 @@ class PurchaseOrderVendorEmailTests(_P2PFixtureMixin, TestCase):
         )
         self.assertEqual(delivery.status, PurchaseOrderVendorDeliveryStatus.AWAITING_APPROVAL)
         self.assertEqual(delivery.recipients, ["orders@vendor.test"])
-        self.assertEqual(delivery.cc, ["backend-test@codexng.com"])
+        self.assertEqual(delivery.bcc, ["backend-test@codexng.com"])
 
         po_email.cancel_awaiting(po, reason="Approval was rejected.", actor_user=self.user)
         delivery.refresh_from_db()
@@ -6447,7 +6447,7 @@ class PurchaseOrderVendorEmailTests(_P2PFixtureMixin, TestCase):
         self.assertTrue(delivery.pdf_file.name.endswith(".pdf"))
         self.assertGreater(delivery.pdf_file.size, 100)
         metadata = notify.call_args.kwargs["metadata"]
-        self.assertEqual(metadata["cc"], ["backend-test@codexng.com"])
+        self.assertEqual(metadata["bcc"], ["backend-test@codexng.com"])
         self.assertEqual(metadata["attachments"][0]["storage_name"], delivery.pdf_file.name)
 
         draft = self._po(approved=False)

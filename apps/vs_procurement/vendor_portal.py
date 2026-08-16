@@ -99,9 +99,9 @@ def _safe_notify(*, event_key: str, context: dict, invitation: RfqInvitation, re
         for email in invitation.recipients.values_list("email", flat=True)
         if str(email).strip()
     }
-    cc = [
+    bcc = [
         str(email).strip()
-        for email in getattr(settings, "PROCUREMENT_VENDOR_EMAIL_CC", [])
+        for email in getattr(settings, "PROCUREMENT_VENDOR_EMAIL_BCC", [])
         if str(email).strip() and str(email).strip().lower() not in invited_emails
     ]
     try:
@@ -116,7 +116,7 @@ def _safe_notify(*, event_key: str, context: dict, invitation: RfqInvitation, re
             metadata={
                 "rfq_id": invitation.rfq_id,
                 "invitation_id": invitation.pk,
-                "cc": cc,
+                "bcc": bcc,
             },
         )
         return True

@@ -1418,7 +1418,8 @@ class PurchaseOrderVendorDelivery(TimeStampedModel):
     workflow_instance_id = models.CharField(max_length=64, blank=True, default="")
     buyer_message = models.TextField(blank=True, default="")
     recipients = models.JSONField(default=list)
-    cc = models.JSONField(default=list)
+    # Monitoring copies are blind: these addresses are ours, not the vendor's.
+    bcc = models.JSONField(default=list)
     notification_ids = models.JSONField(default=list)
     pdf_file = models.FileField(upload_to=purchase_order_vendor_pdf_path, blank=True)
     queued_at = models.DateTimeField(null=True, blank=True)

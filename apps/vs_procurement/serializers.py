@@ -1018,12 +1018,12 @@ class PurchaseOrderVendorDeliverySerializer(serializers.ModelSerializer):
 
     requested_by_name = serializers.SerializerMethodField()
     recipient_count = serializers.SerializerMethodField()
-    cc_count = serializers.SerializerMethodField()
+    bcc_count = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseOrderVendorDelivery
         fields = [
-            "id", "source", "status", "requested_by_name", "recipient_count", "cc_count",
+            "id", "source", "status", "requested_by_name", "recipient_count", "bcc_count",
             "buyer_message", "queued_at", "sent_at", "cancelled_at", "failure_reason",
             "created_at", "parent_id",
         ]
@@ -1035,8 +1035,8 @@ class PurchaseOrderVendorDeliverySerializer(serializers.ModelSerializer):
     def get_recipient_count(self, obj):
         return len(obj.recipients or [])
 
-    def get_cc_count(self, obj):
-        return len(obj.cc or [])
+    def get_bcc_count(self, obj):
+        return len(obj.bcc or [])
 
 
 class PurchaseOrderSerializer(serializers.ModelSerializer):

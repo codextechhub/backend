@@ -168,6 +168,28 @@ class NotificationService:
                     )
                     continue
 
+                # In-app delivery cannot proceed without an account to deliver to.
+                # An UnregisteredRecipient is an email address and nothing else - a
+                # payer, a vendor contact, an invitee - so an in-app row for one has
+                # no inbox it can ever appear in. Several billing events declare both
+                # channels and are only ever sent to unregistered customers, which
+                # was silently producing one unreadable row per send.
+                #
+                # Skipped rather than recorded as FAILED: the no-address case below
+                # records a failure because somebody meant to send an email and it
+                # did not go. Here nobody meant to send anything - the event simply
+                # supports a channel that cannot apply to this recipient - and a
+                # FAILED row would be exactly as unreadable as the SENT one it
+                # replaces. Registered recipients are unaffected, so an event stays
+                # ready for a customer portal without needing its channels changed.
+                if channel == ChannelChoices.IN_APP and isinstance(target, UnregisteredRecipient):
+                    logger.debug(
+                        "Skipping in-app notification for unregistered recipient on "
+                        "event_key=%s - no account to deliver to.",
+                        event_key,
+                    )
+                    continue
+
                 # Email delivery cannot proceed without an address, but history should record the failure.
                 email_addr = _resolve_email(target)
                 if channel == ChannelChoices.EMAIL and not email_addr:

@@ -280,6 +280,55 @@ class DispatchTests(_NotifFixture):
         self.assertEqual(in_app.status, NotificationStatus.SENT)
         delay.assert_called_once_with(str(email.id))
 
+    def test_unregistered_recipient_gets_no_in_app_record(self):
+        """An address is not an inbox.
+
+        Several billing events support both channels but are only ever sent to
+        payers with no console account. Creating an in-app row for one produced a
+        record with no recipient user that nobody could open - one per send, and
+        more once re-sends existed.
+        """
+        from vs_notifications.notify import UnregisteredRecipient
+
+        with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
+            with self.captureOnCommitCallbacks(execute=True):
+                ids = NotificationService.send(
+                    event_key="ticket.created",
+                    context={"student_first_name": "Sam", "student_last_name": "Doe"},
+                    recipients=[],
+                    unregistered_recipients=[
+                        UnregisteredRecipient(email="payer@example.com", name="Payer"),
+                    ],
+                )
+
+        notifs = Notification.objects.filter(id__in=ids)
+        self.assertEqual(notifs.count(), 1)
+        self.assertEqual(notifs.first().channel, ChannelChoices.EMAIL)
+        self.assertFalse(notifs.filter(channel=ChannelChoices.IN_APP).exists())
+
+    def test_registered_recipient_still_gets_in_app(self):
+        """The guard is about having an account, not about the event."""
+        rcpt = self._recipient("registered@test.com")
+        from vs_notifications.notify import UnregisteredRecipient
+
+        with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
+            with self.captureOnCommitCallbacks(execute=True):
+                ids = NotificationService.send(
+                    event_key="ticket.created",
+                    context={"student_first_name": "Sam", "student_last_name": "Doe"},
+                    recipients=[rcpt],
+                    unregistered_recipients=[
+                        UnregisteredRecipient(email="payer@example.com", name="Payer"),
+                    ],
+                )
+
+        notifs = Notification.objects.filter(id__in=ids)
+        in_app = notifs.filter(channel=ChannelChoices.IN_APP)
+        self.assertEqual(in_app.count(), 1)
+        self.assertEqual(in_app.first().recipient_id, rcpt.id)
+        # Both targets still get their email.
+        self.assertEqual(notifs.filter(channel=ChannelChoices.EMAIL).count(), 2)
+
     def test_metadata_stored_but_never_serialized(self):
         rcpt = self._recipient()
         with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
@@ -374,7 +423,7 @@ class DispatchTests(_NotifFixture):
 # ---------------------------------------------------------------------------
 
 @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
-                   DEFAULT_FROM_EMAIL="CodeX System <system@codexng.com>", EMAIL_CC=[])
+                   DEFAULT_FROM_EMAIL="CodeX System <system@codexng.com>", EMAIL_BCC=[])
 class DeliveryTaskTests(_NotifFixture):
 
     def _pending_email(self, html=""):
@@ -437,42 +486,44 @@ class DeliveryTaskTests(_NotifFixture):
         self.assertIn("Ada Admin", mail.outbox[0].from_email)
         self.assertIn("system@codexng.com", mail.outbox[0].from_email)
 
-    def test_metadata_cc_is_passed_to_the_email_backend(self):
+    def test_metadata_bcc_is_passed_to_the_email_backend(self):
         from .tasks import deliver_email_notification
         notif = self._pending_email()
-        notif.metadata = {"cc": ["backend-test@codexng.com"]}
+        notif.metadata = {"bcc": ["backend-test@codexng.com"]}
         notif.save(update_fields=["metadata"])
 
         deliver_email_notification(str(notif.id))
 
-        self.assertEqual(mail.outbox[0].cc, ["backend-test@codexng.com"])
+        self.assertEqual(mail.outbox[0].bcc, ["backend-test@codexng.com"])
+        # The whole point of the switch: the recipient must not see it.
+        self.assertEqual(mail.outbox[0].cc, [])
 
-    @override_settings(EMAIL_CC=["monitor@codexng.com"])
-    def test_notification_without_metadata_cc_keeps_the_platform_default(self):
-        """An absent "cc" key means "no opinion", not "send with no CC".
+    @override_settings(EMAIL_BCC=["monitor@codexng.com"])
+    def test_notification_without_metadata_bcc_keeps_the_platform_default(self):
+        """An absent "bcc" key means "no opinion", not "copy nobody".
 
-        Procurement narrows the CC for vendor mail by setting the key explicitly. If
-        that were expressed as an always-present list, every other notification on the
-        platform would silently lose its EMAIL_CC monitoring copy.
+        Procurement and finance narrow the copy for external mail by setting the key
+        explicitly. If that were expressed as an always-present list, every other
+        notification on the platform would silently lose its monitoring copy.
         """
         from .tasks import deliver_email_notification
         notif = self._pending_email()
 
         deliver_email_notification(str(notif.id))
 
-        self.assertEqual(mail.outbox[0].cc, ["monitor@codexng.com"])
+        self.assertEqual(mail.outbox[0].bcc, ["monitor@codexng.com"])
 
-    @override_settings(EMAIL_CC=["monitor@codexng.com"])
-    def test_explicit_empty_metadata_cc_suppresses_the_platform_default(self):
+    @override_settings(EMAIL_BCC=["monitor@codexng.com"])
+    def test_explicit_empty_metadata_bcc_suppresses_the_platform_default(self):
         """An explicit empty list is a real instruction: copy nobody."""
         from .tasks import deliver_email_notification
         notif = self._pending_email()
-        notif.metadata = {"cc": []}
+        notif.metadata = {"bcc": []}
         notif.save(update_fields=["metadata"])
 
         deliver_email_notification(str(notif.id))
 
-        self.assertEqual(mail.outbox[0].cc, [])
+        self.assertEqual(mail.outbox[0].bcc, [])
 
     def test_metadata_attachment_is_loaded_from_storage(self):
         from .tasks import deliver_email_notification

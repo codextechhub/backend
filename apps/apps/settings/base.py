@@ -223,19 +223,39 @@ DEFAULT_FROM_EMAIL = config(
     "DEFAULT_FROM_EMAIL",
     default="CodeX Vision <chidera.ohanenye@codexng.com>",
 )
-# Comma-separated CC addresses added to every outgoing email. Clear to disable.
-EMAIL_CC = [
+# Monitoring copies are BCC, never CC.
+#
+# Every list below is an internal mailbox we copy so somebody can see what went
+# out. Copying it visibly put internal addresses in front of customers and vendors,
+# showed each recipient that their mail is monitored, and handed anyone who hits
+# reply-all a route into an internal inbox. None of that was intended; CC was simply
+# the first thing reached for. BCC delivers the same copy without any of it.
+#
+# Each reads its old CC environment variable as the fallback default, so a
+# deployment that has not renamed its variables keeps the addresses it had.
+EMAIL_BCC = [
     addr.strip()
-    for addr in config("EMAIL_CC", default="").split(",")
+    for addr in config("EMAIL_BCC", default=config("EMAIL_CC", default="")).split(",")
     if addr.strip()
 ]
-# Procurement messages sent to external vendors use a narrower CC list so
-# monitoring does not copy unrelated platform email into the procurement inbox.
-PROCUREMENT_VENDOR_EMAIL_CC = [
+# Procurement messages sent to external vendors use a narrower list so monitoring
+# does not copy unrelated platform email into the procurement inbox.
+PROCUREMENT_VENDOR_EMAIL_BCC = [
     addr.strip()
     for addr in config(
-        "PROCUREMENT_VENDOR_EMAIL_CC",
-        default="backend-test@codexng.com",
+        "PROCUREMENT_VENDOR_EMAIL_BCC",
+        default=config("PROCUREMENT_VENDOR_EMAIL_CC", default="backend-test@codexng.com"),
+    ).split(",")
+    if addr.strip()
+]
+# Finance documents sent to paying customers (invoice, receipt, statement) copy a
+# finance-owned mailbox rather than the platform-wide EMAIL_BCC, for the same reason
+# procurement narrows its own: a customer document is not general platform mail.
+FINANCE_CUSTOMER_EMAIL_BCC = [
+    addr.strip()
+    for addr in config(
+        "FINANCE_CUSTOMER_EMAIL_BCC",
+        default=config("FINANCE_CUSTOMER_EMAIL_CC", default="backend-test@codexng.com"),
     ).split(",")
     if addr.strip()
 ]

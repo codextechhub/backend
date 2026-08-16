@@ -49,11 +49,15 @@ def _dedupe(values):
     return result
 
 
-def procurement_cc(recipients=None):
-    """Return the procurement-only CC list without duplicating a direct recipient."""
+def procurement_bcc(recipients=None):
+    """The procurement-only monitoring copy, without duplicating a direct recipient.
+
+    Blind, not visible: a vendor has no reason to see our internal mailbox, and a
+    visible copy makes reply-all a route into it.
+    """
     direct = {value.lower() for value in recipients or []}
     return [
-        value for value in _dedupe(getattr(settings, "PROCUREMENT_VENDOR_EMAIL_CC", []))
+        value for value in _dedupe(getattr(settings, "PROCUREMENT_VENDOR_EMAIL_BCC", []))
         if value not in direct
     ]
 
@@ -86,7 +90,7 @@ def preview(po: PurchaseOrder) -> dict:
     recipients = resolve_recipients(po)
     return {
         "recipients": recipients,
-        "cc": procurement_cc(recipients),
+        "bcc": procurement_bcc(recipients),
         "subject": _subject(po),
         "can_schedule": po.status == DocumentStatus.DRAFT
         and po.approval_state not in (ProcApprovalState.PENDING, ProcApprovalState.APPROVED),
@@ -117,7 +121,7 @@ def _audit(delivery, action, message, *, actor_user=None, status=FinanceAuditSta
         delivery_id=delivery.pk,
         delivery_source=delivery.source,
         recipients=delivery.recipients,
-        cc=delivery.cc,
+        bcc=delivery.bcc,
         notification_ids=delivery.notification_ids,
     )
 
@@ -148,7 +152,7 @@ def schedule_after_approval(po: PurchaseOrder, *, actor_user, buyer_message=""):
         requested_by=actor_user,
         buyer_message=_clean_message(buyer_message),
         recipients=recipients,
-        cc=procurement_cc(recipients),
+        bcc=procurement_bcc(recipients),
     )
     _audit(
         delivery, FinanceAuditAction.PURCHASE_ORDER_EMAIL_SCHEDULED,
@@ -373,7 +377,7 @@ def _queue_delivery(delivery_id: int, *, actor_user=None):
         unregistered_recipients=[UnregisteredRecipient(email=email, name=po.vendor.name) for email in delivery.recipients],
         metadata={
             "po_delivery_id": delivery.pk,
-            "cc": delivery.cc,
+            "bcc": delivery.bcc,
             "attachments": [{
                 "name": filename,
                 "storage_name": delivery.pdf_file.name,
@@ -423,7 +427,7 @@ def send_approved(po: PurchaseOrder, *, actor_user, buyer_message="", parent=Non
         parent=parent,
         buyer_message=_clean_message(buyer_message),
         recipients=recipients,
-        cc=procurement_cc(recipients),
+        bcc=procurement_bcc(recipients),
     )
     return _queue_delivery(delivery.pk, actor_user=actor_user)
 
