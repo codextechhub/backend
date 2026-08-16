@@ -24,6 +24,7 @@ from vs_tenants.models import Branch, BranchLifecycle, BranchStatus
 from vs_audit.models import AuditModuleKey, AuditActionType
 from vs_audit.services import AuditDiffService, emit_audit_event
 from vs_config.models import Capability, CapabilityEntitlement
+from vs_config.services.capabilities import set_entitlement
 
 
 # -----------------------------------------------------------------------------
@@ -241,8 +242,11 @@ class SchoolPackageSetupReadSerializer(serializers.ModelSerializer):
     enabled_modules = serializers.SerializerMethodField()
 
     def get_enabled_modules(self, obj):
+        # Entitlements are tenant-scoped, never school-scoped: the school
+        # reaches its own tenant. Filtering on the tenant (not a NULL-tenant
+        # platform grant) keeps one school from reading another's package.
         capability_ids = CapabilityEntitlement.all_objects.filter(
-            school=obj.school,
+            tenant_id=obj.school.tenant_id,
             state=CapabilityEntitlement.State.GRANTED,
             source=CapabilityEntitlement.Source.PACKAGE,
         ).values_list("capability_id", flat=True)
@@ -1005,7 +1009,10 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             emit_audit_event(
                 module_key=AuditModuleKey.BRANCH,
                 action_type=AuditActionType.CREATE,
-                actor_user=self.context.get("actor_id"),
+                # Not context["actor_id"]: the API views put a User in it but
+                # the bulk importer puts str(user.id), and a string here makes
+                # emit_audit_event swallow the event and write nothing.
+                actor_user=actor,
                 entity_type="Branch",
                 entity_id=str(branch.code),
                 entity_label=branch.name,
@@ -1043,16 +1050,17 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                         to_grant[required.pk] = required
                         stack.append(required)
 
+            # vs_config owns entitlement writes: it computes the canonical
+            # "tenant:<id>" scope key and audits every grant. Writing rows
+            # here directly is what let this path drift out of step with it.
             for capability in to_grant.values():
-                CapabilityEntitlement.all_objects.update_or_create(
+                set_entitlement(
                     capability=capability,
-                    scope_key=f"school:{school.pk}",
-                    defaults={
-                        "school": school,
-                        "state": CapabilityEntitlement.State.GRANTED,
-                        "source": CapabilityEntitlement.Source.PACKAGE,
-                        "updated_by": self.context.get("actor_id"),
-                    },
+                    tenant=school.tenant,
+                    state=CapabilityEntitlement.State.GRANTED,
+                    source=CapabilityEntitlement.Source.PACKAGE,
+                    actor=actor,
+                    reason=f"School package setup for {school.name}",
                 )
 
         # --- 6. Audit trail for school ---
@@ -1064,7 +1072,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         emit_audit_event(
             module_key=AuditModuleKey.SCHOOL,
             action_type=AuditActionType.CREATE,
-            actor_user=self.context.get("actor_id"),
+            actor_user=actor,
             entity_type="School",
             entity_id=str(school.slug),
             entity_label=school.name,

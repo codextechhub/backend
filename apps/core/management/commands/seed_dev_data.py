@@ -356,16 +356,20 @@ class Command(BaseCommand):
                 )
                 # Enable every module except the finance stack (user scope).
                 from vs_config.models import Capability, CapabilityEntitlement
+                from vs_config.services.capabilities import set_entitlement
                 modules = Capability.objects.filter(kind=Capability.Kind.MODULE).exclude(
                     key__in=["finance", "procurement", "payments", "vendors"]
                 )
                 for capability in modules:
-                    CapabilityEntitlement.all_objects.update_or_create(
+                    # Entitlements are tenant-scoped and belong to vs_config's
+                    # service, which owns the scope key and the audit trail.
+                    set_entitlement(
                         capability=capability,
-                        scope_key=f"school:{school.pk}",
-                        defaults={
-                            "school": school, "state": "GRANTED", "source": "PACKAGE"
-                        },
+                        tenant=school.tenant,
+                        state=CapabilityEntitlement.State.GRANTED,
+                        source=CapabilityEntitlement.Source.PACKAGE,
+                        actor=None,
+                        reason="Development seed data",
                     )
             contact, _ = ContactInfo.objects.get_or_create(
                 email=f"admin@{spec['slug']}.example.com",
