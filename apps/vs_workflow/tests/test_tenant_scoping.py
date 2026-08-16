@@ -225,3 +225,93 @@ class DelegationScopingTests(_TwoTenants):
         view = ApprovalDelegationViewSet.as_view({"get": "list"})
         rows = _rows(_call(view, "get", self.admin, self.mine.tenant))
         self.assertEqual(len(rows), 1)
+
+
+class DelegationWriteBoundaryTests(_TwoTenants):
+    """A delegation may not name a delegate outside the delegation's tenant.
+
+    ``delegate`` is client-supplied - ``perform_create`` pins only the tenant and
+    the delegator - so this endpoint was the one place a caller could nominate an
+    approver by id, and the id was resolved over the whole user table. Any
+    authenticated user could therefore hand their approval authority to somebody
+    in another tenant, whom ``resolve_approvers`` would then seat on the document.
+
+    The refusal is only half of what is asserted here. Resolving the delegate
+    *inside* the tenant means a foreign id and an id that exists nowhere take the
+    same path and come back identical, so the endpoint cannot be walked to learn
+    which user ids exist elsewhere. The resolution-time half of the fix, which
+    neutralises rows written before this boundary, lives in
+    ``test_services.DelegationTenantContainmentTests``.
+    """
+
+    def _payload(self, delegate_id):
+        now = timezone.now()
+        return {
+            "delegate": delegate_id,
+            "starts_at": now.isoformat(),
+            "ends_at": (now + timezone.timedelta(days=1)).isoformat(),
+        }
+
+    def _create(self, delegate_id):
+        view = ApprovalDelegationViewSet.as_view({"post": "create"})
+        return _call(view, "post", self.admin, self.mine.tenant,
+                     self._payload(delegate_id))
+
+    def _unused_user_id(self):
+        """An id no user holds, derived rather than hard-coded so it stays true."""
+        from django.contrib.auth import get_user_model
+
+        highest = (get_user_model().objects.order_by("-pk")
+                   .values_list("pk", flat=True).first() or 0)
+        return highest + 1000
+
+    @staticmethod
+    def _field_errors(resp):
+        """The per-field errors, unwrapped from the platform error envelope."""
+        data = resp.data
+        if isinstance(data, dict) and isinstance(data.get("error"), dict):
+            data = data["error"].get("detail", data)
+        return data if isinstance(data, dict) else {}
+
+    def test_can_delegate_to_a_user_in_our_own_tenant(self):
+        """The counterweight: scoping the field must not break delegating at all."""
+        colleague = make_school_admin(self.mine_branch, email="deleg-mine@test.com")
+
+        resp = self._create(colleague.pk)
+
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        row = ApprovalDelegation.all_objects.get()
+        self.assertEqual(row.delegate_id, colleague.pk)
+        self.assertEqual(row.delegator_id, self.admin.pk)
+        self.assertEqual(row.tenant_id, self.mine.tenant.pk)
+
+    def test_cannot_delegate_to_a_user_in_another_tenant(self):
+        """The hole: approval authority handed across the tenant boundary."""
+        self.assertNotEqual(self.their_user.tenant_id, self.mine.tenant.pk)
+
+        resp = self._create(self.their_user.pk)
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("delegate", self._field_errors(resp))
+        self.assertFalse(ApprovalDelegation.all_objects.exists())
+
+    def test_a_foreign_delegate_is_reported_exactly_like_an_unknown_one(self):
+        """No existence oracle: the two refusals must be indistinguishable.
+
+        Rejecting a foreign id with its own wording would answer "does user 412
+        exist somewhere on this platform?" for any authenticated caller, one id at
+        a time. The two responses are compared to *each other* rather than to a
+        copy of the message, so rewording the refusal cannot split them apart
+        without failing here.
+        """
+        foreign = self._create(self.their_user.pk)
+        unknown = self._create(self._unused_user_id())
+
+        # Assert the refusal first: two identical successes would satisfy the
+        # comparison below while proving the opposite of what it is for.
+        self.assertEqual(foreign.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(self._field_errors(foreign).get("delegate"))
+
+        self.assertEqual(foreign.status_code, unknown.status_code)
+        self.assertEqual(foreign.data, unknown.data)
+        self.assertFalse(ApprovalDelegation.all_objects.exists())

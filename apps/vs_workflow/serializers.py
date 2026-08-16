@@ -1,7 +1,11 @@
 """DRF serializers for vs_workflow REST surface."""
 
+from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
+from vs_rbac.serializers.tenant import (
+    USER_NOT_FOUND, TenantScopedRelatedField, TenantScopedSerializerMixin,
+)
 from vs_workflow.constants import (
     ApproverScope, ApproverSource, GroupMemberKind, OrganogramTarget,
 )
@@ -304,7 +308,32 @@ class ReverseActionSerializer(serializers.Serializer):
     reason = serializers.CharField()
 
 
-class ApprovalDelegationSerializer(serializers.ModelSerializer):
+class ApprovalDelegationSerializer(
+    TenantScopedSerializerMixin, serializers.ModelSerializer,
+):
+    """Hand one user's approval authority to another for a period.
+
+    ``delegate`` is client-supplied, so it is the one field here that can move
+    authority, and it is resolved *inside* the delegation's tenant rather than
+    globally: approval authority is tenant-bound, and a delegation is the only
+    way a caller can nominate an approver by id. The view supplies that tenant
+    (``get_serializer_context``), and it is the same tenant ``perform_create``
+    pins on the row, so what was validated and what is stored cannot diverge.
+
+    ``TenantScopedRelatedField`` is reused from ``vs_rbac`` rather than
+    reimplemented, because the guarantee is not only "refuse the foreigner". A
+    foreign id and an absent id come back with one shared message and one status,
+    so this surface cannot be walked to learn which user ids exist in other
+    tenants. A local check written to say "that user is in another tenant" would
+    be the enumeration oracle that field exists to close.
+    """
+
+    delegate = TenantScopedRelatedField(
+        queryset=get_user_model().objects.all(),
+        tenant_lookup="tenant",
+        not_found=USER_NOT_FOUND,
+    )
+
     class Meta:
         model = ApprovalDelegation
         fields = [
@@ -314,6 +343,24 @@ class ApprovalDelegationSerializer(serializers.ModelSerializer):
         # delegator is set from request.user in the view's perform_create - it
         # must be read-only so DRF validation doesn't require the client to send it.
         read_only_fields = ["id", "delegator", "created_at", "revoked_at"]
+
+    def validate(self, attrs):
+        """Fallback tenancy check on the delegate.
+
+        Unreachable through the API - the field above already resolves inside the
+        tenant - and kept as the backstop for a binding that could not reach one
+        (the mixin refuses those outright, so this covers a future field-level
+        change too). It raises the identical message the lookup does, so neither
+        route reveals that an id exists somewhere else.
+        """
+        tenant = self._tenant()
+        if tenant is None:
+            raise serializers.ValidationError({"tenant": "Tenant context is required."})
+
+        delegate = attrs.get("delegate") or getattr(self.instance, "delegate", None)
+        if delegate is not None and getattr(delegate, "tenant_id", None) != tenant.pk:
+            raise serializers.ValidationError({"delegate": USER_NOT_FOUND})
+        return attrs
 
 
 class ApproverPreviewRequestSerializer(serializers.Serializer):

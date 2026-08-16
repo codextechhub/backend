@@ -873,6 +873,12 @@ class ApprovalDelegationViewSet(TenantScopedMixin, ModelViewSet):
     serializer_class = ApprovalDelegationSerializer
     permission_classes = [IsAuthenticatedAndActive]
 
+    def get_serializer_context(self):
+        # The tenant every reference on the serializer resolves inside. Without
+        # it the delegate would be looked up across the whole user table, which
+        # is how a delegation could name somebody in another tenant.
+        return super().get_serializer_context() | {"tenant": self.get_tenant()}
+
     def get_queryset(self):
         user = self.request.user
         qs = ApprovalDelegation.all_objects.filter(tenant=self.get_tenant())
@@ -882,8 +888,11 @@ class ApprovalDelegationViewSet(TenantScopedMixin, ModelViewSet):
         return qs.order_by("-starts_at")
 
     def perform_create(self, serializer):
-        # Delegations are always created by the current user within the active school scope.
-        serializer.save(tenant=self.request.tenant, delegator=self.request.user)
+        # Delegations are always created by the current user within the active
+        # tenant scope. get_tenant() rather than request.tenant directly, so the
+        # tenant the delegate was resolved inside and the tenant stored on the row
+        # are the same expression and cannot drift into disagreeing.
+        serializer.save(tenant=self.get_tenant(), delegator=self.request.user)
 
     @action(detail=True, methods=["post"])
     def revoke(self, request, pk=None):

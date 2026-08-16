@@ -1561,3 +1561,188 @@ class OrganogramSourceResolutionTests(TestCase):
              resolve_approvers(self._stage(code="org-cx"), instance)],
             [manager.pk],
         )
+
+
+class DelegationTenantContainmentTests(TestCase):
+    """A delegation cannot carry approval authority across a tenant boundary.
+
+    ``ApprovalDelegation`` is the only way one user names another as an approver,
+    and the expansion at the end of ``resolve_approvers`` used to trust the row
+    outright. Its queryset filters ``tenant=instance.tenant``, which scopes the
+    delegation ROW and reads like containment without being it: nothing
+    constrained the user the row names, so a delegation to somebody in another
+    tenant seated that outsider on the document.
+
+    The write boundary now refuses such a row (see
+    ``vs_workflow.tests.test_tenant_scoping.DelegationWriteBoundaryTests``).
+    These pin the other half, which is what neutralises the rows written before
+    the boundary existed - deliberately without a data migration, because
+    ignoring a row at resolution is reversible and deleting somebody's delegation
+    history is not.
+
+    The counterweights matter as much as the regressions: a fix that simply
+    stopped expanding delegations would pass every cross-tenant case here and
+    silently break the feature.
+    """
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import (
+            make_assignment, make_branch, make_role, make_school,
+        )
+
+        self.school = make_school(slug="delegation-school")
+        self.branch = make_branch(self.school)
+        self.tenant = self.school.tenant
+        self.requester = _make_user_in_branch("deleg-req@test.com", self.branch)
+        self.template = _make_template(doc_type="DELEG_DOC")
+        self.instance = _make_instance(self.template, self.requester)
+
+        self.role = make_role(self.tenant, name="Delegating Bursar")
+        self.approver = _make_user_in_branch("deleg-approver@test.com", self.branch)
+        make_assignment(self.tenant, self.approver, self.role)
+
+    # -- fixtures ------------------------------------------------------------ #
+
+    def _stage(self, code="deleg-stage"):
+        """A plain ROLE stage the delegating approver qualifies for."""
+        stage = _make_stage(self.template, code=code)
+        stage.approver_source = "ROLE"
+        stage.approver_role_key = self.role.key
+        stage.approver_role = self.role
+        stage.save(update_fields=[
+            "approver_source", "approver_role_key", "approver_role",
+        ])
+        return stage
+
+    def _outsider(self, email):
+        """An active user whose home tenant is not the one raising the document."""
+        from vs_rbac.tests.helpers import make_branch, make_school
+
+        other = make_school(slug=f"delegation-other-{email.split('@')[0]}")
+        return _make_user_in_branch(email, make_branch(other))
+
+    def _insider(self, email):
+        return _make_user_in_branch(email, self.branch)
+
+    def _delegate_to(self, delegate, *, exclusive=False):
+        """An active, unrevoked row of exactly the shape the resolver reads."""
+        from vs_workflow.models import ApprovalDelegation
+
+        now = timezone.now()
+        return ApprovalDelegation.objects.create(
+            tenant=self.tenant, delegator=self.approver, delegate=delegate,
+            starts_at=now - timezone.timedelta(hours=1),
+            ends_at=now + timezone.timedelta(hours=1),
+            exclusive=exclusive,
+        )
+
+    def _assert_row_is_live(self, row):
+        """Every filter the resolver applies except containment, asserted.
+
+        Without this the cross-tenant tests could quietly decay into tests of a
+        delegation that was never going to fire - an expired window or a row in
+        the wrong tenant would make them pass for the wrong reason.
+        """
+        now = timezone.now()
+        self.assertEqual(row.tenant_id, self.instance.tenant_id)
+        self.assertLessEqual(row.starts_at, now)
+        self.assertGreaterEqual(row.ends_at, now)
+        self.assertIsNone(row.revoked_at)
+        self.assertEqual(row.document_type, "")
+        self.assertEqual(row.delegator_id, self.approver.pk)
+        self.assertNotEqual(row.delegate_id, self.instance.requested_by_id)
+
+    # -- the regression -------------------------------------------------------- #
+
+    def test_a_delegate_in_another_tenant_is_not_an_eligible_approver(self):
+        """The hole: an existing row hands a tenant's document to an outsider.
+
+        Before containment reached the delegates this returned two approvers, the
+        second of them a user with no relationship to the tenant that raised the
+        document, acting on the delegator's behalf.
+        """
+        outsider = self._outsider("deleg-outsider@test.com")
+        row = self._delegate_to(outsider)
+
+        self.assertNotEqual(outsider.tenant_id, self.instance.tenant_id)
+        self._assert_row_is_live(row)
+
+        result = resolve_approvers(self._stage(), self.instance)
+        self.assertEqual([e.user.pk for e in result], [self.approver.pk])
+        self.assertIsNone(result[0].on_behalf_of)
+
+    def test_an_exclusive_cross_tenant_delegation_does_not_strip_the_delegator(self):
+        """A row that may not add an approver may not remove one either.
+
+        This is what decides where containment goes in the function. Filtering
+        the outsider out *after* ``excluded_delegators`` is computed would refuse
+        him and still honour his row's exclusivity, leaving a stage with nobody on
+        it - and with ``skip_if_no_approvers=False``, which every ladder over
+        money sets, that parks a document that had a perfectly good approver all
+        along. A refused row must have no effect in either direction.
+        """
+        outsider = self._outsider("deleg-outsider-excl@test.com")
+        row = self._delegate_to(outsider, exclusive=True)
+        self._assert_row_is_live(row)
+        self.assertTrue(row.exclusive)
+
+        result = resolve_approvers(self._stage(code="deleg-cross-excl"), self.instance)
+        self.assertEqual([e.user.pk for e in result], [self.approver.pk])
+        self.assertIsNone(result[0].on_behalf_of)
+
+    def test_a_deactivated_delegate_is_not_an_eligible_approver(self):
+        """The second thing the shared filter fixes, free of charge.
+
+        Every base source excludes inactive users, but the delegation expansion
+        checked nothing at all, so a delegate was the one route by which a closed
+        account stayed eligible to approve. Routing delegates through
+        ``_tenant_members`` - the single definition of "may act here" - closes
+        that with the same line, which is the point of having one definition.
+        """
+        stand_in = self._insider("deleg-gone@test.com")
+        self._delegate_to(stand_in)
+        # save() re-derives is_active from status, so deactivate via status.
+        stand_in.status = "DEACTIVATED"
+        stand_in.save(update_fields=["status"])
+
+        result = resolve_approvers(self._stage(code="deleg-inactive"), self.instance)
+        self.assertEqual([e.user.pk for e in result], [self.approver.pk])
+
+    # -- the counterweights ---------------------------------------------------- #
+
+    def test_a_same_tenant_delegation_still_expands_the_approver_list(self):
+        """Delegation still works, which is what makes the fix a fix.
+
+        Both people are eligible on a non-exclusive row, and the delegate carries
+        ``on_behalf_of`` so the audit trail names both.
+        """
+        stand_in = self._insider("deleg-standin@test.com")
+        self._delegate_to(stand_in)
+
+        self.assertEqual(stand_in.tenant_id, self.instance.tenant_id)
+        result = resolve_approvers(self._stage(code="deleg-inside"), self.instance)
+        pairs = {
+            (e.user.pk, e.on_behalf_of.pk if e.on_behalf_of else None)
+            for e in result
+        }
+        self.assertEqual(
+            pairs, {(self.approver.pk, None), (stand_in.pk, self.approver.pk)},
+        )
+
+    def test_an_exclusive_same_tenant_delegation_still_replaces_the_delegator(self):
+        """Exclusivity survives containment for a legitimate row.
+
+        The pair with the test above: containment must not be implemented by
+        dropping the exclusivity handling, and must not be applied so late that a
+        valid exclusive row stops removing its delegator.
+        """
+        stand_in = self._insider("deleg-standin-excl@test.com")
+        self._delegate_to(stand_in, exclusive=True)
+
+        result = resolve_approvers(
+            self._stage(code="deleg-inside-excl"), self.instance,
+        )
+        self.assertEqual(
+            [(e.user.pk, e.on_behalf_of.pk) for e in result],
+            [(stand_in.pk, self.approver.pk)],
+        )

@@ -123,9 +123,15 @@ def _role_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
 def _tenant_members(users, tenant_id) -> list:
     """De-dupe and enforce tenant containment on a resolved user list.
 
+    The single definition of "this person may hold approval authority here", so
+    every door into the eligible list runs through this one function and the two
+    conditions cannot drift apart between them.
+
     Containment is applied at resolution rather than trusted from the stored
     rows: organogram positions are platform-global seats, so a tenant's group
-    must never route approval authority to somebody outside that tenant.
+    must never route approval authority to somebody outside that tenant. The
+    same reasoning covers a delegation row, whose tenant column scopes the row
+    and says nothing about the user it names.
     """
     return list({
         u.pk: u for u in users
@@ -383,6 +389,11 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     via a seen-set on (user_id, on_behalf_of_id) pairs prevents the same row
     appearing twice. A delegate acting for two different delegators intentionally
     appears twice - once per delegator - because the on_behalf_of field differs.
+
+    Containment is one rule, not one rule per code path, so it is applied to the
+    delegates too: an approver may hand their authority to a colleague, never
+    across a tenant boundary, and a delegation row cannot buy an outsider the
+    eligibility the sources above are forbidden to give them directly.
     """
     override = stage_override_for(stage, instance.tenant)
     if override is not None:
@@ -414,7 +425,8 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     # somebody outside that tenant. The role, group and override paths already
     # resolve inside instance.tenant, and _tenant_members is a pure filter, so
     # applying it here is a no-op for them and the one missing guard for
-    # ORGANOGRAM.
+    # ORGANOGRAM. This is the first of the two doors into the eligible list; the
+    # delegation block below is the second, and runs the same filter.
     base_users = _tenant_members(base_users, instance.tenant_id)
 
     # Self-approval is barred on every source, so the filter lives here once
@@ -425,14 +437,39 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
 
     now = timezone.now()
     # Delegations only apply while active, unrevoked, and matching this document type.
-    delegations = ApprovalDelegation.objects.filter(
+    delegations = list(ApprovalDelegation.objects.filter(
         tenant=instance.tenant,
         starts_at__lte=now, ends_at__gte=now,
         revoked_at__isnull=True,
         delegator_id__in=base_ids,
     ).filter(
         Q(document_type="") | Q(document_type=instance.document_type),
-    ).exclude(delegate_id=instance.requested_by_id).select_related("delegator", "delegate")
+    ).exclude(delegate_id=instance.requested_by_id).select_related("delegator", "delegate"))
+
+    # The second door, running the same containment filter as the first.
+    # ``tenant=instance.tenant`` above scopes the delegation ROW and reads like
+    # containment without being it: nothing constrained the user that row names,
+    # so an approver could hand their authority to somebody in another tenant and
+    # resolution would seat that outsider as an eligible approver. A delegate is
+    # a person entering the eligible list, so they go through _tenant_members
+    # exactly as the base users did, which also means "active" and "home tenant"
+    # cannot come to mean different things at the two doors.
+    #
+    # Rows written before this rule existed may already name a foreign delegate,
+    # and they are neutralised here rather than deleted or rewritten by a data
+    # migration: ignoring a row at resolution is safe and reversible, whereas
+    # destroying somebody's delegation history is neither.
+    contained_delegate_ids = {
+        u.pk for u in _tenant_members(
+            [d.delegate for d in delegations], instance.tenant_id,
+        )
+    }
+    # Deliberately ahead of excluded_delegators: an exclusive delegation naming
+    # an outsider must not strip the delegator while contributing nobody. A row
+    # that is not allowed to add an approver is not allowed to remove one either,
+    # or refusing the outsider would empty the stage instead of leaving it as it
+    # was before the row was written.
+    delegations = [d for d in delegations if d.delegate_id in contained_delegate_ids]
 
     result: List[EligibleApprover] = []
     seen = set()
