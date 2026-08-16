@@ -76,7 +76,6 @@ class _ExportFixture:
         call_command("seed_actions", verbosity=0)
         call_command("seed_exports_permissions", verbosity=0)
         call_command("seed_finance_permissions", verbosity=0)
-        call_command("seed_notification_event_types", verbosity=0)
 
         self.tenant = Tenant.objects.get(slug="codex")
         seed_currencies()
@@ -862,11 +861,15 @@ class QueuePositionTests(_ExportFixture, TestCase):
 class NotificationRegistryTests(_ExportFixture, TestCase):
     """send_notification rejects unregistered keys, so a typo silences a notification
     exactly the way an unregistered action_type silences an audit event. Both
-    registries get a guard test for the same reason."""
+    registries get a guard test for the same reason.
+
+    Nothing here seeds the registry. The rows arrive with the database, from
+    ``vs_notifications`` migration 0008, so this test doubles as the proof that
+    they do: if that migration ever stops running, this fails rather than every
+    export notification quietly turning into a swallowed dispatch error."""
 
     def setUp(self):
         self.build()
-        call_command("seed_notification_event_types", verbosity=0)
 
     def test_every_notification_event_key_is_registered(self):
         from vs_notifications.models import NotificationEventType

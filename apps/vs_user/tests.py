@@ -990,13 +990,10 @@ class EmailFailureResilienceTests(TestCase):
 
     def setUp(self):
         from apps.celery import app as celery_app
-        from vs_notifications.services.seed import (
-            seed_event_types, seed_notification_templates,
-        )
+        from vs_notifications.services.seed import seed_notification_templates
 
-        # The event registry + DB templates are not seeded by migrations, so the
-        # engine has nothing to render/dispatch without this.
-        seed_event_types()
+        # The event registry arrives with the database (vs_notifications 0008).
+        # The DB templates do not, so the engine has nothing to render without this.
         seed_notification_templates()
 
         self.celery_app = celery_app
@@ -1107,10 +1104,9 @@ class InvitationEngineDispatchTests(TestCase):
     """
 
     def setUp(self):
-        from vs_notifications.services.seed import (
-            seed_event_types, seed_notification_templates,
-        )
-        seed_event_types()
+        # Event types come from vs_notifications 0008; only the templates need seeding.
+        from vs_notifications.services.seed import seed_notification_templates
+
         seed_notification_templates()
 
     def _invitation_for(self, user, invited_by=None):
@@ -1511,29 +1507,7 @@ class QueueSummaryTests(TestCase):
         self.assertEqual(res.json()["data"]["by_status"].get("SUCCEEDED"), 1)
 
 
-class SeedsNotificationEventTypes:
-    """Seeds the notification event-type registry for tests that create users.
-
-    Nothing creates these rows automatically - no migration does, only the
-    `seed_notification_event_types` command - so a fresh test database has an
-    empty registry. Creating a user sends an invitation, dispatch cannot resolve
-    its event key, and `finalize_invitation` catches the error and logs it. The
-    test still passes, which is the problem: the invitation path never actually
-    ran, and every user-creating test printed error-level tracebacks that make a
-    genuine failure in the same run much harder to read.
-
-    Seeding here means these tests exercise the real dispatch instead of its
-    exception handler, and stops them depending on whether some earlier test in
-    the same worker happened to seed the registry first.
-    """
-
-    @classmethod
-    def setUpTestData(cls):
-        super().setUpTestData()
-        call_command("seed_notification_event_types", verbosity=0)
-
-
-class UserBranchAssignmentTests(SeedsNotificationEventTypes, TestCase):
+class UserBranchAssignmentTests(TestCase):
     """Creating a user against a branch - the path M9 school onboarding needs.
 
     Two differently shaped tenants on purpose. ``branched`` is a school with real
@@ -1773,7 +1747,7 @@ class UserBranchAssignmentTests(SeedsNotificationEventTypes, TestCase):
         self.assertEqual(resp.status_code, 400, resp.content)
 
 
-class UserBranchTenantGuardTests(SeedsNotificationEventTypes, TestCase):
+class UserBranchTenantGuardTests(TestCase):
     """``User._derive_tenant`` and the ``save()`` guard, after Phase C.
 
     Both read the branch's own ``tenant_id`` now instead of walking

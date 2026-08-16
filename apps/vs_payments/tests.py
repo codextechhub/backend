@@ -2703,7 +2703,6 @@ class UnbookedReceiptAlertTests(_PaymentsFixtureMixin, TestCase):
 
         call_command("seed_actions", verbosity=0)
         call_command("seed_payments_permissions", verbosity=0)
-        call_command("seed_notification_event_types", verbosity=0)
 
     def _unbooked(self, entity, customer, *, count=1, status="FAILED", error="",
                   amount=50000):

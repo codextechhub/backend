@@ -10607,16 +10607,16 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
     def setUpTestData(cls):
         """Seed the registries these sends depend on, once for the whole class.
 
-        No migration creates NotificationEventType rows - only
-        ``seed_notification_event_types``, which build.sh runs on every deploy - so a
-        fresh test database has none and every send would raise UnknownEventTypeError.
-        Seeding is what makes these tests exercise the real dispatch path rather than
-        a swallowed failure. Permission rows carry module/resource/action FKs, so they
-        come from the real seeder too rather than being invented row by row.
+        NotificationEventType rows now arrive with the database (vs_notifications
+        migration 0008), so nothing here has to install them. The templates do not:
+        without them a send would render nothing, and these tests would exercise a
+        swallowed failure rather than the real dispatch path. Permission rows carry
+        module/resource/action FKs, so they come from the real seeder too rather than
+        being invented row by row.
 
-        Class-level and stdout-captured deliberately: per-test seeding ran three
-        commands 13 times and buried the results under hundreds of lines of seeder
-        output, which is exactly what makes a failing run unreadable.
+        Class-level and stdout-captured deliberately: per-test seeding ran these
+        commands 13 times over and buried the results under hundreds of lines of
+        seeder output, which is exactly what makes a failing run unreadable.
         """
         super().setUpTestData()
         import io
@@ -10624,7 +10624,6 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
         from django.core.management import call_command
 
         quiet = io.StringIO()
-        call_command("seed_notification_event_types", verbosity=0, stdout=quiet)
         call_command("seed_notification_templates", verbosity=0, stdout=quiet)
         call_command("seed_finance_permissions", verbosity=0, stdout=quiet)
 

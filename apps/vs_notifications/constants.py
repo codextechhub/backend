@@ -3,8 +3,11 @@
 #
 # All enums, TextChoices, and the EVENT_TYPE_REGISTRY that seeds the
 # NotificationEventType table.  Adding a new event type means:
-#   1. Add an entry to EVENT_TYPE_REGISTRY below.
-#   2. Run: python manage.py seed_notification_event_types
+#   1. Add an entry to EVENT_TYPE_REGISTRY below.  This list is the only place
+#      the catalogue is written down: vs_notifications migration 0008 reads it
+#      directly, so a new database picks the entry up with no further step.
+#   2. Run: python manage.py seed_notification_event_types  (resyncs databases
+#      that already exist; build.sh does this on every deploy)
 #   3. Run: python manage.py seed_notification_templates   (creates default body)
 # =============================================================================
 

@@ -31,7 +31,7 @@ from .models import (
 )
 from .services.dispatch import NotificationService, UnregisteredRecipient
 from .services.settings import resolve_channels, resolve_channels_bulk
-from .services.seed import seed_event_types, seed_notification_templates, seed_platform_settings
+from .services.seed import seed_notification_templates, seed_platform_settings
 from . import signals
 
 User = get_user_model()
@@ -70,10 +70,14 @@ def _grant_school_permission(user, school, permission_key):
 
 
 class _NotifFixture(TestCase):
-    """Seeds event types/templates/platform settings and builds users + schools."""
+    """Seeds templates/platform settings and builds users + schools.
+
+    The event types themselves are not seeded here: migration 0008 installs the
+    whole registry, so every database already has them. Templates and platform
+    settings still need a call, since nothing installs those.
+    """
 
     def setUp(self):
-        seed_event_types()
         seed_notification_templates()
         seed_platform_settings()
 

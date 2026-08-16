@@ -33,14 +33,18 @@ class NotificationEventType(models.Model):
     """
     A named, platform-defined trigger point registered by a source module.
 
-    Records are created and updated by the seed_notification_event_types
-    management command.  They are never created via the API.
+    Records are installed by migration 0008 from EVENT_TYPE_REGISTRY, so every
+    database has the full catalogue from the moment it is created, and are
+    resynced afterwards by the seed_notification_event_types management command
+    (build.sh runs it on every deploy).  They are never created via the API.
 
     The `key` field is the stable identifier used by calling modules:
         NotificationService.send(event_key="billing.invoice_issued", ...)
 
-    Deleting an event type is blocked (PROTECT) while templates or settings
-    reference it - use is_active=False to retire an event type instead.
+    Deleting an event type is blocked (PROTECT) while templates or sent
+    notifications reference it.  Settings are CASCADE, so a delete that did get
+    through would silently take every tenant's channel toggles with it - which is
+    the other half of why you retire an event type with is_active=False instead.
     """
 
     id = models.UUIDField(
