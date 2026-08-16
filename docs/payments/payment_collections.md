@@ -342,8 +342,9 @@ server-side.
 
 ## 11. Test coverage & gaps
 
-Baseline after hardening: **38 green** (`python manage.py test vs_payments
---settings=apps.settings.local`). Collections/VA-relevant:
+Full `vs_payments` app suite: **139 green** (`python manage.py test vs_payments
+--settings=apps.settings.local --noinput`, one app at a time with a unique
+`DB_NAME`). Collections/VA-relevant:
 - `CollectionTests`: initiate → PROCESSING + checkout + audit row; verify → books
   receipt & settles invoice; failed collection books nothing; **confirm
   idempotency**; plus the five hardening tests - `test_settled_amount_overrides_

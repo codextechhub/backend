@@ -278,8 +278,9 @@ Paystack collection webhook (from `test_webhook_confirms_collection`,
 
 ## 11. Test coverage & gaps
 
-Baseline after hardening: **70 green** (`python manage.py test vs_payments
---settings=apps.settings.local`). Webhook/provider-relevant:
+Full `vs_payments` app suite: **139 green** (`python manage.py test vs_payments
+--settings=apps.settings.local --noinput`, one app at a time with a unique
+`DB_NAME`). Webhook/provider-relevant:
 - `ProviderTests`: Fake signature round-trip (tamper → invalid); registry override
   resolves the Fake over `PAYSTACK`.
 - `WebhookTests`: **bad signature rejected + books nothing**; webhook confirms a
