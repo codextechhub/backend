@@ -1,4 +1,7 @@
 ## Undone
+- LIVE BUG on M9's path, found 2026-08-16 while updating the M9 FRD (verified by Django introspection, not by reading): `apps/schools/vs_schools/serializers.py:245` filters `CapabilityEntitlement.all_objects.filter(school=obj.school, ...)` but that model has NO `school` field. Its fields are id, capability, tenant, scope_key, state, source, starts_at, ends_at, updated_by, created_at, updated_at. So `get_enabled_modules` raises FieldError, meaning school detail blows up for any school that has a package setup. The tenant refactor moved entitlements to `tenant` and this call site was missed. Fix is to filter on the school's tenant. Check for sibling call sites before assuming this is the only one.
+- ALSO from the M9 FRD pass (2026-08-16), unimplemented rather than broken: NOTHING anywhere sets `School.status = ACTIVE`, and `SchoolUpdateSerializer` excludes `status` from its fields. So there is no code path that takes a school live. M9 has to provide it.
+- AUDIT SILENTLY DROPS UNKNOWN ACTIONS (2026-08-16): `emit_audit_event` swallows an unregistered `action_type` without error, so a module that emits action types it never registered gets an entirely empty audit trail and no warning. Register the values before relying on them.
 
 
 
