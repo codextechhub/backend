@@ -21,12 +21,14 @@ import uuid
 
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
-from django.db.models import F
+from django.db.models import F, Q
 from django.utils import timezone
 
 from . import analytics, audit
 from .catalogue import default_format_options, get_dataset
 from .constants import (
+    ABANDONED_QUEUED_HOURS,
+    ABANDONED_RUNNING_HOURS,
     AuditAction,
     MISSED_WINDOW_GRACE_HOURS,
     PauseReason,
@@ -408,11 +410,15 @@ def execute_run(run_id: int):
     def _cancelled():
         return ExportRun.objects.filter(pk=run.pk, cancel_requested=True).exists()
 
+    # Everything that decides whether a file exists is inside one guard, so there is
+    # no window in which the run can be left RUNNING with a file already written. A
+    # run that reaches this function ALWAYS leaves it terminal.
     try:
         body, headers, field_ids, row_count, omissions = produce(
             owner, run.frozen_config, run.scope_context(), run.tenant,
             progress=_progress, is_cancelled=_cancelled,
         )
+        file = _store_file(run, body, field_ids, row_count)
     except Cancelled:
         return _finish_cancelled(run)
     except ExportError as exc:
@@ -424,9 +430,6 @@ def execute_run(run_id: int):
             "keeps happening, contact support with the reference above.",
             detail=str(exc),
         )
-
-    file = _store_file(run, body, field_ids, row_count)
-    _record_sensitive(run, owner)
 
     run.status = (
         RunStatus.COMPLETED_WITH_OMISSIONS if omissions else RunStatus.COMPLETED
@@ -442,22 +445,37 @@ def execute_run(run_id: int):
         "ended_at", "updated_at",
     ])
 
-    audit.record(
-        AuditAction.RUN_COMPLETED, actor=run.requested_by, tenant=run.tenant, obj=run,
-        label=run.reference,
-        metadata={"rows": row_count, "bytes": file.size_bytes, "file": file.name},
-    )
-    if omissions:
-        audit.record(
-            AuditAction.RUN_OMITTED_FIELDS, actor=run.requested_by, tenant=run.tenant,
-            obj=run, label=run.reference, severity="WARNING",
-            metadata={"omissions": run.omissions},
-        )
-
-    _record_failure_resolved(run)
-    _advance_schedule(run, succeeded=True)
-    _notify(run, omissions=bool(omissions))
+    _after_completion(run, owner, file, row_count, omissions)
     return run
+
+
+# Everything that happens once the run is already finished and saved.
+#
+# The file exists and the row is terminal before any of this runs, so none of it may
+# change the outcome - and none of it may undo the outcome by raising either. A failed
+# audit write, a notification the mailer refused, a schedule that could not be advanced:
+# each is worth logging and none is worth telling the user their export did not happen.
+def _after_completion(run, owner, file, row_count, omissions):
+    try:
+        _record_sensitive(run, owner)
+        audit.record(
+            AuditAction.RUN_COMPLETED, actor=run.requested_by, tenant=run.tenant, obj=run,
+            label=run.reference,
+            metadata={"rows": row_count, "bytes": file.size_bytes, "file": file.name},
+        )
+        if omissions:
+            audit.record(
+                AuditAction.RUN_OMITTED_FIELDS, actor=run.requested_by, tenant=run.tenant,
+                obj=run, label=run.reference, severity="WARNING",
+                metadata={"omissions": run.omissions},
+            )
+        _record_failure_resolved(run)
+        _advance_schedule(run, succeeded=True)
+        _notify(run, omissions=bool(omissions))
+    except Exception:                              # pragma: no cover - defensive
+        logger.exception(
+            "Export run %s completed but its follow-up bookkeeping failed", run.reference,
+        )
 
 
 # Close the loop on a failure this run has just put right.
@@ -728,18 +746,85 @@ def expire_files(*, now=None) -> int:
     stale = ExportFile.objects.filter(available_until__lte=now, purged_at__isnull=True)
     purged = 0
     for file in stale.select_related("run", "run__tenant").iterator():
-        try:
-            default_storage.delete(file.storage_name)
-        except Exception:                          # pragma: no cover - storage best effort
-            pass
-        file.purged_at = now
-        file.save(update_fields=["purged_at", "updated_at"])
-        audit.record(
-            AuditAction.FILE_EXPIRED, tenant=file.run.tenant, obj=file, label=file.name,
-            metadata={"run": file.run.reference},
-        )
+        _purge_file(file, now=now, reason="expired")
         purged += 1
     return purged
+
+
+# Delete one file's bytes and mark the row purged. History is never rewritten.
+def _purge_file(file, *, now, reason):
+    try:
+        default_storage.delete(file.storage_name)
+    except Exception:                              # pragma: no cover - storage best effort
+        pass
+    file.purged_at = now
+    file.save(update_fields=["purged_at", "updated_at"])
+    audit.record(
+        AuditAction.FILE_EXPIRED, tenant=file.run.tenant, obj=file, label=file.name,
+        metadata={"run": file.run.reference, "reason": reason},
+    )
+
+
+def sweep_abandoned_runs(*, now=None) -> dict:
+    """Finish runs whose worker never reported back. Returns what it closed.
+
+    The safety net for the one way a run can still be stranded: the process holding it
+    dies, so none of :func:`execute_run`'s own finalisers ever run. Everything else
+    about the export is already durable - the row, the frozen config, the audit trail -
+    and this is what stops that row spinning forever.
+
+    Two ways a swept run ends, and the difference matters to the person waiting:
+
+    * asked to be cancelled - it ends CANCELLED, silently. They already know; a failure
+      notice for something they themselves stopped is noise.
+    * anything else - it ends FAILED with :attr:`FailureCode.INFRASTRUCTURE`, which is
+      retryable, carries "try again" guidance, and notifies the owner. A run that died
+      is not a run that never happened.
+
+    Any file the dead worker had already stored is purged rather than handed over. The
+    bytes are complete (``_store_file`` writes in one go), but the *run* never recorded
+    what is in them - no row count of its own, no omission list - and offering a file
+    this app cannot describe is precisely the silence the Export Centre exists to
+    prevent. Failing the run instead costs one more click and produces a file that
+    comes with its own account of itself.
+
+    Idempotent: a swept run is terminal, so the next pass does not see it.
+    """
+    now = now or timezone.now()
+    running_cutoff = now - datetime.timedelta(hours=ABANDONED_RUNNING_HOURS)
+    queued_cutoff = now - datetime.timedelta(hours=ABANDONED_QUEUED_HOURS)
+
+    stranded = ExportRun.objects.filter(
+        Q(status=RunStatus.RUNNING, started_at__lt=running_cutoff)
+        # A RUNNING row always has started_at (execute_run writes both in one save), but
+        # the fallback keeps the net from having a hole in it: no non-terminal row can
+        # be invisible to this query forever, whatever wrote it.
+        | Q(status=RunStatus.RUNNING, started_at__isnull=True, queued_at__lt=running_cutoff)
+        | Q(status=RunStatus.QUEUED, queued_at__lt=queued_cutoff)
+    ).select_related("definition", "schedule", "tenant", "requested_by")
+
+    closed = {"failed": 0, "cancelled": 0, "files_purged": 0}
+    for run in stranded.iterator():
+        file = ExportFile.objects.filter(run=run, purged_at__isnull=True).first()
+        if file is not None:
+            _purge_file(file, now=now, reason="run_abandoned")
+            closed["files_purged"] += 1
+
+        if run.cancel_requested:
+            _finish_cancelled(run)
+            closed["cancelled"] += 1
+            continue
+
+        _finish_failed(
+            run, FailureCode.INFRASTRUCTURE,
+            "This run stopped without finishing - whatever was producing it never "
+            "reported back.",
+            detail=f"swept after {run.status.lower()} since "
+                   f"{(run.started_at or run.queued_at).isoformat()}",
+        )
+        closed["failed"] += 1
+    logger.info("Export sweeper closed %s", closed)
+    return closed
 
 
 # --------------------------------------------------------------------------- #

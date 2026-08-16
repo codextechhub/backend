@@ -78,6 +78,15 @@ app.conf.beat_schedule = {
         "task": "vs_exports.dispatch_schedules",
         "schedule": crontab(minute="*/5"),
     },
+    # Every half hour: close runs whose worker died mid-flight. Nothing inside the
+    # process can strand a run any more, but a killed worker leaves one RUNNING for
+    # good - spinning on the Files screen, and counting against the tenant's
+    # three-in-flight limit until nobody can export at all. Frequent because it is one
+    # indexed query, and because the run it closes is one somebody is waiting on.
+    "exports-sweep-abandoned-runs": {
+        "task": "vs_exports.sweep_abandoned_runs",
+        "schedule": crontab(minute="*/30"),
+    },
     "exports-expire-files": {
         "task": "vs_exports.expire_files",
         "schedule": crontab(hour=3, minute=30),

@@ -1,6 +1,6 @@
 """Background work for the Export Centre.
 
-Four tasks, each thin: the decisions live in :mod:`vs_exports.services`, so the same
+Five tasks, each thin: the decisions live in :mod:`vs_exports.services`, so the same
 behaviour is reachable from a test, a management command or a worker.
 
 Every task rides the platform's :class:`core.tasks_base.TrackedTask` base, so each run
@@ -35,6 +35,20 @@ def run_export_task(run_id: int):
         "rows": run.row_count,
         "omissions": len(run.omissions or []),
     }
+
+
+@shared_task(name="vs_exports.sweep_abandoned_runs")
+def sweep_abandoned_runs_task():
+    """Every half hour: finish runs whose worker died and never reported back.
+
+    The only remaining way a run can be stranded, and the one this app cannot fix from
+    the inside - the process that would have marked it failed is the process that went
+    away. Cheap enough to run often: one indexed query on ``(status, -queued_at)``, and
+    on a healthy platform it closes nothing.
+    """
+    from .services import sweep_abandoned_runs
+
+    return sweep_abandoned_runs()
 
 
 @shared_task(name="vs_exports.expire_files")
