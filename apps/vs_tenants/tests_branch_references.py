@@ -16,7 +16,7 @@ several branches and one with none at all.
 from django.test import TestCase
 from rest_framework.exceptions import ValidationError
 
-from vs_schools.models import School
+from schools.vs_schools.models import School
 from vs_tenants.models import Branch
 from vs_tenants.references import (
     BRANCH_NOT_FOUND,

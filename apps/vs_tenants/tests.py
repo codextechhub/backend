@@ -4,7 +4,7 @@ from django.http import HttpResponse
 from django.test import RequestFactory, TestCase
 from rest_framework.exceptions import NotFound, ValidationError
 
-from vs_schools.models import School, SchoolStatus
+from schools.vs_schools.models import School, SchoolStatus
 from vs_rbac.tests.helpers import make_vision_user
 from vs_tenants.models import Tenant
 from vs_tenants.numbering import next_tenant_document_number

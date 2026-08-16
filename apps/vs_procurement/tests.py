@@ -12495,7 +12495,7 @@ class ProcurementOnboardingSeedTests(TestCase):
         """Every movement needs a location, so an entity must never have none."""
         from vs_finance.models import LedgerEntity
         from vs_finance.provisioning import provision_entity
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
 
         from vs_procurement.models import StockLocation
 
@@ -12518,7 +12518,7 @@ class ProcurementOnboardingSeedTests(TestCase):
     def test_creating_books_publishes_this_tenants_spend_ladders(self):
         from vs_finance.models import LedgerEntity
         from vs_finance.provisioning import provision_entity
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
         from vs_workflow.models import WorkflowTemplate
 
         from vs_procurement.constants import PROCUREMENT_APPROVAL_TYPES
@@ -12541,7 +12541,7 @@ class ProcurementOnboardingSeedTests(TestCase):
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_finance.models import LedgerEntity
         from vs_finance.provisioning import provision_entity
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
 
         from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
 
@@ -12561,7 +12561,7 @@ class ProcurementOnboardingSeedTests(TestCase):
     def test_a_second_entity_in_one_tenant_does_not_republish(self):
         from vs_finance.models import LedgerEntity
         from vs_finance.provisioning import provision_entity
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
         from vs_workflow.models import WorkflowTemplate
 
         school = School.objects.create(

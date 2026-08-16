@@ -98,22 +98,22 @@ SETTING_CONSUMERS = {
     },
     "platform.onboarding.default_ownership_type": {
         "service": "School onboarding",
-        "consumer": "vs_schools.serializers.SchoolCreateSerializer",
+        "consumer": "schools.vs_schools.serializers.SchoolCreateSerializer",
         "impact": "Fills ownership type when a new school omits it.",
     },
     "platform.onboarding.default_term_structure": {
         "service": "School onboarding",
-        "consumer": "vs_schools.serializers.SchoolCreateSerializer",
+        "consumer": "schools.vs_schools.serializers.SchoolCreateSerializer",
         "impact": "Fills academic structure when a new school omits it.",
     },
     "platform.onboarding.default_currency": {
         "service": "School onboarding",
-        "consumer": "vs_schools.serializers.SchoolCreateSerializer",
+        "consumer": "schools.vs_schools.serializers.SchoolCreateSerializer",
         "impact": "Fills billing currency when a new school omits it.",
     },
     "platform.onboarding.default_branch_country": {
         "service": "Branch onboarding",
-        "consumer": "vs_schools.serializers.BranchCreateSerializer",
+        "consumer": "schools.vs_schools.serializers.BranchCreateSerializer",
         "impact": "Fills country when a new branch omits it.",
     },
     "security.failed_login_threshold": {

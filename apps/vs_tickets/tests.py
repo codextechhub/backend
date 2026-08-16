@@ -21,7 +21,7 @@ from vs_rbac.tests.helpers import (
     make_role,
     make_role_permission,
 )
-from vs_schools.models import School, SchoolStatus
+from schools.vs_schools.models import School, SchoolStatus
 from vs_tenants.models import Branch
 from vs_user.models import User
 

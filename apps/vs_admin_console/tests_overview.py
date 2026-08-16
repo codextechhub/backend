@@ -29,7 +29,7 @@ from vs_rbac.tests.helpers import (
     make_school_admin,
     make_vision_user,
 )
-from vs_schools.models import School, SchoolStatus
+from schools.vs_schools.models import School, SchoolStatus
 from vs_todo.models import Task
 from vs_user.tokens import CodeXRefreshToken
 

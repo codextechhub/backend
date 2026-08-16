@@ -1,6 +1,6 @@
 """School datasets published to the Export Centre.
 
-Registered from :meth:`vs_schools.apps.VsSchoolsConfig.ready`.
+Registered from :meth:`schools.vs_schools.apps.VsSchoolsConfig.ready`.
 
 **This is the one dataset in the platform whose base queryset is not the tenant
 boundary, and that is a deliberate, reviewed exception.**
@@ -8,7 +8,7 @@ boundary, and that is a deliberate, reviewed exception.**
 Every other dataset fences its rows with ``filter(tenant=scope.tenant)`` or
 ``filter(entity=scope.entity)``, so no code path can read past it. The School
 Management console is different by design: it is the CX platform's register of
-*every* school, and :class:`vs_schools.views.school.SchoolListView` already
+*every* school, and :class:`schools.vs_schools.views.school.SchoolListView` already
 serves ``School.objects.all()`` behind ``platform.schools.view``. An export that
 fenced itself to one tenant would not match the screen it is started from, which
 is the one thing this feature promises.
@@ -46,8 +46,8 @@ def _schools(scope):
     return School.objects.all()
 
 
-_SCHOOL_STATUS = choice_labels("vs_schools.models.SchoolStatus")
-_OWNERSHIP = choice_labels("vs_schools.models.OwnershipType")
+_SCHOOL_STATUS = choice_labels("schools.vs_schools.models.SchoolStatus")
+_OWNERSHIP = choice_labels("schools.vs_schools.models.OwnershipType")
 
 
 # Register every schools dataset. Called once from AppConfig.ready().

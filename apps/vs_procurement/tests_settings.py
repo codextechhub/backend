@@ -25,7 +25,7 @@ from vs_procurement.payables import match_vendor_invoice
 from vs_procurement.purchasing import vendor_purchase_block_reason
 from vs_procurement.settings import SETTING_FIELDS
 from vs_procurement.settings_ownership import PROCUREMENT_SETTING_CONSUMERS
-from vs_schools.models import School
+from schools.vs_schools.models import School
 
 
 class ProcurementSettingsAPITests(TestCase):

@@ -87,7 +87,9 @@ INSTALLED_APPS = [
 
     # apps
     "vs_tenants",
-    "vs_schools",
+    # XVS, the schools product. Everything school-shaped lives under
+    # apps/schools/; the app label stays "vs_schools" (see its AppConfig).
+    "schools.vs_schools",
     "vs_admin_console",
     "vs_user",
     "vs_rbac",

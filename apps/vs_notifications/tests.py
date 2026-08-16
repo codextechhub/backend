@@ -21,7 +21,7 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.test import TestCase, override_settings
 
-from vs_schools.models import School
+from schools.vs_schools.models import School
 
 from .constants import ChannelChoices, NotificationErrorCode, NotificationPermission, NotificationStatus
 from .models import (
@@ -1375,7 +1375,7 @@ class SeedNotificationPermissionsTests(TestCase):
 
     def test_native_school_role_backfilled_in_tenant_table(self):
         from vs_rbac.models import TenantRolePermission, TenantRoleTemplate
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
 
         school = School.objects.create(name="Notif Backfill", slug="notif-bf", code="NBF")
         role = TenantRoleTemplate.objects.create(

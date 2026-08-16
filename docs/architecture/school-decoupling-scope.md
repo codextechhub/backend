@@ -571,8 +571,17 @@ Match real couplings (imports, FK target strings, `get_model`) rather than the
 bare word, so a comment or a docstring cannot fail the build and an import cannot
 hide behind one. Across the eight engine apps named in `CLAUDE.md`:
 
+> **Updated 2026-08-16, when `vs_schools` moved to `apps/schools/vs_schools`.**
+> The pattern below matches `from schools.` and `import schools.` as well as the
+> old top-level form. This matters more than it looks: after the move an engine
+> importing the school app writes `from schools.vs_schools.models import …`,
+> which the *previous* pattern did **not** match, so the check would have gone on
+> returning "clean" while the boundary it guards was open. The old `vs_schools`
+> alternatives are kept so the recipe still reads correctly against history and
+> against any app not yet moved under `apps/schools/`.
+
 ```sh
-grep -rnE "from vs_schools|import vs_schools|['\"]vs_schools\.[A-Z]|get_model\(['\"]vs_schools" \
+grep -rnE "from (schools\.)?vs_schools|import (schools\.)?vs_schools|from schools\.|import schools\.|['\"]vs_schools\.[A-Z]|get_model\(['\"]vs_schools" \
   --include="*.py" \
   apps/vs_finance apps/vs_procurement apps/vs_payments apps/vs_rbac \
   apps/vs_workflow apps/vs_notifications apps/vs_audit apps/core \
@@ -596,9 +605,9 @@ engine list but are equally not school apps (`vs_config`, `vs_user`,
 `vs_tickets`, `vs_import_data`, `vs_exports`), returns 42 today:
 
 ```sh
-grep -rnE "from vs_schools|import vs_schools|['\"]vs_schools\.[A-Z]|get_model\(['\"]vs_schools" \
+grep -rnE "from (schools\.)?vs_schools|import (schools\.)?vs_schools|from schools\.|import schools\.|['\"]vs_schools\.[A-Z]|get_model\(['\"]vs_schools" \
   --include="*.py" apps/ \
-  | grep -vE "^apps/vs_schools/|^apps/apps/|/migrations/|/test"
+  | grep -vE "^apps/schools/|^apps/apps/|/migrations/|/test"
 ```
 
 `vs_admin_console` and the onboarding paths in `vs_import_data` legitimately

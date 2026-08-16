@@ -309,7 +309,7 @@ class Command(BaseCommand):
     # 2. Schools, branches, package, primary admins                      #
     # ------------------------------------------------------------------ #
     def _schools(self):
-        from vs_schools.models import (
+        from schools.vs_schools.models import (
             ContactInfo, PackagePlan, School, SchoolBranding,
             SchoolPackageSetup, SchoolPrimaryAdmin, SchoolStatus,
         )

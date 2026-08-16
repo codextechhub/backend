@@ -61,7 +61,7 @@ RETURNED_ITEMS_LIMIT = 3
 
 def _schools() -> dict:
     """Active-school count - the conditional aggregate SchoolStatsView uses."""
-    from vs_schools.models import School, SchoolStatus
+    from schools.vs_schools.models import School, SchoolStatus
 
     row = School.objects.aggregate(
         active=Count("slug", filter=Q(status=SchoolStatus.ACTIVE)),

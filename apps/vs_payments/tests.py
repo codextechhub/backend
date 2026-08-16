@@ -1298,7 +1298,7 @@ class PayoutBatchApprovalTests(TestCase):
             TenantRoleTemplate, TenantUserRoleAssignment, TenantRolePermission,
         )
         from vs_tenants.models import Tenant
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
 
         call_command("seed_payments_permissions", verbosity=0, stdout=io.StringIO())
 
@@ -1983,7 +1983,7 @@ class PayoutApprovalSeedingTests(TestCase):
     def setUp(self):
         import io
         from django.core.management import call_command
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
 
         call_command("seed_payments_permissions", verbosity=0, stdout=io.StringIO())
         self.school = School.objects.create(
@@ -2983,7 +2983,7 @@ class PayoutOnboardingSeedTests(TestCase):
     """
 
     def _tenant(self, slug="cedar-onboard", code="CDRON"):
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
 
         return School.objects.create(
             name="Cedar", slug=slug, code=code, status="ACTIVE").tenant

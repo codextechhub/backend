@@ -1,7 +1,7 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from vs_schools.models import PackagePlan, BillingCycle
+from schools.vs_schools.models import PackagePlan, BillingCycle
 
 
 # ---------------------------------------------------------------------------

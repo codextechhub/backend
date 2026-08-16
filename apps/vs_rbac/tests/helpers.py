@@ -8,7 +8,7 @@ preserved for existing callers, but they now return the tenant objects.
 """
 import itertools
 from django.utils.text import slugify
-from vs_schools.models import School
+from schools.vs_schools.models import School
 from vs_user.models import User
 from vs_tenants.models import Branch, Tenant
 from vs_rbac.models import (
