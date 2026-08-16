@@ -10,14 +10,17 @@
 #   NotificationTemplateViewSet  - Vision Staff template management
 #   NotificationEventTypeViewSet - event type catalogue (read-only, all users)
 #
-# Scoping model (the platform is global; school is optional):
-#   * School-scoped users act on their own school. Supplying ?school= for a
-#     DIFFERENT school returns 404 (never leak another school's existence);
-#     their own id is allowed.
-#   * CX staff (platform tenant) default to the PLATFORM scope, or pass
-#     ?school=<id> to view/write a specific school's rows.
+# Scoping model (scope comes from the ASSERTED TENANT, not a query parameter):
+#   * There is no ?school= parameter. Callers assert a tenant with ?tenant=<slug>
+#     and get that tenant's rows. Asserting a slug that is not the caller's own
+#     tenant is refused with 404 in vs_rbac.authentication (never leak another
+#     tenant's existence); none of these views opt in via
+#     platform_cross_tenant_param, so not even CX staff can cross over here.
+#   * A PLATFORM-kind tenant (CX staff) is Codex's own tenant. In the settings
+#     endpoints it resolves to the PLATFORM scope - the tenant-NULL default rows
+#     every tenant inherits, NOT codex's own rows.
 #
-# NOTE on managers: view scoping is done EXPLICITLY (recipient=… / school=… /
+# NOTE on managers: view scoping is done EXPLICITLY (recipient=… / tenant=… /
 # all_objects) rather than relying on the ambient TenantAwareManager - the
 # tenant thread-local is not reliably set for DRF-authenticated requests, and
 # explicit scoping is the security-critical contract here.
@@ -67,7 +70,9 @@ from .services.routing import notification_route_q
 
 logger = logging.getLogger("vs_notifications.views")
 
-# Sentinel used by history + settings to mean "the platform (school IS NULL) rows".
+# Sentinel for the history ``?scope=`` filter, meaning "rows owned by the
+# PLATFORM-kind tenant". Settings no longer uses it: its scope is the asserted
+# tenant.
 _PLATFORM_SCOPE = "platform"
 
 # Longer terms are noise, not search: a 100k-character icontains scan is a free
@@ -285,9 +290,10 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
     """
     Admin notification history log.
 
-    School Admins: see EXACTLY their own school's rows (never platform rows).
-    CX staff:      see everything; must supply ≥1 filter. Pass
-                   ``scope=platform`` to filter to platform rows (school IS NULL).
+    Every caller, CX staff included, sees EXACTLY their asserted tenant's rows:
+    the queryset filters on ``request.tenant`` regardless of user type, so
+    tenant-NULL rows never appear. Everyone must supply ≥1 filter. Pass
+    ``scope=platform`` to narrow to rows owned by a PLATFORM-kind tenant.
 
     Routes:
         GET /notifications/history/      - paginated log
@@ -301,11 +307,11 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
 
     def get_queryset(self):
         """
-        Base queryset, scoped by the caller's tenancy.
+        Base queryset, scoped to the asserted tenant.
 
-        School admins are hard-scoped to their own school (all_objects so the
-        include_global manager change can't leak platform rows into their view).
-        CX staff (no school) see everything.
+        Every caller is hard-scoped to request.tenant (all_objects so the
+        include_global manager change can't leak tenant-NULL rows into their
+        view). CX staff are not exempt: they see the tenant they asserted.
         """
         user = self.request.user
         # History uses the unscoped manager so platform rows are visible only when allowed.
@@ -329,9 +335,9 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
         created_before  = params.get("created_before")
         search          = (params.get("search") or "").strip()
 
-        # Everyone (school admins included, who have an implicit school filter)
-        # must narrow the log with at least one explicit filter, so a school-less
-        # CX user cannot dump the entire table unfiltered. A search term is a
+        # Everyone (including callers who already have the implicit tenant
+        # filter) must narrow the log with at least one explicit filter, so
+        # nobody can dump a whole tenant's table unfiltered. A search term is a
         # filter like any other.
         if not any([
             scope, recipient_email, event_type_key,
@@ -412,11 +418,14 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
     PATCH /notifications/settings/update/ - upsert override rows by
                                             (event_type_key, channel).
 
-    Scope resolution (same for GET and PATCH):
-      * School-scoped caller → their own school, overlaid on platform defaults.
-        ?school=<own id> is allowed; ?school=<other id> → 404 (no leak).
-      * CX staff (platform tenant) → platform scope by default;
-        ?school=<id> targets that school's effective matrix / rows.
+    Scope resolution (same for GET and PATCH) follows the asserted tenant; there
+    is no ?school= parameter:
+      * Business tenant → its own override rows, overlaid on platform defaults.
+        Asserting another tenant's ?tenant= slug is refused with 404 by the auth
+        layer (this view does not set platform_cross_tenant_param), so the
+        no-leak guarantee still holds.
+      * PLATFORM-kind tenant (CX staff) → the platform DEFAULT layer, the
+        tenant-NULL rows. It cannot target one tenant's rows from here.
 
     Transactional event types appear in the matrix flagged
     ``is_transactional: true`` and are read-only (they bypass settings) - a
@@ -453,7 +462,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
         For each active event type × supported channel, resolve the effective
         value and record which layer produced it. resolve_channels_bulk owns the
         is_active / transactional / layering logic; the same fetched rows also
-        feed the `source` label ("school" / "platform" / "default") so the UI
+        feed the `source` label ("tenant" / "platform" / "default") so the UI
         can render provenance. Total cost: 1 event-type query + 1 settings query.
         """
         event_types = list(
@@ -609,7 +618,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # All valid - upsert override rows by (school, event_type, channel).
+        # All valid - upsert override rows by (tenant, event_type, channel).
         with transaction.atomic():
             # The full PATCH is all-or-nothing so settings cannot partially apply.
             for item in updates:

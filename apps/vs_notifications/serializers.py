@@ -510,7 +510,7 @@ class EffectiveSettingSerializer(serializers.Serializer):
     channel          = serializers.CharField()
     is_enabled       = serializers.BooleanField()
     is_transactional = serializers.BooleanField()
-    # Which layer produced is_enabled: "school", "platform", or "default".
+    # Which layer produced is_enabled: "tenant", "platform", or "default".
     source           = serializers.CharField()
 
 
