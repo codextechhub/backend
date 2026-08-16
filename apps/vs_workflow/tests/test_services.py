@@ -1415,3 +1415,149 @@ class OrganogramSourceResolutionTests(TestCase):
             WorkflowStageApprover.objects.filter(
                 stage_instance=stage_instance).exists(),
         )
+
+    # -- tenant containment ---------------------------------------------------- #
+    #
+    # Organogram seats are platform-global: a Position belongs to the CX org
+    # chart, not to a tenant. Every other approver source resolves through a
+    # tenant-filtered query, so ORGANOGRAM was the one way a tenant's document
+    # could be routed to somebody outside that tenant. The invariant these pin is
+    # that approval authority never crosses a tenant boundary, whichever source
+    # produced the candidate.
+
+    def _outsider(self, email="org-outsider@test.com"):
+        """An active user whose home tenant is not the one raising the document."""
+        from vs_rbac.tests.helpers import make_branch, make_school
+
+        other = make_school(slug=f"organogram-other-{email.split('@')[0]}")
+        return _make_user_in_branch(email, make_branch(other))
+
+    def _cx_staff(self, email):
+        """An active CX staff member, whose home tenant is the codex PLATFORM one."""
+        from django.contrib.auth import get_user_model
+
+        return get_user_model().objects.create_user(
+            email=email, user_type="CX_STAFF", status="ACTIVE",
+            first_name="Platform", last_name="Staff",
+        )
+
+    def test_a_climb_reaching_another_tenants_user_resolves_to_nobody(self):
+        """The regression: a manager seat held from outside the tenant is not eligible.
+
+        The climb genuinely reaches the outsider - that is asserted first, so this
+        can never quietly become a test of an empty organogram instead. What must
+        not happen is the resolver handing them the document: their home tenant is
+        not the tenant that raised it, and approval authority does not cross that
+        boundary. Before the containment filter this returned the outsider.
+        """
+        from vs_user.services.organogram import OrganogramService
+
+        outsider = self._outsider("org-outsider-mgr@test.com")
+        top = self._seat("ORG-X-MGR", title="Outside Head", holder=outsider)
+        self._seat("ORG-X-STAFF", title="Officer", reports_to=top,
+                   holder=self.requester)
+
+        # The organogram itself is happy to climb across the boundary...
+        self.assertEqual(
+            [u.pk for u in OrganogramService.resolve_direct_manager(self.requester)],
+            [outsider.pk],
+        )
+        self.assertNotEqual(outsider.tenant_id, self.instance.tenant_id)
+
+        # ...and the resolver is what refuses to act on it.
+        self.assertEqual(
+            resolve_approvers(self._stage(code="org-cross"), self.instance), [],
+        )
+
+    def test_a_specific_position_cannot_reach_across_the_tenant_boundary(self):
+        """SPECIFIC_POSITION is the sharpest form of the same hole.
+
+        The other three climb modes start from the requester's own seat, so a
+        requester outside the CX chart reaches nobody by accident. SPECIFIC_POSITION
+        ignores the requester entirely and returns the named seat's holders, so a
+        tenant stage pointed at a platform seat would resolve to platform staff
+        every time rather than only in odd chart shapes.
+        """
+        outsider = self._outsider("org-outsider-seat@test.com")
+        seat = self._seat("ORG-X-SEAT", title="Group Auditor", holder=outsider)
+        stage = self._stage(code="org-cross-seat", target="SPECIFIC_POSITION")
+        stage.organogram_position = seat
+        stage.save(update_fields=["organogram_position"])
+
+        self.assertEqual(resolve_approvers(stage, self.instance), [])
+
+    def test_a_same_tenant_organogram_approver_survives_containment(self):
+        """Containment must remove only outsiders, never the legitimate approver.
+
+        The counterweight to the two tests above: a filter that emptied the source
+        outright would pass them both and break every real organogram ladder.
+        """
+        manager = self._reporting_line(manager_email="org-inside@test.com")
+
+        self.assertEqual(manager.tenant_id, self.instance.tenant_id)
+        self.assertEqual(
+            [e.user.pk for e in
+             resolve_approvers(self._stage(code="org-inside"), self.instance)],
+            [manager.pk],
+        )
+
+    def test_a_stage_emptied_by_containment_parks_instead_of_auto_approving(self):
+        """Refusing an outsider must park the document, not wave it through.
+
+        This is the consequence that decides whether the fix is an improvement at
+        all. With ``skip_if_no_approvers=False`` - what every ladder over money
+        sets - a stage left with nobody has to stay ACTIVE and unstaffed and wait
+        for a human. The failure mode being excluded is a stage that skips itself
+        because the only candidate was disqualified, walking the document to a
+        terminal decision nobody made.
+        """
+        outsider = self._outsider("org-outsider-park@test.com")
+        top = self._seat("ORG-X-PARK", title="Outside Head", holder=outsider)
+        self._seat("ORG-X-PARK-STAFF", title="Officer", reports_to=top,
+                   holder=self.requester)
+        stage = self._stage(code="org-cross-park")
+
+        routing_svc.advance_instance(self.instance, current_attempt=1)
+
+        self.instance.refresh_from_db()
+        # Emphatically *not* APPROVED: the only candidate was refused, so the
+        # document is waiting, not decided.
+        self.assertEqual(self.instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        stage_instance = WorkflowStageInstance.objects.get(
+            instance=self.instance, stage=stage,
+        )
+        self.assertEqual(stage_instance.status, WorkflowStageStatus.ACTIVE)
+        self.assertFalse(
+            WorkflowStageApprover.objects.filter(
+                stage_instance=stage_instance,
+                attempt=stage_instance.attempt,
+            ).exists(),
+        )
+
+    def test_a_platform_tenant_climb_is_not_emptied_by_containment(self):
+        """The platform ladder keeps its approvers, which is why this is safe at all.
+
+        Containing at the shared choke point would be far worse than the bug it
+        fixes if it emptied platform-scoped stages: the seeded
+        ``PLATFORM_USER_CREATION`` stage sets ``skip_if_no_approvers=True``, so an
+        empty resolution there does not park, it finalises the invitation
+        unapproved. It cannot happen. ``WorkflowInstance.tenant`` is NOT NULL, a
+        platform request carries the codex PLATFORM tenant, and CX staff derive
+        that same tenant as their home, so the holders a climb finds are inside it.
+        """
+        requester = self._cx_staff("org-cx-req@test.com")
+        manager = self._cx_staff("org-cx-mgr@test.com")
+        instance = _make_instance(self.template, requester)
+        top = self._seat("ORG-CX-MGR", title="Head of Platform", holder=manager)
+        self._seat("ORG-CX-STAFF", title="Analyst", reports_to=top, holder=requester)
+
+        # The premise the safety argument rests on, asserted rather than assumed.
+        self.assertEqual(instance.tenant.kind, "PLATFORM")
+        self.assertIsNotNone(instance.tenant_id)
+        self.assertEqual(manager.tenant_id, instance.tenant_id)
+
+        self.assertEqual(
+            [e.user.pk for e in
+             resolve_approvers(self._stage(code="org-cx"), instance)],
+            [manager.pk],
+        )

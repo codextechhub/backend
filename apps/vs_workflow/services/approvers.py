@@ -294,6 +294,10 @@ def _organogram_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> 
     list if vs_user / the organogram service is unavailable, mirroring the RBAC
     path's defensive ImportError handling. The requester is excluded inside the
     service helpers, so they can never approve their own submission.
+
+    The seats this climbs are platform-global, so the holders it returns are not
+    contained by anything here. ``resolve_approvers`` contains them, once, for
+    every source; do not add a second containment filter to this function.
     """
     try:
         from vs_user.services.organogram import OrganogramService
@@ -367,7 +371,12 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     not been taught must never be able to produce one. Adding a source means
     adding a branch below.
 
-    The requester is always excluded - they cannot approve their own submission.
+    Every source is then contained to ``instance.tenant`` and the requester is
+    always excluded - they cannot approve their own submission. Both rules are
+    applied once, after the dispatch, because they hold for every source: an
+    approver from outside the requesting tenant is never eligible, whichever
+    branch above produced them.
+
     Active delegations then expand the list regardless of source: if an eligible
     approver has delegated their authority, the delegate is added on their behalf
     (and the delegator removed when the delegation is exclusive). De-duplication
@@ -396,6 +405,17 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
             f"'{stage.approver_source}', which the engine cannot resolve.",
             stage=stage.code, approver_source=stage.approver_source,
         )
+
+    # Tenant containment is barred from being per-source for the same reason
+    # self-approval is: a rule each branch has to remember is a rule a new
+    # branch eventually forgets. ORGANOGRAM forgot. Organogram positions are
+    # platform-global seats, so a climb (SPECIFIC_POSITION above all, which does
+    # not depend on the requester at all) could hand a tenant's document to
+    # somebody outside that tenant. The role, group and override paths already
+    # resolve inside instance.tenant, and _tenant_members is a pure filter, so
+    # applying it here is a no-op for them and the one missing guard for
+    # ORGANOGRAM.
+    base_users = _tenant_members(base_users, instance.tenant_id)
 
     # Self-approval is barred on every source, so the filter lives here once
     # rather than being repeated (and one day forgotten) per branch.
