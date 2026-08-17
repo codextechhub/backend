@@ -41,7 +41,12 @@ class SchoolStatus(models.TextChoices):
     ACTIVE = "ACTIVE", "Active"
     INACTIVE = "INACTIVE", "Inactive"
     PENDING = "PENDING", "Pending"
-    
+    # A school whose onboarding was abandoned and expired. It is a school
+    # status, and not only a tenant one, because `save()` mirrors this column
+    # onto the tenant on every write: a tenant suspended on its own would be
+    # quietly returned to PENDING by the next ordinary edit of its school.
+    SUSPENDED = "SUSPENDED", "Suspended"
+
 
 class InviteStatus(models.TextChoices):
     QUEUED = "QUEUED", "Queued"
@@ -115,6 +120,14 @@ class School(TimeStampedModel):
         website / motto / registration_id: Optional metadata displayed in onboarding.
         term_structure: Academic calendar definition (`TermStructure` choices).
         currency: Preferred billing currency (`Currency` choices).
+        operates_branches: Whether the school runs more than one site. This is
+            the *intent*, not a count: onboarding reads it to decide whether the
+            BRANCH_SETUP task exists for this school at all, so a school that
+            plans branches but has not created any yet still says True, and a
+            single-site school never sees a branch step it will never finish.
+            Branch-optional schools are real, so the default is False and
+            creating a school with inline branches raises it to True; a school
+            that decides later corrects it through the update endpoint.
         status: Operational flag (`SchoolStatus` choices, indexed).
         activated_at / deactivated_at: Lifecycle timestamps for activation and deactivation.
 
@@ -152,6 +165,14 @@ class School(TimeStampedModel):
     term_structure = models.CharField(max_length=255, blank=True, default=TermStructure.THREE_TERMS, choices=TermStructure.choices)
     currency = models.CharField(max_length=8, blank=True, choices=Currency.choices, default=Currency.NGN)
     registration_id = models.CharField(max_length=64, blank=True, default="")
+
+    operates_branches = models.BooleanField(
+        default=False,
+        help_text=(
+            "Whether this school runs more than one site. Onboarding reads this "
+            "to decide whether branch setup is a step the school must complete."
+        ),
+    )
 
     status = models.CharField(
         max_length=16,
@@ -199,6 +220,9 @@ class School(TimeStampedModel):
                     kind=Tenant.Kind.SCHOOL,
                     status=status,
                     activated_at=self.activated_at,
+                    pending_since=Tenant.pending_since_for(
+                        new_status=status, previous_status=None, current=None,
+                    ),
                 )
             self.code = str(self.code or "").strip().upper()
             if not self.code:
@@ -215,12 +239,33 @@ class School(TimeStampedModel):
             tenant_status = {
                 SchoolStatus.ACTIVE: Tenant.Status.ACTIVE,
                 SchoolStatus.INACTIVE: Tenant.Status.INACTIVE,
+                SchoolStatus.SUSPENDED: Tenant.Status.SUSPENDED,
             }.get(self.status, Tenant.Status.PENDING)
+            # This update is the only place a school's tenant changes status, so
+            # it is also the only place that can tell "became pending" from
+            # "was already pending". Reading the row first is what keeps an
+            # ordinary save (a rename, a metadata fix) from restarting the
+            # 90-day clock the onboarding expiry sweep reads.
+            previous = (
+                Tenant.objects
+                .filter(pk=self.tenant_id)
+                .values("status", "pending_since", "expiry_warned_at")
+                .first()
+                or {}
+            )
+            pending_since, expiry_warned_at = Tenant.pending_stamps_for(
+                new_status=tenant_status,
+                previous_status=previous.get("status"),
+                pending_since=previous.get("pending_since"),
+                warned_at=previous.get("expiry_warned_at"),
+            )
             Tenant.objects.filter(pk=self.tenant_id).update(
                 name=self.name,
                 status=tenant_status,
                 activated_at=self.activated_at,
                 deactivated_at=self.deactivated_at,
+                pending_since=pending_since,
+                expiry_warned_at=expiry_warned_at,
             )
             return result
 

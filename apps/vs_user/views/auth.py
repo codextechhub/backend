@@ -160,6 +160,11 @@ class LogoutView(APIView):
     # Logs the caller out of their own session - no tenant-scoped input, so
     # ?tenant= is not required.
     tenant_param_required = False
+    # Self-scoped, so it stays open to a tenant that has not gone live (FR-012).
+    # Declared explicitly rather than relied on: this view's bare
+    # IsAuthenticated happens to skip the surface gate today, and the intent
+    # must survive that being tightened.
+    pending_tenant_surface = True
 
     def post(self, request):
         refresh_token = request.data.get('refresh')
@@ -220,6 +225,7 @@ class TokenRefreshView(APIView):
     # gate, so ?tenant= is not required (clients send a Bearer header here,
     # which would otherwise trip the mandatory tenant assertion).
     tenant_param_required = False
+    pending_tenant_surface = True  # A pending school must be able to stay signed in (FR-012).
 
     def post(self, request):
         ser = TokenRefreshSerializer(data=request.data)

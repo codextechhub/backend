@@ -76,12 +76,93 @@ def user_has_rbac_permission(
     )
 
 
+# Decide whether the view being called is open to a tenant that is not yet live.
+def _view_opens_to_pending_tenant(view, request) -> bool:
+    """Read the view's ``pending_tenant_surface`` declaration.
+
+    The attribute is the whole of the allowlist, and its absence means closed:
+    a surface opened by default would silently admit every endpoint added
+    afterwards, which is the failure this gate exists to prevent.
+
+    Accepted forms:
+      ``True``                 the whole view is open;
+      an iterable of names     open only for those ViewSet actions or HTTP
+                               methods, compared case-insensitively. This is
+                               how a router-backed view opens one verb without
+                               opening its siblings (POST /support/tickets/
+                               without the ticket list, for instance).
+    """
+    declared = getattr(view, "pending_tenant_surface", False)
+    if declared is True:
+        return True
+    if not declared:
+        return False
+    if isinstance(declared, str):
+        declared = [declared]
+    names = {str(name).lower() for name in declared}
+    action = getattr(view, "action", None)
+    if action and str(action).lower() in names:
+        return True
+    return (getattr(request, "method", "") or "").lower() in names
+
+
+# Close every surface but onboarding to a tenant that has not gone live (FR-012).
+class TenantSurfaceAllowed(BasePermission):
+    """Refuse a PENDING tenant anything outside the onboarding surface.
+
+    Authentication admits a tenant whose status is ACTIVE or PENDING, because
+    the first School Admin has to sign in before the school is live. Deciding
+    *what* they may then reach is a question about the view being called, not
+    about the caller's identity, so it is answered here rather than at the
+    door. A view opts in with ``pending_tenant_surface``; anything that does
+    not declare it is closed.
+
+    This is not a permission key, deliberately: a role grant must never be able
+    to reopen the platform to a school that has not gone live.
+
+    Installed everywhere a view can pick up its permissions, because DRF's
+    ``permission_classes`` replaces ``DEFAULT_PERMISSION_CLASSES`` rather than
+    adding to it, so the defaults alone would leave almost the whole repo
+    ungated: in ``DEFAULT_PERMISSION_CLASSES`` (a view that declares nothing),
+    in :class:`IsAuthenticatedAndActive` (which nearly every authenticated view
+    composes), and in :class:`HasRBACPermission` / :class:`HasAnyModuleAccess`
+    (for views that pair those with a bare ``IsAuthenticated``).
+
+    Either returns True or raises ``TenantNotLive``; it never returns False, so
+    the refusal carries its own error code rather than DRF's generic one.
+    """
+
+    def has_permission(self, request, view):
+        from vs_tenants.exceptions import TenantNotLive
+        from vs_tenants.models import Tenant
+
+        u = _get_user(None, request)
+        if not u or not getattr(u, "is_authenticated", False):
+            # Unauthenticated callers hold no tenant; IsAuthenticated (or
+            # AllowAny) owns that decision, not this class.
+            return True
+
+        # ``request.tenant`` is the tenant being operated on: the caller's own
+        # for an ordinary call, and the target tenant when a platform actor
+        # rides an impersonation session, which is exactly the scope that must
+        # be governed in both cases.
+        tenant = getattr(request, "tenant", None) or getattr(u, "tenant", None)
+        if getattr(tenant, "status", None) != Tenant.Status.PENDING:
+            return True
+
+        if _view_opens_to_pending_tenant(view, request):
+            return True
+        raise TenantNotLive()
+
+
 # Enforce login plus non-terminal account status before RBAC is evaluated.
 class IsAuthenticatedAndActive(BasePermission):
     """
     Minimal guardrail:
     - user must be authenticated
     - if your UserAccount has 'status', block locked/suspended
+    - the tenant being operated on must be live, unless the view declares
+      itself part of the pending-tenant surface (see TenantSurfaceAllowed)
     """
 
     def has_permission(self, request, view):
@@ -97,7 +178,10 @@ class IsAuthenticatedAndActive(BasePermission):
         if status == "DEACTIVATED":
             raise PermissionDenied("This account has been deactivated. Contact your administrator.")
 
-        return True
+        # Nearly every authenticated view in the repo composes this class, and
+        # DRF's permission_classes replaces DEFAULT_PERMISSION_CLASSES rather
+        # than adding to it, so the surface gate has to live here too.
+        return TenantSurfaceAllowed().has_permission(request, view)
 
 
 # Allow only Vision staff into platform-owned RBAC administration surfaces.
@@ -174,6 +258,14 @@ class HasRBACPermission(BasePermission):
         if not u or not u.is_authenticated:
             return False
 
+        # A handful of views pair this class with a bare ``IsAuthenticated``
+        # instead of ``IsAuthenticatedAndActive``, so the surface gate is
+        # applied here as well. It raises rather than returning False, hence
+        # the discarded result. It runs before the super-admin bypass on
+        # purpose: the question is whether the tenant being operated on is
+        # live, not what the caller holds.
+        TenantSurfaceAllowed().has_permission(request, view)
+
         # Vision super admin bypasses all RBAC permission checks.
         if is_vision_super_admin(u):
             return True
@@ -249,6 +341,11 @@ class HasAnyModuleAccess(BasePermission):
         u = request.user
         if not u or not u.is_authenticated:
             return False
+
+        # Same reasoning as HasRBACPermission: this class can be the only RBAC
+        # gate on a view, so it must carry the surface check too. It raises
+        # rather than returning False, hence the discarded result.
+        TenantSurfaceAllowed().has_permission(request, view)
 
         # Vision super admin bypasses all RBAC permission checks.
         if is_vision_super_admin(u):

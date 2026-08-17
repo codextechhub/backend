@@ -161,3 +161,112 @@ class TenantJWTAuthenticationTests(TestCase):
         request = self._authed_request(cx, tenant_slug=school.slug, view=_FakeView())
         with self.assertRaises(NotFound):
             self.auth.authenticate(request)
+
+    # ── FR-012: which tenant statuses may authenticate ─────────────────────
+
+    def _user_in_tenant_with_status(self, status, *, slug, email):
+        """Build a school + admin, then force the tenant to *status*.
+
+        The tenant is written directly rather than through School.save(), which
+        maps only ACTIVE and INACTIVE and would silently turn a SUSPENDED
+        school back into a PENDING tenant.
+        """
+        school = make_school(slug=slug, name=slug.replace("-", " ").title())
+        branch = make_branch(school)
+        user = make_school_admin(branch, email=email)
+        Tenant.objects.filter(pk=school.tenant_id).update(status=status)
+        school.tenant.refresh_from_db()
+        return user
+
+    def test_authentication_admits_active_and_pending_only(self):
+        admitted = {}
+        for status in (Tenant.Status.ACTIVE, Tenant.Status.PENDING):
+            user = self._user_in_tenant_with_status(
+                status,
+                slug=f"admits-{status.lower()}",
+                email=f"admits-{status.lower()}@test.com",
+            )
+            request = self._authed_request(user, view=_FakeView())
+            result = self.auth.authenticate(request)
+            self.assertIsNotNone(result, f"{status} should authenticate")
+            self.assertEqual(request.tenant.status, status)
+            admitted[status] = True
+
+        for status in (Tenant.Status.SUSPENDED, Tenant.Status.INACTIVE):
+            user = self._user_in_tenant_with_status(
+                status,
+                slug=f"admits-{status.lower()}",
+                email=f"admits-{status.lower()}@test.com",
+            )
+            request = self._authed_request(user, view=_FakeView())
+            with self.assertRaises(NotFound, msg=f"{status} must not authenticate"):
+                self.auth.authenticate(request)
+
+        self.assertEqual(
+            sorted(admitted), sorted([Tenant.Status.ACTIVE, Tenant.Status.PENDING]),
+        )
+
+    def test_suspended_and_inactive_tenants_still_answer_404(self):
+        # 404, not 403: the refusal must stay indistinguishable from an unknown
+        # slug so tenant identifiers cannot be enumerated.
+        for status in (Tenant.Status.SUSPENDED, Tenant.Status.INACTIVE):
+            user = self._user_in_tenant_with_status(
+                status,
+                slug=f"closed-{status.lower()}",
+                email=f"closed-{status.lower()}@test.com",
+            )
+            request = self._authed_request(user, view=_FakeView())
+            with self.assertRaises(NotFound) as caught:
+                self.auth.authenticate(request)
+            self.assertEqual(caught.exception.status_code, 404)
+
+        # An unknown slug answers the same way.
+        known = self._user_in_tenant_with_status(
+            Tenant.Status.ACTIVE, slug="closed-control", email="closed-control@test.com",
+        )
+        request = self._authed_request(
+            known, tenant_slug="no-such-tenant", view=_FakeView(),
+        )
+        with self.assertRaises(NotFound):
+            self.auth.authenticate(request)
+
+    def test_active_tenant_access_is_unchanged_on_every_surface(self):
+        """An ACTIVE tenant behaves exactly as before on all three auth paths."""
+        from vs_rbac.permissions import TenantSurfaceAllowed
+
+        school = make_school(slug="unchanged-school", name="Unchanged School")
+        branch = make_branch(school)
+        user = make_school_admin(branch, email="unchanged@test.com")
+
+        # 1. The ordinary path: ?tenant=<own slug> on a view declaring nothing.
+        undeclared = _FakeView()
+        request = self._authed_request(user, view=undeclared)
+        authed_user, _ = self.auth.authenticate(request)
+        self.assertEqual(request.tenant, school.tenant)
+        request.user = authed_user
+        # The surface gate never fires for a live tenant, so a view that
+        # declares no membership is still reachable.
+        self.assertTrue(
+            TenantSurfaceAllowed().has_permission(request, undeclared),
+        )
+
+        # 2. The self-scoped path: no ?tenant= on an exempt view.
+        exempt = _FakeView(tenant_param_required=False)
+        request = self._authed_request(user, with_tenant=False, view=exempt)
+        authed_user, _ = self.auth.authenticate(request)
+        self.assertEqual(request.tenant, school.tenant)
+        request.user = authed_user
+        self.assertTrue(TenantSurfaceAllowed().has_permission(request, exempt))
+
+        # 3. The platform cross-tenant path onto an ACTIVE school.
+        cx = User.objects.create_user(
+            email="cx-unchanged@test.com", password="testpass123",
+            user_type="CX_STAFF", status="ACTIVE",
+            first_name="CX", last_name="Unchanged",
+        )
+        cross = _FakeView(platform_cross_tenant_param=True)
+        request = self._authed_request(cx, tenant_slug=school.slug, view=cross)
+        authed_user, _ = self.auth.authenticate(request)
+        self.assertEqual(request.tenant, school.tenant)
+        request.user = authed_user
+        self.assertTrue(TenantSurfaceAllowed().has_permission(request, cross))

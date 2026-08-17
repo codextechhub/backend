@@ -1392,3 +1392,111 @@ class SeedNotificationPermissionsTests(TestCase):
         )
         self.assertIn("communication.communication_permissions.enforce", keys)
         self.assertIn("communication.message_activity.audit", keys)
+
+
+# ---------------------------------------------------------------------------
+# Pending-tenant surface (FR-012) - the inbox is open, the rest is not
+# ---------------------------------------------------------------------------
+
+class PendingTenantInboxAccessTests(_NotifFixture):
+    """A school that has not gone live must be able to read its own inbox.
+
+    Onboarding dispatches in-app notifications while the tenant is still
+    PENDING (onboarding.step_completed, onboarding.go_live_ready). Those
+    messages were being written and left unreadable, because /v1/notify/ was
+    not part of the pending-tenant surface. NotificationViewSet now declares
+    the personal-inbox actions; nothing else in the module was opened.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from vs_tenants.models import Tenant
+
+        self.pending_school = School.objects.create(
+            name="Pending Notif", slug="pending-notif", code="PNDNT",
+            status="PENDING",
+        )
+        self.pending_tenant = self.pending_school.tenant
+        self.pending_tenant.refresh_from_db()
+        self.assertEqual(self.pending_tenant.status, Tenant.Status.PENDING)
+
+        self.pending_admin = User.objects.create_user(
+            email="pending-admin@test.com", password="x", user_type="SCHOOL_ADMIN",
+            status="ACTIVE", first_name="Pat", last_name="Pending",
+            tenant=self.pending_tenant,
+        )
+        # Granted deliberately: with the permission held, a 403 on the settings
+        # endpoint can only be the surface gate, never a missing grant.
+        _grant_school_permission(
+            self.pending_admin, self.pending_school,
+            NotificationPermission.ENFORCE_PERMISSIONS,
+        )
+
+        self.onboarding_notification = Notification.objects.create(
+            tenant=self.pending_tenant, recipient=self.pending_admin,
+            event_type=self._event("onboarding.step_completed"),
+            channel=ChannelChoices.IN_APP, body="Step complete",
+            subject="Onboarding step completed", status=NotificationStatus.SENT,
+        )
+
+    # ── open: the personal inbox ──────────────────────────────────────────
+
+    def test_pending_tenant_can_list_own_notifications(self):
+        resp = self._client(self.pending_admin).get("/v1/notify/")
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        ids = [row["id"] for row in resp.json()["data"]]
+        self.assertIn(str(self.onboarding_notification.id), ids)
+
+    def test_pending_tenant_can_read_and_mark_the_inbox(self):
+        """Retrieve, unread-count and the mark-read actions come with it."""
+        client = self._client(self.pending_admin)
+
+        detail = client.get(f"/v1/notify/{self.onboarding_notification.id}/")
+        self.assertEqual(detail.status_code, 200, detail.data)
+
+        count = client.get("/v1/notify/unread-count/")
+        self.assertEqual(count.status_code, 200, count.data)
+        self.assertEqual(count.json()["data"]["unread_count"], 1)
+
+        marked = client.post(
+            "/v1/notify/mark-read/",
+            {"ids": [str(self.onboarding_notification.id)]}, format="json",
+        )
+        self.assertEqual(marked.status_code, 200, marked.data)
+        self.onboarding_notification.refresh_from_db()
+        self.assertTrue(self.onboarding_notification.is_read)
+
+        all_read = client.post("/v1/notify/mark-all-read/", {}, format="json")
+        self.assertEqual(all_read.status_code, 200, all_read.data)
+
+    # ── still closed: everything that is not the personal inbox ───────────
+
+    def test_pending_tenant_is_still_refused_the_settings_surface(self):
+        resp = self._client(self.pending_admin).get("/v1/notify/settings/")
+
+        self.assertEqual(resp.status_code, 403, resp.data)
+        self.assertEqual(resp.data["error"]["code"], "TENANT_NOT_LIVE")
+
+    def test_pending_tenant_is_still_refused_history_and_the_catalogue(self):
+        client = self._client(self.pending_admin)
+
+        for path in ("/v1/notify/history/", "/v1/notify/event-types/"):
+            with self.subTest(path=path):
+                resp = client.get(path)
+                self.assertEqual(resp.status_code, 403, resp.data)
+                self.assertEqual(resp.data["error"]["code"], "TENANT_NOT_LIVE")
+
+    # ── unchanged: a live tenant ──────────────────────────────────────────
+
+    def test_active_tenant_behaviour_is_unchanged(self):
+        client = self._client(self.admin_a)
+
+        inbox = client.get("/v1/notify/")
+        self.assertEqual(inbox.status_code, 200, inbox.data)
+
+        settings_matrix = client.get("/v1/notify/settings/")
+        self.assertEqual(settings_matrix.status_code, 200, settings_matrix.data)
+
+        catalogue = client.get("/v1/notify/event-types/")
+        self.assertEqual(catalogue.status_code, 200, catalogue.data)

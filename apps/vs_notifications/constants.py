@@ -465,7 +465,6 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_onboarding",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
-        "is_active": False,  # no vs_onboarding emitter yet
     },
     {
         "key": "onboarding.go_live_ready",
@@ -474,7 +473,53 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_onboarding",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
-        "is_active": False,  # no vs_onboarding emitter yet
+    },
+    {
+        "key": "onboarding.go_live_reviewed",
+        "label": "Go-live request reviewed",
+        "description": (
+            "Fires when platform staff approve or reject a school's go-live "
+            "request, carrying the decision, the reviewer and the reason when "
+            "the request was rejected."
+        ),
+        "source_module": "vs_onboarding",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
+        "key": "onboarding.activated",
+        "label": "School activated",
+        "description": "Fires when a school is taken live and the rest of the platform opens to it.",
+        "source_module": "vs_onboarding",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
+        "key": "onboarding.expiry_warning",
+        "label": "Onboarding expiring soon",
+        "description": (
+            "Fires once, fourteen days before a school's onboarding window "
+            "closes, telling the school when it expires and how long is left. "
+            "Goes to the school, not to platform staff."
+        ),
+        "source_module": "vs_onboarding",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+        # A school that mutes onboarding chatter must still be told its access
+        # is about to stop: this is the last notice before the sign-in closes.
+        "is_transactional": True,
+    },
+    {
+        "key": "onboarding.stale_report",
+        "label": "Stale onboarding report",
+        "description": (
+            "Fires every two weeks with the schools that have been onboarding "
+            "too long and the ones the expiry sweep has just suspended. Goes to "
+            "platform operators, never to the school."
+        ),
+        "source_module": "vs_onboarding",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
     },
     {
         "key": "user.invited",

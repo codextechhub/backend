@@ -324,6 +324,29 @@ class _MigrationHarness(TransactionTestCase):
         executor.loader.build_graph()
         return executor.loader.project_state((self.APP, target)).apps
 
+    def _make_tenant(self, historical, *, slug, name):
+        """Create a tenant through the model as it stood at that migration.
+
+        Never through the live ``Tenant``. Rewinding this app also unapplies
+        the ``vs_tenants`` migrations that depend on it, so any column added to
+        ``Tenant`` after that point does not exist in the database while these
+        tests run, and the live model would try to insert it. That is not
+        hypothetical: it is exactly what the onboarding expiry sweep's
+        ``pending_since`` column did to all seven of these tests. The
+        historical model is the shape the database actually has.
+
+        For the same reason nothing below queries ``Branch`` by a tenant
+        *instance*: a historical instance is a different class from the live
+        one, so these tests filter on ``tenant_id``.
+        """
+        HistoricalTenant = historical.get_model("vs_tenants", "Tenant")
+        return HistoricalTenant.objects.create(
+            name=name,
+            slug=slug,
+            kind=Tenant.Kind.SCHOOL,
+            status=Tenant.Status.ACTIVE,
+        )
+
 
 class BranchTenantMigrationTests(_MigrationHarness):
     """Phase B: the 0003 backfill, its de-duplication step, and its reverse."""
@@ -341,9 +364,7 @@ class BranchTenantMigrationTests(_MigrationHarness):
         tenants = {}
         schools = {}
         for slug, name in (("alpha", "Alpha School"), ("beta", "Beta School")):
-            tenant = Tenant.objects.create(
-                name=name, slug=slug, kind=Tenant.Kind.SCHOOL, status=Tenant.Status.ACTIVE,
-            )
+            tenant = self._make_tenant(historical, slug=slug, name=name)
             tenants[slug] = tenant
             schools[slug] = OldSchool.objects.create(
                 name=name, slug=slug, code=f"SC-{slug}", tenant_id=tenant.pk,
@@ -380,8 +401,12 @@ class BranchTenantMigrationTests(_MigrationHarness):
 
         self._migrate(self.AFTER)
 
-        self.assertEqual(tenants["alpha"].branches.count(), 0)
-        self.assertEqual(tenants["beta"].branches.count(), 0)
+        self.assertEqual(
+            Branch.all_objects.filter(tenant_id=tenants["alpha"].pk).count(), 0,
+        )
+        self.assertEqual(
+            Branch.all_objects.filter(tenant_id=tenants["beta"].pk).count(), 0,
+        )
 
     def test_dirty_data_is_de_duplicated_so_the_constraints_can_be_added(self):
         tenants, schools, OldBranch = self._seed_pre_migration_rows()
@@ -399,12 +424,13 @@ class BranchTenantMigrationTests(_MigrationHarness):
         self._migrate(self.AFTER)
 
         codes = dict(
-            Branch.all_objects.filter(tenant=tenants["alpha"]).values_list("pk", "code")
+            Branch.all_objects.filter(tenant_id=tenants["alpha"].pk)
+            .values_list("pk", "code")
         )
         self.assertEqual(codes[first.pk], 1, "the lowest pk keeps its code")
         self.assertEqual(sorted(codes.values()), [1, 2, 3])
         mains = list(
-            Branch.all_objects.filter(tenant=tenants["alpha"], is_main=True)
+            Branch.all_objects.filter(tenant_id=tenants["alpha"].pk, is_main=True)
             .values_list("pk", flat=True)
         )
         self.assertEqual(mains, [first.pk], "only the lowest pk stays main")
@@ -469,9 +495,7 @@ class BranchMoveMigrationTests(_MigrationHarness):
 
         tenants, schools = {}, {}
         for slug, name in (("multi", "Multi School"), ("solo", "Solo School")):
-            tenant = Tenant.objects.create(
-                name=name, slug=slug, kind=Tenant.Kind.SCHOOL, status=Tenant.Status.ACTIVE,
-            )
+            tenant = self._make_tenant(historical, slug=slug, name=name)
             tenants[slug] = tenant
             schools[slug] = OldSchool.objects.create(
                 name=name, slug=slug, code=f"SC-{slug}", tenant_id=tenant.pk,
@@ -531,12 +555,12 @@ class BranchMoveMigrationTests(_MigrationHarness):
         # Every row is still there, in both tenant shapes.
         self.assertEqual(
             sorted(
-                Branch.all_objects.filter(tenant=tenants["multi"])
+                Branch.all_objects.filter(tenant_id=tenants["multi"].pk)
                 .values_list("name", flat=True)
             ),
             ["HQ", "Lekki"],
         )
-        self.assertEqual(Branch.all_objects.filter(tenant=tenants["solo"]).count(), 0)
+        self.assertEqual(Branch.all_objects.filter(tenant_id=tenants["solo"].pk).count(), 0)
         # No row moved and no constraint was rebuilt away: the table is the
         # same table, so every inbound foreign key is still there.
         self.assertEqual(self._inbound_foreign_keys(), before_fks)
@@ -574,12 +598,12 @@ class BranchMoveMigrationTests(_MigrationHarness):
         self.assertNotIn("school_id", self._branch_columns())
         self.assertEqual(
             sorted(
-                Branch.all_objects.filter(tenant=tenants["multi"])
+                Branch.all_objects.filter(tenant_id=tenants["multi"].pk)
                 .values_list("code", flat=True)
             ),
             [1, 2],
         )
-        self.assertEqual(Branch.all_objects.filter(tenant=tenants["solo"]).count(), 0)
+        self.assertEqual(Branch.all_objects.filter(tenant_id=tenants["solo"].pk).count(), 0)
         # Still creatable, and the allocator still counts from the tenant.
         # Through ``save()``, not by calling ``allocate_next_code`` directly:
         # the allocator takes a ``select_for_update`` lock and a
@@ -587,6 +611,6 @@ class BranchMoveMigrationTests(_MigrationHarness):
         # TransactionManagementError. ``save()`` opens the atomic block itself,
         # which is also the path production uses.
         fresh = Branch.all_objects.create(
-            tenant=tenants["multi"], name="Ikoyi", _type="Sub",
+            tenant_id=tenants["multi"].pk, name="Ikoyi", _type="Sub",
         )
         self.assertEqual(fresh.code, 3)

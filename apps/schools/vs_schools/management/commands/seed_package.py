@@ -1,3 +1,13 @@
+"""Seed the subscription package catalogue.
+
+Lives in the school package rather than in ``core`` because that is what it
+seeds: ``PackagePlan`` and ``BillingCycle`` are school models, and a command in
+a domain-neutral app importing them was one of three places the school app
+leaked into the engines. Django discovers management commands per app, so the
+command name is unchanged: ``manage.py seed_package`` still resolves, and every
+runbook, ``reset_db --post-commands`` list and deploy script that names it
+keeps working.
+"""
 from django.core.management.base import BaseCommand
 from django.db import transaction
 

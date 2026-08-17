@@ -686,6 +686,9 @@ class SchoolDetailSerializer(serializers.ModelSerializer):
             "term_structure",
             "currency",
             "registration_id",
+            # Writable through create/update, so it has to be readable back:
+            # a flag you can set and never see is one the client cannot render.
+            "operates_branches",
             "status",
             "activated_at",
             "deactivated_at",
@@ -772,6 +775,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             "term_structure",
             "currency",
             "registration_id",
+            "operates_branches",
 
             # optional nested
             "branding",
@@ -877,6 +881,13 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     "branches": "Only one branch can be marked as is_main=true."
                 })
+
+            # A school that submits branches at creation plainly operates them,
+            # so the flag is inferred rather than asked for twice. An explicit
+            # value from the caller always wins: a school may declare that it
+            # operates branches before it has created any, and the reverse
+            # (branches now, single-site intent) is theirs to state.
+            attrs.setdefault("operates_branches", True)
 
         return attrs
 
@@ -1063,7 +1074,30 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                     reason=f"School package setup for {school.name}",
                 )
 
-        # --- 6. Audit trail for school ---
+        # --- 6. Set of books (best effort, never fatal) ---
+        # Every school gets books, entitled to finance or not: adding them later
+        # means going back to repair every school created before this point. The
+        # service opens its own savepoint and swallows its own failures, so a
+        # finance problem cannot cost us the school, the tenant, the admin user,
+        # the branches or the entitlements above.
+        from .services.books import provision_books_for_school
+
+        provision_books_for_school(school)
+
+        # --- 7. Onboarding control room (best effort, never fatal) ---
+        # A school that cannot see its checklist the moment it is created has
+        # to be found and repaired by hand, so provisioning happens here rather
+        # than on the school's first sign-in. Same shape as the books above:
+        # the service opens its own savepoint and swallows its own failures, so
+        # a checklist problem cannot cost us the school. This is the choke point
+        # for both creation paths - the bulk importer runs this same serializer.
+        from schools.vs_onboarding.services.provisioning import (
+            provision_onboarding_for_school,
+        )
+
+        provision_onboarding_for_school(school, actor=actor)
+
+        # --- 8. Audit trail for school ---
         _school_snap = AuditDiffService.from_instances(
             before_instance=None,
             after_instance=school,
@@ -1101,6 +1135,7 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
             "term_structure",
             "currency",
             "registration_id",
+            "operates_branches",
 
             # optional nested
             "branding",

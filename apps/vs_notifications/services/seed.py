@@ -915,6 +915,102 @@ def _build_default_templates() -> dict:
             ),
         },
 
+        # ── onboarding.go_live_reviewed ─────────────────────────────────────
+        # One event covers both decisions: the school needs the reason far more
+        # than it needs two separate keys, and a rejected request renders the
+        # reason inline rather than sending the admin looking for it.
+        ("onboarding.go_live_reviewed", C.IN_APP): {
+            "subject": "",
+            "body": (
+                "Go-live request for {{ school_name }} was {{ decision }} by "
+                "{{ reviewed_by_name }} on {{ reviewed_at }}."
+                "{% if rejection_reason %} Reason: {{ rejection_reason }}{% endif %}"
+            ),
+        },
+        ("onboarding.go_live_reviewed", C.EMAIL): {
+            "subject": "Go-live request {{ decision }} - {{ school_name }}",
+            "body": (
+                "The go-live request for {{ school_name }} ({{ school_slug }}) has been "
+                "{{ decision }}.\n\n"
+                "Reviewed by: {{ reviewed_by_name }}\n"
+                "Reviewed at: {{ reviewed_at }}\n"
+                "{% if rejection_reason %}Reason: {{ rejection_reason }}\n{% endif %}"
+                "\nLog in to continue onboarding.\n\n"
+                "CodeX Vision"
+            ),
+        },
+
+        # ── onboarding.activated ────────────────────────────────────────────
+        ("onboarding.activated", C.IN_APP): {
+            "subject": "",
+            "body": (
+                "{{ school_name }} is now live. Every module is open to this school."
+            ),
+        },
+        ("onboarding.activated", C.EMAIL): {
+            "subject": "{{ school_name }} is now live",
+            "body": (
+                "{{ school_name }} ({{ school_slug }}) has been activated and is now live.\n\n"
+                "Activated at: {{ go_live_at }}\n\n"
+                "Onboarding is complete and the rest of the platform is now open to "
+                "your school.\n\n"
+                "CodeX Vision"
+            ),
+        },
+
+        # ── onboarding.expiry_warning ───────────────────────────────────────
+        # The school's own notice, sent once per pending spell. Says the date
+        # rather than only the count, because "14 days" in an email read a week
+        # later is worse than useless.
+        ("onboarding.expiry_warning", C.IN_APP): {
+            "subject": "",
+            "body": (
+                "Onboarding for {{ school_name }} expires on {{ expires_on }}, "
+                "in {{ days_remaining }} day(s). Complete your remaining steps "
+                "and request go-live before then."
+            ),
+        },
+        ("onboarding.expiry_warning", C.EMAIL): {
+            "subject": "Action needed: onboarding for {{ school_name }} expires {{ expires_on }}",
+            "body": (
+                "Onboarding for {{ school_name }} ({{ school_slug }}) has been open for "
+                "{{ pending_days }} days and expires on {{ expires_on }}, in "
+                "{{ days_remaining }} day(s).\n\n"
+                "If it expires, the school is suspended and its users can no longer "
+                "sign in until platform staff restore it.\n\n"
+                "Log in, finish your outstanding onboarding steps and submit your "
+                "go-live request before that date.\n\n"
+                "CodeX Vision"
+            ),
+        },
+
+        # ── onboarding.stale_report ─────────────────────────────────────────
+        # A platform operator's standing list, not a school's notice. The two
+        # lists are pre-rendered strings: a template given a list of rows would
+        # print their Python repr at the reader.
+        ("onboarding.stale_report", C.IN_APP): {
+            "subject": "",
+            "body": (
+                "{{ ageing_count }} school(s) have been onboarding for more than "
+                "{{ stale_after_days }} days, and {{ expired_count }} were "
+                "suspended in the last {{ window_days }} days."
+            ),
+        },
+        ("onboarding.stale_report", C.EMAIL): {
+            "subject": "Stale onboarding: {{ ageing_count }} ageing, {{ expired_count }} expired",
+            "body": (
+                "Schools onboarding for more than {{ stale_after_days }} days "
+                "and not yet live ({{ ageing_count }}):\n\n"
+                "{{ ageing_list }}\n\n"
+                "Suspended by the {{ expiry_days }}-day expiry in the last "
+                "{{ window_days }} days ({{ expired_count }}):\n\n"
+                "{{ expired_list }}\n\n"
+                "A suspended school can be returned to onboarding, which gives it "
+                "a fresh {{ expiry_days }} days.\n\n"
+                "CodeX Vision"
+            ),
+        },
+
         # ── user.invited (EMAIL only, transactional) ────────────────────────
         # Ported from vs_user/templates/vs_user/emails/invitation.{txt,html}.
         # The Django-template variables there ({{ user.first_name }} etc.) are

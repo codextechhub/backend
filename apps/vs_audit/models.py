@@ -144,6 +144,26 @@ class AuditActionType(models.TextChoices):
     EXPORT_FILE_EXPIRED = "EXPORT_FILE_EXPIRED", "Export File Expired (export.file.expired)"
     EXPORT_ADMIN_VIEWED_ACTIVITY = "EXPORT_ADMIN_VIEWED_ACTIVITY", "Export Activity Viewed (export.admin.viewed_activity)"
 
+    # School onboarding (M9). Registered here before the module emits anything:
+    # the vocabulary is closed and validated on save, and emit_audit_event never
+    # raises, so an unregistered value is dropped silently and the trail this
+    # module promises would simply be empty.
+    ONBOARDING_PROVISIONED = "ONBOARDING_PROVISIONED", "Onboarding Provisioned"
+    ONBOARDING_TASK_COMPLETED = "ONBOARDING_TASK_COMPLETED", "Onboarding Task Completed"
+    ONBOARDING_TASK_SKIPPED = "ONBOARDING_TASK_SKIPPED", "Onboarding Task Skipped"
+    ONBOARDING_TASK_REOPENED = "ONBOARDING_TASK_REOPENED", "Onboarding Task Reopened"
+    GO_LIVE_REQUESTED = "GO_LIVE_REQUESTED", "Go-Live Requested"
+    GO_LIVE_APPROVED = "GO_LIVE_APPROVED", "Go-Live Approved"
+    GO_LIVE_REJECTED = "GO_LIVE_REJECTED", "Go-Live Rejected"
+    GO_LIVE_ACTIVATED = "GO_LIVE_ACTIVATED", "Go-Live Activated"
+    GO_LIVE_FAILED = "GO_LIVE_FAILED", "Go-Live Failed"
+    # The two ends of the abandoned-onboarding decision: a school that stayed
+    # pending too long is suspended by a sweep nobody watches, and a platform
+    # operator can put it back. Both are status changes made to somebody else's
+    # school, so both have to be findable afterwards.
+    ONBOARDING_EXPIRED = "ONBOARDING_EXPIRED", "Onboarding Expired"
+    ONBOARDING_REINSTATED = "ONBOARDING_REINSTATED", "Onboarding Reinstated"
+
     CUSTOM = "CUSTOM", "Custom"
 
 

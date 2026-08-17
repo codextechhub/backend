@@ -58,3 +58,21 @@ class BranchAlreadyInState(BranchLifecycleError):
     def __init__(self, *, state: str):
         self.state = state
         super().__init__(f"Branch is already {state}.")
+
+
+class TenantNotLive(TenantsError):
+    """Raised when a PENDING tenant reaches a surface that is not open to it.
+
+    A tenant that has not gone live authenticates normally, so the caller is
+    who they say they are and owns the tenant they asserted. What they lack is
+    a live tenant, not a permission - hence 403 with a code of its own, and
+    deliberately not 404: 404 is reserved for a caller asserting a tenant that
+    is not theirs, where even the existence of the tenant must stay hidden.
+    """
+
+    error_code = "TENANT_NOT_LIVE"
+    default_message = (
+        "This school is still being set up. Complete onboarding and go live to "
+        "use this part of the platform."
+    )
+    http_status = 403

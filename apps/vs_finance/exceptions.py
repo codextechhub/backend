@@ -114,6 +114,47 @@ class InactiveAccountError(PostingError):
         )
 
 
+class PrimaryEntityExistsError(FinanceError):
+    """Raised when a tenant is asked for a second TENANT-kind set of books.
+
+    There is a real tension here, and it is deliberate, so please read this
+    before "fixing" either side of it.
+
+    :class:`~vs_finance.models.LedgerEntity` says in its own docstring that a
+    single tenant may keep **several** entities, and that stays true: a group
+    with subsidiaries, or a school running its own books beside
+    platform-managed ones, is a legitimate arrangement. That is why this is a
+    service-level rule and **not** a database constraint - the data model must
+    keep allowing the shape.
+
+    What cannot be allowed is a *second* entity of kind ``TENANT`` appearing by
+    accident, because the finance abstraction layer resolves exactly one primary
+    entity per tenant. Two candidates make that resolution ambiguous, and the
+    ambiguity is only discovered later, by whichever posting picked the wrong
+    set of books. So the extra entities a tenant may legitimately keep are
+    PLATFORM, PRODUCT or OTHER, and a deliberate second TENANT entity has to be
+    created by an operator who has decided that is what they want, not by an
+    ordinary ``finance.entity.create`` call.
+
+    The platform's own tenant is exempt: Codex keeps several sets of books for
+    itself and is never resolved through the primary-entity lookup.
+    """
+
+    error_code = "PRIMARY_ENTITY_EXISTS"
+    default_message = "This tenant already has a set of books."
+    http_status = 409  # A conflict with existing state, not malformed input.
+
+    def __init__(self, *, entity_code="", **kwargs):
+        self.entity_code = entity_code
+        super().__init__(
+            f"This tenant already keeps a set of books"
+            f"{f' ({entity_code})' if entity_code else ''}. A tenant has one "
+            f"primary set of books; create any additional entity with an "
+            f"explicit kind other than TENANT.",
+            entity_code=entity_code, **kwargs,
+        )
+
+
 # Group behavior for Document Numbering Error.
 class DocumentNumberingError(FinanceError):
     error_code = "DOCUMENT_NUMBERING_FAILED"  # Sequence allocation failed.

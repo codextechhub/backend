@@ -49,6 +49,13 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     permission_classes = TICKET_PERMISSIONS
 
+    # Filing a ticket is the one escalation route a school that has not gone
+    # live still has, so POST /v1/support/tickets/ is part of the pending-tenant
+    # surface (FR-010, FR-012). Only the create action: the rest of the desk
+    # (lists, threads, attachments, assignment) opens at go-live like everything
+    # else.
+    pending_tenant_surface = ("create",)
+
     # Actions gated by an RBAC key (support staff bypass in the permission
     # class). Absent actions rely on queryset/object scoping: anyone may file
     # a ticket and participants always keep access to their own thread.
