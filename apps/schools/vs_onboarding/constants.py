@@ -41,7 +41,11 @@ class GoLiveStatus(models.TextChoices):
 
 
 class TaskKey(models.TextChoices):
-    BRANCH_SETUP = "BRANCH_SETUP", "Branch setup"
+    # There is no BRANCH_SETUP. vs_onboarding 0002 removed it along with the
+    # rows that carried it: every school is created with its main branch, so
+    # the step was complete before the school could ever see it, and a step
+    # nobody can have outstanding is not a step. Branch readiness is still a
+    # real fact; it is simply not a thing the school is asked to go and do.
     FIRST_ADMIN = "FIRST_ADMIN", "First administrator"
     ROLE_BASELINE = "ROLE_BASELINE", "Role baseline"
     SCHOOL_METADATA = "SCHOOL_METADATA", "School metadata"
@@ -77,9 +81,13 @@ class CatalogEntry:
     """One canonical onboarding step.
 
     ``applies_to`` answers "does this school have this step at all?", which is a
-    different question from ``is_required``. A single-site school does not have
-    an optional branch step it can ignore, it has no branch step: the control
-    room must not show a column the school will never fill in.
+    different question from ``is_required``. A school that cannot ever perform a
+    step does not have an optional step it may ignore, it has no such step at
+    all: the control room must not show a column the school will never fill in.
+    No entry uses it today, and the honest reason is that the one that did (the
+    branch step) turned out to apply to every school, so it stopped being a step
+    rather than becoming an unconditional one. The seam stays because the
+    question it answers is real and provisioning already routes through it.
 
     ``is_required`` means the step must be DONE before the school goes live and
     that it cannot be skipped either. There is no third setting for "required
@@ -102,43 +110,32 @@ class CatalogEntry:
         return bool(self.applies_to(tenant, school))
 
 
-def _school_operates_branches(tenant, school) -> bool:
-    """Whether branch setup is a step this school has.
-
-    ``School.operates_branches`` is the intent, not a count: a school that plans
-    branches but has created none still has the step, and a single-site school
-    never sees one. This is the whole of the condition, by product decision.
-    """
-    return bool(getattr(school, "operates_branches", False))
-
-
 #: The canonical catalog, in display order. Every entry maps to something the
 #: platform can check today or to a dependency named in the FRD.
+#:
+#: There is no branch step. It was here, conditional on a school flag that said
+#: whether the school ran more than one site; the flag is gone and the honest
+#: predicate was the branch count, which every school satisfies at creation. A
+#: step that is complete the moment it could exist is not a step, so it was
+#: removed rather than left in as a box that arrives already ticked.
 TASK_CATALOG: tuple[CatalogEntry, ...] = (
-    CatalogEntry(
-        key=TaskKey.BRANCH_SETUP,
-        title="Set up your branches",
-        is_required=True,
-        order_index=1,
-        applies_to=_school_operates_branches,
-    ),
     CatalogEntry(
         key=TaskKey.FIRST_ADMIN,
         title="Confirm your first administrator",
         is_required=True,
-        order_index=2,
+        order_index=1,
     ),
     CatalogEntry(
         key=TaskKey.ROLE_BASELINE,
         title="Confirm your roles",
         is_required=True,
-        order_index=3,
+        order_index=2,
     ),
     CatalogEntry(
         key=TaskKey.SCHOOL_METADATA,
         title="Complete your school profile",
         is_required=True,
-        order_index=4,
+        order_index=3,
     ),
     # Books are provisioned for every school at creation, entitled to finance or
     # not, so this is no longer conditional on a capability. It stays REQUIRED
@@ -148,25 +145,25 @@ TASK_CATALOG: tuple[CatalogEntry, ...] = (
         key=TaskKey.SET_OF_BOOKS,
         title="Confirm your set of books",
         is_required=True,
-        order_index=5,
+        order_index=4,
     ),
     CatalogEntry(
         key=TaskKey.ACADEMIC_STRUCTURE,
         title="Set up your academic structure",
         is_required=True,
-        order_index=6,
+        order_index=5,
     ),
     CatalogEntry(
         key=TaskKey.INITIAL_DATA,
         title="Import your initial data",
         is_required=False,
-        order_index=7,
+        order_index=6,
     ),
     CatalogEntry(
         key=TaskKey.STAFF_INVITATIONS,
         title="Invite your staff",
         is_required=False,
-        order_index=8,
+        order_index=7,
     ),
 )
 

@@ -4,6 +4,8 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, close_old_connections, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase, TransactionTestCase
+from django.urls import reverse
+from rest_framework.test import APIClient
 
 from .models import School
 from .serializers import SchoolCreateSerializer
@@ -11,6 +13,17 @@ from vs_config.models import ConfigurationDefinition
 from vs_config.services.resolution import set_value
 from vs_rbac.tests.helpers import make_vision_user
 from vs_tenants.models import Branch, Tenant
+
+
+def _branch_payload(name="Main Campus", *, is_main=True, email="main@branch.test"):
+    """The smallest branch a school can be created with."""
+    return {
+        "name": name,
+        "_type": "Main" if is_main else "Annex",
+        "state": "Lagos",
+        "is_main": is_main,
+        "primary_admin_data": {"full_name": f"{name} Head", "email": email},
+    }
 
 
 class SchoolCodeAllocationTests(TestCase):
@@ -26,6 +39,7 @@ class SchoolCodeAllocationTests(TestCase):
             "address": "1 Test Road",
             "term_structure": "3_TERMS",
             "currency": "NGN",
+            "branches": [_branch_payload(email="head@serializer-school.test")],
         })
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
@@ -47,11 +61,15 @@ class SchoolCodeAllocationTests(TestCase):
             actor=actor,
         )
 
-        omitted = SchoolCreateSerializer(data={"name": "Defaults School"})
+        omitted = SchoolCreateSerializer(data={
+            "name": "Defaults School",
+            "branches": [_branch_payload(email="head@defaults-school.test")],
+        })
         explicit = SchoolCreateSerializer(data={
             "name": "Explicit School",
             "ownership_type": "PRIVATE",
             "currency": "NGN",
+            "branches": [_branch_payload(email="head@explicit-school.test")],
         })
 
         self.assertTrue(omitted.is_valid(), omitted.errors)
@@ -124,11 +142,19 @@ class BranchTenantOwnershipTests(TestCase):
             set_current_tenant(None)
 
     def test_a_tenant_with_no_branches_is_untouched(self):
-        empty = School.objects.create(name="Branchless", slug="branchless")
+        """A bare tenant, not a school: every school has a branch.
+
+        Code allocation has to work for a tenant whose first branch is being
+        created, and a tenant with no product attached is the honest way to
+        express that now that a branchless school is not a shape that exists.
+        """
+        empty = Tenant.objects.create(
+            name="Empty Org", slug="empty-org", kind=Tenant.Kind.ORGANIZATION,
+            status=Tenant.Status.ACTIVE,
+        )
 
         self.assertEqual(empty.branches.count(), 0)
-        self.assertIsNone(empty.main_branch)
-        self.assertEqual(Branch.allocate_next_code(tenant_id=empty.tenant_id), 1)
+        self.assertEqual(Branch.allocate_next_code(tenant_id=empty.pk), 1)
 
 
 class BranchUniquenessConstraintTests(TestCase):
@@ -614,3 +640,225 @@ class BranchMoveMigrationTests(_MigrationHarness):
             tenant_id=tenants["multi"].pk, name="Ikoyi", _type="Sub",
         )
         self.assertEqual(fresh.code, 3)
+
+
+class EverySchoolHasAtLeastOneBranchTests(TestCase):
+    """The invariant the product settled and the code did not hold.
+
+    ``SchoolCreateSerializer.branches`` was ``required=False, default=list``, so
+    the live creation endpoint (and the bulk importer, which runs this same
+    serializer) would happily mint a school with nowhere to put a user, a
+    document or a student. Every branch rule in ``validate()`` sat behind an
+    ``if branches:`` and therefore never ran for exactly the payload that needed
+    them.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="branch-invariant@example.com", super_admin=True,
+        )
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        return client
+
+    def _post(self, payload, *, expect):
+        response = self._client().post(
+            reverse("school-create"), payload, format="json",
+        )
+        self.assertEqual(response.status_code, expect, response.data)
+        return response
+
+    # --- refused ----------------------------------------------------------
+
+    def test_a_school_with_no_branches_at_all_is_refused(self):
+        response = self._post(
+            {"name": "Nowhere School", "slug": "nowhere-school"}, expect=400,
+        )
+
+        self.assertIn("branches", self._errors(response))
+        self.assertFalse(School.objects.filter(slug="nowhere-school").exists())
+
+    def test_an_empty_branch_list_is_refused(self):
+        response = self._post(
+            {"name": "Empty List", "slug": "empty-list", "branches": []},
+            expect=400,
+        )
+
+        self.assertIn("branches", self._errors(response))
+        self.assertFalse(School.objects.filter(slug="empty-list").exists())
+
+    def test_the_refusal_is_a_validation_error_not_a_crash(self):
+        """400 with a readable message, never a 500."""
+        response = self._post({"name": "Readable", "slug": "readable"}, expect=400)
+
+        self.assertIn("at least one branch", str(self._errors(response)["branches"]))
+
+    def test_nothing_at_all_is_written_when_the_branch_is_missing(self):
+        """The refusal happens in validation, before the first row is written."""
+        before = (
+            School.objects.count(), Tenant.objects.count(), Branch.all_objects.count(),
+        )
+
+        self._post({"name": "No Trace", "slug": "no-trace"}, expect=400)
+
+        self.assertEqual(
+            (School.objects.count(), Tenant.objects.count(), Branch.all_objects.count()),
+            before,
+        )
+
+    def test_two_branches_still_need_exactly_one_main(self):
+        response = self._post({
+            "name": "Two Mains", "slug": "two-mains",
+            "branches": [
+                _branch_payload("A", is_main=True, email="a@two-mains.test"),
+                _branch_payload("B", is_main=True, email="b@two-mains.test"),
+            ],
+        }, expect=400)
+
+        self.assertIn("branches", self._errors(response))
+        self.assertFalse(School.objects.filter(slug="two-mains").exists())
+
+    def test_two_branches_with_no_main_are_refused(self):
+        """Promotion is only safe when there is one branch to promote."""
+        self._post({
+            "name": "No Main", "slug": "no-main",
+            "branches": [
+                _branch_payload("A", is_main=False, email="a@no-main.test"),
+                _branch_payload("B", is_main=False, email="b@no-main.test"),
+            ],
+        }, expect=400)
+
+        self.assertFalse(School.objects.filter(slug="no-main").exists())
+
+    # --- accepted ---------------------------------------------------------
+
+    def test_one_branch_succeeds_and_that_branch_is_the_main_one(self):
+        self._post({
+            "name": "One Branch", "slug": "one-branch",
+            "branches": [_branch_payload("Main Campus", email="head@one-branch.test")],
+        }, expect=201)
+
+        school = School.objects.get(slug="one-branch")
+        self.assertEqual(school.branches.count(), 1)
+        branch = school.main_branch
+        self.assertIsNotNone(branch)
+        self.assertEqual(branch.name, "Main Campus")
+        self.assertTrue(branch.is_main)
+        self.assertEqual(branch.code, 1)
+        self.assertEqual(branch.tenant_id, school.tenant_id)
+
+    def test_the_only_branch_is_promoted_to_main_when_the_flag_is_omitted(self):
+        """A school's single site is its main site; saying so twice buys nothing."""
+        self._post({
+            "name": "Implied Main", "slug": "implied-main",
+            "branches": [{
+                "name": "Only Campus", "_type": "Main", "state": "Lagos",
+                "primary_admin_data": {
+                    "full_name": "Only Head", "email": "head@implied-main.test",
+                },
+            }],
+        }, expect=201)
+
+        school = School.objects.get(slug="implied-main")
+        self.assertEqual(school.branches.count(), 1)
+        self.assertTrue(school.main_branch.is_main)
+
+    def test_a_multi_branch_school_keeps_the_shape_it_asked_for(self):
+        """One branch proves nothing about a school with several."""
+        self._post({
+            "name": "Multi Branch", "slug": "multi-branch",
+            "branches": [
+                _branch_payload("HQ", is_main=True, email="hq@multi-branch.test"),
+                _branch_payload("Lekki", is_main=False, email="lekki@multi-branch.test"),
+                _branch_payload("Ikoyi", is_main=False, email="ikoyi@multi-branch.test"),
+            ],
+        }, expect=201)
+
+        school = School.objects.get(slug="multi-branch")
+        self.assertEqual(school.branches.count(), 3)
+        self.assertEqual(school.main_branch.name, "HQ")
+        self.assertEqual(
+            sorted(school.branches.values_list("code", flat=True)), [1, 2, 3],
+        )
+
+    @staticmethod
+    def _errors(response):
+        """Field errors live at ``error.detail`` in the project envelope."""
+        data = response.data
+        if isinstance(data, dict) and isinstance(data.get("error"), dict):
+            return data["error"].get("detail", data)
+        return data
+
+
+class BulkImporterSuppliesAMainBranchTests(TestCase):
+    """The second creation path: the bulk school importer.
+
+    It runs the same serializer, so the rule above already binds it. What is
+    pinned here is that an import row with no branch columns filled in still
+    produces a school with a main branch rather than a rejected row.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="branch-importer@example.com", super_admin=True,
+        )
+
+    def test_a_row_with_no_branch_columns_still_gets_a_main_branch(self):
+        from vs_import_data.services.import_executor import import_schools_row
+
+        result = import_schools_row(
+            import_batch=None,
+            payload={
+                "name": "Imported Academy",
+                "slug": "imported-academy",
+                "branch_admin_full_name": "Imported Head",
+                "branch_admin_email": "head@imported-academy.test",
+            },
+            queued_by=self.vision_user,
+        )
+
+        school = result.instance
+        self.assertEqual(school.slug, "imported-academy")
+        self.assertEqual(school.branches.count(), 1)
+        self.assertTrue(school.main_branch.is_main)
+        # The default name the handler builds when the column is blank.
+        self.assertEqual(school.main_branch.name, "Imported Academy - Main Campus")
+
+    def test_a_row_names_its_branch_when_the_column_is_filled(self):
+        from vs_import_data.services.import_executor import import_schools_row
+
+        result = import_schools_row(
+            import_batch=None,
+            payload={
+                "name": "Named Academy",
+                "slug": "named-academy",
+                "branch_name": "Yaba Campus",
+                "branch_state": "Lagos",
+                "branch_admin_full_name": "Yaba Head",
+                "branch_admin_email": "head@named-academy.test",
+            },
+            queued_by=self.vision_user,
+        )
+
+        self.assertEqual(result.instance.main_branch.name, "Yaba Campus")
+
+
+class SeedDataSuppliesABranchTests(TestCase):
+    """The dev seed is a creation path too, and it must not model a shape the
+    product has abolished."""
+
+    def test_every_seeded_school_spec_has_exactly_one_main_branch(self):
+        from core.management.commands.seed_dev_data import SCHOOLS
+
+        self.assertTrue(SCHOOLS)
+        for spec in SCHOOLS:
+            branches = spec["branches"]
+            self.assertTrue(branches, f"{spec['slug']} is seeded with no branch")
+            mains = [b for b in branches if b[2]]
+            self.assertEqual(
+                len(mains), 1, f"{spec['slug']} must have exactly one main branch",
+            )

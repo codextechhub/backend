@@ -686,9 +686,6 @@ class SchoolDetailSerializer(serializers.ModelSerializer):
             "term_structure",
             "currency",
             "registration_id",
-            # Writable through create/update, so it has to be readable back:
-            # a flag you can set and never see is one the client cannot render.
-            "operates_branches",
             "status",
             "activated_at",
             "deactivated_at",
@@ -721,7 +718,9 @@ class BranchInlineCreateSerializer(serializers.Serializer):
     inside SchoolCreateSerializer.create(), not here.
 
     Each branch entry must include primary_admin_data.
-    is_main defaults to False. Exactly one branch should have is_main=True.
+    is_main defaults to False. Exactly one branch must end up is_main=True; when
+    a school is created with a single branch, that branch is promoted to main
+    because it is the only site the school has.
     """
 
     name = serializers.CharField(max_length=255)
@@ -744,22 +743,38 @@ class BranchInlineCreateSerializer(serializers.Serializer):
 class SchoolCreateSerializer(serializers.ModelSerializer):
 
     """
-    Creates an School with optional:
+    Creates a School with its branches, plus optional:
       - Branding
       - School-level primary admin
-      - One or more branches (each with their own branch admin)
+      - Package setup
 
-    The `branches` field accepts a list of branch objects.
+    The `branches` field accepts a list of branch objects and is **required**:
+    every school has at least one branch, its main branch, from the moment it
+    exists. It used to be ``required=False, default=list``, which let this
+    endpoint (and the bulk importer behind it) mint a school with nowhere to put
+    a user, a document or a student. Every branch rule below used to sit behind
+    an ``if branches:`` and so never ran for the one payload that needed them.
+
     Business rules enforced here:
-      - At most ONE branch may have is_main=True.
-      - If any branches are submitted, exactly one must be is_main=True.
+      - At least ONE branch must be submitted.
+      - Exactly one branch must have is_main=True.
       - Branch names must be unique within the submission.
     """
 
     slug = serializers.CharField(required=False, allow_blank=True)
     branding = SchoolBrandingSerializer(required=False)
     primary_admin_data = SchoolPrimaryAdminWriteSerializer(required=False, write_only=True)
-    branches = BranchInlineCreateSerializer(many=True, required=False, default=list, write_only=True)
+    branches = BranchInlineCreateSerializer(
+        many=True,
+        required=True,
+        allow_empty=False,
+        write_only=True,
+        error_messages={
+            "required": "A school must be created with at least one branch, its main branch.",
+            "empty": "A school must be created with at least one branch, its main branch.",
+            "null": "A school must be created with at least one branch, its main branch.",
+        },
+    )
     package_setup_data = SchoolPackageSetupWriteSerializer(required=False, write_only=True)
 
     class Meta:
@@ -775,7 +790,6 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             "term_structure",
             "currency",
             "registration_id",
-            "operates_branches",
 
             # optional nested
             "branding",
@@ -863,31 +877,36 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(email_errors)
 
         # --- Branch-level validations ---
-        if branches:
-            # Rule 1: Branch names must be unique within the submission
-            names = [b["name"].strip().lower() for b in branches]
-            if len(names) != len(set(names)):
-                raise serializers.ValidationError({
-                    "branches": "Each branch must have a unique name within this submission."
-                })
+        # No longer behind ``if branches:``. The field is required and rejects an
+        # empty list, so reaching here means at least one branch was submitted,
+        # and these rules run for every school that is ever created.
+        if not branches:
+            raise serializers.ValidationError({
+                "branches": "A school must be created with at least one branch, its main branch."
+            })
 
-            # Rule 2: Exactly one branch must be marked as main
-            main_branches = [b for b in branches if b.get("is_main", False)]
-            if len(main_branches) == 0:
+        # Rule 1: Branch names must be unique within the submission
+        names = [b["name"].strip().lower() for b in branches]
+        if len(names) != len(set(names)):
+            raise serializers.ValidationError({
+                "branches": "Each branch must have a unique name within this submission."
+            })
+
+        # Rule 2: Exactly one branch must be marked as main
+        main_branches = [b for b in branches if b.get("is_main", False)]
+        if len(main_branches) == 0:
+            if len(branches) == 1:
+                # The lone branch of a new school is its main branch. Making the
+                # caller say so twice buys nothing.
+                branches[0]["is_main"] = True
+            else:
                 raise serializers.ValidationError({
                     "branches": "Exactly one branch must be marked as is_main=true."
                 })
-            if len(main_branches) > 1:
-                raise serializers.ValidationError({
-                    "branches": "Only one branch can be marked as is_main=true."
-                })
-
-            # A school that submits branches at creation plainly operates them,
-            # so the flag is inferred rather than asked for twice. An explicit
-            # value from the caller always wins: a school may declare that it
-            # operates branches before it has created any, and the reverse
-            # (branches now, single-site intent) is theirs to state.
-            attrs.setdefault("operates_branches", True)
+        if len(main_branches) > 1:
+            raise serializers.ValidationError({
+                "branches": "Only one branch can be marked as is_main=true."
+            })
 
         return attrs
 
@@ -1135,7 +1154,6 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
             "term_structure",
             "currency",
             "registration_id",
-            "operates_branches",
 
             # optional nested
             "branding",

@@ -465,10 +465,9 @@ class PayloadExposureTests(OnboardingFixture):
 
 class ProvisioningTests(OnboardingFixture):
     def test_it_creates_one_progress_row_and_one_task_per_applicable_entry(self):
-        expected = {
-            entry.key for entry in TASK_CATALOG
-            if entry.key != TaskKey.BRANCH_SETUP  # this school is single-site
-        }
+        # Every catalog entry, with nothing left out: no step is conditional on
+        # the shape of the school any more.
+        expected = {entry.key for entry in TASK_CATALOG}
 
         self.assertEqual(
             OnboardingProgress.all_objects.filter(tenant=self.tenant).count(), 1,
@@ -512,7 +511,7 @@ class ProvisioningTests(OnboardingFixture):
         extended = TASK_CATALOG + (
             CatalogEntry(
                 key=TaskKey.STAFF_INVITATIONS, title="Invite your staff",
-                is_required=False, order_index=8,
+                is_required=False, order_index=7,
             ),
         )
         with patch("schools.vs_onboarding.services.provisioning.TASK_CATALOG", extended):
@@ -522,6 +521,46 @@ class ProvisioningTests(OnboardingFixture):
         self.assertEqual(after - before, {TaskKey.STAFF_INVITATIONS.value})
         self.assertEqual(
             self.task(TaskKey.FIRST_ADMIN).status, TaskStatus.IN_PROGRESS,
+        )
+
+    def test_an_entry_that_does_not_apply_to_this_school_is_never_created(self):
+        """``applies_to`` still works, and is still the only route to a row.
+
+        No shipped entry uses it since the branch step was retired, so it is
+        pinned with a synthetic one: an unused seam that nothing exercises is
+        one that quietly stops working before the next conditional step needs
+        it.
+        """
+        from .constants import CatalogEntry
+
+        OnboardingTask.all_objects.filter(
+            tenant=self.tenant, key=TaskKey.STAFF_INVITATIONS,
+        ).delete()
+        seen = []
+
+        def _never(tenant, school):
+            seen.append((tenant.pk, school.pk))
+            return False
+
+        extended = tuple(
+            entry for entry in TASK_CATALOG
+            if entry.key != TaskKey.STAFF_INVITATIONS
+        ) + (
+            CatalogEntry(
+                key=TaskKey.STAFF_INVITATIONS, title="Invite your staff",
+                is_required=False, order_index=7, applies_to=_never,
+            ),
+        )
+        with patch("schools.vs_onboarding.services.provisioning.TASK_CATALOG", extended):
+            provision_onboarding(self.tenant, actor=self.admin)
+
+        # The predicate was consulted, with this school, and its answer was
+        # obeyed: not present-and-optional, absent.
+        self.assertEqual(seen, [(self.tenant.pk, self.school.pk)])
+        self.assertFalse(
+            OnboardingTask.all_objects.filter(
+                tenant=self.tenant, key=TaskKey.STAFF_INVITATIONS,
+            ).exists(),
         )
 
     def test_provisioning_writes_one_audit_row(self):
@@ -583,7 +622,22 @@ class SchoolCreationProvisionsOnboardingTests(TestCase):
         call_command("seed_actions", stdout=StringIO())
         call_command("seed_prebuilt_role_templates", stdout=StringIO())
 
+    @staticmethod
+    def _branch(name, email, *, is_main=True):
+        return {
+            "name": name, "_type": "Main" if is_main else "Annex", "state": "Lagos",
+            "is_main": is_main,
+            "primary_admin_data": {"full_name": f"{name} Head", "email": email},
+        }
+
     def _create(self, payload, *, expect=201):
+        # Every school is created with at least one branch. These tests are
+        # about the onboarding control room, so the main branch is scenery, but
+        # the payload is refused without it.
+        payload = dict(payload)
+        payload.setdefault("branches", [
+            self._branch("Main Campus", f"main@{payload['slug']}.test"),
+        ])
         client = APIClient()
         client.force_authenticate(user=self.vision_user)
         response = client.post(reverse("school-create"), payload, format="json")
@@ -602,27 +656,37 @@ class SchoolCreationProvisionsOnboardingTests(TestCase):
             .filter(tenant=school.tenant)
             .values_list("key", flat=True)
         )
-        self.assertNotIn(TaskKey.BRANCH_SETUP.value, keys)
-        self.assertIn(TaskKey.FIRST_ADMIN.value, keys)
+        self.assertEqual(keys, {entry.key.value for entry in TASK_CATALOG})
 
-    def test_a_school_with_branches_gets_the_branch_step(self):
+    def test_a_second_branch_changes_nothing_about_the_checklist(self):
+        """The checklist no longer varies with how many sites a school runs.
+
+        It used to: a school that submitted a second branch was handed a branch
+        step that a single-site school never saw. Both schools now get the same
+        list, which is what makes the list something the control room can
+        explain.
+        """
+        self._create({"name": "One Site", "slug": "one-site-school"})
         self._create({
             "name": "Branchy School", "slug": "branchy-school",
-            "branches": [{
-                "name": "Main Campus", "_type": "Main", "state": "Lagos",
-                "is_main": True,
-                "primary_admin_data": {
-                    "full_name": "Main Head", "email": "main@branchy.test",
-                },
-            }],
+            "branches": [
+                self._branch("Main Campus", "main@branchy.test"),
+                self._branch("Lekki Annex", "lekki@branchy.test", is_main=False),
+            ],
         })
 
-        school = School.objects.get(slug="branchy-school")
-        self.assertTrue(
-            OnboardingTask.all_objects.filter(
-                tenant=school.tenant, key=TaskKey.BRANCH_SETUP,
-            ).exists(),
+        def keys_for(slug):
+            tenant = School.objects.get(slug=slug).tenant
+            return set(
+                OnboardingTask.all_objects
+                .filter(tenant=tenant)
+                .values_list("key", flat=True)
+            )
+
+        self.assertEqual(
+            School.objects.get(slug="branchy-school").branches.count(), 2,
         )
+        self.assertEqual(keys_for("one-site-school"), keys_for("branchy-school"))
 
     def test_an_onboarding_failure_does_not_cost_us_the_school(self):
         def _failing_statement(*args, **kwargs):
@@ -709,16 +773,23 @@ class TaskTransitionTests(OnboardingFixture):
         self.assertEqual(self.task(TaskKey.SET_OF_BOOKS).status, TaskStatus.NOT_STARTED)
 
     def test_done_is_allowed_once_the_condition_holds(self):
-        make_branch(self.tenant, name="HQ", status=BranchStatus.ACTIVE)
-        OnboardingTask.all_objects.create(
-            tenant=self.tenant, key=TaskKey.BRANCH_SETUP,
-            title="Set up your branches", is_required=True, order_index=1,
-        )
+        """The other side of the previous test: STAFF_INVITATIONS, satisfied.
+
+        The condition wants somebody in this tenant beyond the first
+        administrator, so one more user is the whole of the set-up.
+        """
+        refused = self.patch_task(TaskKey.STAFF_INVITATIONS, TaskStatus.DONE)
+        self.assertErrorCode(refused, 422, "TASK_CONDITION_NOT_MET")
+
+        make_school_admin(None, email="alpha-second@test.com", tenant=self.tenant)
 
         with self.captureOnCommitCallbacks(execute=True):
-            response = self.patch_task(TaskKey.BRANCH_SETUP, TaskStatus.DONE)
+            response = self.patch_task(TaskKey.STAFF_INVITATIONS, TaskStatus.DONE)
 
         self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            self.task(TaskKey.STAFF_INVITATIONS).status, TaskStatus.DONE,
+        )
 
     def test_the_first_admin_condition_reads_a_real_active_assignment(self):
         with self.captureOnCommitCallbacks(execute=True):
@@ -759,10 +830,24 @@ class TaskTransitionTests(OnboardingFixture):
         self.assertEqual(self.task(TaskKey.FIRST_ADMIN).status, TaskStatus.NOT_STARTED)
 
     def test_a_key_this_tenant_does_not_have_is_a_plain_404(self):
-        """BRANCH_SETUP is a real catalog key that this single-site school lacks."""
-        response = self.patch_task(TaskKey.BRANCH_SETUP, TaskStatus.DONE)
+        """A real catalog key, and a school with no row for it.
+
+        The rival school keeps its row, so a 404 here cannot come from the key
+        being unknown to the platform: it comes from this tenant not holding
+        one, which must be indistinguishable from another tenant's task.
+        """
+        OnboardingTask.all_objects.filter(
+            tenant=self.tenant, key=TaskKey.STAFF_INVITATIONS,
+        ).delete()
+
+        response = self.patch_task(TaskKey.STAFF_INVITATIONS, TaskStatus.DONE)
 
         self.assertEqual(response.status_code, 404, response.data)
+        self.assertTrue(
+            OnboardingTask.all_objects.filter(
+                tenant=self.rival_tenant, key=TaskKey.STAFF_INVITATIONS,
+            ).exists(),
+        )
 
     def test_a_required_task_cannot_be_skipped(self):
         """The product decision that replaced "skippable but still blocking".
@@ -1397,10 +1482,7 @@ class StatePayloadTests(OnboardingFixture):
         response = self.client_for(self.admin).get(self.scoped("onboarding-task-list"))
 
         keys = [row["key"] for row in response.data["data"]]
-        expected = [
-            entry.key.value for entry in TASK_CATALOG
-            if entry.key != TaskKey.BRANCH_SETUP
-        ]
+        expected = [entry.key.value for entry in TASK_CATALOG]
         self.assertEqual(keys, expected)
 
 
@@ -1429,62 +1511,59 @@ class IndexTests(TestCase):
 # ══════════════════════════════════════════════════════════════════════════
 
 class BranchShapeTests(TestCase):
-    """Branch-optional and multi-branch schools must both work."""
+    """Single-branch and multi-branch schools must both work, identically.
 
-    def test_a_branch_optional_school_never_gets_a_branch_step(self):
-        school = make_school(
-            slug="single-site", name="Single Site", status="PENDING",
-            operates_branches=False,
-        )
+    Onboarding used to vary with branch shape: a branch step existed only for a
+    school whose ``operates_branches`` flag was set. The flag is gone, and with
+    it the last thing in this module that asked how many sites a school runs.
+    These tests are what stops it coming back as a conditional step keyed off a
+    branch count instead.
+    """
+
+    def _keys_after_provisioning(self, school):
         provision_onboarding(school.tenant)
-
-        keys = set(
+        return set(
             OnboardingTask.all_objects
             .filter(tenant=school.tenant)
             .values_list("key", flat=True)
         )
-        self.assertNotIn(TaskKey.BRANCH_SETUP.value, keys)
-        # Not present-and-optional, and not present-and-blank: absent.
+
+    def test_a_single_branch_school_gets_the_whole_catalog(self):
+        school = make_school(
+            slug="single-site", name="Single Site", status="PENDING",
+        )
+        make_branch(school, name="HQ", status=BranchStatus.ACTIVE)
+
         self.assertEqual(
-            OnboardingTask.all_objects.filter(
-                tenant=school.tenant, key=TaskKey.BRANCH_SETUP,
-            ).count(),
-            0,
+            self._keys_after_provisioning(school),
+            {entry.key.value for entry in TASK_CATALOG},
         )
 
-    def test_a_three_branch_school_gets_one_step_satisfied_by_its_main_branch(self):
+    def test_a_three_branch_school_gets_exactly_the_same_steps(self):
         school = make_school(
             slug="three-sites", name="Three Sites", status="PENDING",
-            operates_branches=True,
         )
         main = make_branch(school, name="HQ", status=BranchStatus.ACTIVE)
         make_branch(school, name="Annex", is_main=False, status=BranchStatus.ACTIVE)
         make_branch(school, name="Lekki", is_main=False, status=BranchStatus.PENDING)
-        provision_onboarding(school.tenant)
 
-        rows = OnboardingTask.all_objects.filter(
-            tenant=school.tenant, key=TaskKey.BRANCH_SETUP,
-        )
-        self.assertEqual(rows.count(), 1)
-        self.assertTrue(rows.first().is_required)
+        keys = self._keys_after_provisioning(school)
 
-        from .services.conditions import condition_holds
-
-        self.assertTrue(condition_holds(TaskKey.BRANCH_SETUP, school.tenant, school))
+        self.assertEqual(keys, {entry.key.value for entry in TASK_CATALOG})
         self.assertEqual(Branch.all_objects.filter(tenant=school.tenant).count(), 3)
         self.assertTrue(main.is_main)
 
-    def test_the_branch_condition_is_not_satisfied_by_another_tenants_branch(self):
-        mine = make_school(
-            slug="branchless", name="Branchless", status="PENDING",
-            operates_branches=True,
-        )
-        theirs = make_school(slug="branchful", name="Branchful", status="PENDING")
-        make_branch(theirs, name="Their HQ", status=BranchStatus.ACTIVE)
+    def test_no_step_is_named_for_branches_any_more(self):
+        """The retired key is gone from the vocabulary, not merely unused.
 
-        from .services.conditions import condition_holds
+        A key still in ``TaskKey`` would be a step the API advertises and no
+        school can ever hold.
+        """
+        from .services.conditions import TASK_CONDITIONS
 
-        self.assertFalse(condition_holds(TaskKey.BRANCH_SETUP, mine.tenant, mine))
+        self.assertNotIn("BRANCH_SETUP", TaskKey.values)
+        self.assertNotIn("BRANCH_SETUP", [entry.key for entry in TASK_CATALOG])
+        self.assertNotIn("BRANCH_SETUP", TASK_CONDITIONS)
 
 
 class TwoTenantsOnboardingTests(TestCase):

@@ -50,10 +50,10 @@ def _action_type_for(previous: str, target: str) -> str:
 def _step_position(tenant, task) -> tuple[int, int]:
     """This task's place in the school's own checklist, 1-based.
 
-    Counted over the tenant's rows rather than over the catalog, because a
-    single-site school has no branch step and being told it is "step 3 of 8"
-    when it can only ever see seven is the kind of small wrongness that makes a
-    control room feel broken.
+    Counted over the tenant's rows rather than over the catalog. A school that
+    was provisioned under an older catalog does not hold the same steps as one
+    provisioned today, and being told it is "step 3 of 8" while looking at seven
+    is the kind of small wrongness that makes a control room feel broken.
     """
     keys = list(
         rows_for(OnboardingTask, tenant)

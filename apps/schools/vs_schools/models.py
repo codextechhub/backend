@@ -120,14 +120,6 @@ class School(TimeStampedModel):
         website / motto / registration_id: Optional metadata displayed in onboarding.
         term_structure: Academic calendar definition (`TermStructure` choices).
         currency: Preferred billing currency (`Currency` choices).
-        operates_branches: Whether the school runs more than one site. This is
-            the *intent*, not a count: onboarding reads it to decide whether the
-            BRANCH_SETUP task exists for this school at all, so a school that
-            plans branches but has not created any yet still says True, and a
-            single-site school never sees a branch step it will never finish.
-            Branch-optional schools are real, so the default is False and
-            creating a school with inline branches raises it to True; a school
-            that decides later corrects it through the update endpoint.
         status: Operational flag (`SchoolStatus` choices, indexed).
         activated_at / deactivated_at: Lifecycle timestamps for activation and deactivation.
 
@@ -166,13 +158,10 @@ class School(TimeStampedModel):
     currency = models.CharField(max_length=8, blank=True, choices=Currency.choices, default=Currency.NGN)
     registration_id = models.CharField(max_length=64, blank=True, default="")
 
-    operates_branches = models.BooleanField(
-        default=False,
-        help_text=(
-            "Whether this school runs more than one site. Onboarding reads this "
-            "to decide whether branch setup is a step the school must complete."
-        ),
-    )
+    # How many sites a school runs is not stored here: it is counted. There was
+    # a boolean for it, and a flag can disagree with the rows it describes, so a
+    # school could claim one site while its ``tenant.branches`` said three. Ask
+    # the branches. Every school has at least one from the moment it is created.
 
     status = models.CharField(
         max_length=16,
