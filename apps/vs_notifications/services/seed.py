@@ -1157,13 +1157,35 @@ def _build_default_templates() -> dict:
         # ── export.run_completed / export.run_failed (Export Centre) ─────────
         # Separate from task.completed above because a background job that
         # succeeded can still have produced a file with columns left out -
-        # {{ error }} carries that, and the in-app body must be able to say so.
-        # Manual successes are in-app only by design: the person is already
-        # looking at the screen, so only failures and deliveries earn an email.
+        # {{ error }} carries that, and both bodies must be able to say so.
+        #
+        # A finished export earns an email as well as the bell: decided
+        # 2026-08-17. The registry has always declared IN_APP + EMAIL for this
+        # key (constants.py), but no email default existed here, so dispatch
+        # skipped the channel in silence for the life of the Export Centre. The
+        # vs_notifications.W001 system check found it. Do not delete the email
+        # template below as an oddity: without it the channel goes quiet again
+        # and nothing fails.
         ("export.run_completed", C.IN_APP): {
             "subject": "",
             "body": (
                 "{{ export_name }} is ready - {{ rows }} rows. {{ error }}"
+            ),
+        },
+        # The opening line is conditional on purpose: a run that completed with
+        # columns left out must not open by saying everything worked.
+        ("export.run_completed", C.EMAIL): {
+            "subject": "Export ready - {{ export_name }}",
+            "body": (
+                "{% if error %}Your export has finished, but not everything you "
+                "asked for is in the file.{% else %}Your export has finished and "
+                "the file is ready.{% endif %}\n\n"
+                "  Export    : {{ export_name }}\n"
+                "  Reference : {{ reference }}\n"
+                "  Rows      : {{ rows }}\n\n"
+                "{% if error %}{{ error }}\n\n{% endif %}"
+                "Open the run in Vision to download the file.\n\n"
+                "CodeX Vision"
             ),
         },
         ("export.run_failed", C.IN_APP): {
