@@ -1,12 +1,14 @@
 import datetime
 
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError, transaction
 from django.http import HttpResponse
 from django.test import RequestFactory, TestCase
 from rest_framework.exceptions import NotFound, ValidationError
 
 from schools.vs_schools.models import School, SchoolStatus
 from vs_rbac.tests.helpers import make_vision_user
-from vs_tenants.models import Tenant
+from vs_tenants.models import Branch, BranchStatus, Tenant
 from vs_tenants.numbering import next_tenant_document_number
 from vs_tenants.resolution import resolve_tenant
 from vs_user.models import User
@@ -289,3 +291,181 @@ class ProxyAuditMiddlewareTests(TestCase):
 
         self._run("patch", emit_business_event=True)
         self.assertEqual(list(AuditEvent.objects.values_list("action_type", flat=True)), ["UPDATE"])
+
+
+class BranchDatabaseConstraintTests(TestCase):
+    """The two promises in ``Branch``'s docstring, tested at the database.
+
+    ``Branch.save()`` and ``Branch.clean()`` both guard the main-branch rule in
+    Python, and the school-creation serializer guards both rules again. None of
+    that is what makes the rules true: a management command, a data migration,
+    the shell or a bulk import reaches the table without passing any of them.
+    So every test here writes through ``bulk_create``, which skips ``save()``
+    entirely, and asserts on ``IntegrityError`` from the constraint itself.
+
+    ``all_objects`` throughout: ``objects`` is the ``TenantAwareManager`` and
+    would hide the rows of whichever tenant is not ambient.
+    """
+
+    def setUp(self):
+        self.alpha = Tenant.objects.create(
+            name="Alpha School", slug="alpha", kind=Tenant.Kind.SCHOOL,
+        )
+        self.beta = Tenant.objects.create(
+            name="Beta School", slug="beta", kind=Tenant.Kind.SCHOOL,
+        )
+
+    def _branch(self, tenant, *, code, is_main=False, name="Site",
+                status=BranchStatus.ACTIVE):
+        return Branch(
+            tenant=tenant, name=name, code=code, is_main=is_main,
+            _type="Main" if is_main else "Sub", status=status,
+        )
+
+    def _insert(self, *branches):
+        """Write straight to the table, past ``save()`` and ``clean()``."""
+        return Branch.all_objects.bulk_create(list(branches))
+
+    # --- uq_branch_tenant_code ---------------------------------------------
+
+    def test_duplicate_code_in_the_same_tenant_is_refused(self):
+        self._insert(self._branch(self.alpha, code=1, is_main=True))
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._insert(self._branch(self.alpha, code=1, name="Clash"))
+
+    def test_the_same_code_in_a_different_tenant_is_allowed(self):
+        """Proves the uniqueness is scoped to the tenant, not global."""
+        self._insert(
+            self._branch(self.alpha, code=1, is_main=True),
+            self._branch(self.beta, code=1, is_main=True),
+        )
+
+        self.assertEqual(Branch.all_objects.filter(code=1).count(), 2)
+
+    def test_code_is_not_nullable_so_the_constraint_has_no_null_escape(self):
+        """A nullable column would let Postgres wave through unlimited rows.
+
+        In PostgreSQL two NULLs are never equal, so a unique index over a
+        nullable column does not constrain NULL rows at all. ``code`` is
+        declared NOT NULL, which is what closes that hole; this test fails the
+        moment somebody relaxes it.
+        """
+        self.assertFalse(Branch._meta.get_field("code").null)
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._insert(self._branch(self.alpha, code=None))
+
+    # --- uq_branch_one_main_per_tenant -------------------------------------
+
+    def test_a_second_main_branch_in_the_same_tenant_is_refused(self):
+        self._insert(self._branch(self.alpha, code=1, is_main=True, name="HQ"))
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._insert(
+                self._branch(self.alpha, code=2, is_main=True, name="Lekki"),
+            )
+
+    def test_each_tenant_may_have_its_own_main_branch(self):
+        self._insert(
+            self._branch(self.alpha, code=1, is_main=True, name="Alpha HQ"),
+            self._branch(self.beta, code=1, is_main=True, name="Beta HQ"),
+        )
+
+        self.assertEqual(Branch.all_objects.filter(is_main=True).count(), 2)
+
+    def test_many_non_main_branches_are_allowed(self):
+        """The index is partial: only ``is_main=True`` rows are constrained."""
+        self._insert(
+            self._branch(self.alpha, code=1, is_main=True, name="HQ"),
+            self._branch(self.alpha, code=2, name="Lekki"),
+            self._branch(self.alpha, code=3, name="Ikeja"),
+        )
+
+        self.assertEqual(Branch.all_objects.filter(tenant=self.alpha).count(), 3)
+
+    # --- how the lifecycle interacts with both rules ------------------------
+
+    def test_a_closed_main_branch_still_blocks_a_second_main(self):
+        """Neither constraint looks at ``status``, and that is deliberate.
+
+        ``is_main`` records which site is the canonical one, not which site is
+        trading. If the index were narrowed to in-service rows, closing the main
+        branch would silently let a tenant hold two ``is_main=True`` rows, and
+        ``School.main_branch`` (a ``.filter(is_main=True).first()``) would then
+        return whichever the database handed back first.
+        """
+        main = self._branch(self.alpha, code=1, is_main=True, name="HQ")
+        self._insert(main)
+        main.transition(to_state=BranchStatus.CLOSED, actor_id="1", reason="shut")
+        self.assertEqual(
+            Branch.all_objects.get(pk=main.pk).status, BranchStatus.CLOSED,
+        )
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._insert(
+                self._branch(self.alpha, code=2, is_main=True, name="New HQ"),
+            )
+
+    def test_a_closed_branchs_code_stays_reserved(self):
+        """Codes are historical labels, so a closed branch keeps its number.
+
+        ``allocate_next_code`` is ``max(code) + 1`` over every row regardless of
+        status, so it never re-issues a closed branch's code either. The two
+        agree, and a document that cites branch 2 keeps meaning one branch.
+        """
+        closed = self._branch(self.alpha, code=1, is_main=True, name="HQ")
+        self._insert(closed)
+        closed.transition(to_state=BranchStatus.CLOSED, actor_id="1", reason="shut")
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self._insert(self._branch(self.alpha, code=1, name="Reused"))
+
+        self.assertEqual(
+            Branch.allocate_next_code(tenant_id=self.alpha.pk), 2,
+        )
+
+    def test_closing_the_only_main_branch_leaves_the_tenant_without_one(self):
+        """The honest consequence of the rule above, asserted rather than hidden.
+
+        Nothing in the lifecycle demotes ``is_main`` when a branch closes, and
+        nothing refuses to close a main branch, so a tenant can be left with a
+        main branch that is out of service and cannot be replaced. That is a gap
+        in the lifecycle, not in these constraints: the fix is to refuse the
+        closure (or hand ``is_main`` over first), and it belongs where the
+        transition is decided.
+        """
+        main = self._branch(self.alpha, code=1, is_main=True, name="HQ")
+        other = self._branch(self.alpha, code=2, name="Lekki")
+        self._insert(main, other)
+
+        main.transition(to_state=BranchStatus.CLOSED, actor_id="1", reason="shut")
+
+        # The tenant still has exactly one main branch, and it is closed.
+        mains = Branch.all_objects.filter(tenant=self.alpha, is_main=True)
+        self.assertEqual([b.status for b in mains], [BranchStatus.CLOSED])
+        # No in-service branch is main.
+        self.assertFalse(
+            Branch.all_objects.filter(
+                tenant=self.alpha, is_main=True,
+                status__in=Branch.IN_SERVICE_STATES,
+            ).exists()
+        )
+        # And the surviving branch cannot be promoted while the closed one
+        # holds the flag: the model guard refuses it, and so does the database.
+        other.is_main = True
+        with self.assertRaises(DjangoValidationError):
+            other.save()
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Branch.all_objects.filter(pk=other.pk).update(is_main=True)
+
+    # --- the Python guards agree with the database --------------------------
+
+    def test_the_model_guard_refuses_a_second_main_before_the_database_does(self):
+        """``save()`` should fail as a field error, not as a 500 IntegrityError."""
+        self._insert(self._branch(self.alpha, code=1, is_main=True, name="HQ"))
+
+        second = self._branch(self.alpha, code=2, is_main=True, name="Lekki")
+        with self.assertRaises(DjangoValidationError) as caught:
+            second.save()
+        self.assertIn("is_main", caught.exception.message_dict)
