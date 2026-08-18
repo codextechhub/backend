@@ -346,7 +346,17 @@ class Branch(models.Model):
         help_text="Marks the primary/main branch for this tenant.",
     )
 
-    _type = models.CharField(max_length=80)  # e.g., Primary, Secondary, etc. --- optional freeform for now
+    # Free-form label for the site: "Primary", "Secondary", "Nursery". Nothing
+    # branches on it - it is rendered in the branch list and detail payloads,
+    # carried by the import template as a not-required column, and read nowhere
+    # else - so it is declared optional, which is what its comment always said
+    # it was. It was ``CharField(max_length=80)`` with no ``blank``: optional in
+    # prose and required in the schema. Every row made outside the serializers
+    # (``seed_import``, a data migration, the shell, the test factories) stored
+    # ``""`` and was then permanently unpatchable through the API, because
+    # ``BranchUpdateSerializer`` runs ``full_clean()`` over the whole instance
+    # and the blank it refused was one nobody had touched.
+    _type = models.CharField(max_length=80, blank=True, default="")
 
     # Branch contact/location info
     address = models.CharField(max_length=255, blank=True, default="")
@@ -698,10 +708,20 @@ class BranchLifecycle(models.Model):
         related_name="lifecycle_events",
     )
 
-    from_state = models.CharField(max_length=32, choices=BranchStatus.choices)
+    # A creation event has no state to come from, and ``BranchCreateSerializer``
+    # has always written ``from_state=""`` for one. ``to_state`` is the opposite
+    # and stays required: an event that does not say where the branch went is
+    # not an event.
+    from_state = models.CharField(
+        max_length=32, choices=BranchStatus.choices, blank=True, default="",
+    )
     to_state = models.CharField(max_length=32, choices=BranchStatus.choices)
 
-    actor_id = models.CharField(max_length=120)
+    # ``Branch.transition`` writes ``str(actor_id or "")``, so a system-driven
+    # transition - the onboarding sweep, a management command - stores a blank
+    # here by design. Same fix as ``reason`` below, which this sweep missed the
+    # first time round.
+    actor_id = models.CharField(max_length=120, blank=True, default="")
     # The column is NOT NULL, so default=None made every writer that omitted
     # `reason` raise IntegrityError.
     reason = models.TextField(blank=True, default="")

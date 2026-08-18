@@ -2,6 +2,7 @@
 
 import logging
 
+from django.core.exceptions import NON_FIELD_ERRORS
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
 from django.db.models import ProtectedError, RestrictedError
@@ -64,6 +65,29 @@ def _blocker_summary(exc) -> tuple[str, dict]:
     return ' and '.join(phrases), detail
 
 
+def _validation_error_detail(exc: DjangoValidationError) -> dict:
+    """A Django ValidationError as ``{field: [message, ...]}``.
+
+    Errors raised without a field - and every ``ValidationError("some text")``
+    from a service is one - collect under ``NON_FIELD_ERRORS`` (``__all__``),
+    which is where Django itself puts them, so the shape is the same either
+    way and a caller never has to branch on it.
+    """
+    if hasattr(exc, 'error_dict'):
+        return exc.message_dict
+    messages = exc.messages if hasattr(exc, 'messages') else [str(exc)]
+    return {NON_FIELD_ERRORS: messages}
+
+
+def _validation_error_message(detail: dict) -> str:
+    """One human sentence naming the fields that failed."""
+    parts = []
+    for field, messages in detail.items():
+        prefix = '' if field == NON_FIELD_ERRORS else f'{field}: '
+        parts.extend(f'{prefix}{message}' for message in messages)
+    return '; '.join(parts) or 'Validation failed.'
+
+
 def custom_exception_handler(exc, context):
 
     # Let DRF handle it first
@@ -81,13 +105,20 @@ def custom_exception_handler(exc, context):
             }
         }, status=status.HTTP_401_UNAUTHORIZED)
 
-    # Intercept Django model/form validation errors (args[0] is a list, not a dict)
+    # Intercept Django model/form validation errors.
+    #
+    # This used to read `exc.messages`, which flattens a field-keyed error into
+    # a bare list of sentences. A `full_clean()` on a model with eight editable
+    # columns therefore answered "This field cannot be blank." and never said
+    # which field, leaving the caller nothing to act on. `message_dict` keeps
+    # the keys; `messages` is still the fallback for the errors that genuinely
+    # have no field (`ValidationError("...")` raised from a service).
     if isinstance(exc, DjangoValidationError):
-        messages = exc.messages if hasattr(exc, 'messages') else [str(exc)]
+        detail = _validation_error_detail(exc)
         return Response({
             "success": False,
-            "message": '; '.join(messages),
-            "error": {"code": "VALIDATION_ERROR", "detail": messages},
+            "message": _validation_error_message(detail),
+            "error": {"code": "VALIDATION_ERROR", "detail": detail},
         }, status=status.HTTP_400_BAD_REQUEST)
 
     # A delete blocked by an on_delete=PROTECT / RESTRICT foreign key is the

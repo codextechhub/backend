@@ -18,9 +18,10 @@ from .models import (
     SchoolBranding,
     SchoolStatus,
     PackagePlan,
+    slug_is_reserved,
 )
-from vs_tenants.exceptions import BranchAlreadyInState
-from vs_tenants.models import Branch, BranchLifecycle, BranchStatus
+from vs_tenants.exceptions import BranchAlreadyInState, TenantSlugFrozen
+from vs_tenants.models import Branch, BranchLifecycle, BranchStatus, Tenant
 from vs_audit.models import AuditModuleKey, AuditActionType
 from vs_audit.services import AuditDiffService, emit_audit_event
 from vs_config.models import Capability, CapabilityEntitlement
@@ -52,6 +53,29 @@ def _slug_is_unique(slug: str, exclude_school_slug: Optional[str] = None) -> boo
     if exclude_school_slug:
         qs = qs.exclude(slug=exclude_school_slug)
     return not qs.filter(slug=slug).exists()
+
+
+def full_clean_as_field_errors(instance) -> None:
+    """``instance.full_clean()``, with its refusal renamed into DRF's shape.
+
+    A model ``ValidationError`` is keyed by field - ``{"_type": ["This field
+    cannot be blank."]}`` - but nothing on the update path was translating it,
+    so it travelled all the way to ``core.exceptions.custom_exception_handler``
+    and came back as the bare sentence with no field attached. The caller was
+    told a field was blank and not which one, on an endpoint that writes eight
+    of them.
+
+    ``as_serializer_error`` is DRF's own converter: it keeps the field keys and
+    moves model-level (``__all__``) errors under ``non_field_errors``, so a
+    ``full_clean`` failure lands in exactly the place a caller already reads
+    field errors from this endpoint.
+    """
+    try:
+        instance.full_clean()
+    except DjangoValidationError as exc:
+        raise serializers.ValidationError(
+            serializers.as_serializer_error(exc)
+        ) from exc
 
 
 # -----------------------------------------------------------------------------
@@ -628,7 +652,7 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
         if changes == 0:
             raise serializers.ValidationError({"detail": "No changes detected in update payload."})
 
-        instance.full_clean()
+        full_clean_as_field_errors(instance)
         instance.save()
 
         if promoting:
@@ -749,7 +773,12 @@ class BranchInlineCreateSerializer(serializers.Serializer):
     """
 
     name = serializers.CharField(max_length=255)
-    _type = serializers.CharField(max_length=80)
+    # Optional, to match the column and the other branch write paths. This was
+    # the one place a free-form descriptor was mandatory, and it made a school
+    # impossible to create over an import row that had no branch type.
+    _type = serializers.CharField(
+        max_length=80, required=False, allow_blank=True, default="",
+    )
     address = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
     email = serializers.EmailField(required=False, allow_blank=True, default="")
     country = serializers.CharField(max_length=80, required=False)
@@ -1165,13 +1194,34 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
     """
     Updates tenant identity fields only.
     Branch details are updated via BranchUpdateSerializer.
+
+    ``slug`` is writable because a school's address is editable right up to
+    go-live and frozen for ever after (``School._check_slug_change``). Without
+    it on this serializer the correction that rule exists to permit - Bright
+    Star created as ``bright-star`` when its admins meant
+    ``bright-star-academy`` - could only be made from a shell.
+
+    ``name`` deliberately is not writable here. It is not covered by the
+    address rule, and it is not free of consequences either: the spreadsheet
+    importer identifies a school by name when the row carries no slug
+    (``vs_import_data.services.import_executor``), so a rename silently turns a
+    school's own import file into a request to create a second school. That
+    needs its own decision, not a field quietly added beside this one.
+
+    Declared explicitly rather than left to ``ModelSerializer``: the model's
+    ``SlugField`` validator refuses anything that is not already lowercase and
+    hyphenated, which would turn "Bright Star" into a regex complaint. The
+    create path normalises instead, and correcting a typo should behave the
+    same way.
     """
 
+    slug = serializers.CharField(required=False)
     branding = SchoolBrandingSerializer(required=False)
 
     class Meta:
         model = School
         fields = [
+            "slug",
             "ownership_type",
             "address",
             "website",
@@ -1184,20 +1234,71 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
             "branding",
         ]
 
+    def validate_slug(self, value: str) -> str:
+        """Settle the address here, so no refusal has to escape from ``save()``.
+
+        Every check below has a backstop deeper down - ``School.clean()`` for
+        the reserved list, the unique index for the collision,
+        ``_check_slug_change()`` for the freeze - and every one of those
+        backstops raises where the caller would receive it as a 500 or as a
+        stray sentence. They stay where they are, because a shell or a data
+        migration must still be refused; this is the same set of rules stated
+        where an HTTP caller can be answered properly.
+        """
+        normalized = _normalize_slug(value)
+        if not normalized:
+            raise serializers.ValidationError(
+                "Provide an address made of lowercase letters, numbers and hyphens."
+            )
+        if normalized == self.instance.slug:
+            return normalized
+
+        # First, because it outranks the rest: a live school may not move to a
+        # free slug either, so "that one is taken" would be misleading advice.
+        if self.instance.has_ever_been_live():
+            raise TenantSlugFrozen(
+                tenant_name=self.instance.name, slug=self.instance.slug,
+            )
+
+        if slug_is_reserved(normalized):
+            raise serializers.ValidationError("This slug is reserved. Choose another.")
+
+        if not _slug_is_unique(normalized, exclude_school_slug=self.instance.slug):
+            raise serializers.ValidationError({
+                "message": "Slug already exists.",
+                "suggestions": [
+                    s for s in _build_slug_suggestions(normalized) if _slug_is_unique(s)
+                ],
+            })
+
+        # The school's slug is mirrored onto its tenant by ``School.save()``,
+        # and that mirror is a queryset ``update()`` - it cannot raise a field
+        # error, only an IntegrityError against the tenant's own unique index.
+        # A clinic group or an ORGANIZATION tenant holding the name is enough
+        # to trigger it, and there is no school row to have caught it above.
+        if Tenant.objects.filter(slug=normalized).exclude(
+            pk=self.instance.tenant_id
+        ).exists():
+            raise serializers.ValidationError(
+                "This address is already in use on the platform. Choose another."
+            )
+
+        return normalized
+
     @transaction.atomic
     def update(self, instance: School, validated_data: Dict[str, Any]) -> School:
         branding_data = validated_data.pop("branding", None)
 
         changes = 0
         for attr, value in validated_data.items():
-            if getattr(instance, attr) != value:  
+            if getattr(instance, attr) != value:
                 changes += 1
                 setattr(instance, attr, value)
-        
+
         if changes == 0:
             raise serializers.ValidationError({"detail": "No changes detected in update payload."})
-        
-        instance.full_clean()
+
+        full_clean_as_field_errors(instance)
         instance.save()
 
         actor_id = self.context.get("actor_id", "system")

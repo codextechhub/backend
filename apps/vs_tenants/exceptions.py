@@ -123,6 +123,37 @@ class BranchNotInService(BranchLifecycleError):
         )
 
 
+class TenantSlugFrozen(TenantsError):
+    """Raised when a tenant that has gone live is asked to move its slug.
+
+    The slug is the sign-in address (``bright-star.xvs.codexng.com``), so it
+    stops being editable the moment the first family is told where to sign in.
+    :meth:`Tenant._assert_slug_unchanged_once_live` and
+    :meth:`School._check_slug_change` are the backstops and raise Django's own
+    ``ValidationError``, because they run inside ``save()``/``full_clean()``
+    where nothing else would be caught. This is what an API caller gets: the
+    same refusal, hoisted into the request layer so the rejection carries a
+    status of its own instead of arriving as a field error on a write that
+    could never have been attempted.
+
+    409 rather than 400, alongside :class:`BranchLifecycleError`: the payload
+    is well-formed and would have been accepted yesterday. What refuses it is
+    the school's current state.
+    """
+
+    error_code = "TENANT_SLUG_FROZEN"
+    http_status = 409
+
+    def __init__(self, *, tenant_name: str = "", slug: str = ""):
+        self.slug = slug
+        subject = f"'{tenant_name}'" if tenant_name else "This school"
+        address = f" at '{slug}'" if slug else ""
+        super().__init__(
+            f"{subject} is live{address}, so its address cannot move. Changing "
+            f"it would break every link and sign-in its users already have."
+        )
+
+
 class TenantNotLive(TenantsError):
     """Raised when a PENDING tenant reaches a surface that is not open to it.
 

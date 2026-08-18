@@ -214,19 +214,10 @@ class School(TimeStampedModel):
         school suspended for an unpaid invoice cannot rename itself while it is
         off.
         """
-        if not self.pk:
-            return False
-        stored = (
-            School.objects.filter(pk=self.pk)
-            .values("slug", "activated_at", "status")
-            .first()
-        )
+        stored = self._stored_identity()
         if stored is None:
             return False
-        has_been_live = (
-            stored["activated_at"] is not None
-            or stored["status"] == SchoolStatus.ACTIVE
-        )
+        has_been_live = self._has_been_live(stored)
         if has_been_live and stored["slug"] != self.slug:
             raise ValidationError({
                 "slug": (
@@ -235,6 +226,41 @@ class School(TimeStampedModel):
                 )
             })
         return has_been_live
+
+    def _stored_identity(self):
+        """The row as the database currently holds it, or ``None`` if unsaved.
+
+        Read as a dict rather than as ``self``, because every caller here is
+        asking what the *stored* school looks like, and the in-memory instance
+        is exactly the thing that may already have been edited.
+        """
+        if not self.pk:
+            return None
+        return (
+            School.objects.filter(pk=self.pk)
+            .values("slug", "activated_at", "status")
+            .first()
+        )
+
+    @staticmethod
+    def _has_been_live(stored) -> bool:
+        return (
+            stored["activated_at"] is not None
+            or stored["status"] == SchoolStatus.ACTIVE
+        )
+
+    def has_ever_been_live(self) -> bool:
+        """Whether this school has been live at any point, per the stored row.
+
+        The public half of :meth:`_check_slug_change`, for callers that need to
+        ask the question before attempting the write - the update serializer
+        refuses a rename in ``validate_slug`` so the caller gets a typed 409
+        rather than a field error escaping from ``save()``. Both read the same
+        row and apply the same test, so the API and the model cannot disagree
+        about which schools are frozen.
+        """
+        stored = self._stored_identity()
+        return stored is not None and self._has_been_live(stored)
 
     def save(self, *args, **kwargs):
         self.slug = (self.slug or "").strip().lower()

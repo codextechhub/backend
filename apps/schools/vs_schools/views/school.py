@@ -195,8 +195,14 @@ class SchoolUpdateView(ActorContextMixin, generics.UpdateAPIView):
     lookup_field = "slug"
 
     def update(self, request, *args, **kwargs):
+        # The primary key is read before the write and the row re-read by it
+        # afterwards. ``lookup_field`` is the slug, and the slug is now
+        # editable until the school goes live, so re-fetching by the URL key
+        # would 404 on exactly the rename that had just succeeded - reporting
+        # "no such school" for the one request that moved it.
+        school_pk = self.get_object().pk
         super().update(request, *args, **kwargs)
-        school = self.get_object()
+        school = self.get_queryset().get(pk=school_pk)
         return success_response(
             message="School updated successfully.",
             data=SchoolDetailSerializer(school, context=self.get_serializer_context()).data,
