@@ -567,13 +567,28 @@ class BranchCreateSerializer(serializers.ModelSerializer):
             after_instance=branch,
             exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at"],
         )
+        # Keyed on the primary key, not the code. ``Branch.code`` is allocated
+        # per tenant from 1, so every school's main branch is code 1 and
+        # ``EntityAuditTrail`` is unique on (entity_type, entity_id) with no
+        # tenant column: a code-keyed trail put Bright Star's, Greenfield's and
+        # Corona's main branches on one platform-wide row, interleaved, with
+        # nothing on the event saying whose branch it was. The pk is unique
+        # across tenants and a branch cannot change it.
+        #
+        # The code still has to be findable. It is what a school's own staff
+        # call the branch ("branch 2"), and it is no longer in ``entity_id``
+        # where the Event Explorer's free-text search would reach it - worse,
+        # searching "2" there now finds the branch whose *pk* is 2, which is
+        # somebody else's. The summary carries it, together with the school,
+        # because "Main Campus" is not a distinguishing label either.
         emit_audit_event(
             module_key=AuditModuleKey.BRANCH,
             action_type=AuditActionType.CREATE,
             actor_user=self.context.get("actor_id"),
             entity_type="Branch",
-            entity_id=str(branch.code),
+            entity_id=str(branch.pk),
             entity_label=branch.name,
+            summary=f"{branch.name} created as branch {branch.code} of {school.name}",
             before_data=_snap["before_data"],
             diff_data=_snap["diff"],
         )
@@ -668,7 +683,12 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
             action_type=AuditActionType.UPDATE,
             actor_user=self.context.get("actor_id"),
             entity_type="Branch",
-            entity_id=str(instance.code),
+            # The pk, matching the create path, so an edit lands on this
+            # branch's own trail instead of the one row every school's branch
+            # of the same code used to share. The code itself is not repeated
+            # here: it is ``editable=False`` and never changes, so naming it
+            # once on the creation event keeps it findable for good.
+            entity_id=str(instance.pk),
             entity_label=instance.name,
             before_data=before_instance,
             diff_data=AuditDiffService.diff_dicts(
@@ -725,6 +745,13 @@ class SchoolDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = School
         fields = [
+            # The list has carried the pk all along; the detail response is the
+            # one a console screen is actually built from, and it could not
+            # name the school it was showing. Audit trails are keyed on the pk
+            # now, so "view this school's audit trail" needs it, as do the
+            # tenant-scoped endpoints (vs_config entitlements and overrides,
+            # notification settings) that take an id rather than a slug.
+            "id",
             "name",
             "slug",
             "code",
@@ -1098,8 +1125,13 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 # emit_audit_event swallow the event and write nothing.
                 actor_user=actor,
                 entity_type="Branch",
-                entity_id=str(branch.code),
+                # The pk, not the code: codes restart at 1 for every tenant, so
+                # this is the site that used to file every school's main branch
+                # under one shared trail. See BranchCreateSerializer.create for
+                # the full reasoning, including why the summary names the code.
+                entity_id=str(branch.pk),
                 entity_label=branch.name,
+                summary=f"{branch.name} created as branch {branch.code} of {school.name}",
                 before_data=_branch_snap["before_data"],
                 diff_data=_branch_snap["diff"],
             )

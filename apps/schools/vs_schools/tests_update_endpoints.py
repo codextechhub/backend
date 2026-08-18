@@ -865,3 +865,291 @@ class SchoolTrailIsKeyedOnThePrimaryKeyTests(TestCase):
             set(trails.values_list("entity_label", flat=True)),
             {"Bright Star", "Greenfield"},
         )
+
+
+class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
+    """One branch, one trail - and one *school's* branch, not the platform's.
+
+    Branch events used to be filed under ``Branch.code``, which is allocated
+    per tenant from 1. Every school's main branch is therefore code 1, and
+    ``EntityAuditTrail`` is unique on (entity_type, entity_id) with no tenant
+    column, so ``Branch:1`` was a single row for the whole platform: Bright
+    Star's branch being created, Greenfield's being renamed and Corona's being
+    edited all landed on it, interleaved, with nothing to say whose was whose.
+
+    These drive the three real write paths - the wizard's inline main branch,
+    the standalone branch create, and the branch update - because that is where
+    the key is chosen.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="branch-trail-key@example.com", super_admin=True,
+        )
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        return client
+
+    def _create_school_with_main_branch(self, *, name="Bright Star", slug="bright-star"):
+        """The wizard path: a school and its main branch in one request."""
+        response = self._client().post(
+            reverse("school-create"),
+            {
+                "name": name,
+                "slug": slug,
+                "branches": [{
+                    "name": f"{name} Main Campus",
+                    "_type": "Main",
+                    "state": "Lagos",
+                    "is_main": True,
+                    "primary_admin_data": {
+                        "full_name": f"{name} Head",
+                        "email": f"head@{slug}.test",
+                    },
+                }],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        school = School.objects.get(slug=slug)
+        return school, school.branches.get(is_main=True)
+
+    def _add_branch(self, school, *, name="Lekki Campus"):
+        """The standalone path: a second site added after go-live.
+
+        The endpoint only serves an active school, and the wizard leaves a new
+        one PENDING, so the school goes live first - which is when a second
+        campus is opened anyway.
+        """
+        if school.status != SchoolStatus.ACTIVE:
+            school.status = SchoolStatus.ACTIVE
+            school.save()
+        response = self._client().post(
+            reverse("branch-create", kwargs={"slug": school.slug}),
+            {
+                "name": name,
+                "_type": "Annex",
+                "state": "Lagos",
+                "primary_admin_data": {
+                    "full_name": f"{name} Head",
+                    "email": f"{name.lower().replace(' ', '-')}@{school.slug}.test",
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        return Branch.objects.get(tenant=school.tenant, name=name)
+
+    def _rename_branch(self, school, branch, new_name):
+        response = self._client().patch(
+            reverse(
+                "branch-update",
+                kwargs={"slug": school.slug, "code": branch.code},
+            ),
+            {"name": new_name}, format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        branch.refresh_from_db()
+        return branch
+
+    def _branch_events(self, branch=None):
+        qs = AuditEvent.objects.filter(entity_type="Branch")
+        if branch is not None:
+            qs = qs.filter(entity_id=str(branch.pk))
+        return qs.order_by("event_at")
+
+    # --- the whole point: one school's branch is not another's --------------
+
+    def test_two_schools_main_branches_no_longer_share_a_trail(self):
+        """Both mains are code 1 - that is the collision - and they must still
+        come out as two separate trails."""
+        bright_star, bs_main = self._create_school_with_main_branch(
+            name="Bright Star", slug="bright-star",
+        )
+        greenfield, gf_main = self._create_school_with_main_branch(
+            name="Greenfield", slug="greenfield",
+        )
+
+        # The premise. If codes ever stop restarting per tenant this test stops
+        # testing anything.
+        self.assertEqual(bs_main.code, 1)
+        self.assertEqual(gf_main.code, 1)
+        self.assertNotEqual(bs_main.pk, gf_main.pk)
+
+        trails = EntityAuditTrail.objects.filter(entity_type="Branch")
+        self.assertEqual(trails.count(), 2)
+        self.assertEqual(
+            set(trails.values_list("entity_id", flat=True)),
+            {str(bs_main.pk), str(gf_main.pk)},
+        )
+        self.assertEqual(
+            set(trails.values_list("entity_label", flat=True)),
+            {"Bright Star Main Campus", "Greenfield Main Campus"},
+        )
+        for trail in trails:
+            self.assertEqual(trail.event_count, 1)
+
+    def test_one_schools_branch_history_never_shows_up_in_anothers(self):
+        """Proved through the endpoint the console calls, because that is where
+        a CX investigator met the interleaved rows."""
+        bright_star, bs_main = self._create_school_with_main_branch(
+            name="Bright Star", slug="bright-star",
+        )
+        greenfield, gf_main = self._create_school_with_main_branch(
+            name="Greenfield", slug="greenfield",
+        )
+        self._rename_branch(greenfield, gf_main, "Greenfield Ikoyi Campus")
+
+        response = self._client().get(
+            reverse(
+                "entity-audit-trail-detail",
+                kwargs={"entity_type": "Branch", "entity_id": str(bs_main.pk)},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        payload = response.data["data"]
+        self.assertEqual(payload["trail"]["event_count"], 1)
+        self.assertEqual(
+            {e["entity_label"] for e in payload["events"]},
+            {"Bright Star Main Campus"},
+        )
+
+    def test_two_schools_second_branches_do_not_collide_either(self):
+        """The standalone create path allocates code 2 for both schools, so it
+        had the same collision as the wizard's main branch."""
+        bright_star, _ = self._create_school_with_main_branch(
+            name="Bright Star", slug="bright-star",
+        )
+        greenfield, _ = self._create_school_with_main_branch(
+            name="Greenfield", slug="greenfield",
+        )
+        bs_annex = self._add_branch(bright_star, name="Bright Star Lekki")
+        gf_annex = self._add_branch(greenfield, name="Greenfield Lekki")
+
+        self.assertEqual(bs_annex.code, 2)
+        self.assertEqual(gf_annex.code, 2)
+        self.assertEqual(
+            EntityAuditTrail.objects.filter(entity_type="Branch").count(), 4,
+        )
+        self.assertNotEqual(
+            self._branch_events(bs_annex).get().pk,
+            self._branch_events(gf_annex).get().pk,
+        )
+
+    # --- and one branch's own history stays together ------------------------
+
+    def test_a_branch_create_and_update_share_one_entity_id(self):
+        school, _ = self._create_school_with_main_branch()
+        branch = self._add_branch(school, name="Lekki Campus")
+
+        self._rename_branch(school, branch, "Lekki Annex")
+
+        events = list(self._branch_events(branch))
+        self.assertEqual(
+            [e.action_type for e in events],
+            [AuditActionType.CREATE, AuditActionType.UPDATE],
+        )
+        self.assertEqual({e.entity_id for e in events}, {str(branch.pk)})
+
+    def test_the_trail_row_is_the_same_row_before_and_after_an_edit(self):
+        school, _ = self._create_school_with_main_branch()
+        branch = self._add_branch(school, name="Lekki Campus")
+        trail_before = EntityAuditTrail.objects.get(
+            entity_type="Branch", entity_id=str(branch.pk),
+        )
+        self.assertEqual(trail_before.event_count, 1)
+
+        self._rename_branch(school, branch, "Lekki Annex")
+
+        trail_after = EntityAuditTrail.objects.get(
+            entity_type="Branch", entity_id=str(branch.pk),
+        )
+        self.assertEqual(trail_after.pk, trail_before.pk)
+        self.assertEqual(trail_after.event_count, 2)
+
+    def test_the_code_is_no_longer_a_trail_of_its_own(self):
+        school, main = self._create_school_with_main_branch()
+
+        self.assertFalse(
+            EntityAuditTrail.objects.filter(
+                entity_type="Branch", entity_id=str(main.code),
+            ).exclude(entity_id=str(main.pk)).exists()
+        )
+
+    # --- it still reads as a branch, not as a number ------------------------
+
+    def test_entity_label_still_reads_the_branch_name(self):
+        school, _ = self._create_school_with_main_branch()
+        branch = self._add_branch(school, name="Lekki Campus")
+
+        event = self._branch_events(branch).get()
+        self.assertEqual(event.entity_label, "Lekki Campus")
+        trail = EntityAuditTrail.objects.get(
+            entity_type="Branch", entity_id=str(branch.pk),
+        )
+        self.assertEqual(trail.entity_label, "Lekki Campus")
+
+    def test_a_renamed_branch_takes_its_new_name_onto_the_trail(self):
+        """With an opaque pk in ``entity_id`` the label is the only human
+        handle on the row, so it may not be written once and frozen."""
+        school, _ = self._create_school_with_main_branch()
+        branch = self._add_branch(school, name="Lekki Campus")
+
+        self._rename_branch(school, branch, "Lekki Annex")
+
+        trail = EntityAuditTrail.objects.get(
+            entity_type="Branch", entity_id=str(branch.pk),
+        )
+        self.assertEqual(trail.entity_label, "Lekki Annex")
+
+    # --- the code has to survive leaving entity_id --------------------------
+
+    def test_the_creation_summary_names_the_code_and_the_school(self):
+        """``entity_id`` used to hold the code, and the Event Explorer searches
+        that column. The code is what a school's own staff call the branch, and
+        "Main Campus" is not a distinguishing label, so the summary carries
+        both the code and the school it belongs to."""
+        school, main = self._create_school_with_main_branch(
+            name="Bright Star", slug="bright-star",
+        )
+
+        event = self._branch_events(main).get()
+        self.assertEqual(
+            event.summary,
+            "Bright Star Main Campus created as branch 1 of Bright Star",
+        )
+
+    def test_the_standalone_create_writes_the_same_summary(self):
+        school, _ = self._create_school_with_main_branch(
+            name="Bright Star", slug="bright-star",
+        )
+        branch = self._add_branch(school, name="Lekki Campus")
+
+        event = self._branch_events(branch).get()
+        self.assertEqual(
+            event.summary, "Lekki Campus created as branch 2 of Bright Star",
+        )
+
+    def test_the_code_is_still_findable_in_the_event_explorer(self):
+        """The reason for the summary, asserted through the search the console
+        actually runs rather than through the column it reads."""
+        bright_star, _ = self._create_school_with_main_branch(
+            name="Bright Star", slug="bright-star",
+        )
+        greenfield, _ = self._create_school_with_main_branch(
+            name="Greenfield", slug="greenfield",
+        )
+        self._add_branch(greenfield, name="Greenfield Lekki")
+
+        response = self._client().get(
+            reverse("audit-event-list"),
+            {"entity_type": "Branch", "search": "branch 2 of Greenfield"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        rows = response.data["data"]
+        self.assertEqual([row["entity_label"] for row in rows], ["Greenfield Lekki"])

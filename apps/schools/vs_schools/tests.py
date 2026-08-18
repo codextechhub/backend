@@ -5,7 +5,7 @@ from unittest import mock
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, close_old_connections, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, tag
 from django.urls import reverse
 from rest_framework.test import APIClient
 
@@ -228,6 +228,12 @@ class BranchUniquenessConstraintTests(TestCase):
         self.assertEqual(Branch.all_objects.filter(is_main=True).count(), 2)
 
 
+# Tagged slow: TransactionTestCase gets no transaction rollback, so Django
+# flushes and rebuilds the database around every test in the class. That, not
+# the assertions, is what makes this app's suite take ~18 minutes. Skip with
+# --exclude-tag=slow while iterating; run it whenever migrations, the branch
+# code allocator or concurrency behaviour change.
+@tag("slow")
 class BranchCodeAllocationConcurrencyTests(TransactionTestCase):
     """The first-branch race: two creates against a tenant that has no branches.
 
@@ -310,6 +316,9 @@ class BranchCodeAllocationConcurrencyTests(TransactionTestCase):
         )
 
 
+# Tagged slow for the same reason, and more so: every subclass re-runs the
+# migration graph. The tag is inherited, so the subclasses need no marking.
+@tag("slow")
 class _MigrationHarness(TransactionTestCase):
     """Drive real migrations forward and back, then leave the database current.
 
@@ -964,3 +973,84 @@ class SchoolDetailMissingSlugTests(TestCase):
         self.assertNotIn("RuntimeError", body)
         self.assertNotIn("Traceback", body)
         self.assertEqual(response.data["error"]["code"], "SERVER_ERROR")
+
+
+class SchoolDetailCarriesTheSchoolIdTests(TestCase):
+    """The detail response names the school it is describing.
+
+    ``SchoolListSerializer`` has always carried ``id`` - the scoped endpoints
+    (vs_config entitlements and overrides, notification settings) key on it -
+    but the detail serializer did not, and the detail response is the one a
+    console screen is built from. With audit trails now keyed on the primary
+    key it became load-bearing: a "view this school's audit trail" link needs
+    ``School:<pk>``, and the screen showing the school could not supply it
+    without going back to the list for the id of the school already on screen.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="detail-id@example.com", super_admin=True,
+        )
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        return client
+
+    def _detail(self, school):
+        return self._client().get(
+            reverse("school-detail", kwargs={"slug": school.slug})
+        )
+
+    def test_the_detail_response_carries_the_school_id(self):
+        school = make_school(slug="id-on-detail", name="Id On Detail")
+        make_branch(school, name="Main Campus")
+
+        response = self._detail(school)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["id"], school.pk)
+
+    def test_the_id_matches_the_one_the_list_hands_out(self):
+        """Two payloads for the same school must not disagree about which
+        school it is."""
+        school = make_school(slug="id-agrees", name="Id Agrees")
+        make_branch(school, name="Main Campus")
+
+        detail = self._detail(school)
+        listing = self._client().get(reverse("school-list"), {"q": "Id Agrees"})
+
+        self.assertEqual(listing.status_code, 200, listing.data)
+        # XVSPagination puts the rows straight in ``data``, not under
+        # ``data["results"]``.
+        rows = [
+            row for row in listing.data["data"]
+            if row["slug"] == "id-agrees"
+        ]
+        self.assertEqual(len(rows), 1, listing.data)
+        self.assertEqual(detail.data["data"]["id"], rows[0]["id"])
+
+    def test_the_id_is_what_the_audit_trail_is_keyed_on(self):
+        """The reason the field is needed: the console builds the trail link
+        out of it, and the key on the trail row is the same value."""
+        from vs_audit.models import EntityAuditTrail
+        from vs_audit.services import emit_audit_event
+
+        school = make_school(slug="id-for-trail", name="Id For Trail")
+        make_branch(school, name="Main Campus")
+        emit_audit_event(
+            module_key="SCHOOL", action_type="UPDATE",
+            actor_user=self.vision_user,
+            entity_type="School", entity_id=str(school.pk),
+            entity_label=school.name,
+        )
+
+        response = self._detail(school)
+
+        self.assertTrue(
+            EntityAuditTrail.objects.filter(
+                entity_type="School",
+                entity_id=str(response.data["data"]["id"]),
+            ).exists()
+        )
