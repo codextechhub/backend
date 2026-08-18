@@ -26,6 +26,14 @@ Two rules follow, and they are separate:
    `branch.school.tenant`. If an engine needs a school-only fact, it belongs
    behind the FAL, not behind an import.
 
+   **The word "school" belongs to `apps/schools/`.** Outside that folder, say
+   **tenant**: in parameter names, serializer fields, constants, variables and
+   JSON body keys alike. `LoginService.login(..., tenant=...)`, never
+   `school=...`, because `vs_user` is an engine app. Prose may still mention a
+   school where it explains where a value comes from ("the tenant slug the
+   frontend takes from the school's subdomain") - the ban is on identifiers, not
+   on explanations.
+
 2. **Within XVS, build for every school, not the first one.** XVS is multi-tenant;
    Corona Secondary School (at `xvs.codexng.com`) is simply the first tenant.
    Nothing may be special-cased to one tenant's arrangement - if a feature only

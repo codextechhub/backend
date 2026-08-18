@@ -1,5 +1,37 @@
 # AGENTS.md - backend
 
+## What this codebase is - and what XVS is
+
+**This repo is a multi-domain platform, not a schools application.** The engine
+apps - `vs_finance`, `vs_procurement`, `vs_payments`, `vs_rbac`, `vs_workflow`,
+`vs_notifications`, `vs_audit`, `core` - are deliberately **domain-neutral**.
+They know about entities, customers, invoices, vendors, roles and approvals;
+they know nothing about schools. `vs_health` (VIGIL) is already a second domain
+standing on the same foundation, and there will be more.
+
+**XVS is the first product built on that platform** - the schools product.
+Corona Secondary School is simply its first tenant.
+
+Two rules follow, and they are separate.
+
+**1. Keep the engines domain-neutral.** School concepts - students, guardians,
+classes, terms, sessions - live in the school apps (`apps/schools/`) and reach
+the engines through the FAL, which lives under `apps/schools/` and not in
+`core/`, because it is school-specific by design. If you find yourself adding a
+`student` or `term` field to a generic app, stop: that leak is exactly what the
+FAL exists to prevent.
+
+**The engines must not import `vs_schools`**, or anything else under
+`apps/schools/`. The site primitive is `vs_tenants.Branch`, owned directly by
+`Tenant`: reach it as `row.branch` or `tenant.branches`, never as
+`branch.school.tenant`. `Branch` has no `school` column. If an engine needs a
+school-only fact, it belongs behind the FAL, not behind an import.
+
+**2. Build for every school, not the first one.** Nothing may be special-cased
+to one tenant's arrangement. If a feature only works because of how the first
+school happens to be set up, it is not finished. The section below on branches
+is the most common instance of this.
+
 ## Holistic problem solving
 
 When the user asks for a problem to be fixed, trace it to its root cause and
@@ -24,6 +56,21 @@ pre-existing changes in the worktree or work completed in an earlier request.
   concrete risk or an explicit user request.
 - Documentation-only changes do not require application tests; validate only
   the documentation or formatting affected, when such validation exists.
+
+## The word "school" belongs to the schools folder
+
+School concepts - students, guardians, classes, terms, sessions - live in
+`apps/schools/`. Outside that folder, say **tenant**.
+
+This covers naming, not just models: parameter names, serializer fields,
+constants, local variables and JSON body keys. `LoginService.login(..., tenant=...)`,
+never `school=...`, because `vs_user` is an engine app and the engines must stay
+domain-neutral.
+
+Prose may still mention a school where it explains where a value comes from -
+"the tenant slug the frontend takes from the school's subdomain" is good
+documentation. The rule bans school vocabulary in identifiers, not in
+explanations.
 
 ## Every school has at least one branch
 
