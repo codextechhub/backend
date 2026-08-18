@@ -398,6 +398,7 @@ class Command(BaseCommand):
             domain = f"{school.slug}.example.com"
 
             def mk(email, first, last, user_type, branch):
+                email = normalize_email(email)
                 user = User.objects.filter(email=email).first()
                 if user is None:
                     user = User.objects.create_user(

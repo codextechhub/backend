@@ -2213,3 +2213,365 @@ class BarcodePreviewIsPlatformOnlyTests(TestCase):
 
         self.assertEqual(response.status_code, 403, response.content)
         self.assertIn("suspended", response.json()["message"].lower())
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Phase 2: email case
+# ═════════════════════════════════════════════════════════════════════════════
+
+class EmailCaseNormalizationTests(TestCase):
+    """No address reaches the users table with an uppercase character in it.
+
+    Django's ``normalize_email`` folds only the domain, so ``Ada@gmail.com``
+    used to survive creation with its capital. PostgreSQL unique indexes are
+    case sensitive, so a second row spelled ``ada@gmail.com`` could then sit
+    beside it while every lookup asked for ``iexact`` and took ``.first()``.
+    """
+
+    def setUp(self):
+        from vs_tenants.models import Tenant
+
+        self.platform = Tenant.objects.get(slug="codex", kind="PLATFORM")
+        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
+
+    def _stored(self, pk):
+        """The value the database holds, never the one the instance remembers."""
+        return User.objects.values_list("email", flat=True).get(pk=pk)
+
+    # ── the write paths ──────────────────────────────────────────────────────
+
+    def test_manager_create_user_stores_the_address_lowercase(self):
+        user = User.objects.create_user(
+            email="  Ada.Okoye@Example.TEST  ", password="Str0ng!pass123",
+            user_type="CX_STAFF", status="ACTIVE", first_name="Ada", last_name="Okoye",
+        )
+
+        self.assertEqual(self._stored(user.pk), "ada.okoye@example.test")
+
+    def test_save_stores_the_address_lowercase(self):
+        """The path create_user does not cover: User(...) then .save()."""
+        user = User(
+            email="Tunde.Bello@Example.TEST", first_name="Tunde", last_name="Bello",
+            user_type="CX_STAFF", status="ACTIVE", tenant=self.platform,
+        )
+        user.save()
+
+        self.assertEqual(self._stored(user.pk), "tunde.bello@example.test")
+
+    def test_a_later_save_folds_a_new_address_too(self):
+        user = make_cx_user(email="ops@codex.test")
+        user.email = "OPS.Renamed@Codex.TEST"
+        user.save(update_fields=["email", "updated_at"])
+
+        self.assertEqual(self._stored(user.pk), "ops.renamed@codex.test")
+
+    def test_full_clean_folds_before_the_instance_is_ever_saved(self):
+        """A validated-but-unsaved instance must already carry the stored form."""
+        user = User(
+            email="  Ngozi@Example.TEST  ", first_name="Ngozi", last_name="Eze",
+            user_type="CX_STAFF", status="ACTIVE", tenant=self.platform,
+        )
+        user.set_unusable_password()
+        user.full_clean()
+
+        self.assertEqual(user.email, "ngozi@example.test")
+
+    def test_full_clean_catches_a_case_variant_of_an_existing_address(self):
+        """validate_unique compares with '='; folding first is what makes it see."""
+        make_cx_user(email="ada@example.test")
+        clash = User(
+            email="ADA@Example.TEST", first_name="Ada", last_name="Twin",
+            user_type="CX_STAFF", status="ACTIVE", tenant=self.platform,
+        )
+        clash.set_unusable_password()
+
+        with self.assertRaises(DjangoValidationError) as ctx:
+            clash.full_clean()
+
+        self.assertIn("email", ctx.exception.error_dict)
+
+    def test_bulk_create_folds_the_addresses_it_never_calls_save_for(self):
+        User.objects.bulk_create([
+            User(
+                email="  BULK@Example.TEST ", first_name="Bulk", last_name="One",
+                user_type="CX_STAFF", status="PENDING", tenant=self.platform,
+            ),
+        ])
+
+        self.assertTrue(User.objects.filter(email="bulk@example.test").exists())
+        self.assertFalse(User.objects.filter(email__contains="BULK").exists())
+
+    def test_bulk_update_folds_the_addresses_it_never_calls_save_for(self):
+        user = make_cx_user(email="before@codex.test")
+        user.email = "AFTER@Codex.TEST"
+        User.objects.bulk_update([user], ["email"])
+
+        self.assertEqual(self._stored(user.pk), "after@codex.test")
+
+    def test_the_database_refuses_a_mixed_case_write_that_skips_every_hook(self):
+        """QuerySet.update() and psql go round save(); the constraint does not."""
+        from django.db import IntegrityError, transaction
+
+        user = make_cx_user(email="constrained@codex.test")
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                User.objects.filter(pk=user.pk).update(email="Constrained@Codex.TEST")
+
+    def test_the_manager_normalizer_folds_the_local_part_not_just_the_domain(self):
+        """Django's own normalize_email leaves 'Ada@' alone. Ours must not."""
+        self.assertEqual(
+            User.objects.normalize_email("  Ada@GMAIL.com "), "ada@gmail.com",
+        )
+
+    # ── the read paths still find the account ────────────────────────────────
+
+    def test_login_works_when_the_address_is_typed_in_a_different_case(self):
+        from django.test import RequestFactory
+
+        password = "Str0ng!pass123"
+        ada = make_school_admin(
+            self.bright_star, email="ada.okoye@example.test", password=password,
+        )
+        request = RequestFactory().post("/v1/user/auth/login/")
+
+        result = LoginService.login("  ADA.Okoye@Example.TEST ", password, request=request)
+
+        self.assertIn("access", result)
+        self.assertEqual(result["user"]["email"], ada.email)
+
+    def test_password_reset_works_when_the_address_is_typed_in_a_different_case(self):
+        from vs_user.models import PasswordResetRequest
+        from vs_user.services.password import PasswordService
+
+        ada = make_school_admin(self.bright_star, email="ada.okoye@example.test")
+
+        with mock.patch("vs_user.tasks.send_password_reset_email_task"):
+            PasswordService.request_reset(email="ADA.Okoye@Example.TEST")
+
+        self.assertEqual(PasswordResetRequest.objects.filter(user=ada).count(), 1)
+
+    def test_change_email_stores_the_new_address_lowercase(self):
+        from vs_user.services.user import EmailChangeService
+
+        user = make_cx_user(email="old@codex.test")
+        EmailChangeService.change_email(user, "  New.Address@Codex.TEST  ", user)
+
+        self.assertEqual(self._stored(user.pk), "new.address@codex.test")
+
+    def test_change_email_refuses_a_case_variant_of_someone_elses_address(self):
+        from vs_user.services.user import EmailChangeService
+
+        make_cx_user(email="taken@codex.test")
+        mover = make_cx_user(email="mover@codex.test")
+
+        with self.assertRaises(ValueError) as ctx:
+            EmailChangeService.change_email(mover, "TAKEN@Codex.TEST", mover)
+
+        self.assertEqual(ctx.exception.args[0]["error_code"], "DUPLICATE_EMAIL")
+
+
+class EmailCaseCreationChecksAgreeTests(TestCase):
+    """The two creation paths must mean the same thing by "already exists".
+
+    ``vs_user.serializers`` checked with ``iexact`` and the school-create
+    serializer checked with ``=``, so the school path created exactly the
+    duplicate the other path refused.
+    """
+
+    def setUp(self):
+        make_cx_user(email="ada.okoye@example.test")
+
+    def test_platform_user_create_refuses_a_case_variant(self):
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        from vs_user.serializers import UserCreateSerializer
+
+        with self.assertRaises(DRFValidationError):
+            UserCreateSerializer().validate_email("  ADA.Okoye@Example.TEST ")
+
+    def test_platform_user_create_returns_the_folded_address(self):
+        from vs_user.serializers import UserCreateSerializer
+
+        self.assertEqual(
+            UserCreateSerializer().validate_email("  Fresh.Hire@Codex.TEST "),
+            "fresh.hire@codex.test",
+        )
+
+    def test_admin_provisioning_treats_a_case_variant_as_the_same_account(self):
+        """The idempotency check that used to miss and blow its own savepoint."""
+        from types import SimpleNamespace
+
+        from schools.vs_schools.models import InviteStatus
+        from schools.vs_schools.services.admin_provisioning import provision_admin_user
+
+        school = make_school(name="Bright Star School", slug="bright-star")
+        existing = make_school_admin(school, email="head@bright-star.test")
+        link = SimpleNamespace(
+            invite_status=InviteStatus.QUEUED, invite_sent_at=None,
+            save=lambda **kwargs: None,
+        )
+
+        returned = provision_admin_user(
+            contact=SimpleNamespace(email="HEAD@Bright-Star.TEST", full_name="Head Teacher"),
+            admin_link=link, school=school, branch=None,
+            user_type="SCHOOL_ADMIN", role="", actor=None,
+        )
+
+        self.assertEqual(returned, existing)
+        self.assertEqual(link.invite_status, InviteStatus.SENT)
+
+    def test_the_bulk_importer_sees_a_case_variant_as_taken(self):
+        """vs_import_data validated with a bare .lower() against unfolded rows."""
+        from vs_import_data.models import ImportRowActionChoices
+        from vs_import_data.services.import_executor import import_cx_users_row
+
+        result = import_cx_users_row(
+            import_batch=None,
+            payload={"email": "ADA.Okoye@Example.TEST", "first_name": "Ada",
+                     "last_name": "Okoye"},
+            queued_by=None,
+        )
+
+        self.assertEqual(result.action, ImportRowActionChoices.SKIP)
+
+
+class EmailCaseRepairMigrationTests(TestCase):
+    """``vs_user.0006`` folds historical rows - or names the ones it will not.
+
+    The repair step is exercised directly rather than through the migration
+    executor: the constraint the same migration adds makes it impossible to
+    write a mixed-case row through the ORM, so each test drops it, plants the
+    row with raw SQL and calls the function. The drop is rolled back with the
+    rest of the test transaction.
+    """
+
+    MIGRATION = "vs_user.migrations.0006_normalize_user_email_case"
+
+    def setUp(self):
+        from django.db import connection
+        from importlib import import_module
+
+        self.connection = connection
+        self.migration = import_module(self.MIGRATION)
+        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "ALTER TABLE vs_users_user DROP CONSTRAINT ck_user_email_lowercase"
+            )
+
+    def _plant(self, user, raw_email):
+        """Put a mixed-case address on an existing row, behind the ORM's back."""
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE vs_users_user SET email = %s WHERE id = %s",
+                [raw_email, user.pk],
+            )
+        return raw_email
+
+    def _run(self):
+        class _Apps:
+            @staticmethod
+            def get_model(app_label, model_name):
+                return User
+
+        class _SchemaEditor:
+            connection = self.connection
+
+        self.migration.normalize_email_case(_Apps(), _SchemaEditor())
+
+    def _stored(self, pk):
+        return User.objects.values_list("email", flat=True).get(pk=pk)
+
+    # ── it repairs ───────────────────────────────────────────────────────────
+
+    def test_a_mixed_case_row_is_folded(self):
+        ada = make_school_admin(self.bright_star, email="ada.okoye@example.test")
+        self._plant(ada, "Ada.Okoye@Example.TEST")
+
+        self._run()
+
+        self.assertEqual(self._stored(ada.pk), "ada.okoye@example.test")
+
+    def test_it_is_a_no_op_on_data_that_is_already_lowercase(self):
+        ada = make_school_admin(self.bright_star, email="ada.okoye@example.test")
+        before = {u.pk: u.email for u in User.objects.all()}
+
+        self._run()
+
+        self.assertEqual({u.pk: u.email for u in User.objects.all()}, before)
+        self.assertEqual(self._stored(ada.pk), "ada.okoye@example.test")
+
+    def test_it_is_safe_to_run_again(self):
+        """Irreversible, but idempotent - a re-run finds nothing left to do."""
+        ada = make_school_admin(self.bright_star, email="ada.okoye@example.test")
+        self._plant(ada, "ADA.OKOYE@EXAMPLE.TEST")
+
+        self._run()
+        self._run()
+
+        self.assertEqual(self._stored(ada.pk), "ada.okoye@example.test")
+
+    # ── it refuses ───────────────────────────────────────────────────────────
+
+    def test_it_refuses_two_rows_in_one_tenant_that_differ_only_in_case(self):
+        """Which of the two accounts is real is a human decision, not this one."""
+        ada = make_school_admin(self.bright_star, email="ada.okoye@example.test")
+        twin = make_school_admin(self.bright_star, email="ada.okoye+2@example.test")
+        planted = self._plant(twin, "Ada.Okoye@Example.TEST")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run()
+
+        report = str(ctx.exception)
+        self.assertIn("ada.okoye@example.test", report)
+        self.assertIn("same tenant", report)
+        self.assertIn(f"pk={ada.pk}", report)
+        self.assertIn(f"pk={twin.pk}", report)
+        self.assertIn(planted, report)
+
+    def test_it_writes_nothing_at_all_when_it_refuses(self):
+        ada = make_school_admin(self.bright_star, email="ada.okoye@example.test")
+        twin = make_school_admin(self.bright_star, email="ada.okoye+2@example.test")
+        self._plant(twin, "Ada.Okoye@Example.TEST")
+        stray = make_school_admin(self.greenfield, email="other@example.test")
+        self._plant(stray, "Other@Example.TEST")
+
+        with self.assertRaises(RuntimeError):
+            self._run()
+
+        self.assertEqual(self._stored(ada.pk), "ada.okoye@example.test")
+        self.assertEqual(self._stored(twin.pk), "Ada.Okoye@Example.TEST")
+        self.assertEqual(self._stored(stray.pk), "Other@Example.TEST")
+
+    def test_it_refuses_a_pair_that_spans_two_tenants(self):
+        """Legal after Phase 3, but User.email is still globally unique today."""
+        make_school_admin(self.bright_star, email="ada.okoye@example.test")
+        greenfield_ada = make_school_admin(
+            self.greenfield, email="ada.okoye+gf@example.test",
+        )
+        self._plant(greenfield_ada, "Ada.Okoye@Example.TEST")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run()
+
+        self.assertIn("different tenants", str(ctx.exception))
+
+    def test_the_refusal_names_every_colliding_address_not_just_the_first(self):
+        first = make_school_admin(self.bright_star, email="ada.okoye@example.test")
+        first_twin = make_school_admin(self.bright_star, email="ada.okoye+2@example.test")
+        second = make_school_admin(self.bright_star, email="tunde.bello@example.test")
+        second_twin = make_school_admin(self.bright_star, email="tunde.bello+2@example.test")
+        self._plant(first_twin, "Ada.Okoye@Example.TEST")
+        self._plant(second_twin, "Tunde.Bello@Example.TEST")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run()
+
+        report = str(ctx.exception)
+        self.assertIn("2 address(es)", report)
+        self.assertIn("ada.okoye@example.test", report)
+        self.assertIn("tunde.bello@example.test", report)
+        self.assertIn(f"pk={first.pk}", report)
+        self.assertIn(f"pk={second.pk}", report)

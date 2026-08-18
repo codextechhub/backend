@@ -10,6 +10,7 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
+from ..email_normalization import normalize_email
 from ..models import LoginSession, User, AuthEventLog
 from .audit import log_auth_event, blacklist_all_user_tokens
 from vs_rbac.models import TenantUserRoleAssignment
@@ -222,14 +223,15 @@ class EmailChangeService:
         Changes a user's email immediately.
         Ends all active sessions - the user must log in again with the new email.
         """
-        new_email      = new_email.lower().strip()
+        new_email      = normalize_email(new_email)
         previous_email = target_user.email
 
-        if new_email == target_user.email.lower():
+        if new_email == normalize_email(target_user.email):
             raise ValueError({'error_code': 'SAME_EMAIL', 'message': 'This is already your email address.'})
 
         # Global uniqueness check - email must be unique across the whole platform.
-        if User.objects.filter(email__iexact=new_email).exclude(pk=target_user.pk).exists():
+        # Exact match on the normalised value: stored addresses are all lowercase.
+        if User.objects.filter(email=new_email).exclude(pk=target_user.pk).exists():
             raise ValueError({'error_code': 'DUPLICATE_EMAIL', 'message': 'This email is already in use.'})
 
         target_user.email = new_email

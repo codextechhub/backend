@@ -15,6 +15,7 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
+from vs_user.email_normalization import normalize_email
 from vs_user.models import User
 from vs_user.services.audit import log_auth_event
 from vs_user.models import AuthEventLog
@@ -156,12 +157,17 @@ class Command(BaseCommand):
             phone      = self._prompt('Phone (optional)', '')
             password   = self._prompt_password()
         else:
-            email      = options['email'].strip().lower()
+            email      = options['email']
             password   = options['password']
             first_name = options['first_name'].strip()
             last_name  = options['last_name'].strip()
             phone      = options['phone'].strip()
-        
+
+        # Both branches, not just the non-interactive one: the prompt used to
+        # hand its answer through unfolded, so an operator typing 'Admin@...'
+        # got past the duplicate check below and created a second account.
+        email = normalize_email(email)
+
         force = options['force']
         
         # ── Display Configuration ─────────────────────────────────────────────
@@ -185,7 +191,7 @@ class Command(BaseCommand):
             existing_count = User.objects.filter(tenant__kind='PLATFORM').count()
         
         # Check for duplicate email
-        if User.objects.filter(email__iexact=email).exists():
+        if User.objects.filter(email=email).exists():
             user_exist = True
         
         # Validate password length
@@ -298,10 +304,10 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(f"⚠️  Permission bootstrap: {e}"))
 
     def _assign_role_to_existing(self, options):
-        email = options['email'].strip().lower()
+        email = normalize_email(options['email'])
 
         try:
-            user = User.objects.get(email__iexact=email)
+            user = User.objects.get(email=email)
         except User.DoesNotExist:
             self.stdout.write(self.style.ERROR(f"No user found with email: {email}"))
             return

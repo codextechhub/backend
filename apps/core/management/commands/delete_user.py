@@ -39,6 +39,8 @@ Note
 from django.core.management.base import BaseCommand, CommandError
 from django.db import models, transaction
 
+from vs_user.email_normalization import normalize_email
+
 
 def _related_querysets(user):
     """
@@ -88,13 +90,13 @@ class Command(BaseCommand):
         from django.contrib.auth import get_user_model
         User = get_user_model()
 
-        emails = [e.strip().lower() for e in options["email"]]
+        emails = [normalize_email(e) for e in options["email"]]
 
         # Resolve all emails - collect not-found ones to report at the end.
         users, not_found = [], []
         for email in emails:
             try:
-                users.append(User.objects.select_related("tenant__school_profile").get(email__iexact=email))
+                users.append(User.objects.select_related("tenant__school_profile").get(email=email))
             except User.DoesNotExist:
                 not_found.append(email)
 

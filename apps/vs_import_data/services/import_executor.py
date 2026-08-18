@@ -114,6 +114,7 @@ def import_cx_users_row(import_batch, payload: dict, queued_by) -> ImportExecuti
     """
     from types import SimpleNamespace
 
+    from vs_user.email_normalization import normalize_email
     from vs_user.models import User
     from vs_user.serializers import UserCreateSerializer
     from vs_user.services.user import UserCreationService
@@ -122,8 +123,8 @@ def import_cx_users_row(import_batch, payload: dict, queued_by) -> ImportExecuti
     def _s(key: str) -> str:
         return (payload.get(key) or "").strip()
 
-    email = _s("email").lower()
-    if email and User.objects.filter(email__iexact=email).exists():
+    email = normalize_email(_s("email"))
+    if email and User.objects.filter(email=email).exists():
         return ImportExecutionResult(
             action=ImportRowActionChoices.SKIP,
             instance=None,

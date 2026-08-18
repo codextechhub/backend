@@ -26,6 +26,7 @@ from vs_audit.models import AuditModuleKey, AuditActionType, AuditSeverity
 from vs_audit.services import AuditDiffService, emit_audit_event
 from vs_config.models import Capability, CapabilityEntitlement
 from vs_config.services.capabilities import set_entitlement
+from vs_user.email_normalization import normalize_email
 
 
 # -----------------------------------------------------------------------------
@@ -487,7 +488,12 @@ class BranchCreateSerializer(serializers.ModelSerializer):
         primary_admin_data = attrs.get("primary_admin_data")
         if primary_admin_data:
             from vs_user.models import User
-            email = (primary_admin_data.get("email") or "").lower().strip()
+            # Same normalisation as vs_user.serializers, so the two creation
+            # paths now agree on what "already exists" means. They did not: the
+            # incoming value was folded but stored addresses were not, so a
+            # stored 'Ada@gmail.com' was invisible here and this path created
+            # the duplicate the other path refused.
+            email = normalize_email(primary_admin_data.get("email"))
             if email and User.objects.filter(email=email).exists():
                 raise serializers.ValidationError({
                     "primary_admin_data": {"email": "A user with this email already exists."}
@@ -930,13 +936,13 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
 
         _tagged_emails: Dict[str, str] = {}
         if primary_admin_data:
-            sa_email = (primary_admin_data.get("email") or "").lower().strip()
+            sa_email = normalize_email(primary_admin_data.get("email"))
             if sa_email:
                 _tagged_emails["__school__"] = sa_email
 
         for i, branch in enumerate(branches):
             ba_data = branch.get("primary_admin_data") or {}
-            ba_email = (ba_data.get("email") or "").lower().strip()
+            ba_email = normalize_email(ba_data.get("email"))
             if ba_email:
                 _tagged_emails[i] = ba_email
 
@@ -1039,7 +1045,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 invite_queued_at=timezone.now(),
                 invite_sent_at=None,
             )
-            school_admin_email = primary_admin_data["email"].lower().strip()
+            school_admin_email = normalize_email(primary_admin_data["email"])
             provision_admin_user(
                 contact=contact,
                 admin_link=school_admin_link,
@@ -1080,7 +1086,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
 
             # Create branch admin if provided
             if branch_admin_data:
-                branch_admin_email = branch_admin_data["email"].lower().strip()
+                branch_admin_email = normalize_email(branch_admin_data["email"])
                 contact = ContactInfo.objects.create(
                     full_name=branch_admin_data["full_name"],
                     email=branch_admin_data["email"],

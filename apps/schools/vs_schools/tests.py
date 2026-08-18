@@ -1054,3 +1054,82 @@ class SchoolDetailCarriesTheSchoolIdTests(TestCase):
                 entity_id=str(response.data["data"]["id"]),
             ).exists()
         )
+
+
+class AdminEmailCaseIsRefusedTests(TestCase):
+    """The school-side creation paths must not admit a case-variant duplicate.
+
+    Both checks folded the address they were GIVEN and compared it with ``=``
+    against addresses that were not folded on the way in, so a stored
+    ``Ada.Okoye@example.test`` was invisible here while
+    ``vs_user.serializers`` - which used ``iexact`` - refused it. Two creation
+    paths disagreeing about "already exists" is how one school ends up able to
+    mint the account another one was told it could not have.
+
+    The incumbent account is created directly rather than by onboarding a first
+    school: ``provision_admin_user`` refuses to mint an admin without a role
+    template, so a school created here leaves its admin link QUEUED and no
+    ``User`` row behind, and the duplicate these tests are about would never
+    exist to be found.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="admin-email-case@example.com", super_admin=True,
+        )
+        # The incumbent: one real account, stored lowercase as it now always is.
+        cls.incumbent = make_vision_user(email="head@bright-star.test")
+
+    def _post(self, payload, *, expect):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        response = client.post(reverse("school-create"), payload, format="json")
+        self.assertEqual(response.status_code, expect, response.data)
+        return response
+
+    def test_school_create_refuses_a_branch_admin_that_is_a_case_variant(self):
+        response = self._post({
+            "name": "Greenfield", "slug": "greenfield",
+            "branches": [_branch_payload("Main Campus", email="HEAD@Bright-Star.TEST")],
+        }, expect=400)
+
+        self.assertIn("already exists", str(response.data))
+        self.assertFalse(School.objects.filter(slug="greenfield").exists())
+
+    def test_school_create_refuses_a_school_admin_that_is_a_case_variant(self):
+        response = self._post({
+            "name": "Greenfield", "slug": "greenfield",
+            "primary_admin_data": {
+                "full_name": "Head Two", "email": "  Head@Bright-Star.TEST  ",
+            },
+            "branches": [_branch_payload("Main Campus", email="campus@greenfield.test")],
+        }, expect=400)
+
+        self.assertIn("primary_admin_data", str(response.data))
+        self.assertFalse(School.objects.filter(slug="greenfield").exists())
+
+    def test_school_create_still_accepts_an_address_nobody_holds(self):
+        """The refusal must not be a blanket one."""
+        self._post({
+            "name": "Greenfield", "slug": "greenfield",
+            "branches": [_branch_payload("Main Campus", email="head@greenfield.test")],
+        }, expect=201)
+
+    def test_branch_create_refuses_a_case_variant_of_an_existing_admin(self):
+        from .serializers import BranchCreateSerializer
+
+        school = make_school(slug="bright-star", name="Bright Star")
+
+        serializer = BranchCreateSerializer(
+            data={
+                "name": "Lekki", "_type": "Annex", "state": "Lagos", "is_main": False,
+                "primary_admin_data": {
+                    "full_name": "Lekki Head", "email": "  HEAD@Bright-Star.TEST  ",
+                },
+            },
+            context={"school": school},
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("primary_admin_data", serializer.errors)

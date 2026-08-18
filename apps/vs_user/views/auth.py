@@ -25,6 +25,7 @@ from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 from vs_tenants.models import Tenant
 from core.response import success_response, error_response
+from ..email_normalization import normalize_email
 from ..models import (
     User, LoginSession, AuthEventLog,
 )
@@ -148,12 +149,12 @@ class SpecialLoginPreviewView(APIView):
     }
 
     def get(self, request):
-        email = (request.query_params.get('email') or '').strip().lower()
+        email = normalize_email(request.query_params.get('email'))
         if not email:
             return error_response(message='email query parameter is required.', status=status.HTTP_400_BAD_REQUEST)
 
         user = User.objects.filter(
-            email__iexact=email, tenant__kind=Tenant.Kind.PLATFORM,
+            email=email, tenant__kind=Tenant.Kind.PLATFORM,
         ).first()
         if not user:
             return error_response(

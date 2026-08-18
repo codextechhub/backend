@@ -231,6 +231,7 @@ def _validate_schools_rules(import_batch) -> list[dict]:
     from django.utils.text import slugify
     from vs_config.models import Capability
     from schools.vs_schools.models import RESERVED_TENANT_SLUGS, PackagePlan, School
+    from vs_user.email_normalization import normalize_email
     from vs_user.models import User
 
     issues = []
@@ -435,7 +436,11 @@ def _validate_schools_rules(import_batch) -> list[dict]:
 
         # --- admin emails: must not already exist as users, must not repeat across rows ---
         for email_target in ("school_admin_email", "branch_admin_email"):
-            email = _s(email_target).lower()
+            # normalize_email, not .lower(): the same fold the model applies
+            # on write, so an exact match here sees every stored account. The
+            # bare .lower() this replaces missed a stored 'Ada@gmail.com'
+            # entirely and passed the row as importable.
+            email = normalize_email(_s(email_target))
             if not email:
                 continue
             if User.objects.filter(email=email).exists():
@@ -467,6 +472,7 @@ def _validate_schools_rules(import_batch) -> list[dict]:
 
 def _validate_branches_rules(import_batch) -> list[dict]:
     from schools.vs_schools.models import School
+    from vs_user.email_normalization import normalize_email
     from vs_user.models import User
 
     issues = []
@@ -569,7 +575,7 @@ def _validate_branches_rules(import_batch) -> list[dict]:
             })
 
         # --- branch_admin_email: must not already exist, must be unique across rows ---
-        email = _s("branch_admin_email").lower()
+        email = normalize_email(_s("branch_admin_email"))
         if email:
             if User.objects.filter(email=email).exists():
                 issues.append({

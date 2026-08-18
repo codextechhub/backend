@@ -45,17 +45,22 @@ def provision_admin_user(
     Wrapped in its own savepoint so a failure here (e.g. duplicate email from a
     concurrent request) is isolated and never rolls back the parent transaction.
     """
+    from vs_user.email_normalization import normalize_email
     from vs_user.models import User
     from vs_user.services.invitation import InvitationService
     from vs_user.tasks import send_invitation_email_task
     from ..models import InviteStatus
 
-    email = contact.email.lower().strip()
+    email = normalize_email(contact.email)
 
     try:
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         with transaction.atomic():  # savepoint - rollback here if anything fails
             # Idempotent: if the user already exists just stamp the link as sent.
+            # Exact match on a normalised address is exhaustive now that every
+            # stored address is lowercase. It was not before: a stored
+            # 'Ada@gmail.com' looked absent here, so this went on to create the
+            # account and lost the whole savepoint to an IntegrityError.
             existing = User.objects.filter(email=email).first()
             if existing:
                 logger.warning(

@@ -2,6 +2,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from vs_user.email_normalization import normalize_email
 from vs_user.models import PlatformStaffProfile, User
 from vs_user.services.user import UserCreationService
 from vs_workflow.models import WorkflowInstance
@@ -26,7 +27,7 @@ class Command(BaseCommand):
             status=User.Status.PENDING_APPROVAL,
         ).select_related("tenant", "invited_by")
         if options.get("email"):
-            users = users.filter(email__iexact=options["email"].strip())
+            users = users.filter(email=normalize_email(options["email"]))
 
         content_type = ContentType.objects.get_for_model(User)
         repaired = 0

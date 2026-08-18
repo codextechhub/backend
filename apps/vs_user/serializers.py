@@ -19,6 +19,7 @@ from vs_rbac.models import TenantRoleTemplate
 from vs_rbac.fls import FieldSecurityMixin
 from vs_tenants.references import resolve_branch_reference
 from vs_tenants.models import Tenant
+from .email_normalization import normalize_email
 from .models import (
     User,
     UserInvitation,
@@ -266,10 +267,14 @@ class UserCreateSerializer(serializers.Serializer):
 
     def validate_email(self, value):
         # Enforce email uniqueness here to provide a clear error message, rather than relying on DB constraint which raises IntegrityError.
-        if User.objects.filter(email__iexact=value.lower().strip()).exists():
+        # Normalised input compared with '=' rather than iexact: every stored
+        # address is lowercase (User.save plus ck_user_email_lowercase), so the
+        # two find the same rows and this one can use the index on email.
+        email = normalize_email(value)
+        if User.objects.filter(email=email).exists():
             raise serializers.ValidationError({'email': 'A user with this email already exists.'})
 
-        return value.lower().strip()
+        return email
 
     def validate(self, attrs):
         actor = self.context['request'].user
@@ -501,10 +506,10 @@ class LoginRequestSerializer(serializers.Serializer):
     tenant           = serializers.CharField(required=False, allow_blank=True, default='')
 
     def validate(self, attrs):
-        email = attrs.get('email', '').strip()
+        email = normalize_email(attrs.get('email'))
         if not email:
             raise serializers.ValidationError({'email': 'Email is required.'})
-        attrs['email'] = email.lower()
+        attrs['email'] = email
         attrs['tenant'] = (attrs.get('tenant') or '').strip().lower()
         return attrs
 

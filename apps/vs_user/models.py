@@ -23,10 +23,13 @@ from django.contrib.auth.models import PermissionsMixin
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import Q, Max
+from django.db.models.functions import Lower
 from django.utils import timezone
 
 from vs_tenants.models import Branch
 from vs_rbac.managers import TenantAwareManager
+
+from . import email_normalization
 
 
 # =============================================================================
@@ -44,13 +47,54 @@ class TimeStampedModel(models.Model):
 # UserManager + User
 # =============================================================================
 
-class UserManager(BaseUserManager):
+class UserQuerySet(models.QuerySet):
+    """The bulk writes, which do not go through ``User.save()``.
+
+    ``bulk_create`` and ``bulk_update`` build their SQL from the instances
+    directly, so the normalisation in ``save()`` never runs for them and a
+    mixed-case address would land in the table. They are folded here instead.
+
+    ``QuerySet.update(email=...)`` cannot be intercepted this way - the value
+    is an expression, not an instance - and neither can raw SQL. Those are
+    caught by the ``ck_user_email_lowercase`` database constraint, which is the
+    only guard that holds for every path including psql.
+    """
+
+    # The helper is applied to the attribute rather than through
+    # User._normalize_email(): UserManager is use_in_migrations, so these two
+    # methods also run against the historical model rebuilt from migration
+    # state, and that model has the fields but none of the methods.
+
+    def bulk_create(self, objs, *args, **kwargs):
+        objs = list(objs)  # may arrive as a generator; normalising consumes it
+        for obj in objs:
+            obj.email = email_normalization.normalize_email(obj.email)
+        return super().bulk_create(objs, *args, **kwargs)
+
+    def bulk_update(self, objs, fields, *args, **kwargs):
+        objs = list(objs)
+        if 'email' in fields:
+            for obj in objs:
+                obj.email = email_normalization.normalize_email(obj.email)
+        return super().bulk_update(objs, fields, *args, **kwargs)
+
+
+class UserManager(BaseUserManager.from_queryset(UserQuerySet)):
     use_in_migrations = True
+
+    # Django's inherited normalize_email() lowercases only the domain. Every
+    # path that reaches it - this manager, createsuperuser, anything that calls
+    # User.objects.normalize_email() directly - must get the whole address
+    # folded, so it delegates to the shared helper. Written module-qualified on
+    # purpose: a bare name here would read like a recursive call.
+    @classmethod
+    def normalize_email(cls, email):
+        return email_normalization.normalize_email(email)
 
     def _create_user(self, email: str, password=None, **extra_fields):
         if not email:
             raise ValueError('Email is required')
-        email = self.normalize_email(email).strip()
+        email = self.normalize_email(email)
         user  = self.model(email=email, **extra_fields)
         if password:
             user.set_password(password)
@@ -219,6 +263,18 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
                 condition=Q(user_type='CX_STAFF'),
                 name='unique_uid_vision_staff',
             ),
+            # No address reaches this table with an uppercase character in it.
+            # save(), full_clean() and the bulk writes all fold the value, but
+            # a QuerySet.update(), a data migration or a hand-typed psql
+            # statement goes round every one of them. Every existence check on
+            # this column now compares with '=' against a normalised input, so
+            # a single stray capital would make an account invisible to the
+            # check that is supposed to find it - and, once Phase 3 lands,
+            # invisible to the constraint that is supposed to reject it.
+            models.CheckConstraint(
+                condition=Q(email=Lower('email')),
+                name='ck_user_email_lowercase',
+            ),
         ]
         indexes = [
             models.Index(fields=['tenant', 'user_type', 'status']),
@@ -257,16 +313,33 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
                 slug="codex", kind=Tenant.Kind.PLATFORM,
             ).first()
 
+    def _normalize_email(self):
+        """Fold the address to the single form this table stores.
+
+        Called from both ``full_clean()`` and ``save()``, for the same reason
+        ``_derive_tenant`` is: an instance that has only been validated must
+        already carry the value that will be persisted, or the two disagree.
+
+        Doing it before ``super().full_clean()`` also makes the model's own
+        uniqueness check case-insensitive for free. ``validate_unique()``
+        compares with ``=``, so ``Ada@gmail.com`` used to slip past a stored
+        ``ada@gmail.com`` and fail later as an IntegrityError; now both sides
+        of that comparison are lowercase.
+        """
+        self.email = email_normalization.normalize_email(self.email)
+
     def full_clean(self, *args, **kwargs):
         # Derive the tenant BEFORE super().full_clean(): clean_fields() runs
         # first inside it and would otherwise collect a spurious
         # {'tenant': ['This field cannot be null.']}. Setting it in clean()
         # is too late - clean_fields() has already run by then.
         self._derive_tenant()
+        self._normalize_email()
         super().full_clean(*args, **kwargs)
 
     def save(self, *args, **kwargs):
         self._derive_tenant()  # backstop for saves that skip full_clean()
+        self._normalize_email()  # ditto - every write lands lowercase
         if self.branch_id and self.branch.tenant_id != self.tenant_id:
             raise ValidationError("User branch must belong to the user's tenant.")
         if self.uid is None:
