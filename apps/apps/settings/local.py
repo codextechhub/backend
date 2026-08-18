@@ -66,7 +66,7 @@ DATABASES = {
 # documented to run with --settings=apps.settings.local (see CLAUDE.md), so
 # silencing it in test.py or ci.py alone would silence nothing here.
 if "test" in sys.argv:
-    SILENCED_SYSTEM_CHECKS = ["vs_notifications.W001"]
+    SILENCED_SYSTEM_CHECKS = [*SILENCED_SYSTEM_CHECKS, "vs_notifications.W001"]
 
     # Hash test fixtures cheaply. PBKDF2 is deliberately slow, and the suite
     # creates users constantly, so the default cost dominates the run:

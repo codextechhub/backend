@@ -126,6 +126,23 @@ class UserManager(BaseUserManager.from_queryset(UserQuerySet)):
 # User model
 # ─────────────────────────────────────────────────────────────────────────────
 
+# What a caller is told when an address is refused because it already belongs
+# to an account at ANOTHER tenant and sign-in cannot yet tell the two apart.
+#
+# It names no tenant, no school, no account and no person, and it does not say
+# that an account exists elsewhere. An administrator at Greenfield who typed
+# ada@gmail.com must not be able to learn from this refusal that Bright Star
+# has a parent by that address - that is the same enumeration concern the
+# barcode preview was scoped for, and it applies to any message a customer's
+# own staff can trigger with a guess.
+CROSS_TENANT_EMAIL_REFUSAL = (
+    'This email address cannot be used for a new account here yet. Sign-in '
+    'does not yet name the tenant it is addressed to, so two accounts sharing '
+    'one address could not be told apart. Please use a different address, or '
+    'contact CodeX support.'
+)
+
+
 class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     """
     Every person who logs into any part of CodeX Vision - Vision staff,
@@ -175,7 +192,12 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     # ── Identity ──────────────────────────────────────────────────────────────
 
-    email      = models.EmailField(max_length=254, unique=True)
+    # NOT unique on its own: one real address may be a login at more than one
+    # customer of this platform. Ada Okoye has a child at Bright Star and
+    # another at Greenfield and uses ada@gmail.com at both, and neither school
+    # may learn anything about the other. Uniqueness is per tenant instead -
+    # see uq_user_email_per_tenant below.
+    email      = models.EmailField(max_length=254)
     first_name = models.CharField(max_length=100)
     last_name  = models.CharField(max_length=100)
     gender     = models.CharField(max_length=20, choices=Gender.choices, blank=True, default='')
@@ -275,6 +297,28 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
                 condition=Q(email=Lower('email')),
                 name='ck_user_email_lowercase',
             ),
+            # One address, one account, PER TENANT.
+            #
+            # Written on the plain columns rather than as a Lower('email')
+            # expression, and it is genuinely case-insensitive all the same,
+            # because ck_user_email_lowercase above holds every stored address
+            # to its folded form: a row that could defeat this constraint by
+            # capitalising a letter cannot be written in the first place.
+            #
+            # The plain form also earns its keep twice. Its index is on
+            # (tenant_id, email), which the ordinary equality lookups every
+            # caller writes - filter(tenant=..., email=...) - can actually use;
+            # an index on (tenant_id, lower(email)) would serve neither those
+            # nor Django's __iexact, which compiles to UPPER() on PostgreSQL
+            # (backends/postgresql/operations.py lookup_cast) and so matches no
+            # LOWER() index either. And a `fields` constraint is one Django's
+            # own validation can report in words - UniqueConstraint.validate
+            # falls back to unique_error_message() for it, where an expression
+            # constraint can only say that some named constraint was violated.
+            models.UniqueConstraint(
+                fields=['tenant', 'email'],
+                name='uq_user_email_per_tenant',
+            ),
         ]
         indexes = [
             models.Index(fields=['tenant', 'user_type', 'status']),
@@ -293,6 +337,96 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         if self.user_type == self.UserType.CX_STAFF:
             if self.branch_id:
                 raise ValidationError('Vision Staff must not be assigned to a branch.')
+        self._guard_cross_tenant_email()
+
+    def validate_unique(self, exclude=None):
+        """Keep a same-tenant duplicate address reported ON the email field.
+
+        ``unique=True`` used to make this Django's own job, and its error came
+        back as ``{'email': [...]}``. The replacement is a two-column
+        UniqueConstraint, and Django reports a multi-field constraint under
+        NON_FIELD_ERRORS - so leaving it to the framework would quietly change
+        the error shape of every creation path that goes through
+        ``full_clean()``, including ``UserManager._create_user``.
+
+        Checking it here restores the old shape, and costs nothing extra:
+        ``full_clean()`` adds every field it has already collected an error for
+        to the exclusion set before it runs ``validate_constraints()``, so
+        ``uq_user_email_per_tenant`` skips itself and the clash is reported
+        once, not twice.
+        """
+        super().validate_unique(exclude=exclude)
+        if exclude and ('email' in exclude or 'tenant' in exclude):
+            return
+        if not self.email or not self.tenant_id:
+            return
+        clash = User.objects.filter(tenant_id=self.tenant_id, email=self.email)
+        if self.pk is not None:
+            clash = clash.exclude(pk=self.pk)
+        if clash.exists():
+            raise ValidationError({
+                'email': [ValidationError(
+                    'A user with this email already exists.', code='unique',
+                )],
+            })
+
+    def _guard_cross_tenant_email(self, update_fields=None):
+        """Refuse a second tenant's copy of an address while sign-in is unscoped.
+
+        ``uq_user_email_per_tenant`` makes ada@gmail.com legal at Bright Star
+        AND at Greenfield. Sign-in can only tell those two accounts apart when
+        the request names the tenant it is addressed to, and
+        ``sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN`` is still False because
+        neither frontend sends one yet: an unscoped sign-in falls back to
+        ``filter(email__iexact=...).first()``, so Ada - who reuses her password
+        - would be signed in to whichever of her two schools came back first,
+        silently, and a reset asked for at one would rewrite her password at
+        the other.
+
+        Nothing but the order of two deployments stops that pair from being
+        created today, and an ordering assumption that lives only in a plan
+        document is not a safeguard. So while the switch is off the pair is
+        refused; when it is on the refusal lifts and no code changes.
+
+        It lives here, called from both ``clean()`` and ``save()``, for the
+        same reason ``_derive_tenant`` and ``_normalize_email`` are: a
+        serializer covers one door, and this table is written through many -
+        ``objects.create()``, ``create_user``, the school-admin provisioner,
+        the bulk importer, the seeders and the management commands. The
+        database cannot hold this rule itself, because it is conditional on a
+        Python constant that is meant to be flipped.
+
+        Only an address being INTRODUCED is checked. If a legal pair ever does
+        exist - made while the switch was on - a later save of either account
+        must still work, or a status change, or the ``last_login_at`` write at
+        the end of every successful sign-in, would start failing outright.
+
+        ``bulk_create``/``bulk_update`` go round ``save()`` and are not covered.
+        Nothing in this codebase creates users that way (only the test that
+        proves the case-folding in ``UserQuerySet``), and the queryset methods
+        run against historical models during migrations, where reaching into
+        ``services.sign_in_scope`` would be wrong.
+        """
+        from .services import sign_in_scope
+
+        if sign_in_scope.tenant_is_required():
+            return
+        if not self.email or not self.tenant_id:
+            return
+        if update_fields is not None and 'email' not in update_fields:
+            return
+        if not self._state.adding and self.pk is not None:
+            unchanged = not (
+                User.objects.filter(pk=self.pk).exclude(email=self.email).exists()
+            )
+            if unchanged:
+                return
+
+        clash = User.objects.filter(email=self.email).exclude(tenant_id=self.tenant_id)
+        if self.pk is not None:
+            clash = clash.exclude(pk=self.pk)
+        if clash.exists():
+            raise ValidationError({'email': [CROSS_TENANT_EMAIL_REFUSAL]})
 
     def _derive_tenant(self):
         """Fill in the canonical home tenant when one wasn't supplied.
@@ -342,6 +476,8 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         self._normalize_email()  # ditto - every write lands lowercase
         if self.branch_id and self.branch.tenant_id != self.tenant_id:
             raise ValidationError("User branch must belong to the user's tenant.")
+        # Backstop for the many writers that never call full_clean().
+        self._guard_cross_tenant_email(update_fields=kwargs.get('update_fields'))
         if self.uid is None:
             with transaction.atomic():
                 if self.user_type == self.UserType.CX_STAFF:

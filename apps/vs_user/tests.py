@@ -2575,3 +2575,519 @@ class EmailCaseRepairMigrationTests(TestCase):
         self.assertIn("tunde.bello@example.test", report)
         self.assertIn(f"pk={first.pk}", report)
         self.assertIn(f"pk={second.pk}", report)
+
+
+# =============================================================================
+# Per-tenant email, Phase 3 - uniqueness narrows from the platform to a tenant
+# =============================================================================
+
+def _tenant_required(value=True):
+    """Flip sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN for the block."""
+    return mock.patch(
+        "vs_user.services.sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN", value,
+    )
+
+
+class EmailUniquePerTenantTests(TestCase):
+    """``uq_user_email_per_tenant`` replaces platform-wide uniqueness.
+
+    Ada Okoye has a child at Bright Star and another at Greenfield and uses
+    ada.okoye@example.test at both. Before this, Greenfield's database refused
+    to create her an account at all - and the refusal itself told Greenfield
+    that somebody, somewhere on the platform, held that address.
+    """
+
+    def setUp(self):
+        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+
+    def _plant(self, school, email, **extra):
+        """Create straight through save(), skipping full_clean()."""
+        return User.objects.create(
+            email=email, first_name="Ada", last_name="Okoye",
+            user_type="SCHOOL_ADMIN", status="ACTIVE", tenant=school.tenant,
+            **extra,
+        )
+
+    # ── what is now allowed ──────────────────────────────────────────────────
+
+    def test_two_tenants_may_hold_the_same_address(self):
+        with _tenant_required():
+            at_bright_star = make_school_admin(
+                self.bright_star, email="ada.okoye@example.test",
+            )
+            at_greenfield = make_school_admin(
+                self.greenfield, email="ada.okoye@example.test",
+            )
+
+        self.assertNotEqual(at_bright_star.pk, at_greenfield.pk)
+        self.assertNotEqual(at_bright_star.tenant_id, at_greenfield.tenant_id)
+        self.assertEqual(
+            User.objects.filter(email="ada.okoye@example.test").count(), 2,
+        )
+
+    def test_the_email_column_carries_no_unique_index_of_its_own(self):
+        """The model must not quietly keep both kinds of uniqueness."""
+        self.assertFalse(User._meta.get_field("email").unique)
+
+    # ── what is still refused, by the database ───────────────────────────────
+
+    def test_one_tenant_may_not_hold_the_same_address_twice(self):
+        from django.db import IntegrityError, transaction
+
+        self._plant(self.bright_star, "ada.okoye@example.test")
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self._plant(self.bright_star, "ada.okoye@example.test")
+
+    def test_a_case_variant_in_one_tenant_is_still_refused(self):
+        """The constraint is on the raw columns; ck_user_email_lowercase is
+        what makes that case-insensitive, by folding the address first."""
+        from django.db import IntegrityError, transaction
+
+        self._plant(self.bright_star, "ada.okoye@example.test")
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self._plant(self.bright_star, "ADA.Okoye@Example.TEST")
+
+    def test_a_case_variant_at_another_tenant_is_the_same_account_key(self):
+        """Folding happens before the tenant scope is applied, not after."""
+        with _tenant_required():
+            at_greenfield = make_school_admin(
+                self.greenfield, email="ADA.Okoye@Example.TEST",
+            )
+
+        self.assertEqual(at_greenfield.email, "ada.okoye@example.test")
+
+    # ── and by validation, on the field, as unique=True used to ──────────────
+
+    def test_full_clean_reports_a_same_tenant_duplicate_on_the_email_field(self):
+        """A two-column constraint reports under NON_FIELD_ERRORS by default.
+
+        Every creation path that relies on full_clean() would have had its
+        error shape change silently; User.validate_unique keeps it on email.
+        """
+        make_school_admin(self.bright_star, email="ada.okoye@example.test")
+        clash = User(
+            email="ada.okoye@example.test", first_name="Ada", last_name="Twin",
+            user_type="SCHOOL_ADMIN", status="ACTIVE", tenant=self.bright_star.tenant,
+        )
+        clash.set_unusable_password()
+
+        with self.assertRaises(DjangoValidationError) as ctx:
+            clash.full_clean()
+
+        self.assertIn("email", ctx.exception.error_dict)
+        self.assertNotIn("__all__", ctx.exception.error_dict)
+
+    def test_full_clean_reports_it_once_not_twice(self):
+        make_school_admin(self.bright_star, email="ada.okoye@example.test")
+        clash = User(
+            email="ada.okoye@example.test", first_name="Ada", last_name="Twin",
+            user_type="SCHOOL_ADMIN", status="ACTIVE", tenant=self.bright_star.tenant,
+        )
+        clash.set_unusable_password()
+
+        with self.assertRaises(DjangoValidationError) as ctx:
+            clash.full_clean()
+
+        self.assertEqual(len(ctx.exception.error_dict["email"]), 1)
+
+    def test_full_clean_allows_the_same_address_at_another_tenant(self):
+        make_school_admin(self.bright_star, email="ada.okoye@example.test")
+        other = User(
+            email="ada.okoye@example.test", first_name="Ada", last_name="Okoye",
+            user_type="SCHOOL_ADMIN", status="ACTIVE", tenant=self.greenfield.tenant,
+        )
+        other.set_unusable_password()
+
+        with _tenant_required():
+            other.full_clean()  # must not raise
+
+    def test_saving_an_existing_user_is_not_a_clash_with_itself(self):
+        ada = make_school_admin(self.bright_star, email="ada.okoye@example.test")
+        ada.first_name = "Adaeze"
+
+        ada.full_clean()
+        ada.save()
+
+        self.assertEqual(User.objects.get(pk=ada.pk).first_name, "Adaeze")
+
+
+class CrossTenantEmailGuardTests(TestCase):
+    """Until sign-in names its tenant, a second tenant's copy is refused.
+
+    Uniqueness is per tenant now, so ada.okoye@example.test may legally exist
+    at Bright Star AND at Greenfield. Sign-in can only tell those two apart
+    when the request names the tenant, and REQUIRE_TENANT_ON_SIGN_IN is still
+    False because neither frontend sends one. Without this guard the ordering
+    that keeps Ada safe would live only in a plan document: create the pair
+    early and she is signed in to whichever school the unscoped lookup returns
+    first, with her own password, and nothing in any log looks wrong.
+    """
+
+    def setUp(self):
+        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+        self.ada = make_school_admin(
+            self.bright_star, email="ada.okoye@example.test",
+        )
+
+    def _second_copy(self):
+        return make_school_admin(self.greenfield, email="ada.okoye@example.test")
+
+    # ── refused while the switch is off ──────────────────────────────────────
+
+    def test_a_second_tenants_copy_is_refused(self):
+        with self.assertRaises(DjangoValidationError) as ctx:
+            self._second_copy()
+
+        self.assertIn("email", ctx.exception.error_dict)
+
+    def test_it_is_refused_on_the_path_that_never_calls_full_clean(self):
+        """objects.create() goes straight to save(); the guard sits there too."""
+        with self.assertRaises(DjangoValidationError):
+            User.objects.create(
+                email="ada.okoye@example.test", first_name="Ada", last_name="Okoye",
+                user_type="SCHOOL_ADMIN", status="ACTIVE",
+                tenant=self.greenfield.tenant,
+            )
+
+    def test_a_case_variant_at_another_tenant_is_refused_too(self):
+        with self.assertRaises(DjangoValidationError):
+            make_school_admin(self.greenfield, email="ADA.Okoye@Example.TEST")
+
+    def test_moving_an_existing_account_onto_the_address_is_refused(self):
+        mover = make_school_admin(self.greenfield, email="tunde@example.test")
+        mover.email = "ada.okoye@example.test"
+
+        with self.assertRaises(DjangoValidationError):
+            mover.save()
+
+    def test_nothing_is_written_when_it_refuses(self):
+        with self.assertRaises(DjangoValidationError):
+            self._second_copy()
+
+        self.assertEqual(
+            User.objects.filter(email="ada.okoye@example.test").count(), 1,
+        )
+
+    # ── the refusal says nothing about where the other account lives ─────────
+
+    def test_the_refusal_does_not_name_the_other_tenant(self):
+        """Greenfield's admin must not learn that Bright Star has this parent."""
+        with self.assertRaises(DjangoValidationError) as ctx:
+            self._second_copy()
+
+        message = " ".join(ctx.exception.messages).lower()
+        for leak in ("bright", "bright-star", "bright star", str(self.bright_star.tenant_id),
+                     str(self.ada.pk), self.ada.first_name.lower(), self.ada.last_name.lower()):
+            self.assertNotIn(leak.lower(), message, f"refusal leaked {leak!r}")
+
+    def test_the_refusal_is_the_shared_message(self):
+        from vs_user.models import CROSS_TENANT_EMAIL_REFUSAL
+
+        with self.assertRaises(DjangoValidationError) as ctx:
+            self._second_copy()
+
+        self.assertEqual(ctx.exception.messages, [CROSS_TENANT_EMAIL_REFUSAL])
+
+    def test_a_same_tenant_duplicate_gets_the_duplicate_message_not_this_one(self):
+        from vs_user.models import CROSS_TENANT_EMAIL_REFUSAL
+
+        with self.assertRaises(DjangoValidationError) as ctx:
+            make_school_admin(self.bright_star, email="ada.okoye@example.test")
+
+        self.assertNotIn(CROSS_TENANT_EMAIL_REFUSAL, ctx.exception.messages)
+
+    # ── permitted once the switch is on ──────────────────────────────────────
+
+    def test_a_second_tenants_copy_is_allowed_once_the_switch_is_on(self):
+        with _tenant_required():
+            second = self._second_copy()
+
+        self.assertEqual(second.email, self.ada.email)
+        self.assertEqual(second.tenant_id, self.greenfield.tenant_id)
+
+    # ── an account that already exists stays writable ────────────────────────
+
+    def test_a_legal_pair_can_still_be_saved_after_the_switch_goes_back_off(self):
+        """Otherwise a status change, or a login's last_login_at write, would
+        start failing for both accounts the moment the switch was rolled back."""
+        with _tenant_required():
+            second = self._second_copy()
+
+        second.status = "SUSPENDED"
+        second.save()
+
+        self.assertEqual(User.objects.get(pk=second.pk).status, "SUSPENDED")
+
+    def test_an_update_fields_save_that_excludes_email_never_checks(self):
+        with _tenant_required():
+            second = self._second_copy()
+
+        second.last_login_at = timezone.now()
+        second.save(update_fields=["last_login_at", "updated_at"])
+
+        self.assertIsNotNone(User.objects.get(pk=second.pk).last_login_at)
+
+    def test_an_ordinary_new_address_is_untouched_by_the_guard(self):
+        fresh = make_school_admin(self.greenfield, email="tunde.bello@example.test")
+
+        self.assertEqual(fresh.email, "tunde.bello@example.test")
+
+
+class PerTenantEmailSignInTests(TestCase):
+    """Two Adas, one address: sign-in and reset must land on the right one.
+
+    This is the failure the whole plan exists to prevent, and it is only
+    reproducible now that the pair can exist. Both accounts are created with
+    the switch on, which is the state the platform reaches when both frontends
+    send their tenant.
+    """
+
+    def setUp(self):
+        from django.test import RequestFactory
+
+        self.bright_star_password = "Br1ghtStar!pass"
+        self.greenfield_password = "Gr33nfield!pass"
+        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+        with _tenant_required():
+            self.at_bright_star = make_school_admin(
+                self.bright_star, email="ada.okoye@example.test",
+                password=self.bright_star_password,
+            )
+            self.at_greenfield = make_school_admin(
+                self.greenfield, email="ada.okoye@example.test",
+                password=self.greenfield_password,
+            )
+        self.factory = RequestFactory()
+
+    def _login(self, password, tenant=None):
+        request = self.factory.post("/v1/user/auth/login/")
+        return LoginService.login(
+            "ada.okoye@example.test", password, tenant=tenant, request=request,
+        )
+
+    def test_each_tenants_sign_in_reaches_its_own_account(self):
+        at_bright_star = self._login(self.bright_star_password, tenant="bright-star")
+        at_greenfield = self._login(self.greenfield_password, tenant="greenfield")
+
+        self.assertEqual(at_bright_star["user"]["id"], self.at_bright_star.pk)
+        self.assertEqual(at_greenfield["user"]["id"], self.at_greenfield.pk)
+        self.assertEqual(at_bright_star["tenant"]["slug"], "bright-star")
+        self.assertEqual(at_greenfield["tenant"]["slug"], "greenfield")
+
+    def test_one_tenants_password_does_not_open_the_other_tenants_account(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._login(self.greenfield_password, tenant="bright-star")
+
+        self.assertEqual(ctx.exception.args[0]["code"], "INVALID_CREDENTIALS")
+
+    def test_omitting_the_tenant_is_refused_once_the_switch_is_on(self):
+        with _tenant_required():
+            with self.assertRaises(ValueError) as ctx:
+                self._login(self.bright_star_password)
+
+        self.assertEqual(ctx.exception.args[0]["code"], "INVALID_CREDENTIALS")
+        self.assertEqual(
+            AuthAttempt.all_objects.latest("id").failure_code, "TENANT_REQUIRED",
+        )
+
+    def test_a_reset_at_one_tenant_never_touches_the_other_account(self):
+        from vs_user.models import PasswordResetRequest
+        from vs_user.services.password import PasswordService
+
+        with mock.patch("vs_user.tasks.send_password_reset_email_task"):
+            PasswordService.request_reset(
+                email="ada.okoye@example.test", tenant="greenfield",
+            )
+
+        self.assertEqual(
+            PasswordResetRequest.objects.filter(user=self.at_greenfield).count(), 1,
+        )
+        self.assertFalse(
+            PasswordResetRequest.objects.filter(user=self.at_bright_star).exists(),
+        )
+
+
+class EmailPerTenantMigrationTests(TestCase):
+    """``vs_user.0007`` verifies before it writes, in both directions.
+
+    The two check functions are exercised directly rather than through the
+    migration executor: the constraint the same migration adds makes the
+    forward collision impossible to plant through the ORM, so that test drops
+    it first. The drop rolls back with the test transaction.
+    """
+
+    MIGRATION = "vs_user.migrations.0007_user_email_unique_per_tenant"
+
+    def setUp(self):
+        from django.db import connection
+        from importlib import import_module
+
+        self.connection = connection
+        self.migration = import_module(self.MIGRATION)
+        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+
+    def _drop(self, name):
+        with self.connection.cursor() as cursor:
+            cursor.execute(f"ALTER TABLE vs_users_user DROP CONSTRAINT {name}")
+
+    def _plant(self, school, email):
+        return User.objects.create(
+            email=email, first_name="Ada", last_name="Okoye",
+            user_type="SCHOOL_ADMIN", status="ACTIVE", tenant=school.tenant,
+        )
+
+    def _raw_email(self, user, raw):
+        """Put a mixed-case address on a row, behind save() and the constraint."""
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE vs_users_user SET email = %s WHERE id = %s", [raw, user.pk],
+            )
+        return raw
+
+    def _shims(self):
+        class _Apps:
+            @staticmethod
+            def get_model(app_label, model_name):
+                return User
+
+        class _SchemaEditor:
+            connection = self.connection
+
+        return _Apps(), _SchemaEditor()
+
+    def _forward(self):
+        self.migration.refuse_same_tenant_duplicates(*self._shims())
+
+    def _reverse(self):
+        self.migration.refuse_cross_tenant_duplicates(*self._shims())
+
+    # ── forward ──────────────────────────────────────────────────────────────
+
+    def test_forward_passes_on_clean_data(self):
+        make_school_admin(self.bright_star, email="ada.okoye@example.test")
+
+        self._forward()  # must not raise
+
+    def test_forward_passes_when_two_tenants_share_an_address(self):
+        """That pair is the point of the migration, not an obstacle to it."""
+        with _tenant_required():
+            make_school_admin(self.bright_star, email="ada.okoye@example.test")
+            make_school_admin(self.greenfield, email="ada.okoye@example.test")
+
+        self._forward()  # must not raise
+
+    def test_forward_refuses_two_rows_in_one_tenant_and_names_them(self):
+        self._drop("uq_user_email_per_tenant")
+        first = self._plant(self.bright_star, "ada.okoye@example.test")
+        second = self._plant(self.bright_star, "ada.okoye@example.test")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._forward()
+
+        report = str(ctx.exception)
+        self.assertIn("1 address(es)", report)
+        self.assertIn("ada.okoye@example.test", report)
+        self.assertIn(f"pk={first.pk}", report)
+        self.assertIn(f"pk={second.pk}", report)
+        self.assertIn(f"tenant={self.bright_star.tenant_id}", report)
+
+    def test_forward_refuses_a_case_variant_even_with_no_lowercase_constraint(self):
+        """It must not assume 0006 ran: the check folds the address itself."""
+        self._drop("uq_user_email_per_tenant")
+        self._drop("ck_user_email_lowercase")
+        first = self._plant(self.bright_star, "ada.okoye@example.test")
+        second = self._plant(self.bright_star, "ada.okoye+2@example.test")
+        self._raw_email(second, "ADA.Okoye@Example.TEST")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._forward()
+
+        report = str(ctx.exception)
+        self.assertIn(f"pk={first.pk}", report)
+        self.assertIn(f"pk={second.pk}", report)
+
+    def test_forward_ignores_a_lone_row_at_a_third_tenant(self):
+        """A tenant that merely shares the address is not part of the problem."""
+        self._drop("uq_user_email_per_tenant")
+        first = self._plant(self.bright_star, "ada.okoye@example.test")
+        second = self._plant(self.bright_star, "ada.okoye@example.test")
+        with _tenant_required():
+            innocent = self._plant(self.greenfield, "ada.okoye@example.test")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._forward()
+
+        report = str(ctx.exception)
+        self.assertIn(f"pk={first.pk}", report)
+        self.assertIn(f"pk={second.pk}", report)
+        self.assertNotIn(f"pk={innocent.pk}", report)
+
+    # ── reverse ──────────────────────────────────────────────────────────────
+
+    def test_reverse_passes_when_every_address_is_still_unique_platform_wide(self):
+        make_school_admin(self.bright_star, email="ada.okoye@example.test")
+        make_school_admin(self.greenfield, email="tunde.bello@example.test")
+
+        self._reverse()  # must not raise
+
+    def test_reverse_refuses_when_two_tenants_share_an_address(self):
+        """Restoring unique=True would otherwise die as an opaque IntegrityError."""
+        with _tenant_required():
+            at_bright_star = make_school_admin(
+                self.bright_star, email="ada.okoye@example.test",
+            )
+            at_greenfield = make_school_admin(
+                self.greenfield, email="ada.okoye@example.test",
+            )
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._reverse()
+
+        report = str(ctx.exception)
+        self.assertIn("1 address(es)", report)
+        self.assertIn("ada.okoye@example.test", report)
+        self.assertIn(f"pk={at_bright_star.pk}", report)
+        self.assertIn(f"pk={at_greenfield.pk}", report)
+        self.assertIn(f"tenant={self.bright_star.tenant_id}", report)
+        self.assertIn(f"tenant={self.greenfield.tenant_id}", report)
+
+    def test_reverse_names_every_shared_address_not_just_the_first(self):
+        with _tenant_required():
+            make_school_admin(self.bright_star, email="ada.okoye@example.test")
+            make_school_admin(self.greenfield, email="ada.okoye@example.test")
+            make_school_admin(self.bright_star, email="tunde.bello@example.test")
+            make_school_admin(self.greenfield, email="tunde.bello@example.test")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._reverse()
+
+        report = str(ctx.exception)
+        self.assertIn("2 address(es)", report)
+        self.assertIn("ada.okoye@example.test", report)
+        self.assertIn("tunde.bello@example.test", report)
+
+    def test_reverse_writes_nothing_when_it_refuses(self):
+        with _tenant_required():
+            at_bright_star = make_school_admin(
+                self.bright_star, email="ada.okoye@example.test",
+            )
+            at_greenfield = make_school_admin(
+                self.greenfield, email="ada.okoye@example.test",
+            )
+
+        with self.assertRaises(RuntimeError):
+            self._reverse()
+
+        self.assertEqual(
+            set(User.objects.filter(email="ada.okoye@example.test")
+                .values_list("pk", flat=True)),
+            {at_bright_star.pk, at_greenfield.pk},
+        )

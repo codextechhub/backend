@@ -24,6 +24,24 @@ TEMP_PASSWORD_PEPPER = config("TEMP_PASSWORD_PEPPER")
 
 AUTH_USER_MODEL = "vs_user.User"
 
+# auth.E003 says USERNAME_FIELD must be globally unique. It deliberately is
+# not: one real address can be a login at more than one customer of this
+# platform (a parent with a child at two schools), so uniqueness lives on
+# vs_user.User's uq_user_email_per_tenant instead - see the per-tenant email
+# work in vs_user/models.py and migration 0007.
+#
+# The check exists because django.contrib.auth's ModelBackend resolves a login
+# with get_by_natural_key(), a bare .get() on the username field, which would
+# raise MultipleObjectsReturned. Nothing here goes through it: requests
+# authenticate with JWT via vs_rbac.authentication, LoginService checks the
+# password itself against a tenant-scoped lookup, and django.contrib.admin -
+# the other ModelBackend caller - is deliberately absent from INSTALLED_APPS.
+#
+# Silenced in base, not per environment: the design decision is the same in
+# development, CI, staging and production. Environment files that add their own
+# entries must extend this list rather than replace it.
+SILENCED_SYSTEM_CHECKS = ["auth.E003"]
+
 REST_FRAMEWORK = {
     # JSON only by default - local.py adds the browsable API for development.
     "DEFAULT_RENDERER_CLASSES": [
