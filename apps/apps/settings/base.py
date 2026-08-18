@@ -157,6 +157,20 @@ CORS_ALLOWED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+# Every school is served from its own subdomain (bright-star.xvs.codexng.com),
+# so the browser origin differs per tenant and cannot be enumerated in advance.
+# The pattern matches one label only - it does not reach a.b.xvs.codexng.com -
+# and the bare product site keeps its explicit entry above.
+# django-cors-headers echoes the specific matched origin rather than "*", which
+# is what keeps this legal alongside CORS_ALLOW_CREDENTIALS.
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    origin.strip()
+    for origin in config(
+        "CORS_ALLOWED_ORIGIN_REGEXES",
+        default=r"^https://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.xvs\.codexng\.com$",
+    ).split(",")
+    if origin.strip()
+]
 CORS_ALLOW_CREDENTIALS = True
 
 # Proxy requests carry the audited session id in a custom header. Browsers
