@@ -67,3 +67,17 @@ DATABASES = {
 # silencing it in test.py or ci.py alone would silence nothing here.
 if "test" in sys.argv:
     SILENCED_SYSTEM_CHECKS = ["vs_notifications.W001"]
+
+    # Hash test fixtures cheaply. PBKDF2 is deliberately slow, and the suite
+    # creates users constantly, so the default cost dominates the run:
+    # schools.vs_schools took 17.5 minutes at 100% CPU for 143 tests, most of
+    # it hashing passwords nobody checks the strength of.
+    #
+    # ci.py and test.py already do this. local.py did not, and local.py is the
+    # module CLAUDE.md tells you to run the suite with - so the documented
+    # command was the one path still paying full price.
+    #
+    # Inside the test guard on purpose. This file is also the dev-server
+    # settings, and MD5-hashing a real developer's password would be a genuine
+    # weakening of that environment, not a speed-up.
+    PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
