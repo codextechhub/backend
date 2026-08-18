@@ -14,15 +14,24 @@ could reach.
   updated through the API again - refused over a field the caller had not
   touched, and not even told which one.
 """
+from unittest import mock
+
+from django.db import connection
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from vs_audit.models import (
+    AuditActionType,
+    AuditActorType,
+    AuditEvent,
+    AuditSeverity,
+)
 from vs_rbac.tests.helpers import make_branch, make_school, make_vision_user
 from vs_tenants.models import Branch, BranchStatus, Tenant
 
-from .models import School, SchoolStatus
+from .models import School, SchoolBranding, SchoolStatus
 
 
 class SchoolSlugUpdateTests(TestCase):
@@ -426,3 +435,216 @@ class BranchUpdateBlankFieldTests(TestCase):
         )
 
         event.full_clean()  # would raise on from_state, actor_id and reason
+
+
+class SchoolUpdateAuditTests(TestCase):
+    """``PATCH /v1/schools/<slug>/update/`` leaves a record of who changed what.
+
+    ``SchoolUpdateSerializer.update()`` read ``actor_id`` out of its context and
+    never used it: no audit event was emitted at all, while
+    ``BranchUpdateSerializer`` immediately above it audits every field change.
+    Harmless while the endpoint edited mottos, and not harmless at all once the
+    same endpoint could move a school's ``slug`` - which is mirrored onto the
+    tenant, and so is the host every one of that school's users signs in at.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="audit-update@example.com", super_admin=True,
+        )
+
+    def _client(self, user=None):
+        client = APIClient()
+        client.force_authenticate(user=user or self.vision_user)
+        return client
+
+    def _url(self, school):
+        return reverse("school-update", kwargs={"slug": school.slug})
+
+    def _pending_school(self, *, slug, name="Bright Star"):
+        school = make_school(slug=slug, name=name, status=SchoolStatus.PENDING)
+        make_branch(school, name="Main Campus", status=BranchStatus.PENDING)
+        return school
+
+    def _school_events(self):
+        return AuditEvent.objects.filter(
+            entity_type="School", action_type=AuditActionType.UPDATE,
+        )
+
+    # --- the address move, which is the one that matters --------------------
+
+    def test_a_slug_change_is_recorded_with_both_addresses(self):
+        """The question someone actually asks is "what was this school's
+        address before, and who moved it?" - so the old value has to be
+        recoverable from the record, not merely implied by it."""
+        school = self._pending_school(slug="bright-star", name="Bright Star Academy")
+
+        response = self._client().patch(
+            self._url(school), {"slug": "bright-star-academy"}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        event = self._school_events().get()
+        self.assertEqual(event.before_data["slug"], "bright-star")
+        self.assertEqual(
+            event.diff_data["slug"],
+            {"before": "bright-star", "after": "bright-star-academy"},
+        )
+        self.assertEqual(event.entity_id, "bright-star-academy")
+        self.assertEqual(event.entity_label, "Bright Star Academy")
+
+    def test_the_summary_names_the_address_the_school_left(self):
+        """The Event Explorer's free-text search runs over ``summary``, not over
+        the JSON snapshots, so the dead address has to appear there for anyone
+        holding it to find out where the school went."""
+        school = self._pending_school(slug="corona-secondry", name="Corona Secondary")
+
+        self._client().patch(
+            self._url(school), {"slug": "corona-secondary"}, format="json",
+        )
+
+        event = self._school_events().get()
+        self.assertIn("corona-secondry", event.summary)
+        self.assertIn("corona-secondary", event.summary)
+        self.assertEqual(event.severity, AuditSeverity.WARNING)
+
+    # --- attribution --------------------------------------------------------
+
+    def test_the_record_names_the_real_user_not_the_system(self):
+        """``actor_id`` was defaulted to the string ``"system"``. ``actor_user``
+        is a foreign key, so that string would have raised inside
+        ``emit_audit_event`` - which swallows its own failures - and the event
+        would have been lost rather than attributed to anybody."""
+        school = self._pending_school(slug="attributed", name="Attributed School")
+
+        self._client().patch(
+            self._url(school), {"motto": "Learning first"}, format="json",
+        )
+
+        event = self._school_events().get()
+        self.assertEqual(event.actor_type, AuditActorType.USER)
+        self.assertEqual(event.actor_user_id, self.vision_user.id)
+        self.assertIn("Vision Staff", event.summary)
+
+    # --- ordinary fields, and non-changes -----------------------------------
+
+    def test_another_field_s_change_is_recorded_too(self):
+        school = self._pending_school(slug="motto-school", name="Motto School")
+
+        response = self._client().patch(
+            self._url(school), {"motto": "Knowledge is light"}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        event = self._school_events().get()
+        self.assertEqual(
+            event.diff_data["motto"], {"before": "", "after": "Knowledge is light"},
+        )
+        self.assertNotIn("slug", event.diff_data)
+        self.assertEqual(event.severity, AuditSeverity.INFO)
+
+    def test_a_payload_that_changes_nothing_records_nothing(self):
+        """A PATCH that re-sends the values already stored is not an edit, and
+        a log full of no-op entries is one nobody reads."""
+        school = self._pending_school(slug="noop-school", name="No-op School")
+        school.motto = "Unchanged"
+        school.save(update_fields=["motto"])
+
+        response = self._client().patch(
+            self._url(school),
+            {"slug": "noop-school", "motto": "Unchanged"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertFalse(self._school_events().exists())
+
+    def test_a_refused_update_records_nothing(self):
+        """A live school cannot move its address. The refusal happens in
+        validation, so no event is written for the attempt."""
+        school = self._pending_school(slug="frozen-school", name="Frozen School")
+        school.status = SchoolStatus.ACTIVE
+        school.activated_at = timezone.now()
+        school.save(update_fields=["status", "activated_at"])
+
+        response = self._client().patch(
+            self._url(school), {"slug": "frozen-school-moved"}, format="json",
+        )
+
+        self.assertIn(response.status_code, (400, 409))
+        self.assertFalse(self._school_events().exists())
+
+    # --- the failure mode ---------------------------------------------------
+
+    def test_a_failed_audit_write_does_not_cost_the_school_its_correction(self):
+        """Best effort, and deliberately so: the audit row describes the change,
+        it does not license it. Bright Star's admins should not be left signing
+        in at the misspelt host because the log table was full.
+
+        The failure is a real database error, not a mocked Python one, because
+        that is the case that used to be dangerous: ``emit_audit_event`` runs
+        inside the serializer's own ``transaction.atomic`` block, and a database
+        error there marks the whole transaction for rollback. Catching it was
+        never enough - the school's edit died at commit with the audit row.
+        """
+        school = self._pending_school(slug="fragile-star", name="Fragile Star")
+
+        def _fail_in_the_database(*args, **kwargs):
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM no_such_audit_table")
+
+        with mock.patch.object(
+            AuditEvent.objects, "create", side_effect=_fail_in_the_database,
+        ):
+            with self.assertLogs("vs_audit", level="ERROR") as logged:
+                response = self._client().patch(
+                    self._url(school), {"slug": "fragile-star-academy"}, format="json",
+                )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        school.refresh_from_db()
+        self.assertEqual(school.slug, "fragile-star-academy")
+        self.assertEqual(
+            Tenant.objects.get(pk=school.tenant_id).slug, "fragile-star-academy",
+        )
+        self.assertFalse(self._school_events().exists())
+        # Not silent: the failure is on the record even when the event is not.
+        self.assertTrue(any("emit_audit_event failed" in line for line in logged.output))
+
+
+class SchoolResetConfigAuditTests(TestCase):
+    """``POST /v1/schools/<slug>/reset-config/`` had the same gap.
+
+    It read ``actor_id`` from its context, never used it, and deleted the
+    school's branding row with no record of the deletion at all.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="audit-reset@example.com", super_admin=True,
+        )
+
+    def test_clearing_a_school_s_configuration_is_recorded(self):
+        school = make_school(slug="reset-school", name="Reset School")
+        make_branch(school, name="Main Campus")
+        SchoolBranding.objects.create(school=school, logo="school_logos/reset.png")
+
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        response = client.post(
+            reverse("school-reset-config", kwargs={"slug": school.slug}),
+            {"confirmation_token": "RESET", "reason": "Rebrand"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertFalse(SchoolBranding.objects.filter(school=school).exists())
+        event = AuditEvent.objects.get(
+            entity_type="School", action_type=AuditActionType.CONFIG_CHANGED,
+        )
+        self.assertEqual(event.actor_user_id, self.vision_user.id)
+        self.assertEqual(event.entity_id, "reset-school")
+        self.assertEqual(event.before_data["logo"], "school_logos/reset.png")
+        self.assertEqual(event.metadata["reason"], "Rebrand")

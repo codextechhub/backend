@@ -1,4 +1,6 @@
+import json
 import threading
+from unittest import mock
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, close_old_connections, connection, transaction
@@ -9,9 +11,10 @@ from rest_framework.test import APIClient
 
 from .models import School
 from .serializers import SchoolCreateSerializer
+from .views.school import SchoolDetailView
 from vs_config.models import ConfigurationDefinition
 from vs_config.services.resolution import set_value
-from vs_rbac.tests.helpers import make_vision_user
+from vs_rbac.tests.helpers import make_branch, make_school, make_vision_user
 from vs_tenants.models import Branch, Tenant
 
 
@@ -862,3 +865,102 @@ class SeedDataSuppliesABranchTests(TestCase):
             self.assertEqual(
                 len(mains), 1, f"{spec['slug']} must have exactly one main branch",
             )
+
+
+class SchoolDetailMissingSlugTests(TestCase):
+    """A school that does not exist answers 404, and says nothing else.
+
+    The verification 7464999 never wrote. That commit removed a blanket
+    ``except Exception`` from ``SchoolDetailView.retrieve`` which caught every
+    failure - including the ``Http404`` that ``get_object`` raises for an
+    unknown slug - and answered with ``f"DEBUG: {type(exc).__name__}: {exc}"``
+    plus ``traceback.format_exc()``. Two defects in one: an absent school came
+    back as a server fault rather than a 404, and the response was built to hand
+    a Python stack trace, file paths and all, to whoever asked.
+
+    The status code was never the whole defect, so these assert on the body.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="detail-404@example.com", super_admin=True,
+        )
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        return client
+
+    def _get(self, slug):
+        return self._client().get(reverse("school-detail", kwargs={"slug": slug}))
+
+    def test_a_school_that_does_not_exist_answers_404(self):
+        response = self._get("no-such-school")
+
+        self.assertEqual(response.status_code, 404, response.data)
+
+    def test_the_404_body_carries_no_trace_of_the_server(self):
+        response = self._get("no-such-school")
+
+        body = json.dumps(response.data)
+        for leak in (
+            "DEBUG:",
+            "Traceback",
+            "traceback",
+            'File "',
+            "site-packages",
+            "/apps/",
+            "Http404",
+            "Exception",
+        ):
+            self.assertNotIn(leak, body, f"404 body leaked {leak!r}: {body}")
+
+    def test_the_404_uses_the_platform_error_envelope(self):
+        """The same shape any other 404 in this codebase produces, so a caller
+        does not have to special-case this endpoint."""
+        response = self._get("no-such-school")
+
+        self.assertEqual(response.data["success"], False)
+        self.assertIsInstance(response.data["message"], str)
+        self.assertTrue(response.data["message"])
+        self.assertEqual(response.data["error"]["code"], "REQUEST_ERROR")
+
+    def test_an_existing_school_is_unaffected(self):
+        school = make_school(slug="present-school", name="Present School")
+        make_branch(school, name="Main Campus")
+
+        response = self._get("present-school")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["slug"], "present-school")
+
+    def test_an_unexpected_failure_still_leaks_nothing(self):
+        """The other route out of this view.
+
+        Removing the blanket ``except`` handed every non-404 failure to
+        ``core.exceptions.custom_exception_handler``. That handler must answer
+        an unforeseen error with a fixed sentence and log the trace server-side
+        - if it echoed the exception instead, the traceback would simply have
+        moved one layer out rather than gone away.
+        """
+        school = make_school(slug="present-or-not", name="Present Or Not")
+        make_branch(school, name="Main Campus")
+        # Patched on the view class, not on the module-level name: the view
+        # bound ``serializer_class = SchoolDetailSerializer`` when it was
+        # defined, so replacing the module attribute changes nothing and the
+        # request simply succeeds - which is how this test first passed for the
+        # wrong reason.
+        with mock.patch.object(
+            SchoolDetailView, "get_serializer",
+            side_effect=RuntimeError("psql://user:hunter2@db.internal/cx"),
+        ):
+            with self.assertLogs("core.exceptions", level="ERROR"):
+                response = self._get("present-or-not")
+
+        self.assertEqual(response.status_code, 500)
+        body = json.dumps(response.data)
+        self.assertNotIn("hunter2", body)
+        self.assertNotIn("RuntimeError", body)
+        self.assertNotIn("Traceback", body)
+        self.assertEqual(response.data["error"]["code"], "SERVER_ERROR")

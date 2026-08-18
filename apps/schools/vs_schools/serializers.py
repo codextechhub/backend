@@ -22,7 +22,7 @@ from .models import (
 )
 from vs_tenants.exceptions import BranchAlreadyInState, TenantSlugFrozen
 from vs_tenants.models import Branch, BranchLifecycle, BranchStatus, Tenant
-from vs_audit.models import AuditModuleKey, AuditActionType
+from vs_audit.models import AuditModuleKey, AuditActionType, AuditSeverity
 from vs_audit.services import AuditDiffService, emit_audit_event
 from vs_config.models import Capability, CapabilityEntitlement
 from vs_config.services.capabilities import set_entitlement
@@ -1287,7 +1287,31 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def update(self, instance: School, validated_data: Dict[str, Any]) -> School:
+        """Write the change, then record who made it.
+
+        This used to read ``actor_id`` out of the context and drop it on the
+        floor: no audit event was emitted at all, while ``BranchUpdateSerializer``
+        directly above audits every field it touches. That was survivable while
+        the endpoint edited mottos. It stopped being survivable at 0699ada, when
+        ``slug`` became writable here: the slug is mirrored onto the tenant and
+        is therefore the host every one of a school's users signs in at, and it
+        could be moved with no record of who moved it or where from.
+
+        Same shape as the branch above, deliberately: the same
+        ``AuditDiffService`` snapshot, the same before/diff pair, the same
+        ``emit_audit_event`` call, and the same actor resolution - ``.get()``
+        with no default, so an absent actor arrives as ``None`` and the event is
+        attributed to SYSTEM. The old ``"system"`` string default would have been
+        worse than nothing: ``actor_user`` is a FK, a string there raises inside
+        ``emit_audit_event``, and that helper swallows its own failures - so a
+        defaulted actor meant no event at all rather than a system-attributed one.
+        """
         branding_data = validated_data.pop("branding", None)
+
+        before_data = AuditDiffService.model_instance_to_dict(
+            instance,
+            exclude_fields=["created_at", "updated_at", "activated_at", "deactivated_at"],
+        )
 
         changes = 0
         for attr, value in validated_data.items():
@@ -1301,14 +1325,54 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
         full_clean_as_field_errors(instance)
         instance.save()
 
-        actor_id = self.context.get("actor_id", "system")
-
         # Branding upsert
         if branding_data is not None:
             SchoolBranding.objects.update_or_create(
                 school=instance,
                 defaults=branding_data,
             )
+
+        after_data = AuditDiffService.model_instance_to_dict(
+            instance,
+            exclude_fields=["created_at", "updated_at", "activated_at", "deactivated_at"],
+        )
+
+        # The address move gets its own sentence and its own severity. The old
+        # slug is already recoverable from ``before_data`` and from the diff,
+        # but neither is searchable: the Event Explorer's free-text search runs
+        # over ``summary``, so naming both addresses there is what lets someone
+        # holding the dead address find out where the school went. Everything
+        # else keeps the generated "{actor} updated School {entity}" summary.
+        previous_slug = before_data.get("slug")
+        slug_moved = previous_slug != instance.slug
+        summary = ""
+        if slug_moved:
+            summary = (
+                f"Sign-in address for {instance.name} moved from "
+                f"{previous_slug} to {instance.slug}"
+            )
+
+        # Best effort, and not silent: ``emit_audit_event`` never raises and
+        # logs its own failures to the ``vs_audit`` logger, which is the audit
+        # app's stated contract ("audit failures must never block business
+        # logic") and what the branch serializer above relies on. A failed
+        # audit write therefore leaves the school edit standing rather than
+        # rolling back a legitimate correction over a logging fault.
+        emit_audit_event(
+            module_key=AuditModuleKey.SCHOOL,
+            action_type=AuditActionType.UPDATE,
+            actor_user=self.context.get("actor_id"),
+            entity_type="School",
+            entity_id=str(instance.slug),
+            entity_label=instance.name,
+            severity=AuditSeverity.WARNING if slug_moved else AuditSeverity.INFO,
+            summary=summary,
+            before_data=before_data,
+            diff_data=AuditDiffService.diff_dicts(
+                before_data=before_data,
+                after_data=after_data,
+            ),
+        )
 
         return instance
 
@@ -1364,7 +1428,6 @@ class SchoolResetConfigSerializer(serializers.Serializer):
     @transaction.atomic
     def save(self, **kwargs) -> School:
         school: School = self.context["school"]
-        actor_id = self.context.get("actor_id", "system")
 
         token = (self.validated_data.get("confirmation_token") or "").strip()
         if not token:
@@ -1374,6 +1437,34 @@ class SchoolResetConfigSerializer(serializers.Serializer):
         # - Remove branding
         # - Disable all modules (or re-seed defaults depending on your product policy)
         # - Clear localization (optional; many teams keep localization)
+        branding = SchoolBranding.objects.filter(school=school).first()
+        # Built by hand rather than through ``model_instance_to_dict``: ``logo``
+        # is an ImageField, ``model_to_dict`` hands back the FieldFile itself,
+        # and a FieldFile in a JSONField raises inside ``emit_audit_event`` -
+        # which swallows its own failures, so the whole event would vanish.
+        before_data = {"logo": str(branding.logo) if branding and branding.logo else ""}
+
         SchoolBranding.objects.filter(school=school).delete()
+
+        # Same gap as SchoolUpdateSerializer had: this read ``actor_id`` from
+        # the context and never used it, so a super admin wiping a school's
+        # branding left no record of it at all. Best effort and non-blocking,
+        # for the reason given on the update path above.
+        emit_audit_event(
+            module_key=AuditModuleKey.SCHOOL,
+            action_type=AuditActionType.CONFIG_CHANGED,
+            actor_user=self.context.get("actor_id"),
+            entity_type="School",
+            entity_id=str(school.slug),
+            entity_label=school.name,
+            severity=AuditSeverity.WARNING,
+            summary=f"Configuration reset for {school.name}: branding cleared",
+            before_data=before_data,
+            diff_data=AuditDiffService.diff_dicts(
+                before_data=before_data,
+                after_data={"logo": ""},
+            ),
+            metadata={"reason": self.validated_data.get("reason", "")},
+        )
 
         return school

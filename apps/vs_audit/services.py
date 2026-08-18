@@ -6,6 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
+from django.db import transaction
 from django.forms.models import model_to_dict
 
 logger = logging.getLogger("vs_audit")
@@ -119,49 +120,61 @@ def emit_audit_event(
     - summary: auto-generated from action_type + entity context when not provided.
     - Never raises - audit failures must never block business logic.
     - Returns the created AuditEvent, or None on failure.
+
+    The writes below run in their own savepoint, which is what makes the
+    promise above true for the callers that matter. Most of them emit from
+    inside their own ``transaction.atomic`` block - the school and branch
+    serializers, the onboarding effects - and a *database* error here (not a
+    Python one) marks the whole enclosing transaction for rollback. Catching
+    the exception was not enough: the caller carried on, and its own legitimate
+    write was then refused at commit with TransactionManagementError. So an
+    audit failure used to be able to destroy the business change it was only
+    supposed to describe. Rolling back to a savepoint confines the damage to
+    the audit row, which is the stated contract.
     """
     from .models import AuditEvent, AuditActorType, EntityAuditTrail
 
     try:
-        from vs_tenants.context import resolve_audit_identity
-        actor_user, effective_user, impersonation_session = resolve_audit_identity(
-            actor_user, effective_user, impersonation_session,
-        )
-        actor_type = AuditActorType.USER if actor_user is not None else AuditActorType.SYSTEM
+        with transaction.atomic():
+            from vs_tenants.context import resolve_audit_identity
+            actor_user, effective_user, impersonation_session = resolve_audit_identity(
+                actor_user, effective_user, impersonation_session,
+            )
+            actor_type = AuditActorType.USER if actor_user is not None else AuditActorType.SYSTEM
 
-        resolved_summary = summary or _build_summary(action_type, actor_user, entity_label, entity_type)
+            resolved_summary = summary or _build_summary(action_type, actor_user, entity_label, entity_type)
 
-        event = AuditEvent.objects.create(
-            module_key=module_key,
-            action_type=action_type,
-            actor_type=actor_type,
-            actor_user=actor_user if actor_type == AuditActorType.USER else None,
-            effective_user=effective_user,
-            tenant=tenant,
-            impersonation_session=impersonation_session,
-            entity_type=entity_type,
-            entity_id=str(entity_id),
-            entity_label=entity_label or "",
-            severity=severity,
-            status=status,
-            summary=resolved_summary,
-            before_data=before_data or {},
-            diff_data=diff_data or {},
-            metadata=metadata or {},
-        )
+            event = AuditEvent.objects.create(
+                module_key=module_key,
+                action_type=action_type,
+                actor_type=actor_type,
+                actor_user=actor_user if actor_type == AuditActorType.USER else None,
+                effective_user=effective_user,
+                tenant=tenant,
+                impersonation_session=impersonation_session,
+                entity_type=entity_type,
+                entity_id=str(entity_id),
+                entity_label=entity_label or "",
+                severity=severity,
+                status=status,
+                summary=resolved_summary,
+                before_data=before_data or {},
+                diff_data=diff_data or {},
+                metadata=metadata or {},
+            )
 
-        # The proxy middleware uses this request-local marker to avoid adding a
-        # vague fallback event when the feature already recorded the real
-        # business action.
-        from vs_tenants.context import mark_audit_event_emitted
-        mark_audit_event_emitted()
+            # The proxy middleware uses this request-local marker to avoid adding a
+            # vague fallback event when the feature already recorded the real
+            # business action.
+            from vs_tenants.context import mark_audit_event_emitted
+            mark_audit_event_emitted()
 
-        trail, _ = EntityAuditTrail.objects.get_or_create(
-            entity_type=entity_type,
-            entity_id=str(entity_id),
-            defaults={"entity_label": entity_label or ""},
-        )
-        trail.register_event(event)
+            trail, _ = EntityAuditTrail.objects.get_or_create(
+                entity_type=entity_type,
+                entity_id=str(entity_id),
+                defaults={"entity_label": entity_label or ""},
+            )
+            trail.register_event(event)
 
         return event
 
