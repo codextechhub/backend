@@ -27,9 +27,15 @@ class LoginService:
         ValueError. Only the success path (session + token + user update) is
         wrapped in its own atomic block.
 
+        No school context is supplied by the caller. The tenant is DERIVED from
+        the user row found by email, which is safe only because ``User.email`` is
+        unique across the whole platform. If email uniqueness is ever narrowed to
+        per-tenant, step 1 becomes ambiguous and this method must take the tenant
+        as an argument (resolved from the request host) BEFORE the lookup runs.
+
         Steps:
-          1. Find user by email
-          2. Enforce school context (non-Vision Staff must provide slug)
+          1. Find user by email (globally unique, so this identifies the tenant)
+          2. Refuse a non-platform user whose tenant has no school profile
           3. Authenticate credentials
           4. Check account lockout - only AFTER a correct password, so the
              locked state is never revealed to someone who doesn't know it

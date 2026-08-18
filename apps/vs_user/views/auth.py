@@ -44,11 +44,11 @@ class LoginView(APIView):
     """
     POST /auth/login/
     Authenticates a user and returns a JWT token pair.
-    Handles lockout checks, school context, session creation,
-    and audit logging - all via LoginService.
+    Handles lockout checks, session creation and audit logging - all via
+    LoginService. The school is NOT supplied by the caller: it is derived from
+    the user found by email. See LoginService.login.
 
     Permission: AllowAny (public endpoint).
-    RBAC: identity.school_aware_login.enforce
 
     docstring-name: Log in
     """
