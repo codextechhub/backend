@@ -580,14 +580,31 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         branch: Branch = self.instance
-        # Friendly guard: if turning this branch into main, ensure no other main exists
-        if "is_main" in attrs and attrs["is_main"] is True:
-            exists_other_main = Branch.all_objects.filter(
-                tenant_id=branch.tenant_id,
-                is_main=True,
-            ).exclude(code=branch.code).exists()
-            if exists_other_main:
-                raise serializers.ValidationError({"is_main": "Another main branch already exists for this school."})
+        # ``is_main=true`` used to be refused whenever another main branch
+        # existed, which made promotion impossible for every school that had
+        # one - and a main branch can no longer be retired without promoting a
+        # sibling first, so that refusal was the dead end itself. It is now a
+        # handover: ``Branch.promote_to_main`` demotes the incumbent in the
+        # same transaction. All that is refused here is promoting a branch that
+        # is out of service.
+        if attrs.get("is_main") is True and branch.status not in Branch.IN_SERVICE_STATES:
+            raise serializers.ValidationError({
+                "is_main": (
+                    f"This branch is {branch.status} and cannot become the main "
+                    f"branch. Bring it back into service first."
+                )
+            })
+        # Clearing the flag outright would leave the school with no main branch
+        # at all, which is the same damage by another route: promote the
+        # successor instead and the incumbent is demoted for you.
+        if attrs.get("is_main") is False and branch.is_main:
+            raise serializers.ValidationError({
+                "is_main": (
+                    "A school must always have a main branch. Make another "
+                    "branch the main branch instead; this one is demoted "
+                    "automatically."
+                )
+            })
         return attrs
 
     @transaction.atomic
@@ -596,19 +613,27 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
             instance,
             exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at"],
         )
-        
-        changes = 0
+
+        # Handled by promote_to_main, not by a plain attribute write: the
+        # incumbent has to be demoted first or the partial unique index refuses
+        # the promotion even though the end state is legal.
+        promoting = validated_data.pop("is_main", None) is True and not instance.is_main
+
+        changes = 1 if promoting else 0
         for attr, value in validated_data.items():
-            if getattr(instance, attr) != value:  
+            if getattr(instance, attr) != value:
                 changes += 1
                 setattr(instance, attr, value)
-        
+
         if changes == 0:
             raise serializers.ValidationError({"detail": "No changes detected in update payload."})
-        
+
         instance.full_clean()
         instance.save()
-        
+
+        if promoting:
+            instance.promote_to_main(actor_id=self.context.get("actor_id"))
+
         after_instance = AuditDiffService.model_instance_to_dict(
             instance,
             exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at"],

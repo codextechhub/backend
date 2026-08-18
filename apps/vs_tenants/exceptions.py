@@ -60,6 +60,69 @@ class BranchAlreadyInState(BranchLifecycleError):
         super().__init__(f"Branch is already {state}.")
 
 
+class MainBranchCannotLeaveService(BranchLifecycleError):
+    """Raised when the tenant's main branch is taken out of service.
+
+    ``is_main`` marks the canonical site and exactly one row per tenant may
+    carry it. Nothing hands the flag over on its own, so letting the main
+    branch go SUSPENDED, INACTIVE or CLOSED leaves every reader of
+    ``School.main_branch`` pointing at a site nobody may be posted to - and
+    for CLOSED, permanently, because CLOSED is terminal and the partial unique
+    index then refuses to make any survivor main.
+
+    The message names the way out, which is :meth:`Branch.promote_to_main`
+    over the API's ``is_main`` field.
+    """
+
+    error_code = "MAIN_BRANCH_CANNOT_LEAVE_SERVICE"
+
+    def __init__(self, *, branch_name: str = "", to_state: str = ""):
+        self.to_state = to_state
+        subject = f"'{branch_name}'" if branch_name else "This branch"
+        super().__init__(
+            f"{subject} is the main branch. Make another branch the main "
+            f"branch first, then take this one out of service."
+        )
+
+
+class LastBranchCannotLeaveService(BranchLifecycleError):
+    """Raised when a tenant's only branch is taken out of service.
+
+    Every school has at least one branch and there is nothing to hand the main
+    flag to, so the advice given by :class:`MainBranchCannotLeaveService`
+    cannot be followed. Winding a school down is a school-level action, not a
+    branch-level one, so that is what the message points at.
+    """
+
+    error_code = "LAST_BRANCH_CANNOT_LEAVE_SERVICE"
+
+    def __init__(self, *, branch_name: str = "", to_state: str = ""):
+        self.to_state = to_state
+        subject = f"'{branch_name}'" if branch_name else "This branch"
+        super().__init__(
+            f"{subject} is the only branch, and every school must keep one in "
+            f"service. Deactivate the school itself instead."
+        )
+
+
+class BranchNotInService(BranchLifecycleError):
+    """Raised when an out-of-service branch is asked to become the main one.
+
+    Promoting a suspended or closed branch would rebuild by hand exactly the
+    dead end the guards above exist to prevent.
+    """
+
+    error_code = "BRANCH_NOT_IN_SERVICE"
+
+    def __init__(self, *, branch_name: str = "", status: str = ""):
+        self.status = status
+        subject = f"'{branch_name}'" if branch_name else "This branch"
+        super().__init__(
+            f"{subject} is {status or 'out of service'} and cannot become the "
+            f"main branch. Bring it back into service first."
+        )
+
+
 class TenantNotLive(TenantsError):
     """Raised when a PENDING tenant reaches a surface that is not open to it.
 

@@ -27,10 +27,15 @@ slug_validator = RegexValidator(
 )
 
 
-RESERVED_TENANT_SLUGS = {
-    "admin", "api", "auth", "login", "logout", "www", "root", "static",
-    "media", "health", "status", "support", "system", "internal", "codex",
-}
+# The one list, which now lives in the platform app beside the tenant slug
+# validator: the names it protects are platform hostnames, and an ORGANIZATION
+# or VIGIL tenant gets a subdomain off the same wildcard as a school. Re-exported
+# here because this app, its serializers and vs_import_data all read it by this
+# name. Extend it in vs_tenants, not here.
+from vs_tenants.models import (  # noqa: E402  (kept beside the name it replaces)
+    RESERVED_TENANT_SLUGS,
+    slug_is_reserved,
+)
 
 
 # -----------------------------------------------------------------------------
@@ -188,11 +193,52 @@ class School(TimeStampedModel):
 
     def clean(self):
         super().clean()
-        slug = (self.slug or "").strip().lower()
-        if slug in RESERVED_TENANT_SLUGS:
+        if slug_is_reserved(self.slug):
             raise ValidationError({"slug": "This slug is reserved. Choose another."})
 
+    def _check_slug_change(self) -> bool:
+        """Refuse a post-go-live rename, and report whether the school is live.
+
+        Returns ``True`` once the school has been live, which is also the
+        answer to "may its slug still be mirrored onto its tenant?" - see
+        :meth:`save`.
+
+        ``School.save()`` seeds ``Tenant.slug`` at creation and deliberately
+        never syncs it afterwards, so the two are only equal because nothing
+        moves either one. Guarding the tenant alone would leave the school's
+        own slug - the ``/v1/i/<slug>/`` path key - free to drift away from the
+        sign-in address after go-live, which is a different bug with the same
+        cause. Same test as ``Tenant._assert_slug_unchanged_once_live`` and for
+        the same reasons: ``activated_at`` is written once, so it answers "has
+        this school ever been live?" rather than "is it live right now?", and a
+        school suspended for an unpaid invoice cannot rename itself while it is
+        off.
+        """
+        if not self.pk:
+            return False
+        stored = (
+            School.objects.filter(pk=self.pk)
+            .values("slug", "activated_at", "status")
+            .first()
+        )
+        if stored is None:
+            return False
+        has_been_live = (
+            stored["activated_at"] is not None
+            or stored["status"] == SchoolStatus.ACTIVE
+        )
+        if has_been_live and stored["slug"] != self.slug:
+            raise ValidationError({
+                "slug": (
+                    "This school is live, so its address is fixed. Changing it "
+                    "would break every link and sign-in its users already have."
+                )
+            })
+        return has_been_live
+
     def save(self, *args, **kwargs):
+        self.slug = (self.slug or "").strip().lower()
+        slug_is_frozen = self._check_slug_change()
         # Keep direct ORM/test creation safe as well as the onboarding service:
         # the pair is committed or rolled back as one unit.
         with transaction.atomic():
@@ -248,14 +294,29 @@ class School(TimeStampedModel):
                 pending_since=previous.get("pending_since"),
                 warned_at=previous.get("expiry_warned_at"),
             )
-            Tenant.objects.filter(pk=self.tenant_id).update(
-                name=self.name,
-                status=tenant_status,
-                activated_at=self.activated_at,
-                deactivated_at=self.deactivated_at,
-                pending_since=pending_since,
-                expiry_warned_at=expiry_warned_at,
-            )
+            # The slug is mirrored now, where it used to be seeded at creation
+            # and then left alone. Correcting a typo before go-live has to
+            # reach the tenant or it does not reach the sign-in address at all,
+            # which is the only address that matters: a school that fixed
+            # ``corona-secondry`` on its own row would still be served at the
+            # misspelt host its admins actually type.
+            #
+            # And only before go-live. A live school's slug cannot have changed
+            # (``_check_slug_change`` refused it), but a school whose slug
+            # drifted from its tenant's under the old rules must not have that
+            # drift resolved by an ordinary metadata save silently moving a
+            # live school's sign-in address.
+            mirrored = {
+                "name": self.name,
+                "status": tenant_status,
+                "activated_at": self.activated_at,
+                "deactivated_at": self.deactivated_at,
+                "pending_since": pending_since,
+                "expiry_warned_at": expiry_warned_at,
+            }
+            if not slug_is_frozen:
+                mirrored["slug"] = self.slug
+            Tenant.objects.filter(pk=self.tenant_id).update(**mirrored)
             return result
 
     # --- Branch helpers ---

@@ -36,8 +36,10 @@ class BranchTransitionView(ActorContextMixin, generics.GenericAPIView):
     lookup_field = "code"
 
     def get_queryset(self):
-        # Branch codes are unique per school, not globally: without the slug
-        # filter get_object() matches every school's branch N.
+        # Branch codes are unique per TENANT, not globally (uq_branch_tenant_code):
+        # without the slug filter get_object() matches every school's branch N.
+        # The filter hops slug -> school_profile -> tenant because Branch has no
+        # school column; it is owned directly by Tenant.
         qs = super().get_queryset()
         slug = self.kwargs.get("slug")
         if slug:

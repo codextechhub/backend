@@ -8,7 +8,12 @@ from django.utils import timezone
 
 from vs_rbac.managers import TenantAwareManager
 
-from .exceptions import InvalidBranchTransition
+from .exceptions import (
+    BranchNotInService,
+    InvalidBranchTransition,
+    LastBranchCannotLeaveService,
+    MainBranchCannotLeaveService,
+)
 
 
 tenant_slug_validator = RegexValidator(
@@ -17,11 +22,60 @@ tenant_slug_validator = RegexValidator(
 )
 
 
+#: Slugs no customer may take, because each one is (or will be) a hostname the
+#: platform itself answers on. Every tenant is served from its own subdomain -
+#: ``bright-star.xvs.codexng.com``, matched by the CORS origin regex in
+#: ``settings.base`` - so a tenant slug is a DNS label first and an identifier
+#: second, and a school called "Support Academy" that took ``support`` would be
+#: served the help site instead of its own.
+#:
+#: It lives here, in the platform app, rather than in ``schools.vs_schools``
+#: where it began. The names being protected are platform infrastructure, not
+#: school vocabulary: an ORGANIZATION tenant and a VIGIL clinic group get a
+#: subdomain off the same wildcard and must be held to the same list, and the
+#: engines may not import the schools app to reach it.
+#:
+#: It sits *beside* ``tenant_slug_validator`` rather than inside it, and is
+#: enforced in :meth:`Tenant.save`, for one blunt reason: field validators do
+#: not run on ``Tenant.objects.create()``, which is how every writer in this
+#: codebase makes a tenant. A validator on the field would have looked like
+#: enforcement and caught nothing. Extend the set here; no migration is needed
+#: because nothing about it is stored in the field definition.
+RESERVED_TENANT_SLUGS = frozenset({
+    # The bare product and marketing hosts.
+    "www", "xvs", "vigil", "intranet", "blog", "docs", "help", "support",
+    "status", "portal", "about", "careers", "legal", "privacy", "terms",
+    # The API and its neighbours.
+    "api", "app", "auth", "login", "logout", "signup", "register", "account",
+    "accounts", "schema", "graphql", "webhook", "webhooks", "oauth", "sso",
+    # Infrastructure and delivery.
+    "admin", "root", "system", "internal", "static", "assets", "cdn", "media",
+    "files", "img", "images", "download", "downloads", "mail", "email", "smtp",
+    "imap", "ns", "ns1", "ns2", "ftp", "vpn", "proxy", "metrics", "health",
+    # Environments. A school called "Dev" would otherwise take the host the
+    # next environment needs.
+    "dev", "staging", "test", "demo", "sandbox", "preview", "local",
+    # The platform tenant itself, seeded by vs_tenants 0002.
+    "codex",
+    # Commercial surfaces that will want their own host.
+    "billing", "payments", "pay", "checkout",
+})
+
+
+def slug_is_reserved(slug: str) -> bool:
+    """Whether ``slug`` collides with a platform hostname, after normalising."""
+    return (slug or "").strip().lower() in RESERVED_TENANT_SLUGS
+
+
 class Tenant(models.Model):
     """A customer or platform security boundary.
 
     Numeric primary keys are deliberately internal. ``slug`` is the stable,
-    human-readable identifier accepted by tenant-scoped APIs.
+    human-readable identifier accepted by tenant-scoped APIs - and, since every
+    tenant is served from its own subdomain, it is the sign-in address too.
+    Two rules follow, both enforced in :meth:`save` so no writer can miss them:
+    it may not be one of :data:`RESERVED_TENANT_SLUGS`, and once the tenant has
+    gone live it may not change at all.
     """
 
     class Kind(models.TextChoices):
@@ -81,6 +135,92 @@ class Tenant(models.Model):
     def clean(self):
         super().clean()
         self.slug = (self.slug or "").strip().lower()
+        self._assert_slug_allowed()
+
+    def _assert_slug_allowed(self):
+        """Refuse a reserved slug, whoever is writing it.
+
+        PLATFORM tenants are exempt because they *are* the infrastructure the
+        list protects: ``codex`` is a reserved name precisely so that no school
+        can take the host the platform tenant already answers on.
+        """
+        if self.kind == self.Kind.PLATFORM:
+            return
+        if slug_is_reserved(self.slug):
+            raise ValidationError({
+                "slug": (
+                    "This address is reserved for the platform. Choose another."
+                )
+            })
+
+    def _assert_slug_unchanged_once_live(self):
+        """Freeze the slug from the moment the tenant first goes live.
+
+        The slug is the school's sign-in address
+        (``bright-star.xvs.codexng.com``, and the ``?tenant=`` key that
+        ``vs_rbac.authentication`` resolves against). Changing it after go-live
+        moves every parent, teacher and pupil to an address nobody told them
+        about, and the old one stops resolving the same second.
+
+        "Live" is ``activated_at is not None or status == ACTIVE`` - live at
+        some point in the past, or live now. The first half carries the rule,
+        and it is deliberately not ``status == ACTIVE`` on its own:
+
+        * ``activated_at`` is written once and never cleared - :meth:`activate`
+          keeps the first value, and ``School.save()`` mirrors the school's own
+          stamp - so it is exactly the question "has this address ever been
+          handed out?".
+        * ``status == ACTIVE`` alone would let a school that is suspended for
+          an unpaid invoice, or temporarily deactivated, rename itself while it
+          is off. It comes back on reinstatement at an address its families
+          cannot reach - the one school least able to absorb that. The status
+          stays in the test only as a second reading of "live now", covering a
+          row activated by some path that forgot the stamp.
+        * The onboarding gate's ``ReadinessState.LIVE`` is not used because its
+          own constants file calls it "a projection, not the source of truth",
+          and a tenant that is not a school has no readiness row at all.
+
+        PENDING is the interesting exclusion, because a pending school's admins
+        *can* already sign in - ``AUTHENTICABLE_STATUSES`` admits them so they
+        can onboard. They are also the only people who can: the handful of
+        admins setting the school up, one of whom is the person fixing the typo.
+        Bright Star is created as ``bright-star`` when it meant
+        ``bright-star-academy``; before go-live that costs two admins a
+        re-bookmark, and after it costs every parent their sign-in.
+        """
+        if not self.pk:
+            return
+        stored = (
+            Tenant.objects.filter(pk=self.pk)
+            .values("slug", "activated_at", "status")
+            .first()
+        )
+        if stored is None or stored["slug"] == self.slug:
+            return
+        has_been_live = (
+            stored["activated_at"] is not None
+            or stored["status"] == self.Status.ACTIVE
+        )
+        if not has_been_live:
+            return
+        raise ValidationError({
+            "slug": (
+                "This school is live, so its sign-in address is fixed. "
+                "Changing it would lock every user out of the address they "
+                "already use."
+            )
+        })
+
+    def save(self, *args, **kwargs):
+        # Both guards live here rather than on the field, because nothing in
+        # this codebase creates a tenant through a form: it is
+        # ``Tenant.objects.create()`` from ``School.save()``, from the
+        # onboarding services and from the seeds, and field validators never
+        # run on that path.
+        self.slug = (self.slug or "").strip().lower()
+        self._assert_slug_allowed()
+        self._assert_slug_unchanged_once_live()
+        return super().save(*args, **kwargs)
 
     @classmethod
     def pending_since_for(cls, *, new_status, previous_status, current):
@@ -178,7 +318,13 @@ class Branch(models.Model):
     Helpers:
         allocate_next_code() locks the tenant row and returns the next code.
         transition()/mark_*() mutate status and append a BranchLifecycle event.
+        promote_to_main() hands `is_main` over, demoting the incumbent first.
         clean() auto-populates `closed_at` when the status is CLOSED.
+
+    The main branch may not be taken out of service. `transition()` refuses it
+    for every out-of-service state, so a tenant is never left with a canonical
+    site that is suspended, deactivated or - permanently, since CLOSED is
+    terminal - shut. Hand `is_main` over with `promote_to_main()` first.
     """
 
     tenant = models.ForeignKey(
@@ -382,6 +528,96 @@ class Branch(models.Model):
         BranchStatus.CLOSED: frozenset(),
     }
 
+    def _assert_may_leave_service(self, to_state: str) -> None:
+        """Refuse to take the tenant's canonical site out of service.
+
+        Only ``is_main`` rows are checked, and that is the whole invariant
+        rather than a shortcut: a tenant has exactly one main branch
+        (``uq_branch_one_main_per_tenant``), so retiring a *non*-main branch
+        can never leave the tenant without an in-service main one, while
+        retiring the main branch always does.
+
+        Every out-of-service state is guarded, not only CLOSED. CLOSED is the
+        state that makes the damage permanent - it is terminal, and the partial
+        unique index then refuses to hand ``is_main`` to any survivor - but a
+        SUSPENDED or INACTIVE main branch is already wrong today: every reader
+        of ``School.main_branch`` and every default-branch pick lands on a site
+        nobody may be posted to, silently. Deriving the set from
+        :attr:`OUT_OF_SERVICE_STATES` also means a lifecycle state added later
+        is guarded the moment it is declared out of service.
+
+        Which refusal is raised depends on whether there is anything to hand
+        over to, because the advice differs: a multi-branch school promotes a
+        sibling, and a one-branch school has no sibling and must wind the
+        school down instead.
+        """
+        if to_state not in self.OUT_OF_SERVICE_STATES or not self.is_main:
+            return
+
+        has_sibling = (
+            Branch.all_objects
+            .filter(tenant_id=self.tenant_id)
+            .exclude(pk=self.pk)
+            .exists()
+        )
+        if has_sibling:
+            raise MainBranchCannotLeaveService(
+                branch_name=self.name, to_state=to_state,
+            )
+        raise LastBranchCannotLeaveService(
+            branch_name=self.name, to_state=to_state,
+        )
+
+    @transaction.atomic
+    def promote_to_main(self, *, actor_id: str = "", reason: str = ""):
+        """Make this branch the tenant's main one, demoting the incumbent.
+
+        The way out of the refusals above, so it has to actually work. Two
+        things make it safe:
+
+        * The incumbent is demoted in its own UPDATE *before* this row is
+          promoted. ``uq_branch_one_main_per_tenant`` is an ordinary (not
+          deferrable) partial unique index, so the two writes cannot be
+          reordered or batched: promoting first would trip the index even
+          though the end state is legal.
+        * The tenant row is locked first, exactly as
+          :meth:`allocate_next_code` does. Two admins promoting two different
+          branches at the same moment would otherwise both read one incumbent,
+          both demote it, and both insert a main branch.
+
+        An out-of-service branch is refused: promoting a closed campus would
+        rebuild the dead end by hand.
+
+        No ``BranchLifecycle`` row is written, and ``actor_id`` is taken only
+        so callers can pass it symmetrically with :meth:`transition`. That
+        table records status edges (``from_state`` -> ``to_state``) and a
+        handover changes no status; the branch update serializer already emits
+        the ordinary audit event, whose diff carries ``is_main``.
+        """
+        if self.status not in self.IN_SERVICE_STATES:
+            raise BranchNotInService(branch_name=self.name, status=self.status)
+
+        if self.is_main:
+            # Idempotent on purpose: the serializer and any retry can call this
+            # without first asking whether it is needed.
+            return self
+
+        Tenant.objects.select_for_update().only("id").get(pk=self.tenant_id)
+        demoted = list(
+            Branch.all_objects
+            .filter(tenant_id=self.tenant_id, is_main=True)
+            .exclude(pk=self.pk)
+            .values_list("pk", flat=True)
+        )
+        if demoted:
+            Branch.all_objects.filter(pk__in=demoted).update(
+                is_main=False, updated_at=timezone.now(),
+            )
+
+        self.is_main = True
+        self.save(update_fields=["is_main", "updated_at"])
+        return self
+
     @transaction.atomic
     def transition(self, *, to_state: str, actor_id: str, reason: str = ""):
         """
@@ -393,6 +629,11 @@ class Branch(models.Model):
 
         The status write and the audit row are one unit: a branch must never
         change state without the history entry that explains it.
+
+        Every route to a branch's status runs through here - the ``mark_*``
+        helpers above, the API's transition serializer, the shell - so the
+        main-branch guard below is stated once and cannot be walked around by
+        adding another caller.
         """
         from_state = self.status
         if from_state == to_state:
@@ -400,6 +641,8 @@ class Branch(models.Model):
 
         if to_state not in self.ALLOWED_TRANSITIONS.get(from_state, frozenset()):
             raise InvalidBranchTransition(from_state=from_state, to_state=to_state)
+
+        self._assert_may_leave_service(to_state)
 
         now = timezone.now()
         self.status = to_state
