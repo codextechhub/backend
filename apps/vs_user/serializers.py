@@ -486,12 +486,26 @@ class ActivationPreviewSerializer(serializers.ModelSerializer):
 class LoginRequestSerializer(serializers.Serializer):
     email            = serializers.EmailField()
     password         = serializers.CharField(write_only=True, trim_whitespace=False)
+    # The slug of the tenant the caller is signing in to, which the frontend
+    # reads off the subdomain it is served from: a school's page at
+    # bright-star.xvs.codexng.com sends "bright-star". A BODY key, not the
+    # ``?tenant=`` query assertion the authenticated endpoints take - there is
+    # no token yet to check one against.
+    #
+    # Optional here on purpose: two frontends call this endpoint and neither
+    # sends it yet, so requiring it in the serializer would break both the day
+    # it lands. Whether an absent tenant is acceptable is decided in one place,
+    # the service (services.sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN), not here.
+    # An unknown slug is not rejected as a field error either: that would tell
+    # an anonymous caller which tenants exist. It is refused as bad credentials.
+    tenant           = serializers.CharField(required=False, allow_blank=True, default='')
 
     def validate(self, attrs):
         email = attrs.get('email', '').strip()
         if not email:
             raise serializers.ValidationError({'email': 'Email is required.'})
         attrs['email'] = email.lower()
+        attrs['tenant'] = (attrs.get('tenant') or '').strip().lower()
         return attrs
 
 
@@ -540,9 +554,14 @@ class PasswordChangeSerializer(serializers.Serializer):
 
 class PasswordResetRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
+    # Same optional tenant slug as LoginRequestSerializer, for the same reasons.
+    tenant = serializers.CharField(required=False, allow_blank=True, default='')
 
     def validate_email(self, value):
         return value.lower().strip()
+
+    def validate_tenant(self, value):
+        return (value or '').strip().lower()
 
 
 class PasswordResetPreviewSerializer(serializers.Serializer):

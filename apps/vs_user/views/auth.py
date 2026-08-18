@@ -23,6 +23,7 @@ from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.utils import datetime_from_epoch
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
+from vs_tenants.models import Tenant
 from core.response import success_response, error_response
 from ..models import (
     User, LoginSession, AuthEventLog,
@@ -45,8 +46,18 @@ class LoginView(APIView):
     POST /auth/login/
     Authenticates a user and returns a JWT token pair.
     Handles lockout checks, session creation and audit logging - all via
-    LoginService. The school is NOT supplied by the caller: it is derived from
-    the user found by email. See LoginService.login.
+    LoginService.
+
+    The body may carry an optional ``tenant`` - the slug the frontend reads off
+    the subdomain the request came from (a school's page at
+    bright-star.xvs.codexng.com sends "bright-star"). When present the tenant is
+    resolved first and the account lookup is scoped to it, so an address that
+    belongs to a different tenant is refused with the same message a wrong
+    password gets. When absent the tenant is derived from the account, as it
+    always was. See LoginService.login and services.sign_in_scope.
+
+    Note this is a body key, not the ``?tenant=`` query assertion the
+    authenticated endpoints require: there is no token yet to check against.
 
     Permission: AllowAny (public endpoint).
 
@@ -65,6 +76,7 @@ class LoginView(APIView):
             result = LoginService.login(
                 email=ser.validated_data['email'],
                 password=ser.validated_data['password'],
+                tenant=ser.validated_data.get('tenant', ''),
                 request=request,
             )
         except ValueError as e:
@@ -88,20 +100,35 @@ class SpecialLoginPreviewView(APIView):
     """
     GET /user/auth/special_login/preview/?email=<email>
 
-    Barcode / ID-card login flow.  The frontend encodes the user's email in the
-    QR/barcode and navigates to  /<email>/login.  Before showing the password
-    field the page calls this endpoint to:
+    Barcode / ID-card login flow, **for CX staff only**.  The CX console
+    encodes the staff member's email in the QR/barcode and navigates to
+    /<email>/login.  Before showing the password field the page calls this
+    endpoint to:
 
-      1. Confirm the email belongs to a known account.
+      1. Confirm the email belongs to a known CX staff account.
       2. Return the user's display name (shown in place of the email field).
       3. Surface a clear, status-specific message for non-active accounts so the
          page can inform the user without them having to attempt a full login.
 
+    Scoped to the PLATFORM tenant, and that scope is the whole security of this
+    endpoint. It is unauthenticated by necessity - a barcode scanner carries no
+    credentials - so without the scope it answered for every row in the user
+    table: 404 for an address nobody holds, 403 with a status-specific message
+    for one that exists, and 200 with the person's full name when the account
+    was active. That is a name-and-existence oracle over every parent, student
+    and teacher on the platform, readable by anyone who can reach the URL.
+
+    The discriminator is the TENANT KIND, not ``user_type``. ``user_type`` is
+    declared inert on the model and must never drive an access decision, and the
+    same address may legitimately hold a CX staff account on the platform tenant
+    and an unrelated parent account at a school - only the tenant separates them.
+
     Responses
     ---------
-    200  Active user found → { data: { full_name } }
-    403  User exists but account is PENDING / LOCKED / SUSPENDED / DEACTIVATED
-    404  No user with that email
+    200  Active CX staff user found → { data: { full_name } }
+    403  CX staff user exists but is PENDING / LOCKED / SUSPENDED / DEACTIVATED
+    404  No CX staff user with that email (an address that exists only at a
+         school gets this too, and cannot be told from an unknown one)
     400  email query param missing
 
     Permission: AllowAny - the barcode scanner carries no credentials.
@@ -125,7 +152,9 @@ class SpecialLoginPreviewView(APIView):
         if not email:
             return error_response(message='email query parameter is required.', status=status.HTTP_400_BAD_REQUEST)
 
-        user = User.objects.filter(email__iexact=email).first()
+        user = User.objects.filter(
+            email__iexact=email, tenant__kind=Tenant.Kind.PLATFORM,
+        ).first()
         if not user:
             return error_response(
                 message=f'User with {email} does not exist.',

@@ -137,8 +137,10 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     gender     = models.CharField(max_length=20, choices=Gender.choices, blank=True, default='')
     phone      = models.CharField(max_length=32, blank=True, null=True, default='')
 
-    # Auto-assigned on create; unique within school for school users,
-    # unique across all Vision Staff for VISION_STAFF. Starts at 10.
+    # Auto-assigned on create; unique within the TENANT for tenant-scoped
+    # users - which is what unique_uid_per_tenant below actually enforces, and
+    # a school is one tenant, not the key - and unique across all CX staff.
+    # Starts at 10.
     uid = models.PositiveIntegerField(null=True, blank=True, editable=False)
 
     # ──User type and status ───────────────────────────────────────────────────────

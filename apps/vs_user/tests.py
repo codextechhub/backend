@@ -1872,3 +1872,344 @@ class AuthContextParityTests(TestCase):
                       "login must build its tenant block with the shared helper")
         self.assertEqual(set(tenant_context_block(self.user.tenant)),
                          set(self._me_tenant()))
+
+
+# =============================================================================
+# Per-tenant email, Phase 1 - sign-in resolves the tenant instead of guessing it
+# =============================================================================
+
+class SignInTenantScopeTests(TestCase):
+    """The tenant is resolved BEFORE the account is looked up.
+
+    Ada Okoye has a child at Bright Star and another at Greenfield. Today her
+    address is still globally unique, so these tests exercise the guard rather
+    than the collision: an account reached from the wrong tenant's sign-in page
+    is refused, and the refusal says nothing about where the account really is.
+    """
+
+    def setUp(self):
+        from django.test import RequestFactory
+
+        self.password = "Str0ng!pass123"
+        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+        self.ada = make_school_admin(
+            self.bright_star, email="ada.okoye@example.test", password=self.password,
+        )
+        self.cx = make_cx_user(email="ops@codex.test", password=self.password)
+        self.factory = RequestFactory()
+
+    def _login(self, email, password, tenant=None):
+        request = self.factory.post("/v1/user/auth/login/")
+        return LoginService.login(email, password, tenant=tenant, request=request)
+
+    def _latest_attempt(self):
+        return AuthAttempt.all_objects.latest("id")
+
+    # ── The optional path stays exactly as it was ────────────────────────────
+
+    def test_tenant_user_signs_in_with_no_tenant_supplied(self):
+        """The two live frontends send no tenant; neither may break."""
+        result = self._login(self.ada.email, self.password)
+
+        self.assertIn("access", result)
+        self.assertEqual(result["tenant"]["slug"], self.bright_star.slug)
+
+    def test_cx_staff_signs_in_with_no_tenant_supplied(self):
+        result = self._login(self.cx.email, self.password)
+
+        self.assertIn("access", result)
+        self.assertIsNone(result["school"])
+
+    # ── The scoped path ──────────────────────────────────────────────────────
+
+    def test_correct_tenant_signs_in(self):
+        result = self._login(self.ada.email, self.password, tenant="bright-star")
+
+        self.assertIn("access", result)
+        self.assertEqual(result["tenant"]["slug"], "bright-star")
+
+    def test_cx_staff_may_assert_the_platform_tenant(self):
+        """CX staff sign in at the console; codex is a tenant slug like any other."""
+        result = self._login(self.cx.email, self.password, tenant="codex")
+
+        self.assertIn("access", result)
+        self.assertEqual(result["tenant"]["slug"], "codex")
+
+    def test_tenant_slug_is_matched_case_insensitively(self):
+        result = self._login(self.ada.email, self.password, tenant="  Bright-Star  ")
+
+        self.assertIn("access", result)
+
+    # ── Refusals are indistinguishable from a wrong password ─────────────────
+
+    def _wrong_password_payload(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._login(self.ada.email, "not-her-password", tenant="bright-star")
+        return ctx.exception.args[0]
+
+    def test_wrong_tenant_is_refused_with_the_wrong_password_message(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._login(self.ada.email, self.password, tenant="greenfield")
+
+        self.assertEqual(ctx.exception.args[0], self._wrong_password_payload())
+
+    def test_unknown_tenant_is_refused_with_the_same_message(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._login(self.ada.email, self.password, tenant="no-such-tenant")
+
+        self.assertEqual(ctx.exception.args[0], self._wrong_password_payload())
+
+    def test_suspended_tenant_is_refused_like_an_unknown_one(self):
+        from vs_tenants.models import Tenant
+
+        Tenant.objects.filter(pk=self.greenfield.tenant_id).update(
+            status=Tenant.Status.SUSPENDED,
+        )
+        with self.assertRaises(ValueError) as ctx:
+            self._login(self.ada.email, self.password, tenant="greenfield")
+
+        self.assertEqual(ctx.exception.args[0]["code"], "INVALID_CREDENTIALS")
+
+    def test_wrong_tenant_never_reaches_the_success_path(self):
+        with self.assertRaises(ValueError):
+            self._login(self.ada.email, self.password, tenant="greenfield")
+
+        self.assertFalse(
+            LoginSession.all_objects.filter(user=self.ada).exists(),
+            "a wrong-tenant sign-in must not open a session",
+        )
+
+    # ── What the audit trail may and may not say ─────────────────────────────
+
+    def test_tenant_mismatch_is_its_own_failure_code(self):
+        with self.assertRaises(ValueError):
+            self._login(self.ada.email, self.password, tenant="greenfield")
+        attempt = self._latest_attempt()
+
+        self.assertEqual(attempt.failure_code, "TENANT_MISMATCH")
+        self.assertEqual(attempt.email_entered, self.ada.email)
+
+    def test_wrong_password_keeps_its_own_failure_code(self):
+        with self.assertRaises(ValueError):
+            self._login(self.ada.email, "not-her-password", tenant="bright-star")
+
+        self.assertEqual(self._latest_attempt().failure_code, "INVALID_CREDENTIALS")
+
+    def test_mismatch_audit_row_names_only_the_asserted_tenant(self):
+        """Greenfield's attempt log must not disclose that Ada is at Bright Star."""
+        with self.assertRaises(ValueError):
+            self._login(self.ada.email, self.password, tenant="greenfield")
+        attempt = self._latest_attempt()
+
+        self.assertEqual(attempt.tenant_id, self.greenfield.tenant_id)
+        self.assertNotEqual(attempt.tenant_id, self.bright_star.tenant_id)
+        self.assertIsNone(attempt.user_id)
+
+    def test_unknown_tenant_audit_row_names_no_tenant_at_all(self):
+        with self.assertRaises(ValueError):
+            self._login(self.ada.email, self.password, tenant="no-such-tenant")
+        attempt = self._latest_attempt()
+
+        self.assertIsNone(attempt.tenant_id)
+        self.assertIsNone(attempt.user_id)
+        self.assertEqual(attempt.failure_code, "TENANT_MISMATCH")
+
+    def test_unknown_email_in_a_real_tenant_looks_the_same_as_a_wrong_tenant(self):
+        """Otherwise the failure code is an existence oracle over other tenants."""
+        with self.assertRaises(ValueError):
+            self._login("nobody@example.test", self.password, tenant="greenfield")
+        stranger = self._latest_attempt().failure_code
+
+        with self.assertRaises(ValueError):
+            self._login(self.ada.email, self.password, tenant="greenfield")
+
+        self.assertEqual(stranger, self._latest_attempt().failure_code)
+
+    # ── The view passes it through ───────────────────────────────────────────
+
+    def test_login_endpoint_accepts_and_enforces_the_tenant_field(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        client = APIClient()
+        response = client.post(
+            "/v1/user/auth/login/",
+            {"email": self.ada.email, "password": self.password, "tenant": "greenfield"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 401, response.content)
+        self.assertEqual(response.json()["error"]["code"], "INVALID_CREDENTIALS")
+
+
+class SignInTenantRequiredSwitchTests(TestCase):
+    """Phase 3 flips one constant; nothing else about the services changes."""
+
+    def setUp(self):
+        from django.test import RequestFactory
+
+        self.password = "Str0ng!pass123"
+        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        self.ada = make_school_admin(
+            self.bright_star, email="ada.okoye@example.test", password=self.password,
+        )
+        self.factory = RequestFactory()
+
+    def _login(self, tenant=None):
+        request = self.factory.post("/v1/user/auth/login/")
+        return LoginService.login(
+            self.ada.email, self.password, tenant=tenant, request=request,
+        )
+
+    def test_omitting_the_tenant_is_refused_once_the_switch_is_on(self):
+        with mock.patch(
+            "vs_user.services.sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN", True,
+        ):
+            with self.assertRaises(ValueError) as ctx:
+                self._login()
+
+        self.assertEqual(ctx.exception.args[0]["code"], "INVALID_CREDENTIALS")
+        self.assertEqual(AuthAttempt.all_objects.latest("id").failure_code,
+                         "TENANT_REQUIRED")
+
+    def test_supplying_the_tenant_still_works_once_the_switch_is_on(self):
+        with mock.patch(
+            "vs_user.services.sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN", True,
+        ):
+            result = self._login(tenant="bright-star")
+
+        self.assertIn("access", result)
+
+    def test_reset_without_a_tenant_does_nothing_once_the_switch_is_on(self):
+        from vs_user.models import PasswordResetRequest
+        from vs_user.services.password import PasswordService
+
+        with mock.patch("vs_user.tasks.send_password_reset_email_task"):
+            with mock.patch(
+                "vs_user.services.sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN", True,
+            ):
+                PasswordService.request_reset(email=self.ada.email)
+
+        self.assertFalse(PasswordResetRequest.objects.filter(user=self.ada).exists())
+
+
+class PasswordResetTenantScopeTests(TestCase):
+    """A reset asked for at one tenant must never rewrite another tenant's account."""
+
+    def setUp(self):
+        self.password = "Str0ng!pass123"
+        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+        self.ada = make_school_admin(
+            self.bright_star, email="ada.okoye@example.test", password=self.password,
+        )
+
+    def _request(self, tenant=None):
+        from vs_user.services.password import PasswordService
+
+        with mock.patch("vs_user.tasks.send_password_reset_email_task"):
+            PasswordService.request_reset(email=self.ada.email, tenant=tenant)
+
+    def _resets(self):
+        from vs_user.models import PasswordResetRequest
+
+        return PasswordResetRequest.objects.filter(user=self.ada)
+
+    def test_reset_in_the_right_tenant_creates_the_request(self):
+        self._request(tenant="bright-star")
+
+        self.assertEqual(self._resets().count(), 1)
+
+    def test_reset_in_the_wrong_tenant_touches_nothing(self):
+        self._request(tenant="greenfield")
+
+        self.assertFalse(self._resets().exists())
+
+    def test_reset_in_an_unknown_tenant_touches_nothing(self):
+        self._request(tenant="no-such-tenant")
+
+        self.assertFalse(self._resets().exists())
+
+    def test_reset_with_no_tenant_behaves_as_today(self):
+        self._request()
+
+        self.assertEqual(self._resets().count(), 1)
+
+    def test_reset_endpoint_stays_silent_about_the_wrong_tenant(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        client = APIClient()
+        with mock.patch("vs_user.tasks.send_password_reset_email_task"):
+            response = client.post(
+                "/v1/user/auth/password/reset/request/",
+                {"email": self.ada.email, "tenant": "greenfield"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(self._resets().exists())
+
+
+class BarcodePreviewIsPlatformOnlyTests(TestCase):
+    """The unauthenticated barcode preview answers only for the CodeX tenant.
+
+    Unscoped it was a name-and-existence oracle over every parent, student and
+    teacher on the platform: anyone who could reach the URL could learn whether
+    ada.okoye@example.test held an account, what her account's state was, and -
+    if it was active - her full name.
+    """
+
+    URL = "/v1/user/auth/special_login/preview/"
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        self.ada = make_school_admin(self.bright_star, email="ada.okoye@example.test")
+        self.cx = make_cx_user(email="ops@codex.test")
+        self.client = APIClient()
+
+    def _get(self, email):
+        return self.client.get(self.URL, {"email": email})
+
+    def test_cx_staff_address_still_previews(self):
+        response = self._get(self.cx.email)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["data"]["full_name"], self.cx.full_name)
+
+    def test_customer_tenant_address_is_a_404(self):
+        response = self._get(self.ada.email)
+
+        self.assertEqual(response.status_code, 404, response.content)
+
+    def test_customer_404_is_identical_to_an_unknown_address(self):
+        known = self._get(self.ada.email)
+        unknown = self._get("nobody@example.test")
+
+        self.assertEqual(known.status_code, unknown.status_code)
+        self.assertEqual(
+            known.json()["message"].replace(self.ada.email, "EMAIL"),
+            unknown.json()["message"].replace("nobody@example.test", "EMAIL"),
+        )
+
+    def test_suspended_customer_user_gets_404_not_403(self):
+        """403 would confirm the account exists and disclose its state."""
+        self.ada.status = User.Status.SUSPENDED
+        self.ada.save(update_fields=["status", "updated_at"])
+
+        response = self._get(self.ada.email)
+
+        self.assertEqual(response.status_code, 404, response.content)
+
+    def test_suspended_cx_staff_still_gets_the_status_message(self):
+        self.cx.status = User.Status.SUSPENDED
+        self.cx.save(update_fields=["status", "updated_at"])
+
+        response = self._get(self.cx.email)
+
+        self.assertEqual(response.status_code, 403, response.content)
+        self.assertIn("suspended", response.json()["message"].lower())

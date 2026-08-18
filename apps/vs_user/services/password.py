@@ -14,6 +14,7 @@ from django.utils import timezone
 
 from ..models import User, PasswordResetRequest, AuthEventLog, AccountLockout
 from .audit import log_auth_event, blacklist_all_user_tokens, get_client_ip
+from .sign_in_scope import resolve_sign_in_account
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +43,28 @@ class PasswordService:
         )
 
     @staticmethod
-    def request_reset(email: str, request=None):
+    def request_reset(email: str, tenant: str | None = None, request=None):
         """
         Self-service password reset request.
         Silently does nothing if the email is not found -- prevents enumeration.
-        """
-        user = User.objects.filter(email__iexact=email).first()
 
-        if not user or user.status == User.Status.DEACTIVATED:
+        ``tenant`` is the asserted tenant slug, which the frontend reads off the
+        subdomain the request was made from. It is optional and governed by the
+        same switch as sign-in (``sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN``).
+
+        Scoping matters here for the same reason it matters at sign-in, and the
+        consequence is worse: this endpoint sends a link that CHANGES a
+        password. An unscoped ``.first()`` on an address held at two customers
+        would let a reset asked for at Greenfield rewrite the Bright Star
+        account instead - silently, and looking correct in every log. The
+        refusal stays silent because a reset request must never say whether the
+        address exists, here or anywhere else on the platform.
+        """
+        user, _resolved, scope_failure = resolve_sign_in_account(
+            email=email, tenant=tenant,
+        )
+
+        if scope_failure or not user or user.status == User.Status.DEACTIVATED:
             return  # Do not reveal whether the account exists
 
         PasswordService._create_and_send_reset(

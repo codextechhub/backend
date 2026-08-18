@@ -100,6 +100,11 @@ class PasswordResetRequestView(APIView):
     Always returns 200 regardless of whether the email exists
     - prevents user enumeration.
 
+    Takes the same optional ``tenant`` body key as login (the slug the frontend
+    reads off the subdomain). When present the account is looked up only within
+    that tenant, so a reset asked for at one can never rewrite the password of
+    an account at another.
+
     Permission: AllowAny (public - user may be locked out or forgot password).
     RBAC: identity.user_password.reset
 
@@ -113,9 +118,11 @@ class PasswordResetRequestView(APIView):
         if not ser.is_valid():
             return error_response(message="Invalid request.", error=ser.errors)
 
-        # Service silently does nothing if the email is not found.
+        # Service silently does nothing if the email is not found, or is not
+        # found in the tenant the request named.
         PasswordService.request_reset(
             email=ser.validated_data['email'],
+            tenant=ser.validated_data.get('tenant', ''),
             request=request,
         )
 
