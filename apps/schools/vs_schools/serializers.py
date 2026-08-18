@@ -1176,13 +1176,26 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             after_instance=school,
             exclude_fields=["created_at", "updated_at", "activated_at", "deactivated_at"],
         )
+        # Keyed on the primary key, not the slug. A school's slug is editable
+        # right up to go-live, and a slug-keyed trail splits down the middle
+        # the moment it is corrected: the creation event stays filed under
+        # ``bright-star`` while the rename and everything after it file under
+        # ``bright-star-academy``, so whoever opens the trail for the address
+        # the school actually uses never sees it being created. The pk is the
+        # one identifier a school cannot change.
+        #
+        # The slug still has to be findable, because it is the address people
+        # hold and search on, and it is no longer sitting in ``entity_id``
+        # where the Event Explorer's free-text search would reach it. Naming
+        # it in the summary is the same device the rename event uses.
         emit_audit_event(
             module_key=AuditModuleKey.SCHOOL,
             action_type=AuditActionType.CREATE,
             actor_user=actor,
             entity_type="School",
-            entity_id=str(school.slug),
+            entity_id=str(school.pk),
             entity_label=school.name,
+            summary=f"{school.name} created with sign-in address {school.slug}",
             before_data=_school_snap["before_data"],
             diff_data=_school_snap["diff"],
         )
@@ -1363,7 +1376,11 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
             action_type=AuditActionType.UPDATE,
             actor_user=self.context.get("actor_id"),
             entity_type="School",
-            entity_id=str(instance.slug),
+            # The pk, and emphatically not the slug: this is the one call site
+            # that can change a school's slug, so keying the event on it would
+            # file the rename under the new address and leave everything before
+            # it under the old one. See the create path for the full reasoning.
+            entity_id=str(instance.pk),
             entity_label=instance.name,
             severity=AuditSeverity.WARNING if slug_moved else AuditSeverity.INFO,
             summary=summary,
@@ -1455,7 +1472,9 @@ class SchoolResetConfigSerializer(serializers.Serializer):
             action_type=AuditActionType.CONFIG_CHANGED,
             actor_user=self.context.get("actor_id"),
             entity_type="School",
-            entity_id=str(school.slug),
+            # Same key as the create and update paths, so a reset lands on the
+            # school's one trail rather than starting a second one.
+            entity_id=str(school.pk),
             entity_label=school.name,
             severity=AuditSeverity.WARNING,
             summary=f"Configuration reset for {school.name}: branding cleared",

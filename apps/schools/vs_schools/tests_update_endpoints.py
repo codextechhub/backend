@@ -27,6 +27,7 @@ from vs_audit.models import (
     AuditActorType,
     AuditEvent,
     AuditSeverity,
+    EntityAuditTrail,
 )
 from vs_rbac.tests.helpers import make_branch, make_school, make_vision_user
 from vs_tenants.models import Branch, BranchStatus, Tenant
@@ -491,7 +492,7 @@ class SchoolUpdateAuditTests(TestCase):
             event.diff_data["slug"],
             {"before": "bright-star", "after": "bright-star-academy"},
         )
-        self.assertEqual(event.entity_id, "bright-star-academy")
+        self.assertEqual(event.entity_id, str(school.pk))
         self.assertEqual(event.entity_label, "Bright Star Academy")
 
     def test_the_summary_names_the_address_the_school_left(self):
@@ -645,6 +646,222 @@ class SchoolResetConfigAuditTests(TestCase):
             entity_type="School", action_type=AuditActionType.CONFIG_CHANGED,
         )
         self.assertEqual(event.actor_user_id, self.vision_user.id)
-        self.assertEqual(event.entity_id, "reset-school")
+        self.assertEqual(event.entity_id, str(school.pk))
         self.assertEqual(event.before_data["logo"], "school_logos/reset.png")
         self.assertEqual(event.metadata["reason"], "Rebrand")
+
+
+class SchoolTrailIsKeyedOnThePrimaryKeyTests(TestCase):
+    """One school, one trail, whatever its address happens to be.
+
+    School audit events used to be filed under the slug, which matched the
+    creation path and read well in the Event Explorer. It stopped being safe at
+    0699ada, when the slug became editable before go-live: correcting Bright
+    Star's address from ``bright-star`` to ``bright-star-academy`` split its
+    history in two, and the half containing the school's own creation was left
+    filed under an address nobody would ever look up again.
+
+    These tests drive the real endpoints end to end - create, rename, reset -
+    because the defect was only visible across all three.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="trail-key@example.com", super_admin=True,
+        )
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        return client
+
+    def _create_school(self, *, name="Bright Star", slug="bright-star"):
+        """Create a school the way the wizard does, main branch and all."""
+        response = self._client().post(
+            reverse("school-create"),
+            {
+                "name": name,
+                "slug": slug,
+                "status": SchoolStatus.PENDING,
+                "branches": [{
+                    "name": f"{name} Main Campus",
+                    "_type": "Main",
+                    "state": "Lagos",
+                    "is_main": True,
+                    "primary_admin_data": {
+                        "full_name": f"{name} Head",
+                        "email": f"head@{slug}.test",
+                    },
+                }],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        return School.objects.get(slug=slug)
+
+    def _rename(self, school, new_slug):
+        response = self._client().patch(
+            reverse("school-update", kwargs={"slug": school.slug}),
+            {"slug": new_slug}, format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        school.refresh_from_db()
+        return school
+
+    def _reset_config(self, school):
+        response = self._client().post(
+            reverse("school-reset-config", kwargs={"slug": school.slug}),
+            {"confirmation_token": "RESET", "reason": "Rebrand"}, format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def _school_events(self):
+        return AuditEvent.objects.filter(entity_type="School").order_by("event_at")
+
+    # --- the one identifier a school cannot change --------------------------
+
+    def test_creation_update_and_reset_all_share_one_entity_id(self):
+        school = self._create_school()
+        SchoolBranding.objects.create(school=school, logo="school_logos/bs.png")
+        self._rename(school, "bright-star-academy")
+        self._reset_config(school)
+
+        events = list(self._school_events())
+        self.assertEqual(
+            [e.action_type for e in events],
+            [
+                AuditActionType.CREATE,
+                AuditActionType.UPDATE,
+                AuditActionType.CONFIG_CHANGED,
+            ],
+        )
+        self.assertEqual({e.entity_id for e in events}, {str(school.pk)})
+
+    def test_a_rename_leaves_the_trail_unbroken(self):
+        """The whole point: the events on either side of the rename are one
+        query, not two, and neither address is a key any more."""
+        school = self._create_school()
+        self._rename(school, "bright-star-academy")
+
+        together = AuditEvent.objects.filter(
+            entity_type="School", entity_id=str(school.pk),
+        )
+        self.assertEqual(together.count(), 2)
+        self.assertEqual(
+            {e.action_type for e in together},
+            {AuditActionType.CREATE, AuditActionType.UPDATE},
+        )
+        self.assertFalse(
+            AuditEvent.objects.filter(
+                entity_type="School",
+                entity_id__in=["bright-star", "bright-star-academy"],
+            ).exists()
+        )
+
+    def test_the_trail_endpoint_returns_both_sides_of_the_rename(self):
+        """Proved through the endpoint the console actually calls, since that
+        is where a split trail would have shown up as a missing creation."""
+        school = self._create_school()
+        self._rename(school, "bright-star-academy")
+
+        response = self._client().get(
+            reverse(
+                "entity-audit-trail-detail",
+                kwargs={"entity_type": "School", "entity_id": str(school.pk)},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        payload = response.data["data"]
+        self.assertEqual(payload["trail"]["event_count"], 2)
+        self.assertEqual(
+            {e["action_type"] for e in payload["events"]},
+            {AuditActionType.CREATE, AuditActionType.UPDATE},
+        )
+
+    def test_the_old_address_is_no_longer_a_trail_of_its_own(self):
+        school = self._create_school()
+        self._rename(school, "bright-star-academy")
+
+        self.assertEqual(
+            EntityAuditTrail.objects.filter(entity_type="School").count(), 1,
+        )
+        response = self._client().get(
+            reverse(
+                "entity-audit-trail-detail",
+                kwargs={"entity_type": "School", "entity_id": "bright-star"},
+            )
+        )
+        self.assertEqual(response.status_code, 404)
+
+    # --- and it still reads as a school, not as a number --------------------
+
+    def test_entity_label_still_carries_the_readable_name_after_a_rename(self):
+        school = self._create_school(name="Bright Star Academy")
+        self._rename(school, "bright-star-academy")
+
+        self.assertEqual(
+            {e.entity_label for e in self._school_events()}, {"Bright Star Academy"},
+        )
+        trail = EntityAuditTrail.objects.get(
+            entity_type="School", entity_id=str(school.pk),
+        )
+        self.assertEqual(trail.entity_label, "Bright Star Academy")
+
+    def test_the_creation_summary_still_names_the_sign_in_address(self):
+        """``entity_id`` used to be the slug, and the Event Explorer searches
+        it. Moving to the pk would have made the address unfindable on the one
+        event that records where it came from, so the summary carries it."""
+        school = self._create_school(slug="bright-star")
+
+        event = self._school_events().get(action_type=AuditActionType.CREATE)
+        self.assertIn("bright-star", event.summary)
+        self.assertIn("Bright Star", event.summary)
+
+    def test_a_stale_trail_label_is_refreshed_by_the_next_event(self):
+        """With an opaque pk in ``entity_id`` the label is the only human
+        handle on a trail row, so it may not be written once and frozen."""
+        school = self._create_school()
+        trail = EntityAuditTrail.objects.get(
+            entity_type="School", entity_id=str(school.pk),
+        )
+        EntityAuditTrail.objects.filter(pk=trail.pk).update(entity_label="Stale Name")
+
+        self._rename(school, "bright-star-academy")
+
+        trail.refresh_from_db()
+        self.assertEqual(trail.entity_label, "Bright Star")
+
+    # --- the trail row itself ----------------------------------------------
+
+    def test_the_trail_row_is_the_same_row_before_and_after_a_rename(self):
+        school = self._create_school()
+        trail_before = EntityAuditTrail.objects.get(
+            entity_type="School", entity_id=str(school.pk),
+        )
+        self.assertEqual(trail_before.event_count, 1)
+
+        self._rename(school, "bright-star-academy")
+
+        trail_after = EntityAuditTrail.objects.get(
+            entity_type="School", entity_id=str(school.pk),
+        )
+        self.assertEqual(trail_after.pk, trail_before.pk)
+        self.assertEqual(trail_after.event_count, 2)
+        self.assertEqual(trail_after.first_event_at, trail_before.first_event_at)
+        self.assertGreater(trail_after.last_event_at, trail_before.last_event_at)
+
+    def test_two_schools_never_share_a_trail(self):
+        """A single-school test proves nothing here: the key has to separate
+        schools as reliably as it joins one school's own history."""
+        first = self._create_school(name="Bright Star", slug="bright-star")
+        second = self._create_school(name="Greenfield", slug="greenfield")
+
+        self.assertNotEqual(str(first.pk), str(second.pk))
+        trails = EntityAuditTrail.objects.filter(entity_type="School")
+        self.assertEqual(trails.count(), 2)
+        self.assertEqual(
+            set(trails.values_list("entity_label", flat=True)),
+            {"Bright Star", "Greenfield"},
+        )

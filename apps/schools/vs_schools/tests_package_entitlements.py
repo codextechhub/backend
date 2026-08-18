@@ -311,7 +311,7 @@ class SchoolPackageEntitlementTests(TestCase):
 
         self.assertTrue(
             AuditEvent.objects.filter(
-                entity_type="School", entity_id=school.slug,
+                entity_type="School", entity_id=str(school.pk),
                 actor_user=self.vision_user,
             ).exists()
         )

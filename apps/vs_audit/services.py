@@ -174,6 +174,15 @@ def emit_audit_event(
                 entity_id=str(entity_id),
                 defaults={"entity_label": entity_label or ""},
             )
+            # The label was previously written once and never revisited, which
+            # was survivable only while entity_id was itself readable. It is
+            # not: a trail keyed on a primary key shows an opaque number, and
+            # the label is the only human handle on the row. Left frozen, the
+            # trail list would still be offering "Bright Star" long after the
+            # school became "Bright Star Academy". Costs no extra query -
+            # register_event's save carries the field.
+            if entity_label and trail.entity_label != entity_label:
+                trail.entity_label = entity_label
             trail.register_event(event)
 
         return event
