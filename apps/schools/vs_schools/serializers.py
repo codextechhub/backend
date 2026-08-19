@@ -565,7 +565,6 @@ class BranchCreateSerializer(serializers.ModelSerializer):
                 admin_link=admin_link,
                 school=school,
                 branch=branch,
-                user_type="BRANCH_ADMIN",
                 role=branch_admin_role.key if branch_admin_role else "",
                 actor=self.context.get("actor_id"),
             )
@@ -1075,7 +1074,6 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 admin_link=school_admin_link,
                 school=school,
                 branch=None,
-                user_type="SCHOOL_ADMIN",
                 role=school_admin_role.key if school_admin_role else "",
                 actor=actor,
             )
@@ -1136,7 +1134,6 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                         admin_link=branch_admin_link,
                         school=school,
                         branch=branch,
-                        user_type="BRANCH_ADMIN",
                         role=branch_admin_role.key if branch_admin_role else "",
                         actor=actor,
                     )

@@ -23,13 +23,40 @@ class ImpersonationSessionSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def _staff_type_label(user):
+        """Who an operator is looking at, in the words they would use.
+
+        For a CX hire the persona still says something real - CX_STAFF survives
+        and means "works for the platform, not for a school".
+
+        For anyone inside a tenant it no longer does. This label used to read
+        "School Admin", and it was only ever informative because that persona
+        existed; every tenant user is ``STAFF`` now, and a proxy log reading
+        "CX Staff proxied Staff" cannot tell a reviewer whether a CS lead
+        stepped into Corona's principal or into a Year 4 teacher. The role is
+        what separates those two people, so it is what the label names.
+
+        This is a caption, not a gate: nothing here decides what anyone may do.
+
+        Reads the ``_active_proxy_roles`` prefetch when the list view supplied
+        one, so this costs no extra query per row.
+        """
         assignments = getattr(user, "_active_proxy_roles", None)
         if assignments is None:
             assignments = user.tenant_role_assignments.select_related("role").filter(
                 assignment_status="ACTIVE",
             )
+        assignments = list(assignments)
         if any(assignment.role.key.startswith("xvs_") for assignment in assignments):
             return "XVS Staff"
+        if user.user_type != user.UserType.CX_STAFF:
+            names = sorted(
+                {a.role.name for a in assignments if a.role.name}
+            )
+            if names:
+                return ", ".join(names)
+        # A CX hire, or a tenant account that holds no active role yet. The
+        # persona is the only thing left to say, and for the first of those it
+        # is also the right thing to say.
         return user.get_user_type_display()
 
     def get_staff_type_label(self, obj):

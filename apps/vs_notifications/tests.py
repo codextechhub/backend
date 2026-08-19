@@ -97,7 +97,7 @@ class _NotifFixture(TestCase):
 
         # School-scoped admin in school A, granted the settings permission.
         self.admin_a = User.objects.create_user(
-            email="admin-a@test.com", password="x", user_type="SCHOOL_ADMIN",
+            email="admin-a@test.com", password="x", user_type="STAFF",
             status="ACTIVE", first_name="Ada", last_name="Admin", tenant=self.school_a.tenant,
         )
         _grant_school_permission(
@@ -106,7 +106,7 @@ class _NotifFixture(TestCase):
 
         # A plain school user with no RBAC grants (for 403 tests).
         self.plain_a = User.objects.create_user(
-            email="plain-a@test.com", password="x", user_type="SCHOOL_ADMIN",
+            email="plain-a@test.com", password="x", user_type="STAFF",
             status="ACTIVE", first_name="Peter", last_name="Plain", tenant=self.school_a.tenant,
         )
 
@@ -1428,7 +1428,7 @@ class PendingTenantInboxAccessTests(_NotifFixture):
         self.assertEqual(self.pending_tenant.status, Tenant.Status.PENDING)
 
         self.pending_admin = User.objects.create_user(
-            email="pending-admin@test.com", password="x", user_type="SCHOOL_ADMIN",
+            email="pending-admin@test.com", password="x", user_type="STAFF",
             status="ACTIVE", first_name="Pat", last_name="Pending",
             tenant=self.pending_tenant,
         )

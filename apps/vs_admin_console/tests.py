@@ -142,6 +142,29 @@ class ImpersonationStartTests(ImpersonationTestBase):
         self.assertEqual(resp.status_code, 403)
         self.assertFalse(ImpersonationSession.objects.exists())
 
+    def test_the_target_is_labelled_by_role_not_by_persona(self):
+        """"Staff proxied Staff" is not an audit trail anybody can review.
+
+        A CS lead proxying Corona's principal and a CS lead proxying a Year 4
+        teacher are the same row if the label reads the persona, because both
+        people are STAFF. The role is the only thing that still tells them
+        apart, so it is what the label carries.
+        """
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+
+        role = TenantRoleTemplate.objects.create(
+            tenant=self.school.tenant, key="principal",
+            name="Principal", status="ACTIVE",
+        )
+        TenantUserRoleAssignment.objects.create(
+            tenant=self.school.tenant, user=self.target, role=role,
+            assignment_status="ACTIVE",
+        )
+
+        payload = self.start_session().json()["data"]
+
+        self.assertEqual(payload["target_type_label"], "Principal")
+
     def test_start_creates_active_session(self):
         from vs_audit.models import AuditEvent
 
@@ -156,7 +179,10 @@ class ImpersonationStartTests(ImpersonationTestBase):
         self.assertEqual(payload["tenant_name"], self.school.tenant.name)
         self.assertEqual(payload["tenant_slug"], self.school.tenant.slug)
         self.assertEqual(payload["staff_type_label"], "CX Staff")
-        self.assertEqual(payload["target_type_label"], "School Admin")
+        # The persona no longer distinguishes anybody at a school - every one
+        # of them is STAFF - so the label names the role, which is what a
+        # reviewer reading a proxy log actually needs to know.
+        self.assertEqual(payload["target_type_label"], "Staff")
         event = AuditEvent.objects.get(
             impersonation_session=session, action_type="IMPERSONATION_STARTED",
         )

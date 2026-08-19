@@ -154,9 +154,13 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     # ── Choices ──────────────────────────────────────────────────────────────
 
     class UserType(models.TextChoices):
+        # A staff member is a staff member. What separated a "school admin", a
+        # principal and a teacher was never the persona - it was the
+        # permissions in their role - so the two admin personas are gone and
+        # everyone who works at a tenant is STAFF. Reach (whole-school versus
+        # one branch) is carried by the role assignment's branch, which is what
+        # ``vs_rbac.scoping.visible_branch_ids`` already reads.
         CX_STAFF          = 'CX_STAFF',      'CX Staff'
-        SCHOOL_ADMIN      = 'SCHOOL_ADMIN',  'School Admin'
-        BRANCH_ADMIN      = 'BRANCH_ADMIN',  'Branch Admin'
         STAFF             = 'STAFF',         'Staff'
         STUDENT           = 'STUDENT',       'Student'
         PARENT            = 'PARENT',        'Parent/Guardian'
@@ -187,7 +191,11 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     branch = models.ForeignKey(
         Branch, on_delete=models.PROTECT,
         related_name='users', null=True, blank=True,
-        help_text='NULL for Vision Staff and School Admins.',
+        help_text=(
+            'The one branch this person is posted to. NULL means "across the '
+            'whole tenant" for a tenant user, and is the only legal value for '
+            'Vision Staff, who belong to no tenant branch at all.'
+        ),
     )
 
     # ── Identity ──────────────────────────────────────────────────────────────
@@ -257,21 +265,31 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     class Meta:
         db_table = 'vs_users_user'
         constraints = [
-            # Vision Staff must not be bound to any branch.
+            # The whole of the branch rule, in one place.
+            #
+            # Vision Staff must not be bound to any branch: they work for the
+            # platform, and the platform tenant owns no branches for them to be
+            # bound to. Every tenant user MAY carry one, and a NULL means
+            # "across the whole tenant" - the same first-class value the
+            # academic structure and procurement documents already use. It does
+            # not mean "no branches exist".
+            #
+            # There is deliberately no companion constraint requiring a branch.
+            # There used to be (ck_branch_required_for_branch_level_users), and
+            # it existed only to make SCHOOL_ADMIN the one persona allowed to be
+            # school-wide. With the admin personas gone, school-wide reach is a
+            # property of the role assignment, not of the persona, and any
+            # tenant user can legitimately hold it.
+            #
+            # ``User.branch_assignment_error`` states this same rule for Python,
+            # and ``clean()`` and ``UserCreateSerializer`` both consult it, so
+            # the database and the application cannot drift apart.
             models.CheckConstraint(
                 condition=(
                     Q(user_type='CX_STAFF', branch__isnull=True)
                     | ~Q(user_type='CX_STAFF')
                 ),
                 name='ck_vision_staff_no_branch',
-            ),
-            # Branch-level user types must have a branch.
-            models.CheckConstraint(
-                condition=(
-                    Q(user_type__in=['CX_STAFF', 'SCHOOL_ADMIN'])
-                    | Q(branch__isnull=False)
-                ),
-                name='ck_branch_required_for_branch_level_users',
             ),
             # uid is unique within each tenant for tenant-scoped (non-CX) users.
             models.UniqueConstraint(
@@ -329,14 +347,32 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     # ── Validation ────────────────────────────────────────────────────────────
 
+    @classmethod
+    def branch_assignment_error(cls, user_type, has_branch: bool) -> str | None:
+        """The branch rule, stated once, for every writer to consult.
+
+        Returns the refusal in words, or ``None`` when the pairing is legal.
+
+        It used to be written four times - in two check constraints, in
+        ``clean()`` and in ``UserCreateSerializer.validate`` - and each copy had
+        to name SCHOOL_ADMIN as the one persona allowed to be school-wide. With
+        the admin personas gone there is one rule left, and it is short: Vision
+        Staff take no branch, and everybody else may or may not have one.
+
+        Takes ``has_branch`` as a bool rather than the branch itself so a caller
+        holding only an unresolved reference - the create serializer, which must
+        judge CX staff before it looks a branch up - can ask the same question
+        as a caller holding a saved row.
+        """
+        if user_type == cls.UserType.CX_STAFF and has_branch:
+            return 'Vision Staff must not be assigned to a branch.'
+        return None
+
     def clean(self):
         super().clean()
-        if self.user_type != self.UserType.CX_STAFF:
-            if self.user_type not in (self.UserType.SCHOOL_ADMIN,) and not self.branch_id:
-                raise ValidationError(f'{self.user_type} must be assigned to a branch.')
-        if self.user_type == self.UserType.CX_STAFF:
-            if self.branch_id:
-                raise ValidationError('Vision Staff must not be assigned to a branch.')
+        error = self.branch_assignment_error(self.user_type, bool(self.branch_id))
+        if error:
+            raise ValidationError(error)
         self._guard_cross_tenant_email()
 
     def validate_unique(self, exclude=None):
@@ -433,9 +469,18 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
         Branch-bound users inherit their branch's own tenant; CX Staff fall
         back to the Codex PLATFORM tenant. Runs from both full_clean() and
-        save() so validation and persistence agree on the derived value. A
-        non-CX user created with neither an explicit tenant nor a branch is
-        left with a null tenant so full_clean() fails loudly (tenant required).
+        save() so validation and persistence agree on the derived value.
+
+        A tenant user with no branch has nothing to derive from, and there is
+        no honest guess to make: the account could belong to any tenant on the
+        platform, and picking one would put a person inside a customer they
+        have no business being in. That shape used to be rare - only a
+        SCHOOL_ADMIN could be branchless - but any tenant user may be
+        school-wide now, so the caller MUST pass ``tenant=``. The instance is
+        left with a null tenant here and refused: ``full_clean()`` reports it
+        as ``{'tenant': ['This field cannot be null.']}``, and ``save()``
+        raises rather than reaching the database, where it would surface as an
+        IntegrityError naming a column instead of the mistake.
         """
         if self.tenant_id:
             return
@@ -474,6 +519,12 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     def save(self, *args, **kwargs):
         self._derive_tenant()  # backstop for saves that skip full_clean()
         self._normalize_email()  # ditto - every write lands lowercase
+        if not self.tenant_id:
+            # See _derive_tenant: nothing to infer one from, and no safe guess.
+            raise ValidationError({'tenant': [
+                'A tenant is required. A user with no branch cannot have one '
+                'derived, so it must be supplied.'
+            ]})
         if self.branch_id and self.branch.tenant_id != self.tenant_id:
             raise ValidationError("User branch must belong to the user's tenant.")
         # Backstop for the many writers that never call full_clean().

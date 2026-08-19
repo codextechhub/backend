@@ -173,8 +173,9 @@ class SchoolPermissionGroupSeedTests(TestCase):
 
         school = make_school(slug="riverbank", name="Riverbank School")
         branch = make_branch(school, name="Main Campus")
-        # STAFF, not SCHOOL_ADMIN. The whole point of the catalogue is that the
-        # role carries the authority, so the fixture must not lean on a persona.
+        # An ordinary STAFF account. The whole point of the catalogue is that
+        # the role carries the authority, and there is no admin persona left to
+        # lean on even if the fixture wanted one.
         admin = make_staff_user(branch, email="head@riverbank.test")
         role = provision_role_from_prebuilt(
             tenant=school.tenant, prebuilt_key="school_admin",

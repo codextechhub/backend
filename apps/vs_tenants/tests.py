@@ -35,7 +35,7 @@ class TenantFoundationTests(TestCase):
         )
         self.user = User.objects.create_user(
             email="admin@cedar.test", password="pw", first_name="Ada", last_name="Okafor",
-            user_type=User.UserType.SCHOOL_ADMIN, tenant=self.school.tenant,
+            user_type=User.UserType.STAFF, tenant=self.school.tenant,
             status=User.Status.ACTIVE, is_active=True,
         )
 

@@ -7733,7 +7733,7 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
     def _make_approver(self, email="apr-jaw@test.com"):
         """A school user holding finance.journal.approve at self.school."""
         user = self.User.objects.create_user(
-            email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
+            email=email, password="pw", user_type="STAFF", status="ACTIVE",
             first_name="Apro", last_name="Ver", tenant=self.school.tenant,
         )
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
@@ -8056,7 +8056,7 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
     # Support the make approver workflow.
     def _make_approver(self, email="apr-raw@test.com"):
         user = self.User.objects.create_user(
-            email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
+            email=email, password="pw", user_type="STAFF", status="ACTIVE",
             first_name="Apro", last_name="Ver", tenant=self.school.tenant,
         )
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
@@ -8376,7 +8376,7 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
     # Support the make approver workflow.
     def _make_approver(self, email="apr-woa@test.com"):
         user = self.User.objects.create_user(
-            email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
+            email=email, password="pw", user_type="STAFF", status="ACTIVE",
             first_name="Apro", last_name="Ver", tenant=self.school.tenant,
         )
         role, _ = self.TenantRoleTemplate.objects.get_or_create(

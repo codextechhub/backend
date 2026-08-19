@@ -415,10 +415,14 @@ class Command(BaseCommand):
                 return user
 
             users = {"admins": [], "branch_admins": [], "staff": [], "students": [], "parents": []}
-            users["admins"].append(mk(f"admin@{domain}", "Amaka", school.code.title(), "SCHOOL_ADMIN", main))
+            # The school administrator is posted school-wide: branch=None is a
+            # real posting meaning "every campus", not a missing one. Everyone
+            # who works at a school is STAFF now; what separates this person
+            # from a teacher is the role assigned in _rbac below, not a persona.
+            users["admins"].append(mk(f"admin@{domain}", "Amaka", school.code.title(), "STAFF", None))
             for i, br in enumerate(branches):
                 users["branch_admins"].append(
-                    mk(f"branch{i + 1}.admin@{domain}", first_names[i], "Balogun", "BRANCH_ADMIN", br)
+                    mk(f"branch{i + 1}.admin@{domain}", first_names[i], "Balogun", "STAFF", br)
                 )
             for i in range(3):
                 users["staff"].append(
@@ -683,9 +687,20 @@ class Command(BaseCommand):
         cs_lead = staff[2] if len(staff) > 2 else staff[0]
         target_school = schools[0] if schools else None
         if target_school is not None:
-            target_user = User.objects.filter(
-                tenant=target_school.tenant, user_type="SCHOOL_ADMIN"
-            ).first()
+            # Whom a CS lead would proxy is a question about authority, and
+            # authority is the role. Asking user_type used to answer it only
+            # because SCHOOL_ADMIN happened to exist; STAFF says nothing, and
+            # would have picked a random teacher.
+            target_user = (
+                User.objects.filter(
+                    tenant=target_school.tenant,
+                    tenant_role_assignments__tenant=target_school.tenant,
+                    tenant_role_assignments__role__name__iexact="School Administrator",
+                    tenant_role_assignments__assignment_status="ACTIVE",
+                )
+                .order_by("email")
+                .first()
+            )
             if target_user and not ImpersonationSession.objects.filter(
                 staff_user=cs_lead, tenant=target_school.tenant
             ).exists():

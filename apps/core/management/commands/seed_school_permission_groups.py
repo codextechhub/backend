@@ -32,8 +32,8 @@ Reach: school-wide versus branch-scopable
 
 Each group declares a ``reach``, and its description says it out loud in the
 first two words, because this is the distinction the ``SCHOOL_ADMIN`` and
-``BRANCH_ADMIN`` user types have been standing in for and nothing else in the
-schema records.
+``BRANCH_ADMIN`` user types used to stand in for. Those personas are gone, and
+nothing else in the schema records the distinction.
 
 ``SCHOOL_WIDE``
     The key is only meaningful for the whole school. There is one role
@@ -258,9 +258,11 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
 ]
 
 
-#: Every key the school catalogue calls school-wide, flattened. The follow-on
-#: work that removes ``User.UserType.SCHOOL_ADMIN`` and ``BRANCH_ADMIN`` needs
-#: exactly this split, so it is exported rather than left implicit in the table.
+#: Every key the school catalogue calls school-wide, flattened. This is the
+#: split that survived the removal of ``User.UserType.SCHOOL_ADMIN`` and
+#: ``BRANCH_ADMIN``: it says which keys are meaningless when pinned to one
+#: branch, which is the only thing those two personas ever really recorded. It
+#: is exported rather than left implicit in the table.
 SCHOOL_WIDE_KEYS: frozenset[str] = frozenset(
     key
     for _name, reach, _description, keys in SCHOOL_PERMISSION_GROUPS

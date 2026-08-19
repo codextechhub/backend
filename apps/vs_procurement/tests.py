@@ -9999,8 +9999,9 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=tenant, branch=branch,
-            # SCHOOL_ADMIN is the branch-optional user type; STAFF must have one.
-            user_type="STAFF" if branch is not None else "SCHOOL_ADMIN",
+            # One persona either way: a null branch is a school-wide posting,
+            # not a different kind of person.
+            user_type="STAFF",
             status="ACTIVE", first_name="Branch", last_name="Tester",
         )
         client = TenantAPIClient(user=user)
@@ -10558,8 +10559,9 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
 
         return get_user_model().objects.create_user(
             email=email, password="pw", tenant=tenant, branch=branch,
-            # SCHOOL_ADMIN is the branch-optional user type; STAFF must have one.
-            user_type="STAFF" if branch is not None else "SCHOOL_ADMIN",
+            # One persona either way: a null branch is a school-wide posting,
+            # not a different kind of person.
+            user_type="STAFF",
             status="ACTIVE", first_name=first_name, last_name="Tester",
         )
 

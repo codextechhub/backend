@@ -284,11 +284,13 @@ class UserCreateSerializer(serializers.Serializer):
         if not user_type:
             # Default the created user's persona from the ACTOR's tenant kind:
             # a platform-tenant actor provisions internal staff, everyone else
-            # provisions a school admin. (Tenant-kind, not user_type, decides.)
+            # provisions a tenant staff member. (Tenant-kind, not user_type,
+            # decides.) The default used to be SCHOOL_ADMIN, which read as a
+            # grant of authority and was never one - the role carries that.
             if getattr(actor.tenant, 'kind', None) == Tenant.Kind.PLATFORM:
                 user_type = User.UserType.CX_STAFF
             else:
-                user_type = User.UserType.SCHOOL_ADMIN
+                user_type = User.UserType.STAFF
 
         attrs['user_type'] = user_type
 
@@ -313,24 +315,24 @@ class UserCreateSerializer(serializers.Serializer):
         else:
             target_tenant = getattr(self.context['request'], 'tenant', None) or actor.tenant
 
-        # Vision Staff must not have a branch. Judged on the raw reference, not
-        # a resolved row: the platform tenant owns no branches, so resolving
+        # The branch rule, asked of the model so there is one statement of it -
+        # see User.branch_assignment_error. Judged on the raw reference, not a
+        # resolved row: the platform tenant owns no branches, so resolving
         # first would answer "no such branch" and hide the real reason.
         if user_type == User.UserType.CX_STAFF:
-            if branch_ref not in (None, ''):
-                raise serializers.ValidationError(
-                    {'user_type': 'Vision Staff accounts cannot be assigned to a branch.'}
-                )
+            error = User.branch_assignment_error(
+                user_type, branch_ref not in (None, ''),
+            )
+            if error:
+                raise serializers.ValidationError({'user_type': error})
             attrs['branch'] = None
         else:
             # Raises a validation error - never a model-level exception or a
             # database error - for an unknown, foreign or malformed reference.
+            # A tenant user may leave it out: a null branch means the person
+            # works across the whole tenant, which is a real posting and not a
+            # missing one.
             attrs['branch'] = resolve_branch_reference(target_tenant, branch_ref)
-            # Branch-level users must have a branch.
-            if user_type not in (User.UserType.SCHOOL_ADMIN,) and not attrs['branch']:
-                raise serializers.ValidationError(
-                    {'branch': f'User type {user_type} must be assigned to a branch.'}
-                )
 
         attrs['tenant'] = target_tenant
 

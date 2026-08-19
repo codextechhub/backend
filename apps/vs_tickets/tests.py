@@ -737,11 +737,11 @@ class TicketBranchTenantGuardTests(TestCase):
             "guard.requester@alpha.test", "Gina", "Guard",
             user_type=User.UserType.STAFF, branch=cls.branch,
         )
-        # SCHOOL_ADMIN, not STAFF: a branch-level user must have a branch, and
-        # this tenant has none - which is exactly the shape being tested.
+        # STAFF with no branch: this tenant owns no branches, and a null
+        # branch is a legal school-wide posting - which is the shape tested.
         cls.branchless_requester = User.objects.create_user(
             email="guard.solo@solo.test", first_name="Solo", last_name="Guard",
-            user_type=User.UserType.SCHOOL_ADMIN, status=User.Status.ACTIVE,
+            user_type=User.UserType.STAFF, status=User.Status.ACTIVE,
             tenant=cls.branchless.tenant,
         )
 

@@ -69,10 +69,8 @@ class _BranchGrantFixture(TestCase):
 
     def person(self, tenant, email, *, branch=None):
         """A user of ``tenant``; ``branch`` is their legacy home posting."""
-        return make_staff_user(
-            branch, email=email, tenant=tenant,
-            user_type="STAFF" if branch is not None else "SCHOOL_ADMIN",
-        )
+        # No branch is a school-wide posting, and the same STAFF persona.
+        return make_staff_user(branch, email=email, tenant=tenant)
 
 
 class BranchScopedGrantAccessTests(_BranchGrantFixture):

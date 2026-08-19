@@ -34,8 +34,7 @@ def provision_admin_user(
     contact,       # ContactInfo instance
     admin_link,    # BranchPrimaryAdmin or SchoolPrimaryAdmin instance
     school,        # School instance (always required)
-    branch,        # Branch instance or None (required for BRANCH_ADMIN)
-    user_type: str,   # 'SCHOOL_ADMIN' or 'BRANCH_ADMIN'
+    branch,        # Branch instance, or None for a school-wide posting
     role: str = "",   # TenantRoleTemplate key for the tenant role assignment
     actor,         # the requesting User (invited_by); may be None for system
 ):
@@ -44,6 +43,13 @@ def provision_admin_user(
 
     Wrapped in its own savepoint so a failure here (e.g. duplicate email from a
     concurrent request) is isolated and never rolls back the parent transaction.
+
+    The account is created as ordinary ``STAFF``. It used to take a
+    ``user_type`` of 'SCHOOL_ADMIN' or 'BRANCH_ADMIN' from the caller, and the
+    two said nothing the rest of the arguments did not already say: the reach is
+    ``branch`` (a branch, or None for the whole school) and the authority is
+    ``role``. A persona that mirrors two other arguments is a third copy of the
+    truth waiting to disagree with them, so it is gone.
     """
     from vs_user.email_normalization import normalize_email
     from vs_user.models import User
@@ -95,7 +101,7 @@ def provision_admin_user(
                 if role else None
             )
 
-            # A school admin or branch admin without a role is a half-broken
+            # An administrator without a role is a half-broken
             # account: they receive the invitation email, activate it, and
             # then can do nothing. Fail loud here instead of silently creating
             # the user and dispatching the email - the outer savepoint will
@@ -104,7 +110,7 @@ def provision_admin_user(
             # seeded, or the tenant's TenantRoleTemplate is missing).
             if not role_obj:
                 raise ValueError(
-                    f"Refusing to provision {email} ({user_type}) without a role assignment. "
+                    f"Refusing to provision {email} without a role assignment. "
                     f"Expected TenantRoleTemplate key={role!r} on tenant {getattr(tenant, 'slug', tenant)}."
                 )
 
@@ -115,7 +121,7 @@ def provision_admin_user(
                 last_name=last_name,
                 gender="",
                 phone=getattr(contact, "phone", "") or "",
-                user_type=user_type,
+                user_type=User.UserType.STAFF,
                 role=role_obj.name,
                 tenant=tenant,
                 branch=branch,
@@ -153,9 +159,11 @@ def provision_admin_user(
             admin_link.save(update_fields=["invite_status", "invite_sent_at"])
 
             logger.info(
-                "provision_admin_user: created User %s (type=%s) and dispatched invite",
+                "provision_admin_user: created User %s (role=%s, branch=%s) "
+                "and dispatched invite",
                 email,
-                user_type,
+                role_obj.key,
+                getattr(branch, "pk", None),
             )
             return user
 

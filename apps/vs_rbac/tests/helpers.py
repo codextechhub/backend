@@ -118,8 +118,15 @@ def make_vision_user(email="vision@test.com", password="testpass123",
 
 
 def make_school_admin(branch, email="admin@test.com", password="testpass123", **kwargs):
+    """A tenant staff account. The name says what the fixture is *for*.
+
+    There is no SCHOOL_ADMIN persona any more - a principal and a teacher are
+    both STAFF, and their roles separate them - so this differs from
+    ``make_staff_user`` only in the name it gives the person. Callers that want
+    school-wide reach pass ``branch=None``.
+    """
     defaults = {
-        "user_type": "SCHOOL_ADMIN",
+        "user_type": "STAFF",
         "status": "ACTIVE",
         "branch": branch,
         "first_name": "School",

@@ -290,7 +290,7 @@ class SchoolAdminEffectivePermissionsTests(TestCase):
         self.user = User.objects.create_user(
             email="head@effective.test",
             password="Str0ng!pass123",
-            user_type="SCHOOL_ADMIN",
+            user_type="STAFF",
             status="ACTIVE",
             first_name="Head",
             last_name="Teacher",

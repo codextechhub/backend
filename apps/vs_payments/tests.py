@@ -1415,7 +1415,7 @@ class PayoutBatchApprovalTests(TestCase):
 
     def _make_approver(self, email="apr-pba@test.com"):
         user = self.User.objects.create_user(
-            email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
+            email=email, password="pw", user_type="STAFF", status="ACTIVE",
             first_name="Apr", last_name="Over", tenant=self.school.tenant,
         )
         # The stage names this role directly, so staffing it is one assignment.
@@ -1870,7 +1870,7 @@ class PayoutBatchApprovalTests(TestCase):
         instance = self._instance_for(batch)
 
         stranger = self.User.objects.create_user(
-            email="stranger-pba@test.com", password="pw", user_type="SCHOOL_ADMIN",
+            email="stranger-pba@test.com", password="pw", user_type="STAFF",
             status="ACTIVE", first_name="Stran", last_name="Ger",
             tenant=self.school.tenant,
         )
@@ -1911,7 +1911,7 @@ class PayoutBatchApprovalTests(TestCase):
 
         batch = self._park_a_batch()
         outsider = self.User.objects.create_user(
-            email="nobody-pba@test.com", password="pw", user_type="SCHOOL_ADMIN",
+            email="nobody-pba@test.com", password="pw", user_type="STAFF",
             status="ACTIVE", first_name="No", last_name="Body",
             tenant=self.school.tenant,
         )
@@ -2593,7 +2593,7 @@ class UnattributedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
             "payments.webhook.view", "payments.webhook.replay",
             "payments.unattributed_webhook.view", "payments.unattributed_webhook.replay",
             email="school-hooks@test.com", tenant=self._school_tenant(),
-            user_type="SCHOOL_ADMIN",
+            user_type="STAFF",
         )
 
         self.assertEqual(client.get(self.LIST_URL).status_code, 403)
