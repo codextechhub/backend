@@ -712,3 +712,68 @@ class CodexTenantRoleViewTests(TestCase):
     def test_plain_vision_denied(self):
         resp = _token_client(self.plain_vision).get(self._list_url())
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class PermissionGroupCreationScopeTests(TestCase):
+    """A bundle built through the API has to be usable inside a tenant.
+
+    ``PermissionGroup.scope`` has no default and the group serializer does not
+    expose the field, so every group created through the endpoint was written
+    unclassified - and ``TenantRoleGroup`` refuses to attach an unclassified
+    bundle to a role inside a tenant. Vision could build a bundle that no
+    school could ever be given.
+
+    Serializer-level rather than over HTTP: the endpoint is gated by
+    ``platform.permissions.manage`` and the question here is what the write
+    produces, not who may reach it.
+    """
+
+    def test_group_created_through_the_serializer_is_tenant_scoped(self):
+        from vs_rbac.models import PermissionGroup, PermissionScope
+        from vs_rbac.serializers.registry import PermissionGroupDetailSerializer
+
+        make_permission("academics.calendar.view")
+        make_permission("academics.calendar.update")
+
+        serializer = PermissionGroupDetailSerializer(data={
+            "name": "Calendar Officer bundle",
+            "description": "Calendar reads and edits.",
+            "permission_keys": [
+                "academics.calendar.view",
+                "academics.calendar.update",
+            ],
+        })
+        serializer.is_valid(raise_exception=True)
+        group = serializer.save()
+
+        self.assertEqual(group.scope, PermissionScope.TENANT)
+        self.assertEqual(
+            set(group.permissions.values_list("key", flat=True)),
+            {"academics.calendar.view", "academics.calendar.update"},
+        )
+        self.assertTrue(PermissionGroup.objects.filter(pk=group.pk).exists())
+
+    def test_that_group_can_then_be_attached_to_a_school_role(self):
+        from vs_rbac.models import TenantRoleGroup
+        from vs_rbac.serializers.registry import PermissionGroupDetailSerializer
+
+        make_permission("academics.calendar.view")
+        serializer = PermissionGroupDetailSerializer(data={
+            "name": "Calendar reads",
+            "permission_keys": ["academics.calendar.view"],
+        })
+        serializer.is_valid(raise_exception=True)
+        group = serializer.save()
+
+        school = make_school(slug="lakeside", name="Lakeside School")
+        role = TenantRoleTemplate.objects.create(
+            tenant=school.tenant, key="calendar-reader", name="Calendar Reader",
+        )
+
+        link = TenantRoleGroup(role=role, group=group)
+        link.full_clean()
+        link.save()
+
+        self.assertTrue(
+            TenantRoleGroup.objects.filter(role=role, group=group).exists(),
+        )

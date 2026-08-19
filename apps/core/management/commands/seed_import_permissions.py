@@ -210,7 +210,12 @@ class Command(BaseCommand):
         ))
 
     def _seed_permission_groups(self, all_keys: list[str]) -> None:
-        from vs_rbac.models import GroupPermission, Permission, PermissionGroup
+        from vs_rbac.models import (
+            GroupPermission,
+            Permission,
+            PermissionGroup,
+            PermissionScope,
+        )
 
         TEMPLATE_KEYS = [k for k in all_keys if k.startswith("import.templates.")]
         BATCH_KEYS    = [k for k in all_keys if k.startswith("import.batches.")]
@@ -240,6 +245,15 @@ class Command(BaseCommand):
                 name=name,
                 defaults={
                     "description": description,
+                    # ``PermissionGroup.scope`` has no default, deliberately, so
+                    # every creation path has to declare it. Migration 0007
+                    # classified the groups that already existed; a group seeded
+                    # after it without this line is created unclassified, and
+                    # ``TenantRoleGroup`` refuses to attach an unclassified
+                    # bundle to any role inside a tenant. Every import key is
+                    # TENANT-scoped (see the Permission rows above), so the
+                    # bundle is too.
+                    "scope": PermissionScope.TENANT,
                     "is_system": True,
                     "is_active": True,
                 },

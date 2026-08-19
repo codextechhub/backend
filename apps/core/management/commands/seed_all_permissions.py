@@ -39,6 +39,11 @@ Seed order
 13. seed_onboarding_permissions - M9 onboarding keys → school_admin (control room,
                                tasks, go-live submission) + platform roles
                                (provisioning, approve/reject)
+14. seed_school_permission_groups - groups the school-facing keys into named
+                               bundles and records which are school-wide and
+                               which narrow to a campus. Runs LAST because it
+                               spans five modules and can only group keys that
+                               are already registered. Grants nothing.
 """
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
@@ -68,6 +73,9 @@ SEED_STEPS: list[tuple[str, list]] = [
     ("seed_notification_permissions", []),
     ("seed_onboarding_permissions",  []),
     ("seed_health", []),
+    # Last on purpose: it groups keys from five different modules and can only
+    # see the ones already in the registry.
+    ("seed_school_permission_groups", []),
 ]
 
 
