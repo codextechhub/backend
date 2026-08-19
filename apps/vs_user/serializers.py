@@ -20,6 +20,7 @@ from vs_rbac.fls import FieldSecurityMixin
 from vs_tenants.references import resolve_branch_reference
 from vs_tenants.models import Tenant
 from .email_normalization import normalize_email
+from .services.email_availability import email_refusal
 from .models import (
     User,
     UserInvitation,
@@ -266,15 +267,15 @@ class UserCreateSerializer(serializers.Serializer):
     state_of_origin = serializers.CharField(max_length=80, required=False, allow_blank=True, default='')
 
     def validate_email(self, value):
-        # Enforce email uniqueness here to provide a clear error message, rather than relying on DB constraint which raises IntegrityError.
-        # Normalised input compared with '=' rather than iexact: every stored
-        # address is lowercase (User.save plus ck_user_email_lowercase), so the
-        # two find the same rows and this one can use the index on email.
-        email = normalize_email(value)
-        if User.objects.filter(email=email).exists():
-            raise serializers.ValidationError({'email': 'A user with this email already exists.'})
-
-        return email
+        # Normalise only. The uniqueness question cannot be answered here:
+        # ``User.email`` is unique PER TENANT, and the target tenant is not
+        # resolved until validate() below (it comes from the ?tenant=
+        # assertion, or is forced to the platform tenant for CX staff). A
+        # field-level validator runs before validate(), so an existence check
+        # written here has no choice but to ask about the whole platform - and
+        # would refuse Greenfield an account for ada@gmail.com because Bright
+        # Star already has one. See validate() for the scoped check.
+        return normalize_email(value)
 
     def validate(self, attrs):
         actor = self.context['request'].user
@@ -332,6 +333,13 @@ class UserCreateSerializer(serializers.Serializer):
                 )
 
         attrs['tenant'] = target_tenant
+
+        # Now that the owning tenant is known, ask whether the address is free
+        # IN IT. Reported on the 'email' key so the error shape is unchanged
+        # for clients, even though the check moved out of validate_email.
+        refusal = email_refusal(attrs.get('email'), tenant=target_tenant)
+        if refusal:
+            raise serializers.ValidationError({'email': refusal})
 
         # Role input is a TenantRoleTemplate KEY, resolved within the target
         # tenant natively. The backfill in vs_rbac.0004 set each migrated
@@ -452,7 +460,9 @@ class EmailChangeSerializer(serializers.Serializer):
     email = serializers.EmailField()
 
     def validate_email(self, value):
-        return value.lower().strip()
+        # One spelling of the fold, shared with the model and every other
+        # creation path, rather than a second hand-rolled .lower().strip().
+        return normalize_email(value)
 
 
 # =============================================================================

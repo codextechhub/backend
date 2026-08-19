@@ -104,7 +104,28 @@ def resolve_sign_in_account(*, email: str, tenant: str | None):
     if not slug:
         if tenant_is_required():
             return None, None, FAILURE_TENANT_REQUIRED
-        # Legacy path, unchanged: correct only while email is globally unique.
+        # The legacy path, and the ONLY unscoped email lookup left on User
+        # that is deliberately cross-tenant. It stays, and it stays unchanged.
+        #
+        # It cannot be scoped: there is no tenant to scope it to. The caller
+        # named none, which is exactly the case this branch exists to serve
+        # while the two frontends still send none. Making it refuse instead
+        # would not be a smaller change than flipping the switch above - it
+        # would BE flipping the switch, and it would lock every existing user
+        # out on deploy.
+        #
+        # And ``.first()`` is not ambiguous here, which is the whole reason
+        # Phase 3 shipped its guard: while REQUIRE_TENANT_ON_SIGN_IN is False,
+        # ``User._guard_cross_tenant_email`` refuses to CREATE a second
+        # tenant's copy of an address, so at most one row on the platform can
+        # match and ``.first()`` has nothing to choose between. The two halves
+        # are the same switch read from opposite ends - the guard holds the
+        # data to what this lookup can safely answer for, and both stand down
+        # together on the flip.
+        #
+        # When the switch does flip this branch becomes unreachable: the
+        # ``tenant_is_required()`` return above takes every tenantless request.
+        # So it is not a thing to fix later either; it is a thing that retires.
         user = User.objects.filter(email__iexact=email).first()
         return user, (user.tenant if user else None), ''
 

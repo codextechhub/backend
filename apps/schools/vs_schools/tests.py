@@ -1094,7 +1094,13 @@ class AdminEmailCaseIsRefusedTests(TestCase):
             "branches": [_branch_payload("Main Campus", email="HEAD@Bright-Star.TEST")],
         }, expect=400)
 
-        self.assertIn("already exists", str(response.data))
+        # The KEY the error lands on, not its wording. A school being created
+        # has no tenant yet, so the address cannot be "already taken here" -
+        # what refuses it is the transitional cross-tenant guard, whose message
+        # deliberately says nothing about where the other account lives. The
+        # case-folding this class is about is still what makes the two
+        # addresses meet in the first place.
+        self.assertIn("primary_admin_data", str(response.data["error"]["detail"]))
         self.assertFalse(School.objects.filter(slug="greenfield").exists())
 
     def test_school_create_refuses_a_school_admin_that_is_a_case_variant(self):

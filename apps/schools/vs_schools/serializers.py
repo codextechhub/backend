@@ -487,16 +487,20 @@ class BranchCreateSerializer(serializers.ModelSerializer):
 
         primary_admin_data = attrs.get("primary_admin_data")
         if primary_admin_data:
-            from vs_user.models import User
-            # Same normalisation as vs_user.serializers, so the two creation
-            # paths now agree on what "already exists" means. They did not: the
-            # incoming value was folded but stored addresses were not, so a
-            # stored 'Ada@gmail.com' was invisible here and this path created
-            # the duplicate the other path refused.
-            email = normalize_email(primary_admin_data.get("email"))
-            if email and User.objects.filter(email=email).exists():
+            from vs_user.services.email_availability import email_refusal
+            # Scoped to the school this branch is being added to, via the one
+            # helper every creation path now shares, so all of them agree on
+            # what "already exists" means. They did not agree twice over: this
+            # path once compared case-sensitively while vs_user compared with
+            # iexact, and then both asked about the whole platform after
+            # uniqueness had narrowed to one address per tenant.
+            refusal = email_refusal(
+                primary_admin_data.get("email"),
+                tenant=school.tenant if school else None,
+            )
+            if refusal:
                 raise serializers.ValidationError({
-                    "primary_admin_data": {"email": "A user with this email already exists."}
+                    "primary_admin_data": {"email": refusal}
                 })
 
         return attrs
@@ -591,6 +595,17 @@ class BranchCreateSerializer(serializers.ModelSerializer):
             module_key=AuditModuleKey.BRANCH,
             action_type=AuditActionType.CREATE,
             actor_user=self.context.get("actor_id"),
+            # ``branch.tenant``, not ``school.tenant``, and they are the same
+            # row: ``Branch`` is owned directly by ``Tenant`` and this create
+            # passed ``tenant=school.tenant`` a few lines up. Reading it off
+            # the branch says what the audit row means - the tenant this
+            # BRANCH belongs to - and keeps working if the branch ever arrives
+            # from somewhere the school is not in scope.
+            #
+            # Without it the row landed with tenant NULL, and an investigator
+            # asking "show me everything at Bright Star" had to read summaries
+            # and labels instead of filtering a column.
+            tenant=branch.tenant,
             entity_type="Branch",
             entity_id=str(branch.pk),
             entity_label=branch.name,
@@ -688,6 +703,8 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
             module_key=AuditModuleKey.BRANCH,
             action_type=AuditActionType.UPDATE,
             actor_user=self.context.get("actor_id"),
+            # The branch owns its tenant directly; see the create path.
+            tenant=instance.tenant,
             entity_type="Branch",
             # The pk, matching the create path, so an edit lands on this
             # branch's own trail instead of the one row every school's branch
@@ -929,7 +946,15 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             attrs["slug"] = base
 
         # --- Admin email existence checks (single DB query) ---
-        from vs_user.models import User
+        #
+        # The school being created has no tenant row yet, so there is no tenant
+        # for an address to be taken IN: the same-tenant rule is vacuous here
+        # by construction, and this check exists only to give a readable error
+        # for the transitional refusal in ``User._guard_cross_tenant_email``
+        # while sign-in does not yet name its tenant. When that switch flips
+        # this check goes quiet on its own, and Greenfield can be created with
+        # ada.okoye@example.test even though Bright Star already uses it.
+        from vs_user.services.email_availability import email_refusals
 
         primary_admin_data = attrs.get("primary_admin_data", None)
         branches = attrs.get("branches", [])
@@ -947,16 +972,15 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 _tagged_emails[i] = ba_email
 
         if _tagged_emails:
-            existing = set(
-                User.objects.filter(email__in=_tagged_emails.values()).values_list("email", flat=True)
-            )
+            refused = email_refusals(_tagged_emails.values(), tenant=None)
             email_errors: Dict[str, Any] = {}
-            if "__school__" in _tagged_emails and _tagged_emails["__school__"] in existing:
-                email_errors["primary_admin_data"] = {"email": "A user with this email already exists."}
+            sa_refusal = refused.get(_tagged_emails.get("__school__", ""), "")
+            if sa_refusal:
+                email_errors["primary_admin_data"] = {"email": sa_refusal}
             branch_email_errors = {
-                i: {"primary_admin_data": {"email": "A user with this email already exists."}}
+                i: {"primary_admin_data": {"email": refused[email]}}
                 for i, email in _tagged_emails.items()
-                if i != "__school__" and email in existing
+                if i != "__school__" and email in refused
             }
             if branch_email_errors:
                 email_errors["branches"] = branch_email_errors
@@ -1130,6 +1154,10 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 # the bulk importer puts str(user.id), and a string here makes
                 # emit_audit_event swallow the event and write nothing.
                 actor_user=actor,
+                # Same row as school.tenant - the branch was created with it
+                # immediately above - read off the branch for the same reason
+                # BranchCreateSerializer does.
+                tenant=branch.tenant,
                 entity_type="Branch",
                 # The pk, not the code: codes restart at 1 for every tenant, so
                 # this is the site that used to file every school's main branch
@@ -1230,6 +1258,9 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             module_key=AuditModuleKey.SCHOOL,
             action_type=AuditActionType.CREATE,
             actor_user=actor,
+            # The school's own tenant, so "everything at Bright Star" is a
+            # column filter rather than a search through summaries.
+            tenant=school.tenant,
             entity_type="School",
             entity_id=str(school.pk),
             entity_label=school.name,
@@ -1413,6 +1444,7 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
             module_key=AuditModuleKey.SCHOOL,
             action_type=AuditActionType.UPDATE,
             actor_user=self.context.get("actor_id"),
+            tenant=instance.tenant,
             entity_type="School",
             # The pk, and emphatically not the slug: this is the one call site
             # that can change a school's slug, so keying the event on it would
@@ -1509,6 +1541,7 @@ class SchoolResetConfigSerializer(serializers.Serializer):
             module_key=AuditModuleKey.SCHOOL,
             action_type=AuditActionType.CONFIG_CHANGED,
             actor_user=self.context.get("actor_id"),
+            tenant=school.tenant,
             entity_type="School",
             # Same key as the create and update paths, so a reset lands on the
             # school's one trail rather than starting a second one.

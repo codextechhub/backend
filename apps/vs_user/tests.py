@@ -345,6 +345,65 @@ def make_cx_user(email="staff@codex.test", password="Str0ng!pass123"):
     )
 
 
+def _run_user_create_serializer(*, email, actor=None, tenant=None, **extra):
+    """Validate a CX-staff create the way the endpoint does, and return attrs.
+
+    Exists because the per-tenant email check has to run where the target
+    tenant is known - ``validate()`` - so a test that pokes ``validate_email``
+    directly proves nothing about the rule any more.
+    """
+    from types import SimpleNamespace
+    from vs_user.serializers import UserCreateSerializer
+
+    actor = actor or make_cx_user(email="hiring.manager@codex.test")
+    data = {
+        "first_name": "Ada",
+        "last_name": "Okoye",
+        "email": email,
+        "user_type": "CX_STAFF",
+    }
+    data.update(extra)
+    serializer = UserCreateSerializer(
+        data=data,
+        context={
+            "request": SimpleNamespace(user=actor, tenant=tenant or actor.tenant),
+            "draft": True,
+        },
+    )
+    serializer.is_valid(raise_exception=True)
+    return serializer.validated_data
+
+
+def _main_branch(school):
+    """The main branch every school is created with."""
+    from vs_tenants.models import Branch
+
+    branch = Branch.all_objects.filter(tenant=school.tenant, is_main=True).first()
+    if branch is None:
+        branch = Branch.objects.create(
+            tenant=school.tenant, name="Main Campus", is_main=True, status="ACTIVE",
+        )
+    return branch
+
+
+def _seed_prebuilt_admin_roles():
+    """Seed the two prebuilt role templates school creation provisions from.
+
+    ``provision_admin_user`` refuses to mint an administrator without a role,
+    so a school created in a test database that has never run
+    ``seed_platform_permissions`` would silently produce no admin at all.
+    """
+    from vs_rbac.models import PrebuiltRoleTemplate
+
+    for key, name, scope in (
+        ("school_admin", "School Admin", "institution"),
+        ("branch_admin", "Branch Admin", "branch"),
+    ):
+        PrebuiltRoleTemplate.objects.get_or_create(
+            key=key, defaults={"name": name, "scope": scope},
+        )
+
+
 def make_school(name="Caleb International College", slug="caleb"):
     from schools.vs_schools.models import School
     return School.objects.create(name=name, slug=slug, status="ACTIVE")
@@ -2383,11 +2442,18 @@ class EmailCaseCreationChecksAgreeTests(TestCase):
         make_cx_user(email="ada.okoye@example.test")
 
     def test_platform_user_create_refuses_a_case_variant(self):
-        from rest_framework.exceptions import ValidationError as DRFValidationError
-        from vs_user.serializers import UserCreateSerializer
+        """Driven through the whole serializer, not ``validate_email`` alone.
 
-        with self.assertRaises(DRFValidationError):
-            UserCreateSerializer().validate_email("  ADA.Okoye@Example.TEST ")
+        The uniqueness check moved to ``validate()`` in Phase 4, because the
+        tenant that will own the account is not resolved until then and a
+        field-level validator can only ask about the whole platform.
+        """
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+
+        with self.assertRaises(DRFValidationError) as ctx:
+            _run_user_create_serializer(email="  ADA.Okoye@Example.TEST ")
+
+        self.assertIn("email", ctx.exception.detail)
 
     def test_platform_user_create_returns_the_folded_address(self):
         from vs_user.serializers import UserCreateSerializer
@@ -3091,3 +3157,704 @@ class EmailPerTenantMigrationTests(TestCase):
                 .values_list("pk", flat=True)),
             {at_bright_star.pk, at_greenfield.pk},
         )
+
+
+# =============================================================================
+# Phase 4 - every remaining email lookup is scoped, or says why it is not
+# =============================================================================
+
+class ScopedEmailLookupTests(TestCase):
+    """An unscoped email lookup on ``User`` is a defect, in both directions.
+
+    Unscoped, an ``.exists()`` refuses something legal (Greenfield cannot give
+    Ada an account because Bright Star already has one) and a ``.first()``
+    accepts something wrong (Greenfield's new admin link is handed Ada's Bright
+    Star account). These tests hold both halves for every production path.
+    """
+
+    def setUp(self):
+        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+        self.ada = make_school_admin(
+            self.bright_star, email="ada.okoye@example.test",
+        )
+
+    # ── the helper every path shares ─────────────────────────────────────────
+
+    def test_the_helper_refuses_an_address_held_in_the_same_tenant(self):
+        from vs_user.services.email_availability import (
+            SAME_TENANT_REFUSAL, email_refusal,
+        )
+
+        self.assertEqual(
+            email_refusal("ada.okoye@example.test", tenant=self.bright_star.tenant),
+            SAME_TENANT_REFUSAL,
+        )
+
+    def test_the_helper_allows_another_tenants_address_once_the_switch_is_on(self):
+        from vs_user.services.email_availability import email_refusal
+
+        with _tenant_required():
+            self.assertEqual(
+                email_refusal(
+                    "ada.okoye@example.test", tenant=self.greenfield.tenant,
+                ),
+                "",
+            )
+
+    def test_the_helper_mirrors_the_transitional_guard_while_the_switch_is_off(self):
+        """It must not be laxer than ``User.save``, or the pre-check would pass
+        a create the model then refuses with an unhandled ValidationError."""
+        from vs_user.models import CROSS_TENANT_EMAIL_REFUSAL
+        from vs_user.services.email_availability import email_refusal
+
+        self.assertEqual(
+            email_refusal("ada.okoye@example.test", tenant=self.greenfield.tenant),
+            CROSS_TENANT_EMAIL_REFUSAL,
+        )
+
+    def test_the_helper_ignores_the_account_being_renamed(self):
+        from vs_user.services.email_availability import email_refusal
+
+        self.assertEqual(
+            email_refusal(
+                "ada.okoye@example.test",
+                tenant=self.bright_star.tenant,
+                exclude_pk=self.ada.pk,
+            ),
+            "",
+        )
+
+    def test_the_bulk_helper_answers_for_several_addresses_at_once(self):
+        from vs_user.services.email_availability import (
+            SAME_TENANT_REFUSAL, email_refusals,
+        )
+
+        refused = email_refusals(
+            ["ADA.Okoye@Example.TEST", "nobody@example.test"],
+            tenant=self.bright_star.tenant,
+        )
+
+        self.assertEqual(refused, {"ada.okoye@example.test": SAME_TENANT_REFUSAL})
+
+    # ── user create ──────────────────────────────────────────────────────────
+
+    def test_user_create_accepts_an_address_held_by_another_tenant(self):
+        with _tenant_required():
+            attrs = _run_user_create_serializer(
+                email="ada.okoye@example.test",
+                actor=make_school_admin(self.greenfield, email="head@greenfield.test"),
+                user_type="SCHOOL_ADMIN",
+            )
+
+        self.assertEqual(attrs["email"], "ada.okoye@example.test")
+        self.assertEqual(attrs["tenant"], self.greenfield.tenant)
+
+    def test_user_create_refuses_the_same_address_twice_in_one_tenant(self):
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+
+        with _tenant_required():
+            with self.assertRaises(DRFValidationError) as ctx:
+                _run_user_create_serializer(
+                    email="ada.okoye@example.test",
+                    actor=make_school_admin(
+                        self.bright_star, email="head@bright-star.test",
+                    ),
+                    user_type="SCHOOL_ADMIN",
+                )
+
+        self.assertIn("email", ctx.exception.detail)
+
+    # ── email change ─────────────────────────────────────────────────────────
+
+    def test_email_change_to_another_tenants_address_succeeds(self):
+        from vs_user.services.user import EmailChangeService
+
+        mover = make_school_admin(self.greenfield, email="tunde@greenfield.test")
+        with _tenant_required():
+            EmailChangeService.change_email(
+                mover, "ada.okoye@example.test", mover,
+            )
+
+        mover.refresh_from_db()
+        self.assertEqual(mover.email, "ada.okoye@example.test")
+        self.assertEqual(mover.tenant_id, self.greenfield.tenant_id)
+        self.assertEqual(User.objects.get(pk=self.ada.pk).tenant_id,
+                         self.bright_star.tenant_id)
+
+    def test_email_change_within_one_tenant_is_still_refused(self):
+        from vs_user.services.user import EmailChangeService
+
+        mover = make_school_admin(self.bright_star, email="tunde@bright-star.test")
+        with _tenant_required():
+            with self.assertRaises(ValueError) as ctx:
+                EmailChangeService.change_email(
+                    mover, "ada.okoye@example.test", mover,
+                )
+
+        self.assertEqual(ctx.exception.args[0]["error_code"], "DUPLICATE_EMAIL")
+
+    # ── admin provisioning: the worst one ────────────────────────────────────
+
+    def _provision(self, school, email):
+        from types import SimpleNamespace
+
+        from schools.vs_schools.models import InviteStatus
+        from schools.vs_schools.services.admin_provisioning import provision_admin_user
+        from vs_rbac.models import TenantRoleTemplate
+
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=school.tenant, key="school_admin",
+            defaults={"name": "School Admin", "status": "ACTIVE"},
+        )
+        link = SimpleNamespace(
+            invite_status=InviteStatus.QUEUED, invite_sent_at=None,
+            save=lambda **kwargs: None,
+        )
+        return provision_admin_user(
+            contact=SimpleNamespace(email=email, full_name="Ada Okoye", phone=""),
+            admin_link=link, school=school, branch=None,
+            user_type="SCHOOL_ADMIN", role=role.key if role else "", actor=None,
+        )
+
+    def test_provisioning_never_hands_back_another_schools_account(self):
+        """The reported defect, in the shape it would actually happen.
+
+        CodeX creates Greenfield with ada.okoye@example.test as its primary
+        admin. Ada already administers Bright Star. Greenfield must get its
+        own new account, not a link to hers.
+        """
+        with _tenant_required():
+            provisioned = self._provision(self.greenfield, "ada.okoye@example.test")
+
+        self.assertIsNotNone(provisioned)
+        self.assertNotEqual(provisioned.pk, self.ada.pk)
+        self.assertEqual(provisioned.tenant_id, self.greenfield.tenant_id)
+        self.assertEqual(
+            User.objects.get(pk=self.ada.pk).tenant_id, self.bright_star.tenant_id,
+        )
+
+    def test_provisioning_is_still_idempotent_within_one_school(self):
+        """The behaviour the unscoped lookup was there for, kept."""
+        from schools.vs_schools.models import InviteStatus
+
+        before = User.objects.count()
+        returned = self._provision(self.bright_star, "ADA.Okoye@Example.TEST")
+
+        self.assertEqual(returned.pk, self.ada.pk)
+        self.assertEqual(User.objects.count(), before)
+        self.assertEqual(InviteStatus.SENT, "SENT")
+
+    # ── the CX bulk importer ─────────────────────────────────────────────────
+
+    def test_the_cx_importer_ignores_a_school_account_on_the_same_address(self):
+        """Phase 0: a CX staff member may also be a parent at a school.
+
+        Ada administers Bright Star and CodeX later hires her. The import must
+        not skip her row because "the address already exists" - it exists at a
+        customer, not on the platform tenant her CX account will belong to.
+        """
+        from vs_import_data.models import ImportRowActionChoices
+        from vs_import_data.services.import_executor import import_cx_users_row
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_user.models import OrgNode, Position
+
+        hiring_manager = make_cx_user(email="hiring@codex.test")
+        TenantRoleTemplate.objects.get_or_create(
+            tenant=hiring_manager.tenant, key="cx_analyst",
+            defaults={"name": "CX Analyst", "status": "ACTIVE"},
+        )
+        node = OrgNode.objects.create(
+            name="Operations", code="OPS", kind=OrgNode.Kind.DIVISION,
+        )
+        Position.objects.create(title="Analyst", code="ANALYST", org_node=node)
+
+        with _tenant_required():
+            result = import_cx_users_row(
+                import_batch=None,
+                payload={"email": "ada.okoye@example.test", "first_name": "Ada",
+                         "last_name": "Okoye", "role": "cx_analyst",
+                         "position": "ANALYST"},
+                queued_by=hiring_manager,
+            )
+
+        self.assertEqual(result.action, ImportRowActionChoices.CREATE)
+        self.assertEqual(result.instance.tenant_id, hiring_manager.tenant_id)
+        self.assertNotEqual(result.instance.pk, self.ada.pk)
+
+    # ── the barcode preview's single-platform-tenant assumption ──────────────
+
+    def test_the_barcode_preview_refuses_rather_than_choosing_a_platform_row(self):
+        """Its ``.first()`` is only correct while ONE tenant has kind=PLATFORM.
+
+        That is an assumption, not a constraint, so it is asserted: a second
+        platform tenant must make the endpoint answer 404 rather than hand a
+        scanner whichever of two people's names came back first.
+        """
+        from django.core.cache import cache
+        from django.test import Client
+
+        from vs_tenants.models import Tenant
+
+        cache.clear()
+        second_platform = Tenant.objects.create(
+            slug="codex-two", kind=Tenant.Kind.PLATFORM, name="CodeX Two",
+            status=Tenant.Status.ACTIVE,
+        )
+        with _tenant_required():
+            User.objects.create_user(
+                email="scanner@codex.test", password="Str0ng!pass123",
+                user_type="CX_STAFF", status="ACTIVE", first_name="Chidi",
+                last_name="One",
+            )
+            User.objects.create_user(
+                email="scanner@codex.test", password="Str0ng!pass123",
+                user_type="CX_STAFF", status="ACTIVE", first_name="Nkechi",
+                last_name="Two", tenant=second_platform,
+            )
+
+        response = Client().get(
+            "/v1/user/auth/special_login/preview/",
+            {"email": "scanner@codex.test"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn("Chidi", response.content.decode())
+        self.assertNotIn("Nkechi", response.content.decode())
+
+
+class ScopedEmailLookupCommandTests(TestCase):
+    """``delete_user`` and ``create_superuser`` must refuse, not pick a row."""
+
+    def setUp(self):
+        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+        with _tenant_required():
+            self.at_bright_star = make_school_admin(
+                self.bright_star, email="ada.okoye@example.test",
+            )
+            self.at_greenfield = make_school_admin(
+                self.greenfield, email="ada.okoye@example.test",
+            )
+
+    def test_delete_user_refuses_an_address_held_at_two_tenants(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError) as ctx:
+            call_command(
+                "delete_user", "--email", "ada.okoye@example.test", "--force",
+                stdout=StringIO(),
+            )
+
+        self.assertIn("more than one tenant", str(ctx.exception))
+        self.assertEqual(
+            User.objects.filter(email="ada.okoye@example.test").count(), 2,
+        )
+
+    def test_delete_user_deletes_exactly_the_named_tenants_account(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        call_command(
+            "delete_user", "--email", "ada.okoye@example.test",
+            "--tenant_id", "greenfield", "--force", stdout=StringIO(),
+        )
+
+        self.assertFalse(User.objects.filter(pk=self.at_greenfield.pk).exists())
+        self.assertTrue(User.objects.filter(pk=self.at_bright_star.pk).exists())
+
+    def test_delete_user_rejects_an_unknown_tenant_reference(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError) as ctx:
+            call_command(
+                "delete_user", "--email", "ada.okoye@example.test",
+                "--tenant_id", "no-such-school", "--force", stdout=StringIO(),
+            )
+
+        self.assertIn("No tenant found", str(ctx.exception))
+
+    def test_create_superuser_assign_role_refuses_an_ambiguous_address(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+        from vs_rbac.models import TenantUserRoleAssignment
+
+        out = StringIO()
+        # --tenant_id is not supplied and the default codex scope holds no such
+        # account, so nothing may be promoted by accident either.
+        call_command(
+            "create_superuser", "--assign-role",
+            "--email", "ada.okoye@example.test", stdout=out, stderr=StringIO(),
+        )
+
+        self.assertIn("No user found", out.getvalue())
+        self.assertFalse(
+            TenantUserRoleAssignment.objects.filter(
+                user__email="ada.okoye@example.test",
+            ).exists()
+        )
+
+    def test_create_superuser_assign_role_names_the_tenants_when_scope_is_wide(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+        from vs_rbac.models import TenantUserRoleAssignment
+
+        out = StringIO()
+        with mock.patch(
+            "core.management.commands.create_superuser._codex_tenant",
+            return_value=None,
+        ):
+            call_command(
+                "create_superuser", "--assign-role",
+                "--email", "ada.okoye@example.test", stdout=out, stderr=StringIO(),
+            )
+
+        self.assertIn("more than one tenant", out.getvalue())
+        self.assertFalse(
+            TenantUserRoleAssignment.objects.filter(
+                user__email="ada.okoye@example.test",
+            ).exists()
+        )
+
+    def test_create_superuser_ignores_a_school_account_on_the_same_address(self):
+        """Phase 0: a CX staff member may also be a parent at a school.
+
+        admin@codexng.com existing at Bright Star must not block the bootstrap
+        superuser, which lives on the codex platform tenant.
+        """
+        from io import StringIO
+
+        from django.core.management import call_command
+        from vs_tenants.models import Tenant
+
+        with _tenant_required():
+            make_school_admin(self.bright_star, email="admin@codexng.com")
+
+        with _tenant_required():
+            call_command(
+                "create_superuser", "--force", "--password", "Str0ng!pass123",
+                stdout=StringIO(), stderr=StringIO(),
+            )
+
+        self.assertTrue(
+            User.objects.filter(
+                email="admin@codexng.com", tenant__kind=Tenant.Kind.PLATFORM,
+            ).exists()
+        )
+
+
+class ScopedEmailLookupSchoolCreateTests(TestCase):
+    """A new school's admin address may already be in use at another school."""
+
+    def setUp(self):
+        _seed_prebuilt_admin_roles()
+        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        self.ada = make_school_admin(
+            self.bright_star, email="ada.okoye@example.test",
+        )
+        self.actor = make_cx_user(email="onboarding@codex.test")
+
+    def _payload(self, slug="greenfield"):
+        return {
+            "name": "Greenfield Academy",
+            "slug": slug,
+            "primary_admin_data": {
+                "full_name": "Ada Okoye",
+                "email": "ada.okoye@example.test",
+            },
+            "branches": [{
+                "name": "Main Campus",
+                "is_main": True,
+                "primary_admin_data": {
+                    "full_name": "Bola Adeniyi",
+                    "email": "bola@greenfield.test",
+                },
+            }],
+        }
+
+    def _create(self):
+        from types import SimpleNamespace
+
+        from schools.vs_schools.serializers import SchoolCreateSerializer
+
+        serializer = SchoolCreateSerializer(
+            data=self._payload(),
+            context={"request": SimpleNamespace(user=self.actor, tenant=self.actor.tenant)},
+        )
+        serializer.is_valid(raise_exception=True)
+        return serializer.save()
+
+    def test_the_new_school_gets_its_own_admin_account(self):
+        with _tenant_required():
+            school = self._create()
+
+        admins = User.objects.filter(
+            email="ada.okoye@example.test", tenant=school.tenant,
+        )
+        self.assertEqual(admins.count(), 1)
+        self.assertNotEqual(admins.first().pk, self.ada.pk)
+        self.assertEqual(
+            User.objects.filter(email="ada.okoye@example.test").count(), 2,
+        )
+
+    def test_the_existing_account_is_untouched(self):
+        with _tenant_required():
+            self._create()
+
+        self.ada.refresh_from_db()
+        self.assertEqual(self.ada.tenant_id, self.bright_star.tenant_id)
+        self.assertEqual(self.ada.user_type, "SCHOOL_ADMIN")
+
+    def test_it_is_still_refused_while_the_switch_is_off(self):
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+
+        with self.assertRaises(DRFValidationError) as ctx:
+            self._create()
+
+        self.assertIn("primary_admin_data", ctx.exception.detail)
+
+
+class SchoolAuditEventsCarryTheTenantTests(TestCase):
+    """An investigator must be able to filter "everything at Bright Star".
+
+    ``AuditEvent.tenant`` is nullable, so a missing argument is silent: the row
+    is written, looks complete, and simply cannot be filtered by customer.
+    """
+
+    def setUp(self):
+        from types import SimpleNamespace
+
+        _seed_prebuilt_admin_roles()
+        self.actor = make_cx_user(email="onboarding@codex.test")
+        self.request = SimpleNamespace(user=self.actor, tenant=self.actor.tenant)
+
+    def _events(self, module_key):
+        from vs_audit.models import AuditEvent
+        return AuditEvent.objects.filter(module_key=module_key)
+
+    def _make_school(self):
+        from types import SimpleNamespace
+
+        from schools.vs_schools.serializers import SchoolCreateSerializer
+
+        serializer = SchoolCreateSerializer(
+            data={
+                "name": "Bright Star School",
+                "slug": "bright-star",
+                "branches": [{"name": "Main Campus", "is_main": True,
+                              "primary_admin_data": {
+                                  "full_name": "Bola Adeniyi",
+                                  "email": "bola@bright-star.test"}}],
+            },
+            context={"request": self.request},
+        )
+        serializer.is_valid(raise_exception=True)
+        return serializer.save()
+
+    def test_school_and_branch_creation_events_carry_the_tenant(self):
+        from vs_audit.models import AuditModuleKey
+
+        school = self._make_school()
+
+        school_event = self._events(AuditModuleKey.SCHOOL).get(entity_type="School")
+        branch_event = self._events(AuditModuleKey.BRANCH).get(entity_type="Branch")
+        self.assertEqual(school_event.tenant_id, school.tenant_id)
+        self.assertEqual(branch_event.tenant_id, school.tenant_id)
+
+    def test_a_branch_added_later_carries_the_tenant(self):
+        from vs_audit.models import AuditActionType, AuditModuleKey
+        from schools.vs_schools.serializers import BranchCreateSerializer
+
+        school = self._make_school()
+        serializer = BranchCreateSerializer(
+            data={"name": "Annexe", "primary_admin_data": {
+                "full_name": "Tunde Bello", "email": "tunde@bright-star.test"}},
+            context={"school": school, "actor_id": self.actor, "request": self.request},
+        )
+        serializer.is_valid(raise_exception=True)
+        branch = serializer.save()
+
+        event = self._events(AuditModuleKey.BRANCH).get(
+            entity_id=str(branch.pk), action_type=AuditActionType.CREATE,
+        )
+        self.assertEqual(event.tenant_id, school.tenant_id)
+        # branch.tenant IS the school's tenant - Branch is owned by Tenant
+        # directly, and the create passes school.tenant. Asserted so the two
+        # sources cannot silently drift apart.
+        self.assertEqual(branch.tenant_id, school.tenant_id)
+
+    def test_branch_and_school_updates_carry_the_tenant(self):
+        from vs_audit.models import AuditActionType, AuditModuleKey
+        from schools.vs_schools.serializers import (
+            BranchUpdateSerializer, SchoolUpdateSerializer,
+        )
+
+        school = self._make_school()
+        branch = school.tenant.branches.get(is_main=True)
+
+        branch_ser = BranchUpdateSerializer(
+            branch, data={"name": "Main Campus Renamed"}, partial=True,
+            context={"actor_id": self.actor, "request": self.request},
+        )
+        branch_ser.is_valid(raise_exception=True)
+        branch_ser.save()
+
+        school_ser = SchoolUpdateSerializer(
+            school, data={"motto": "Ad astra"}, partial=True,
+            context={"actor_id": self.actor, "request": self.request},
+        )
+        school_ser.is_valid(raise_exception=True)
+        school_ser.save()
+
+        self.assertEqual(
+            self._events(AuditModuleKey.BRANCH)
+            .get(action_type=AuditActionType.UPDATE).tenant_id,
+            school.tenant_id,
+        )
+        self.assertEqual(
+            self._events(AuditModuleKey.SCHOOL)
+            .get(action_type=AuditActionType.UPDATE).tenant_id,
+            school.tenant_id,
+        )
+
+    def test_a_configuration_reset_carries_the_tenant(self):
+        from vs_audit.models import AuditActionType, AuditModuleKey
+        from schools.vs_schools.serializers import SchoolResetConfigSerializer
+
+        school = self._make_school()
+        serializer = SchoolResetConfigSerializer(
+            data={"confirmation_token": school.slug},
+            context={"school": school, "actor_id": self.actor, "request": self.request},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        event = self._events(AuditModuleKey.SCHOOL).get(
+            action_type=AuditActionType.CONFIG_CHANGED,
+        )
+        self.assertEqual(event.tenant_id, school.tenant_id)
+
+
+class ParentAtTwoSchoolsEndToEndTests(TestCase):
+    """The whole point, proved end to end with the switch on.
+
+    Ada Okoye has Tunde at Bright Star and Zainab at Greenfield and uses
+    ada.okoye@example.test at both. Greenfield's admin creates her an account
+    through the ordinary user-create endpoint's serializer, and she signs in at
+    both schools with two different passwords, reaching a different account
+    each time. Neither school can see the other.
+    """
+
+    def setUp(self):
+        from django.test import RequestFactory
+        from vs_rbac.models import TenantRoleTemplate
+
+        _seed_prebuilt_admin_roles()
+        self.factory = RequestFactory()
+        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+        self.bright_star_branch = _main_branch(self.bright_star)
+        self.greenfield_branch = _main_branch(self.greenfield)
+        for tenant in (self.bright_star.tenant, self.greenfield.tenant):
+            TenantRoleTemplate.objects.get_or_create(
+                tenant=tenant, key="parent",
+                defaults={"name": "Parent", "status": "ACTIVE"},
+            )
+        self.bright_star_head = make_school_admin(
+            self.bright_star, email="head@bright-star.test",
+        )
+        self.greenfield_head = make_school_admin(
+            self.greenfield, email="head@greenfield.test",
+        )
+
+    def _create_parent(self, actor, branch, password):
+        """Create Ada through UserCreateSerializer + UserCreationService."""
+        from types import SimpleNamespace
+
+        from vs_user.serializers import UserCreateSerializer
+        from vs_user.services.user import UserCreationService
+
+        serializer = UserCreateSerializer(
+            data={
+                "first_name": "Ada", "last_name": "Okoye",
+                "email": "ada.okoye@example.test",
+                "user_type": "PARENT",
+                "role": "parent",
+                "branch": str(branch.pk),
+            },
+            context={"request": SimpleNamespace(user=actor, tenant=actor.tenant)},
+        )
+        serializer.is_valid(raise_exception=True)
+        user = UserCreationService.create_pending(
+            validated_data=serializer.validated_data, requesting_user=actor,
+        )
+        user.set_password(password)
+        user.status = User.Status.ACTIVE
+        user.is_active = True
+        user.save(update_fields=["password", "status", "is_active", "updated_at"])
+        return user
+
+    def test_a_parent_can_be_created_at_a_second_school_and_sign_in_at_both(self):
+        with _tenant_required():
+            at_bright_star = self._create_parent(
+                self.bright_star_head, self.bright_star_branch, "Br1ghtStar!pass",
+            )
+            at_greenfield = self._create_parent(
+                self.greenfield_head, self.greenfield_branch, "Gr33nfield!pass",
+            )
+
+        self.assertNotEqual(at_bright_star.pk, at_greenfield.pk)
+        self.assertEqual(at_bright_star.tenant_id, self.bright_star.tenant_id)
+        self.assertEqual(at_greenfield.tenant_id, self.greenfield.tenant_id)
+
+        def _login(password, tenant):
+            return LoginService.login(
+                "ada.okoye@example.test", password, tenant=tenant,
+                request=self.factory.post("/v1/user/auth/login/"),
+            )
+
+        bright_star_session = _login("Br1ghtStar!pass", "bright-star")
+        greenfield_session = _login("Gr33nfield!pass", "greenfield")
+
+        self.assertEqual(bright_star_session["user"]["id"], at_bright_star.pk)
+        self.assertEqual(greenfield_session["user"]["id"], at_greenfield.pk)
+        self.assertEqual(bright_star_session["tenant"]["slug"], "bright-star")
+        self.assertEqual(greenfield_session["tenant"]["slug"], "greenfield")
+
+    def test_the_same_school_still_refuses_the_address_twice(self):
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+
+        with _tenant_required():
+            self._create_parent(
+                self.greenfield_head, self.greenfield_branch, "Gr33nfield!pass",
+            )
+            with self.assertRaises(DRFValidationError) as ctx:
+                self._create_parent(
+                    self.greenfield_head, self.greenfield_branch, "Another!pass1",
+                )
+
+        self.assertIn("email", ctx.exception.detail)
+
+    def test_the_second_account_is_refused_while_the_switch_is_off(self):
+        """Phase 3's guard is what makes the legacy unscoped sign-in lookup
+        safe, so it must still hold until the switch flips."""
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+
+        self._create_parent(
+            self.bright_star_head, self.bright_star_branch, "Br1ghtStar!pass",
+        )
+        with self.assertRaises(DRFValidationError) as ctx:
+            self._create_parent(
+                self.greenfield_head, self.greenfield_branch, "Gr33nfield!pass",
+            )
+
+        self.assertIn("email", ctx.exception.detail)

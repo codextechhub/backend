@@ -11,6 +11,8 @@
 #   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet
 
 from __future__ import annotations
+import logging
+
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
@@ -36,6 +38,8 @@ from ..services.auth       import LoginService
 from ..services.invitation import InvitationService
 from ..services.audit      import log_auth_event
 
+
+logger = logging.getLogger('vs_user.auth')
 
 
 # =============================================================================
@@ -153,9 +157,28 @@ class SpecialLoginPreviewView(APIView):
         if not email:
             return error_response(message='email query parameter is required.', status=status.HTTP_400_BAD_REQUEST)
 
-        user = User.objects.filter(
+        # ``.first()`` is only correct because ``uq_user_email_per_tenant``
+        # makes an address unique WITHIN a tenant and exactly one tenant has
+        # kind=PLATFORM: vs_tenants migration 0002 seeds ``codex`` and nothing
+        # creates a second one. That is an assumption, not a constraint, so it
+        # is asserted rather than left implicit - if a second platform tenant
+        # is ever seeded this endpoint would silently start choosing between
+        # two different people's accounts by insertion order, and the name it
+        # returned would be whichever came back first.
+        matches = list(User.objects.filter(
             email=email, tenant__kind=Tenant.Kind.PLATFORM,
-        ).first()
+        )[:2])
+        if len(matches) > 1:
+            logger.error(
+                'special_login_preview: %s matches %d accounts across platform '
+                'tenants; there must be exactly one platform tenant.',
+                email, len(matches),
+            )
+            return error_response(
+                message=f'User with {email} does not exist.',
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        user = matches[0] if matches else None
         if not user:
             return error_response(
                 message=f'User with {email} does not exist.',

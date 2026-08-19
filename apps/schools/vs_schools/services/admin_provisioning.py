@@ -52,21 +52,36 @@ def provision_admin_user(
     from ..models import InviteStatus
 
     email = normalize_email(contact.email)
+    tenant = school.tenant
 
     try:
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         with transaction.atomic():  # savepoint - rollback here if anything fails
-            # Idempotent: if the user already exists just stamp the link as sent.
-            # Exact match on a normalised address is exhaustive now that every
-            # stored address is lowercase. It was not before: a stored
-            # 'Ada@gmail.com' looked absent here, so this went on to create the
-            # account and lost the whole savepoint to an IntegrityError.
-            existing = User.objects.filter(email=email).first()
+            # Idempotent: if this school already has an account on that address
+            # just stamp the link as sent.
+            #
+            # Scoped to THIS school's tenant, and the scope is the whole point.
+            # Unscoped, "already exists" meant "exists anywhere on the
+            # platform", and the row it returned was handed back to the caller
+            # as the new school's administrator: CodeX creates Greenfield with
+            # ada.okoye@example.test as primary admin, Ada already administers
+            # Bright Star, and Greenfield's admin link is stamped SENT pointing
+            # at Bright Star's account. No exception, no error log, and the
+            # invitation email is never sent because the account it "found"
+            # was activated months ago.
+            #
+            # Nothing but the school-create serializer's own pre-check kept
+            # that unreachable, and this service has three callers.
+            #
+            # Exact match on a normalised address is exhaustive because every
+            # stored address is lowercase (User.save plus
+            # ck_user_email_lowercase).
+            existing = User.objects.filter(email=email, tenant=tenant).first()
             if existing:
                 logger.warning(
-                    "provision_admin_user: %s already has a User account; "
-                    "skipping creation and marking link as SENT",
-                    email,
+                    "provision_admin_user: %s already has a User account at "
+                    "tenant %s; skipping creation and marking link as SENT",
+                    email, getattr(tenant, "slug", tenant),
                 )
                 admin_link.invite_status = InviteStatus.SENT
                 admin_link.invite_sent_at = timezone.now()
@@ -75,7 +90,6 @@ def provision_admin_user(
 
             first_name, last_name = _split_name(contact.full_name)
             invited_by = actor if isinstance(actor, User) else None
-            tenant = school.tenant
             role_obj = (
                 TenantRoleTemplate.objects.filter(tenant=tenant, key=role).first()
                 if role else None

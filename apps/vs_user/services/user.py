@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 from ..email_normalization import normalize_email
 from ..models import LoginSession, User, AuthEventLog
 from .audit import log_auth_event, blacklist_all_user_tokens
+from .email_availability import email_refusal
 from vs_rbac.models import TenantUserRoleAssignment
 
 
@@ -229,10 +230,16 @@ class EmailChangeService:
         if new_email == normalize_email(target_user.email):
             raise ValueError({'error_code': 'SAME_EMAIL', 'message': 'This is already your email address.'})
 
-        # Global uniqueness check - email must be unique across the whole platform.
-        # Exact match on the normalised value: stored addresses are all lowercase.
-        if User.objects.filter(email=new_email).exclude(pk=target_user.pk).exists():
-            raise ValueError({'error_code': 'DUPLICATE_EMAIL', 'message': 'This email is already in use.'})
+        # Uniqueness is PER TENANT, so the question is asked of the tenant that
+        # owns this account, not of the platform. Unscoped, a Bright Star
+        # parent could not be corrected to ada@gmail.com because Greenfield
+        # already had an account on it - and the refusal told Bright Star's
+        # admin that somebody, somewhere, holds the address.
+        refusal = email_refusal(
+            new_email, tenant=target_user.tenant_id, exclude_pk=target_user.pk,
+        )
+        if refusal:
+            raise ValueError({'error_code': 'DUPLICATE_EMAIL', 'message': refusal})
 
         target_user.email = new_email
         target_user.save(update_fields=['email', 'updated_at'])

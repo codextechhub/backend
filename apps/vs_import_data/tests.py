@@ -185,3 +185,142 @@ class SchoolImportRollbackTests(TestCase):
         self.assertTrue(reverse_target_record(self._row("9" * 40)))
         self.assertTrue(reverse_target_record(self._row("")))
         self.assertTrue(School.objects.filter(pk=school.pk).exists())
+
+
+class ImportAdminEmailScopeTests(TestCase):
+    """The importer's "already exists" question is per tenant, not per platform.
+
+    Unscoped it refused a legitimate row: Greenfield joins the platform with
+    ada.okoye@example.test as its branch administrator, and the file was
+    rejected because Bright Star - imported last term - already uses it.
+    """
+
+    def setUp(self):
+        from unittest import mock
+
+        self.tenant_required = lambda value=True: mock.patch(
+            "vs_user.services.sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN", value,
+        )
+        self.bright_star = make_school(slug="bright-star", name="Bright Star School")
+        self.greenfield = make_school(slug="greenfield", name="Greenfield Academy")
+        self.bright_star_branch = make_branch(self.bright_star)
+        self.greenfield_branch = make_branch(self.greenfield)
+        self.ada = make_school_admin(
+            self.bright_star_branch, email="ada.okoye@example.test",
+        )
+
+    def _branches_batch(self, school=None, email="ada.okoye@example.test"):
+        from types import SimpleNamespace
+
+        template = ImportTemplate.objects.create(
+            code=f"branches-scope-{school.pk if school else 'open'}",
+            name="Branches",
+            dataset_type=DatasetTypeChoices.BRANCHES,
+            default_file_format=FileFormatChoices.CSV,
+        )
+        for target in ("school_slug", "name", "branch_admin_email",
+                       "branch_admin_full_name", "is_main"):
+            ImportTemplateColumn.objects.create(
+                template=template, column_name=target, target_field=target,
+                data_type=TemplateColumnDataTypeChoices.STRING,
+            )
+        return SimpleNamespace(
+            template=template,
+            school=school,
+            preview_rows=[{
+                "school_slug": "" if school else self.greenfield.slug,
+                "name": "Annexe",
+                "branch_admin_email": email,
+                "branch_admin_full_name": "Ada Okoye",
+                "is_main": "FALSE",
+            }],
+        )
+
+    def _duplicate_issues(self, issues):
+        return [i for i in issues if i["code"] == "duplicate_record"]
+
+    def test_an_address_held_by_another_tenant_is_accepted(self):
+        from .services.validation_service import _validate_branches_rules
+
+        with self.tenant_required():
+            issues = _validate_branches_rules(self._branches_batch())
+
+        self.assertEqual(self._duplicate_issues(issues), [])
+
+    def test_an_address_held_in_the_same_tenant_is_refused(self):
+        from .services.validation_service import _validate_branches_rules
+
+        with self.tenant_required():
+            issues = _validate_branches_rules(
+                self._branches_batch(school=self.bright_star),
+            )
+
+        self.assertEqual(len(self._duplicate_issues(issues)), 1)
+        self.assertEqual(
+            self._duplicate_issues(issues)[0]["column_name"], "branch_admin_email",
+        )
+
+    def test_it_is_still_refused_across_tenants_while_the_switch_is_off(self):
+        """The pre-check must not be laxer than ``User.save``'s own guard, or
+        the row would pass validation and blow up during execution."""
+        from .services.validation_service import _validate_branches_rules
+
+        issues = _validate_branches_rules(self._branches_batch())
+
+        self.assertEqual(len(self._duplicate_issues(issues)), 1)
+
+    def _schools_batch(self, email="ada.okoye@example.test"):
+        from types import SimpleNamespace
+
+        template = ImportTemplate.objects.create(
+            code="schools-scope",
+            name="Schools",
+            dataset_type=DatasetTypeChoices.SCHOOLS,
+            default_file_format=FileFormatChoices.CSV,
+        )
+        for target in ("name", "slug", "school_admin_email", "school_admin_full_name"):
+            ImportTemplateColumn.objects.create(
+                template=template, column_name=target, target_field=target,
+                data_type=TemplateColumnDataTypeChoices.STRING,
+            )
+        return SimpleNamespace(
+            template=template,
+            school=None,
+            preview_rows=[{
+                "name": "Sunrise College",
+                "slug": "sunrise",
+                "school_admin_email": email,
+                "school_admin_full_name": "Ada Okoye",
+            }],
+        )
+
+    def test_a_new_school_may_reuse_an_address_once_the_switch_is_on(self):
+        """Every schools-import row creates a brand-new tenant, so there is no
+        tenant the address can already be taken in."""
+        from .services.validation_service import _validate_schools_rules
+
+        with self.tenant_required():
+            issues = _validate_schools_rules(self._schools_batch())
+
+        self.assertEqual(self._duplicate_issues(issues), [])
+
+    def test_a_new_school_is_still_refused_while_the_switch_is_off(self):
+        from .services.validation_service import _validate_schools_rules
+
+        issues = _validate_schools_rules(self._schools_batch())
+
+        self.assertEqual(len(self._duplicate_issues(issues)), 1)
+
+    def test_a_within_file_repeat_is_still_caught(self):
+        """The scoping change must not weaken the row-against-row rule."""
+        from .services.validation_service import _validate_schools_rules
+
+        batch = self._schools_batch(email="fresh@example.test")
+        batch.preview_rows.append(dict(batch.preview_rows[0], slug="sunset",
+                                       name="Sunset College"))
+
+        with self.tenant_required():
+            issues = _validate_schools_rules(batch)
+
+        self.assertEqual(len(self._duplicate_issues(issues)), 1)
+        self.assertEqual(self._duplicate_issues(issues)[0]["row_number"], 2)

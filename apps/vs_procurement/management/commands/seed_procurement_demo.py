@@ -20,6 +20,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db.models import F
 from django.utils import timezone
 
+from vs_tenants.models import Tenant
 from vs_finance.constants import DocumentStatus, PaymentMethod
 from vs_finance.models import Account, BankAccount, FiscalPeriod, LedgerEntity, TaxCode
 from vs_procurement.models import (
@@ -69,9 +70,21 @@ class Command(BaseCommand):
         if expense is None or payable is None:
             raise CommandError("CODEX chart is incomplete; run seed_finance_ar_demo --all first.")
 
-        actor = get_user_model().objects.filter(email="admin@codexng.com").first()
+        # Scoped to the platform tenant: admin@codexng.com is the bootstrap CX
+        # superuser, and the same address may legitimately also be a parent
+        # account at a school (Phase 0 settled that CX staff participate as
+        # customers). Unscoped, this seeder could pick the parent and file the
+        # whole procurement demo under a school user.
+        actor = (
+            get_user_model().objects
+            .filter(email="admin@codexng.com", tenant__kind=Tenant.Kind.PLATFORM)
+            .first()
+        )
         if actor is None:
-            raise CommandError("admin@codexng.com does not exist; seed the dev users first.")
+            raise CommandError(
+                "admin@codexng.com does not exist on the platform tenant; "
+                "seed the dev users first."
+            )
         requester = (
             get_user_model().objects.filter(tenant=entity.tenant, status="ACTIVE")
             .exclude(pk=getattr(actor, "pk", None)).order_by("id").first()

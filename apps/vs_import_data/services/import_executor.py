@@ -114,9 +114,10 @@ def import_cx_users_row(import_batch, payload: dict, queued_by) -> ImportExecuti
     """
     from types import SimpleNamespace
 
+    from vs_tenants.models import Tenant
     from vs_user.email_normalization import normalize_email
-    from vs_user.models import User
     from vs_user.serializers import UserCreateSerializer
+    from vs_user.services.email_availability import email_refusal
     from vs_user.services.user import UserCreationService
     from vs_workflow.services.submission import submit_for_approval
 
@@ -124,12 +125,23 @@ def import_cx_users_row(import_batch, payload: dict, queued_by) -> ImportExecuti
         return (payload.get(key) or "").strip()
 
     email = normalize_email(_s("email"))
-    if email and User.objects.filter(email=email).exists():
+    # Scoped to the tenant that will own the row. This handler forces
+    # user_type=CX_STAFF, and UserCreateSerializer.validate pins CX staff to
+    # the platform (codex) tenant regardless of who queued the batch, so that
+    # is the tenant the address has to be free in. Unscoped, a CX hire could
+    # not be imported because the same person already has a parent account at
+    # the school her own child attends - which Phase 0 settled as legitimate
+    # and unconnected.
+    platform_tenant = Tenant.objects.filter(
+        slug='codex', kind=Tenant.Kind.PLATFORM,
+    ).first()
+    refusal = email_refusal(email, tenant=platform_tenant)
+    if refusal:
         return ImportExecutionResult(
             action=ImportRowActionChoices.SKIP,
             instance=None,
             target_model="User",
-            message=f"User with email '{email}' already exists - skipped.",
+            message=f"User with email '{email}' skipped: {refusal}",
         )
 
     data = {"user_type": "CX_STAFF"}

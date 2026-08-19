@@ -2,6 +2,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from vs_tenants.references import find_tenant
 from vs_user.email_normalization import normalize_email
 from vs_user.models import PlatformStaffProfile, User
 from vs_user.services.user import UserCreationService
@@ -20,12 +21,35 @@ class Command(BaseCommand):
             "--email",
             help="Repair only this user email (recommended on staging).",
         )
+        parser.add_argument(
+            "--tenant_id",
+            metavar="TENANT",
+            help=(
+                "Narrow --email to one tenant, by numeric id or slug. An "
+                "address can be a login at several tenants, so it no longer "
+                "identifies one account on its own."
+            ),
+        )
 
     def handle(self, *args, **options):
         users = User.objects.filter(
             user_type=User.UserType.CX_STAFF,
             status=User.Status.PENDING_APPROVAL,
         ).select_related("tenant", "invited_by")
+        # Unlike delete_user and create_superuser this command never took
+        # ``.get()`` or ``.first()``: it filters and iterates, so an address
+        # held at two tenants repairs both rather than picking one. That is
+        # already safe (the work is idempotent and re-submits a stuck
+        # approval), but it is not always what the operator asked for, so
+        # --tenant_id narrows it. The user_type/status filter above means only
+        # CX staff can ever match, which today means the codex tenant only.
+        if options.get("tenant_id"):
+            tenant = find_tenant(options["tenant_id"])
+            if tenant is None:
+                raise CommandError(
+                    f"No tenant found for --tenant_id {options['tenant_id']!r} (id or slug)."
+                )
+            users = users.filter(tenant=tenant)
         if options.get("email"):
             users = users.filter(email=normalize_email(options["email"]))
 

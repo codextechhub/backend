@@ -17,6 +17,12 @@ Usage
     python manage.py delete_user --email user@example.com
     python manage.py delete_user --email alice@x.com bob@x.com
     python manage.py delete_user --email alice@x.com bob@x.com --force
+    python manage.py delete_user --email ada@gmail.com --tenant_id bright-star
+
+An address is unique PER TENANT, not platform-wide, so one address can name
+two unrelated accounts. Without --tenant_id (a tenant id or slug) this command
+refuses an ambiguous address and prints the tenants it belongs to, rather than
+hard-deleting whichever row came back first.
 
 Note
 ----
@@ -39,7 +45,18 @@ Note
 from django.core.management.base import BaseCommand, CommandError
 from django.db import models, transaction
 
+from vs_tenants.references import find_tenant
 from vs_user.email_normalization import normalize_email
+
+
+def _resolve_tenant(ref):
+    """Turn a ``--tenant_id`` argument into a Tenant, or None when not given."""
+    if ref in (None, ""):
+        return None
+    tenant = find_tenant(ref)
+    if tenant is None:
+        raise CommandError(f"No tenant found for --tenant_id {ref!r} (id or slug).")
+    return tenant
 
 
 def _related_querysets(user):
@@ -81,6 +98,15 @@ class Command(BaseCommand):
             help="One or more email addresses to delete.",
         )
         parser.add_argument(
+            "--tenant_id",
+            metavar="TENANT",
+            help=(
+                "Tenant that owns the account(s): its numeric id or its slug. "
+                "An address may now be a login at more than one tenant, so it "
+                "no longer identifies one account on its own."
+            ),
+        )
+        parser.add_argument(
             "--force",
             action="store_true",
             help="Skip confirmation prompt.",
@@ -91,14 +117,42 @@ class Command(BaseCommand):
         User = get_user_model()
 
         emails = [normalize_email(e) for e in options["email"]]
+        tenant = _resolve_tenant(options.get("tenant_id"))
 
         # Resolve all emails - collect not-found ones to report at the end.
-        users, not_found = [], []
+        #
+        # ``.get(email=...)`` on its own is no longer a question with one
+        # answer: ada@gmail.com is a legitimate login at Bright Star AND at
+        # Greenfield, so the unscoped form raises MultipleObjectsReturned, and
+        # this command hard-deletes a user and every trace of their work. It
+        # refuses rather than guessing, and names both tenants so the operator
+        # can say which one they meant.
+        users, not_found, ambiguous = [], [], []
         for email in emails:
-            try:
-                users.append(User.objects.select_related("tenant__school_profile").get(email=email))
-            except User.DoesNotExist:
+            matches = list(
+                User.objects.select_related("tenant__school_profile")
+                .filter(email=email, **({"tenant": tenant} if tenant else {}))
+                .order_by("tenant_id")
+            )
+            if not matches:
                 not_found.append(email)
+            elif len(matches) > 1:
+                ambiguous.append((email, matches))
+            else:
+                users.append(matches[0])
+
+        if ambiguous:
+            lines = []
+            for email, matches in ambiguous:
+                where = ", ".join(
+                    f"{getattr(u.tenant, 'slug', '?')} (--tenant_id {u.tenant_id})"
+                    for u in matches
+                )
+                lines.append(f"  {email} exists at: {where}")
+            raise CommandError(
+                "These addresses exist at more than one tenant. Re-run with "
+                "--tenant_id to say which account you mean:\n" + "\n".join(lines)
+            )
 
         if not users:
             raise CommandError("None of the provided emails were found.")

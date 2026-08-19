@@ -399,7 +399,12 @@ class Command(BaseCommand):
 
             def mk(email, first, last, user_type, branch):
                 email = normalize_email(email)
-                user = User.objects.filter(email=email).first()
+                # Scoped to the school being seeded. The addresses this seeder
+                # mints are already per-school (they carry the slug in their
+                # domain), so the unscoped form found the same rows - but it
+                # was the wrong question, and it would silently reuse another
+                # school's account the moment a shared address is seeded.
+                user = User.objects.filter(email=email, tenant=school.tenant).first()
                 if user is None:
                     user = User.objects.create_user(
                         email=email, password=SCHOOL_USER_PASSWORD,

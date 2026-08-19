@@ -28,6 +28,36 @@ _MAX_BIGINT = 9_223_372_036_854_775_807
 
 BRANCH_NOT_FOUND = "No such branch in this tenant."
 
+TENANT_NOT_FOUND = "No such tenant."
+
+
+def find_tenant(ref):
+    """Return the :class:`~vs_tenants.models.Tenant` ``ref`` names, or ``None``.
+
+    Accepts either the numeric primary key or the slug, because the two
+    audiences want different things: ``Tenant.slug`` is the stable
+    human-readable identifier (and the sign-in subdomain), while the numeric pk
+    is what an operator reads off a row they are already looking at. Blank
+    references, unparseable ones and unknown ones all answer ``None``.
+
+    Written for the operator-facing management commands, which must now be told
+    WHICH tenant an address belongs to: one address can be a login at several
+    of them, so an email no longer identifies one account.
+    """
+    if ref in (None, ""):
+        return None
+
+    from vs_tenants.models import Tenant
+
+    raw = str(ref).strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        if int(raw) > _MAX_BIGINT:
+            return None
+        return Tenant.objects.filter(pk=int(raw)).first()
+    return Tenant.objects.filter(slug=raw.lower()).first()
+
 
 def find_branch_in_tenant(tenant, ref):
     """Return the :class:`~vs_tenants.models.Branch` ``ref`` names in ``tenant``.
