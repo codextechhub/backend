@@ -52,6 +52,12 @@ def record_configuration_event(
         target_id=event.target_id,
         detail={"before": before or {}, "after": after or {}, **(metadata or {})},
         branch=branch,
+        # The local row already resolved this (including from the branch), and
+        # the mirror was throwing it away: a configuration change made for
+        # Bright Star landed in the platform trail with no customer on it. A
+        # platform-default change legitimately resolves to None here and stays
+        # null, which is what the platform layer means in this module.
+        tenant=tenant,
     )
     return event
 
@@ -64,6 +70,7 @@ def write_audit_log(
     target_id: str,
     detail: dict = None,
     branch=None,
+    tenant=None,
 ) -> None:
     """
     Dispatch a platform-level audit log entry to Module 5.
@@ -76,6 +83,10 @@ def write_audit_log(
     target_id   : str         - string representation of the target's primary key
     detail      : dict        - optional payload with before/after values or extra context
     branch      : Branch      - optional; set for branch-scoped changes
+    tenant      : Tenant      - optional; the customer the change belongs to. Left
+                  out it is derived from ``branch``, and failing that inherited
+                  from the request by ``emit_audit_event``. None all the way down
+                  means a platform-default change, which is a real answer here.
 
     Design note:
     The import of vs_audit's emit_audit_event is inside the function body to avoid
@@ -90,6 +101,10 @@ def write_audit_log(
         metadata["config_action"] = action
         if branch is not None:
             metadata["branch_id"] = str(branch.id)
+        # A branch carries its tenant on the row itself, so a caller that named
+        # only the branch has still told us the customer.
+        if tenant is None and branch is not None:
+            tenant = branch.tenant
 
         emit_audit_event(
             module_key="CONFIG",
@@ -97,6 +112,7 @@ def write_audit_log(
             entity_type=target_type,
             entity_id=str(target_id),
             actor_user=actor,
+            tenant=tenant,
             metadata=metadata,
         )
     except ImportError:

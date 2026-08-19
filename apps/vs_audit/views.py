@@ -19,6 +19,7 @@ from rest_framework.views import APIView
 from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, DestroyModelMixin
 from core.response import success_response, error_response
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
+from vs_tenants.models import Tenant
 
 from .models import (
     AuditEvent,
@@ -43,6 +44,7 @@ from .serializers import (
     ComplianceRuleDetailSerializer,
     ComplianceRuleCreateUpdateSerializer,
     AuditEventFilterSerializer,
+    NO_TENANT,
 )
 
 logger = logging.getLogger(__name__)
@@ -76,6 +78,15 @@ def apply_audit_event_filters(queryset, filters):
         queryset = queryset.filter(severity__in=severities)
     if statuses := filters.get("status"):
         queryset = queryset.filter(status__in=statuses)
+    if tenant_slug := filters.get("tenant_slug"):
+        # ``__none__`` is a first-class answer, not a fallback: platform
+        # operations, nightly sweeps and management commands legitimately belong
+        # to no customer, and a filter that could only narrow *to* a tenant would
+        # make every one of them unreachable from this screen.
+        if tenant_slug == NO_TENANT:
+            queryset = queryset.filter(tenant__isnull=True)
+        else:
+            queryset = queryset.filter(tenant__slug=tenant_slug)
     if actor_type := filters.get("actor_type"):
         queryset = queryset.filter(actor_type=actor_type)
     if actor_user_id := filters.get("actor_user_id"):
@@ -128,8 +139,43 @@ class AuditEventFilterOptionsView(APIView):
                 "severities": options(AuditSeverity.choices),
                 "statuses": options(AuditStatus.choices),
                 "actor_types": options(AuditActorType.choices),
+                "tenants": self._tenant_options(request),
             },
         )
+
+    def _tenant_options(self, request):
+        """The tenant roster for ``tenant_slug``, and only for platform callers.
+
+        The key that opens this endpoint is ``platform.audit.view``, but a key's
+        namespace is not the same thing as its audience: nothing in the grant
+        path stops that key being attached to a role inside a school tenant, and
+        this app's own export fixture attaches it to one. So the roster is gated
+        on the caller's tenant kind, which cannot be granted away, rather than on
+        the permission. Bright Star's audit officer opening the filter drawer
+        would otherwise be handed the name and slug of every other school on the
+        platform - Codex's customer list - which is a disclosure the Explorer
+        never made before and is not what "narrow the trail to one tenant" asks
+        for. Platform staff already see this list on the schools and proxy
+        screens, so for them it is nothing new. The gate stays correct if the
+        RBAC layer later forbids such grants outright; it just stops being the
+        only thing holding the line.
+
+        An empty list is a complete answer, not a broken one: a single-tenant
+        caller has no tenant dimension to offer, exactly as a single-branch
+        school gets no branch switcher.
+        """
+        tenant = getattr(request, "tenant", None)
+        if getattr(tenant, "kind", None) != Tenant.Kind.PLATFORM:
+            return []
+        rows = [
+            {"value": slug, "label": name}
+            for slug, name in Tenant.objects.order_by("name").values_list("slug", "name")
+        ]
+        # Platform operations, sweeps and management commands belong to nobody,
+        # and they are unreachable from this screen unless the console can offer
+        # the sentinel as a choice beside the real tenants.
+        rows.append({"value": NO_TENANT, "label": "No tenant (platform-level)"})
+        return rows
 
 
 class AuditEventListView(generics.ListAPIView):
@@ -178,7 +224,10 @@ class AuditEventListView(generics.ListAPIView):
         return Response(serializer.data)
 
     def get_queryset(self):
-        queryset = AuditEvent.objects.select_related("actor_user").all()
+        # ``tenant`` rides along because both event serializers render it as a
+        # slug. Now that the column is actually populated, leaving it out
+        # turns one query into one-per-row on a paginated screen.
+        queryset = AuditEvent.objects.select_related("actor_user", "tenant").all()
 
         # Validate incoming filters first
         filter_serializer = AuditEventFilterSerializer(data=self.request.query_params)
@@ -198,7 +247,7 @@ class AuditEventDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     """
 
     queryset = AuditEvent.objects.select_related(
-        "actor_user",
+        "actor_user", "tenant",
     ).all()
     serializer_class = AuditEventDetailSerializer
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
@@ -249,7 +298,9 @@ class MyActivityView(generics.ListAPIView):
     permission_classes = [IsAuthenticatedAndActive]
 
     def get_queryset(self):
-        qs = AuditEvent.objects.select_related("actor_user").filter(actor_user=self.request.user)
+        qs = AuditEvent.objects.select_related("actor_user", "tenant").filter(
+            actor_user=self.request.user,
+        )
 
         params = self.request.query_params
         if module_key := params.get("module_key"):
@@ -279,7 +330,7 @@ class MyActivitySubjectView(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        qs = AuditEvent.objects.select_related("actor_user").filter(
+        qs = AuditEvent.objects.select_related("actor_user", "tenant").filter(
             entity_type="User",
             entity_id=str(user.id),
         ).exclude(actor_user=user)
@@ -312,8 +363,10 @@ class EntityAuditTrailDetailView(APIView):
             entity_id=entity_id,
         )
 
+        # The whole trail is serialized in one response, so the tenant column
+        # is one join here or one query per event.
         event_qs = AuditEvent.objects.select_related(
-            "actor_user",
+            "actor_user", "tenant",
         ).filter(
             entity_type=entity_type,
             entity_id=entity_id,

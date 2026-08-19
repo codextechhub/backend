@@ -34,6 +34,11 @@ def _mirror_to_central(*, action, actor_user, entity, target_type, target_id,
             entity_id=str(target_id or ""),
             entity_label=document_number or str(target_id or ""),
             actor_user=actor_user,
+            # A set of books has exactly one canonical owner (LedgerEntity.tenant
+            # is not nullable), so the mirror can say which customer the posting
+            # belongs to instead of leaving the platform trail to guess. Guarded
+            # because posting code may mirror without a loaded entity.
+            tenant=getattr(entity, "tenant", None),
             status="SUCCESS" if status == FinanceAuditStatus.SUCCESS else "FAILED",
             severity="INFO" if status == FinanceAuditStatus.SUCCESS else "WARNING",
             summary=message or f"Finance: {action}",

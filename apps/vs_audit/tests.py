@@ -16,6 +16,7 @@ from vs_tenants.context import (
     clear_request_context,
     get_current_audit_identity,
     set_current_audit_identity,
+    set_current_tenant,
 )
 from vs_tenants.models import Tenant
 from vs_user.models import User
@@ -31,7 +32,7 @@ from .models import (
     ExportFormat,
     ExportJobStatus,
 )
-from .serializers import AuditEventFilterSerializer
+from .serializers import NO_TENANT, AuditEventFilterSerializer
 from .services import emit_audit_event
 from .views import (
     EXPORT_CSV_HEADER,
@@ -150,6 +151,174 @@ class AuditEventFilterContractTests(TestCase):
         self.assertIn("EXPORTS", AuditModuleKey.values)
         self.assertIn("PLATFORM", AuditModuleKey.values)
         self.assertIn("PROCUREMENT_ACTION", AuditActionType.values)
+
+
+class AuditEventTenantFilterTests(TestCase):
+    """Narrowing the trail to one customer - and finding what belongs to none.
+
+    Bright Star and Greenfield both have events; a nightly sweep has one that
+    belongs to neither. All three have to be reachable, and none of them may
+    leak into another's answer.
+    """
+
+    def setUp(self):
+        self.bright_star = Tenant.objects.create(
+            name="Bright Star School", slug="bright-star",
+            kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
+        )
+        self.greenfield = Tenant.objects.create(
+            name="Greenfield Academy", slug="greenfield",
+            kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
+        )
+        self.bright_star_event = self._event(self.bright_star, "SCH-1")
+        self.greenfield_event = self._event(self.greenfield, "SCH-2")
+        self.platform_event = self._event(None, "SWEEP-1")
+
+    def _event(self, tenant, entity_id):
+        return AuditEvent.objects.create(
+            module_key=AuditModuleKey.SCHOOL,
+            action_type=AuditActionType.UPDATE,
+            actor_type=AuditActorType.SYSTEM,
+            actor_label="Sweep worker",
+            tenant=tenant,
+            entity_type="School",
+            entity_id=entity_id,
+        )
+
+    def _filtered(self, value):
+        serializer = AuditEventFilterSerializer(data={"tenant_slug": value})
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        return set(
+            apply_audit_event_filters(
+                AuditEvent.objects.all(), serializer.validated_data,
+            ).values_list("id", flat=True)
+        )
+
+    def test_the_filter_narrows_to_one_tenant_and_excludes_the_others(self):
+        self.assertEqual(self._filtered("bright-star"), {self.bright_star_event.id})
+        self.assertEqual(self._filtered("greenfield"), {self.greenfield_event.id})
+
+    def test_events_belonging_to_no_tenant_are_reachable(self):
+        self.assertEqual(self._filtered(NO_TENANT), {self.platform_event.id})
+
+    def test_an_unknown_slug_is_refused_rather_than_answered_with_nothing(self):
+        # The trap this filter exists to remove: a near-miss slug that quietly
+        # reports "nothing happened at Bright Star".
+        serializer = AuditEventFilterSerializer(data={"tenant_slug": "bright-star-school"})
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("tenant_slug", serializer.errors)
+
+    def test_a_slug_is_matched_case_and_padding_insensitively(self):
+        self.assertEqual(
+            self._filtered("  BRIGHT-STAR  "), {self.bright_star_event.id},
+        )
+
+    def test_omitting_the_filter_still_returns_every_tenant(self):
+        serializer = AuditEventFilterSerializer(data={})
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        ids = set(
+            apply_audit_event_filters(
+                AuditEvent.objects.all(), serializer.validated_data,
+            ).values_list("id", flat=True)
+        )
+        self.assertEqual(
+            ids,
+            {self.bright_star_event.id, self.greenfield_event.id, self.platform_event.id},
+        )
+
+
+class AmbientTenantInheritanceTests(TestCase):
+    """Where an event's tenant comes from when the caller does not say.
+
+    The filter above is only worth having if the column is populated, and only
+    trustworthy if it is populated correctly. These pin both halves: what is
+    inherited, and what deliberately is not.
+    """
+
+    def setUp(self):
+        self.bright_star = Tenant.objects.create(
+            name="Bright Star School", slug="bright-star",
+            kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
+        )
+        self.greenfield = Tenant.objects.create(
+            name="Greenfield Academy", slug="greenfield",
+            kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
+        )
+        self.codex = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+    def tearDown(self):
+        clear_request_context()
+
+    def _emit(self, **kwargs):
+        return emit_audit_event(
+            module_key=AuditModuleKey.RBAC,
+            action_type=AuditActionType.ROLE_ASSIGNED,
+            entity_type="TenantRoleTemplate",
+            entity_id="bursar",
+            **kwargs,
+        )
+
+    def test_an_event_emitted_in_a_tenant_context_carries_it_with_no_caller_change(self):
+        # vs_rbac's signals never pass a tenant and are not being edited; the
+        # role Bright Star's bursar is granted must still be findable under
+        # Bright Star.
+        set_current_tenant(self.bright_star)
+
+        event = self._emit()
+
+        self.assertEqual(event.tenant_id, self.bright_star.pk)
+
+    def test_an_explicit_tenant_beats_the_ambient_one(self):
+        # The shape that makes this rule load-bearing: a Codex staffer creates
+        # Bright Star while asserting ?tenant=codex, and SchoolCreateSerializer
+        # names the new school's tenant on the event.
+        set_current_tenant(self.codex)
+
+        event = self._emit(tenant=self.bright_star)
+
+        self.assertEqual(event.tenant_id, self.bright_star.pk)
+
+    def test_an_explicit_tenant_beats_a_different_ambient_tenant(self):
+        set_current_tenant(self.greenfield)
+
+        event = self._emit(tenant=self.bright_star)
+
+        self.assertEqual(event.tenant_id, self.bright_star.pk)
+
+    def test_with_no_ambient_tenant_the_event_stays_null(self):
+        # A Celery task or a management command: nothing to inherit, and
+        # inventing one would be worse than leaving it empty.
+        clear_request_context()
+
+        event = self._emit()
+
+        self.assertIsNone(event.tenant_id)
+
+    def test_the_platform_tenant_is_not_inherited(self):
+        # Asserting ?tenant=codex says who is acting, not whose data is being
+        # touched. Stamping codex on it would hide the row from the Bright Star
+        # filter AND show it under Codex, which is worse than null.
+        set_current_tenant(self.codex)
+
+        event = self._emit()
+
+        self.assertIsNone(event.tenant_id)
+
+    def test_an_inherited_tenant_is_findable_through_the_filter(self):
+        set_current_tenant(self.bright_star)
+        event = self._emit()
+        clear_request_context()
+
+        serializer = AuditEventFilterSerializer(data={"tenant_slug": "bright-star"})
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        ids = set(
+            apply_audit_event_filters(
+                AuditEvent.objects.all(), serializer.validated_data,
+            ).values_list("id", flat=True)
+        )
+
+        self.assertIn(event.id, ids)
 
 
 class ProxiedAuditAttributionTests(TestCase):
@@ -412,6 +581,76 @@ class AuditExportFileFixture:
         ]
         AuditEvent.objects.bulk_create(events)
         return events
+
+
+class EventExplorerTenantFilterEndpointTests(AuditExportFileFixture, TestCase):
+    """The filter on the wire: same gate, same readers, one new parameter.
+
+    ``officer`` is a Codex audit officer; ``outsider`` holds the very same
+    ``platform.audit.view`` key inside Bright Star, and ``stranger`` holds
+    nothing. Nobody's reach may change.
+    """
+
+    def setUp(self):
+        self.build()
+        self.make_events(2)
+        AuditEvent.objects.filter(entity_type="PurchaseOrder").update(
+            tenant=self.other_tenant,
+        )
+        self.client = TenantAPIClient(self.officer)
+
+    @staticmethod
+    def _rows(response):
+        payload = response.data["data"]
+        return payload["results"] if isinstance(payload, dict) else payload
+
+    def test_the_filter_narrows_the_listing_to_one_tenant(self):
+        response = self.client.get(
+            "/v1/audit/events/", {"tenant_slug": self.other_tenant.slug},
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        rows = self._rows(response)
+        self.assertTrue(rows)
+        self.assertEqual({row["tenant"] for row in rows}, {self.other_tenant.slug})
+
+    def test_the_null_sentinel_finds_events_that_belong_to_no_tenant(self):
+        response = self.client.get("/v1/audit/events/", {"tenant_slug": NO_TENANT})
+
+        self.assertEqual(response.status_code, 200, response.data)
+        rows = self._rows(response)
+        self.assertTrue(rows)
+        self.assertEqual({row["tenant"] for row in rows}, {None})
+
+    def test_an_unknown_tenant_is_a_400_and_not_an_empty_page(self):
+        response = self.client.get("/v1/audit/events/", {"tenant_slug": "no-such-school"})
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_the_permission_gate_is_unchanged(self):
+        # Adding a filter must not open the surface to anyone new.
+        denied = TenantAPIClient(self.stranger).get(
+            "/v1/audit/events/", {"tenant_slug": self.other_tenant.slug},
+        )
+        self.assertEqual(denied.status_code, 403)
+
+        allowed = self.client.get("/v1/audit/events/")
+        self.assertEqual(allowed.status_code, 200)
+
+    def test_the_tenant_roster_is_offered_to_platform_callers_only(self):
+        platform = self.client.get("/v1/audit/events/filter-options/")
+        self.assertEqual(platform.status_code, 200, platform.data)
+        values = {row["value"] for row in platform.data["data"]["tenants"]}
+        self.assertIn(self.other_tenant.slug, values)
+        self.assertIn(NO_TENANT, values)
+
+        # A school audit officer holding the same key is not handed Codex's
+        # customer list just for opening the filter drawer.
+        school_side = TenantAPIClient(self.outsider).get(
+            "/v1/audit/events/filter-options/",
+        )
+        self.assertEqual(school_side.status_code, 200, school_side.data)
+        self.assertEqual(school_side.data["data"]["tenants"], [])
 
 
 class AuditExportStorageTests(AuditExportFileFixture, TestCase):
