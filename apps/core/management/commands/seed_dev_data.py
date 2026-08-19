@@ -119,7 +119,7 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.MIGRATE_HEADING("Organogram (Codex internal, 40 seats / 7 levels)..."))
         staff = list(
-            User.objects.filter(user_type="CX_STAFF", email__endswith="@vision.edu")
+            User.objects.filter(tenant__kind="PLATFORM", email__endswith="@vision.edu")
             .order_by("email")
         )
         if not staff:
@@ -397,7 +397,7 @@ class Command(BaseCommand):
             main = branches[0]
             domain = f"{school.slug}.example.com"
 
-            def mk(email, first, last, user_type, branch):
+            def mk(email, first, last, branch):
                 email = normalize_email(email)
                 # Scoped to the school being seeded. The addresses this seeder
                 # mints are already per-school (they carry the slug in their
@@ -409,34 +409,40 @@ class Command(BaseCommand):
                     user = User.objects.create_user(
                         email=email, password=SCHOOL_USER_PASSWORD,
                         first_name=first, last_name=last,
-                        user_type=user_type, status="ACTIVE",
+                        status="ACTIVE",
                         tenant=school.tenant, branch=branch,
                     )
                 return user
 
             users = {"admins": [], "branch_admins": [], "staff": [], "students": [], "parents": []}
             # The school administrator is posted school-wide: branch=None is a
-            # real posting meaning "every campus", not a missing one. Everyone
-            # who works at a school is STAFF now; what separates this person
-            # from a teacher is the role assigned in _rbac below, not a persona.
-            users["admins"].append(mk(f"admin@{domain}", "Amaka", school.code.title(), "STAFF", None))
+            # real posting meaning "every campus", not a missing one. What
+            # separates this person from a teacher is the role assigned in
+            # _rbac below - which is now the only thing that ever did.
+            #
+            # The buckets below still say "students" and "parents" because the
+            # seeder builds a school-shaped cast to look at. They are ordinary
+            # tenant users; nothing marks them, and nothing reads a mark. A
+            # pupil becomes a pupil when the schools app gives him a student
+            # record, and a parent when a guardian record names her.
+            users["admins"].append(mk(f"admin@{domain}", "Amaka", school.code.title(), None))
             for i, br in enumerate(branches):
                 users["branch_admins"].append(
-                    mk(f"branch{i + 1}.admin@{domain}", first_names[i], "Balogun", "STAFF", br)
+                    mk(f"branch{i + 1}.admin@{domain}", first_names[i], "Balogun", br)
                 )
             for i in range(3):
                 users["staff"].append(
-                    mk(f"teacher{i + 1}@{domain}", first_names[i + 2], "Teacher", "STAFF",
+                    mk(f"teacher{i + 1}@{domain}", first_names[i + 2], "Teacher",
                        branches[i % len(branches)])
                 )
             for i in range(4):
                 users["students"].append(
-                    mk(f"student{i + 1}@{domain}", first_names[i + 5], "Student", "STUDENT",
+                    mk(f"student{i + 1}@{domain}", first_names[i + 5], "Student",
                        branches[i % len(branches)])
                 )
             for i in range(2):
                 users["parents"].append(
-                    mk(f"parent{i + 1}@{domain}", first_names[i + 9], "Parent", "PARENT", main)
+                    mk(f"parent{i + 1}@{domain}", first_names[i + 9], "Parent", main)
                 )
             result[school.pk] = users
             total += sum(len(v) for v in users.values())
@@ -647,7 +653,7 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.MIGRATE_HEADING("CX security history..."))
         staff = list(
-            User.objects.filter(user_type="CX_STAFF", email__endswith="@vision.edu")
+            User.objects.filter(tenant__kind="PLATFORM", email__endswith="@vision.edu")
             .order_by("email")[:6]
         )
         devices = [
@@ -688,9 +694,9 @@ class Command(BaseCommand):
         target_school = schools[0] if schools else None
         if target_school is not None:
             # Whom a CS lead would proxy is a question about authority, and
-            # authority is the role. Asking user_type used to answer it only
-            # because SCHOOL_ADMIN happened to exist; STAFF says nothing, and
-            # would have picked a random teacher.
+            # authority is the role. Asking a persona column used to answer it
+            # only because SCHOOL_ADMIN happened to exist; STAFF said nothing,
+            # and would have picked a random teacher.
             target_user = (
                 User.objects.filter(
                     tenant=target_school.tenant,

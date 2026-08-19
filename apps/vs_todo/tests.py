@@ -27,9 +27,16 @@ from .services.stats import area_tasks_qs, stats_for
 
 
 def _staff(email, first, last, **extra):
+    from vs_tenants.models import Tenant
+
+    # vs_todo is a platform surface, and being platform staff IS being on the
+    # platform tenant. Named here rather than derived from an absent persona.
+    extra.setdefault(
+        "tenant", Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM),
+    )
     return User.objects.create_user(
         email=email, first_name=first, last_name=last,
-        user_type=User.UserType.CX_STAFF, status=User.Status.ACTIVE, **extra,
+        status=User.Status.ACTIVE, **extra,
     )
 
 

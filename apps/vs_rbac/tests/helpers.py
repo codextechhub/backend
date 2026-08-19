@@ -89,13 +89,23 @@ def make_branch(school_or_tenant, name="Main Branch", is_main=True, **kwargs):
     )
 
 
+def platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant. There is no persona column
+    standing in for it any more, so a fixture that wants a CX account names the
+    tenant, exactly as production code does.
+    """
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 def make_vision_user(email="vision@test.com", password="testpass123",
                      super_admin=False, **kwargs):
-    """Create a CX_STAFF user. With ``super_admin=True`` also grant the
+    """Create a platform-tenant user. With ``super_admin=True`` also grant the
     ``xvs_super_admin`` platform role so the user bypasses RBAC checks
     (mirrors how real Vision admins operate the platform)."""
     defaults = {
-        "user_type": "CX_STAFF",
+        "tenant": platform_tenant(),
         "status": "ACTIVE",
         "first_name": "Vision",
         "last_name": "Staff",
@@ -120,13 +130,12 @@ def make_vision_user(email="vision@test.com", password="testpass123",
 def make_school_admin(branch, email="admin@test.com", password="testpass123", **kwargs):
     """A tenant staff account. The name says what the fixture is *for*.
 
-    There is no SCHOOL_ADMIN persona any more - a principal and a teacher are
-    both STAFF, and their roles separate them - so this differs from
+    There is no persona at all any more - a principal and a teacher are the
+    same kind of row, and their roles separate them - so this differs from
     ``make_staff_user`` only in the name it gives the person. Callers that want
     school-wide reach pass ``branch=None``.
     """
     defaults = {
-        "user_type": "STAFF",
         "status": "ACTIVE",
         "branch": branch,
         "first_name": "School",
@@ -143,7 +152,6 @@ def make_school_admin(branch, email="admin@test.com", password="testpass123", **
 
 def make_staff_user(branch, email="staff@test.com", password="testpass123", **kwargs):
     defaults = {
-        "user_type": "STAFF",
         "status": "ACTIVE",
         "branch": branch,
         "first_name": "Staff",

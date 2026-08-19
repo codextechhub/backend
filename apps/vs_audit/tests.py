@@ -42,14 +42,25 @@ from .views import (
 )
 
 
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 class AuditEventFilterContractTests(TestCase):
     def setUp(self):
-        self.actor = User.objects.create_user(
+        self.actor = User.objects.create_user(tenant=_platform_tenant(), 
             email="procurement.auditor@example.test",
             password="Str0ng!pass123",
             first_name="Priya",
             last_name="Buyer",
-            user_type="CX_STAFF",
             status="ACTIVE",
         )
 
@@ -324,28 +335,25 @@ class AmbientTenantInheritanceTests(TestCase):
 class ProxiedAuditAttributionTests(TestCase):
     def setUp(self):
         self.tenant = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
-        self.proxier = User.objects.create_user(
+        self.proxier = User.objects.create_user(tenant=_platform_tenant(), 
             email="audit-proxier@codex.test",
             password="Str0ng!pass123",
             first_name="Audit",
             last_name="Proxier",
-            user_type="CX_STAFF",
             status="ACTIVE",
         )
-        self.target = User.objects.create_user(
+        self.target = User.objects.create_user(tenant=_platform_tenant(), 
             email="audit-target@codex.test",
             password="Str0ng!pass123",
             first_name="Proxy",
             last_name="Target",
-            user_type="CX_STAFF",
             status="ACTIVE",
         )
-        self.third_party = User.objects.create_user(
+        self.third_party = User.objects.create_user(tenant=_platform_tenant(), 
             email="audit-third-party@codex.test",
             password="Str0ng!pass123",
             first_name="Third",
             last_name="Party",
-            user_type="CX_STAFF",
             status="ACTIVE",
         )
         self.session = ImpersonationSession.objects.create(
@@ -535,8 +543,7 @@ class AuditExportFileFixture:
 
         tenant = tenant or self.tenant
         user = User.objects.create_user(
-            email=email, password="Str0ng!pass123", user_type="CX_STAFF",
-            status="ACTIVE", first_name=email.split("@")[0], last_name="Tester",
+            email=email, password="Str0ng!pass123", status="ACTIVE", first_name=email.split("@")[0], last_name="Tester",
             tenant=tenant,
         )
         template, _ = TenantRoleTemplate.objects.get_or_create(

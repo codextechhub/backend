@@ -2,6 +2,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from vs_tenants.models import Tenant
 from vs_tenants.references import find_tenant
 from vs_user.email_normalization import normalize_email
 from vs_user.models import PlatformStaffProfile, User
@@ -33,7 +34,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         users = User.objects.filter(
-            user_type=User.UserType.CX_STAFF,
+            tenant__kind=Tenant.Kind.PLATFORM,
             status=User.Status.PENDING_APPROVAL,
         ).select_related("tenant", "invited_by")
         # Unlike delete_user and create_superuser this command never took
@@ -41,8 +42,8 @@ class Command(BaseCommand):
         # held at two tenants repairs both rather than picking one. That is
         # already safe (the work is idempotent and re-submits a stuck
         # approval), but it is not always what the operator asked for, so
-        # --tenant_id narrows it. The user_type/status filter above means only
-        # CX staff can ever match, which today means the codex tenant only.
+        # --tenant_id narrows it. The tenant-kind filter above means only
+        # platform users can ever match, which today means the codex tenant.
         if options.get("tenant_id"):
             tenant = find_tenant(options["tenant_id"])
             if tenant is None:

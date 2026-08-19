@@ -27,6 +27,18 @@ from .helpers import make_branch, make_school, make_school_admin
 
 # ── Throwaway views used only by this module ───────────────────────────────
 
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 class BareSurfaceView(APIView):
     """Declares nothing at all: no permission_classes, no surface membership.
 
@@ -157,9 +169,9 @@ class PendingTenantSurfaceDeclarationTests(PendingTenantTestBase):
         self.assertEqual(active_answer.content, pending_answer.content)
 
     def test_platform_actor_impersonating_into_a_pending_tenant_is_scoped_the_same(self):
-        cx = User.objects.create_user(
+        cx = User.objects.create_user(tenant=_platform_tenant(), 
             email="cx-proxy@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE",
+            status="ACTIVE",
             first_name="CX", last_name="Proxy",
         )
         session = ImpersonationSession.objects.create(

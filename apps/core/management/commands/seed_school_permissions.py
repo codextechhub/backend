@@ -83,7 +83,7 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
 
     ("school", "roles", "view",                _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
     ("school", "roles", "assign",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
-    # Explicit grants replace the removed implicit SCHOOL_ADMIN user_type
+    # Explicit grants replace the removed implicit SCHOOL_ADMIN persona
     # authority over role templates (tenant refactor: personas grant nothing).
     ("school", "roles", "create",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("school", "roles", "update",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),

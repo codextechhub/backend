@@ -73,7 +73,7 @@ class LoginService:
             raise ValueError({'code': 'INVALID_CREDENTIALS', 'detail': 'Invalid credentials.'})
 
         # 2. School-binding enforcement - non-platform tenants must resolve to a
-        # school profile. Gated by the actor's TENANT KIND, not their user_type.
+        # school profile. Gated by the actor's TENANT KIND.
         if user and getattr(user.tenant, 'kind', None) != Tenant.Kind.PLATFORM:
             if getattr(user.tenant, 'school_profile', None) is None:
                 record_attempt(

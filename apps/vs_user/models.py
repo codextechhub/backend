@@ -26,10 +26,15 @@ from django.db.models import Q, Max
 from django.db.models.functions import Lower
 from django.utils import timezone
 
-from vs_tenants.models import Branch
+from vs_tenants.models import Branch, Tenant
 from vs_rbac.managers import TenantAwareManager
 
 from . import email_normalization
+
+# The one fact that used to be recorded twice - once as the tenant's kind and
+# once as a ``CX_STAFF`` persona on every one of its users. Bound to a name
+# here so the several places that ask it read alike.
+PLATFORM_TENANT_KIND = Tenant.Kind.PLATFORM
 
 
 # =============================================================================
@@ -153,17 +158,23 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     # ── Choices ──────────────────────────────────────────────────────────────
 
-    class UserType(models.TextChoices):
-        # A staff member is a staff member. What separated a "school admin", a
-        # principal and a teacher was never the persona - it was the
-        # permissions in their role - so the two admin personas are gone and
-        # everyone who works at a tenant is STAFF. Reach (whole-school versus
-        # one branch) is carried by the role assignment's branch, which is what
-        # ``vs_rbac.scoping.visible_branch_ids`` already reads.
-        CX_STAFF          = 'CX_STAFF',      'CX Staff'
-        STAFF             = 'STAFF',         'Staff'
-        STUDENT           = 'STUDENT',       'Student'
-        PARENT            = 'PARENT',        'Parent/Guardian'
+    # There is deliberately no ``UserType``.
+    #
+    # A persona column can disagree with reality, and nothing could ever
+    # detect the disagreement: a row marked STUDENT with no student record
+    # anywhere was writable and undetectable. Every question the column used to
+    # answer is now asked of something that cannot be wrong about itself.
+    #
+    #   "does this person work for the platform?"  ->  ``is_platform_user``,
+    #       which reads the kind of the tenant the account actually belongs to;
+    #   "is this person a parent?"                 ->  they have a guardian
+    #       record;
+    #   "what does this person do here?"           ->  their role, which is
+    #       also the only thing that decides what they may do.
+    #
+    # CX_STAFF and "belongs to the PLATFORM tenant" were the same fact recorded
+    # twice, with nothing holding the two copies together. STUDENT and PARENT
+    # were read by no line of code at all.
 
     class Status(models.TextChoices):
         DRAFT            = 'DRAFT',            'Draft'
@@ -217,16 +228,8 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     # Starts at 10.
     uid = models.PositiveIntegerField(null=True, blank=True, editable=False)
 
-    # ──User type and status ───────────────────────────────────────────────────────
+    # ── Status ────────────────────────────────────────────────────────────────
 
-    user_type = models.CharField(
-        max_length=32, choices=UserType.choices,
-        help_text=(
-            'Inert domain marker for the person\'s persona. Migrates into the '
-            'future profile models and MUST NEVER drive authorization - all '
-            'access decisions run through tenant RBAC, not this field.'
-        ),
-    )
     role      = models.CharField(max_length=120, blank=True, default='')  # Denormalized display name; actual grants live in TenantUserRoleAssignment.
     status    = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
 
@@ -265,43 +268,50 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     class Meta:
         db_table = 'vs_users_user'
         constraints = [
-            # The whole of the branch rule, in one place.
+            # THE BRANCH RULE IS NOT HERE. It is a database TRIGGER, installed
+            # by vs_user migration 0009, and this comment is the signpost to it.
             #
-            # Vision Staff must not be bound to any branch: they work for the
+            # The rule itself is unchanged: a user on a PLATFORM-kind tenant
+            # must not be bound to a branch. Platform staff work for the
             # platform, and the platform tenant owns no branches for them to be
             # bound to. Every tenant user MAY carry one, and a NULL means
             # "across the whole tenant" - the same first-class value the
             # academic structure and procurement documents already use. It does
             # not mean "no branches exist".
             #
-            # There is deliberately no companion constraint requiring a branch.
-            # There used to be (ck_branch_required_for_branch_level_users), and
-            # it existed only to make SCHOOL_ADMIN the one persona allowed to be
-            # school-wide. With the admin personas gone, school-wide reach is a
-            # property of the role assignment, not of the persona, and any
-            # tenant user can legitimately hold it.
+            # It used to be ``ck_vision_staff_no_branch``, a CheckConstraint
+            # reading ``user_type='CX_STAFF'``. That was a correlated proxy for
+            # the tenant kind, not the rule, and the two could drift apart in
+            # silence. Stating the real rule needs the tenant's ``kind``, which
+            # lives in another table - and a CHECK constraint is evaluated per
+            # row and may not contain a subquery, on PostgreSQL or anywhere
+            # else, so no CheckConstraint can express it. Django says so first:
+            # a relational lookup in a CheckConstraint raises FieldError
+            # ("Joined field references are not permitted in this query").
             #
-            # ``User.branch_assignment_error`` states this same rule for Python,
+            # A trigger can, so the guarantee is kept rather than downgraded to
+            # a Python-only check. Two triggers, in fact - see the migration -
+            # because the pair (user.tenant.kind, user.branch_id) can be broken
+            # from either side: by writing the user row, or by flipping an
+            # existing tenant to PLATFORM underneath its users.
+            #
+            # ``User.branch_assignment_error`` states the same rule for Python,
             # and ``clean()`` and ``UserCreateSerializer`` both consult it, so
             # the database and the application cannot drift apart.
-            models.CheckConstraint(
-                condition=(
-                    Q(user_type='CX_STAFF', branch__isnull=True)
-                    | ~Q(user_type='CX_STAFF')
-                ),
-                name='ck_vision_staff_no_branch',
-            ),
-            # uid is unique within each tenant for tenant-scoped (non-CX) users.
+
+            # uid is unique within its tenant - for every user, now that there
+            # is no persona to split them by.
+            #
+            # This was two constraints: uid unique per tenant for non-CX users,
+            # and uid unique globally for CX staff. They were never two rules.
+            # All platform staff live in the one PLATFORM tenant, so "unique
+            # among CX staff" and "unique within the platform tenant" pick out
+            # exactly the same rows - the second constraint was the first one
+            # spelled differently because the persona was doing the tenant's
+            # job. One rule states it for everybody.
             models.UniqueConstraint(
                 fields=['tenant', 'uid'],
-                condition=~Q(user_type='CX_STAFF'),
                 name='unique_uid_per_tenant',
-            ),
-            # uid is unique across all Vision Staff.
-            models.UniqueConstraint(
-                fields=['uid'],
-                condition=Q(user_type='CX_STAFF'),
-                name='unique_uid_vision_staff',
             ),
             # No address reaches this table with an uppercase character in it.
             # save(), full_clean() and the bulk writes all fold the value, but
@@ -339,7 +349,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             ),
         ]
         indexes = [
-            models.Index(fields=['tenant', 'user_type', 'status']),
+            models.Index(fields=['tenant', 'status']),
             models.Index(fields=['tenant', 'branch']),
             models.Index(fields=['email', 'status']),
         ]
@@ -348,29 +358,38 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     # ── Validation ────────────────────────────────────────────────────────────
 
     @classmethod
-    def branch_assignment_error(cls, user_type, has_branch: bool) -> str | None:
+    def branch_assignment_error(cls, tenant, has_branch: bool) -> str | None:
         """The branch rule, stated once, for every writer to consult.
 
         Returns the refusal in words, or ``None`` when the pairing is legal.
 
-        It used to be written four times - in two check constraints, in
-        ``clean()`` and in ``UserCreateSerializer.validate`` - and each copy had
-        to name SCHOOL_ADMIN as the one persona allowed to be school-wide. With
-        the admin personas gone there is one rule left, and it is short: Vision
-        Staff take no branch, and everybody else may or may not have one.
+        The rule is short: a user on the PLATFORM tenant takes no branch, and
+        everybody else may or may not have one. It used to be asked of
+        ``user_type``, which only correlated with the answer; asking the tenant
+        is asking the fact.
 
         Takes ``has_branch`` as a bool rather than the branch itself so a caller
         holding only an unresolved reference - the create serializer, which must
-        judge CX staff before it looks a branch up - can ask the same question
-        as a caller holding a saved row.
+        judge a platform hire before it looks a branch up - can ask the same
+        question as a caller holding a saved row. ``tenant`` is likewise taken
+        as the object (or ``None``) rather than read off an instance, for the
+        same caller.
+
+        The database enforces this too. See the note in ``Meta.constraints``:
+        it is a trigger rather than a CheckConstraint, because the rule spans
+        two tables.
         """
-        if user_type == cls.UserType.CX_STAFF and has_branch:
-            return 'Vision Staff must not be assigned to a branch.'
+        if getattr(tenant, 'kind', None) == PLATFORM_TENANT_KIND and has_branch:
+            return 'Platform staff must not be assigned to a branch.'
         return None
 
     def clean(self):
         super().clean()
-        error = self.branch_assignment_error(self.user_type, bool(self.branch_id))
+        # Reads tenant_id first so an unsaved instance with no tenant yet asks
+        # nothing of the database and simply passes - the missing tenant is
+        # reported by clean_fields(), which has already run.
+        tenant = self.tenant if self.tenant_id else None
+        error = self.branch_assignment_error(tenant, bool(self.branch_id))
         if error:
             raise ValidationError(error)
         self._guard_cross_tenant_email()
@@ -467,30 +486,32 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     def _derive_tenant(self):
         """Fill in the canonical home tenant when one wasn't supplied.
 
-        Branch-bound users inherit their branch's own tenant; CX Staff fall
-        back to the Codex PLATFORM tenant. Runs from both full_clean() and
-        save() so validation and persistence agree on the derived value.
+        A branch names its own tenant, so a branch-bound user inherits it.
+        There is exactly one such derivation, and it reads a real relationship.
 
-        A tenant user with no branch has nothing to derive from, and there is
-        no honest guess to make: the account could belong to any tenant on the
-        platform, and picking one would put a person inside a customer they
-        have no business being in. That shape used to be rare - only a
-        SCHOOL_ADMIN could be branchless - but any tenant user may be
-        school-wide now, so the caller MUST pass ``tenant=``. The instance is
-        left with a null tenant here and refused: ``full_clean()`` reports it
-        as ``{'tenant': ['This field cannot be null.']}``, and ``save()``
-        raises rather than reaching the database, where it would surface as an
+        Nothing else can be derived, and nothing should be. A user with no
+        branch could belong to any tenant on the platform, and picking one
+        would put a person inside a customer they have no business being in.
+        There used to be a second rule here - a ``CX_STAFF`` account fell back
+        to the Codex PLATFORM tenant - and it was the persona column standing
+        in for the answer it was supposed to be derived FROM. With the column
+        gone the circle is broken: a caller creating platform staff names the
+        platform tenant, the same way a caller creating a school user names
+        the school's.
+
+        Note what is deliberately NOT written here. "No branch and no tenant"
+        does not mean "platform staff" - that would be inferring an identity
+        from an absence, and one mistyped tenant would silently mint a
+        colleague inside CodeX. The instance is left with a null tenant and
+        refused instead: ``full_clean()`` reports it as
+        ``{'tenant': ['This field cannot be null.']}``, and ``save()`` raises
+        rather than reaching the database, where it would surface as an
         IntegrityError naming a column instead of the mistake.
         """
         if self.tenant_id:
             return
         if self.branch_id:
             self.tenant_id = self.branch.tenant_id
-        elif self.user_type == self.UserType.CX_STAFF:
-            from vs_tenants.models import Tenant
-            self.tenant = Tenant.objects.filter(
-                slug="codex", kind=Tenant.Kind.PLATFORM,
-            ).first()
 
     def _normalize_email(self):
         """Fold the address to the single form this table stores.
@@ -531,19 +552,16 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         self._guard_cross_tenant_email(update_fields=kwargs.get('update_fields'))
         if self.uid is None:
             with transaction.atomic():
-                if self.user_type == self.UserType.CX_STAFF:
-                    max_uid = (
-                        User.objects.select_for_update()
-                        .filter(user_type=self.UserType.CX_STAFF)
-                        .aggregate(m=Max('uid'))['m']
-                    )
-                else:
-                    max_uid = (
-                        User.objects.select_for_update()
-                        .filter(tenant_id=self.tenant_id)
-                        .exclude(user_type=self.UserType.CX_STAFF)
-                        .aggregate(m=Max('uid'))['m']
-                    )
+                # One allocation rule, matching the one uid constraint: the
+                # next number within this account's own tenant. Platform staff
+                # used to be counted separately, over every CX_STAFF row
+                # regardless of tenant - which, since they all sit in the one
+                # PLATFORM tenant, produced the same sequence this does.
+                max_uid = (
+                    User.objects.select_for_update()
+                    .filter(tenant_id=self.tenant_id)
+                    .aggregate(m=Max('uid'))['m']
+                )
                 self.uid = (max_uid or 9) + 1
                 self._sync_is_active()
                 update_fields = kwargs.get('update_fields')
@@ -582,14 +600,25 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         return self.status == self.Status.SUSPENDED
 
     @property
-    def is_vision_staff(self) -> bool:
-        return self.user_type == self.UserType.CX_STAFF
+    def is_platform_user(self) -> bool:
+        """True when this account belongs to a PLATFORM-kind tenant.
+
+        The replacement for ``user_type == CX_STAFF``, and the same question -
+        asked of the tenant the account is actually in rather than of a column
+        that merely agreed with it. Nothing kept those two in step, so they
+        could have disagreed at any time without anything noticing.
+
+        Says nothing about what the person may do: that is their role, and only
+        their role. This answers "which side of the platform boundary is this
+        account on", which is a different question and the only one it answers.
+        """
+        return getattr(self.tenant, 'kind', None) == PLATFORM_TENANT_KIND
 
     def mark_password_change(self):
         self.password_changed_at = timezone.now()
 
     def __str__(self):
-        return f'{self.email} ({self.user_type})'
+        return f'{self.email} ({self.status})'
 
 # =============================================================================
 # UserInvitation
@@ -960,7 +989,8 @@ class AuthEventLog(TimeStampedModel):
 
 class PlatformStaffProfile(TimeStampedModel):
     """
-    Extended personal / HR profile for CX Staff (User.UserType.CX_STAFF).
+    Extended personal / HR profile for platform staff - the users whose
+    tenant is PLATFORM-kind.
     One row per platform staff member. Kept separate from User so the auth
     model stays lean - same pattern as AccountLockout / LoginSession.
 
@@ -1053,10 +1083,11 @@ class PlatformStaffProfile(TimeStampedModel):
 
     def clean(self):
         super().clean()
-        # Profile is valid only for CX Staff. user_type lives on the User
-        # table, so this is enforced here rather than via a DB CheckConstraint.
-        if self.user_id and self.user.user_type != User.UserType.CX_STAFF:
-            raise ValidationError('PlatformStaffProfile can only be attached to CX Staff users.')
+        # Platform staff only. The fact lives on the User's TENANT, one join
+        # away, so it is enforced here rather than via a DB CheckConstraint -
+        # the same reason the branch rule needed a trigger.
+        if self.user_id and not self.user.is_platform_user:
+            raise ValidationError('PlatformStaffProfile can only be attached to platform staff.')
 
     @property
     def is_active_employee(self) -> bool:
@@ -1438,8 +1469,8 @@ class PositionAssignment(TimeStampedModel):
 
     def clean(self):
         super().clean()
-        if self.user_id and self.user.user_type != User.UserType.CX_STAFF:
-            raise ValidationError('Only CX Staff can be assigned to a position.')
+        if self.user_id and not self.user.is_platform_user:
+            raise ValidationError('Only platform staff can be assigned to a position.')
         if self.end_date and self.end_date < self.start_date:
             raise ValidationError('end_date cannot be before start_date.')
         # One current primary assignment per user (MariaDB-safe: enforced here).

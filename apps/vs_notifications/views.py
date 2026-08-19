@@ -396,7 +396,7 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
 
     def list(self, request):
         """GET /notifications/history/"""
-        is_vision_staff = getattr(request.user, "is_vision_staff", False)
+        is_vision_staff = getattr(request.user, "is_platform_user", False)
         qs = self.get_queryset()
 
         try:

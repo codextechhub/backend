@@ -233,7 +233,8 @@ class IsAuthenticatedAndActive(BasePermission):
 class IsVisionStaff(BasePermission):
     """
     Vision staff can manage global permission registry + approve/deny requests.
-    Assumes your user model has user_type and includes VISION_STAFF (Module 3).
+    "Vision staff" means an account on a PLATFORM-kind tenant, which is what
+    has_permission below reads. There is no persona column to consult.
     """
 
     def has_permission(self, request, view):

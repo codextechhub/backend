@@ -44,7 +44,7 @@ class ConfigurationDefinition(models.Model):
     against it and application code can read it through
     ``vs_config.conf.get_config(key)``.
 
-    Only platform (CX_STAFF) users may create, update, or archive
+    Only platform-tenant users may create, update, or archive
     definitions; school users can at most read them and write values where
     ``allowed_scopes`` permits.
 

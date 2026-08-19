@@ -259,7 +259,7 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
 
 
 #: Every key the school catalogue calls school-wide, flattened. This is the
-#: split that survived the removal of ``User.UserType.SCHOOL_ADMIN`` and
+#: split that survived the removal of the ``SCHOOL_ADMIN`` persona and
 #: ``BRANCH_ADMIN``: it says which keys are meaningless when pinned to one
 #: branch, which is the only thing those two personas ever really recorded. It
 #: is exported rather than left implicit in the table.

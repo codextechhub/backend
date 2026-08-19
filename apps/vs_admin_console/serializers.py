@@ -25,15 +25,16 @@ class ImpersonationSessionSerializer(serializers.ModelSerializer):
     def _staff_type_label(user):
         """Who an operator is looking at, in the words they would use.
 
-        For a CX hire the persona still says something real - CX_STAFF survives
-        and means "works for the platform, not for a school".
+        There is no persona left to fall back on, and there never should have
+        been one: a proxy log reading "CX Staff proxied Staff" could not tell a
+        reviewer whether a CS lead stepped into Corona's principal or into a
+        Year 4 teacher. The role separates those two people, so the role is
+        what the label names.
 
-        For anyone inside a tenant it no longer does. This label used to read
-        "School Admin", and it was only ever informative because that persona
-        existed; every tenant user is ``STAFF`` now, and a proxy log reading
-        "CX Staff proxied Staff" cannot tell a reviewer whether a CS lead
-        stepped into Corona's principal or into a Year 4 teacher. The role is
-        what separates those two people, so it is what the label names.
+        Only one distinction survives without a role to read, and it is a real
+        one: an account on the PLATFORM tenant works for the platform, not for
+        a school. That is read off the tenant, which cannot be wrong about
+        itself, rather than off a column that merely agreed with it.
 
         This is a caption, not a gate: nothing here decides what anyone may do.
 
@@ -48,16 +49,16 @@ class ImpersonationSessionSerializer(serializers.ModelSerializer):
         assignments = list(assignments)
         if any(assignment.role.key.startswith("xvs_") for assignment in assignments):
             return "XVS Staff"
-        if user.user_type != user.UserType.CX_STAFF:
-            names = sorted(
-                {a.role.name for a in assignments if a.role.name}
-            )
-            if names:
-                return ", ".join(names)
-        # A CX hire, or a tenant account that holds no active role yet. The
-        # persona is the only thing left to say, and for the first of those it
-        # is also the right thing to say.
-        return user.get_user_type_display()
+        if user.is_platform_user:
+            return "CX Staff"
+        names = sorted({a.role.name for a in assignments if a.role.name})
+        if names:
+            return ", ".join(names)
+        # A tenant account holding no active role. ``User.role`` is the
+        # denormalised display name written at creation, so it usually still
+        # says what the person was hired as; the last resort names the boundary
+        # the account sits on and claims nothing more.
+        return user.role or "Tenant user"
 
     def get_staff_type_label(self, obj):
         return self._staff_type_label(obj.staff_user)
@@ -99,6 +100,7 @@ class ImpersonationTargetSerializer(serializers.ModelSerializer):
     full_name = serializers.CharField(read_only=True)
     tenant_slug = serializers.CharField(source="tenant.slug", read_only=True)
     tenant_name = serializers.CharField(source="tenant.name", read_only=True)
+    tenant_kind = serializers.CharField(source="tenant.kind", read_only=True)
     school_name = serializers.SerializerMethodField()
 
     class Meta:
@@ -107,7 +109,10 @@ class ImpersonationTargetSerializer(serializers.ModelSerializer):
             "id",
             "email",
             "full_name",
-            "user_type",
+            # Was ``user_type``. The picker lists people a platform operator
+            # may step into, and the only account-level distinction left is
+            # which side of the platform boundary they are on.
+            "tenant_kind",
             "role",
             "tenant_slug",
             "tenant_name",

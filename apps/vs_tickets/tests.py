@@ -47,14 +47,24 @@ def _branch(school, name):
     )
 
 
-def _user(email, first, last, *, user_type, school=None, branch=None):
-    # ``school`` is accepted for call-site readability but the tenant is derived
-    # from the branch (or defaults to codex for CX staff) - User.school is gone.
+def _user(email, first, last, *, school=None, branch=None, tenant=None):
+    """A ticket-side account. ``school`` is accepted for call-site readability.
+
+    With no branch and no tenant the account is platform support: being support
+    staff IS being on the platform tenant, and there is no persona column left
+    to say so on the account itself. The tenant is named here rather than
+    derived, because a derivation from an absence is exactly what this change
+    removed.
+    """
+    if tenant is None and branch is None:
+        from vs_tenants.models import Tenant
+
+        tenant = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
     return User.objects.create_user(
         email=email,
         first_name=first,
         last_name=last,
-        user_type=user_type,
+        tenant=tenant,
         branch=branch,
         status=User.Status.ACTIVE,
     )
@@ -76,27 +86,25 @@ class TicketFixtureMixin:
         self.branch_b = _branch(self.school_b, "Main")
         self.requester = _user(
             "requester@alpha.test", "Rita", "Requester",
-            user_type=User.UserType.STAFF, school=self.school_a, branch=self.branch_a,
+            school=self.school_a, branch=self.branch_a,
         )
         self.peer = _user(
             "peer@alpha.test", "Paul", "Peer",
-            user_type=User.UserType.STAFF, school=self.school_a, branch=self.branch_a,
+            school=self.school_a, branch=self.branch_a,
         )
         self.norole = _user(
             "norole@alpha.test", "Nora", "Norole",
-            user_type=User.UserType.STAFF, school=self.school_a, branch=self.branch_a,
+            school=self.school_a, branch=self.branch_a,
         )
         self.outsider = _user(
             "outsider@beta.test", "Bola", "Outsider",
-            user_type=User.UserType.STAFF, school=self.school_b, branch=self.branch_b,
+            school=self.school_b, branch=self.branch_b,
         )
         self.support = _user(
             "support@cx.test", "Ada", "Support",
-            user_type=User.UserType.CX_STAFF,
         )
         self.other_support = _user(
             "tier2@cx.test", "Tolu", "Tier",
-            user_type=User.UserType.CX_STAFF,
         )
         _grant(self.school_a, self.requester, REQUESTER_KEYS, role_name="Alpha Requester")
         _grant(self.school_a, self.peer, REQUESTER_KEYS, role_name="Alpha Peer")
@@ -457,7 +465,6 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
     def test_consultant_role_can_create_a_ticket(self):
         consultant = _user(
             "consultant@cx.test", "Cora", "Consultant",
-            user_type=User.UserType.CX_STAFF,
         )
         call_command("seed_consultant_role", verbosity=0)
         role = TenantRoleTemplate.objects.get(
@@ -497,7 +504,6 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
     def test_assignment_options_include_only_active_ticket_handlers(self):
         non_handler = _user(
             "observer@cx.test", "Olivia", "Observer",
-            user_type=User.UserType.CX_STAFF,
         )
         self.client_api.force_authenticate(self.support)
 
@@ -735,13 +741,13 @@ class TicketBranchTenantGuardTests(TestCase):
         cls.branchless = _school("guard-solo", "Guard Solo")
         cls.requester = _user(
             "guard.requester@alpha.test", "Gina", "Guard",
-            user_type=User.UserType.STAFF, branch=cls.branch,
+            branch=cls.branch,
         )
-        # STAFF with no branch: this tenant owns no branches, and a null
-        # branch is a legal school-wide posting - which is the shape tested.
+        # A tenant user with no branch: this tenant owns no branches, and a
+        # null branch is a legal school-wide posting - the shape tested here.
         cls.branchless_requester = User.objects.create_user(
             email="guard.solo@solo.test", first_name="Solo", last_name="Guard",
-            user_type=User.UserType.STAFF, status=User.Status.ACTIVE,
+            status=User.Status.ACTIVE,
             tenant=cls.branchless.tenant,
         )
 

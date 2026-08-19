@@ -30,7 +30,7 @@ from core.mixins import (
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
 from ..models import (
-    User, PlatformStaffProfile, OrgNode, Position,
+    PlatformStaffProfile, OrgNode, Position,
     PositionAssignment, MatrixReport,
 )
 from ..serializers import (
@@ -53,7 +53,7 @@ class PlatformStaffProfileViewSet(
     mixins.ListModelMixin, viewsets.GenericViewSet,
 ):
     """
-    CX Staff HR / personal profiles. One profile per CX_STAFF user.
+    Platform staff HR / personal profiles. One profile per platform user.
 
     GET    /platform-staff-profiles/         - list (slim, no payroll)
     POST   /platform-staff-profiles/         - create a profile for a CX staff user
@@ -111,7 +111,6 @@ class PlatformStaffProfileViewSet(
                 'position__reports_to',
             )
             .filter(
-                user__user_type=User.UserType.CX_STAFF,
                 user__tenant=tenant,
             )
             .order_by('-created_at')

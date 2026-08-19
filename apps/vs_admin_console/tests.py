@@ -179,10 +179,13 @@ class ImpersonationStartTests(ImpersonationTestBase):
         self.assertEqual(payload["tenant_name"], self.school.tenant.name)
         self.assertEqual(payload["tenant_slug"], self.school.tenant.slug)
         self.assertEqual(payload["staff_type_label"], "CX Staff")
-        # The persona no longer distinguishes anybody at a school - every one
-        # of them is STAFF - so the label names the role, which is what a
-        # reviewer reading a proxy log actually needs to know.
-        self.assertEqual(payload["target_type_label"], "Staff")
+        # There is no persona to name at all now, and the target here holds no
+        # active role and no denormalised role string, so the label falls all
+        # the way through to the one thing still true of the account: which
+        # side of the platform boundary it sits on. A target WITH a role gets
+        # its role named - see the impersonation serializer tests - which is
+        # what a reviewer reading a proxy log actually needs to know.
+        self.assertEqual(payload["target_type_label"], "Tenant user")
         event = AuditEvent.objects.get(
             impersonation_session=session, action_type="IMPERSONATION_STARTED",
         )

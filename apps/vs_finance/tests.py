@@ -188,6 +188,18 @@ from vs_tenants.models import Branch
 
 
 # Group tests for Money Tests.
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 class MoneyTests(TestCase):
     # Verify to kobo from string is exact behavior.
     def test_to_kobo_from_string_is_exact(self):
@@ -754,7 +766,7 @@ class PostingWindowEndpointTests(TestCase):
         )
 
         user = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+            email=email, password="x", status="ACTIVE",
             first_name="Gate", last_name="Test", tenant=self.tenant,
         )
         role = make_role(self.tenant, name=f"Role {email}")
@@ -831,7 +843,7 @@ class FiscalCalendarPermissionTests(TestCase):
         )
 
         user = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+            email=email, password="x", status="ACTIVE",
             first_name="Calendar", last_name="Test", tenant=self.tenant,
         )
         role = make_role(self.tenant, name=f"Role {email}")
@@ -4449,9 +4461,9 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         from vs_tenants.models import Tenant
 
         User = get_user_model()
-        self.user = User.objects.create_user(
+        self.user = User.objects.create_user(tenant=_platform_tenant(), 
             email="fin-admin@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE",
+            status="ACTIVE",
             first_name="Finance", last_name="Admin",
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
@@ -6067,9 +6079,9 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
         from vs_tenants.models import Tenant
 
         User = get_user_model()
-        self.user = User.objects.create_user(
+        self.user = User.objects.create_user(tenant=_platform_tenant(), 
             email="ops-admin@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE", first_name="Ops", last_name="Admin",
+            status="ACTIVE", first_name="Ops", last_name="Admin",
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), 
@@ -6213,9 +6225,9 @@ class EntityCreatePermissionTests(TestCase):
         from rest_framework.test import APIClient
 
         User = get_user_model()
-        self.user = User.objects.create_user(
+        self.user = User.objects.create_user(tenant=_platform_tenant(), 
             email="no-grant@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE",
+            status="ACTIVE",
             first_name="No", last_name="Grant",
         )
         from core.test_utils import TenantAPIClient
@@ -6253,14 +6265,22 @@ class EntityCreatePermissionTests(TestCase):
 
 # Group tests for Stub User.
 class _StubUser:
-    """A minimal user carrying just the attributes get_queryset reads."""
+    """A minimal user carrying just the attributes get_queryset reads.
+
+    Which is the TENANT, and only the tenant. This used to take a
+    ``user_type`` and turn "CX_STAFF" into the codex tenant, which was the
+    persona standing in for the fact the view was really asking about. The
+    column is gone and the view never read it; the stub says the fact directly.
+
+    ``platform=True`` is the codex tenant, a ``school`` is that school's, and
+    neither is a tenantless account - the shape a scoping test still needs.
+    """
     # Initialize this object with its required state.
-    def __init__(self, user_type, school=None):
-        self.user_type = user_type
+    def __init__(self, *, platform=False, school=None):
         self.school = school
         if school is not None:
             self.tenant = school.tenant
-        elif user_type == "CX_STAFF":
+        elif platform:
             from vs_tenants.models import Tenant
             self.tenant = Tenant.objects.filter(slug="codex").first()
         else:
@@ -6308,21 +6328,21 @@ class EntityListScopingTests(TestCase):
 
     # Verify cx staff sees every entity behavior.
     def test_cx_staff_sees_every_entity(self):
-        codes = self._codes(_StubUser("CX_STAFF"))
+        codes = self._codes(_StubUser(platform=True))
         self.assertTrue({"GREENF1", "BLUEF1"} <= codes)
 
     # Verify school user sees only own behavior.
     def test_school_user_sees_only_own(self):
-        codes = self._codes(_StubUser("SCHOOL_STAFF", school=self.school))
+        codes = self._codes(_StubUser(school=self.school))
         self.assertEqual(codes, {"GREENF1"})
 
     # Verify user without school sees none behavior.
     def test_user_without_school_sees_none(self):
-        self.assertEqual(self._codes(_StubUser("SCHOOL_STAFF")), set())
+        self.assertEqual(self._codes(_StubUser()), set())
 
     # Verify scoping composes with kind filter behavior.
     def test_scoping_composes_with_kind_filter(self):
-        codes = self._codes(_StubUser("SCHOOL_STAFF", school=self.school),
+        codes = self._codes(_StubUser(school=self.school),
                             params={"kind": LedgerEntity.Kind.TENANT})
         self.assertEqual(codes, {"GREENF1"})
 
@@ -6343,9 +6363,9 @@ class FinanceDashboardTests(_ARFixtureMixin, TestCase):
 
         # A journal with a real author guards the actor-label path (the custom User
         # model has no get_full_name; recent_journals must compose first/last/email).
-        author = get_user_model().objects.create_user(
+        author = get_user_model().objects.create_user(tenant=_platform_tenant(), 
             email="fin.officer@test.com", password="x",
-            user_type="CX_STAFF", status="ACTIVE",
+            status="ACTIVE",
             first_name="Fin", last_name="Officer",
         )
         je = JournalEntry.objects.create(
@@ -6440,8 +6460,8 @@ class InvoiceDetailEndpointTests(_ARFixtureMixin, TestCase):
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, vat)])
         post_invoice(inv)
 
-        u = get_user_model().objects.create_user(
-            email="inv-detail@test.com", password="x", user_type="CX_STAFF", status="ACTIVE",
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email="inv-detail@test.com", password="x", status="ACTIVE",
             first_name="Inv", last_name="Detail")
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
@@ -6492,8 +6512,8 @@ class InvoiceDetailEndpointTests(_ARFixtureMixin, TestCase):
         write_off_invoice(inv, write_off_date=datetime.date(2026, 1, 28))
         inv.refresh_from_db()
 
-        u = get_user_model().objects.create_user(
-            email="inv-settle@test.com", password="x", user_type="CX_STAFF", status="ACTIVE",
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email="inv-settle@test.com", password="x", status="ACTIVE",
             first_name="Inv", last_name="Settle")
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
@@ -6538,8 +6558,8 @@ class FinanceDocumentEndpointTests(_ARFixtureMixin, TestCase):
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
 
-        u = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email=email, password="x", status="ACTIVE",
             first_name="Finance", last_name="Docs",
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
@@ -6743,8 +6763,8 @@ class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
         from django.contrib.auth import get_user_model
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
-        u = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email=email, password="x", status="ACTIVE",
             first_name="Inv", last_name="Maker")
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
@@ -6853,9 +6873,8 @@ class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
         from django.contrib.auth import get_user_model
         entity, _p, _c, _vat = self.build_ar()
         # A plain active user with no super-admin role lacks finance.invoice.create.
-        u = get_user_model().objects.create_user(
-            email="inv-nobody@test.com", password="x", user_type="CX_STAFF",
-            status="ACTIVE", first_name="No", last_name="Perm")
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email="inv-nobody@test.com", password="x", status="ACTIVE", first_name="No", last_name="Perm")
         resp = self._post(entity, u, {
             "customer": "CUST1", "invoice_date": "2026-01-10",
             "lines": [{"revenue_account": "4100", "quantity": 1, "unit_price": 30000}],
@@ -6880,8 +6899,8 @@ class InvoicePayRemindEndpointTests(_ARFixtureMixin, TestCase):
         from django.contrib.auth import get_user_model
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
-        u = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email=email, password="x", status="ACTIVE",
             first_name="Pay", last_name="Tester")
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
@@ -6943,9 +6962,8 @@ class InvoicePayRemindEndpointTests(_ARFixtureMixin, TestCase):
         from vs_finance.models import Payment
         from vs_finance.views_ar import InvoicePayView
         entity, inv = self._posted_invoice()
-        u = get_user_model().objects.create_user(
-            email="pay-nobody@test.com", password="x", user_type="CX_STAFF",
-            status="ACTIVE", first_name="No", last_name="Perm")
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email="pay-nobody@test.com", password="x", status="ACTIVE", first_name="No", last_name="Perm")
         resp = self._call(InvoicePayView, entity, u, inv.pk, {
             "amount": inv.total, "payment_date": "2026-01-20", "deposit_account": "1100",
         })
@@ -6989,8 +7007,8 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
         from django.contrib.auth import get_user_model
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
-        u = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email=email, password="x", status="ACTIVE",
             first_name="Cust", last_name="Tester")
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
@@ -7199,9 +7217,8 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
         from rest_framework.test import APIRequestFactory, force_authenticate
         from vs_finance.views_ar import CustomerReceiptView
         entity, customer, inv = self._fixture()
-        u = get_user_model().objects.create_user(
-            email="cust-noperm@test.com", password="x", user_type="CX_STAFF",
-            status="ACTIVE", first_name="No", last_name="Perm")
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email="cust-noperm@test.com", password="x", status="ACTIVE", first_name="No", last_name="Perm")
         req = APIRequestFactory().post(
             f"/v1/finance/customers/{customer.pk}/receipt/?entity={entity.code}",
             {"amount": 5000, "payment_date": "2026-01-20", "deposit_account": "1100"},
@@ -7245,8 +7262,8 @@ class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
         from django.contrib.auth import get_user_model
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
-        u = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email=email, password="x", status="ACTIVE",
             first_name="Rcpt", last_name="Tester")
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
@@ -7327,9 +7344,8 @@ class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
         entity, _p, customer, _v = self.build_ar()
         a = self.make_invoice(entity, customer, lines=[("4100", 1, 7900, None)]); post_invoice(a)
         p = self._unallocated_receipt(entity, customer, 9000)
-        u = get_user_model().objects.create_user(
-            email="rcpt-noperm@test.com", password="x", user_type="CX_STAFF",
-            status="ACTIVE", first_name="No", last_name="Perm")
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email="rcpt-noperm@test.com", password="x", status="ACTIVE", first_name="No", last_name="Perm")
         req = APIRequestFactory().post(f"/v1/finance/payments/{p.pk}/allocate/?entity={entity.code}", {"auto_allocate": True}, format="json")
         force_authenticate(req, user=u)
         req.tenant = u.tenant  # factory requests bypass the auth layer
@@ -7506,9 +7522,9 @@ class DimensionAnalyticsAPITests(_Phase4FixtureMixin, TestCase):
         from vs_tenants.models import Tenant
 
         User = get_user_model()
-        self.user = User.objects.create_user(
+        self.user = User.objects.create_user(tenant=_platform_tenant(), 
             email="dim-admin@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE", first_name="Dim", last_name="Admin",
+            status="ACTIVE", first_name="Dim", last_name="Admin",
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), 
@@ -7580,9 +7596,8 @@ class DimensionAnalyticsAPITests(_Phase4FixtureMixin, TestCase):
         from rest_framework.test import APIRequestFactory, force_authenticate
         from vs_finance.views import AnalyticsSliceView
         entity, _, _ = self.build_books()
-        u = get_user_model().objects.create_user(
-            email="dim-noperm@test.com", password="x", user_type="CX_STAFF",
-            status="ACTIVE", first_name="No", last_name="Perm")
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email="dim-noperm@test.com", password="x", status="ACTIVE", first_name="No", last_name="Perm")
         req = APIRequestFactory().get(
             f"/v1/finance/reports/analytics-slice/?entity={entity.code}&axis=cost_center")
         force_authenticate(req, user=u)
@@ -7614,7 +7629,7 @@ def _school_finance_requester(school, email, *, exclude_approve=True):
         )
     )
     user = get_user_model().objects.create_user(
-        email=email, password="pw", user_type="STAFF", status="ACTIVE",
+        email=email, password="pw", status="ACTIVE",
         first_name="Reqi", last_name="Ester", branch=branch,
     )
     role, created = TenantRoleTemplate.objects.get_or_create(
@@ -7733,7 +7748,7 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
     def _make_approver(self, email="apr-jaw@test.com"):
         """A school user holding finance.journal.approve at self.school."""
         user = self.User.objects.create_user(
-            email=email, password="pw", user_type="STAFF", status="ACTIVE",
+            email=email, password="pw", status="ACTIVE",
             first_name="Apro", last_name="Ver", tenant=self.school.tenant,
         )
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
@@ -8056,7 +8071,7 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
     # Support the make approver workflow.
     def _make_approver(self, email="apr-raw@test.com"):
         user = self.User.objects.create_user(
-            email=email, password="pw", user_type="STAFF", status="ACTIVE",
+            email=email, password="pw", status="ACTIVE",
             first_name="Apro", last_name="Ver", tenant=self.school.tenant,
         )
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
@@ -8376,7 +8391,7 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
     # Support the make approver workflow.
     def _make_approver(self, email="apr-woa@test.com"):
         user = self.User.objects.create_user(
-            email=email, password="pw", user_type="STAFF", status="ACTIVE",
+            email=email, password="pw", status="ACTIVE",
             first_name="Apro", last_name="Ver", tenant=self.school.tenant,
         )
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
@@ -10636,8 +10651,8 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
         from vs_tenants.models import Tenant
 
         tenant = Tenant.objects.get(slug=tenant_slug)
-        user = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+        user = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email=email, password="x", status="ACTIVE",
             first_name="Mail", last_name="Tester",
         )
         role_key = "xvs_super_admin" if keys is None else f"limited_{email.split('@')[0]}"

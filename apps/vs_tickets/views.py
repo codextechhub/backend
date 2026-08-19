@@ -138,7 +138,9 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     # Resolve by primary key but return 404 when object-level visibility fails.
     def get_object(self):
         ticket = get_object_or_404(
-            Ticket.all_objects.select_related("requester", "assignee", "tenant", "branch"),
+            Ticket.all_objects.select_related(
+                "requester__tenant", "assignee__tenant", "tenant", "branch",
+            ),
             pk=self.kwargs["pk"],
         )
         if not visibility.can_view_ticket(self.request.user, ticket):
@@ -221,7 +223,10 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     def comments(self, request, pk=None):
         ticket = self.get_object()
         if request.method == "GET":
-            comments = ticket.comments.select_related("author").prefetch_related("attachments")
+            comments = (
+                ticket.comments.select_related("author__tenant")
+                .prefetch_related("attachments__uploaded_by__tenant")
+            )
             if not visibility.can_view_internal_notes(request.user, ticket):
                 # Internal notes are support-only and must not leak through list responses.
                 comments = comments.filter(visibility=CommentVisibility.PUBLIC)
@@ -273,7 +278,7 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     def attachment_download(self, request, pk=None, attachment_id=None):
         ticket = self.get_object()
         attachment = get_object_or_404(
-            TicketAttachment.objects.select_related("comment"),
+            TicketAttachment.objects.select_related("comment", "uploaded_by__tenant"),
             pk=attachment_id,
             ticket=ticket,
         )
@@ -302,7 +307,7 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="audit")
     def audit(self, request, pk=None):
         ticket = self.get_object()
-        qs = ticket.audit_logs.select_related("actor").all()
+        qs = ticket.audit_logs.select_related("actor__tenant").all()
         return success_response(
             message="Ticket audit trail retrieved successfully.",
             data=TicketAuditLogSerializer(qs, many=True).data,

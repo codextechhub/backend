@@ -22,6 +22,18 @@ from rest_framework import serializers
 from vs_rbac.fls import FieldSecurityMixin
 
 
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 class _DemoSerializer(FieldSecurityMixin, serializers.Serializer):
     public = serializers.CharField()
     secret = serializers.CharField()
@@ -45,10 +57,9 @@ class FieldSecurityMixinBehaviourTest(TestCase):
 
         # A plain Vision staff user with no platform assignment - authenticated
         # but NOT the super admin, so FLS applies to them.
-        cls.user = User.objects.create_user(
+        cls.user = User.objects.create_user(tenant=_platform_tenant(), 
             email="fls-probe@test.com",
             password="testpass123",
-            user_type="CX_STAFF",
             status="ACTIVE",
             first_name="Fls",
             last_name="Probe",

@@ -161,7 +161,7 @@ class Command(BaseCommand):
         for u in users:
             self.stdout.write(
                 f"    • {u.full_name or '-'} <{u.email}>"
-                f"  [{u.user_type} | {u.status}"
+                f"  [{u.tenant.kind} | {u.status}"
                 f"{' | ' + s.name if (s := getattr(u.tenant, 'school_profile', None)) else ''}]\n"
             )
 

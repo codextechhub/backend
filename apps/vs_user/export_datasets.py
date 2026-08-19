@@ -67,7 +67,6 @@ def _login_sessions(scope):
     return LoginSession.all_objects.filter(tenant=scope.tenant)
 
 
-_USER_TYPE = choice_labels("vs_user.models.User.UserType")
 _TENANT_KIND = choice_labels("vs_tenants.models.Tenant.Kind")
 _USER_STATUS = choice_labels("vs_user.models.User.Status")
 
@@ -88,13 +87,19 @@ def register_datasets():
         scope=DatasetScope.TENANT,
         permission="platform.team.view",
         row_cap=100_000,
-        default_columns=("email", "first_name", "last_name", "user_type", "status"),
+        default_columns=("email", "first_name", "last_name", "role", "status"),
         fields=(
             Field("email", "Email", "Account", KIND_TEXT, locked=True,
                   description="The account's identity - always exported."),
             Field("first_name", "First name", "Person", KIND_TEXT),
             Field("last_name", "Last name", "Person", KIND_TEXT),
-            Field("user_type", "Type", "Account", KIND_CHOICE, choices=_USER_TYPE),
+            # What the "Type" column used to be. It said Staff / Student /
+            # Parent, and an access review cannot act on any of those: two rows
+            # both reading "Staff" are a principal and a Year 4 teacher. The
+            # role is the answer a reviewer needs, and unlike the persona it is
+            # also the thing that decides what the person may do. The platform
+            # / tenant split the column also carried is ``tenant_kind`` below.
+            Field("role", "Role", "Account", KIND_TEXT),
             Field("status", "Status", "Account", KIND_CHOICE, choices=_USER_STATUS),
             Field("is_active", "Active", "Account", KIND_TEXT),
             Field("last_login", "Last signed in", "Account", KIND_DATETIME),
@@ -112,16 +117,16 @@ def register_datasets():
         ),
         filters=(
             FilterDef("created_at", "Created", FILTER_DATE_RANGE, is_primary_date=True),
-            FilterDef("user_type", "Type", FILTER_CHOICE, choices=_USER_TYPE),
             FilterDef("status", "Status", FILTER_CHOICE, choices=_USER_STATUS),
             FilterDef("search", "Search", FILTER_SEARCH, searches=(
                 ("email", "Email"), ("first_name", "First name"),
                 ("last_name", "Last name"),
             ), description="Matches any one of these, the way the search box does."),
             FilterDef("email", "Email", FILTER_TEXT),
-            # The console's CX / School tabs are a tenant-KIND split, not a
-            # user_type one - CX staff live in the platform tenant. Filtering on
-            # the kind is what makes the export agree with the tab.
+            # The console's CX / School tabs are a tenant-KIND split - CX
+            # staff live in the platform tenant. Filtering on the kind is what
+            # makes the export agree with the tab, and since the persona column
+            # went it is the only thing left that could answer the question.
             FilterDef("tenant_kind", "Tenant type", FILTER_CHOICE,
                       source="tenant__kind", choices=_TENANT_KIND),
             FilterDef("school", "School", FILTER_TEXT,
@@ -219,14 +224,14 @@ def _translate_users(params):
     from .models import User
 
     filters, unmapped = [], []
-    if value := params.get("user_type"):
-        filters.append({"id": "user_type", "values": [value]})
-    elif scope := params.get("scope"):
-        # The screen's two tabs are "CX" and "School", and that split is by tenant
-        # KIND, not user type: CX staff are the platform tenant's users. An earlier
+    if scope := params.get("scope"):
+        # The screen's two tabs are "CX" and "School", and that split is by
+        # tenant KIND: CX staff are the platform tenant's users. An earlier
         # version mapped this to "every user_type except CX_STAFF", which is a
-        # different question and produced an empty file - the rows it wanted live
-        # in other tenants entirely. Filter the same column the list view does.
+        # different question and produced an empty file - the rows it wanted
+        # live in other tenants entirely. Filter the same column the list view
+        # does. The screen no longer offers a persona filter at all, so this is
+        # the whole of the mapping.
         if scope == "school":
             filters.append({"id": "tenant_kind", "values": [
                 str(k) for k in Tenant.Kind.values if k != Tenant.Kind.PLATFORM
@@ -326,7 +331,7 @@ def register_screens():
     register_screen(ScreenBinding(
         key="admin.users",
         handles=(
-            "scope", "user_type", "status", "exclude_status", "q", "search",
+            "scope", "status", "exclude_status", "q", "search",
             "branch", "role",
         ),
         label="Administration - Users",

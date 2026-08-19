@@ -42,7 +42,7 @@ def school_public_info(school, request=None) -> dict | None:
 
     Shape: ``{"id", "name", "slug", "logo"}`` where ``logo`` is an absolute URL
     (built from ``request`` when available) or ``None``. Returns ``None`` when
-    there is no school (e.g. CX_STAFF or a user without a school FK).
+    there is no school (e.g. a platform user, or a user without a school FK).
 
     Null-safe at every level: a missing ``branding`` row, a missing logo upload,
     or an unreadable file URL all resolve to ``logo: None`` rather than raising.
@@ -171,6 +171,12 @@ class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     school_id    = serializers.SerializerMethodField()
     school_name  = serializers.SerializerMethodField()
     branch_name  = serializers.CharField(source='branch.name', read_only=True, default=None)
+    # Replaces the ``user_type`` column this list used to carry. The console's
+    # two tabs are CX and School, and that split has always been the tenant's
+    # kind - ``scope=school`` on the list endpoint already filters on exactly
+    # this. What the tab could not say per row, this says per row. The human
+    # answer to "who is this person here" is ``role``, which is beside it.
+    tenant_kind  = serializers.CharField(source='tenant.kind', read_only=True)
     invited_by_name         = serializers.SerializerMethodField()
     invitation_email_status = serializers.SerializerMethodField()
     invitation_expires_at   = serializers.SerializerMethodField()
@@ -184,7 +190,7 @@ class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     class Meta:
         model  = User
         fields = (
-            'id', 'uid', 'email', 'full_name', 'gender', 'user_type', 'role',
+            'id', 'uid', 'email', 'full_name', 'gender', 'tenant_kind', 'role',
             'status', 'school_id', 'school_name', 'branch_id', 'branch_name',
             'invited_by_name', 'created_at',
             'invitation_email_status', 'invitation_expires_at',
@@ -229,7 +235,10 @@ class UserCreateSerializer(serializers.Serializer):
     last_name   = serializers.CharField(max_length=100)
     email       = serializers.EmailField()
     gender      = serializers.ChoiceField(choices=User.Gender.choices, required=False, allow_blank=True, default='')
-    user_type   = serializers.ChoiceField(choices=User.UserType.choices, required=False, default=None, allow_null=True)
+    # There is no ``user_type`` input. Which side of the platform boundary a
+    # new account lands on was never the client's to assert: it follows from
+    # the tenant the account is created in, and validate() below settles that
+    # from the actor and the asserted tenant, exactly as the old default did.
     phone       = serializers.CharField(
         max_length=32, required=False, allow_blank=True, default='',
         validators=[RegexValidator(r'^\+?[0-9 ()\-]{7,22}$', message='Enter a valid phone number.')],
@@ -279,32 +288,26 @@ class UserCreateSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         actor = self.context['request'].user
-        user_type = attrs.get('user_type')
 
-        if not user_type:
-            # Default the created user's persona from the ACTOR's tenant kind:
-            # a platform-tenant actor provisions internal staff, everyone else
-            # provisions a tenant staff member. (Tenant-kind, not user_type,
-            # decides.) The default used to be SCHOOL_ADMIN, which read as a
-            # grant of authority and was never one - the role carries that.
-            if getattr(actor.tenant, 'kind', None) == Tenant.Kind.PLATFORM:
-                user_type = User.UserType.CX_STAFF
-            else:
-                user_type = User.UserType.STAFF
-
-        attrs['user_type'] = user_type
-
-        # The target tenant that will own the created user comes from request
-        # context (the ?tenant= assertion), not a school input. CX staff always
-        # belong to the platform (codex) tenant. A legacy ``school`` input is
-        # accepted and ignored so old clients do not 400.
+        # The target tenant that will own the created user comes from the actor
+        # and the request context (the ?tenant= assertion), never from a client
+        # input. A platform-tenant actor provisions internal staff, so the
+        # target is the platform (codex) tenant; everybody else provisions
+        # inside the tenant they are working in. This is the same rule the old
+        # ``user_type`` default already ran on - the persona was derived from
+        # the actor's tenant kind and then used to pick the tenant, so it was
+        # only ever the answer travelling in a circle. A legacy ``school``
+        # input is accepted and ignored so old clients do not 400.
         attrs.pop('school', None)
         branch_ref = attrs.pop('branch', None)
 
         # The target tenant has to be known BEFORE the branch is resolved: the
         # branch is looked up *inside* that tenant, which is what makes another
         # tenant's branch indistinguishable from one that does not exist.
-        if user_type == User.UserType.CX_STAFF:
+        creating_platform_staff = (
+            getattr(actor.tenant, 'kind', None) == Tenant.Kind.PLATFORM
+        )
+        if creating_platform_staff:
             target_tenant = Tenant.objects.filter(
                 slug='codex', kind=Tenant.Kind.PLATFORM,
             ).first()
@@ -315,16 +318,25 @@ class UserCreateSerializer(serializers.Serializer):
         else:
             target_tenant = getattr(self.context['request'], 'tenant', None) or actor.tenant
 
+        # A caller may name the platform tenant as the target without being on
+        # it - the CX-user import handler does exactly that. Ask the resolved
+        # tenant, not the actor, from here on.
+        creating_platform_staff = (
+            getattr(target_tenant, 'kind', None) == Tenant.Kind.PLATFORM
+        )
+
         # The branch rule, asked of the model so there is one statement of it -
         # see User.branch_assignment_error. Judged on the raw reference, not a
         # resolved row: the platform tenant owns no branches, so resolving
         # first would answer "no such branch" and hide the real reason.
-        if user_type == User.UserType.CX_STAFF:
+        if creating_platform_staff:
             error = User.branch_assignment_error(
-                user_type, branch_ref not in (None, ''),
+                target_tenant, branch_ref not in (None, ''),
             )
             if error:
-                raise serializers.ValidationError({'user_type': error})
+                # Reported on 'branch' now. It used to be reported on
+                # 'user_type', which was never the field the caller got wrong.
+                raise serializers.ValidationError({'branch': error})
             attrs['branch'] = None
         else:
             # Raises a validation error - never a model-level exception or a
@@ -363,7 +375,7 @@ class UserCreateSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     {'role': f'Role with key "{role_key}" not found in the target tenant.'}
                 )
-            if user_type == User.UserType.CX_STAFF and role_key == 'xvs_super_admin':
+            if creating_platform_staff and role_key == 'xvs_super_admin':
                 from vs_rbac.models import TenantUserRoleAssignment
                 if TenantUserRoleAssignment.objects.filter(
                     role__key='xvs_super_admin',
@@ -381,12 +393,12 @@ class UserCreateSerializer(serializers.Serializer):
         # CX hire; only an incomplete draft may omit it.
         position_ref = attrs.pop('position', None)
         position_instance = None
-        if user_type == User.UserType.CX_STAFF and not draft and not position_ref:
+        if creating_platform_staff and not draft and not position_ref:
             raise serializers.ValidationError(
-                {'position': 'A position must be assigned to CX staff.'}
+                {'position': 'A position must be assigned to platform staff.'}
             )
         if position_ref:
-            if user_type != User.UserType.CX_STAFF:
+            if not creating_platform_staff:
                 raise serializers.ValidationError(
                     {'position': 'Only platform (CX) staff can be assigned an organogram position.'}
                 )
@@ -436,7 +448,7 @@ class UserCreateSerializer(serializers.Serializer):
             profile_prefill['state_of_origin'] = state_of_origin
 
         if profile_prefill:
-            if user_type != User.UserType.CX_STAFF:
+            if not creating_platform_staff:
                 raise serializers.ValidationError(
                     {'job_title': 'Staff profile fields can only be set for platform (CX) staff.'}
                 )
@@ -453,8 +465,8 @@ class UserUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model  = User
         fields = ('first_name', 'last_name', 'phone', 'gender')
-        # role and user_type are intentionally excluded - changes go through
-        # the TenantRoleChangeRequest workflow only.
+        # role is intentionally excluded - changes go through the
+        # TenantRoleChangeRequest workflow only.
         # Email changes go through the separate /email/change/ endpoint.
 
 
@@ -837,7 +849,7 @@ class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerial
     user            = UserInlineSerializer(read_only=True)
     user_id         = serializers.PrimaryKeyRelatedField(
         source='user', write_only=True, required=False,
-        queryset=User.objects.filter(user_type=User.UserType.CX_STAFF),
+        queryset=User.objects.filter(tenant__kind=Tenant.Kind.PLATFORM),
     )
     # The primary seat is the single source everything settles off. Assign it
     # via position_id (or, preferably, through OrganogramService so the
@@ -1038,7 +1050,7 @@ class PositionAssignmentSerializer(serializers.ModelSerializer):
     user        = UserInlineSerializer(read_only=True)
     user_id     = serializers.PrimaryKeyRelatedField(
         source='user', write_only=True,
-        queryset=User.objects.filter(user_type=User.UserType.CX_STAFF),
+        queryset=User.objects.filter(tenant__kind=Tenant.Kind.PLATFORM),
     )
     position    = PositionInlineSerializer(read_only=True)
     position_id = serializers.PrimaryKeyRelatedField(

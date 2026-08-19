@@ -13,7 +13,9 @@ from unittest import mock
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.management import call_command
-from django.test import TestCase
+from django.db import connection, transaction
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TestCase, TransactionTestCase, tag
 from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
@@ -71,7 +73,6 @@ class PlatformUserCreationTests(TestCase):
             "gender": "MALE",
             "phone": "08012345678",
             "tenant": self.tenant,
-            "user_type": "CX_STAFF",
             "role": self.hire_role.name,
             "role_instance": self.hire_role,
             "branch": None,
@@ -316,9 +317,19 @@ class UserListScopeTests(TestCase):
         view.request = request
         return view.get_queryset()
 
-    def test_cx_user_type_filter_returns_only_cx_staff(self):
-        users = self._queryset_for("?user_type=CX_STAFF")
-        self.assertQuerySetEqual(users, [self.cx_user], transform=lambda user: user)
+    def test_cx_and_school_rows_are_told_apart_by_tenant_kind(self):
+        """The list used to carry a ``user_type`` column, and a
+        ``?user_type=CX_STAFF`` filter beside it. Both are gone. The split the
+        console's two tabs actually draw is by tenant kind, which is what
+        ``?scope=school`` filters on and what each row now reports."""
+        from vs_user.serializers import UserListSerializer
+
+        rows = {
+            row["email"]: row["tenant_kind"]
+            for row in UserListSerializer(self._queryset_for(""), many=True).data
+        }
+        self.assertEqual(rows["scope-cx@codex.test"], "PLATFORM")
+        self.assertEqual(rows["scope-admin@school.test"], "SCHOOL")
 
     def test_school_scope_excludes_cx_staff(self):
         users = self._queryset_for("?scope=school")
@@ -334,11 +345,20 @@ class UserListScopeTests(TestCase):
         self.assertEqual(data["role"], "School Administrator")
 
 
+def platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002."""
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 def make_cx_user(email="staff@codex.test", password="Str0ng!pass123"):
+    # The tenant is named, not derived. Being CX staff IS being on the platform
+    # tenant; there is no persona column left to stand in for it.
     return User.objects.create_user(
         email=email,
         password=password,
-        user_type="CX_STAFF",
+        tenant=platform_tenant(),
         status="ACTIVE",
         first_name="Code",
         last_name="Xer",
@@ -360,7 +380,6 @@ def _run_user_create_serializer(*, email, actor=None, tenant=None, **extra):
         "first_name": "Ada",
         "last_name": "Okoye",
         "email": email,
-        "user_type": "CX_STAFF",
     }
     data.update(extra)
     serializer = UserCreateSerializer(
@@ -413,7 +432,6 @@ def make_school_admin(school, email="admin@caleb.test", password="Str0ng!pass123
     return User.objects.create_user(
         email=email,
         password=password,
-        user_type="STAFF",
         status="ACTIVE",
         first_name="Ada",
         last_name="Obi",
@@ -1593,7 +1611,7 @@ class UserBranchAssignmentTests(TestCase):
 
         self.actor = User.objects.create_user(
             email="head@branched.test", password="Str0ng!pass123",
-            user_type=User.UserType.STAFF, status="ACTIVE",
+            status="ACTIVE",
             first_name="Head", last_name="Teacher", tenant=self.branched.tenant,
         )
         self._grant(self.actor, "platform.team.create", tenant=self.branched.tenant)
@@ -1650,7 +1668,6 @@ class UserBranchAssignmentTests(TestCase):
         body = {
             "first_name": "New", "last_name": "Person",
             "email": "new.person@branched.test", "gender": "FEMALE",
-            "user_type": User.UserType.STAFF,
             "role": self.role.key,
         }
         body.update(overrides)
@@ -1735,7 +1752,7 @@ class UserBranchAssignmentTests(TestCase):
         principal, and the difference between them is their role.
         """
         resp = self._post(
-            user_type=User.UserType.STAFF, branch=None,
+            branch=None,
             email="second.head@branched.test",
         )
 
@@ -1754,12 +1771,12 @@ class UserBranchAssignmentTests(TestCase):
 
         school_wide = User.objects.create_user(
             email="bursar@branched.test", password="Str0ng!pass123",
-            user_type=User.UserType.STAFF, status="ACTIVE",
+            status="ACTIVE",
             first_name="Whole", last_name="School", tenant=self.branched.tenant,
         )
         pinned = User.objects.create_user(
             email="lekki.bursar@branched.test", password="Str0ng!pass123",
-            user_type=User.UserType.STAFF, status="ACTIVE",
+            status="ACTIVE",
             first_name="Just", last_name="Lekki", branch=self.lekki,
         )
 
@@ -1775,7 +1792,7 @@ class UserBranchAssignmentTests(TestCase):
         """The branch-optional shape: omitting the branch is the only option."""
         solo_admin = User.objects.create_user(
             email="head@solo.test", password="Str0ng!pass123",
-            user_type=User.UserType.STAFF, status="ACTIVE",
+            status="ACTIVE",
             first_name="Solo", last_name="Head", tenant=self.branchless.tenant,
         )
         self._grant(solo_admin, "platform.team.create", tenant=self.branchless.tenant)
@@ -1785,7 +1802,6 @@ class UserBranchAssignmentTests(TestCase):
         resp = client.post("/v1/user/users/", {
             "first_name": "Only", "last_name": "Admin",
             "email": "only.admin@solo.test", "gender": "MALE",
-            "user_type": User.UserType.STAFF,
             "role": self.branchless_role.key,
         }, format="json")
 
@@ -1803,7 +1819,7 @@ class UserBranchAssignmentTests(TestCase):
         this would come back a 500 from the database rather than a 201.
         """
         resp = self._post(
-            user_type=User.UserType.STUDENT, branch=None,
+            branch=None,
             email="new.pupil@branched.test",
         )
 
@@ -1821,28 +1837,47 @@ class UserBranchAssignmentTests(TestCase):
             User.objects.get(email="pinned@branched.test").branch_id, self.yaba.pk,
         )
 
-    def test_vision_staff_may_not_be_given_a_branch(self):
-        """The reason must stay "CX staff take no branch", not "no such branch".
+    def test_platform_staff_may_not_be_given_a_branch(self):
+        """The reason must stay "platform staff take no branch", not "no such
+        branch".
 
-        CX staff resolve against the platform tenant, which owns no branches, so
-        resolving before this check would hide the real reason behind a lookup
-        failure.
+        A platform hire resolves against the platform tenant, which owns no
+        branches, so resolving before this check would hide the real reason
+        behind a lookup failure.
+
+        The actor is what says a platform hire is being made. It used to be a
+        ``user_type=CX_STAFF`` in the body, which a school administrator could
+        type - and which is why this test used to be able to run its request
+        through a school actor at all.
         """
-        resp = self._post(
-            user_type=User.UserType.CX_STAFF, branch=self.lekki.pk,
-            email="cx.hire@codex.test",
+        from vs_rbac.models import TenantRoleTemplate
+
+        cx_actor = make_cx_user(email="cx.hiring@codex.test")
+        self._grant(cx_actor, "platform.team.create", tenant=cx_actor.tenant)
+        cx_role = TenantRoleTemplate.objects.create(
+            tenant=cx_actor.tenant, key="cx-engineer", name="CX-Engineer",
         )
+        client = APIClient()
+        client.force_authenticate(user=cx_actor)
+
+        resp = client.post("/v1/user/users/", {
+            "first_name": "New", "last_name": "Person",
+            "email": "cx.hire@codex.test", "gender": "FEMALE",
+            "role": cx_role.key, "branch": self.lekki.pk,
+        }, format="json")
 
         self.assertEqual(resp.status_code, 400, resp.content)
-        self.assertIn("user_type", self._field_errors(resp))
-        self.assertNotIn("branch", self._field_errors(resp))
+        # Reported on 'branch' now: that is the field the caller got wrong, and
+        # there is no longer a 'user_type' field to hang it on.
+        self.assertIn("branch", self._field_errors(resp))
+        self.assertFalse(User.objects.filter(email="cx.hire@codex.test").exists())
 
     # -- authorization ----------------------------------------------------
 
     def test_creating_a_user_requires_the_create_permission(self):
         stranger = User.objects.create_user(
             email="nobody@branched.test", password="Str0ng!pass123",
-            user_type=User.UserType.STAFF, status="ACTIVE",
+            status="ACTIVE",
             first_name="No", last_name="Body", tenant=self.branched.tenant,
         )
         client = APIClient()
@@ -1851,7 +1886,7 @@ class UserBranchAssignmentTests(TestCase):
         resp = client.post("/v1/user/users/", {
             "first_name": "Sneaky", "last_name": "Hire",
             "email": "sneaky@branched.test", "gender": "MALE",
-            "user_type": User.UserType.STAFF, "role": self.role.key,
+            "role": self.role.key,
             "branch": self.lekki.pk,
         }, format="json")
 
@@ -1890,7 +1925,7 @@ class UserBranchTenantGuardTests(TestCase):
         user = User.objects.create_user(
             email="derive@guard.test", password="Str0ng!pass123",
             first_name="Der", last_name="Ive", status="ACTIVE",
-            user_type=User.UserType.STAFF, branch=self.lekki,
+            branch=self.lekki,
         )
 
         self.assertEqual(user.tenant_id, self.branched.tenant_id)
@@ -1902,7 +1937,7 @@ class UserBranchTenantGuardTests(TestCase):
         user = User.objects.create_user(
             email="straddle@guard.test", password="Str0ng!pass123",
             first_name="Stra", last_name="Ddle", status="ACTIVE",
-            user_type=User.UserType.STAFF, branch=self.lekki,
+            branch=self.lekki,
         )
         user.branch = self.rival_branch
 
@@ -1916,7 +1951,7 @@ class UserBranchTenantGuardTests(TestCase):
         user = User.objects.create_user(
             email="solo@guard.test", password="Str0ng!pass123",
             first_name="Sol", last_name="Oh", status="ACTIVE",
-            user_type=User.UserType.STAFF, tenant=self.branchless.tenant,
+            tenant=self.branchless.tenant,
         )
         user.branch = self.lekki
 
@@ -1927,7 +1962,7 @@ class UserBranchTenantGuardTests(TestCase):
         user = User.objects.create_user(
             email="ok@guard.test", password="Str0ng!pass123",
             first_name="O", last_name="Kay", status="ACTIVE",
-            user_type=User.UserType.STAFF, branch=self.lekki,
+            branch=self.lekki,
         )
         user.first_name = "Okay"
         user.save()  # must not raise
@@ -2361,7 +2396,8 @@ class EmailCaseNormalizationTests(TestCase):
     def test_manager_create_user_stores_the_address_lowercase(self):
         user = User.objects.create_user(
             email="  Ada.Okoye@Example.TEST  ", password="Str0ng!pass123",
-            user_type="CX_STAFF", status="ACTIVE", first_name="Ada", last_name="Okoye",
+            status="ACTIVE", first_name="Ada", last_name="Okoye",
+            tenant=self.platform,
         )
 
         self.assertEqual(self._stored(user.pk), "ada.okoye@example.test")
@@ -2370,7 +2406,7 @@ class EmailCaseNormalizationTests(TestCase):
         """The path create_user does not cover: User(...) then .save()."""
         user = User(
             email="Tunde.Bello@Example.TEST", first_name="Tunde", last_name="Bello",
-            user_type="CX_STAFF", status="ACTIVE", tenant=self.platform,
+            status="ACTIVE", tenant=self.platform,
         )
         user.save()
 
@@ -2387,7 +2423,7 @@ class EmailCaseNormalizationTests(TestCase):
         """A validated-but-unsaved instance must already carry the stored form."""
         user = User(
             email="  Ngozi@Example.TEST  ", first_name="Ngozi", last_name="Eze",
-            user_type="CX_STAFF", status="ACTIVE", tenant=self.platform,
+            status="ACTIVE", tenant=self.platform,
         )
         user.set_unusable_password()
         user.full_clean()
@@ -2399,7 +2435,7 @@ class EmailCaseNormalizationTests(TestCase):
         make_cx_user(email="ada@example.test")
         clash = User(
             email="ADA@Example.TEST", first_name="Ada", last_name="Twin",
-            user_type="CX_STAFF", status="ACTIVE", tenant=self.platform,
+            status="ACTIVE", tenant=self.platform,
         )
         clash.set_unusable_password()
 
@@ -2412,7 +2448,7 @@ class EmailCaseNormalizationTests(TestCase):
         User.objects.bulk_create([
             User(
                 email="  BULK@Example.TEST ", first_name="Bulk", last_name="One",
-                user_type="CX_STAFF", status="PENDING", tenant=self.platform,
+                status="PENDING", tenant=self.platform,
             ),
         ])
 
@@ -2730,7 +2766,7 @@ class EmailUniquePerTenantTests(TestCase):
         """Create straight through save(), skipping full_clean()."""
         return User.objects.create(
             email=email, first_name="Ada", last_name="Okoye",
-            user_type="STAFF", status="ACTIVE", tenant=school.tenant,
+            status="ACTIVE", tenant=school.tenant,
             **extra,
         )
 
@@ -2797,7 +2833,7 @@ class EmailUniquePerTenantTests(TestCase):
         make_school_admin(self.bright_star, email="ada.okoye@example.test")
         clash = User(
             email="ada.okoye@example.test", first_name="Ada", last_name="Twin",
-            user_type="STAFF", status="ACTIVE", tenant=self.bright_star.tenant,
+            status="ACTIVE", tenant=self.bright_star.tenant,
         )
         clash.set_unusable_password()
 
@@ -2811,7 +2847,7 @@ class EmailUniquePerTenantTests(TestCase):
         make_school_admin(self.bright_star, email="ada.okoye@example.test")
         clash = User(
             email="ada.okoye@example.test", first_name="Ada", last_name="Twin",
-            user_type="STAFF", status="ACTIVE", tenant=self.bright_star.tenant,
+            status="ACTIVE", tenant=self.bright_star.tenant,
         )
         clash.set_unusable_password()
 
@@ -2824,7 +2860,7 @@ class EmailUniquePerTenantTests(TestCase):
         make_school_admin(self.bright_star, email="ada.okoye@example.test")
         other = User(
             email="ada.okoye@example.test", first_name="Ada", last_name="Okoye",
-            user_type="STAFF", status="ACTIVE", tenant=self.greenfield.tenant,
+            status="ACTIVE", tenant=self.greenfield.tenant,
         )
         other.set_unusable_password()
 
@@ -2876,7 +2912,7 @@ class CrossTenantEmailGuardTests(TestCase):
         with self.assertRaises(DjangoValidationError):
             User.objects.create(
                 email="ada.okoye@example.test", first_name="Ada", last_name="Okoye",
-                user_type="STAFF", status="ACTIVE",
+                status="ACTIVE",
                 tenant=self.greenfield.tenant,
             )
 
@@ -3066,7 +3102,7 @@ class EmailPerTenantMigrationTests(TestCase):
     def _plant(self, school, email):
         return User.objects.create(
             email=email, first_name="Ada", last_name="Okoye",
-            user_type="STAFF", status="ACTIVE", tenant=school.tenant,
+            status="ACTIVE", tenant=school.tenant,
         )
 
     def _raw_email(self, user, raw):
@@ -3303,7 +3339,6 @@ class ScopedEmailLookupTests(TestCase):
             attrs = _run_user_create_serializer(
                 email="ada.okoye@example.test",
                 actor=make_school_admin(self.greenfield, email="head@greenfield.test"),
-                user_type="STAFF",
             )
 
         self.assertEqual(attrs["email"], "ada.okoye@example.test")
@@ -3319,7 +3354,6 @@ class ScopedEmailLookupTests(TestCase):
                     actor=make_school_admin(
                         self.bright_star, email="head@bright-star.test",
                     ),
-                    user_type="STAFF",
                 )
 
         self.assertIn("email", ctx.exception.detail)
@@ -3463,12 +3497,12 @@ class ScopedEmailLookupTests(TestCase):
         with _tenant_required():
             User.objects.create_user(
                 email="scanner@codex.test", password="Str0ng!pass123",
-                user_type="CX_STAFF", status="ACTIVE", first_name="Chidi",
-                last_name="One",
+                status="ACTIVE", first_name="Chidi",
+                last_name="One", tenant=Tenant.objects.get(slug="codex"),
             )
             User.objects.create_user(
                 email="scanner@codex.test", password="Str0ng!pass123",
-                user_type="CX_STAFF", status="ACTIVE", first_name="Nkechi",
+                status="ACTIVE", first_name="Nkechi",
                 last_name="Two", tenant=second_platform,
             )
 
@@ -3671,7 +3705,7 @@ class ScopedEmailLookupSchoolCreateTests(TestCase):
 
         self.ada.refresh_from_db()
         self.assertEqual(self.ada.tenant_id, self.bright_star.tenant_id)
-        self.assertEqual(self.ada.user_type, "STAFF")
+        self.assertIsNone(self.ada.branch_id)
 
     def test_it_is_still_refused_while_the_switch_is_off(self):
         from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -3825,8 +3859,7 @@ class IdentityAuditEventsCarryTheTenantTests(TestCase):
         )
         self.bola = User.objects.create_user(
             email="bola@bright-star.test", password="Str0ng!pass123",
-            first_name="Bola", last_name="Adeniyi", user_type="STAFF",
-            status="ACTIVE", tenant=self.bright_star,
+            first_name="Bola", last_name="Adeniyi", status="ACTIVE", tenant=self.bright_star,
         )
 
     def test_a_failed_sign_in_is_filed_under_the_tenant_it_happened_at(self):
@@ -3901,7 +3934,6 @@ class ParentAtTwoSchoolsEndToEndTests(TestCase):
             data={
                 "first_name": "Ada", "last_name": "Okoye",
                 "email": "ada.okoye@example.test",
-                "user_type": "PARENT",
                 "role": "parent",
                 "branch": str(branch.pk),
             },
@@ -3974,165 +4006,291 @@ class ParentAtTwoSchoolsEndToEndTests(TestCase):
         self.assertIn("email", ctx.exception.detail)
 
 
-class AdminPersonaRetirementTests(TestCase):
-    """0008_drop_admin_user_types: the conversion, and both refusals.
+@tag("slow")
+class UserTypeMigrationTests(TransactionTestCase):
+    """0009_drop_user_type, and the 0008 conversion that still runs before it.
 
-    Driven against the live registry rather than by rewinding the migration
-    graph. ``vs_user`` sits under almost every other app, so unapplying it
-    would rewind most of the platform for one data check; and the two functions
-    only ever touch querysets, so a historical ``apps`` and the live one give
-    them the identical model. Legacy rows are manufactured with
-    ``QuerySet.update()``, which is exactly how they would have arrived: past
-    the choices list, past ``clean()``, straight into the column.
+    Driven by rewinding the real migration graph one step, which is affordable
+    here for a reason worth writing down: nothing outside ``vs_user`` depends
+    on 0008 or later, so unapplying 0009 unapplies 0009 and nothing else. The
+    predecessor of this class drove 0008's data functions against the LIVE
+    model registry instead, which worked only while ``user_type`` still existed
+    on it. It does not, so the column has to come from the schema the database
+    actually had at that point - which is what a historical registry is.
+
+    Rows are built through the historical model and stamped with
+    ``QuerySet.update()`` where a value is illegal, because that is exactly how
+    such a row would have arrived: past the choices list, past ``clean()``,
+    straight into the column.
     """
 
+    serialized_rollback = True
+
+    APP = "vs_user"
+    BEFORE = "0008_drop_admin_user_types"
+
     def setUp(self):
-        from vs_rbac.tests.helpers import make_branch, make_school
+        self._migrate(self.BEFORE)
+        self.historical = self._historical_apps(self.BEFORE)
+        self.User = self.historical.get_model("vs_user", "User")
+        Tenant = self.historical.get_model("vs_tenants", "Tenant")
+        Branch = self.historical.get_model("vs_tenants", "Branch")
 
-        self.school = make_school(slug="retire-school", name="Retire School")
-        self.lekki = make_branch(self.school, name="Lekki", is_main=True)
-
-    # -- fixtures ---------------------------------------------------------
-
-    def _user(self, email, *, branch=None, user_type="STAFF"):
-        return User.objects.create_user(
-            email=email, password="Str0ng!pass123", first_name="Test",
-            last_name="Person", status="ACTIVE", user_type=user_type,
-            branch=branch, tenant=self.school.tenant,
+        self.codex = Tenant.objects.get(slug="codex", kind="PLATFORM")
+        self.school = Tenant.objects.create(
+            name="Retire School", slug="retire-school", kind="SCHOOL", status="ACTIVE",
+        )
+        self.lekki = Branch.objects.create(
+            tenant=self.school, name="Lekki", code=1, is_main=True, status="ACTIVE",
         )
 
+    def tearDown(self):
+        # Clear this class's rows FIRST. Several tests manufacture exactly the
+        # shapes 0009 refuses to migrate, and the forward run below is the real
+        # migration - it would refuse them again, correctly, and fail the test
+        # in tearDown for doing its job. Raw SQL because the live model and the
+        # historical one disagree about which columns exist here.
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM vs_users_user WHERE email LIKE '%%@retire.test'"
+            )
+            cursor.execute(
+                "DELETE FROM vs_schools_branch WHERE tenant_id = %s", [self.school.pk],
+            )
+            cursor.execute(
+                "DELETE FROM vs_tenants_tenant WHERE id = %s", [self.school.pk],
+            )
+
+        # Always leave the database at the latest state for the rest of the
+        # run. Every leaf, not just this app's - see the same rule, and the
+        # same reasoning, in schools.vs_schools._MigrationHarness.
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        executor.loader.build_graph()
+        super().tearDown()
+
+    # -- harness ----------------------------------------------------------
+
+    def _migrate(self, target):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate([(self.APP, target)])
+        executor.loader.build_graph()
+        return executor
+
+    def _historical_apps(self, target):
+        """One state registry, so every historical model shares an identity."""
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        return executor.loader.project_state((self.APP, target)).apps
+
     @staticmethod
-    def _stamp(user, user_type):
-        """Write a retired persona the way a pre-migration row would carry it."""
-        User.objects.filter(pk=user.pk).update(user_type=user_type)
+    def _module(name):
+        """The real migration module. Its name starts with a digit."""
+        from importlib import import_module
+
+        return import_module(f"vs_user.migrations.{name}")
+
+    def _user(self, email, *, tenant=None, branch=None, user_type="STAFF", uid=None):
+        return self.User.objects.create(
+            email=email, first_name="Test", last_name="Person", gender="",
+            phone="", uid=uid, user_type=user_type, role="", status="ACTIVE",
+            is_staff=False, is_active=True, is_superuser=False,
+            tenant=tenant or self.school, branch=branch,
+        )
+
+    def _stamp(self, user, **values):
+        """Write a value no live writer could produce."""
+        self.User.objects.filter(pk=user.pk).update(**values)
         user.refresh_from_db()
         return user
 
-    @staticmethod
-    def _migration():
-        """The real module. Its name starts with a digit, so import it by path."""
-        from importlib import import_module
+    def _type_of(self, user):
+        return self.User.objects.values_list("user_type", flat=True).get(pk=user.pk)
 
-        return import_module("vs_user.migrations.0008_drop_admin_user_types")
+    # -- 0008: the conversion that still runs on a fresh database ---------
 
-    def _forward(self):
-        from django.apps import apps as live_apps
-
-        self._migration().retire_admin_personas(live_apps, None)
-
-    def _reverse(self):
-        from django.apps import apps as live_apps
-
-        self._migration().restore_admin_personas(live_apps, None)
-
-    # -- the conversion ---------------------------------------------------
-
-    def test_a_school_admin_becomes_staff_and_keeps_its_null_branch(self):
-        """Its NULL was "no campus of their own"; it now says school-wide."""
-        head = self._stamp(self._user("head@retire.test"), "SCHOOL_ADMIN")
-
-        self._forward()
-
-        head.refresh_from_db()
-        self.assertEqual(head.user_type, "STAFF")
-        self.assertIsNone(head.branch_id)
-
-    def test_a_branch_admin_becomes_staff_and_keeps_its_branch(self):
+    def test_the_retired_admin_personas_still_convert(self):
+        """0009 supersedes 0008, but 0007 -> HEAD still passes through it."""
+        head = self._stamp(self._user("head@retire.test"), user_type="SCHOOL_ADMIN")
         pinned = self._stamp(
-            self._user("lekki.head@retire.test", branch=self.lekki), "BRANCH_ADMIN",
+            self._user("lekki.head@retire.test", branch=self.lekki),
+            user_type="BRANCH_ADMIN",
         )
 
-        self._forward()
+        self._module(self.BEFORE).retire_admin_personas(self.historical, None)
 
-        pinned.refresh_from_db()
-        self.assertEqual(pinned.user_type, "STAFF")
-        self.assertEqual(pinned.branch_id, self.lekki.pk)
-
-    def test_the_other_personas_are_left_alone(self):
-        cx = make_cx_user(email="cx@retire.test")
-        pupil = self._user("pupil@retire.test", branch=self.lekki, user_type="STUDENT")
-
-        self._forward()
-
-        cx.refresh_from_db()
-        pupil.refresh_from_db()
-        self.assertEqual(cx.user_type, "CX_STAFF")
-        self.assertEqual(pupil.user_type, "STUDENT")
-
-    # -- the refusals -----------------------------------------------------
+        self.assertEqual(self._type_of(head), "STAFF")
+        self.assertEqual(self._type_of(pinned), "STAFF")
+        # Each kept the branch it had: NULL still means school-wide.
+        self.assertIsNone(self.User.objects.get(pk=head.pk).branch_id)
+        self.assertEqual(self.User.objects.get(pk=pinned.pk).branch_id, self.lekki.pk)
 
     def test_a_branch_admin_with_no_branch_is_refused_not_guessed(self):
         """It claims one campus and names none. Whole school, or a lost id?"""
-        orphan = self._stamp(self._user("orphan@retire.test"), "BRANCH_ADMIN")
+        orphan = self._stamp(self._user("orphan@retire.test"), user_type="BRANCH_ADMIN")
         alongside = self._stamp(
-            self._user("also@retire.test", branch=self.lekki), "SCHOOL_ADMIN",
+            self._user("also@retire.test", branch=self.lekki), user_type="SCHOOL_ADMIN",
         )
 
         with self.assertRaises(RuntimeError) as ctx:
-            self._forward()
+            self._module(self.BEFORE).retire_admin_personas(self.historical, None)
 
         self.assertIn("orphan@retire.test", str(ctx.exception))
         # Refused before it wrote anything: the convertible row alongside it is
         # untouched, so re-running after a fix is not a partial re-run.
-        orphan.refresh_from_db()
-        alongside.refresh_from_db()
-        self.assertEqual(orphan.user_type, "BRANCH_ADMIN")
-        self.assertEqual(alongside.user_type, "SCHOOL_ADMIN")
+        self.assertEqual(self._type_of(orphan), "BRANCH_ADMIN")
+        self.assertEqual(self._type_of(alongside), "SCHOOL_ADMIN")
 
-    def test_an_unrecognised_persona_is_refused(self):
-        stray = self._stamp(self._user("stray@retire.test", branch=self.lekki), "GOVERNOR")
+    # -- 0009 forward: it refuses rather than deciding for you ------------
+
+    def _verify_drop(self):
+        self._module("0009_drop_user_type").verify_before_drop(self.historical, None)
+
+    def test_the_drop_is_allowed_when_the_two_facts_agree(self):
+        self._user("cx@retire.test", tenant=self.codex, user_type="CX_STAFF", uid=10)
+        self._user("teacher@retire.test", branch=self.lekki, uid=10)
+
+        self._verify_drop()  # must not raise
+
+    def test_the_drop_refuses_cx_staff_sitting_outside_the_platform_tenant(self):
+        """The whole migration rests on those two being the same set.
+
+        If they have already drifted, dropping the column decides which of them
+        was telling the truth - and does it silently, which is the one thing it
+        must not do.
+        """
+        # Branchless, because ck_vision_staff_no_branch is still in force at
+        # this migration state - it is 0009 that replaces it. The drift being
+        # manufactured is the tenant one, which nothing guarded at all.
+        stray = self._user("stray.cx@retire.test")
+        self._stamp(stray, user_type="CX_STAFF")
 
         with self.assertRaises(RuntimeError) as ctx:
-            self._forward()
+            self._verify_drop()
 
-        self.assertIn("stray@retire.test", str(ctx.exception))
-        stray.refresh_from_db()
-        self.assertEqual(stray.user_type, "GOVERNOR")
+        self.assertIn("stray.cx@retire.test", str(ctx.exception))
 
-    # -- going back -------------------------------------------------------
-
-    def test_the_reverse_restores_school_admin_and_leaves_teachers_alone(self):
-        """Deliberately lossy, and the loss is the safe direction.
-
-        A branchless STAFF row could not exist before the migration, so it must
-        have been a SCHOOL_ADMIN. A branch-bound one is a former BRANCH_ADMIN
-        or an ordinary teacher, indistinguishable, so it stays STAFF rather
-        than promote every teacher in the school.
-        """
-        head = self._user("rev.head@retire.test")
-        teacher = self._user("rev.teacher@retire.test", branch=self.lekki)
-
-        self._reverse()
-
-        head.refresh_from_db()
-        teacher.refresh_from_db()
-        self.assertEqual(head.user_type, "SCHOOL_ADMIN")
-        self.assertEqual(teacher.user_type, "STAFF")
-
-    def test_the_reverse_refuses_a_row_the_old_constraint_would_reject(self):
-        """A branchless pupil is legal now and was not before.
-
-        Nothing in the old schema can express it, and turning a child into a
-        school administrator to satisfy a check constraint would be worse than
-        stopping - so it stops, before AddConstraint fails with a column name.
-        """
-        pupil = self._user("rev.pupil@retire.test", user_type="STUDENT")
+    def test_the_drop_refuses_a_platform_row_that_is_not_cx_staff(self):
+        """After the drop it becomes platform staff by definition. That is a
+        promotion, and this migration will not perform one silently."""
+        self._user("interloper@retire.test", tenant=self.codex, user_type="STUDENT")
 
         with self.assertRaises(RuntimeError) as ctx:
-            self._reverse()
+            self._verify_drop()
 
-        self.assertIn("rev.pupil@retire.test", str(ctx.exception))
-        pupil.refresh_from_db()
-        self.assertEqual(pupil.user_type, "STUDENT")
+        self.assertIn("interloper@retire.test", str(ctx.exception))
 
-    def test_a_cx_staff_row_is_not_swept_up_by_the_reverse(self):
-        """CX staff are branchless by rule and were never school admins."""
-        cx = make_cx_user(email="rev.cx@retire.test")
+    def test_the_drop_refuses_a_uid_clash_the_merged_constraint_would_reject(self):
+        """Two uid constraints become one, and the merge is stricter.
 
-        self._reverse()
+        Worth being straight about how a clash gets there. While both old
+        constraints are in force it cannot: a same-tenant pair needs one CX row
+        inside a school tenant, and that is the drift the check above already
+        refuses. This check earns its keep on a database whose constraints are
+        NOT intact - a restored dump, or a table somebody altered by hand - so
+        the constraint is dropped here to put the database in exactly that
+        state. Without the check the merge fails as an IntegrityError naming an
+        index; with it, the two accounts are named.
+        """
+        with connection.cursor() as cursor:
+            # A conditional UniqueConstraint is a partial unique INDEX on
+            # PostgreSQL, not a table constraint, so this is the drop that
+            # matches how Django created it.
+            cursor.execute("DROP INDEX unique_uid_per_tenant")
 
-        cx.refresh_from_db()
-        self.assertEqual(cx.user_type, "CX_STAFF")
+        self._user("clash.one@retire.test", branch=self.lekki, uid=77)
+        self._user("clash.two@retire.test", branch=self.lekki, uid=77)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._verify_drop()
+
+        self.assertIn("clash.one@retire.test", str(ctx.exception))
+
+    # -- 0009 reverse: what comes back, and what does not -----------------
+
+    def _restore(self):
+        self._module("0009_drop_user_type").restore_user_type(self.historical, None)
+
+    def test_the_reverse_recovers_cx_staff_from_the_tenant(self):
+        """The one value a reverse can fill in honestly."""
+        cx = self._user("rev.cx@retire.test", tenant=self.codex, user_type="")
+        teacher = self._user("rev.teacher@retire.test", branch=self.lekki, user_type="")
+
+        self._restore()
+
+        self.assertEqual(self._type_of(cx), "CX_STAFF")
+        self.assertEqual(self._type_of(teacher), "STAFF")
+
+    def test_the_reverse_cannot_bring_a_pupil_back(self):
+        """The honest loss, asserted so nobody discovers it during a restore.
+
+        After the forward drop a pupil, a guardian and a bursar are the same
+        row in every column that remains. The reverse leaves all three as STAFF
+        rather than guess which was which.
+        """
+        pupil = self._user("rev.pupil@retire.test", branch=self.lekki, user_type="STUDENT")
+
+        self._restore()
+
+        self.assertEqual(self._type_of(pupil), "STAFF")
+
+    def test_the_reverse_refuses_a_platform_user_holding_a_branch(self):
+        """It would become a CX_STAFF row that violates the re-added
+        constraint, and finding that out from a half-applied AddConstraint is
+        the worst place to find it out."""
+        self._stamp(
+            self._user("rev.branched@retire.test", tenant=self.codex, user_type=""),
+            branch=self.lekki,
+        )
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._restore()
+
+        self.assertIn("rev.branched@retire.test", str(ctx.exception))
+
+    # -- the guarantee survives the migration ----------------------------
+
+    def test_applying_the_migration_installs_the_branch_rule_as_triggers(self):
+        """The point of the whole exercise: the database still refuses it.
+
+        A CheckConstraint cannot reach the tenant's kind, so if the rule had
+        been allowed to become a Python-only check this would insert happily.
+        """
+        from django.db import IntegrityError
+
+        probe = self._user(
+            "trigger.probe@retire.test", tenant=self.codex, user_type="CX_STAFF",
+        )
+
+        self._migrate("0009_drop_user_type")
+
+        # Straight SQL, so nothing but the database is consulted - no
+        # serializer, no clean(), no save().
+        with self.assertRaises(IntegrityError) as ctx, transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE vs_users_user SET branch_id = %s WHERE id = %s",
+                    [self.lekki.pk, probe.pk],
+                )
+        self.assertIn("must not be assigned to a branch", str(ctx.exception))
+
+    def test_applying_the_migration_leaves_a_tenant_user_free_to_hold_a_branch(self):
+        """The other half of the rule, which is just as easy to over-enforce."""
+        pinned = self._user("trigger.pinned@retire.test")
+
+        self._migrate("0009_drop_user_type")
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE vs_users_user SET branch_id = %s WHERE id = %s",
+                [self.lekki.pk, pinned.pk],
+            )
+            cursor.execute(
+                "SELECT branch_id FROM vs_users_user WHERE id = %s", [pinned.pk],
+            )
+            self.assertEqual(cursor.fetchone()[0], self.lekki.pk)
 
 
 class BranchRuleAgreementTests(TestCase):
@@ -4152,7 +4310,7 @@ class BranchRuleAgreementTests(TestCase):
     def test_a_tenant_user_with_no_branch_passes_full_clean(self):
         user = User(
             email="wide@agree.test", first_name="Wide", last_name="Reach",
-            user_type=User.UserType.STAFF, status="ACTIVE",
+            status="ACTIVE",
             tenant=self.school.tenant, branch=None,
         )
         user.full_clean(exclude=["password"])  # must not raise
@@ -4160,7 +4318,7 @@ class BranchRuleAgreementTests(TestCase):
     def test_a_student_with_no_branch_passes_full_clean(self):
         user = User(
             email="pupil@agree.test", first_name="Pu", last_name="Pil",
-            user_type=User.UserType.STUDENT, status="ACTIVE",
+            status="ACTIVE",
             tenant=self.school.tenant, branch=None,
         )
         user.full_clean(exclude=["password"])  # must not raise
@@ -4170,7 +4328,7 @@ class BranchRuleAgreementTests(TestCase):
 
         user = User(
             email="cx@agree.test", first_name="C", last_name="X",
-            user_type=User.UserType.CX_STAFF, status="ACTIVE",
+            status="ACTIVE",
             tenant=Tenant.objects.get(slug="codex", kind="PLATFORM"),
             branch=self.branch,
         )
@@ -4194,7 +4352,7 @@ class BranchRuleAgreementTests(TestCase):
         user = User.objects.create_user(
             email="pinned@agree.test", password="Str0ng!pass123",
             first_name="Pin", last_name="Ned", status="ACTIVE",
-            user_type=User.UserType.STAFF, branch=self.branch,
+            branch=self.branch,
         )
 
         User.objects.filter(pk=user.pk).update(branch=None)  # must not raise
@@ -4204,11 +4362,14 @@ class BranchRuleAgreementTests(TestCase):
 
 
 class PersonaConfersNoAuthorityTests(TestCase):
-    """``user_type`` is inert, and must not have quietly become a grant.
+    """An account's shape confers nothing. Only its role does.
 
-    The removal replaced two personas with STAFF. If anything anywhere reads
-    "STAFF plus no branch" as the school-wide administrator the old
-    SCHOOL_ADMIN was, this is where it shows up.
+    The personas were retired first and the column dropped after, and both
+    steps had the same failure mode: something starts reading what is LEFT of
+    an account as though it were a grant. "A tenant user with no branch" is
+    the shape the old school-wide SCHOOL_ADMIN had; "a user with no student
+    record" is the shape everybody has now. If either is being read as
+    authority anywhere, it shows up here.
     """
 
     def setUp(self):
@@ -4220,8 +4381,7 @@ class PersonaConfersNoAuthorityTests(TestCase):
     def _user(self, email, **kwargs):
         return User.objects.create_user(
             email=email, password="Str0ng!pass123", first_name="In",
-            last_name="Ert", status="ACTIVE", user_type=User.UserType.STAFF,
-            tenant=self.school.tenant, **kwargs,
+            last_name="Ert", status="ACTIVE", tenant=self.school.tenant, **kwargs,
         )
 
     def test_a_branchless_staff_account_may_not_create_users(self):
@@ -4233,11 +4393,86 @@ class PersonaConfersNoAuthorityTests(TestCase):
         resp = client.post("/v1/user/users/", {
             "first_name": "New", "last_name": "Hire",
             "email": "new.hire@inert.test", "gender": "MALE",
-            "user_type": User.UserType.STAFF, "role": "anything",
+            "role": "anything",
         }, format="json")
 
         self.assertEqual(resp.status_code, 403, resp.content)
         self.assertFalse(User.objects.filter(email="new.hire@inert.test").exists())
+
+    def test_a_school_actor_cannot_mint_a_platform_account(self):
+        """The body may not choose which side of the boundary a hire lands on.
+
+        This is the reason the create serializer has no ``user_type`` input,
+        and it is worth stating as a security property rather than a tidying.
+
+        The old field let the request body pin the target tenant to codex, and
+        ``platform.team.create`` is a TENANT-holdable key - a school
+        administrator legitimately holds it to create their own school's staff.
+        ``HasRBACPermission`` evaluates it against the tenant the CALLER
+        asserted, never against the tenant the new row lands in. So Amaka,
+        administrator at Bright Star, could post ``user_type: "CX_STAFF"`` with
+        a codex role key and an active position id, pass a permission check
+        scoped to Bright Star, and end up with an account inside CodeX carrying
+        ``is_staff=True`` and a platform staff profile.
+
+        Which tenant a new account belongs to now follows from the actor's own
+        tenant, and a school actor cannot fake that.
+        """
+        actor = self._user("amaka@inert.test")
+        self._grant_create(actor)
+        client = APIClient()
+        client.force_authenticate(user=actor)
+
+        resp = client.post("/v1/user/users/", {
+            "first_name": "Sneaky", "last_name": "Insider",
+            "email": "insider@inert.test", "gender": "FEMALE",
+            # Ignored: there is no such input field any more. Sent exactly as
+            # the old exploit sent it, so this test fails loudly if one is
+            # ever reintroduced.
+            "user_type": "CX_STAFF",
+            "role": "xvs_platform_admin",
+        }, format="json")
+
+        # Refused, because the role key is looked up in the actor's OWN tenant
+        # now - a codex role is simply not found there.
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertFalse(User.objects.filter(email="insider@inert.test").exists())
+
+    def test_a_school_actors_hire_lands_in_their_own_tenant(self):
+        """The other half: the legitimate case still works, and stays put."""
+        from vs_rbac.models import TenantRoleTemplate
+
+        actor = self._user("amaka2@inert.test")
+        self._grant_create(actor)
+        TenantRoleTemplate.objects.create(
+            tenant=self.school.tenant, key="bursar", name="Bursar",
+        )
+        client = APIClient()
+        client.force_authenticate(user=actor)
+
+        resp = client.post("/v1/user/users/", {
+            "first_name": "Ngozi", "last_name": "Bursar",
+            "email": "ngozi@inert.test", "gender": "FEMALE",
+            "role": "bursar",
+        }, format="json")
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        hire = User.objects.get(email="ngozi@inert.test")
+        self.assertEqual(hire.tenant_id, self.school.tenant_id)
+        self.assertFalse(hire.is_platform_user)
+        # And no platform staff profile came with them.
+        self.assertFalse(hasattr(hire, "platform_staff_profile"))
+
+    def _grant_create(self, user):
+        """Give *user* platform.team.create inside their own tenant."""
+        from vs_rbac.tests.helpers import (
+            make_assignment, make_permission, make_role, make_role_permission,
+        )
+
+        role = make_role(self.school.tenant, name=f"Creator {user.email}")
+        make_role_permission(role, make_permission("platform.team.create"))
+        make_assignment(self.school.tenant, user, role)
+        return role
 
     def test_the_permission_gate_reads_the_same_for_both_branch_shapes(self):
         """Two STAFF accounts, one branchless, neither granted anything."""

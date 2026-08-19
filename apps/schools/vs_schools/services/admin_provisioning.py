@@ -44,12 +44,13 @@ def provision_admin_user(
     Wrapped in its own savepoint so a failure here (e.g. duplicate email from a
     concurrent request) is isolated and never rolls back the parent transaction.
 
-    The account is created as ordinary ``STAFF``. It used to take a
-    ``user_type`` of 'SCHOOL_ADMIN' or 'BRANCH_ADMIN' from the caller, and the
-    two said nothing the rest of the arguments did not already say: the reach is
-    ``branch`` (a branch, or None for the whole school) and the authority is
-    ``role``. A persona that mirrors two other arguments is a third copy of the
-    truth waiting to disagree with them, so it is gone.
+    The account is an ordinary user of the school's tenant - there is no
+    persona to set. It used to take a ``user_type`` of 'SCHOOL_ADMIN' or
+    'BRANCH_ADMIN' from the caller, then 'STAFF' when those were retired, and
+    none of them said anything the rest of the arguments did not already say:
+    the reach is ``branch`` (a branch, or None for the whole school) and the
+    authority is ``role``. A persona that mirrors two other arguments is a
+    third copy of the truth waiting to disagree with them, so it is gone.
     """
     from vs_user.email_normalization import normalize_email
     from vs_user.models import User
@@ -121,7 +122,6 @@ def provision_admin_user(
                 last_name=last_name,
                 gender="",
                 phone=getattr(contact, "phone", "") or "",
-                user_type=User.UserType.STAFF,
                 role=role_obj.name,
                 tenant=tenant,
                 branch=branch,

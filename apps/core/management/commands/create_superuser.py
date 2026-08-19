@@ -208,7 +208,6 @@ class Command(BaseCommand):
         
         existing_count, user_exist, len_pass = None, None, None
         # Check if platform-tenant staff already exist (unless --force is used).
-        # Keyed off the tenant kind, not user_type.
         if not force:
             existing_count = User.objects.filter(tenant__kind='PLATFORM').count()
         
@@ -252,7 +251,11 @@ class Command(BaseCommand):
             first_name=first_name,
             last_name=last_name,
             phone=phone,
-            user_type=User.UserType.CX_STAFF,
+            # Named, not derived. The platform tenant used to be filled in by
+            # User._derive_tenant() off a CX_STAFF persona - which was the
+            # answer arriving back where it started. A caller minting platform
+            # staff says so by naming the platform tenant.
+            tenant=_codex_tenant(),
             status=User.Status.ACTIVE,
             is_active=True,
             is_staff=True,      # Django admin access
@@ -275,7 +278,6 @@ class Command(BaseCommand):
             event=AuthEventLog.Event.USER_CREATED,
             metadata={
                 'bootstrap': True,
-                'user_type': User.UserType.CX_STAFF,
                 'is_superuser': True,
                 'created_via': 'management_command',
                 'used_defaults': not options['interactive'],
@@ -291,7 +293,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_LABEL('Account Details:'))
         self.stdout.write(f'  Email:      {user.email}')
         self.stdout.write(f'  Name:       {user.full_name}')
-        self.stdout.write(f'  User Type:  {user.user_type}')
+        self.stdout.write(f'  Tenant:     {user.tenant.slug} ({user.tenant.kind})')
         self.stdout.write(f'  Status:     {user.status}')
         self.stdout.write(f'  Role:       XVS Super Admin (can create permissions on onset)')
         self.stdout.write(f'  ID:         {user.id}')

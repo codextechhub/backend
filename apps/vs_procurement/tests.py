@@ -118,6 +118,18 @@ from vs_procurement.stock import (
 from vs_procurement.exceptions import InsufficientStockError, StockError
 
 
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 class _P2PFixtureMixin:
     """Builds an entity (seeded chart + open period), a vendor and tax codes."""
 
@@ -529,7 +541,7 @@ class VendorQuotationPortalTests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email="buyer-capture@test.com", password="pw", tenant=self.entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Buyer", last_name="Tester",
+            status="ACTIVE", first_name="Buyer", last_name="Tester",
         )
         response = TenantAPIClient(user=user).post(
             f"/v1/procurement/quotations/?entity={self.entity.code}",
@@ -596,7 +608,7 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Vendor", last_name="Tester",
+            status="ACTIVE", first_name="Vendor", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -876,7 +888,7 @@ class VendorCategoryConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Category", last_name="Tester",
+            status="ACTIVE", first_name="Category", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -1249,7 +1261,7 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         line = po.lines.first()
         user = get_user_model().objects.create_user(
             email="grn-quantity@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="GRN", last_name="Tester",
+            status="ACTIVE", first_name="GRN", last_name="Tester",
         )
         client = TenantAPIClient(user=user)
         base = {
@@ -1311,7 +1323,7 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         from core.test_utils import TenantAPIClient
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Quantity", last_name="Tester",
+            status="ACTIVE", first_name="Quantity", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -1531,7 +1543,7 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         line_a, line_b = list(po.lines.order_by("line_no"))
         user = get_user_model().objects.create_user(
             email="grn-edit@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="GRN", last_name="Editor",
+            status="ACTIVE", first_name="GRN", last_name="Editor",
         )
         client = TenantAPIClient(user=user)
         created = client.post(
@@ -1573,7 +1585,7 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         grn = self.make_grn(entity, vendor, po, [(line, 3)])
         user = get_user_model().objects.create_user(
             email="grn-edit-guard@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="GRN", last_name="Guard",
+            status="ACTIVE", first_name="GRN", last_name="Guard",
         )
         client = TenantAPIClient(user=user)
 
@@ -1600,7 +1612,7 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         grn = self.make_grn(entity, vendor, po, [(po.lines.first(), 3)])
         user = get_user_model().objects.create_user(
             email="grn-edit-nogrant@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="No", last_name="Grant",
+            status="ACTIVE", first_name="No", last_name="Grant",
         )
         response = TenantAPIClient(user=user).patch(
             f"/v1/procurement/goods-receipts/{grn.id}/?entity={entity.code}",
@@ -2137,7 +2149,7 @@ class VendorInvoiceConsoleAPITests(_P2PFixtureMixin, TestCase):
         from core.test_utils import TenantAPIClient
         user = get_user_model().objects.create_user(
             email="vendor-invoice-console@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Invoice", last_name="Tester",
+            status="ACTIVE", first_name="Invoice", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -2632,7 +2644,7 @@ class VendorPaymentConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email="vendor-payment-console@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Payment", last_name="Tester",
+            status="ACTIVE", first_name="Payment", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -3116,7 +3128,7 @@ class RequisitionConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=f"requisitions-{entity.code.lower()}@test.com", password="pw",
-            tenant=entity.tenant, user_type="CX_STAFF", status="ACTIVE",
+            tenant=entity.tenant, status="ACTIVE",
             first_name="Console", last_name="Tester",
         )
         return TenantAPIClient(user=user)
@@ -3347,7 +3359,7 @@ class RequisitionConsoleAPITests(_P2PFixtureMixin, TestCase):
         entity, _, _, _, _ = self.build_p2p()
         user = get_user_model().objects.create_user(
             email="req-no-grant@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="No", last_name="Grant",
+            status="ACTIVE", first_name="No", last_name="Grant",
         )
         client = TenantAPIClient(user=user)
         for path in (
@@ -3480,7 +3492,7 @@ class ProcurementAnalyticsReportAPITests(_P2PFixtureMixin, TestCase):
 
         return get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Rep", last_name="Ort",
+            status="ACTIVE", first_name="Rep", last_name="Ort",
         )
 
     def _second_entity(self):
@@ -3641,7 +3653,7 @@ class VendorAssessmentTests(_P2PFixtureMixin, TestCase):
 
         return get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Assess", last_name="Or",
+            status="ACTIVE", first_name="Assess", last_name="Or",
         )
 
     def _second_entity(self):
@@ -3814,7 +3826,7 @@ class AnalyticsDrawerEndpointTests(_P2PFixtureMixin, TestCase):
 
         return get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Drawer", last_name="Viewer",
+            status="ACTIVE", first_name="Drawer", last_name="Viewer",
         )
 
     def _second_entity(self):
@@ -3960,7 +3972,7 @@ class GRIRPoLinesTests(_P2PFixtureMixin, TestCase):
 
         return get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="GR", last_name="Lines",
+            status="ACTIVE", first_name="GR", last_name="Lines",
         )
 
     def _other_entity(self):
@@ -4459,7 +4471,7 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
         )
         user = get_user_model().objects.create_user(
             email="sourced-budget@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Budget", last_name="Tester",
+            status="ACTIVE", first_name="Budget", last_name="Tester",
         )
         response = TenantAPIClient(user=user).get(
             f"/v1/procurement/requisitions/budget-availability/"
@@ -4774,7 +4786,7 @@ class SourcingConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Sourcing", last_name="Tester",
+            status="ACTIVE", first_name="Sourcing", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -5404,7 +5416,7 @@ class CatalogItemConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Catalog", last_name="Tester",
+            status="ACTIVE", first_name="Catalog", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -5805,7 +5817,7 @@ class ContractConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Contract", last_name="Tester",
+            status="ACTIVE", first_name="Contract", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -6274,7 +6286,7 @@ class PurchaseOrderConsoleDataTests(_P2PFixtureMixin, TestCase):
         original_lines = list(po.lines.values_list("id", flat=True))
         user = get_user_model().objects.create_user(
             email="po-edit@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="PO", last_name="Editor",
+            status="ACTIVE", first_name="PO", last_name="Editor",
         )
         client = TenantAPIClient(user=user)
         response = client.patch(
@@ -6373,9 +6385,9 @@ class PurchaseOrderConsoleDataTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(summary["open"], {"count": 1, "amount": 1_000_000})
 
         # No procurement grant → the endpoint is refused before any data is returned.
-        user = get_user_model().objects.create_user(
+        user = get_user_model().objects.create_user(tenant=_platform_tenant(), 
             email="po-summary-no-grant@test.com", password="pw",
-            user_type="CX_STAFF", status="ACTIVE", first_name="No", last_name="Grant",
+            status="ACTIVE", first_name="No", last_name="Grant",
         )
         response = TenantAPIClient(user=user).get(
             f"/v1/procurement/purchase-orders/summary/?entity={entity.code}",
@@ -6395,7 +6407,7 @@ class PurchaseOrderVendorEmailTests(_P2PFixtureMixin, TestCase):
         self.vendor.save(update_fields=["email", "address", "updated_at"])
         self.user = get_user_model().objects.create_user(
             email="buyer-po-email@test.com", password="pw", tenant=self.entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Purchase", last_name="Buyer",
+            status="ACTIVE", first_name="Purchase", last_name="Buyer",
         )
 
     def _po(self, *, approved=True):
@@ -6623,16 +6635,16 @@ class ProcurementDashboardTests(_P2PFixtureMixin, TestCase):
             tenant=entity.tenant,
         )
         User = get_user_model()
-        requester = User.objects.create_user(
-            email="dash-requester@test.com", user_type="CX_STAFF", status="ACTIVE",
+        requester = User.objects.create_user(tenant=_platform_tenant(), 
+            email="dash-requester@test.com", status="ACTIVE",
             first_name="Dash", last_name="Requester",
         )
-        approver = User.objects.create_user(
-            email="dash-approver@test.com", user_type="CX_STAFF", status="ACTIVE",
+        approver = User.objects.create_user(tenant=_platform_tenant(), 
+            email="dash-approver@test.com", status="ACTIVE",
             first_name="Dash", last_name="Approver",
         )
-        stranger = User.objects.create_user(
-            email="dash-stranger@test.com", user_type="CX_STAFF", status="ACTIVE",
+        stranger = User.objects.create_user(tenant=_platform_tenant(), 
+            email="dash-stranger@test.com", status="ACTIVE",
             first_name="Dash", last_name="Stranger",
         )
         template = WorkflowTemplate.objects.create(
@@ -6687,12 +6699,12 @@ class ProcurementDashboardTests(_P2PFixtureMixin, TestCase):
 
         entity, _, vendor, _, _ = self.build_p2p()
         User = get_user_model()
-        requester = User.objects.create_user(
-            email="dash-pay-requester@test.com", user_type="CX_STAFF", status="ACTIVE",
+        requester = User.objects.create_user(tenant=_platform_tenant(), 
+            email="dash-pay-requester@test.com", status="ACTIVE",
             first_name="Pay", last_name="Requester",
         )
-        approver = User.objects.create_user(
-            email="dash-pay-approver@test.com", user_type="CX_STAFF", status="ACTIVE",
+        approver = User.objects.create_user(tenant=_platform_tenant(), 
+            email="dash-pay-approver@test.com", status="ACTIVE",
             first_name="Pay", last_name="Approver",
         )
         payment = VendorPayment.objects.create(
@@ -6730,9 +6742,9 @@ class ProcurementDashboardTests(_P2PFixtureMixin, TestCase):
         from core.test_utils import TenantAPIClient
 
         entity, _, _, _, _ = self.build_p2p()
-        user = get_user_model().objects.create_user(
+        user = get_user_model().objects.create_user(tenant=_platform_tenant(), 
             email="dashboard-no-grant@test.com", password="pw",
-            user_type="CX_STAFF", status="ACTIVE", first_name="No", last_name="Grant",
+            status="ACTIVE", first_name="No", last_name="Grant",
         )
         response = TenantAPIClient(user=user).get(
             f"/v1/procurement/reports/dashboard/?entity={entity.code}",
@@ -6754,8 +6766,8 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
     def _user(email):
         from django.contrib.auth import get_user_model
 
-        return get_user_model().objects.create_user(
-            email=email, user_type="CX_STAFF", first_name="T", last_name="U",
+        return get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email=email, first_name="T", last_name="U",
         )
 
     def _make_requisition(self, entity, *, unit_price, qty=1):
@@ -6982,8 +6994,7 @@ class _ParkingFixtureMixin(_P2PFixtureMixin):
         from django.contrib.auth import get_user_model
 
         return get_user_model().objects.create_user(
-            email=email, password="pw", tenant=tenant, user_type="CX_STAFF",
-            status="ACTIVE", first_name=email.split("@")[0], last_name="Tester",
+            email=email, password="pw", tenant=tenant, status="ACTIVE", first_name=email.split("@")[0], last_name="Tester",
             **extra,
         )
 
@@ -8492,7 +8503,7 @@ class ProcurementApprovalQueueTests(_P2PFixtureMixin, TestCase):
 
         return get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE",
+            status="ACTIVE",
             first_name=first_name, last_name="Tester",
         )
 
@@ -8983,7 +8994,7 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Stock", last_name="Tester",
+            status="ACTIVE", first_name="Stock", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -9546,7 +9557,7 @@ class ProcurementReportHardeningTests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=f"report-hardening-{entity.pk}@test.com", password="pw",
-            tenant=entity.tenant, user_type="CX_STAFF", status="ACTIVE",
+            tenant=entity.tenant, status="ACTIVE",
             first_name="Report", last_name="Tester",
         )
         return TenantAPIClient(user=user)
@@ -10001,7 +10012,6 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
             email=email, password="pw", tenant=tenant, branch=branch,
             # One persona either way: a null branch is a school-wide posting,
             # not a different kind of person.
-            user_type="STAFF",
             status="ACTIVE", first_name="Branch", last_name="Tester",
         )
         client = TenantAPIClient(user=user)
@@ -10561,7 +10571,6 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
             email=email, password="pw", tenant=tenant, branch=branch,
             # One persona either way: a null branch is a school-wide posting,
             # not a different kind of person.
-            user_type="STAFF",
             status="ACTIVE", first_name=first_name, last_name="Tester",
         )
 
@@ -12297,7 +12306,7 @@ class VendorAdvanceDrawdownEndpointTests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="AP", last_name="Tester",
+            status="ACTIVE", first_name="AP", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -12689,7 +12698,7 @@ class StockLocationTests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=self.entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Stock", last_name="Tester",
+            status="ACTIVE", first_name="Stock", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -12902,7 +12911,7 @@ class VendorDocumentAttachmentTests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Attach", last_name="Tester",
+            status="ACTIVE", first_name="Attach", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 

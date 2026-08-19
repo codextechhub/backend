@@ -123,10 +123,11 @@ class SpecialLoginPreviewView(APIView):
     was active. That is a name-and-existence oracle over every parent, student
     and teacher on the platform, readable by anyone who can reach the URL.
 
-    The discriminator is the TENANT KIND, not ``user_type``. ``user_type`` is
-    declared inert on the model and must never drive an access decision, and the
-    same address may legitimately hold a CX staff account on the platform tenant
-    and an unrelated parent account at a school - only the tenant separates them.
+    The discriminator is the TENANT KIND. It is now the only thing it could
+    be: the ``user_type`` persona that once shadowed it has been removed. The
+    same address may legitimately hold a CX staff account on the platform
+    tenant and an unrelated parent account at a school, and only the tenant
+    separates them.
 
     Responses
     ---------

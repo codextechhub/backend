@@ -12,10 +12,22 @@ from vs_tenants.models import Tenant
 from vs_user.models import User
 
 
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 def _staff_user():
-    return User.objects.create_user(
+    return User.objects.create_user(tenant=_platform_tenant(), 
         email="monitor@codexng.com", password="x",
-        user_type="CX_STAFF", status="ACTIVE",
+        status="ACTIVE",
         first_name="Mon", last_name="Itor", is_staff=True,
     )
 
