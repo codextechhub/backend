@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django.contrib.auth import get_user_model
+from django.urls import reverse
 from rest_framework import serializers
 
 from vs_tenants.models import Tenant
@@ -182,7 +183,27 @@ class EntityAuditTrailDetailSerializer(serializers.Serializer):
 # Audit Export Job Serializers
 # -----------------------------------------------------------------------------
 
-class AuditExportJobListSerializer(serializers.ModelSerializer):
+class _ExportDownloadUrlMixin(serializers.Serializer):
+    """Publish the authorised download path, never the storage key.
+
+    ``AuditExportJob.file_path`` holds the key ``core.storage`` chose, and under
+    that storage a key *is* the credential: anything holding it can fetch the
+    bytes from ``/media/<name>`` with nothing but a login, for ever. Publishing
+    it would hand a permanent, unrevocable copy of the audit trail to every
+    reader of the payload, so neither export serializer exposes it. What they
+    expose is the route that re-asks the permission question on every call.
+    """
+
+    download_url = serializers.SerializerMethodField()
+
+    def get_download_url(self, obj):
+        """Return the authorised download path, or None when there is nothing to take."""
+        if obj.status != ExportJobStatus.COMPLETED or not obj.file_path or obj.is_expired:
+            return None
+        return reverse("audit-export-download", kwargs={"id": obj.id})
+
+
+class AuditExportJobListSerializer(_ExportDownloadUrlMixin, serializers.ModelSerializer):
     """
     Lighter serializer for export history listing.
     """
@@ -197,6 +218,7 @@ class AuditExportJobListSerializer(serializers.ModelSerializer):
             "export_format",
             "status",
             "file_name",
+            "download_url",
             "row_count",
             "requested_at",
             "started_at",
@@ -205,7 +227,7 @@ class AuditExportJobListSerializer(serializers.ModelSerializer):
         )
 
 
-class AuditExportJobDetailSerializer(serializers.ModelSerializer):
+class AuditExportJobDetailSerializer(_ExportDownloadUrlMixin, serializers.ModelSerializer):
     """
     Full serializer for one export job.
     """
@@ -221,7 +243,7 @@ class AuditExportJobDetailSerializer(serializers.ModelSerializer):
             "status",
             "filter_payload",
             "file_name",
-            "file_path",
+            "download_url",
             "row_count",
             "failure_reason",
             "requested_at",
