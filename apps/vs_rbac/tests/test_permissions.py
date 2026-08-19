@@ -7,7 +7,6 @@ from django.test import TestCase
 from vs_rbac.permissions import (
     IsAuthenticatedAndActive,
     IsVisionStaff,
-    IsSchoolAdmin,
     HasRBACPermission,
     ReadOnly,
     user_has_rbac_permission,
@@ -117,31 +116,6 @@ class IsVisionStaffTests(TestCase):
 
     def test_anonymous_denied(self):
         request = _make_request(user=MagicMock(is_authenticated=False))
-        self.assertFalse(self.perm.has_permission(request, self.view))
-
-
-class IsSchoolAdminTests(TestCase):
-    def setUp(self):
-        self.perm = IsSchoolAdmin()
-        self.view = MagicMock()
-
-    def test_school_admin_allowed(self):
-        school = make_school()
-        branch = make_branch(school)
-        user = make_school_admin(branch)
-        request = _make_request(user=user)
-        self.assertTrue(self.perm.has_permission(request, self.view))
-
-    def test_vision_staff_denied(self):
-        user = make_vision_user()
-        request = _make_request(user=user)
-        self.assertFalse(self.perm.has_permission(request, self.view))
-
-    def test_regular_staff_denied(self):
-        school = make_school()
-        branch = make_branch(school)
-        user = make_staff_user(branch)
-        request = _make_request(user=user)
         self.assertFalse(self.perm.has_permission(request, self.view))
 
 

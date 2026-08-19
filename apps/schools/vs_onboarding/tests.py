@@ -301,6 +301,134 @@ class EndpointPermissionTests(OnboardingFixture):
         self.assertEqual(response.status_code, 400, response.data)
 
 
+class SelfApprovalAttackTests(OnboardingFixture):
+    """A school must not be able to take itself live, however it gets the key.
+
+    The defence used to be a sentence: ``onboarding.go_live.approve`` is
+    "granted to platform roles by default", so no school holds it. A default is
+    not a boundary. Both keys live in the ``onboarding`` module, so migration
+    0007 classified them TENANT, and the guard from ad41a03 - which refuses a
+    PLATFORM-scoped key granted inside a tenant - has nothing to say about
+    them. A school admin who can mint a role can mint one carrying either.
+
+    The gate is therefore the caller's asserted tenant, exactly as on
+    :class:`OnboardingReinstateView`: only the platform tenant may decide.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.approve_key = make_permission(PERM_GO_LIVE_APPROVE)
+        self.reject_key = make_permission(PERM_GO_LIVE_REJECT)
+        self.make_ready()
+        self.request_row = self.submit_request()
+        OnboardingProgress.all_objects.filter(tenant=self.tenant).update(
+            readiness_state=ReadinessState.PENDING_APPROVAL,
+        )
+
+    def _self_grant(self, *keys):
+        """The mint-a-role-and-assign-it path, as a school admin would run it.
+
+        Written against the models rather than the RBAC endpoints on purpose:
+        those endpoints are closed to a PENDING tenant by
+        ``TenantSurfaceAllowed``, so driving them here would prove only that
+        the pending gate works. What has to be proved is that *holding* the key
+        confers nothing, because the same admin can mint this role the moment
+        their school is live and the grant outlives the moment.
+        """
+        return grant_extra(self.tenant, self.admin, *keys)
+
+    def test_the_grant_itself_is_not_refused(self):
+        """The premise: nothing stops a school from carrying these keys.
+
+        Both are ``PermissionScope.TENANT`` - the seeder says so - so the
+        scope guard never runs. If this ever starts failing, the boundary has
+        moved to the registry and the view gate below is belt and braces.
+        """
+        from vs_rbac.models import PermissionScope
+
+        self.assertEqual(self.approve_key.scope, PermissionScope.TENANT)
+        self.assertEqual(self.reject_key.scope, PermissionScope.TENANT)
+        role = self._self_grant(PERM_GO_LIVE_APPROVE, PERM_GO_LIVE_REJECT)
+        self.assertTrue(role.pk)
+
+    def test_a_school_admin_holding_the_key_cannot_approve_its_own_school(self):
+        """The attack, end to end. Before the tenant gate this returned 200."""
+        self._self_grant(PERM_GO_LIVE_APPROVE)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client_for(self.admin).post(
+                self.scoped("onboarding-go-live-approve", self.request_row.pk),
+                {}, format="json",
+            )
+
+        self.assertEqual(response.status_code, 403, response.data)
+        self.request_row.refresh_from_db()
+        self.assertEqual(self.request_row.status, GoLiveStatus.PENDING)
+        self.school.refresh_from_db()
+        self.assertEqual(self.school.status, SchoolStatus.PENDING)
+        self.assertEqual(
+            Tenant.objects.get(pk=self.tenant.pk).status, Tenant.Status.PENDING,
+        )
+
+    def test_a_school_admin_holding_the_key_cannot_reject_either(self):
+        """Reject is not harmless: it is how a school buries an inconvenient review."""
+        self._self_grant(PERM_GO_LIVE_REJECT)
+
+        response = self.client_for(self.admin).post(
+            self.scoped("onboarding-go-live-reject", self.request_row.pk),
+            {"rejection_reason": "Reviewing myself."}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 403, response.data)
+        self.request_row.refresh_from_db()
+        self.assertEqual(self.request_row.status, GoLiveStatus.PENDING)
+
+    def test_the_refusal_does_not_say_whether_the_key_was_held(self):
+        """Two callers, one holding the key and one not, get the same answer.
+
+        A refusal that differed would be a probe: mint the role, call the
+        endpoint, and read from the error whether the grant landed.
+        """
+        self._self_grant(PERM_GO_LIVE_APPROVE)
+        holder = self.client_for(self.admin)
+        pauper = self.client_for(
+            make_school_admin(None, email="pauper@test.com", tenant=self.tenant),
+        )
+        url = self.scoped("onboarding-go-live-approve", self.request_row.pk)
+
+        held = holder.post(url, {}, format="json")
+        unheld = pauper.post(url, {}, format="json")
+
+        self.assertEqual(held.status_code, unheld.status_code)
+        # The whole envelope, not just the code: the wording is the part that
+        # would otherwise say "you hold it, but not here".
+        self.assertEqual(held.data["error"], unheld.data["error"], held.data)
+
+    def test_the_platform_reviewer_still_approves_normally(self):
+        """The gate must not cost the people it exists to serve."""
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client_for(self.reviewer).post(
+                self.scoped("onboarding-go-live-approve", self.request_row.pk),
+                {}, format="json",
+            )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.request_row.refresh_from_db()
+        self.assertEqual(self.request_row.status, GoLiveStatus.ACTIVATED)
+        self.school.refresh_from_db()
+        self.assertEqual(self.school.status, SchoolStatus.ACTIVE)
+
+    def test_the_platform_reviewer_still_rejects_normally(self):
+        response = self.client_for(self.reviewer).post(
+            self.scoped("onboarding-go-live-reject", self.request_row.pk),
+            {"rejection_reason": "Come back with a set of books."}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.request_row.refresh_from_db()
+        self.assertEqual(self.request_row.status, GoLiveStatus.REJECTED)
+
+
 class CrossTenantIsolationTests(OnboardingFixture):
     """404, never 403: a tenant identifier must not be enumerable."""
 
