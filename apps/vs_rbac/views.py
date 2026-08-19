@@ -1193,6 +1193,9 @@ class UserPermissionOverrideListCreateView(
         target = getattr(self, "_target", None) or self.get_target_user()
         self._target = target
         context["role_permission_keys"] = self._role_permission_keys(target)
+        # The tenant the override will land in decides which keys may be
+        # granted through it (see UserPermissionOverrideSerializer.validate).
+        context["tenant"] = self.tenant
         return context
 
     def create(self, request, *args, **kwargs):

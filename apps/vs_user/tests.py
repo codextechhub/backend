@@ -1618,6 +1618,7 @@ class UserBranchAssignmentTests(TestCase):
 
     @classmethod
     def _grant(cls, user, permission_key, *, tenant, role_key="team-manager"):
+        from vs_rbac.tests.helpers import scope_for_key
         from vs_rbac.models import (
             Permission, PermissionAction, PermissionModule, PermissionResource,
             TenantRolePermission, TenantUserRoleAssignment,
@@ -1631,7 +1632,10 @@ class UserBranchAssignmentTests(TestCase):
         action, _ = PermissionAction.objects.get_or_create(name=action_name)
         permission, _ = Permission.objects.get_or_create(
             key=permission_key,
-            defaults={"module": module, "resource": resource, "action": action},
+            defaults={
+                "module": module, "resource": resource, "action": action,
+                "scope": scope_for_key(permission_key),
+            },
         )
         role = cls._role(tenant, role_key)
         TenantRolePermission.objects.get_or_create(
@@ -3742,6 +3746,61 @@ class SchoolAuditEventsCarryTheTenantTests(TestCase):
             action_type=AuditActionType.CONFIG_CHANGED,
         )
         self.assertEqual(event.tenant_id, school.tenant_id)
+
+
+class IdentityAuditEventsCarryTheTenantTests(TestCase):
+    """Sign-in events name the customer, and nothing ambient can supply it.
+
+    Every identity action in the platform funnels through ``log_auth_event``,
+    and the ones investigators actually chase - a failed sign-in, a lockout, a
+    password reset - happen on unauthenticated endpoints. Authentication has
+    not run, so there is no request tenant to inherit: if this helper does not
+    pass the subject's own tenant, Bright Star's sign-in history is
+    unattributable to Bright Star no matter what the Explorer offers.
+    """
+
+    def setUp(self):
+        from vs_tenants.context import clear_request_context
+        from vs_tenants.models import Tenant
+
+        clear_request_context()
+        self.bright_star = Tenant.objects.create(
+            name="Bright Star School", slug="bright-star",
+            kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
+        )
+        self.bola = User.objects.create_user(
+            email="bola@bright-star.test", password="Str0ng!pass123",
+            first_name="Bola", last_name="Adeniyi", user_type="SCHOOL_ADMIN",
+            status="ACTIVE", tenant=self.bright_star,
+        )
+
+    def test_a_failed_sign_in_is_filed_under_the_tenant_it_happened_at(self):
+        from vs_audit.models import AuditActionType, AuditEvent
+        from vs_user.models import AuthEventLog
+        from vs_user.services.audit import log_auth_event
+
+        log_auth_event(
+            actor=None, subject=self.bola, tenant=self.bola.tenant,
+            event=AuthEventLog.Event.LOGIN_FAILURE,
+        )
+
+        event = AuditEvent.objects.get(action_type=AuditActionType.LOGIN_FAILED)
+        self.assertEqual(event.tenant_id, self.bright_star.pk)
+
+    def test_a_platform_wide_identity_event_with_no_tenant_stays_null(self):
+        from vs_audit.models import AuditActionType, AuditEvent
+        from vs_user.models import AuthEventLog
+        from vs_user.services.audit import log_auth_event
+
+        log_auth_event(
+            actor=None, subject=self.bola, tenant=None,
+            event=AuthEventLog.Event.PASSWORD_RESET_REQUESTED,
+        )
+
+        event = AuditEvent.objects.get(
+            action_type=AuditActionType.PASSWORD_RESET_REQUESTED,
+        )
+        self.assertIsNone(event.tenant_id)
 
 
 class ParentAtTwoSchoolsEndToEndTests(TestCase):

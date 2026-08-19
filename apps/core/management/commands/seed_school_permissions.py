@@ -189,6 +189,7 @@ class Command(BaseCommand):
             PrebuiltRoleTemplate,
             TenantRolePermission,
             TenantRoleTemplate,
+            PermissionScope,
         )
 
         prefix = "  [dry-run]" if dry_run else " "
@@ -252,6 +253,7 @@ class Command(BaseCommand):
                     is_restricted=is_restricted,
                     sensitivity_level=sensitivity,
                     is_active=True,
+                    scope=PermissionScope.TENANT,
                 )
                 perm.save()
                 created_perm_count += 1

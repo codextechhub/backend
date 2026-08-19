@@ -46,6 +46,7 @@ User = get_user_model()
 
 def _grant_school_permission(user, school, permission_key):
     """Build the full RBAC chain so *user* holds *permission_key* in *school*."""
+    from vs_rbac.tests.helpers import scope_for_key
     from vs_rbac.models import (
         Permission,
         PermissionAction,
@@ -60,7 +61,10 @@ def _grant_school_permission(user, school, permission_key):
     module, _ = PermissionModule.objects.get_or_create(name=module_key)
     resource, _ = PermissionResource.objects.get_or_create(module=module, name=resource_name)
     action, _ = PermissionAction.objects.get_or_create(name=action_key)
-    perm, _ = Permission.objects.get_or_create(module=module, resource=resource, action=action)
+    perm, _ = Permission.objects.get_or_create(
+        module=module, resource=resource, action=action,
+        defaults={"scope": scope_for_key(permission_key)},
+    )
 
     role = TenantRoleTemplate.objects.create(
         tenant=school.tenant, key=f"role-{permission_key.replace('.', '-')}",

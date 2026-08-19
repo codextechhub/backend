@@ -99,6 +99,7 @@ class Command(BaseCommand):
             PermissionResource,
             TenantRolePermission,
             TenantRoleTemplate,
+            PermissionScope,
         )
         from vs_tenants.models import Tenant
 
@@ -141,6 +142,7 @@ class Command(BaseCommand):
                         "description": description,
                         "is_restricted": is_restricted,
                         "sensitivity_level": sensitivity,
+                        "scope": PermissionScope.TENANT,
                         "is_active": True,
                     },
                 )

@@ -12,7 +12,12 @@ from __future__ import annotations
 from django.utils import timezone
 from rest_framework import serializers
 
-from ..models import Permission, UserPermissionOverride
+from ..models import (
+    Permission,
+    PermissionScope,
+    UserPermissionOverride,
+    tenant_is_platform,
+)
 
 
 class UserPermissionOverrideSerializer(serializers.ModelSerializer):
@@ -113,3 +118,36 @@ class UserPermissionOverrideSerializer(serializers.ModelSerializer):
         if value not in UserPermissionOverride.Mode.values:
             raise serializers.ValidationError("Mode must be ALLOW or DENY.")
         return value
+
+    def validate(self, attrs):
+        """Refuse an ALLOW of a key this tenant may not hold.
+
+        The queryset above offers every active key, and it has to: a platform
+        actor managing a CX colleague's overrides legitimately picks platform
+        keys from it. What decides is the *tenant the override lands in*, which
+        only the view knows, so the check belongs here rather than in the field.
+        ``UserPermissionOverride.save()`` refuses it as well - this is the layer
+        that makes the refusal a 400 with a field name on it.
+
+        A DENY is never restricted: taking a key away cannot escalate anyone,
+        and a school may want a pre-emptive deny on record.
+        """
+        attrs = super().validate(attrs)
+        tenant = self.context.get("tenant")
+        permission = attrs.get("permission")
+        mode = attrs.get("mode")
+        if (
+            permission is None
+            or mode != UserPermissionOverride.Mode.ALLOW
+            or tenant is None
+            or tenant_is_platform(tenant)
+        ):
+            return attrs
+        if getattr(permission, "scope", "") != PermissionScope.TENANT:
+            raise serializers.ValidationError({
+                "permission": (
+                    f"'{permission.pk}' is platform-scoped and cannot be granted "
+                    f"to a user inside a tenant."
+                ),
+            })
+        return attrs

@@ -159,6 +159,34 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
     ),
 ]
 
+# Resources in this module whose keys a TENANT role may legitimately hold.
+#
+# The ``platform`` prefix names where these surfaces were first built, not who
+# is allowed to reach them, and for two families it is simply wrong:
+#
+# * ``platform.team.*`` gates ``UserAccountViewSet``, which filters its queryset
+#   to the caller's own tenant for every non-platform caller. A school admin
+#   creating their own staff holds ``platform.team.create`` today - that is what
+#   M9 onboarding does.
+# * ``platform.audit.view`` / ``platform.audit.export`` are held by audit
+#   officers inside a tenant. This app's own committed tests build exactly that
+#   user ("outsider holds the very same key, but in a different tenant") and
+#   assert they may run and download their own exports.
+#
+# ``platform.audit.manage`` is deliberately NOT in this list: it edits
+# compliance and retention rules through an unscoped queryset, and nothing
+# grants it to a tenant.
+TENANT_HOLDABLE_KEYS = {
+    "platform.team.view",
+    "platform.team.create",
+    "platform.team.update",
+    "platform.team.delete",
+    "platform.team.suspend",
+    "platform.team.reactivate",
+    "platform.audit.view",
+    "platform.audit.export",
+}
+
 # Only the Super Admin may transfer the Super Admin role.
 TRANSFER_KEY = "platform.roles.transfer"
 # Canonical codex-tenant role keys (mirror the legacy PlatformRoleTemplate ids).
@@ -179,6 +207,7 @@ class Command(BaseCommand):
             PermissionAction,
             PermissionModule,
             PermissionResource,
+            PermissionScope,
             TenantRolePermission,
             TenantRoleTemplate,
         )
@@ -224,6 +253,11 @@ class Command(BaseCommand):
                         is_restricted=is_restricted,
                         sensitivity_level=sensitivity,
                         is_active=True,
+                        scope=(
+                            PermissionScope.TENANT
+                            if expected_key in TENANT_HOLDABLE_KEYS
+                            else PermissionScope.PLATFORM
+                        ),
                     )
                     perm.save()
                     created_count += 1

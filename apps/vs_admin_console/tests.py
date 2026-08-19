@@ -127,8 +127,17 @@ class ImpersonationStartTests(ImpersonationTestBase):
     def test_school_actor_without_the_school_key_is_forbidden(self):
         # Same tenant this time, so the auth layer lets it through - the denial
         # must come from RBAC, and platform.* keys must not satisfy it.
+        #
+        # Since Permission.scope, the platform keys cannot even be granted
+        # inside a school tenant, so the refusal now happens one layer earlier.
+        # Both halves are asserted: the grant is refused, and the actor - left
+        # holding nothing - is refused too.
+        from django.core.exceptions import ValidationError
+
         school_actor = make_school_admin(self.branch, email="nokey@school.test")
-        _grant_school(school_actor, IMPERSONATION_KEYS)  # platform.* only
+        with self.assertRaises(ValidationError):
+            _grant_school(school_actor, IMPERSONATION_KEYS)  # platform.* only
+
         resp = self.start_session(actor=school_actor)
         self.assertEqual(resp.status_code, 403)
         self.assertFalse(ImpersonationSession.objects.exists())

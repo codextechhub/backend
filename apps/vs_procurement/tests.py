@@ -6995,6 +6995,7 @@ class _ParkingFixtureMixin(_P2PFixtureMixin):
         the permission checks these views run see a genuine grant. Approver
         *resolution* no longer reads permissions; use :meth:`_appoint` for that.
         """
+        from vs_rbac.tests.helpers import scope_for_key
         from vs_rbac.models import (
             Permission, PermissionAction, PermissionModule, PermissionResource,
             TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment,
@@ -7008,7 +7009,10 @@ class _ParkingFixtureMixin(_P2PFixtureMixin):
         action, _ = PermissionAction.objects.get_or_create(name=action_name)
         permission, _ = Permission.objects.get_or_create(
             key=permission_key,
-            defaults={"module": module, "resource": resource, "action": action},
+            defaults={
+                "module": module, "resource": resource, "action": action,
+                "scope": scope_for_key(permission_key),
+            },
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(
             tenant=tenant, key=role_key, defaults={"name": role_key, "status": "ACTIVE"},
@@ -10576,6 +10580,7 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
         honours a branch-scoped assignment is exactly what is under test, so the grant
         has to be the real thing.
         """
+        from vs_rbac.tests.helpers import scope_for_key
         from vs_rbac.models import (
             Permission, PermissionAction, PermissionModule, PermissionResource,
             TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment,
@@ -10587,7 +10592,10 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
         action, _ = PermissionAction.objects.get_or_create(name=action_name)
         permission, _ = Permission.objects.get_or_create(
             key=permission_key,
-            defaults={"module": module, "resource": resource, "action": action},
+            defaults={
+                "module": module, "resource": resource, "action": action,
+                "scope": scope_for_key(permission_key),
+            },
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(
             tenant=tenant, key=role_key, defaults={"name": role_key, "status": "ACTIVE"},
@@ -13180,6 +13188,7 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
         first row and silently change nothing - which is the very arrangement
         these tests exist to prove works.
         """
+        from vs_rbac.tests.helpers import scope_for_key
         from vs_rbac.models import (
             Permission, PermissionAction, PermissionModule, PermissionResource,
             TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment,
@@ -13191,7 +13200,10 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
         action, _ = PermissionAction.objects.get_or_create(name=action_name)
         permission, _ = Permission.objects.get_or_create(
             key=permission_key,
-            defaults={"module": module, "resource": resource, "action": action},
+            defaults={
+                "module": module, "resource": resource, "action": action,
+                "scope": scope_for_key(permission_key),
+            },
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(
             tenant=tenant, key=role_key, defaults={"name": role_key, "status": "ACTIVE"},

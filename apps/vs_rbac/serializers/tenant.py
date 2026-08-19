@@ -21,12 +21,15 @@ from vs_tenants.models import Branch
 from ..models import (
     Permission,
     PermissionGroup,
+    PermissionScope,
     TenantRoleChangeDeltaItem,
     TenantRoleChangeRequest,
     TenantRoleGroup,
     TenantRolePermission,
     TenantRoleTemplate,
     TenantUserRoleAssignment,
+    platform_only_keys,
+    tenant_is_platform,
 )
 from ..services import SUPER_ADMIN_ROLE_KEY
 from .registry import (
@@ -338,7 +341,40 @@ class TenantRoleTemplateDetailSerializer(
                 raise serializers.ValidationError(
                     {"name": "A role with this name already exists in this tenant."}
                 )
+        self._reject_out_of_scope_keys(attrs, tenant)
         return attrs
+
+    def _reject_out_of_scope_keys(self, attrs, tenant):
+        """Report a platform key in a tenant role as a 400, not a 500.
+
+        The model refuses the write either way - this only turns the refusal
+        into the field error the API contract promises, and names every
+        offending key at once instead of failing on the first.
+        """
+        if tenant_is_platform(tenant):
+            return
+        keys = attrs.get("permission_keys")
+        if keys:
+            offending = platform_only_keys(keys)
+            if offending:
+                raise serializers.ValidationError({
+                    "permission_keys": [
+                        f"'{key}' is platform-scoped and cannot be granted to a "
+                        f"tenant role." for key in sorted(offending)
+                    ],
+                })
+        group_ids = attrs.get("group_ids")
+        if group_ids:
+            blocked = PermissionGroup.objects.filter(
+                id__in=group_ids,
+            ).exclude(scope=PermissionScope.TENANT).values_list("name", flat=True)
+            if blocked:
+                raise serializers.ValidationError({
+                    "group_ids": [
+                        f"Permission group '{name}' is not tenant-scoped and cannot "
+                        f"be attached to a tenant role." for name in sorted(blocked)
+                    ],
+                })
 
     def validate_group_ids(self, value):
         if not value:

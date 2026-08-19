@@ -25,7 +25,8 @@ class Command(BaseCommand):
         from vs_rbac.models import (
             Permission, PermissionAction, PermissionModule, PermissionResource,
             TenantRolePermission, TenantRoleTemplate,
-        )
+    PermissionScope,
+)
         from vs_tenants.models import Tenant
 
         module, _ = PermissionModule.objects.get_or_create(
@@ -52,6 +53,7 @@ class Command(BaseCommand):
                         sensitivity_level=sensitivity,
                         is_restricted=sensitivity in {"SENSITIVE", "CRITICAL"},
                         is_active=True,
+                        scope=PermissionScope.TENANT,
                     )
                     permission.save()
                 permissions.append(permission)

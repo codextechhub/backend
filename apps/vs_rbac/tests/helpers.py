@@ -27,6 +27,26 @@ _school_counter = itertools.count(1)
 _role_key_counter = itertools.count(1)
 
 
+def scope_for_key(key):
+    """The scope the real seeders declare for *key*.
+
+    Fixtures across the repo build permission rows by hand, and a row with no
+    scope is refused by the grant guards - correctly, but it would make every
+    such fixture fail for the wrong reason. This mirrors what the seeders do,
+    including the two families inside the ``platform`` module that a tenant
+    role legitimately holds, so a fixture grants exactly what production would.
+    """
+    from core.management.commands.seed_platform_permissions import (
+        TENANT_HOLDABLE_KEYS,
+    )
+    from vs_rbac.models import PermissionScope
+
+    module = (key or "").split(".")[0]
+    if module != "platform" or key in TENANT_HOLDABLE_KEYS:
+        return PermissionScope.TENANT
+    return PermissionScope.PLATFORM
+
+
 def _as_tenant(school_or_tenant):
     """Accept a School or a Tenant and return the Tenant."""
     if isinstance(school_or_tenant, Tenant):
@@ -136,8 +156,15 @@ def make_permission(key, module_key=None, action=None, **kwargs):
 
     The registry is fully relational (module → resource → action FKs), so the
     key is split into its parts and each level is get_or_create'd.
+
+    ``scope`` defaults to what the real seeders declare for that module -
+    ``PLATFORM`` for the ``platform`` module, ``TENANT`` for everything else -
+    so a fixture reads the way production does. Pass ``scope=`` explicitly to
+    build a key whose scope and namespace deliberately disagree.
     """
-    from vs_rbac.models import PermissionAction, PermissionModule, PermissionResource
+    from vs_rbac.models import (
+        PermissionAction, PermissionModule, PermissionResource, PermissionScope,
+    )
 
     parts = key.split(".")
     if len(parts) == 3:
@@ -155,6 +182,7 @@ def make_permission(key, module_key=None, action=None, **kwargs):
     existing = Permission.objects.filter(key=key).first()
     if existing:
         return existing
+    kwargs.setdefault("scope", scope_for_key(key))
     return Permission.objects.create(
         module=module, resource=resource, action=action_obj, **kwargs
     )
