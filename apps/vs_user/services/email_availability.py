@@ -33,7 +33,8 @@
 # names no tenant still falls back to a platform-wide email lookup, so a second
 # tenant's copy of an address could not be told apart at the door.
 # ``User._guard_cross_tenant_email`` therefore refuses to CREATE that pair
-# while the switch is off, and lifts the refusal when it is on.
+# while the switch is off, and lifts the refusal when it is on. The switch is
+# now on, so the refusal has lifted; this module follows it either way.
 #
 # This module mirrors that rule rather than restating it, so a pre-check and the
 # model can never disagree, and so flipping the switch narrows every pre-check

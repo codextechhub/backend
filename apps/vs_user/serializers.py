@@ -521,10 +521,11 @@ class LoginRequestSerializer(serializers.Serializer):
     # ``?tenant=`` query assertion the authenticated endpoints take - there is
     # no token yet to check one against.
     #
-    # Optional here on purpose: two frontends call this endpoint and neither
-    # sends it yet, so requiring it in the serializer would break both the day
-    # it lands. Whether an absent tenant is acceptable is decided in one place,
-    # the service (services.sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN), not here.
+    # Optional HERE on purpose, even though both frontends now send it and the
+    # switch is on. Whether an absent tenant is acceptable is decided in one
+    # place, the service (services.sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN),
+    # not here: a field error would answer a tenantless sign-in differently
+    # from a wrong one, and the refusal must look identical either way.
     # An unknown slug is not rejected as a field error either: that would tell
     # an anonymous caller which tenants exist. It is refused as bad credentials.
     tenant           = serializers.CharField(required=False, allow_blank=True, default='')

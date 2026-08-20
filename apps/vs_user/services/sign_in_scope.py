@@ -31,15 +31,28 @@ from ..models import User
 #
 # While this is False the tenant is OPTIONAL: a request that omits it behaves
 # exactly as it did before (global email lookup, tenant derived from the row),
-# and a request that supplies it is scoped and checked. Two frontends call
-# these endpoints today and neither sends a tenant yet, so it must stay False
-# until they do.
+# and a request that supplies it is scoped and checked.
 #
-# Flipping it to True is the whole of Phase 3's client-facing change: a sign-in
-# or reset that names no tenant is then refused outright instead of being
-# resolved by an ambiguous email lookup. Nothing else needs editing - both
-# services read it through tenant_is_required() below.
-REQUIRE_TENANT_ON_SIGN_IN = False
+# It is now True. Both frontends send the tenant: school-fe reads it off the
+# subdomain it is served from (bright-star.xvs.codexng.com sends "bright-star")
+# and console-fe sends the constant "codex", the platform tenant's slug. A
+# sign-in or reset that names no tenant is refused outright rather than
+# resolved by an ambiguous email lookup.
+#
+# TWO THINGS MOVED WITH IT, and neither needed editing, because both read the
+# switch through tenant_is_required() rather than copying its value:
+#
+#   * the legacy unscoped branch in resolve_sign_in_account below is now
+#     unreachable - every tenantless request is refused before it; and
+#   * ``User._guard_cross_tenant_email`` stands down, so one address may now be
+#     an account at more than one tenant. That is the point of the change: the
+#     guard existed only to hold the data to what an unscoped lookup could
+#     safely answer for.
+#
+# DEPLOY ORDER MATTERS. A backend carrying this flip must not reach production
+# before both frontends do, or every login on the platform fails with correct
+# credentials.
+REQUIRE_TENANT_ON_SIGN_IN = True
 
 # A primary key no tenant row can hold. When the asserted slug matches no
 # authenticable tenant we still run the same scoped user query against this

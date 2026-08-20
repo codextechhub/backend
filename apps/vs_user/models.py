@@ -430,18 +430,22 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
         ``uq_user_email_per_tenant`` makes ada@gmail.com legal at Bright Star
         AND at Greenfield. Sign-in can only tell those two accounts apart when
-        the request names the tenant it is addressed to, and
-        ``sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN`` is still False because
-        neither frontend sends one yet: an unscoped sign-in falls back to
-        ``filter(email__iexact=...).first()``, so Ada - who reuses her password
-        - would be signed in to whichever of her two schools came back first,
-        silently, and a reset asked for at one would rewrite her password at
-        the other.
+        the request names the tenant it is addressed to. While
+        ``sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN`` was False an unscoped
+        sign-in fell back to ``filter(email__iexact=...).first()``, so Ada - who
+        reuses her password - would have been signed in to whichever of her two
+        schools came back first, silently, and a reset asked for at one would
+        have rewritten her password at the other.
 
-        Nothing but the order of two deployments stops that pair from being
-        created today, and an ordering assumption that lives only in a plan
-        document is not a safeguard. So while the switch is off the pair is
-        refused; when it is on the refusal lifts and no code changes.
+        Nothing but the order of two deployments stopped that pair from being
+        created, and an ordering assumption that lives only in a plan document
+        is not a safeguard. So while the switch is off the pair is refused;
+        when it is on the refusal lifts and no code changes.
+
+        THE SWITCH IS NOW ON, so this guard is standing down: one address may
+        be an account at several tenants. It stays here because the switch is
+        meant to be flippable, and because turning it back off must re-arm the
+        refusal in the same instant.
 
         It lives here, called from both ``clean()`` and ``save()``, for the
         same reason ``_derive_tenant`` and ``_normalize_email`` are: a

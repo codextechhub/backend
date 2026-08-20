@@ -30,13 +30,11 @@ class LoginService:
 
         ``tenant`` is the asserted tenant SLUG, which the frontend reads off the
         subdomain it is served from: a school's page at
-        ``bright-star.xvs.codexng.com`` sends ``bright-star``. It is OPTIONAL
-        today and the switch that makes it mandatory is
-        ``sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN``. When it is supplied the
-        tenant is resolved BEFORE the account lookup and the lookup is scoped to
-        it; when it is omitted the tenant is still derived from the row found by
-        email, which is correct only while ``User.email`` is unique across the
-        whole platform.
+        ``bright-star.xvs.codexng.com`` sends ``bright-star``. It is now
+        MANDATORY: ``sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN`` is on, so a
+        sign-in that names no tenant is refused rather than resolved by an
+        ambiguous email lookup. The tenant is resolved BEFORE the account
+        lookup and the lookup is scoped to it.
 
         Steps:
           1. Resolve the asserted tenant, then find the user inside it
