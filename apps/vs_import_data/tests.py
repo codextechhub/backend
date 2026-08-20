@@ -324,3 +324,191 @@ class ImportAdminEmailScopeTests(TestCase):
 
         self.assertEqual(len(self._duplicate_issues(issues)), 1)
         self.assertEqual(self._duplicate_issues(issues)[0]["row_number"], 2)
+
+
+class ImportDoesNotWriteARoleLabelTests(TestCase):
+    """The importer no longer stamps a persona onto the admin link records.
+
+    Both handlers used to put a hardcoded ``role_label`` of "SCHOOL_ADMIN" or
+    "BRANCH_ADMIN" into the payload they hand to the school serializers. The
+    value never came from the sheet - it was a constant - and the column it
+    fed was read by nothing, so it is gone.
+
+    No official template ever offered ``role_label`` as a column: both handlers
+    build their payload from a fixed set of keys they name in their docstrings
+    (``school_admin_role`` and ``branch_admin_role``, which carry the human job
+    title), so a hand-built template declaring the field was already inert. The
+    last test pins that, because "already inert" is the reason a sheet still
+    carrying it needs no migration path.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.queued_by = make_vision_user(
+            email="import-role-label@example.com", super_admin=True,
+        )
+
+    @staticmethod
+    def _batch(school=None):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(school=school, template=None)
+
+    def test_a_school_row_still_imports_and_records_both_job_titles(self):
+        from schools.vs_schools.models import (
+            BranchPrimaryAdmin, School, SchoolPrimaryAdmin,
+        )
+        from .services.import_executor import import_schools_row
+
+        result = import_schools_row(
+            import_batch=self._batch(),
+            payload={
+                "name": "Greenfield Academy",
+                "slug": "import-greenfield",
+                "school_admin_full_name": "Ada Okoye",
+                "school_admin_email": "ada@import-greenfield.test",
+                "school_admin_role": "Director of ICT",
+                "branch_name": "Main Campus",
+                "branch_admin_full_name": "Tunde Bello",
+                "branch_admin_email": "tunde@import-greenfield.test",
+                "branch_admin_role": "Principal",
+            },
+            queued_by=self.queued_by,
+        )
+
+        self.assertIsNotNone(result.instance, result.message)
+        school = School.objects.get(slug="import-greenfield")
+
+        self.assertEqual(
+            SchoolPrimaryAdmin.objects.get(school=school).school_role,
+            "Director of ICT",
+        )
+        self.assertEqual(
+            BranchPrimaryAdmin.objects.get(branch=school.main_branch).branch_role,
+            "Principal",
+        )
+
+    def test_a_school_row_that_omits_the_job_titles_falls_back_to_defaults(self):
+        from schools.vs_schools.models import (
+            BranchPrimaryAdmin, School, SchoolPrimaryAdmin,
+        )
+        from .services.import_executor import import_schools_row
+
+        result = import_schools_row(
+            import_batch=self._batch(),
+            payload={
+                "name": "Bare Minimum",
+                "slug": "import-bare",
+                "school_admin_full_name": "Ada Okoye",
+                "school_admin_email": "ada@import-bare.test",
+                "branch_admin_full_name": "Tunde Bello",
+                "branch_admin_email": "tunde@import-bare.test",
+            },
+            queued_by=self.queued_by,
+        )
+
+        self.assertIsNotNone(result.instance, result.message)
+        school = School.objects.get(slug="import-bare")
+
+        self.assertEqual(
+            SchoolPrimaryAdmin.objects.get(school=school).school_role, "IT Head",
+        )
+        self.assertEqual(
+            BranchPrimaryAdmin.objects.get(branch=school.main_branch).branch_role,
+            "Head Teacher",
+        )
+
+    def test_a_branch_row_still_imports_into_an_existing_school(self):
+        from schools.vs_schools.models import BranchPrimaryAdmin
+        from .services.import_executor import import_branches_row
+
+        school = make_school(slug="import-annexe", name="Import Annexe School")
+        make_branch(school, name="HQ")
+
+        result = import_branches_row(
+            import_batch=self._batch(school=school),
+            payload={
+                "name": "Lekki Annexe",
+                "branch_admin_full_name": "Chidi Eze",
+                "branch_admin_email": "chidi@import-annexe.test",
+                "branch_admin_role": "Vice Principal",
+                "is_main": "false",
+            },
+            queued_by=self.queued_by,
+        )
+
+        self.assertIsNotNone(result.instance, result.message)
+        self.assertEqual(
+            BranchPrimaryAdmin.objects.get(branch=result.instance).branch_role,
+            "Vice Principal",
+        )
+
+    def test_a_sheet_still_carrying_a_role_label_column_imports_unchanged(self):
+        """A stray column is mapped into the payload and then simply not read.
+
+        Bright Star re-uploads last term's spreadsheet, which still has a
+        ``role_label`` header reading "BRANCH_ADMIN". The handler builds its
+        payload from the keys it names, so the value is carried as far as the
+        payload dict and goes no further: the school is created exactly as it
+        would be without the column, and no refusal is owed to the uploader.
+        """
+        from schools.vs_schools.models import School, SchoolPrimaryAdmin
+        from .services.import_executor import import_schools_row
+
+        result = import_schools_row(
+            import_batch=self._batch(),
+            payload={
+                "name": "Stale Template",
+                "slug": "import-stale",
+                "school_admin_full_name": "Ada Okoye",
+                "school_admin_email": "ada@import-stale.test",
+                "school_admin_role": "IT Head",
+                "branch_admin_full_name": "Tunde Bello",
+                "branch_admin_email": "tunde@import-stale.test",
+                "role_label": "BRANCH_ADMIN",
+            },
+            queued_by=self.queued_by,
+        )
+
+        self.assertIsNotNone(result.instance, result.message)
+        school = School.objects.get(slug="import-stale")
+        link = SchoolPrimaryAdmin.objects.get(school=school)
+
+        self.assertEqual(link.school_role, "IT Head")
+        self.assertFalse(hasattr(link, "role_label"))
+
+    def test_an_unknown_header_is_a_warning_not_a_refusal(self):
+        """What an uploader is told about the stale column, at header check.
+
+        ``compare_uploaded_headers_to_template`` is where a sheet's headers meet
+        the official template. A header the template does not declare is a
+        ``column_unknown`` **warning**, so the upload proceeds. That is the
+        right answer here: the field was never a template column, so no sheet
+        was ever meant to carry it, and refusing one now would fail an upload
+        over a value that has been ignored all along.
+        """
+        from .services.template_validation import (
+            compare_uploaded_headers_to_template,
+        )
+
+        template = ImportTemplate.objects.create(
+            code="schools-stale-header",
+            name="Schools",
+            dataset_type=DatasetTypeChoices.SCHOOLS,
+            default_file_format=FileFormatChoices.CSV,
+        )
+        for target in ("name", "school_admin_email", "school_admin_role"):
+            ImportTemplateColumn.objects.create(
+                template=template, column_name=target, target_field=target,
+                data_type=TemplateColumnDataTypeChoices.STRING,
+            )
+
+        issues = compare_uploaded_headers_to_template(
+            ["name", "school_admin_email", "school_admin_role", "role_label"],
+            template,
+        )
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["code"], "column_unknown")
+        self.assertEqual(issues[0]["severity"], "warning")
+        self.assertEqual(issues[0]["column_name"], "role_label")

@@ -555,7 +555,6 @@ class BranchPrimaryAdmin(TimeStampedModel):
         related_name="primary_admin_for_branches",
     )
     branch_role = models.CharField(max_length=80, blank=True, default="Head Teacher")
-    role_label = models.CharField(max_length=80, blank=True, default="BRANCH_ADMIN")
 
     invite_status = models.CharField(
         max_length=16,
@@ -576,7 +575,7 @@ class SchoolPrimaryAdmin(TimeStampedModel):
     """
     Same concept as `BranchPrimaryAdmin` but at the school level.
 
-    Stores the primary School contact, optional role labels, and invite
+    Stores the primary School contact, its optional job title, and invite
     status/timestamps so onboarding jobs can reconcile which tenants still need
     primary admins activated. Indexed by (`school`, `invite_status`) for
     efficient filtering.
@@ -593,7 +592,6 @@ class SchoolPrimaryAdmin(TimeStampedModel):
         related_name="primary_admin_for_schools",
     )
     school_role = models.CharField(max_length=80, blank=True, default="IT Head")
-    role_label = models.CharField(max_length=80, blank=True, default="SCHOOL_ADMIN")
 
     invite_status = models.CharField(
         max_length=16,

@@ -310,7 +310,6 @@ class BranchPrimaryAdminWriteSerializer(serializers.Serializer):
     email = serializers.EmailField()
     phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
     branch_role = serializers.CharField(max_length=80, required=False, allow_blank=True, default="Head Teacher")
-    role_label = serializers.CharField(max_length=80, required=False, allow_blank=True, default="BRANCH_ADMIN")
 
     def validate_full_name(self, value: str) -> str:
         if not value.strip():
@@ -322,7 +321,6 @@ class BranchPrimaryAdminReadSerializer(serializers.Serializer):
     """Read-only view; returns link + contact."""
     id = serializers.CharField()
     branch_role = serializers.CharField()
-    role_label = serializers.CharField()
     invite_status = serializers.CharField()
     invite_queued_at = serializers.DateTimeField(allow_null=True)
     invite_sent_at = serializers.DateTimeField(allow_null=True)
@@ -336,7 +334,6 @@ class SchoolPrimaryAdminWriteSerializer(serializers.Serializer):
     email = serializers.EmailField()
     phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
     school_role = serializers.CharField(max_length=80, required=False, allow_blank=True, default="IT Head")
-    role_label = serializers.CharField(max_length=80, required=False, allow_blank=True, default="SCHOOL_ADMIN")
 
     def validate_full_name(self, value: str) -> str:
         if not value.strip():
@@ -348,7 +345,6 @@ class SchoolPrimaryAdminReadSerializer(serializers.Serializer):
     """Read-only view; returns school admin link + contact."""
     id = serializers.CharField()
     school_role = serializers.CharField()
-    role_label = serializers.CharField()
     invite_status = serializers.CharField()
     invite_queued_at = serializers.DateTimeField(allow_null=True)
     invite_sent_at = serializers.DateTimeField(allow_null=True)
@@ -555,7 +551,6 @@ class BranchCreateSerializer(serializers.ModelSerializer):
                 branch=branch,
                 contact=contact,
                 branch_role=primary_admin_data.get("branch_role", "Head Teacher"),
-                role_label=primary_admin_data.get("role_label", "BRANCH_ADMIN"),
                 invite_status=InviteStatus.QUEUED,
                 invite_queued_at=timezone.now(),
                 invite_sent_at=None,
@@ -1063,7 +1058,6 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 school=school,
                 contact=contact,
                 school_role=primary_admin_data.get("school_role", "IT Head"),
-                role_label=primary_admin_data.get("role_label", "SCHOOL_ADMIN"),
                 invite_status=InviteStatus.QUEUED,
                 invite_queued_at=timezone.now(),
                 invite_sent_at=None,
@@ -1118,7 +1112,6 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                     branch=branch,
                     contact=contact,
                     branch_role=branch_admin_data.get("branch_role", "Head Teacher"),
-                    role_label=branch_admin_data.get("role_label", "BRANCH_ADMIN"),
                     invite_status=InviteStatus.QUEUED,
                     invite_queued_at=timezone.now(),
                     invite_sent_at=None,

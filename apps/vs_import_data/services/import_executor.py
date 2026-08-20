@@ -283,7 +283,6 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
             "email": school_admin_email,
             "phone": _s("school_admin_phone"),
             "school_role": _s("school_admin_role") or "IT Head",
-            "role_label": "SCHOOL_ADMIN",
         }
 
     # --- Branch admin ---
@@ -292,7 +291,6 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
         "email": _s("branch_admin_email"),
         "phone": _s("branch_admin_phone"),
         "branch_role": _s("branch_admin_role") or "Head Teacher",
-        "role_label": "BRANCH_ADMIN",
     }
 
     # --- Branch ---
@@ -441,7 +439,6 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
         "email": _s("branch_admin_email"),
         "phone": _s("branch_admin_phone"),
         "branch_role": _s("branch_admin_role") or "Head Teacher",
-        "role_label": "BRANCH_ADMIN",
     }
 
     # --- Branch payload ---

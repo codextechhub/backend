@@ -1139,3 +1139,206 @@ class AdminEmailCaseIsRefusedTests(TestCase):
 
         self.assertFalse(serializer.is_valid())
         self.assertIn("primary_admin_data", serializer.errors)
+
+
+class PrimaryAdminHasNoRoleLabelTests(TestCase):
+    """``role_label`` is gone from both primary-admin link records.
+
+    It defaulted to the literal strings "SCHOOL_ADMIN" and "BRANCH_ADMIN" -
+    persona names belonging to the ``User.user_type`` field that was retired.
+    Once that went, the defaults named values no enum had, and the column was
+    written in five places and read by none: nothing branched on it, filtered
+    on it, or granted from it. ``provision_admin_user`` takes its role from
+    the RBAC template key.
+
+    It was redundant either way. ``school_role``/``branch_role`` on the same
+    rows carry the human job title and the RBAC role carries the authority, so
+    the tests below pin the two survivors rather than merely the absence: a
+    column that vanishes is only safe if what it duplicated is still there.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="role-label-gone@example.com", super_admin=True,
+        )
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        return client
+
+    def _create(self, payload, *, expect=201):
+        response = self._client().post(
+            reverse("school-create"), payload, format="json",
+        )
+        self.assertEqual(response.status_code, expect, response.data)
+        return response
+
+    # --- the link records still create -----------------------------------
+
+    def test_school_and_branch_admin_links_are_created_without_the_field(self):
+        from .models import BranchPrimaryAdmin, InviteStatus, SchoolPrimaryAdmin
+
+        self._create({
+            "name": "Greenfield Academy", "slug": "greenfield-academy",
+            "primary_admin_data": {
+                "full_name": "Ada Okoye",
+                "email": "ada@greenfield-academy.test",
+                "school_role": "IT Head",
+            },
+            "branches": [_branch_payload(
+                "Main Campus", email="head@greenfield-academy.test",
+            )],
+        })
+
+        school = School.objects.get(slug="greenfield-academy")
+
+        school_link = SchoolPrimaryAdmin.objects.get(school=school)
+        self.assertEqual(school_link.school_role, "IT Head")
+        self.assertEqual(school_link.contact.email, "ada@greenfield-academy.test")
+        self.assertFalse(hasattr(school_link, "role_label"))
+
+        branch_link = BranchPrimaryAdmin.objects.get(branch=school.main_branch)
+        self.assertEqual(branch_link.branch_role, "Head Teacher")
+        self.assertEqual(branch_link.invite_status, InviteStatus.QUEUED)
+        self.assertFalse(hasattr(branch_link, "role_label"))
+
+    def test_a_multi_branch_school_gets_a_link_per_branch(self):
+        """One branch proves nothing about a school with several."""
+        from .models import BranchPrimaryAdmin
+
+        self._create({
+            "name": "Multi Site", "slug": "multi-site",
+            "branches": [
+                _branch_payload("HQ", is_main=True, email="hq@multi-site.test"),
+                _branch_payload("Lekki", is_main=False, email="lekki@multi-site.test"),
+                _branch_payload("Ikoyi", is_main=False, email="ikoyi@multi-site.test"),
+            ],
+        })
+
+        school = School.objects.get(slug="multi-site")
+        links = BranchPrimaryAdmin.objects.filter(branch__tenant=school.tenant)
+
+        self.assertEqual(links.count(), 3)
+        self.assertEqual(
+            sorted(links.values_list("branch_role", flat=True)),
+            ["Head Teacher"] * 3,
+        )
+
+    def test_the_job_title_sent_by_the_caller_is_still_honoured(self):
+        """The surviving column is the one that carried the real information."""
+        from .models import BranchPrimaryAdmin, SchoolPrimaryAdmin
+
+        self._create({
+            "name": "Bright Star", "slug": "bright-star-titles",
+            "primary_admin_data": {
+                "full_name": "Ada Okoye",
+                "email": "ada@bright-star-titles.test",
+                "school_role": "Director of ICT",
+            },
+            "branches": [{
+                "name": "Main Campus", "_type": "Main", "state": "Lagos",
+                "is_main": True,
+                "primary_admin_data": {
+                    "full_name": "Tunde Bello",
+                    "email": "tunde@bright-star-titles.test",
+                    "branch_role": "Principal",
+                },
+            }],
+        })
+
+        school = School.objects.get(slug="bright-star-titles")
+
+        self.assertEqual(
+            SchoolPrimaryAdmin.objects.get(school=school).school_role,
+            "Director of ICT",
+        )
+        self.assertEqual(
+            BranchPrimaryAdmin.objects.get(branch=school.main_branch).branch_role,
+            "Principal",
+        )
+
+    # --- an old client still sending it ----------------------------------
+
+    def test_a_payload_still_carrying_role_label_is_accepted_and_ignored(self):
+        """A frontend built against the old contract must not start failing.
+
+        These are plain ``Serializer`` subclasses, so DRF drops input keys it
+        does not declare rather than raising. A school created by a client that
+        has not yet dropped the field is created normally, and nothing of the
+        value survives.
+        """
+        from .models import BranchPrimaryAdmin, SchoolPrimaryAdmin
+
+        self._create({
+            "name": "Legacy Client", "slug": "legacy-client",
+            "primary_admin_data": {
+                "full_name": "Ada Okoye",
+                "email": "ada@legacy-client.test",
+                "school_role": "IT Head",
+                "role_label": "SCHOOL_ADMIN",
+            },
+            "branches": [{
+                "name": "Main Campus", "_type": "Main", "state": "Lagos",
+                "is_main": True,
+                "primary_admin_data": {
+                    "full_name": "Tunde Bello",
+                    "email": "tunde@legacy-client.test",
+                    "branch_role": "Head Teacher",
+                    "role_label": "BRANCH_ADMIN",
+                },
+            }],
+        })
+
+        school = School.objects.get(slug="legacy-client")
+        self.assertTrue(SchoolPrimaryAdmin.objects.filter(school=school).exists())
+        self.assertTrue(
+            BranchPrimaryAdmin.objects.filter(branch=school.main_branch).exists()
+        )
+
+    # --- the response contract -------------------------------------------
+
+    def test_the_school_detail_response_no_longer_carries_role_label(self):
+        self._create({
+            "name": "Detail School", "slug": "detail-school",
+            "primary_admin_data": {
+                "full_name": "Ada Okoye",
+                "email": "ada@detail-school.test",
+                "school_role": "IT Head",
+            },
+            "branches": [_branch_payload(
+                "Main Campus", email="head@detail-school.test",
+            )],
+        })
+
+        response = self._client().get(
+            reverse("school-detail", kwargs={"slug": "detail-school"})
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
+        primary_admin = response.data["data"]["primary_admin"]
+        self.assertNotIn("role_label", primary_admin)
+        self.assertEqual(primary_admin["school_role"], "IT Head")
+
+        branch = response.data["data"]["branches"][0]
+        self.assertNotIn("role_label", branch["primary_admin"])
+        self.assertEqual(branch["primary_admin"]["branch_role"], "Head Teacher")
+
+    def test_the_branch_detail_response_no_longer_carries_role_label(self):
+        self._create({
+            "name": "Branch Detail", "slug": "branch-detail-school",
+            "branches": [_branch_payload(
+                "Main Campus", email="head@branch-detail-school.test",
+            )],
+        })
+        school = School.objects.get(slug="branch-detail-school")
+
+        response = self._client().get(reverse("branch-detail", kwargs={
+            "slug": school.slug, "code": school.main_branch.code,
+        }))
+        self.assertEqual(response.status_code, 200, response.data)
+
+        primary_admin = response.data["data"]["primary_admin"]
+        self.assertNotIn("role_label", primary_admin)
+        self.assertEqual(primary_admin["branch_role"], "Head Teacher")
