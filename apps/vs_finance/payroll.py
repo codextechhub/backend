@@ -95,27 +95,262 @@ def compute_payroll(run) -> None:
     run.recompute_totals(save=True)  # Roll line totals up to payroll run.
 
 
+# --------------------------------------------------------------------------- #
+# Central or per branch: the school's choice, and the rule that follows        #
+# --------------------------------------------------------------------------- #
+#
+# A school runs payroll one of two ways, and it says which through one setting:
+#
+#   * **CENTRAL** (the default, and what every school does today) - one run covers
+#     everybody the entity employs, and branch plays no part in choosing who is on
+#     it.
+#   * **PER_BRANCH** - the school has a payroll officer per site, and each of them
+#     raises a run covering exactly her own branch's staff.
+#
+# The setting is not decoration. Under CENTRAL every path below is the path that
+# existed before branch payroll was built, down to the SQL: the roster carries no
+# branches and nothing consults them. Only a school that deliberately switches
+# sees any of the new behaviour, and it cannot switch until every active person on
+# its roster has a branch (:func:`assert_roster_fully_assigned`).
+#
+# Head office is a branch in this product - the main branch, which every school is
+# required to have - so under PER_BRANCH nobody belongs to "no branch", and running
+# every branch covers the whole school by construction. A salary row with no branch
+# is therefore not a school-wide person; it is an unassigned row, a data gap rather
+# than a meaning, which is exactly why switching is refused while one exists.
+
+#: The setting that decides which of the two shapes a school runs.
+PAYROLL_SCOPE_KEY = "payroll.scope"
+PAYROLL_SCOPE_CENTRAL = "CENTRAL"
+PAYROLL_SCOPE_PER_BRANCH = "PER_BRANCH"
+PAYROLL_SCOPE_CHOICES = (PAYROLL_SCOPE_CENTRAL, PAYROLL_SCOPE_PER_BRANCH)
+
+
+def payroll_scope(entity) -> str:
+    """Which shape *entity*'s owning school runs payroll in.
+
+    Falls back to :data:`PAYROLL_SCOPE_CENTRAL` for anything unexpected: an entity
+    with no tenant (the platform's own books), an archived definition, a value that
+    is not one of the two. Failing to the old shape is the safe direction. The worst
+    case that way is a school which opted in keeps running centrally until somebody
+    notices; failing the other way would narrow a central school's payroll to one
+    branch and quietly stop paying everybody else.
+    """
+    tenant = getattr(entity, "tenant", None)
+    if tenant is None:
+        return PAYROLL_SCOPE_CENTRAL
+    from vs_config.conf import get_config
+
+    value = get_config(PAYROLL_SCOPE_KEY, PAYROLL_SCOPE_CENTRAL, tenant=tenant)
+    return value if value in PAYROLL_SCOPE_CHOICES else PAYROLL_SCOPE_CENTRAL
+
+
+def is_per_branch(entity) -> bool:
+    """Whether *entity*'s school has opted into per-branch payroll."""
+    return payroll_scope(entity) == PAYROLL_SCOPE_PER_BRANCH
+
+
+def unassigned_roster(tenant):
+    """Active salary rows across *tenant*'s books that carry no branch.
+
+    The rows that make per-branch payroll impossible, because no branch run would
+    ever reach them. Tenant-wide rather than per-entity: the setting is the
+    school's, so the question it has to answer is the school's too, and a group
+    keeping two sets of books must not be able to switch on the strength of one.
+    """
+    from .models import EmployeeSalary
+
+    return EmployeeSalary.objects.filter(
+        entity__tenant=tenant, is_active=True, branch__isnull=True,
+    ).order_by("name")
+
+
+def assert_roster_fully_assigned(tenant) -> None:
+    """Refuse the switch to PER_BRANCH while anybody active has no branch.
+
+    This is the whole guard against the gap per-branch payroll could otherwise
+    open, and it runs at the one moment somebody is paying attention. Corona has
+    109 active staff; 105 carry Ikeja, Lekki or Yaba, and four - the principal, the
+    group accountant and two drivers - were never assigned. Flip the school over
+    anyway and the three branch runs pay 105 people, no run reaches the other four,
+    and the first anybody hears of it is four people asking where January went.
+    Refusing here costs the bursar four edits before she flips the switch, and
+    makes that outcome unreachable rather than merely unlikely.
+
+    Named rather than counted, and capped so the message stays a message: "4 staff
+    are unassigned" sends her hunting through a roster of 109.
+    """
+    from vs_config.exceptions import InvalidConfigurationValue
+
+    rows = list(unassigned_roster(tenant)[:11])
+    if not rows:
+        return
+    shown = ", ".join(row.name for row in rows[:10])
+    more = " and others" if len(rows) > 10 else ""
+    raise InvalidConfigurationValue(
+        f"Per-branch payroll needs every active employee on a branch, and these are "
+        f"not on one yet: {shown}{more}. Assign them a branch, then switch.",
+        extra={"key": PAYROLL_SCOPE_KEY},
+    )
+
+
+def guard_payroll_scope(value, *, tenant=None, branch=None) -> None:
+    """The :mod:`vs_config` write guard behind :data:`PAYROLL_SCOPE_KEY`.
+
+    Registered from this app's ``AppConfig.ready`` rather than called from
+    :mod:`vs_config`, so the configuration engine keeps knowing nothing about
+    finance. Only the switch *into* PER_BRANCH is guarded: switching back to
+    CENTRAL is always safe, because a central run covers everybody whatever their
+    branch says.
+    """
+    if value != PAYROLL_SCOPE_PER_BRANCH or tenant is None:
+        return
+    assert_roster_fully_assigned(tenant)
+
+
+def roster_for(entity, branch=None):
+    """The active salary rows a run for *branch* covers, as a queryset.
+
+    ``branch=None`` covers the whole entity - every active row, branched or not.
+    That is the central run, it is what payroll has always done, and it is what a
+    CENTRAL school keeps doing unchanged.
+
+    A *branch* is read **exclusively**: exactly the rows carrying that branch, and
+    deliberately **not** the rows carrying none. This is the second place on the
+    platform to refuse the inclusive reading (:mod:`vs_procurement` is the first,
+    for a different reason), and the argument is arithmetic rather than taste.
+
+    Suppose an unassigned row were included, the way every other finance screen
+    includes a null branch. Corona has Ikeja, Lekki and Yaba, and one row nobody
+    has assigned yet. January comes, each officer runs her own branch, and that one
+    person is on all three runs: the accrual books the salary three times and the
+    bank sends it three times. A row read inclusively is *seen* three times, which
+    is harmless and often helpful; a row read inclusively is *paid* three times,
+    which is neither. Paying is not reading, so payroll parts company with the
+    platform default here and only here.
+
+    Nobody is stranded by that choice, because a school cannot reach PER_BRANCH
+    with an unassigned row in the first place - see
+    :func:`assert_roster_fully_assigned`.
+    """
+    from .models import EmployeeSalary
+
+    qs = EmployeeSalary.objects.filter(entity=entity, is_active=True)
+    if branch is not None:
+        # ``branch_id`` rather than ``branch``: the caller may hold either, and
+        # this avoids a pointless fetch when it holds a bare id.
+        qs = qs.filter(branch_id=getattr(branch, "pk", branch))
+    return qs
+
+
+def _period_window(entity, pay_date):
+    """The date range that counts as "the same payroll period" as *pay_date*.
+
+    ``period_label`` is free text and is deliberately **not** part of this. Two
+    officers typing "Jan 2026" and "January 2026" mean the same month, and a key
+    that lets those two through is a key that lets somebody be paid twice, which is
+    the single thing this guard exists to prevent. ``pay_date`` on its own is just
+    as weak in the other direction: a central run dated the 25th and a branch run
+    dated the 31st are the same month's payroll and must still collide.
+
+    So the period is the entity's own :class:`FiscalPeriod` containing the date -
+    the same period the run's accrual will post into, and the closest thing the
+    books have to an official payroll month. A date no period covers (a draft
+    raised before the year is opened) falls back to the calendar month, so the
+    guard never quietly stops guarding.
+    """
+    from django.db.models import Q
+
+    period = resolve_period(entity, pay_date)
+    if period is not None:
+        return Q(pay_date__gte=period.start_date, pay_date__lte=period.end_date)
+    return Q(pay_date__year=pay_date.year, pay_date__month=pay_date.month)
+
+
+def ensure_no_overlapping_run(entity, pay_date, branch=None) -> None:
+    """Refuse a run that would pay somebody a second time in the same period.
+
+    **Only under PER_BRANCH.** A CENTRAL school is not guarded at all, and that is
+    deliberate rather than an oversight: raising two runs in one month has always
+    been allowed there, schools do it for advances and supplementary payments, and
+    this change promised to leave a central school's payroll exactly as it found
+    it. The double payment per-branch payroll could introduce is the branch/central
+    one, and that only exists once a school has switched.
+
+    Under PER_BRANCH coverage nests, and the rule falls out of it: a central run
+    covers everybody, a branch run covers its own site, and two different branches
+    never share a person. So two live runs may share a period only when both are
+    branch-scoped and to *different* branches. Everything else - branch against the
+    same branch, branch against central, central against central - is refused.
+
+    Cancelled runs do not count: voiding a run is precisely how a school corrects
+    the one it raised in error before raising the right one.
+    """
+    from django.db.models import Q
+
+    from .models import PayrollRun
+
+    if not is_per_branch(entity):
+        return
+
+    live = PayrollRun.objects.filter(
+        _period_window(entity, pay_date), entity=entity,
+    ).exclude(run_status=PayrollRunStatus.CANCELLED)
+    if branch is None:
+        clash = live.select_related("branch").first()  # central meets everybody
+    else:
+        branch_id = getattr(branch, "pk", branch)
+        clash = (
+            live.filter(Q(branch__isnull=True) | Q(branch_id=branch_id))
+            .select_related("branch")
+            .first()
+        )
+    if clash is None:
+        return
+    whose = clash.branch.name if clash.branch_id else "the whole school"
+    raise PayrollError(
+        f"A payroll run for {whose} ({clash.document_number or clash.pk}) already "
+        f"covers this period. Void it before raising another, or these staff are "
+        f"paid twice.",
+    )
+
+
 @transaction.atomic
-def generate_run_from_roster(entity, *, pay_date, period_label="", narration="",
-                             currency=None, actor_user=None):  # Create a draft payroll run from active salaries.
+def generate_run_from_roster(entity, *, pay_date, branch=None, period_label="",
+                             narration="", currency=None,
+                             actor_user=None):  # Create a draft payroll run from active salaries.
     """Raise a draft :class:`PayrollRun` with one line per active employee salary.
 
     Copies the recurring gross/PAYE/pension (and cost centre) from the
     :class:`EmployeeSalary` roster. Raises :class:`PayrollError` if the roster is empty.
+
+    ``branch`` picks which of the two shapes this is. Left out - the default, and
+    what every existing caller does - it is a central run over the whole entity and
+    behaves exactly as before, right down to the query. Given a branch it covers
+    only that branch's roster rows; :func:`roster_for` argues why that reading is
+    exclusive. Deciding *whether* to pass one is the caller's job, because that is
+    the school's setting rather than this function's business.
     """
-    from .models import EmployeeSalary, PayrollLine, PayrollRun
+    from .models import PayrollLine, PayrollRun
+
+    ensure_no_overlapping_run(entity, pay_date, branch)
 
     roster = list(  # Load active employee salaries in stable order.
-        EmployeeSalary.objects.filter(entity=entity, is_active=True)
+        roster_for(entity, branch)
         .select_related("cost_center")
         .prefetch_related("structure__components")
         .order_by("name")
     )
     if not roster:  # A run needs at least one active employee.
-        raise PayrollError("No active employees on the salary roster to generate a run from.")
+        raise PayrollError(
+            f"No active employees on the {branch.name} salary roster to generate a "
+            f"run from."
+            if branch is not None else
+            "No active employees on the salary roster to generate a run from.",
+        )
 
     run = PayrollRun.objects.create(
-        entity=entity, pay_date=pay_date, period_label=period_label,  # Scope and payroll period label.
+        entity=entity, branch=branch, pay_date=pay_date, period_label=period_label,  # Scope, branch, period label.
         narration=narration, currency=currency, created_by=actor_user,  # Narrative, currency, and actor.
     )
     for i, emp in enumerate(roster, start=1):  # Create one line per roster entry.

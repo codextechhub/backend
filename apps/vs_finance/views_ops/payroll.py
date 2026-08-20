@@ -12,6 +12,8 @@ from rest_framework.exceptions import ValidationError
 
 from django.db.models import Count
 from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
+from vs_rbac.scoping import caller_may_use_branch
+from vs_rbac.scoping import resolve_branch as _resolve_branch
 
 from ..constants import SalaryCalcMethod, SalaryComponentKind, StatutoryType
 from ..views import resolve_entity
@@ -45,6 +47,32 @@ from .base import (
 # Payroll                                                                     #
 # --------------------------------------------------------------------------- #
 
+
+# Support the branch rule workflow.
+def _branch_rule(entity) -> dict:
+    """How :func:`_raised_branch` should treat a caller entitled to several branches.
+
+    The one thing the payroll screens read the school's ``payroll.scope`` setting
+    for, and the reason it is a helper rather than a literal at each call site: the
+    two payroll write paths must not be able to drift apart on it.
+
+    Under **CENTRAL** the answer is ``shared_when_ambiguous=True``, which is
+    precisely what payroll did before per-branch runs existed. A run covers
+    everybody the school employs, so a payroll officer covering Ikeja and Lekki who
+    names no site meant "the school", and asking her to pick would be asking her to
+    narrow a run that is not narrowed. Nothing about a central school's payroll
+    changes.
+
+    Under **PER_BRANCH** the answer is the ordinary finance rule: ask her. The two
+    runs pay different people, only she knows which one she is raising, and
+    guessing "the school" would raise a run that pays Yaba's staff as well - which
+    is the one thing she is not entitled to do.
+    """
+    from ..payroll import is_per_branch
+
+    return {"shared_when_ambiguous": not is_per_branch(entity)}
+
+
 # Group endpoint behavior for Payroll Run List Create View.
 class PayrollRunListCreateView(_FinanceBase):
     """GET (list) / POST (create draft) payroll runs for an entity.
@@ -72,22 +100,22 @@ class PayrollRunListCreateView(_FinanceBase):
     @transaction.atomic
     # Handle POST requests for this endpoint.
     def post(self, request):
-        from ..payroll import compute_payroll
+        from ..payroll import compute_payroll, ensure_no_overlapping_run
 
         entity = resolve_entity(request)
         body = request.data or {}
         lines = _require_lines(body)
+        branch = _raised_branch(request, entity, body, **_branch_rule(entity))
+        pay_date = _date(body.get("pay_date"), "pay_date", required=True)
+        # The same guard as the generated run, at the other door into the same
+        # table. Typing the lines by hand rather than drawing them from the roster
+        # does not make a second run for the period any less of a double payment.
+        # No-ops for a central school, which is not guarded at all.
+        ensure_no_overlapping_run(entity, pay_date, branch)
         run = PayrollRun.objects.create(
             entity=entity,
-            # ``shared_when_ambiguous=True``: a payroll run is drawn from a roster
-            # that has no branch column at all (``EmployeeSalary``), so a run
-            # covering everyone the school employs is the normal shape, not an
-            # accident. A payroll officer who covers two branches and names none
-            # gets that school-wide run rather than being asked to pick a site
-            # the roster cannot express. A branch-pinned officer still stamps her
-            # own branch, because the lines she supplies are her branch's staff.
-            branch=_raised_branch(request, entity, body, shared_when_ambiguous=True),
-            pay_date=_date(body.get("pay_date"), "pay_date", required=True),
+            branch=branch,
+            pay_date=pay_date,
             period_label=body.get("period_label", ""),
             narration=body.get("narration", ""),
             currency=_resolve_currency(body.get("currency")),
@@ -244,8 +272,21 @@ class PayrollRunCancelView(_PayrollActionBase):
 # --------------------------------------------------------------------------- #
 
 # Support the resolve salary workflow.
-def _resolve_salary(entity, pk):
-    sal = EmployeeSalary.objects.filter(entity=entity, pk=pk).first()
+def _resolve_salary(request, entity, pk):
+    """One roster row the caller is entitled to, or 404.
+
+    Narrowed rather than merely entity-scoped. Without this an Ikeja payroll
+    officer could rewrite a Lekki teacher's gross pay by guessing a primary key,
+    which is the write-side half of the hole ``654e7af`` closed on the read side -
+    and pay is the most sensitive column finance has.
+
+    Inclusive, like every other finance read: an unassigned row is visible to
+    everybody, because somebody has to be able to assign it, and until it is
+    assigned no branch owns it.
+    """
+    sal = EmployeeSalary.objects.filter(
+        branch_q(request, include_shared=True), entity=entity, pk=pk,
+    ).first()
     if sal is None:
         raise NotFound("Employee salary not found for this entity.")
     return sal
@@ -280,15 +321,35 @@ class EmployeeSalaryListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
+        # ``include_shared=True``: reading the roster is inclusive even though
+        # *running* it is exclusive, and the split is deliberate. Somebody has to
+        # be able to see an unassigned row in order to assign it, and while it is
+        # unassigned no branch owns it; but a branch run must not pay it, because
+        # every branch's run would. Seeing a person costs nothing. Paying them
+        # three times costs three salaries.
         qs = (
-            EmployeeSalary.objects.filter(entity=entity)
-            .select_related("cost_center", "structure")
+            EmployeeSalary.objects.filter(
+                branch_q(request, include_shared=True), entity=entity,
+            )
+            .select_related("cost_center", "structure", "branch")
             .prefetch_related("structure__components")
         )
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         if (search := request.query_params.get("search")):
             qs = qs.filter(name__icontains=search)
+        if (branch_ref := request.query_params.get("branch")):
+            # ``?branch=unassigned`` is how the bursar finds the people who are
+            # blocking the switch to per-branch payroll. Spelled out rather than
+            # left blank, because a blank parameter is how a frontend says "no
+            # filter at all".
+            if str(branch_ref).lower() in ("unassigned", "none", "null"):
+                qs = qs.filter(branch__isnull=True)
+            else:
+                branch = _resolve_branch(entity.tenant, branch_ref)
+                if branch is None or not caller_may_use_branch(request, branch):
+                    raise ValidationError({"branch": "No such branch for this entity."})
+                qs = qs.filter(branch=branch)
         return success_response(
             "Employee salaries retrieved.",
             data=EmployeeSalarySerializer(qs.order_by("name"), many=True,
@@ -304,6 +365,13 @@ class EmployeeSalaryListCreateView(_FinanceBase):
             raise ValidationError({"name": "An employee name is required."})
         sal = EmployeeSalary.objects.create(
             entity=entity, name=name,
+            # A pinned officer's new hire is hers; an unpinned bursar's is
+            # unassigned until somebody says otherwise, which is what every row on
+            # every roster is today. ``_branch_rule`` decides only the officer who
+            # covers two branches and names neither: asked under PER_BRANCH,
+            # because a row filed unassigned there is a person no run pays, and
+            # left alone under CENTRAL, where nothing turns on the answer.
+            branch=_raised_branch(request, entity, body, **_branch_rule(entity)),
             structure=_resolve_structure(entity, body.get("structure")),
             gross_amount=_money(body.get("gross_amount", 0), "gross_amount"),
             paye_amount=_money(body.get("paye_amount", 0), "paye_amount"),
@@ -333,10 +401,19 @@ class EmployeeSalaryDetailView(_FinanceBase):
     # Handle PATCH requests for this endpoint.
     def patch(self, request, pk):
         entity = resolve_entity(request)
-        sal = _resolve_salary(entity, pk)
+        sal = _resolve_salary(request, entity, pk)
         body = request.data or {}
         if "name" in body:
             sal.name = str(body["name"]).strip()
+        if "branch" in body:
+            # Assigning people to branches is the work a school does *before* it
+            # switches to per-branch payroll, so this has to be editable rather
+            # than write-once. Reusing ``_raised_branch`` keeps it under the same
+            # rule as every other branch a caller names: her own branch or, if she
+            # is unpinned, any of the school's, and a 403 for anyone else's. A
+            # pinned officer cannot push somebody back to unassigned, because
+            # ``_raised_branch`` reads a blank from her as "mine".
+            sal.branch = _raised_branch(request, entity, body, **_branch_rule(entity))
         if "structure" in body:
             sal.structure = _resolve_structure(entity, body.get("structure"))
         for field in ("gross_amount", "paye_amount", "pension_amount"):
@@ -355,13 +432,18 @@ class EmployeeSalaryDetailView(_FinanceBase):
     # Handle DELETE requests for this endpoint.
     def delete(self, request, pk):
         entity = resolve_entity(request)
-        _resolve_salary(entity, pk).delete()
+        _resolve_salary(request, entity, pk).delete()
         return success_response("Employee salary removed.", data={})
 
 
 # Group endpoint behavior for Payroll Run Generate View.
 class PayrollRunGenerateView(_FinanceBase):
     """POST - raise a draft payroll run from the active employee-salary roster.
+
+    Central or per branch, whichever the school has chosen. Under CENTRAL the run
+    covers the whole roster exactly as it always has. Under PER_BRANCH the caller's
+    branch decides which roster rows it covers, and it covers that branch's staff
+    and nobody else's, so the same person is never on two runs.
 
     docstring-name: Generate a payroll run
     """
@@ -371,12 +453,23 @@ class PayrollRunGenerateView(_FinanceBase):
     @transaction.atomic
     # Handle POST requests for this endpoint.
     def post(self, request):
-        from ..payroll import generate_run_from_roster
+        from ..payroll import generate_run_from_roster, is_per_branch
 
         entity = resolve_entity(request)
         body = request.data or {}
+        # A central school's generated run gets no branch at all - not even a
+        # pinned officer's - because that is what this endpoint did before
+        # per-branch payroll existed, and stamping one now would be a change with
+        # no purpose: the run covers the whole roster either way. Reading the
+        # setting first also means a central school never meets the "which branch
+        # do you mean?" refusal, so nothing here can start failing for a school
+        # that has not opted in.
+        branch = (
+            _raised_branch(request, entity, body) if is_per_branch(entity) else None
+        )
         run = generate_run_from_roster(
             entity, pay_date=_date(body.get("pay_date"), "pay_date", required=True),
+            branch=branch,
             period_label=body.get("period_label", ""), narration=body.get("narration", ""),
             currency=_resolve_currency(body.get("currency")), actor_user=request.user,
         )

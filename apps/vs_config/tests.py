@@ -544,7 +544,13 @@ class PlatformSettingsAPITests(TestCase):
     def test_authenticated_platform_request_defaults_to_home_tenant_without_query_param(self):
         login = self.client.post(
             "/v1/user/auth/login/",
-            {"email": self.platform_user.email, "password": "testpass123"},
+            {
+                "email": self.platform_user.email,
+                "password": "testpass123",
+                # 8f3b28b made the tenant mandatory on sign-in. These two tests
+                # were not updated with it and have been failing on main since.
+                "tenant": self.platform_user.tenant.slug,
+            },
             format="json",
         )
         self.assertEqual(login.status_code, 200, login.data)
@@ -931,7 +937,11 @@ class EntitlementManagementAPITests(TestCase):
         self.client.force_authenticate(user=None)
         login = self.client.post(
             "/v1/user/auth/login/",
-            {"email": self.user.email, "password": "testpass123"},
+            {
+                "email": self.user.email,
+                "password": "testpass123",
+                "tenant": self.user.tenant.slug,
+            },
             format="json",
         )
         self.assertEqual(login.status_code, 200, login.data)

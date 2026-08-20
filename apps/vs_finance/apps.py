@@ -28,4 +28,13 @@ class VsFinanceConfig(AppConfig):
         # Settle customer document deliveries when vs_notifications reports the
         # outcome of an email it sent on our behalf.
         from . import receivers  # noqa: F401
+        # A school may only switch payroll to per-branch once every active employee
+        # has a branch, and only finance knows that. Registered here, through the
+        # same one-way seam as the export datasets above, so vs_config keeps
+        # knowing nothing about payroll.
+        from vs_config.services.resolution import register_value_guard
+
+        from .payroll import PAYROLL_SCOPE_KEY, guard_payroll_scope
+
+        register_value_guard(PAYROLL_SCOPE_KEY, guard_payroll_scope)
 

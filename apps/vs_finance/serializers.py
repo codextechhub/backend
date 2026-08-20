@@ -1171,6 +1171,11 @@ class SalaryStructureSerializer(serializers.ModelSerializer):
 class EmployeeSalarySerializer(FieldSecurityMixin, serializers.ModelSerializer):
     cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
     structure_name = serializers.CharField(source="structure.name", read_only=True, default=None)
+    # Not FLS-stripped: which site somebody works at is not a pay figure, and it has
+    # to be readable by whoever is assigning branches before a school can switch to
+    # per-branch payroll. ``branch_name`` is null for an unassigned row, which is
+    # the state the frontend filters on to find who is still blocking the switch.
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
     # PAYE/pension/net/components are derived when a structure is assigned, else the stored
     # flat figures. Computed once per row (memoised) to avoid re-walking the components.
     paye_amount = serializers.SerializerMethodField()
@@ -1194,8 +1199,8 @@ class EmployeeSalarySerializer(FieldSecurityMixin, serializers.ModelSerializer):
     class Meta:
         model = EmployeeSalary
         fields = [
-            "id", "name", "structure_id", "structure_name", "gross_amount",
-            "paye_amount", "pension_amount", "net_amount", "components",
+            "id", "name", "branch_id", "branch_name", "structure_id", "structure_name",
+            "gross_amount", "paye_amount", "pension_amount", "net_amount", "components",
             "cost_center", "is_active",
         ]
 

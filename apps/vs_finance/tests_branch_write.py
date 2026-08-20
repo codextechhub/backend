@@ -333,11 +333,13 @@ class SharedWhenAmbiguousTests(_WriteFixture):
         )
 
     def test_a_payroll_run_from_a_two_branch_officer_covers_the_school(self):
-        """The roster it is drawn from has no branch column, so neither can the run.
+        """A central school's run covers the school, so there is nothing to pick.
 
-        ``EmployeeSalary`` carries no branch, so "the payroll for Ikeja" is not a
-        thing the roster can express. Asking the officer to name a site would be
-        asking for an answer the data cannot hold.
+        ``payroll.scope`` defaults to CENTRAL and no school here has opted out, so
+        a run covers everybody the school employs whichever branches the officer
+        happens to be granted. Asking her to name a site would be asking her to
+        narrow a run that is not narrowed. The school that has switched to
+        PER_BRANCH is asked instead, and ``tests_payroll_branch`` holds that half.
         """
         response = self.post(self.both, "payroll-runs/", self.books, self.payroll_body())
 
