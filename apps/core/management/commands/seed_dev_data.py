@@ -65,19 +65,19 @@ SCHOOLS = [
         "name": "Greenfield Academy",
         "slug": "greenfield-academy",
         "code": "GFA",
-        "branches": [("Main Campus", "GFA-MAIN", True), ("Lekki Annex", "GFA-LEKKI", False)],
+        "branches": [("Main Branch", "GFA-MAIN", True), ("Lekki Annex", "GFA-LEKKI", False)],
     },
     {
         "name": "Royal Crest College",
         "slug": "royal-crest-college",
         "code": "RCC",
-        "branches": [("Main Campus", "RCC-MAIN", True), ("Ikeja Campus", "RCC-IKEJA", False)],
+        "branches": [("Main Branch", "RCC-MAIN", True), ("Ikeja Branch", "RCC-IKEJA", False)],
     },
     {
         "name": "Unity Heights School",
         "slug": "unity-heights-school",
         "code": "UHS",
-        "branches": [("Main Campus", "UHS-MAIN", True)],
+        "branches": [("Main Branch", "UHS-MAIN", True)],
     },
 ]
 
@@ -416,7 +416,7 @@ class Command(BaseCommand):
 
             users = {"admins": [], "branch_admins": [], "staff": [], "students": [], "parents": []}
             # The school administrator is posted school-wide: branch=None is a
-            # real posting meaning "every campus", not a missing one. What
+            # real posting meaning "every branch", not a missing one. What
             # separates this person from a teacher is the role assigned in
             # _rbac below - which is now the only thing that ever did.
             #

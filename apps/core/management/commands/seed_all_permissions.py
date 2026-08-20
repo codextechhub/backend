@@ -41,7 +41,7 @@ Seed order
                                (provisioning, approve/reject)
 14. seed_school_permission_groups - groups the school-facing keys into named
                                bundles and records which are school-wide and
-                               which narrow to a campus. Runs LAST because it
+                               which narrow to a branch. Runs LAST because it
                                spans five modules and can only group keys that
                                are already registered. Grants nothing.
 """

@@ -1,7 +1,7 @@
 """Tests for the ``seed_school_permission_groups`` management command.
 
 The command organises the school-facing permission keys into named bundles and
-records, per bundle, whether it is school-wide or narrows to a campus.
+records, per bundle, whether it is school-wide or narrows to a branch.
 
 What is worth testing here is not that rows appear. It is:
 
@@ -112,6 +112,24 @@ class SchoolPermissionGroupTableTests(TestCase):
             "school/academics keys exist that no permission group places.",
         )
 
+    def test_the_table_calls_a_branch_a_branch(self):
+        """Group names and descriptions are read on screen by a school's admin.
+
+        The site primitive is ``vs_tenants.Branch`` and the word is *branch*.
+        A synonym drifted in far enough that this bundle was called "Campus
+        Administration" for a while, which taught the customer the wrong word
+        for the thing they were administering. Nothing else pins these
+        strings, so this does.
+        """
+        names = {name for name, _reach, _description, _keys in SCHOOL_PERMISSION_GROUPS}
+        self.assertIn("Branch Administration", names)
+
+        for name, _reach, description, _keys in SCHOOL_PERMISSION_GROUPS:
+            self.assertNotIn("campus", name.lower(), f"group name: {name!r}")
+            self.assertNotIn(
+                "campus", description.lower(), f"description of {name!r}",
+            )
+
 
 class SchoolPermissionGroupSeedTests(TestCase):
     def setUp(self):
@@ -172,7 +190,7 @@ class SchoolPermissionGroupSeedTests(TestCase):
         from vs_rbac.services import provision_role_from_prebuilt
 
         school = make_school(slug="riverbank", name="Riverbank School")
-        branch = make_branch(school, name="Main Campus")
+        branch = make_branch(school, name="Main Branch")
         # An ordinary STAFF account. The whole point of the catalogue is that
         # the role carries the authority, and there is no admin persona left to
         # lean on even if the fixture wanted one.

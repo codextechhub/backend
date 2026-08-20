@@ -430,7 +430,7 @@ def _main_branch(school):
     branch = Branch.all_objects.filter(tenant=school.tenant, is_main=True).first()
     if branch is None:
         branch = Branch.objects.create(
-            tenant=school.tenant, name="Main Campus", is_main=True, status="ACTIVE",
+            tenant=school.tenant, name="Main Branch", is_main=True, status="ACTIVE",
         )
     return branch
 
@@ -1627,8 +1627,8 @@ class UserBranchAssignmentTests(TestCase):
         from vs_rbac.tests.helpers import make_branch, make_school
 
         self.branched = make_school(slug="branched-academy", name="Branched Academy")
-        self.lekki = make_branch(self.branched, name="Lekki Campus", is_main=True)
-        self.yaba = make_branch(self.branched, name="Yaba Campus", is_main=False)
+        self.lekki = make_branch(self.branched, name="Lekki Branch", is_main=True)
+        self.yaba = make_branch(self.branched, name="Yaba Branch", is_main=False)
 
         # A second tenant that owns a branch of its own. Its branch is the
         # cross-tenant probe: it exists, so "not found" cannot be explained away
@@ -1777,7 +1777,7 @@ class UserBranchAssignmentTests(TestCase):
     def test_a_tenant_user_may_be_created_without_a_branch(self):
         """A null branch is a school-wide posting, and a legal one.
 
-        Corona Secondary School has three campuses and one bursar who works
+        Corona Secondary School has three branches and one bursar who works
         across all of them. She is STAFF with no branch, exactly like the
         principal, and the difference between them is their role.
         """
@@ -3695,7 +3695,7 @@ class ScopedEmailLookupSchoolCreateTests(TestCase):
                 "email": "ada.okoye@example.test",
             },
             "branches": [{
-                "name": "Main Campus",
+                "name": "Main Branch",
                 "is_main": True,
                 "primary_admin_data": {
                     "full_name": "Bola Adeniyi",
@@ -3773,7 +3773,7 @@ class SchoolAuditEventsCarryTheTenantTests(TestCase):
             data={
                 "name": "Bright Star School",
                 "slug": "bright-star",
-                "branches": [{"name": "Main Campus", "is_main": True,
+                "branches": [{"name": "Main Branch", "is_main": True,
                               "primary_admin_data": {
                                   "full_name": "Bola Adeniyi",
                                   "email": "bola@bright-star.test"}}],
@@ -3825,7 +3825,7 @@ class SchoolAuditEventsCarryTheTenantTests(TestCase):
         branch = school.tenant.branches.get(is_main=True)
 
         branch_ser = BranchUpdateSerializer(
-            branch, data={"name": "Main Campus Renamed"}, partial=True,
+            branch, data={"name": "Main Branch Renamed"}, partial=True,
             context={"actor_id": self.actor, "request": self.request},
         )
         branch_ser.is_valid(raise_exception=True)
@@ -4158,7 +4158,7 @@ class UserTypeMigrationTests(TransactionTestCase):
         self.assertEqual(self.User.objects.get(pk=pinned.pk).branch_id, self.lekki.pk)
 
     def test_a_branch_admin_with_no_branch_is_refused_not_guessed(self):
-        """It claims one campus and names none. Whole school, or a lost id?"""
+        """It claims one branch and names none. Whole school, or a lost id?"""
         orphan = self._stamp(self._user("orphan@retire.test"), user_type="BRANCH_ADMIN")
         alongside = self._stamp(
             self._user("also@retire.test", branch=self.lekki), user_type="SCHOOL_ADMIN",

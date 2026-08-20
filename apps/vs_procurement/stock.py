@@ -7,7 +7,7 @@ the recorded value always equals the perpetual-inventory balance carried in the 
 ``inventory_account``.
 
 **Stock is held per location.** It used to be one pool per entity, which is wrong the
-moment a school has two campuses: the pool knew a thousand units existed but not that
+moment a school has two branches: the pool knew a thousand units existed but not that
 seven hundred sat at one site, so an issue at the other drew against stock it did not
 have and the availability check allowed it. One blended average also meant a site that
 bought dearer and a site that bought cheaper both issued at the middle.
@@ -19,7 +19,7 @@ serializer and reorder rule that reads them keeps reading the same numbers.
 
 A caller that names no location gets the entity's default, which is what lets a
 single-location school keep calling these services unchanged. Once an entity has more
-than one, a call that does not say where is refused: guessing which campus stock left
+than one, a call that does not say where is refused: guessing which branch stock left
 is the defect this exists to fix.
 
 Three movement kinds touch the ledger:
@@ -323,7 +323,7 @@ def _issue_stock_atomic(stock_item, *, quantity, movement_date, location=None,
     location = resolve_location(stock_item.entity, location)
     balance = lock_balance(stock_item, location)
     # Availability is the location's, not the entity's. Checking the roll-up is what
-    # let one campus issue against stock physically standing at another.
+    # let one branch issue against stock physically standing at another.
     on_hand = _dec(balance.on_hand_qty)
     if quantity > on_hand:
         raise InsufficientStockError(

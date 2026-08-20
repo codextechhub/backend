@@ -368,7 +368,7 @@ class ImportDoesNotWriteARoleLabelTests(TestCase):
                 "school_admin_full_name": "Ada Okoye",
                 "school_admin_email": "ada@import-greenfield.test",
                 "school_admin_role": "Director of ICT",
-                "branch_name": "Main Campus",
+                "branch_name": "Main Branch",
                 "branch_admin_full_name": "Tunde Bello",
                 "branch_admin_email": "tunde@import-greenfield.test",
                 "branch_admin_role": "Principal",

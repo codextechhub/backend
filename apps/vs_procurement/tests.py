@@ -9949,7 +9949,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
     """Branch is captured once, inherited down the chain, and never widens access.
 
     Two differently shaped tenants run through every case: ``multi`` has two
-    campuses, ``flat`` has none at all. The flat tenant must behave exactly as
+    branches, ``flat`` has none at all. The flat tenant must behave exactly as
     procurement did before branch awareness existed - no new required field, no
     error, and a null branch on every document.
     """
@@ -9961,10 +9961,10 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
 
         seed_currencies()
         self.multi_school = make_school(
-            slug="branch-multi", name="Multi Campus Group", status="ACTIVE",
+            slug="branch-multi", name="Multi Branch Group", status="ACTIVE",
         )
-        self.lekki = make_branch(self.multi_school, name="Lekki Campus")
-        self.ikeja = make_branch(self.multi_school, name="Ikeja Campus", is_main=False)
+        self.lekki = make_branch(self.multi_school, name="Lekki Branch")
+        self.ikeja = make_branch(self.multi_school, name="Ikeja Branch", is_main=False)
         self.multi = self.build_books("MULTIBK", self.multi_school.tenant)
 
         # A tenant with no branches at all - the branch-optional shape.
@@ -9977,7 +9977,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         self.foreign_school = make_school(
             slug="branch-foreign", name="Foreign School", status="ACTIVE",
         )
-        self.foreign_branch = make_branch(self.foreign_school, name="Foreign Campus")
+        self.foreign_branch = make_branch(self.foreign_school, name="Foreign Branch")
         self.foreign = self.build_books("FORGNBK", self.foreign_school.tenant)
 
     def build_books(self, code, tenant):
@@ -10060,7 +10060,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(req.branch_id, self.lekki.pk)
         data = response.json()["data"]
         self.assertEqual(data["branch_id"], self.lekki.pk)
-        self.assertEqual(data["branch_name"], "Lekki Campus")
+        self.assertEqual(data["branch_name"], "Lekki Branch")
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_branch_bound_raiser_may_restate_their_own_branch(self, _permission):
@@ -10205,7 +10205,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(grn_response.status_code, 201, grn_response.data)
         grn = GoodsReceivedNote.objects.get(pk=grn_response.json()["data"]["id"])
         self.assertEqual(grn.branch_id, self.lekki.pk)
-        self.assertEqual(grn_response.json()["data"]["branch_name"], "Lekki Campus")
+        self.assertEqual(grn_response.json()["data"]["branch_name"], "Lekki Branch")
         # Post the receipt so the bill below matches three ways and can be posted.
         post_grn(grn)
 
@@ -10286,7 +10286,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(rfq_response.status_code, 201, rfq_response.data)
         rfq = RequestForQuotation.objects.get(pk=rfq_response.json()["data"]["id"])
         self.assertEqual(rfq.branch_id, self.lekki.pk)
-        self.assertEqual(rfq_response.json()["data"]["branch_name"], "Lekki Campus")
+        self.assertEqual(rfq_response.json()["data"]["branch_name"], "Lekki Branch")
 
         set_rfq_invitations(rfq, [vendor])
         issue_rfq(rfq)
@@ -10325,7 +10325,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
             {lekki_req.id, ikeja_req.id, entity_req.id},
         )
         by_id = {row["id"]: row for row in self.rows(everything)}
-        self.assertEqual(by_id[lekki_req.id]["branch_name"], "Lekki Campus")
+        self.assertEqual(by_id[lekki_req.id]["branch_name"], "Lekki Branch")
         self.assertIsNone(by_id[entity_req.id]["branch_id"])
 
         one_branch = hq_client.get(f"{url}&branch={self.lekki.pk}")
@@ -10468,16 +10468,16 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
 
         ensure_default_approval_templates()
         # A tenant-scoped ROLE stage only publishes against a role the tenant has.
-        ensure_approver_role(self.multi_school.tenant, "campus-manager")
+        ensure_approver_role(self.multi_school.tenant, "branch-manager")
         branch_template = publish_template(
             tenant=self.multi_school.tenant, branch=self.lekki,
             document_type=WF_DOCTYPE_REQUISITION, code=WF_DEFAULT_TEMPLATE_CODE,
             name="Lekki requisition approval",
-            description="Campus-specific ladder.",
+            description="Branch-specific ladder.",
             stages_payload=[{
-                "code": "manager", "label": "Campus manager", "kind": "APPROVAL",
+                "code": "manager", "label": "Branch manager", "kind": "APPROVAL",
                 "order": 10, "approver_source": "ROLE",
-                "approver_role_key": "campus-manager",
+                "approver_role_key": "branch-manager",
                 "approver_scope": "PLATFORM", "advance_rule": "ANY",
                 "on_rejection": "TERMINAL", "skip_if_no_approvers": True,
             }],
@@ -10509,7 +10509,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
 class _BranchTenantsFixture(_P2PFixtureMixin):
     """Two differently shaped tenants, used by every Round 3 test class.
 
-    ``multi`` has two campuses, ``flat`` has none at all, and ``foreign`` exists only
+    ``multi`` has two branches, ``flat`` has none at all, and ``foreign`` exists only
     to prove nothing crosses a tenant boundary. A single-shape fixture would prove
     nothing about tenancy, so every behaviour below is asserted on both shapes.
     """
@@ -10519,10 +10519,10 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
 
         seed_currencies()
         self.multi_school = make_school(
-            slug="r3-multi", name="Multi Campus Group", status="ACTIVE",
+            slug="r3-multi", name="Multi Branch Group", status="ACTIVE",
         )
-        self.lekki = make_branch(self.multi_school, name="Lekki Campus")
-        self.ikeja = make_branch(self.multi_school, name="Ikeja Campus", is_main=False)
+        self.lekki = make_branch(self.multi_school, name="Lekki Branch")
+        self.ikeja = make_branch(self.multi_school, name="Ikeja Branch", is_main=False)
         self.multi_tenant = self.multi_school.tenant
         self.multi = self.build_books("R3MULTI", self.multi_tenant)
 
@@ -11299,7 +11299,7 @@ class ParkedAndOverrideFilterBranchScopeTests(_BranchTenantsFixture, TestCase):
     isolation work, and nothing until now asserted the two compose.
 
     The failure being excluded is specific: a filter that *widens*. ``?parked=1``
-    must never surface a neighbouring campus's stuck spend, and its negation must
+    must never surface a neighbouring branch's stuck spend, and its negation must
     never surface the rest of the school either, because ``exclude()`` on a
     tenant-wide subquery is just as capable of reaching outside the caller's set.
 
@@ -11375,7 +11375,7 @@ class ParkedAndOverrideFilterBranchScopeTests(_BranchTenantsFixture, TestCase):
     # -- the parked filter ---------------------------------------------------- #
 
     def test_the_parked_filter_shows_only_the_callers_own_branchs_stuck_spend(self):
-        """``?parked=1`` narrows to the campus, and reports it as parked there."""
+        """``?parked=1`` narrows to the branch, and reports it as parked there."""
         mine = self.park(self.lekki)
         theirs = self.park(self.ikeja)
         entity_wide = self.park(None)
@@ -11385,8 +11385,8 @@ class ParkedAndOverrideFilterBranchScopeTests(_BranchTenantsFixture, TestCase):
 
         self.assertEqual(listed, {mine.pk})
         self.assertNotIn(theirs.pk, listed)
-        # A purchase raised for the school as a whole belongs to no campus, so a
-        # campus-scoped caller does not inherit it either.
+        # A purchase raised for the school as a whole belongs to no branch, so a
+        # branch-scoped caller does not inherit it either.
         self.assertNotIn(entity_wide.pk, listed)
 
     def test_the_negated_parked_filter_cannot_reach_past_the_callers_branch(self):
@@ -11434,15 +11434,15 @@ class ParkedAndOverrideFilterBranchScopeTests(_BranchTenantsFixture, TestCase):
 
         listed = self.ids(client, f"&parked=1&branch={self.ikeja.pk}")
 
-        # Both terms are ANDed, so asking for somebody else's campus yields an empty
-        # answer rather than that campus's rows.
+        # Both terms are ANDed, so asking for somebody else's branch yields an empty
+        # answer rather than that branch's rows.
         self.assertEqual(listed, set())
         self.assertNotIn(theirs.pk, listed)
 
     # -- the override filter --------------------------------------------------- #
 
     def test_the_override_filter_shows_only_the_callers_own_branchs_releases(self):
-        """Spend released without review is the last thing that should cross a campus."""
+        """Spend released without review is the last thing that should cross a branch."""
         mine = self.release(self.park(self.lekki))
         theirs = self.release(self.park(self.ikeja))
         still_parked = self.park(self.lekki)
@@ -11482,7 +11482,7 @@ class ParkedAndOverrideFilterBranchScopeTests(_BranchTenantsFixture, TestCase):
     # -- the other shape of school -------------------------------------------- #
 
     def test_a_tenant_with_no_branches_filters_exactly_as_it_always_did(self):
-        """Where a school has no campuses the dimension recedes rather than narrows.
+        """Where a school has no branches the dimension recedes rather than narrows.
 
         A single-tenant, single-shape test proves nothing about tenancy, so the same
         filters are asserted on the school that has no branches at all: the caller is
@@ -11635,7 +11635,7 @@ class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
         """
         from vs_rbac.tests.helpers import make_branch
 
-        foreign_branch = make_branch(self.foreign_school, name="Foreign Campus")
+        foreign_branch = make_branch(self.foreign_school, name="Foreign Branch")
 
         report = self.coverage()
         branch_ids = [scope["branch_id"] for scope in report["scopes"]]
@@ -11648,7 +11648,7 @@ class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
         from vs_procurement.approvals import ensure_tenant_approval_templates
         from vs_rbac.tests.helpers import make_branch
 
-        make_branch(self.foreign_school, name="Foreign Campus")
+        make_branch(self.foreign_school, name="Foreign Branch")
         ensure_tenant_approval_templates(self.flat_tenant)
 
         report = self.coverage(self.flat_tenant)
@@ -11811,7 +11811,7 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
 
     Round 3 made lists, single documents, KPI headers and the dashboard agree by routing
     every "what can this caller see" question through one helper. The analytics reports
-    were left out, so a branch-bound bursar's own list showed one campus while the spend
+    were left out, so a branch-bound bursar's own list showed one branch while the spend
     report beside it showed the whole tenant. These tests pin the closed version: for
     every report, the figure equals the sum over the documents that same caller can
     actually open, on a multi-branch tenant and on a tenant with no branches at all.
@@ -12178,7 +12178,7 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
     def test_grir_aging_withholds_the_gl_comparison_from_a_narrowed_caller(self, _permission):
         """No branch-level control balance exists, so none is invented.
 
-        The ledger has no branch column. Comparing one campus's open receipts against the
+        The ledger has no branch column. Comparing one branch's open receipts against the
         entity's clearing account would report a difference on every read and bury the
         genuine "a posting bypassed the subledger" alarm this field carries.
         """
@@ -12257,7 +12257,7 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
     def test_a_branch_with_no_documents_returns_an_empty_report_not_an_error(self, _permission):
         from vs_rbac.tests.helpers import make_branch
 
-        empty = make_branch(self.multi_school, name="Yaba Campus", is_main=False)
+        empty = make_branch(self.multi_school, name="Yaba Branch", is_main=False)
         client = self.client_for(self.multi_tenant, "rpt-yaba@t.com", branch=empty)
 
         spend = self.report(client, "spend-analysis")
@@ -12529,7 +12529,7 @@ class ProcurementOnboardingSeedTests(TestCase):
         location = StockLocation.objects.get(entity=entity)
         self.assertEqual(location.code, "MAIN")
         self.assertTrue(location.is_default)
-        self.assertIsNone(location.branch)  # Entity-wide until a campus needs its own.
+        self.assertIsNone(location.branch)  # Entity-wide until a branch needs its own.
 
     def _entity_payload(self, code="ONBRD"):
         return {"name": "Onboarded Books", "code": code}
@@ -12653,11 +12653,11 @@ class NonPoInvoicePolicyDefaultTests(TestCase):
 
 
 class StockLocationTests(_P2PFixtureMixin, TestCase):
-    """Stock is held per location, and one campus cannot spend another's.
+    """Stock is held per location, and one branch cannot spend another's.
 
     Before this, an item carried a single quantity and a single value for the whole
     entity. A thousand books existed; nothing recorded that seven hundred stood at one
-    campus. An issue at the other drew against stock it did not physically have and the
+    branch. An issue at the other drew against stock it did not physically have and the
     availability check allowed it, because it was checking the entity total.
     """
 
@@ -12702,7 +12702,7 @@ class StockLocationTests(_P2PFixtureMixin, TestCase):
         )
         return TenantAPIClient(user=user)
 
-    def test_one_campus_cannot_issue_stock_standing_at_another(self):
+    def test_one_branch_cannot_issue_stock_standing_at_another(self):
         """700 at Lekki, 300 at Ikeja. Ikeja issuing 500 must be refused."""
         from vs_procurement.exceptions import InsufficientStockError
         from vs_procurement.stock import issue_stock
@@ -12722,7 +12722,7 @@ class StockLocationTests(_P2PFixtureMixin, TestCase):
             )
 
     def test_each_location_issues_at_its_own_average_cost(self):
-        """A campus that bought dearer relieves inventory at its own price."""
+        """A branch that bought dearer relieves inventory at its own price."""
         from vs_procurement.stock import issue_stock
 
         lekki = self._location("LEKKI", "Lekki store")
@@ -13163,7 +13163,7 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
     Every other branch test in this file patches ``HasRBACPermission`` to True and
     then checks the narrowing. These deliberately do not: whether the grant opens
     the screen at all is half of what is under test. Before this, a role granted
-    for one campus let its holder do nothing anywhere - the permission gate asked
+    for one branch let its holder do nothing anywhere - the permission gate asked
     the evaluator for whole-tenant grants only, so the branch column was stored,
     shown back to administrators, and ignored.
 
@@ -13177,10 +13177,10 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
         super().setUp()
         from vs_rbac.tests.helpers import make_branch
 
-        # A third campus nobody in these tests is ever granted. Two branches can
+        # A third branch nobody in these tests is ever granted. Two branches can
         # only show that a narrowing happened; the third shows it stopped in the
         # right place.
-        self.yaba = make_branch(self.multi_school, name="Yaba Campus", is_main=False)
+        self.yaba = make_branch(self.multi_school, name="Yaba Branch", is_main=False)
 
     @staticmethod
     def as_client(user):
@@ -13195,7 +13195,7 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
         """Grant ``role_key`` at one branch, allowing the same role at several.
 
         ``_BranchTenantsFixture.grant`` keys its ``get_or_create`` on
-        (tenant, user, role), so a second call for another campus would find the
+        (tenant, user, role), so a second call for another branch would find the
         first row and silently change nothing - which is the very arrangement
         these tests exist to prove works.
         """
@@ -13228,7 +13228,7 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
         )
 
     def orders_in_every_branch(self):
-        """One purchase order per campus, plus one for the entity as a whole."""
+        """One purchase order per branch, plus one for the entity as a whole."""
         return {
             "ikeja": self.purchase_order(self.multi, branch=self.ikeja),
             "lekki": self.purchase_order(self.multi, branch=self.lekki),
@@ -13281,7 +13281,7 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
     def test_mr_sunday_sees_both_his_branches_and_only_those_two(self):
         """Acceptance 2. The arrangement one ``User.branch`` column cannot hold.
 
-        He is a storekeeper at Ikeja *and* at Lekki. Not a third campus, and not
+        He is a storekeeper at Ikeja *and* at Lekki. Not a third branch, and not
         the school at large - which is exactly why branch scope had to become a
         set of grants rather than a single field.
         """
@@ -13346,12 +13346,12 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
             adebayo, self.PO_VIEW, tenant=self.multi_tenant,
             role_key="bursar", branch=self.ikeja,
         )
-        self.ikeja.suspend(actor_id="test", reason="Campus closed")
+        self.ikeja.suspend(actor_id="test", reason="Branch closed")
 
         response = self.as_client(user=adebayo).get(
             f"/v1/procurement/purchase-orders/?entity={self.multi.entity.code}",
         )
-        # It was her only grant, so withdrawing the campus withdraws her access
+        # It was her only grant, so withdrawing the branch withdraws her access
         # rather than promoting her to the whole school.
         self.assertEqual(response.status_code, 403, response.data)
 

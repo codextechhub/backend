@@ -41,7 +41,7 @@ def provision_default_stock_location(entity):
     "an entity always has somewhere to put stock" is an invariant rather than something
     each caller has to remember to arrange.
 
-    A school that later runs two campuses adds its second location and moves the
+    A school that later runs two branches adds its second location and moves the
     opening balances across deliberately, where the transfer is visible.
     """
     from .models import StockLocation

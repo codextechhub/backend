@@ -764,7 +764,7 @@ class SchoolCreationProvisionsOnboardingTests(TestCase):
         # the payload is refused without it.
         payload = dict(payload)
         payload.setdefault("branches", [
-            self._branch("Main Campus", f"main@{payload['slug']}.test"),
+            self._branch("Main Branch", f"main@{payload['slug']}.test"),
         ])
         client = APIClient()
         client.force_authenticate(user=self.vision_user)
@@ -798,7 +798,7 @@ class SchoolCreationProvisionsOnboardingTests(TestCase):
         self._create({
             "name": "Branchy School", "slug": "branchy-school",
             "branches": [
-                self._branch("Main Campus", "main@branchy.test"),
+                self._branch("Main Branch", "main@branchy.test"),
                 self._branch("Lekki Annex", "lekki@branchy.test", is_main=False),
             ],
         })

@@ -37,19 +37,19 @@ nothing else in the schema records the distinction.
 
 ``SCHOOL_WIDE``
     The key is only meaningful for the whole school. There is one role
-    catalogue, one set of school settings, one go-live request and one campus
+    catalogue, one set of school settings, one go-live request and one branch
     roster per school, so pinning such a grant to a branch either means nothing
-    or means something dangerous. Corona Secondary School has three campuses; a
+    or means something dangerous. Corona Secondary School has three branches; a
     "Bursar at Ikeja" who could edit *the school's* fee structure would be
     editing Lekki's and Yaba's fees too, and the branch on their grant would
     quietly not be doing the job the person granting it assumed it was doing.
 
 ``BRANCH_SCOPABLE``
-    The key is meaningful for one campus. Student records, classes, the term
-    calendar and the campus dashboard all narrow correctly through
+    The key is meaningful for one branch. Student records, classes, the term
+    calendar and the branch dashboard all narrow correctly through
     ``vs_rbac.scoping.visible_branch_ids``, so a grant pinned to Ikeja shows
     Ikeja's students and no others. Such a key is *also* legitimately held
-    whole-tenant, by somebody who works across every campus - branch-scopable
+    whole-tenant, by somebody who works across every branch - branch-scopable
     says the narrowing is available and means what it says, not that it is
     compulsory.
 
@@ -86,7 +86,7 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
         "School Onboarding",
         SCHOOL_WIDE,
         "Run the onboarding control room, work the checklist and ask to go live. "
-        "A school goes live once, so none of this narrows to a campus.",
+        "A school goes live once, so none of this narrows to a branch.",
         (
             "onboarding.progress.view",
             "onboarding.task.update",
@@ -104,10 +104,10 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
         ),
     ),
     (
-        "Campus Administration",
+        "Branch Administration",
         SCHOOL_WIDE,
-        "Open, edit, close and list the school's campuses. Creating a campus is "
-        "an act of the school, not of any one campus.",
+        "Open, edit, close and list the school's branches. Creating a branch is "
+        "an act of the school, not of any one branch.",
         (
             "school.branches.view",
             "school.branches.create",
@@ -167,7 +167,7 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
         "Academic Sessions",
         SCHOOL_WIDE,
         "Open, edit and close academic sessions and terms. A session is the "
-        "school's, and every campus sits inside the same one.",
+        "school's, and every branch sits inside the same one.",
         (
             "academics.session.view",
             "academics.session.create",
@@ -190,7 +190,7 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
     (
         "School Dashboard",
         BRANCH_SCOPABLE,
-        "Read the overview. Held for one campus it shows that campus.",
+        "Read the overview. Held for one branch it shows that branch.",
         (
             "school.dashboard.view",
         ),
@@ -233,7 +233,7 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
     (
         "Academic Calendar",
         BRANCH_SCOPABLE,
-        "Add and edit calendar entries. A campus keeps its own dates inside the "
+        "Add and edit calendar entries. A branch keeps its own dates inside the "
         "school's session.",
         (
             "academics.calendar.view",
@@ -282,7 +282,7 @@ BRANCH_SCOPABLE_KEYS: frozenset[str] = frozenset(
 class Command(BaseCommand):
     help = (
         "Group the school-facing permission keys into named bundles and record "
-        "which of them are school-wide and which narrow to a campus. Grants "
+        "which of them are school-wide and which narrow to a branch. Grants "
         "nothing (idempotent)."
     )
 

@@ -286,7 +286,7 @@ class BranchStatus(models.TextChoices):
 
 
 class Branch(models.Model):
-    """One physical site owned by a tenant: a campus, a clinic, a store.
+    """One physical site owned by a tenant: a school site, a clinic, a store.
 
     "Branch" is not school vocabulary - a bank, a clinic chain and a retail
     group all have branches - so the model belongs beside ``Tenant`` rather
@@ -303,7 +303,7 @@ class Branch(models.Model):
     Fields:
         tenant: FK to the owning Tenant. Every creation path must supply it;
             there is no longer a school to derive it from.
-        name: Display label such as "Lekki Campus".
+        name: Display label such as "Lekki Branch".
         code: Integer code unique within the tenant; filled on first save.
         is_main: Boolean marker for the canonical site (constraint enforces 1).
         _type: Optional free-form descriptor (e.g., Primary, Secondary).
@@ -334,7 +334,7 @@ class Branch(models.Model):
         db_index=True,
     )
 
-    name = models.CharField(max_length=255, help_text="Branch display name, e.g., 'Lekki Campus'")
+    name = models.CharField(max_length=255, help_text="Branch display name, e.g., 'Lekki Branch'")
     code = models.PositiveIntegerField(
         editable=False,
         null=False,
@@ -595,7 +595,7 @@ class Branch(models.Model):
           branches at the same moment would otherwise both read one incumbent,
           both demote it, and both insert a main branch.
 
-        An out-of-service branch is refused: promoting a closed campus would
+        An out-of-service branch is refused: promoting a closed branch would
         rebuild the dead end by hand.
 
         No ``BranchLifecycle`` row is written, and ``actor_id`` is taken only

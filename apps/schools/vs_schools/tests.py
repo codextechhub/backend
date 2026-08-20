@@ -18,7 +18,7 @@ from vs_rbac.tests.helpers import make_branch, make_school, make_vision_user
 from vs_tenants.models import Branch, Tenant
 
 
-def _branch_payload(name="Main Campus", *, is_main=True, email="main@branch.test"):
+def _branch_payload(name="Main Branch", *, is_main=True, email="main@branch.test"):
     """The smallest branch a school can be created with."""
     return {
         "name": name,
@@ -205,11 +205,11 @@ class BranchUniquenessConstraintTests(TestCase):
     def test_the_existing_main_branch_can_still_be_saved(self):
         main = Branch.objects.create(tenant=self.school.tenant, name="Main", is_main=True)
 
-        main.name = "Main Campus"
+        main.name = "Main Branch"
         main.save()
 
         main.refresh_from_db()
-        self.assertEqual(main.name, "Main Campus")
+        self.assertEqual(main.name, "Main Branch")
 
     def test_a_second_main_that_evades_the_model_guard_is_stopped_by_the_index(self):
         # The model guard is the friendly path; this proves the partial unique
@@ -750,14 +750,14 @@ class EverySchoolHasAtLeastOneBranchTests(TestCase):
     def test_one_branch_succeeds_and_that_branch_is_the_main_one(self):
         self._post({
             "name": "One Branch", "slug": "one-branch",
-            "branches": [_branch_payload("Main Campus", email="head@one-branch.test")],
+            "branches": [_branch_payload("Main Branch", email="head@one-branch.test")],
         }, expect=201)
 
         school = School.objects.get(slug="one-branch")
         self.assertEqual(school.branches.count(), 1)
         branch = school.main_branch
         self.assertIsNotNone(branch)
-        self.assertEqual(branch.name, "Main Campus")
+        self.assertEqual(branch.name, "Main Branch")
         self.assertTrue(branch.is_main)
         self.assertEqual(branch.code, 1)
         self.assertEqual(branch.tenant_id, school.tenant_id)
@@ -767,7 +767,7 @@ class EverySchoolHasAtLeastOneBranchTests(TestCase):
         self._post({
             "name": "Implied Main", "slug": "implied-main",
             "branches": [{
-                "name": "Only Campus", "_type": "Main", "state": "Lagos",
+                "name": "Only Branch", "_type": "Main", "state": "Lagos",
                 "primary_admin_data": {
                     "full_name": "Only Head", "email": "head@implied-main.test",
                 },
@@ -838,7 +838,7 @@ class BulkImporterSuppliesAMainBranchTests(TestCase):
         self.assertEqual(school.branches.count(), 1)
         self.assertTrue(school.main_branch.is_main)
         # The default name the handler builds when the column is blank.
-        self.assertEqual(school.main_branch.name, "Imported Academy - Main Campus")
+        self.assertEqual(school.main_branch.name, "Imported Academy - Main Branch")
 
     def test_a_row_names_its_branch_when_the_column_is_filled(self):
         from vs_import_data.services.import_executor import import_schools_row
@@ -848,7 +848,7 @@ class BulkImporterSuppliesAMainBranchTests(TestCase):
             payload={
                 "name": "Named Academy",
                 "slug": "named-academy",
-                "branch_name": "Yaba Campus",
+                "branch_name": "Yaba Branch",
                 "branch_state": "Lagos",
                 "branch_admin_full_name": "Yaba Head",
                 "branch_admin_email": "head@named-academy.test",
@@ -856,7 +856,7 @@ class BulkImporterSuppliesAMainBranchTests(TestCase):
             queued_by=self.vision_user,
         )
 
-        self.assertEqual(result.instance.main_branch.name, "Yaba Campus")
+        self.assertEqual(result.instance.main_branch.name, "Yaba Branch")
 
 
 class SeedDataSuppliesABranchTests(TestCase):
@@ -937,7 +937,7 @@ class SchoolDetailMissingSlugTests(TestCase):
 
     def test_an_existing_school_is_unaffected(self):
         school = make_school(slug="present-school", name="Present School")
-        make_branch(school, name="Main Campus")
+        make_branch(school, name="Main Branch")
 
         response = self._get("present-school")
 
@@ -954,7 +954,7 @@ class SchoolDetailMissingSlugTests(TestCase):
         moved one layer out rather than gone away.
         """
         school = make_school(slug="present-or-not", name="Present Or Not")
-        make_branch(school, name="Main Campus")
+        make_branch(school, name="Main Branch")
         # Patched on the view class, not on the module-level name: the view
         # bound ``serializer_class = SchoolDetailSerializer`` when it was
         # defined, so replacing the module attribute changes nothing and the
@@ -1005,7 +1005,7 @@ class SchoolDetailCarriesTheSchoolIdTests(TestCase):
 
     def test_the_detail_response_carries_the_school_id(self):
         school = make_school(slug="id-on-detail", name="Id On Detail")
-        make_branch(school, name="Main Campus")
+        make_branch(school, name="Main Branch")
 
         response = self._detail(school)
 
@@ -1016,7 +1016,7 @@ class SchoolDetailCarriesTheSchoolIdTests(TestCase):
         """Two payloads for the same school must not disagree about which
         school it is."""
         school = make_school(slug="id-agrees", name="Id Agrees")
-        make_branch(school, name="Main Campus")
+        make_branch(school, name="Main Branch")
 
         detail = self._detail(school)
         listing = self._client().get(reverse("school-list"), {"q": "Id Agrees"})
@@ -1038,7 +1038,7 @@ class SchoolDetailCarriesTheSchoolIdTests(TestCase):
         from vs_audit.services import emit_audit_event
 
         school = make_school(slug="id-for-trail", name="Id For Trail")
-        make_branch(school, name="Main Campus")
+        make_branch(school, name="Main Branch")
         emit_audit_event(
             module_key="SCHOOL", action_type="UPDATE",
             actor_user=self.vision_user,
@@ -1091,7 +1091,7 @@ class AdminEmailCaseIsRefusedTests(TestCase):
     def test_school_create_refuses_a_branch_admin_that_is_a_case_variant(self):
         response = self._post({
             "name": "Greenfield", "slug": "greenfield",
-            "branches": [_branch_payload("Main Campus", email="HEAD@Bright-Star.TEST")],
+            "branches": [_branch_payload("Main Branch", email="HEAD@Bright-Star.TEST")],
         }, expect=400)
 
         # The KEY the error lands on, not its wording. A school being created
@@ -1109,7 +1109,7 @@ class AdminEmailCaseIsRefusedTests(TestCase):
             "primary_admin_data": {
                 "full_name": "Head Two", "email": "  Head@Bright-Star.TEST  ",
             },
-            "branches": [_branch_payload("Main Campus", email="campus@greenfield.test")],
+            "branches": [_branch_payload("Main Branch", email="branch@greenfield.test")],
         }, expect=400)
 
         self.assertIn("primary_admin_data", str(response.data))
@@ -1119,7 +1119,7 @@ class AdminEmailCaseIsRefusedTests(TestCase):
         """The refusal must not be a blanket one."""
         self._post({
             "name": "Greenfield", "slug": "greenfield",
-            "branches": [_branch_payload("Main Campus", email="head@greenfield.test")],
+            "branches": [_branch_payload("Main Branch", email="head@greenfield.test")],
         }, expect=201)
 
     def test_branch_create_refuses_a_case_variant_of_an_existing_admin(self):
@@ -1188,7 +1188,7 @@ class PrimaryAdminHasNoRoleLabelTests(TestCase):
                 "school_role": "IT Head",
             },
             "branches": [_branch_payload(
-                "Main Campus", email="head@greenfield-academy.test",
+                "Main Branch", email="head@greenfield-academy.test",
             )],
         })
 
@@ -1238,7 +1238,7 @@ class PrimaryAdminHasNoRoleLabelTests(TestCase):
                 "school_role": "Director of ICT",
             },
             "branches": [{
-                "name": "Main Campus", "_type": "Main", "state": "Lagos",
+                "name": "Main Branch", "_type": "Main", "state": "Lagos",
                 "is_main": True,
                 "primary_admin_data": {
                     "full_name": "Tunde Bello",
@@ -1280,7 +1280,7 @@ class PrimaryAdminHasNoRoleLabelTests(TestCase):
                 "role_label": "SCHOOL_ADMIN",
             },
             "branches": [{
-                "name": "Main Campus", "_type": "Main", "state": "Lagos",
+                "name": "Main Branch", "_type": "Main", "state": "Lagos",
                 "is_main": True,
                 "primary_admin_data": {
                     "full_name": "Tunde Bello",
@@ -1308,7 +1308,7 @@ class PrimaryAdminHasNoRoleLabelTests(TestCase):
                 "school_role": "IT Head",
             },
             "branches": [_branch_payload(
-                "Main Campus", email="head@detail-school.test",
+                "Main Branch", email="head@detail-school.test",
             )],
         })
 
@@ -1329,7 +1329,7 @@ class PrimaryAdminHasNoRoleLabelTests(TestCase):
         self._create({
             "name": "Branch Detail", "slug": "branch-detail-school",
             "branches": [_branch_payload(
-                "Main Campus", email="head@branch-detail-school.test",
+                "Main Branch", email="head@branch-detail-school.test",
             )],
         })
         school = School.objects.get(slug="branch-detail-school")

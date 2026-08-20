@@ -70,7 +70,7 @@ class _SchoolCreationMixin:
         # tests are about books and entitlements, not about branch shape.
         payload = dict(payload)
         payload.setdefault("branches", [self._branch(
-            "Main Campus",
+            "Main Branch",
             is_main=True,
             email=f"main-{next(self._branch_email_counter)}@branch.test",
         )])
@@ -209,7 +209,7 @@ class SchoolSurvivesBooksFailureTests(_SchoolCreationMixin, TestCase):
                 "phone": "+2348000000001",
             },
             "branches": [
-                self._branch("Main Campus", is_main=True, email="main@resilient.test"),
+                self._branch("Main Branch", is_main=True, email="main@resilient.test"),
                 self._branch("Annex", is_main=False, email="annex@resilient.test"),
             ],
         }
@@ -249,7 +249,7 @@ class SchoolSurvivesBooksFailureTests(_SchoolCreationMixin, TestCase):
         branch_names = set(
             Branch.objects.filter(tenant=tenant).values_list("name", flat=True)
         )
-        self.assertEqual(branch_names, {"Main Campus", "Annex"})
+        self.assertEqual(branch_names, {"Main Branch", "Annex"})
 
         # Only the books are missing, and they are recoverable.
         self.assertFalse(LedgerEntity.objects.filter(tenant=tenant).exists())
@@ -364,7 +364,7 @@ class BranchCountIsCountedNotStoredTests(_SchoolCreationMixin, TestCase):
         self._create({
             "name": "Multi Site", "slug": "multi-site",
             "branches": [
-                self._branch("Main Campus", is_main=True, email="main@multi-site.test"),
+                self._branch("Main Branch", is_main=True, email="main@multi-site.test"),
                 self._branch("Lekki Annex", is_main=False, email="lekki@multi-site.test"),
             ],
         })

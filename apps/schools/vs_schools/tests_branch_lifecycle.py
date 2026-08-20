@@ -26,7 +26,7 @@ from vs_tenants.models import Branch, BranchLifecycle, BranchStatus
 class BranchTransitionModelTests(TestCase):
     def setUp(self):
         self.school = make_school(slug="lifecycle-school", name="Lifecycle School")
-        # The subject is an ordinary campus, and the school keeps a main branch
+        # The subject is an ordinary branch, and the school keeps a main branch
         # beside it. These tests are about what each edge does to the
         # timestamps and the history row; a *main* branch is refused every
         # out-of-service edge outright (Branch._assert_may_leave_service), so
@@ -35,7 +35,7 @@ class BranchTransitionModelTests(TestCase):
         self.head_office = make_branch(self.school, name="Head Office")
         self.branch = make_branch(
             self.school,
-            name="Lekki Campus",
+            name="Lekki Branch",
             is_main=False,
             status=BranchStatus.PENDING,
         )
@@ -92,7 +92,7 @@ class BranchTransitionModelTests(TestCase):
 
     def test_mark_inactive_stamps_deactivated_at(self):
         self.branch.mark_active(actor_id="actor")
-        self.branch.mark_inactive(actor_id="actor", reason="Campus merged")
+        self.branch.mark_inactive(actor_id="actor", reason="Branch merged")
 
         self.branch.refresh_from_db()
         self.assertEqual(self.branch.status, BranchStatus.INACTIVE)
@@ -119,7 +119,7 @@ class BranchTransitionModelTests(TestCase):
         self.branch.transition(
             to_state=BranchStatus.CLOSED,
             actor_id="actor",
-            reason="Campus shut down",
+            reason="Branch shut down",
         )
 
         self.branch.refresh_from_db()
@@ -237,7 +237,7 @@ class BranchTransitionEndpointTests(TestCase):
         self.school_a = make_school(slug="branch-tx-a", name="Tx School A")
         self.school_b = make_school(slug="branch-tx-b", name="Tx School B")
         # Each school keeps its main branch and the endpoint is driven against
-        # an ordinary campus: the main branch of a school may not be suspended,
+        # an ordinary branch: the main branch of a school may not be suspended,
         # deactivated or closed at all, which is a different test.
         make_branch(self.school_a, name="A Main")
         make_branch(self.school_b, name="B Main")

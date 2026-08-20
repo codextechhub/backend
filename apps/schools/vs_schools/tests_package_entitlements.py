@@ -90,7 +90,7 @@ class SchoolPackageEntitlementTests(TestCase):
             # about entitlements, so the branch is scenery, but it has to be
             # there for the payload to be accepted at all.
             "branches": branches if branches is not None else [{
-                "name": f"{name} Main Campus",
+                "name": f"{name} Main Branch",
                 "_type": "Main",
                 "state": "Lagos",
                 "is_main": True,

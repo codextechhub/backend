@@ -222,7 +222,7 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
         school_admin_role       optional – defaults to "IT Head"
 
     Main branch  (one branch per row, always marked is_main=True)
-        branch_name             optional – defaults to "<school name> - Main Campus"
+        branch_name             optional – defaults to "<school name> - Main Branch"
         branch_type             optional – defaults to "Combined"
         branch_address          optional – falls back to school address
         branch_email            optional
@@ -294,7 +294,7 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
     }
 
     # --- Branch ---
-    branch_name = _s("branch_name") or f"{_s('name')} - Main Campus"
+    branch_name = _s("branch_name") or f"{_s('name')} - Main Branch"
     branch = {
         "name": branch_name,
         "_type": _s("branch_type") or "Combined",

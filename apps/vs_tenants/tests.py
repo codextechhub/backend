@@ -559,7 +559,7 @@ class MainBranchLifecycleGuardTests(TestCase):
     def test_the_only_branch_is_refused_with_advice_it_can_follow(self):
         """There is no sibling to promote, so the message must not say so.
 
-        Bright Star School has one campus. Telling its admin to "make another
+        Bright Star School has one branch. Telling its admin to "make another
         branch the main branch first" is advice for a school that does not
         exist; what they actually want is to deactivate the school.
         """

@@ -584,7 +584,7 @@ class BranchCreateSerializer(serializers.ModelSerializer):
         # where the Event Explorer's free-text search would reach it - worse,
         # searching "2" there now finds the branch whose *pk* is 2, which is
         # somebody else's. The summary carries it, together with the school,
-        # because "Main Campus" is not a distinguishing label either.
+        # because "Main Branch" is not a distinguishing label either.
         emit_audit_event(
             module_key=AuditModuleKey.BRANCH,
             action_type=AuditActionType.CREATE,

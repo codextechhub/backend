@@ -55,7 +55,7 @@ class SchoolSlugUpdateTests(TestCase):
     def _pending_school(self, *, slug, name="Bright Star"):
         """A school that has not gone live, with the main branch every school has."""
         school = make_school(slug=slug, name=name, status=SchoolStatus.PENDING)
-        make_branch(school, name="Main Campus", status=BranchStatus.PENDING)
+        make_branch(school, name="Main Branch", status=BranchStatus.PENDING)
         return school
 
     # --- the correction the rule exists to permit ---------------------------
@@ -208,7 +208,7 @@ class SchoolSlugUpdateTests(TestCase):
 
     def test_a_live_school_cannot_move_its_address(self):
         school = make_school(slug="live-academy", name="Live Academy")
-        make_branch(school, name="Main Campus")
+        make_branch(school, name="Main Branch")
         self.assertEqual(school.status, SchoolStatus.ACTIVE)
 
         response = self._client().patch(
@@ -231,7 +231,7 @@ class SchoolSlugUpdateTests(TestCase):
             slug="suspended-live", name="Suspended School",
             activated_at=timezone.now(),
         )
-        make_branch(school, name="Main Campus")
+        make_branch(school, name="Main Branch")
         School.objects.filter(pk=school.pk).update(status=SchoolStatus.SUSPENDED)
 
         response = self._client().patch(
@@ -244,7 +244,7 @@ class SchoolSlugUpdateTests(TestCase):
     def test_a_live_school_may_still_edit_everything_else(self):
         """The freeze is on the address, not on the row."""
         school = make_school(slug="live-editable", name="Live Editable")
-        make_branch(school, name="Main Campus")
+        make_branch(school, name="Main Branch")
 
         response = self._client().patch(
             self._url(school), {"motto": "Still editable"}, format="json",
@@ -257,7 +257,7 @@ class SchoolSlugUpdateTests(TestCase):
     def test_a_live_school_resending_its_own_slug_is_not_refused(self):
         """A UI that PATCHes the whole form back is not asking for a rename."""
         school = make_school(slug="live-noop", name="Live No-op")
-        make_branch(school, name="Main Campus")
+        make_branch(school, name="Main Branch")
 
         response = self._client().patch(
             self._url(school),
@@ -335,7 +335,7 @@ class BranchUpdateBlankFieldTests(TestCase):
             kwargs={"slug": self.school.slug, "code": branch.code},
         )
 
-    def _row_with_blank_type(self, name="Legacy Campus"):
+    def _row_with_blank_type(self, name="Legacy Branch"):
         """A branch made the way ``seed_import``, a data migration and the
         shell make one: straight through the manager, no serializer, so
         ``_type`` is never supplied."""
@@ -365,7 +365,7 @@ class BranchUpdateBlankFieldTests(TestCase):
         self.assertEqual(branch.address, "14 Admiralty Way, Lekki")
 
     def test_such_a_branch_can_also_be_given_a_type(self):
-        branch = self._row_with_blank_type(name="Typed Campus")
+        branch = self._row_with_blank_type(name="Typed Branch")
 
         response = self._client().patch(
             self._url(branch), {"_type": "Secondary"}, format="json",
@@ -378,7 +378,7 @@ class BranchUpdateBlankFieldTests(TestCase):
     def test_a_type_may_be_cleared_again(self):
         """``blank=True`` has to mean it on the way in as well as on the way
         out, or the field is merely optional once."""
-        branch = self._row_with_blank_type(name="Clearable Campus")
+        branch = self._row_with_blank_type(name="Clearable Branch")
         Branch.all_objects.filter(pk=branch.pk).update(_type="Nursery")
 
         response = self._client().patch(
@@ -395,7 +395,7 @@ class BranchUpdateBlankFieldTests(TestCase):
         """``name`` was deliberately not swept: a site must be named. The point
         of the sweep was to stop *optional* columns behaving like required
         ones, not to make every column optional."""
-        branch = self._row_with_blank_type(name="Nameless Campus")
+        branch = self._row_with_blank_type(name="Nameless Branch")
         Branch.all_objects.filter(pk=branch.pk).update(name="")
 
         response = self._client().patch(
@@ -409,7 +409,7 @@ class BranchUpdateBlankFieldTests(TestCase):
         nothing on this path was translating it, so the caller was told a field
         could not be blank on an endpoint that writes eight of them - and never
         which one."""
-        branch = self._row_with_blank_type(name="Unnamed Campus")
+        branch = self._row_with_blank_type(name="Unnamed Branch")
         Branch.all_objects.filter(pk=branch.pk).update(name="")
 
         response = self._client().patch(
@@ -465,7 +465,7 @@ class SchoolUpdateAuditTests(TestCase):
 
     def _pending_school(self, *, slug, name="Bright Star"):
         school = make_school(slug=slug, name=name, status=SchoolStatus.PENDING)
-        make_branch(school, name="Main Campus", status=BranchStatus.PENDING)
+        make_branch(school, name="Main Branch", status=BranchStatus.PENDING)
         return school
 
     def _school_events(self):
@@ -629,7 +629,7 @@ class SchoolResetConfigAuditTests(TestCase):
 
     def test_clearing_a_school_s_configuration_is_recorded(self):
         school = make_school(slug="reset-school", name="Reset School")
-        make_branch(school, name="Main Campus")
+        make_branch(school, name="Main Branch")
         SchoolBranding.objects.create(school=school, logo="school_logos/reset.png")
 
         client = APIClient()
@@ -685,7 +685,7 @@ class SchoolTrailIsKeyedOnThePrimaryKeyTests(TestCase):
                 "slug": slug,
                 "status": SchoolStatus.PENDING,
                 "branches": [{
-                    "name": f"{name} Main Campus",
+                    "name": f"{name} Main Branch",
                     "_type": "Main",
                     "state": "Lagos",
                     "is_main": True,
@@ -901,7 +901,7 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
                 "name": name,
                 "slug": slug,
                 "branches": [{
-                    "name": f"{name} Main Campus",
+                    "name": f"{name} Main Branch",
                     "_type": "Main",
                     "state": "Lagos",
                     "is_main": True,
@@ -917,12 +917,12 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
         school = School.objects.get(slug=slug)
         return school, school.branches.get(is_main=True)
 
-    def _add_branch(self, school, *, name="Lekki Campus"):
+    def _add_branch(self, school, *, name="Lekki Branch"):
         """The standalone path: a second site added after go-live.
 
         The endpoint only serves an active school, and the wizard leaves a new
         one PENDING, so the school goes live first - which is when a second
-        campus is opened anyway.
+        branch is opened anyway.
         """
         if school.status != SchoolStatus.ACTIVE:
             school.status = SchoolStatus.ACTIVE
@@ -987,7 +987,7 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
         )
         self.assertEqual(
             set(trails.values_list("entity_label", flat=True)),
-            {"Bright Star Main Campus", "Greenfield Main Campus"},
+            {"Bright Star Main Branch", "Greenfield Main Branch"},
         )
         for trail in trails:
             self.assertEqual(trail.event_count, 1)
@@ -1001,7 +1001,7 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
         greenfield, gf_main = self._create_school_with_main_branch(
             name="Greenfield", slug="greenfield",
         )
-        self._rename_branch(greenfield, gf_main, "Greenfield Ikoyi Campus")
+        self._rename_branch(greenfield, gf_main, "Greenfield Ikoyi Branch")
 
         response = self._client().get(
             reverse(
@@ -1015,7 +1015,7 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
         self.assertEqual(payload["trail"]["event_count"], 1)
         self.assertEqual(
             {e["entity_label"] for e in payload["events"]},
-            {"Bright Star Main Campus"},
+            {"Bright Star Main Branch"},
         )
 
     def test_two_schools_second_branches_do_not_collide_either(self):
@@ -1044,7 +1044,7 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
 
     def test_a_branch_create_and_update_share_one_entity_id(self):
         school, _ = self._create_school_with_main_branch()
-        branch = self._add_branch(school, name="Lekki Campus")
+        branch = self._add_branch(school, name="Lekki Branch")
 
         self._rename_branch(school, branch, "Lekki Annex")
 
@@ -1057,7 +1057,7 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
 
     def test_the_trail_row_is_the_same_row_before_and_after_an_edit(self):
         school, _ = self._create_school_with_main_branch()
-        branch = self._add_branch(school, name="Lekki Campus")
+        branch = self._add_branch(school, name="Lekki Branch")
         trail_before = EntityAuditTrail.objects.get(
             entity_type="Branch", entity_id=str(branch.pk),
         )
@@ -1084,20 +1084,20 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
 
     def test_entity_label_still_reads_the_branch_name(self):
         school, _ = self._create_school_with_main_branch()
-        branch = self._add_branch(school, name="Lekki Campus")
+        branch = self._add_branch(school, name="Lekki Branch")
 
         event = self._branch_events(branch).get()
-        self.assertEqual(event.entity_label, "Lekki Campus")
+        self.assertEqual(event.entity_label, "Lekki Branch")
         trail = EntityAuditTrail.objects.get(
             entity_type="Branch", entity_id=str(branch.pk),
         )
-        self.assertEqual(trail.entity_label, "Lekki Campus")
+        self.assertEqual(trail.entity_label, "Lekki Branch")
 
     def test_a_renamed_branch_takes_its_new_name_onto_the_trail(self):
         """With an opaque pk in ``entity_id`` the label is the only human
         handle on the row, so it may not be written once and frozen."""
         school, _ = self._create_school_with_main_branch()
-        branch = self._add_branch(school, name="Lekki Campus")
+        branch = self._add_branch(school, name="Lekki Branch")
 
         self._rename_branch(school, branch, "Lekki Annex")
 
@@ -1111,7 +1111,7 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
     def test_the_creation_summary_names_the_code_and_the_school(self):
         """``entity_id`` used to hold the code, and the Event Explorer searches
         that column. The code is what a school's own staff call the branch, and
-        "Main Campus" is not a distinguishing label, so the summary carries
+        "Main Branch" is not a distinguishing label, so the summary carries
         both the code and the school it belongs to."""
         school, main = self._create_school_with_main_branch(
             name="Bright Star", slug="bright-star",
@@ -1120,18 +1120,18 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
         event = self._branch_events(main).get()
         self.assertEqual(
             event.summary,
-            "Bright Star Main Campus created as branch 1 of Bright Star",
+            "Bright Star Main Branch created as branch 1 of Bright Star",
         )
 
     def test_the_standalone_create_writes_the_same_summary(self):
         school, _ = self._create_school_with_main_branch(
             name="Bright Star", slug="bright-star",
         )
-        branch = self._add_branch(school, name="Lekki Campus")
+        branch = self._add_branch(school, name="Lekki Branch")
 
         event = self._branch_events(branch).get()
         self.assertEqual(
-            event.summary, "Lekki Campus created as branch 2 of Bright Star",
+            event.summary, "Lekki Branch created as branch 2 of Bright Star",
         )
 
     def test_the_code_is_still_findable_in_the_event_explorer(self):

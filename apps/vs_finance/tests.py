@@ -10375,7 +10375,7 @@ class AdjustmentThresholdGateTests(TestCase):
         from vs_finance.constants import WF_ADJUSTMENT_THRESHOLD
 
         branch = Branch.objects.create(
-            tenant=self.school.tenant, name="Second Campus", is_main=False,
+            tenant=self.school.tenant, name="Second Branch", is_main=False,
             status="ACTIVE")
 
         small = self._concession(20_000)

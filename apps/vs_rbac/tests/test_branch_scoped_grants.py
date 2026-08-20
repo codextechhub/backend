@@ -43,7 +43,7 @@ class _BranchGrantFixture(TestCase):
     """
 
     def setUp(self):
-        self.school = make_school(slug="grant-multi", name="Multi Campus")
+        self.school = make_school(slug="grant-multi", name="Multi Branch")
         self.tenant = self.school.tenant
         # Yaba carries the main flag, not Ikeja: these tests suspend Ikeja to
         # withdraw a grant, and a school's *main* branch may not leave service
