@@ -88,6 +88,76 @@ can trace endpoints → calculations → output shapes without reading the code 
   which is why the tenant-scoped Export Centre dataset returns almost nothing
   and why scoping the console is blocked until the column is backfilled.
 
+- 📝 `vs_notifications` - documented: 3 slices in `docs/notifications/` -
+  `notification_dispatch_engine` (`send_notification`, channel resolution,
+  render + shared email layout, the Celery delivery task and the two delivery
+  signals), `notification_feed_history` (the user's in-app feed, read state,
+  route acknowledgement, and the admin delivery history log), and
+  `notification_templates_settings` (the effective settings matrix and its
+  overrides, template CRUD + live preview, the event-type catalogue, and the
+  seed commands). Unlike the other modules, the §8 findings are collected in a
+  dedicated fourth file, **`docs/notifications/notification_code_issues.md`**,
+  which each slice points at instead of repeating.
+  Baseline at the time of writing: **`Ran 85 tests in 380.453s` - OK**
+  (`cd apps && DB_NAME=cx_notifslice2 ../cx/Scripts/python.exe manage.py test
+  vs_notifications --settings=apps.settings.local --noinput`). The suite is slow
+  because every test's `setUp` re-seeds 56 templates and 56 platform settings
+  rows.
+  **Findings are recorded but NOT yet swept** - the loop stopped at step 3
+  (docs written) and steps 4-5 (briefing, fixes) are outstanding.
+  The worst item: notification rows are stamped with the *initiating* tenant
+  while the feed reads through `Notification.objects`, a `TenantAwareManager`,
+  so a recipient in a different tenant never sees the row. Confirmed with a
+  real caller: `vs_tickets` dispatches `ticket.created` with
+  `tenant=ticket.tenant` to CX support staff on the platform tenant, so the
+  agent's in-app feed and unread badge never show it - and under eager mode,
+  which staging defaults to, the delivery task cannot find the row either, so
+  the email is dropped too and the row stays `PENDING` forever. The same
+  mis-filing lets a school admin read CX staff email addresses in their history
+  log, and lets a school admin's settings toggle silence the CX support queue.
+  Second: `acknowledge-route` is the one feed route using `all_objects`, so it
+  can mark read a row the same user cannot see. Third: eight active in-app
+  event types have no click destination because `_PREFIX_ROUTES` maps
+  `finance.` where the registry keys those events `billing.`. Fourth:
+  `Notification.metadata` is an unvalidated control surface - `attachments`
+  reads any path in `default_storage`, `bcc` mails anyone.
+
+- 📝 `vs_config` - documented: 4 slices in `docs/config/` -
+  `config_settings_catalogue` (typed definitions, scoped values, the
+  branch/tenant/platform precedence chain, `conf.get_config`),
+  `config_platform_runtime_settings` (the three curated screens, the transitive
+  security compliance clamp, the code-owned consumer map and the bounded
+  connection test), `config_capabilities_entitlements` (the unified capability
+  catalogue, dependency graph, entitlement/override split, the bulk evaluator,
+  renewal calendar and bulk scheduling), and `config_audit_trail_exports` (the
+  append-only `ConfigurationAuditEvent`, its double immutability guard, facets,
+  saved views, the synchronous CSV and the queued background export).
+  Following the `vs_notifications` precedent, the §8 findings live in a
+  dedicated file, **`error/config/config_code_issues.md`**, which each slice
+  points at instead of repeating.
+  Baseline at the time of writing: **`Ran 61 tests in 94.867s` - OK**
+  (`cd apps && DB_NAME=cx_configslice ../cx/Scripts/python.exe manage.py test
+  vs_config --settings=apps.settings.local --noinput`). The one traceback in
+  that run is `test_oversized_export_fails_with_the_size_limit_in_its_own_words`
+  logging its own expected failure.
+  **Findings are recorded but NOT yet swept** - the loop stopped at step 3
+  (docs written) and steps 4-5 (briefing, fixes) are outstanding.
+  The worst item is a hard bug: `ConfigurationAuditFilterSerializer` accepts a
+  UUID for `?actor=` while the user primary key is a `BigAutoField`, so a
+  well-formed UUID reaches the ORM and 500s the audit list, the CSV export and
+  any saved view or queued export job carrying it - and a queued job fails with
+  "narrow the filters", which cannot help. Second: `bulk_schedule_entitlements`
+  forces `state = GRANTED` and `source = MANUAL` on every target, so extending
+  an expiry across a list that includes a DENIED tenant hands that tenant the
+  module and erases PACKAGE provenance on the rest. Third: no school role is
+  ever granted a `config.*` permission anywhere in the repo, so
+  `/v1/config/effective-capabilities/` - which `Capability`'s own docstring
+  names as the frontend's source of truth - is a 403 for every school user out
+  of the box, along with the security-settings clamp built and tested for
+  schools. Fourth: `default_enabled` is ignored for every entitlement-gated
+  capability, contradicting its own field docstring, so "off by default, opt in
+  per branch" is not available for modules at all.
+
 ## The loop (per slice)
 
 1. **Trace the real code** - models, service functions, views (rbac keys + request
