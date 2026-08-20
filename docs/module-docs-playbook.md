@@ -158,6 +158,63 @@ can trace endpoints → calculations → output shapes without reading the code 
   capability, contradicting its own field docstring, so "off by default, opt in
   per branch" is not available for modules at all.
 
+- 📝 `vs_exports` - documented: 5 slices in `docs/exports/` -
+  `export_catalogue_datasets` (the `Field`/`FilterDef`/`Dataset` vocabulary, the
+  registry the 19 datasets and 18 screens publish into from their own
+  `AppConfig.ready`, the filter compiler and the "export what this table is
+  showing" translation), `export_builder_definitions` (saved recipes, sharing,
+  drafts, the estimate/sample loop, capability flags and quick export),
+  `export_runs_and_files` (the run lifecycle and its frozen config, the engine,
+  the writers, omissions and failure codes, files, download authorisation and
+  the two sweepers), `export_schedules` (recurrence maths, the dispatcher,
+  pause/resume and the failure counter), and `export_audit_analytics` (the two
+  pipelines and the four headline metrics). Following the `vs_notifications`
+  and `vs_config` precedent, the §8 findings live in a dedicated file,
+  **`error/exports/export_code_issues.md`**, which each slice points at.
+  Baseline at the time of writing: **NOT ESTABLISHED - the suite was not run to
+  completion in the documenting session, so nothing below is backed by a
+  `Ran N tests` line.** Establish it before trusting any coverage claim:
+  `cd apps && DB_NAME=cx_exportslice ../cx/Scripts/python.exe manage.py test
+  vs_exports --settings=apps.settings.local --noinput`. Three attempts failed
+  for environmental reasons, and the traps are worth recording:
+  (a) piping the run through `tail` reports **`tail`'s** exit status, so an
+  `exit 0` there is meaningless and the `Ran N tests` line is discarded - always
+  redirect to a file instead; (b) two later attempts were stopped before
+  finishing, and both died still printing `Creating test database for alias
+  'default'...` after nine minutes, so on this box the migration-and-seed setup
+  alone outlasts a ten-minute foreground budget. Prior recorded evidence for
+  this app is the step-0 sweep of 2026-08-16, which counted **vs_exports 152**
+  green; the file has grown since, so expect more. The §11 coverage sections in
+  each slice were written by reading `tests.py`, not by running it, and they say
+  so. One partial run did complete and is worth carrying forward:
+  `ScheduleOccurrenceTests`, `AnalyticsSafetyTests` and
+  `CatalogueRegistrationTests` together gave **`Ran 19 tests in 0.586s` -
+  FAILED (errors=2)**. The tests themselves take under a second; the nine
+  minutes is entirely `Creating test database`. Both errors are one
+  environmental cause - `Path.read_text()` with no `encoding=` meeting UTF-8
+  source on a cp1252 box - and they take out the two guards that enforce the
+  domain-neutrality rule (`export_code_issues` §17).
+  **Findings are recorded but NOT yet swept** - the loop stopped at step 3
+  (docs written) and steps 4-5 (briefing, fixes) are outstanding.
+  The worst item is that the feature does not exist for the customer:
+  `seed_exports_permissions` grants its fifteen keys to `xvs_super_admin` and
+  `xvs_platform_admin` on the Codex tenant only and writes no
+  `PrebuiltRolePermission` row, so every Export Centre route is a 403 for every
+  school user out of the box - the same shape as the `vs_config` finding, but on
+  a user-facing feature. Second: archiving an export sets `is_archived` and
+  nothing else reads it, so an archived export can still be run by id and its
+  schedule keeps producing a file every night, invisibly. Third:
+  `platform.schools` deliberately ignores its scope and returns
+  `School.objects.all()`, and its key is an unrestricted `platform.*` NORMAL key
+  that nothing stops a school role being given. Fourth: run references are
+  `secrets.token_hex(3)` - 16.7M values, globally unique, allocated once with no
+  retry - so collisions start around 4,800 runs, surface to the user as "A
+  record with these details already exists", and inside the schedule dispatcher
+  escape a loop that catches only `ExportServiceError`, killing the whole tick.
+  There is **no exports FRD folder** under `docs/frd/functional-requirements/`;
+  it was not created, per the standing rule that a missing module FRD is
+  reported rather than generated.
+
 ## The loop (per slice)
 
 1. **Trace the real code** - models, service functions, views (rbac keys + request
