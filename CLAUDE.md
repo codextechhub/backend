@@ -148,6 +148,11 @@ an empty heading is worse than no heading, and never pad a section to fill it ou
 - **Where to go next** - the order of the next steps, and which of them are
   unblocked right now.
 
+That list is closed. Do not invent a heading for something that does not fit one
+of them: put it under the heading it belongs to, and if it belongs under none of
+them, leave it out of the breakdown entirely. A section I did not ask for is one
+I have to decode before I can tell whether it needs me.
+
 How to write it:
 
 - Plain words beat precise jargon. "Purchases can approve themselves" lands;
