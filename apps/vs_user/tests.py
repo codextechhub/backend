@@ -335,6 +335,36 @@ class UserListScopeTests(TestCase):
         users = self._queryset_for("?scope=school")
         self.assertQuerySetEqual(users, [self.school_user], transform=lambda user: user)
 
+    def test_platform_scope_returns_only_cx_staff(self):
+        """The positive half of the same split.
+
+        Only ``scope=school`` existed, so the console could exclude platform
+        staff but never ask for them: its CX tabs fell back to an unfiltered
+        list, which is every user on the platform. The pickers built on those
+        tabs then offered school users - including the one that transfers
+        platform super-admin.
+        """
+        users = self._queryset_for("?scope=platform")
+        self.assertQuerySetEqual(users, [self.cx_user], transform=lambda user: user)
+
+    def test_the_two_scopes_partition_the_list(self):
+        """Neither half may drop a row or claim one twice."""
+        everyone = set(self._queryset_for("").values_list("pk", flat=True))
+        school = set(self._queryset_for("?scope=school").values_list("pk", flat=True))
+        platform = set(self._queryset_for("?scope=platform").values_list("pk", flat=True))
+
+        self.assertEqual(school | platform, everyone)
+        self.assertEqual(school & platform, set())
+
+    def test_an_unknown_scope_does_not_silently_filter(self):
+        """``?user_type=CX_STAFF`` is now ignored rather than honoured, so a
+        stale caller gets everything rather than nothing. Worth pinning: the
+        dangerous failure would be an unrecognised value quietly narrowing the
+        list and a reviewer trusting it."""
+        everyone = set(self._queryset_for("").values_list("pk", flat=True))
+        stale = set(self._queryset_for("?user_type=CX_STAFF").values_list("pk", flat=True))
+        self.assertEqual(stale, everyone)
+
     def test_school_scope_serializes_placement_and_active_role(self):
         from vs_user.serializers import UserListSerializer
 

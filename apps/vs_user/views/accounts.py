@@ -142,8 +142,17 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         # internal platform staff. Keep this filter server-side so pagination
         # totals and every page are scoped correctly (client-side filtering
         # would not). Keyed off the tenant kind.
-        if params.get('scope') == 'school':
+        # Both directions, deliberately. Only the negative half existed, so the
+        # platform console had no way to ask for its OWN staff: an unfiltered
+        # list is every user on the platform, and the CX tabs and the pickers
+        # built on them - super-admin transfer, organogram, workflow templates -
+        # would offer school users. The transfer one decides who holds platform
+        # super-admin, so "no filter" there is not a cosmetic gap.
+        scope = params.get('scope')
+        if scope == 'school':
             qs = qs.exclude(tenant__kind=Tenant.Kind.PLATFORM)
+        elif scope == 'platform':
+            qs = qs.filter(tenant__kind=Tenant.Kind.PLATFORM)
 
         # Both of these address integer-keyed rows, so a non-numeric or
         # oversized value is a bad request rather than a lookup - handing it
