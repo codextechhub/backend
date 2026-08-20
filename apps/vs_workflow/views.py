@@ -13,6 +13,11 @@ from rest_framework.views import APIView
 from rest_framework.viewsets import GenericViewSet, ModelViewSet
 
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
+# ``include_shared=True`` spelled out at each call site below. A workflow row
+# with no branch is shared across the school - a tenant-wide template, a group
+# that approves for every site - and hiding those from a branch approver would
+# break the branch -> tenant -> platform cascade the engine actually runs.
+from vs_rbac.scoping import branch_q
 from vs_tenants.models import Tenant
 from vs_rbac.permissions import user_has_rbac_permission
 
@@ -137,6 +142,15 @@ class TenantScopedMixin:
         return getattr(self.request, "tenant", None)
 
     def get_branch(self):
+        """The caller's home posting.
+
+        Kept because it is still the right answer for "where is this person
+        based" (defaults, display), but it is deliberately no longer used to
+        decide *whose rows* anybody sees. ``User.branch`` holds one value and
+        cannot express "Ikeja and Lekki but not Yaba", which a set of grants can;
+        :func:`vs_rbac.scoping.branch_q` is the authority on scope and is what the
+        querysets below filter on.
+        """
         return getattr(self.request.user, "branch", None)
 
 
@@ -211,9 +225,14 @@ class WorkflowTemplateViewSet(
         # runs under is branch → tenant → platform, so all three have to be
         # listable. Filtering to branch=<theirs> hid the tenant-wide and shared
         # templates that actually decide most of their documents.
-        branch = self.get_branch()
-        if branch is not None:
-            qs = qs.filter(Q(branch=branch) | Q(branch__isnull=True))
+        #
+        # That rule was right and was hand-written here, but it was keyed off
+        # ``request.user.branch`` - one column, which cannot say "Ikeja and Lekki
+        # but not Yaba", and which is null for most school users so it narrowed
+        # nothing at all. It is now the platform's own predicate, keyed off the
+        # grants that also decide whether this screen opens, so the gate and the
+        # narrowing cannot answer differently.
+        qs = qs.filter(branch_q(self.request, include_shared=True))
         # Explicit ordering: the model has none, and paginating an unordered
         # queryset returns rows in an undefined order across pages.
         return qs.prefetch_related("stages", "routes").order_by("document_type", "code")
@@ -489,7 +508,9 @@ class WorkflowInstanceViewSet(
 
     def get_queryset(self):
         # Instance lists are tenant-scoped before any user-supplied filters apply.
-        qs = (WorkflowInstance.all_objects.filter(tenant=self.get_tenant())
+        qs = (WorkflowInstance.all_objects
+              .filter(branch_q(self.request, include_shared=True),
+                      tenant=self.get_tenant())
               .select_related("template", "current_stage")
               .prefetch_related("stage_instances__stage", "stage_instances__actions",
                                 "stage_instances__eligible_approvers", "audit_logs")
@@ -723,7 +744,8 @@ class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
 
     def get_queryset(self):
         qs = (WorkflowApproverGroup.all_objects
-              .filter(tenant=self.get_tenant())
+              .filter(branch_q(self.request, include_shared=True),
+                      tenant=self.get_tenant())
               .prefetch_related("members__user", "members__role", "members__position"))
         if self.request.query_params.get("is_active") in ("true", "false"):
             qs = qs.filter(is_active=self.request.query_params["is_active"] == "true")

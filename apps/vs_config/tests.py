@@ -417,6 +417,113 @@ class ConfigurationAPISecurityTests(TestCase):
         self.assertFalse(ConfigurationValue.all_objects.filter(definition=first).exists())
 
 
+class ConfigurationBranchEntitlementTests(TestCase):
+    """A ``?branch=`` you were not granted is not yours to read or write.
+
+    ``resolve_request_scope`` checked that the named branch belonged to the
+    resolved TENANT and never that it belonged to the CALLER. The RBAC key
+    answers "may you edit configuration", never "whose", so a Configuration
+    Admin pinned to one branch could set another branch's values by changing a
+    query parameter - and the write looked ordinary afterwards, with no branch
+    in her grants to explain where it came from.
+    """
+
+    def setUp(self):
+        from vs_rbac.models import TenantUserRoleAssignment
+
+        self.school = make_school(slug="entitlement-school")
+        # A school is created with its main branch already, so both of these are
+        # ordinary sites beside it - which is also the shape this test needs: a
+        # school with one branch cannot demonstrate narrowing at all.
+        self.ikeja = make_branch(self.school, name="Ikeja Branch", is_main=False)
+        self.lekki = make_branch(self.school, name="Lekki Branch", is_main=False)
+
+        self.admin = make_school_admin(self.ikeja, email="ikeja-config@example.com")
+        permission = make_permission("config.value.manage")
+        role = make_role(self.school, name="Configuration Admin")
+        make_role_permission(role, permission)
+        make_assignment(self.school, self.admin, role)
+        # Pin the grant to Ikeja. Without this the caller has whole-tenant
+        # reach and the narrowing correctly does not apply.
+        TenantUserRoleAssignment.objects.filter(
+            tenant=self.school.tenant, user=self.admin,
+        ).update(branch=self.ikeja)
+
+        ConfigurationDefinition.objects.create(
+            key="attendance.lock_after_days", label="Attendance lock",
+            description="Days after which attendance locks.",
+            value_type="INTEGER", allowed_scopes=["school", "branch"],
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+
+    def _scope_for(self, branch):
+        from rest_framework.test import APIRequestFactory
+        from rest_framework.request import Request
+        from vs_config.services.scopes import resolve_request_scope
+
+        request = Request(
+            APIRequestFactory().get(f"/v1/config/values/?branch={branch.pk}")
+        )
+        request._user = self.admin
+        request.tenant = self.school.tenant
+        return resolve_request_scope(request)
+
+    def test_her_own_branch_resolves(self):
+        tenant, branch = self._scope_for(self.ikeja)
+        self.assertEqual(branch, self.ikeja)
+        self.assertEqual(tenant, self.school.tenant)
+
+    def test_another_branch_of_her_own_school_is_refused(self):
+        from rest_framework.exceptions import NotFound
+
+        with self.assertRaises(NotFound):
+            self._scope_for(self.lekki)
+
+    def test_the_refusal_matches_an_unknown_reference(self):
+        """A 403 here would confirm the branch exists, which is the enumeration
+        the scoped lookup already prevents. Unentitled and unknown must be
+        indistinguishable."""
+        from rest_framework.exceptions import NotFound
+
+        with self.assertRaises(NotFound) as unentitled:
+            self._scope_for(self.lekki)
+
+        from rest_framework.test import APIRequestFactory
+        from rest_framework.request import Request
+        from vs_config.services.scopes import resolve_request_scope
+
+        request = Request(APIRequestFactory().get("/v1/config/values/?branch=999999"))
+        request._user = self.admin
+        request.tenant = self.school.tenant
+        with self.assertRaises(NotFound) as unknown:
+            resolve_request_scope(request)
+
+        self.assertEqual(str(unentitled.exception), str(unknown.exception))
+
+    def test_an_unpinned_school_admin_still_reaches_every_branch(self):
+        """Whole-tenant reach is the common case since a4916e9 and must not narrow.
+
+        Both sources have to be clear, which is the part worth pinning: an
+        unpinned GRANT falls back to the caller's home posting
+        (``vs_rbac.scoping``: "no branch-pinned grants to speak for this caller,
+        so their home posting still decides"), so clearing the grant alone still
+        leaves her narrowed to her own branch. She has whole-tenant reach only
+        when neither speaks for her.
+        """
+        from vs_rbac.models import TenantUserRoleAssignment
+
+        TenantUserRoleAssignment.objects.filter(
+            tenant=self.school.tenant, user=self.admin,
+        ).update(branch=None)
+        self.admin.branch = None
+        self.admin.save(update_fields=["branch"])
+
+        for branch in (self.ikeja, self.lekki):
+            _, resolved = self._scope_for(branch)
+            self.assertEqual(resolved, branch)
+
+
 class PlatformSettingsAPITests(TestCase):
     def setUp(self):
         self.client = APIClient()

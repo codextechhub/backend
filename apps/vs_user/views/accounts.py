@@ -19,6 +19,12 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
+# ``include_shared=True`` spelled out rather than left to the default: a null
+# branch means "across the whole tenant" on this very model, and a4916e9 made
+# that the normal shape for a school user - so the shared arm is the common
+# case here, not the edge. Getting it backwards would empty the staff list and
+# every picker built on it.
+from vs_rbac.scoping import branch_q
 from vs_rbac.models import TenantUserRoleAssignment, TenantRoleTemplate
 from vs_tenants.models import Tenant
 from core.mixins import (
@@ -160,6 +166,17 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         if school_id := params.get('school_id'):
             # school_id query param maps to the tenant's school profile now.
             qs = qs.filter(tenant__school_profile__id=_as_row_id(school_id, 'school_id'))
+
+        # The caller's own entitlement, ANDed with the filter they asked for
+        # below. The two are different questions - "whose staff may I administer?"
+        # and "whose staff am I looking at right now?" - so a pinned admin asking
+        # for somebody else's branch gets an empty page rather than that branch's
+        # people, while one asking for her own narrows to it.
+        #
+        # This queryset is also what retrieve/update/destroy resolve through, so
+        # the same line is what stops an Ikeja admin deactivating a Lekki-posted
+        # colleague by id.
+        qs = qs.filter(branch_q(self.request, include_shared=True))
 
         if branch_id := params.get('branch_id'):
             qs = qs.filter(branch_id=_as_row_id(branch_id, 'branch_id'))

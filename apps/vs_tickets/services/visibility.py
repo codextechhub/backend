@@ -4,6 +4,7 @@ from django.db.models import Exists, OuterRef, Q
 
 from vs_rbac.permissions import user_has_rbac_permission
 from vs_rbac.models import TenantUserRoleAssignment
+from vs_rbac.scoping import branch_q_for_user, visible_branch_ids
 from vs_user.models import User
 
 from ..constants import TicketPermission
@@ -102,7 +103,22 @@ def visible_tickets_qs(user):
     # are the only non-participants allowed into them.
     visibility = Q(requester=user) | Q(assignee=user)
     if has_ticket_permission(user, TicketPermission.MANAGE, tenant=user.tenant):
-        visibility |= Q(tenant=user.tenant)
+        # Branch narrowing belongs to *this* arm and to nothing else. A manager
+        # pinned to Ikeja manages Ikeja's tickets and the ones filed for the
+        # school as a whole; she does not manage Lekki's.
+        #
+        # It must not be ANDed over the whole predicate. The participant arm
+        # above is somebody's own thread, and a ticket carries the branch it was
+        # filed for, not the branch of everyone on it: narrowing there would take
+        # a ticket away from the person assigned to work it, which gets reported
+        # as "the app lost my ticket" rather than as a permissions rule.
+        #
+        # ``include_shared=True``: a null branch here means the ticket concerns
+        # the school rather than one site, and a branch manager must still see it.
+        visibility |= (
+            Q(tenant=user.tenant)
+            & branch_q_for_user(user, include_shared=True)
+        )
     return qs.filter(visibility)
 
 
@@ -116,8 +132,20 @@ def can_view_ticket(user, ticket: Ticket) -> bool:
         # Non-support users never cross tenant boundaries.
         return False
     if ticket.requester_id == user.pk or ticket.assignee_id == user.pk:
+        # A participant keeps their own thread whatever branch it carries; see
+        # visible_tickets_qs for why the narrowing sits below this line, not above.
         return True
-    return has_ticket_permission(user, TicketPermission.MANAGE, tenant=ticket.tenant)
+    if not has_ticket_permission(user, TicketPermission.MANAGE, tenant=ticket.tenant):
+        return False
+    # The object-level twin of the manager arm's narrowing. Without it the list
+    # and the detail read disagree, and a manager could open by id exactly the
+    # ticket her own list refused to show her.
+    branch_ids = visible_branch_ids(user, user.tenant)
+    return (
+        branch_ids is None
+        or ticket.branch_id is None  # Filed for the school as a whole: shared.
+        or ticket.branch_id in branch_ids
+    )
 
 
 # Decide who can perform support-owner actions on a ticket.

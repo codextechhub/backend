@@ -15,6 +15,10 @@ from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, 
 from core.response import success_response, error_response
 
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+# ``include_shared=True`` spelled out at each call site. A batch with no branch
+# was uploaded for the school as a whole, which is the normal shape for a
+# tenant-wide import, and it must stay visible to a branch admin.
+from vs_rbac.scoping import branch_q
 
 from .constants import ImportPermission
 from .permissions import HasImportBatchRBACPermission
@@ -123,8 +127,15 @@ class ImportBatchContextMixin(SchoolContextMixin):
         tenant = self.scope_tenant()
         if tenant is not None:
             filters["tenant"] = tenant
+        # The choke point that carries the narrowing to the rest of the app.
+        # Validation issues, jobs, audit logs, notifications and rollback records
+        # are all reached by first resolving a batch here, so narrowing this one
+        # lookup narrows every one of them - and a 404 for another branch's batch
+        # matches the 404 for one that does not exist.
         return get_object_or_404(
-            ImportBatch.objects.select_related(
+            ImportBatch.objects.filter(
+                branch_q(self.request, include_shared=True),
+            ).select_related(
                 "tenant",
                 "uploaded_by",
                 "template",
@@ -343,6 +354,10 @@ class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.L
         queryset = ImportBatch.objects.select_related("tenant", "uploaded_by", "template").order_by("-created_at")
         if tenant is not None:
             queryset = queryset.filter(tenant=tenant)
+        # Inside the tenant filter, never instead of it: an upload belongs to the
+        # branch it was made for, and a branch admin has no business reading
+        # another site's uploaded roster.
+        queryset = queryset.filter(branch_q(self.request, include_shared=True))
 
         status_param = self.request.query_params.get("status")
         if status_param:
@@ -421,7 +436,7 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
         )
         if tenant is not None:
             qs = qs.filter(tenant=tenant)
-        return qs
+        return qs.filter(branch_q(self.request, include_shared=True))
 
     def get_object(self):
         self._cached_import_batch = super().get_object()

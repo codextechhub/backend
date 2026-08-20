@@ -68,6 +68,27 @@ def resolve_request_scope(request, *, allow_platform=True):
         branch = find_branch_in_tenant(tenant, branch_ref)
         if branch is None:
             raise NotFound("Configuration scope not found.")
+        # Belonging to the tenant is not the same as being the caller's to write.
+        # This checked the first and never the second, so a Configuration Admin
+        # pinned to one branch could read and write any other branch of her own
+        # school by changing ``?branch=``: the RBAC key answers "may you edit
+        # configuration", never "whose". Nothing downstream caught it either -
+        # the scope resolved cleanly and the write looked ordinary in the audit
+        # trail, with no branch in her grants to explain where it came from.
+        #
+        # visible_branch_ids answers None for a caller with whole-tenant reach,
+        # which is what a platform operator asserting a business tenant has, and
+        # what an unpinned school admin has - so both keep working untouched.
+        # Only a caller who IS pinned is narrowed, and then to their own set.
+        #
+        # The refusal is the same 404 an unknown reference gets, deliberately.
+        # A distinct 403 would confirm that the branch exists, which is the
+        # enumeration the lookup above is already scoped to prevent.
+        from vs_rbac.scoping import visible_branch_ids
+
+        entitled = visible_branch_ids(request.user, branch.tenant)
+        if entitled is not None and branch.pk not in entitled:
+            raise NotFound("Configuration scope not found.")
         # A branch selection implies its tenant even for platform callers.
         scope_tenant = branch.tenant
 

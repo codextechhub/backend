@@ -270,6 +270,27 @@ def caller_branch_ids(request) -> Optional[FrozenSet[int]]:
     return visible_branch_ids(user, getattr(user, "tenant", None))
 
 
+def branch_scope_for_user(user, *, include_shared: bool = True, tenant=None) -> BranchScope:
+    """The same narrowing as :func:`branch_scope`, for code that holds no request.
+
+    Some visibility rules are written against a *user* rather than a request -
+    :mod:`vs_tickets` decides who may see a thread from the participant list and
+    a permission check, and never looks at the request at all. Those still need
+    the identical answer, so they get it from here rather than by faking a
+    request object or, worse, re-reading ``User.branch`` and quietly disagreeing
+    with every request-driven screen.
+
+    :func:`branch_scope` delegates to this, so there is one implementation.
+    """
+    if user is None or not getattr(user, "is_authenticated", False):
+        ids = WHOLE_TENANT
+    else:
+        ids = visible_branch_ids(user, tenant or getattr(user, "tenant", None))
+    if ids is None and include_shared:
+        return UNNARROWED
+    return BranchScope(ids, include_shared=include_shared)
+
+
 def branch_scope(request, *, include_shared: bool = True) -> BranchScope:
     """Resolve the caller's branch narrowing once, for as many querysets as need it.
 
@@ -277,10 +298,40 @@ def branch_scope(request, *, include_shared: bool = True) -> BranchScope:
     KPI header and the dashboard card above it agree; see :class:`BranchScope`
     for what ``include_shared`` decides.
     """
+    return branch_scope_for_user(
+        getattr(request, "user", None), include_shared=include_shared,
+    )
+
+
+def branch_q_for_user(user, prefix: str = "", *, field: str = "branch",
+                      include_shared: bool = True):
+    """:func:`branch_q` for code that holds a user rather than a request."""
+    return branch_scope_for_user(user, include_shared=include_shared).q(
+        prefix, field=field,
+    )
+
+
+def caller_may_use_branch(request, branch) -> bool:
+    """Whether the caller behind *request* is entitled to work in *branch*.
+
+    The predicate behind an explicitly named branch - a ``?branch=`` parameter or
+    a body field - as opposed to :func:`branch_q`, which narrows rows the caller
+    never named. Tenant membership is a *separate* check and is not done here:
+    callers must already have resolved the branch inside the right tenant
+    (:func:`resolve_branch` or
+    :func:`vs_tenants.references.find_branch_in_tenant`), because "belongs to
+    another tenant" and "belongs to a branch I do not cover" are different
+    failures even though a careful endpoint reports them identically.
+
+    ``None`` - the tenant-wide scope - is answered ``True`` only for an unbound
+    caller. A branch-pinned caller naming no branch is not asking for a scope
+    they hold; deciding what happens to them is :func:`raised_branch`'s job, and
+    it needs the two cases apart.
+    """
     ids = caller_branch_ids(request)
-    if ids is None and include_shared:
-        return UNNARROWED
-    return BranchScope(ids, include_shared=include_shared)
+    if ids is None:
+        return True
+    return getattr(branch, "pk", branch) in ids
 
 
 def branch_q(request, prefix: str = "", *, field: str = "branch",
