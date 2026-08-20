@@ -183,7 +183,7 @@ from vs_finance.close import (
     reopen_period,
 )
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies, seed_tax_obligations
-from vs_schools.models import School
+from schools.vs_schools.models import School
 from vs_tenants.models import Branch
 
 
@@ -9931,7 +9931,7 @@ class AdjustmentApprovalSeedTests(TestCase):
     """
 
     def _tenant(self, slug, code):
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
 
         return School.objects.create(
             name=code.title(), slug=slug, code=code, status="ACTIVE").tenant
@@ -10119,7 +10119,7 @@ class AdjustmentThresholdGateTests(TestCase):
         import io
 
         from django.core.management import call_command
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
 
         from core.test_utils import TenantAPIClient
         from vs_finance.approvals import ensure_tenant_approval_templates
@@ -10496,7 +10496,7 @@ class AdjustmentThresholdRepairMigrationTests(TestCase):
     def _ladder(self, slug, *, senior_condition, first_condition=None,
                 with_senior=True, document_type="finance.concession",
                 code="standard"):
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
         from vs_workflow.models import WorkflowStage, WorkflowTemplate
 
         # School codes are globally unique, so number them rather than deriving

@@ -24,6 +24,7 @@ from vs_tenants.models import Branch, BranchLifecycle, BranchStatus
 from vs_audit.models import AuditModuleKey, AuditActionType
 from vs_audit.services import AuditDiffService, emit_audit_event
 from vs_config.models import Capability, CapabilityEntitlement
+from vs_config.services.capabilities import set_entitlement
 
 
 # -----------------------------------------------------------------------------
@@ -241,8 +242,11 @@ class SchoolPackageSetupReadSerializer(serializers.ModelSerializer):
     enabled_modules = serializers.SerializerMethodField()
 
     def get_enabled_modules(self, obj):
+        # Entitlements are tenant-scoped, never school-scoped: the school
+        # reaches its own tenant. Filtering on the tenant (not a NULL-tenant
+        # platform grant) keeps one school from reading another's package.
         capability_ids = CapabilityEntitlement.all_objects.filter(
-            school=obj.school,
+            tenant_id=obj.school.tenant_id,
             state=CapabilityEntitlement.State.GRANTED,
             source=CapabilityEntitlement.Source.PACKAGE,
         ).values_list("capability_id", flat=True)
@@ -682,6 +686,9 @@ class SchoolDetailSerializer(serializers.ModelSerializer):
             "term_structure",
             "currency",
             "registration_id",
+            # Writable through create/update, so it has to be readable back:
+            # a flag you can set and never see is one the client cannot render.
+            "operates_branches",
             "status",
             "activated_at",
             "deactivated_at",
@@ -768,6 +775,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             "term_structure",
             "currency",
             "registration_id",
+            "operates_branches",
 
             # optional nested
             "branding",
@@ -873,6 +881,13 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     "branches": "Only one branch can be marked as is_main=true."
                 })
+
+            # A school that submits branches at creation plainly operates them,
+            # so the flag is inferred rather than asked for twice. An explicit
+            # value from the caller always wins: a school may declare that it
+            # operates branches before it has created any, and the reverse
+            # (branches now, single-site intent) is theirs to state.
+            attrs.setdefault("operates_branches", True)
 
         return attrs
 
@@ -1005,7 +1020,10 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             emit_audit_event(
                 module_key=AuditModuleKey.BRANCH,
                 action_type=AuditActionType.CREATE,
-                actor_user=self.context.get("actor_id"),
+                # Not context["actor_id"]: the API views put a User in it but
+                # the bulk importer puts str(user.id), and a string here makes
+                # emit_audit_event swallow the event and write nothing.
+                actor_user=actor,
                 entity_type="Branch",
                 entity_id=str(branch.code),
                 entity_label=branch.name,
@@ -1043,19 +1061,43 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                         to_grant[required.pk] = required
                         stack.append(required)
 
+            # vs_config owns entitlement writes: it computes the canonical
+            # "tenant:<id>" scope key and audits every grant. Writing rows
+            # here directly is what let this path drift out of step with it.
             for capability in to_grant.values():
-                CapabilityEntitlement.all_objects.update_or_create(
+                set_entitlement(
                     capability=capability,
-                    scope_key=f"school:{school.pk}",
-                    defaults={
-                        "school": school,
-                        "state": CapabilityEntitlement.State.GRANTED,
-                        "source": CapabilityEntitlement.Source.PACKAGE,
-                        "updated_by": self.context.get("actor_id"),
-                    },
+                    tenant=school.tenant,
+                    state=CapabilityEntitlement.State.GRANTED,
+                    source=CapabilityEntitlement.Source.PACKAGE,
+                    actor=actor,
+                    reason=f"School package setup for {school.name}",
                 )
 
-        # --- 6. Audit trail for school ---
+        # --- 6. Set of books (best effort, never fatal) ---
+        # Every school gets books, entitled to finance or not: adding them later
+        # means going back to repair every school created before this point. The
+        # service opens its own savepoint and swallows its own failures, so a
+        # finance problem cannot cost us the school, the tenant, the admin user,
+        # the branches or the entitlements above.
+        from .services.books import provision_books_for_school
+
+        provision_books_for_school(school)
+
+        # --- 7. Onboarding control room (best effort, never fatal) ---
+        # A school that cannot see its checklist the moment it is created has
+        # to be found and repaired by hand, so provisioning happens here rather
+        # than on the school's first sign-in. Same shape as the books above:
+        # the service opens its own savepoint and swallows its own failures, so
+        # a checklist problem cannot cost us the school. This is the choke point
+        # for both creation paths - the bulk importer runs this same serializer.
+        from schools.vs_onboarding.services.provisioning import (
+            provision_onboarding_for_school,
+        )
+
+        provision_onboarding_for_school(school, actor=actor)
+
+        # --- 8. Audit trail for school ---
         _school_snap = AuditDiffService.from_instances(
             before_instance=None,
             after_instance=school,
@@ -1064,7 +1106,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         emit_audit_event(
             module_key=AuditModuleKey.SCHOOL,
             action_type=AuditActionType.CREATE,
-            actor_user=self.context.get("actor_id"),
+            actor_user=actor,
             entity_type="School",
             entity_id=str(school.slug),
             entity_label=school.name,
@@ -1093,6 +1135,7 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
             "term_structure",
             "currency",
             "registration_id",
+            "operates_branches",
 
             # optional nested
             "branding",

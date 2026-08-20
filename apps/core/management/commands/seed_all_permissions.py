@@ -36,6 +36,9 @@ Seed order
 11. seed_ticket_permissions  - vs_tickets permissions → platform and school roles
 12. seed_notification_permissions - communication keys enforced by vs_notifications
                                → platform roles + school admin defaults
+13. seed_onboarding_permissions - M9 onboarding keys → school_admin (control room,
+                               tasks, go-live submission) + platform roles
+                               (provisioning, approve/reject)
 """
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
@@ -63,6 +66,7 @@ SEED_STEPS: list[tuple[str, list]] = [
     ("seed_todo_permissions",        []),
     ("seed_ticket_permissions",      []),
     ("seed_notification_permissions", []),
+    ("seed_onboarding_permissions",  []),
     ("seed_health", []),
 ]
 

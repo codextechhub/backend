@@ -2,8 +2,16 @@
 
 Every event listed in the handoff (D10·3) goes through :func:`record`, so the module
 key, entity type and severity are decided in one place rather than at twenty call
-sites. Audit failures never block business logic - :func:`vs_audit.services.emit_audit_event`
-already swallows its own errors, and nothing here adds a path that can raise.
+sites.
+
+**Audit failures never block business logic**, and that is enforced here rather than
+merely assumed. :func:`vs_audit.services.emit_audit_event` swallows its own errors, but
+the metadata handed to it is built by *this* module, and building it reads the object
+being audited - so a null relation or a renamed attribute raises before the swallowing
+code is ever reached. That is exactly what stranded export runs: a tenant-scoped run
+has no entity, ``run.entity.code`` raised, and a file that had already been written was
+left attached to a run stuck in RUNNING. Bookkeeping must not be able to fail the work
+it is describing, so :func:`record` now catches and logs instead of propagating.
 
 Two rules the design is explicit about and this module enforces by construction:
 including a sensitive field is an event in its own right, and an administrator reading
@@ -11,7 +19,11 @@ including a sensitive field is an event in its own right, and an administrator r
 """
 from __future__ import annotations
 
+import logging
+
 from .constants import MODULE_KEY
+
+logger = logging.getLogger(__name__)
 
 
 # Emit one export audit event.
@@ -23,24 +35,31 @@ def record(action: str, *, actor=None, tenant=None, obj=None, label: str = "",
     which keeps the trail queryable by object without this module knowing the shape of
     every model it records.
     """
-    from vs_audit.services import emit_audit_event
+    try:
+        from vs_audit.services import emit_audit_event
 
-    # AuditEvent.entity_id is not nullable and is validated on save, so an object-less
-    # event (an admin reading the activity list) still needs an id. "-" keeps the row
-    # writable rather than letting emit_audit_event swallow a validation error and
-    # lose the event entirely.
-    return emit_audit_event(
-        module_key=MODULE_KEY,
-        action_type=action,
-        entity_type=type(obj).__name__ if obj is not None else "ExportCentre",
-        entity_id=str(getattr(obj, "pk", "") or "-"),
-        entity_label=(label or str(obj or ""))[:255],
-        actor_user=actor,
-        tenant=tenant,
-        severity=severity,
-        status=status,
-        metadata=metadata or {},
-    )
+        # AuditEvent.entity_id is not nullable and is validated on save, so an
+        # object-less event (an admin reading the activity list) still needs an id. "-"
+        # keeps the row writable rather than letting emit_audit_event swallow a
+        # validation error and lose the event entirely.
+        return emit_audit_event(
+            module_key=MODULE_KEY,
+            action_type=action,
+            entity_type=type(obj).__name__ if obj is not None else "ExportCentre",
+            entity_id=str(getattr(obj, "pk", "") or "-"),
+            entity_label=(label or str(obj or ""))[:255],
+            actor_user=actor,
+            tenant=tenant,
+            severity=severity,
+            status=status,
+            metadata=metadata or {},
+        )
+    except Exception:
+        # Losing one audit row is bad; failing the export the row describes - and
+        # stranding it half-finished - is worse. Logged at exception level so the
+        # gap is visible to whoever reviews the trail rather than silently absent.
+        logger.exception("Export audit event '%s' could not be written", action)
+        return None
 
 
 # Record that a run included restricted fields.
@@ -60,7 +79,11 @@ def record_sensitive_fields(run, fields, *, actor=None):
         severity="WARNING",
         metadata={
             "dataset": run.frozen_config.get("dataset_key"),
-            "entity": run.entity.code,
+            # Null for a tenant-scoped dataset (admin.users, audit.events, the
+            # schools list…), which has no set of books to name. Guarded the same
+            # way every other reader of this relation in the app is - see
+            # ExportRun.name_tokens and ExportRunSerializer.get_entity_code.
+            "entity": run.entity.code if run.entity_id else None,
             "fields": [f.id for f in fields],
             "field_labels": [f.label for f in fields],
         },

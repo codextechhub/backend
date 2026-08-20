@@ -265,6 +265,22 @@ ROW_WARNING_THRESHOLD = 250_000
 #: Runs a single tenant may have in flight at once - the fair-share rule.
 CONCURRENT_RUN_LIMIT = 3
 
+#: How long a run may sit in each non-terminal state before the sweeper decides its
+#: worker is never coming back. Nothing in the process can strand a run any more -
+#: :func:`vs_exports.services.execute_run` always leaves the row terminal - but a
+#: worker killed mid-run never reaches that code at all, and an unswept run is worse
+#: than a failed one: it spins forever on the Files screen with nothing to cancel or
+#: retry, and it counts against :data:`CONCURRENT_RUN_LIMIT`, so three of them stop
+#: the whole tenant exporting.
+#:
+#: Both numbers are safety nets, not deadlines. They sit far beyond how long an
+#: export of :data:`DEFAULT_ROW_CAP` rows takes, because failing a run that was only
+#: slow costs a user their file, while leaving a dead one an hour longer costs
+#: nothing. QUEUED gets the longer window: a run waiting behind others is doing
+#: exactly what it should, and only a queue with no worker at all stays there.
+ABANDONED_RUNNING_HOURS = 2
+ABANDONED_QUEUED_HOURS = 6
+
 #: A repeated run request carrying the same client key inside this window is the
 #: same run, not a second one.
 IDEMPOTENCY_WINDOW_SECONDS = 60

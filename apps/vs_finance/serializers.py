@@ -141,48 +141,33 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
         return code
 
     def create(self, validated_data):
-        from django.db import transaction
-        from django.utils import timezone
-
-        from .provisioning import provision_entity
-        from .seed import seed_chart_of_accounts, seed_currencies, seed_fiscal_year
+        from .provisioning import provision_books
 
         fiscal_year = validated_data.pop("fiscal_year", None)
         start_month = validated_data.pop("fiscal_start_month", 1)
         period_frequency = validated_data.pop("fiscal_period_frequency", "MONTHLY")
         start_day = validated_data.pop("fiscal_start_day", 1)
-        validated_data.setdefault("kind", LedgerEntity.Kind.TENANT)
 
         # The owning tenant comes from the asserted request context; the entity
         # save() falls back to the codex platform tenant when none is present.
         request = self.context.get("request")
         request_tenant = getattr(request, "tenant", None) if request else None
-        if request_tenant is not None and not validated_data.get("tenant"):
-            validated_data["tenant"] = request_tenant
+        tenant = validated_data.get("tenant") or request_tenant
 
-        # Provision a fully usable set of books in one call: the entity, the default
-        # currencies, a starter chart of accounts, open fiscal periods, and whatever
-        # dependent apps register (the procurement and payout approval ladders).
-        # This keeps the bootstrap API-driven (no CLI seed_finance step required).
-        # The fiscal anchors let a school open e.g. a Sept–Aug year on a chosen day.
-        with transaction.atomic():
-            entity = LedgerEntity.objects.create(
-                is_active=True, activated_at=timezone.now(), **validated_data,
-            )
-            seed_currencies()
-            seed_chart_of_accounts(entity)
-            seed_fiscal_year(
-                entity,
-                year=fiscal_year,
-                start_month=start_month,
-                fiscal_period_frequency=period_frequency,
-                fiscal_start_day=start_day,
-            )
-            # Inside the transaction on purpose: books without their approval ladders
-            # are the open door this closes, so a failure here takes the entity with
-            # it rather than leaving an ungated tenant behind.
-            provision_entity(entity)
-        return entity
+        # Everything that makes a set of books usable now lives in one service,
+        # so this endpoint is a caller of it rather than the only door to it.
+        return provision_books(
+            tenant=tenant,
+            name=validated_data.get("name"),
+            code=validated_data.get("code"),
+            base_currency=validated_data.get("base_currency"),
+            kind=validated_data.get("kind") or LedgerEntity.Kind.TENANT,
+            number_code=validated_data.get("number_code", ""),
+            fiscal_year=fiscal_year,
+            fiscal_start_month=start_month,
+            fiscal_period_frequency=period_frequency,
+            fiscal_start_day=start_day,
+        )
 
     def to_representation(self, instance):
         # Echo back the canonical read shape so the caller sees base_currency code.

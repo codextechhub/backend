@@ -1,5 +1,7 @@
 from .base import *
 
+import sys
+
 DEBUG = True
 
 ALLOWED_HOSTS = []
@@ -46,3 +48,22 @@ DATABASES = {
         "PORT": config("DB_PORT", default="5432"),
     }
 }
+
+# ---------------------------------------------------------------------------
+# System checks
+# ---------------------------------------------------------------------------
+# vs_notifications.W001 reports active notification event types with no active
+# template (see vs_notifications/checks.py). Under `manage.py test` it is true
+# but useless: the test database is built by migrations, so it gets the whole
+# event-type registry from vs_notifications migration 0008 and NO templates
+# (those come from seed_notification_templates, which the suite calls per test),
+# and the runner would print a paragraph naming every event type before every
+# run of every app.
+#
+# Silenced only for a test run, not for the whole file. This module is also the
+# dev-server and dev-migrate settings, and a developer whose database has never
+# been seeded is exactly the environment the check exists to warn. The suite is
+# documented to run with --settings=apps.settings.local (see CLAUDE.md), so
+# silencing it in test.py or ci.py alone would silence nothing here.
+if "test" in sys.argv:
+    SILENCED_SYSTEM_CHECKS = ["vs_notifications.W001"]

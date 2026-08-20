@@ -7,6 +7,7 @@ from core.uploads import MAX_TICKET_ATTACHMENT_BYTES, TICKET_EXTENSIONS, validat
 from vs_user.models import User
 
 from .constants import CommentVisibility, TicketCategory, TicketPriority, TicketStatus
+from .context import allowed_keys, registered_choice_fields
 from .models import Ticket, TicketAttachment, TicketAuditLog, TicketComment
 from .services.visibility import can_view_internal_notes
 
@@ -60,7 +61,10 @@ class TicketSerializer(serializers.ModelSerializer):
     context = serializers.SerializerMethodField()
 
     def get_context(self, obj):
-        allowed = {"guide_id", "route_pattern", "product_area", "app_version"}
+        # Read through the same allowlist the write path validates against, so
+        # a key that stops being allowed also stops being returned on the rows
+        # that already carry it.
+        allowed = allowed_keys()
         return {key: value for key, value in (obj.context or {}).items() if key in allowed}
 
     class Meta:
@@ -115,6 +119,15 @@ class TicketDetailSerializer(TicketSerializer):
 
 
 class TicketContextSerializer(serializers.Serializer):
+    """The allowlist, enforced.
+
+    The four fields below are this app's own. Anything a module registered
+    through :mod:`vs_tickets.context` is added per instance in ``__init__``,
+    always as a ``ChoiceField`` over a closed vocabulary, so a module can widen
+    what a ticket carries without this app importing it and without loosening
+    what any value may be.
+    """
+
     guide_id = serializers.RegexField(r"^[a-z0-9][a-z0-9.-]{0,119}$", required=False)
     route_pattern = serializers.RegexField(
         r"^/[a-z0-9_./:-]{0,199}$",
@@ -122,11 +135,21 @@ class TicketContextSerializer(serializers.Serializer):
     )
     product_area = serializers.ChoiceField(choices=[
         "Account", "Audit and security", "Console", "Data imports", "Exports",
-        "Finance", "Health", "Notifications", "Organogram", "Permissions",
-        "Platform health", "Procurement", "Roles", "School management",
-        "Settings", "Support", "Tasks", "Users", "Workflow",
+        "Finance", "Health", "Notifications", "Onboarding", "Organogram",
+        "Permissions", "Platform health", "Procurement", "Roles",
+        "School management", "Settings", "Support", "Tasks", "Users", "Workflow",
     ], required=False)
     app_version = serializers.RegexField(r"^[A-Za-z0-9._+-]{1,40}$", required=False)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Read at build time rather than at import time: an app registers from
+        # its own ready(), and this module is imported by URL loading, which
+        # can happen first.
+        for key, choices in registered_choice_fields().items():
+            self.fields[key] = serializers.ChoiceField(
+                choices=list(choices), required=False,
+            )
 
     def to_internal_value(self, data):
         if not isinstance(data, dict):

@@ -44,6 +44,7 @@ class PasswordPolicyView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
     tenant_param_required = False
+    pending_tenant_surface = True  # Public and self-scoped: see FR-012.
 
     def get(self, request):
         return success_response("Password policy.", password_policy_payload())
@@ -64,6 +65,9 @@ class PasswordChangeView(APIView):
     # Self-service: changes only request.user's own password with no
     # tenant-scoped input, so ?tenant= is not required.
     tenant_param_required = False
+    # A pending school's first admin arrives through an invitation and may need
+    # to change their password before anything else (FR-012).
+    pending_tenant_surface = True
 
     def post(self, request):
         ser = PasswordChangeSerializer(data=request.data, context={'request': request})

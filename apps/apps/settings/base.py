@@ -36,6 +36,12 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
+        # A tenant that has not gone live reaches the onboarding surface and
+        # nothing else. The gate sits in the defaults so a view that declares
+        # no permission_classes at all is closed to it rather than open by
+        # omission; views that set their own list get the same check through
+        # IsAuthenticatedAndActive / HasRBACPermission.
+        "vs_rbac.permissions.TenantSurfaceAllowed",
     ],
     "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
     "DEFAULT_SCHEMA_CLASS": "core.schema.EnvelopeAutoSchema",
@@ -87,7 +93,12 @@ INSTALLED_APPS = [
 
     # apps
     "vs_tenants",
-    "vs_schools",
+    # XVS, the schools product. Everything school-shaped lives under
+    # apps/schools/; the app label stays "vs_schools" (see its AppConfig).
+    "schools.vs_schools",
+    # M9. School-specific by construction, so it sits beside vs_schools under
+    # apps/schools/ and never beside the domain-neutral engines.
+    "schools.vs_onboarding",
     "vs_admin_console",
     "vs_user",
     "vs_rbac",

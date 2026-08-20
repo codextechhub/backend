@@ -30,10 +30,24 @@ Two rules follow, and they are separate:
    Corona Secondary School (at `xvs.codexng.com`) is simply the first tenant.
    Nothing may be special-cased to one tenant's arrangement - if a feature only
    works because of how the first school happens to be set up, it isn't finished.
-   **Branch-optional and multi-branch schools must both work**; where a school has
-   no branches the dimension should *recede* (no empty column, no pointless
-   filter), not show blank space. Test more than one shape of school - a
-   single-tenant test proves nothing about tenancy.
+
+   **Every school has at least one branch.** A school is created with a main
+   branch and can never have none, so every user, document and record can always
+   be given one. Do not write code that handles a branchless school; that shape
+   does not exist.
+
+   **A school with exactly one branch still needs the dimension to recede.** One
+   branch is the common case, and a switcher with a single entry, a column that
+   repeats the same value on every row, or a filter with one option are all noise.
+   Where a school has one branch, the control is absent, not disabled. Where it
+   has several, branch appears wherever it changes meaning.
+
+   **A null branch means "shared across the school", never "no branches exist".**
+   That is a deliberate, first-class value (see academic structure and procurement
+   documents), and it keeps its meaning however many branches a school has.
+
+   Test more than one shape of school - a single-branch test proves nothing about
+   a multi-branch one.
 
 ## Running the test suite on this machine
 

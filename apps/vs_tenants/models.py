@@ -35,6 +35,13 @@ class Tenant(models.Model):
         SUSPENDED = "SUSPENDED", "Suspended"
         INACTIVE = "INACTIVE", "Inactive"
 
+    # The statuses whose users may sign in and assert this tenant. PENDING is
+    # here because a school has to onboard itself before it goes live (FR-012);
+    # being admitted says nothing about which surfaces are open, which is
+    # settled per view by vs_rbac.permissions.TenantSurfaceAllowed. SUSPENDED
+    # and INACTIVE are refused outright, as an unknown slug is.
+    AUTHENTICABLE_STATUSES = (Status.ACTIVE, Status.PENDING)
+
     name = models.CharField(max_length=255)
     slug = models.SlugField(
         max_length=80, unique=True, validators=[tenant_slug_validator],
@@ -45,6 +52,20 @@ class Tenant(models.Model):
     )
     activated_at = models.DateTimeField(null=True, blank=True)
     deactivated_at = models.DateTimeField(null=True, blank=True)
+    # When this tenant entered the PENDING spell it is in now; null whenever it
+    # is not PENDING. `created_at` cannot answer that question, which is the
+    # whole reason this column exists: a school suspended for an abandoned
+    # onboarding and later put back to PENDING is pending again from the moment
+    # it was reinstated, while its creation date stays where it always was. A
+    # sweep reading `created_at` would expire such a school again on its very
+    # next run, forever.
+    pending_since = models.DateTimeField(null=True, blank=True, db_index=True)
+    # When the tenant was last told its pending spell is about to run out. It
+    # belongs to the spell, not to the tenant: a sweep that asked only "is this
+    # school within the warning window?" would answer yes every day and send
+    # the same warning a dozen times, and one that never cleared the stamp
+    # would leave a reinstated school silently unwarnable for ever.
+    expiry_warned_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -61,10 +82,54 @@ class Tenant(models.Model):
         super().clean()
         self.slug = (self.slug or "").strip().lower()
 
+    @classmethod
+    def pending_since_for(cls, *, new_status, previous_status, current):
+        """The value :attr:`pending_since` must take for a status write.
+
+        One rule in one place, because more than one writer has to get it
+        right: ``School.save()`` mirrors a school's status onto its tenant, and
+        the onboarding lifecycle service writes a tenant that has no school.
+
+        * Leaving PENDING clears it, so the column always describes the spell
+          the tenant is in now rather than a spell it once had.
+        * Entering PENDING stamps it.
+        * Staying PENDING keeps the stamp already there, so an ordinary edit (a
+          rename, a metadata fix) does not restart the clock the expiry sweep
+          reads.
+        """
+        if new_status != cls.Status.PENDING:
+            return None
+        if previous_status == cls.Status.PENDING and current is not None:
+            return current
+        return timezone.now()
+
+    @classmethod
+    def pending_stamps_for(cls, *, new_status, previous_status, pending_since, warned_at):
+        """Both pending columns for one status write, as a pair.
+
+        A warning describes the spell it was sent during. So whenever
+        ``pending_since`` changes (a new spell begins, or the spell ends), the
+        warning stamp goes with it, and a school put back into onboarding is
+        warned again in its new cycle instead of being silently skipped for
+        ever. When the spell simply continues, both are left exactly as they
+        were.
+        """
+        new_pending_since = cls.pending_since_for(
+            new_status=new_status,
+            previous_status=previous_status,
+            current=pending_since,
+        )
+        if new_pending_since != pending_since:
+            return new_pending_since, None
+        return new_pending_since, warned_at
+
     def activate(self):
         self.status = self.Status.ACTIVE
         self.activated_at = self.activated_at or timezone.now()
         self.deactivated_at = None
+        # Not pending any more, so neither pending column describes anything.
+        self.pending_since = None
+        self.expiry_warned_at = None
 
     def __str__(self):
         return self.slug

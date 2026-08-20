@@ -24,7 +24,7 @@ from vs_rbac.models import (
     TenantRoleTemplate,
     TenantUserRoleAssignment,
 )
-from vs_schools.models import School
+from schools.vs_schools.models import School
 from vs_user.models import User
 
 

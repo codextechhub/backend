@@ -48,7 +48,7 @@ def provision_admin_user(
     from vs_user.models import User
     from vs_user.services.invitation import InvitationService
     from vs_user.tasks import send_invitation_email_task
-    from vs_schools.models import InviteStatus
+    from ..models import InviteStatus
 
     email = contact.email.lower().strip()
 

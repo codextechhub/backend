@@ -3,7 +3,15 @@ from django.apps import AppConfig
 
 class VsSchoolsConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
-    name = "vs_schools"
+    name = "schools.vs_schools"
+
+    # The package moved under apps/schools/; the label deliberately did not.
+    # Django would derive "vs_schools" from the last segment of ``name``
+    # anyway, but it is pinned here because every historical migration in
+    # nine other apps depends on the label ``vs_schools``, and every table is
+    # still named ``vs_schools_*``. Changing it is a database migration, not
+    # a rename.
+    label = "vs_schools"
 
     def ready(self):
         from . import signals  # noqa: F401

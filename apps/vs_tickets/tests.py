@@ -21,7 +21,7 @@ from vs_rbac.tests.helpers import (
     make_role,
     make_role_permission,
 )
-from vs_schools.models import School, SchoolStatus
+from schools.vs_schools.models import School, SchoolStatus
 from vs_tenants.models import Branch
 from vs_user.models import User
 
@@ -250,6 +250,72 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
         self.assertEqual(unknown.status_code, 400)
         self.assertIn("email", str(unknown.json()))
         self.assertEqual(live_url.status_code, 400)
+
+    def test_a_ticket_may_carry_the_registered_onboarding_context(self):
+        """Registered by vs_onboarding from its own AppConfig, not declared here.
+
+        The values are asserted against the school module's own constants, so
+        this test fails if the registration is dropped, and it does it without
+        this app importing anything under ``apps/schools/`` in production code.
+        """
+        client = APIClient()
+        client.force_authenticate(self.requester)
+
+        response = client.post("/v1/support/tickets/", {
+            "title": "Cannot finish the books step",
+            "description": "The set of books task will not complete.",
+            "category": "HELP",
+            "priority": "LOW",
+            "context": {
+                "product_area": "Onboarding",
+                "route_pattern": "/onboarding/tasks",
+                "onboarding_task_key": "SET_OF_BOOKS",
+                "onboarding_readiness_state": "NOT_READY",
+            },
+        }, format="json")
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["data"]["context"], {
+            "product_area": "Onboarding",
+            "route_pattern": "/onboarding/tasks",
+            "onboarding_task_key": "SET_OF_BOOKS",
+            "onboarding_readiness_state": "NOT_READY",
+        })
+
+    def test_a_registered_key_still_refuses_a_value_outside_its_vocabulary(self):
+        """Registering a key widens the allowlist; it does not open the field."""
+        client = APIClient()
+        client.force_authenticate(self.requester)
+
+        response = client.post("/v1/support/tickets/", {
+            "title": "Smuggled value",
+            "description": "This payload must fail.",
+            "category": "HELP",
+            "priority": "LOW",
+            "context": {"onboarding_task_key": "Ada Obi, 12 Marina Road"},
+        }, format="json")
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("onboarding_task_key", str(response.json()))
+
+    def test_an_unregistered_key_is_still_rejected_after_registration_exists(self):
+        """The allowlist is still an allowlist, not a door left open."""
+        client = APIClient()
+        client.force_authenticate(self.requester)
+
+        response = client.post("/v1/support/tickets/", {
+            "title": "Unregistered key",
+            "description": "This payload must fail.",
+            "category": "HELP",
+            "priority": "LOW",
+            "context": {
+                "onboarding_task_key": "FIRST_ADMIN",
+                "onboarding_student_name": "Ada",
+            },
+        }, format="json")
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("onboarding_student_name", str(response.json()))
 
     def test_requester_reply_on_unassigned_ticket_notifies_support_queue(self):
         ticket = ticket_svc.create_ticket(
@@ -712,3 +778,100 @@ class TicketBranchTenantGuardTests(TestCase):
                 requester=self.branchless_requester,
                 branch=self.branch,
             ).clean()
+
+
+# ---------------------------------------------------------------------------
+# The context registry itself
+# ---------------------------------------------------------------------------
+
+class TicketContextRegistryTests(TestCase):
+    """The mechanism that lets a module widen the allowlist without an import.
+
+    The same shape the Export Centre uses for datasets: the owning app calls in
+    from its own ``AppConfig.ready``. What is tested here is that calling in is
+    the only way, and that it cannot be used to smuggle a free-text field past
+    an allowlist that exists precisely to prevent one.
+    """
+
+    def setUp(self):
+        from vs_tickets import context
+
+        self.context = context
+        self.original = dict(context._REGISTERED)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        self.context._REGISTERED.clear()
+        self.context._REGISTERED.update(self.original)
+
+    def test_onboarding_registered_its_two_keys_with_closed_vocabularies(self):
+        from schools.vs_onboarding.constants import ReadinessState, TaskKey
+
+        registered = self.context.registered_choice_fields()
+
+        self.assertEqual(
+            registered["onboarding_task_key"], tuple(TaskKey.values),
+        )
+        self.assertEqual(
+            registered["onboarding_readiness_state"], tuple(ReadinessState.values),
+        )
+        self.assertIn("onboarding_task_key", self.context.allowed_keys())
+        self.assertIn("guide_id", self.context.allowed_keys())
+
+    def test_a_value_that_is_not_a_plain_identifier_cannot_be_registered(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured):
+            self.context.register_context_choice_field(
+                "demo_key", choices=["Ada Obi, 12 Marina Road"],
+            )
+
+    def test_a_key_cannot_shadow_one_this_app_declares_itself(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured):
+            self.context.register_context_choice_field(
+                "product_area", choices=["Anything"],
+            )
+
+    def test_re_registering_the_same_values_is_a_no_op(self):
+        self.context.register_context_choice_field("demo_key", choices=["A", "B"])
+        self.context.register_context_choice_field("demo_key", choices=["A", "B"])
+
+        self.assertEqual(
+            self.context.registered_choice_fields()["demo_key"], ("A", "B"),
+        )
+
+    def test_re_registering_different_values_is_refused(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        self.context.register_context_choice_field("demo_key", choices=["A"])
+
+        with self.assertRaises(ImproperlyConfigured):
+            self.context.register_context_choice_field("demo_key", choices=["B"])
+
+    def test_an_empty_vocabulary_is_refused(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured):
+            self.context.register_context_choice_field("demo_key", choices=[])
+
+    def test_vs_tickets_does_not_import_the_school_package(self):
+        """The boundary this mechanism exists to keep, asserted as text.
+
+        A grep, deliberately: an import test that only checked ``sys.modules``
+        would pass in a process where something else had already imported the
+        school app.
+        """
+        import pathlib
+
+        app_dir = pathlib.Path(__file__).resolve().parent
+        offenders = []
+        for path in app_dir.rglob("*.py"):
+            if path.name == "tests.py":
+                continue  # the tests may name the module they are asserting about
+            source = path.read_text()
+            if "from schools." in source or "import schools." in source:
+                offenders.append(path.name)
+
+        self.assertEqual(offenders, [])

@@ -24,7 +24,7 @@ from vs_finance.settings_ownership import (
     BANKING_SETTING_CONSUMERS,
     DOCUMENT_SETTING_CONSUMERS,
 )
-from vs_schools.models import School
+from schools.vs_schools.models import School
 
 
 class FinanceAccountSettingsAPITests(TestCase):

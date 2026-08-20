@@ -158,7 +158,7 @@ class SchoolImportRollbackTests(TestCase):
         return SimpleNamespace(target_object_pk=str(pk))
 
     def test_rollback_deletes_a_school_recorded_by_its_surrogate_id(self):
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
         from vs_import_data.services.rollback_service import reverse_target_record
 
         school = make_school(slug="rollback-by-id", name="Rollback By Id")
@@ -168,7 +168,7 @@ class SchoolImportRollbackTests(TestCase):
 
     def test_rollback_still_deletes_a_school_recorded_by_slug_before_b23(self):
         """Rows written while the slug WAS the primary key must still reverse."""
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
         from vs_import_data.services.rollback_service import reverse_target_record
 
         school = make_school(slug="rollback-by-slug", name="Rollback By Slug")
@@ -177,7 +177,7 @@ class SchoolImportRollbackTests(TestCase):
         self.assertFalse(School.objects.filter(pk=school.pk).exists())
 
     def test_rollback_of_an_unknown_reference_is_a_no_op_not_an_error(self):
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
         from vs_import_data.services.rollback_service import reverse_target_record
 
         school = make_school(slug="rollback-untouched", name="Untouched")

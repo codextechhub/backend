@@ -78,6 +78,15 @@ app.conf.beat_schedule = {
         "task": "vs_exports.dispatch_schedules",
         "schedule": crontab(minute="*/5"),
     },
+    # Every half hour: close runs whose worker died mid-flight. Nothing inside the
+    # process can strand a run any more, but a killed worker leaves one RUNNING for
+    # good - spinning on the Files screen, and counting against the tenant's
+    # three-in-flight limit until nobody can export at all. Frequent because it is one
+    # indexed query, and because the run it closes is one somebody is waiting on.
+    "exports-sweep-abandoned-runs": {
+        "task": "vs_exports.sweep_abandoned_runs",
+        "schedule": crontab(minute="*/30"),
+    },
     "exports-expire-files": {
         "task": "vs_exports.expire_files",
         "schedule": crontab(hour=3, minute=30),
@@ -87,6 +96,31 @@ app.conf.beat_schedule = {
     "exports-prune-analytics": {
         "task": "vs_exports.prune_analytics",
         "schedule": crontab(hour=3, minute=45),
+    },
+
+    # --- vs_onboarding (abandoned onboarding, go-live history) ------------
+    # Daily: suspend schools that have been PENDING for 90 days, then warn the
+    # ones that have reached 76 (expiry first, so nobody is warned about a
+    # deadline they have already passed). Measured from Tenant.pending_since,
+    # so a reinstated school gets its window and its warning back rather than
+    # being expired again the next morning. Idempotent in both steps.
+    "onboarding-expire-stale": {
+        "task": "vs_onboarding.expire_stale_onboarding",
+        "schedule": crontab(hour=4, minute=0),
+    },
+    # Every two weeks: the stale-onboarding list for platform operators. Beat
+    # has no fortnightly primitive, so this is the 1st and the 15th, which is
+    # the same cadence to within a day and never drifts.
+    "onboarding-report-stale": {
+        "task": "vs_onboarding.report_stale_onboarding",
+        "schedule": crontab(hour=7, minute=30, day_of_month="1,15"),
+    },
+    # Weekly: go-live request history past a year. The retention window is a
+    # year, but the cutoff rolls daily, so running it weekly keeps the tail
+    # short instead of letting rows sit up to a year past their date.
+    "onboarding-purge-go-live-history": {
+        "task": "vs_onboarding.purge_go_live_history",
+        "schedule": crontab(hour=4, minute=30, day_of_week=0),
     },
 
     # --- vs_health (platform health) -------------------------------------

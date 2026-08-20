@@ -361,7 +361,7 @@ School roles can optionally trace back to a `PrebuiltRoleTemplate` via `prebuilt
 
 ```python
 from vs_rbac.models import SchoolRoleTemplate
-from vs_schools.models import School
+from schools.vs_schools.models import School
 
 school = School.objects.get(slug="demo-primary")
 

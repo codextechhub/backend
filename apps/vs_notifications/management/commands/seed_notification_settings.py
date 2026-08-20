@@ -56,7 +56,7 @@ class Command(BaseCommand):
         if not options.get("school") and not options.get("all_schools"):
             return
 
-        from vs_schools.models import School  # Late import - avoids coupling at module load
+        from schools.vs_schools.models import School  # Late import - avoids coupling at module load
 
         if options["all_schools"]:
             schools = School.objects.filter(status="ACTIVE")

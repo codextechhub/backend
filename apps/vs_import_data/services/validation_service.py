@@ -230,7 +230,7 @@ def _validate_schools_rules(import_batch) -> list[dict]:
     from datetime import date as date_type
     from django.utils.text import slugify
     from vs_config.models import Capability
-    from vs_schools.models import RESERVED_TENANT_SLUGS, PackagePlan, School
+    from schools.vs_schools.models import RESERVED_TENANT_SLUGS, PackagePlan, School
     from vs_user.models import User
 
     issues = []
@@ -466,7 +466,7 @@ def _validate_schools_rules(import_batch) -> list[dict]:
 
 
 def _validate_branches_rules(import_batch) -> list[dict]:
-    from vs_schools.models import School
+    from schools.vs_schools.models import School
     from vs_user.models import User
 
     issues = []

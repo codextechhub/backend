@@ -262,3 +262,45 @@ class ProxiedAuditAttributionTests(TestCase):
         clear_request_context()
 
         self.assertEqual(get_current_audit_identity(), (None, None, None))
+
+
+class OnboardingActionTypeRegistrationTests(TestCase):
+    """The M9 vocabulary must exist before anything emits it.
+
+    ``action_type`` is validated on save and ``emit_audit_event`` never raises,
+    so an unregistered value is swallowed silently and the trail is simply
+    absent. These assert the row exists, not that no exception was raised.
+    """
+
+    ONBOARDING_ACTION_TYPES = (
+        "ONBOARDING_PROVISIONED",
+        "ONBOARDING_TASK_COMPLETED",
+        "ONBOARDING_TASK_SKIPPED",
+        "ONBOARDING_TASK_REOPENED",
+        "GO_LIVE_REQUESTED",
+        "GO_LIVE_APPROVED",
+        "GO_LIVE_REJECTED",
+        "GO_LIVE_ACTIVATED",
+        "GO_LIVE_FAILED",
+    )
+
+    def test_every_onboarding_action_type_is_registered(self):
+        registered = set(AuditActionType.values)
+        for value in self.ONBOARDING_ACTION_TYPES:
+            self.assertIn(value, registered)
+
+    def test_emitting_each_onboarding_action_type_writes_a_row(self):
+        for index, value in enumerate(self.ONBOARDING_ACTION_TYPES):
+            event = emit_audit_event(
+                module_key=AuditModuleKey.ONBOARDING,
+                action_type=value,
+                entity_type="OnboardingProgress",
+                entity_id=str(index + 1),
+            )
+            self.assertIsNotNone(event, f"{value} was swallowed by emit_audit_event")
+            self.assertTrue(
+                AuditEvent.objects.filter(
+                    module_key=AuditModuleKey.ONBOARDING, action_type=value,
+                ).exists(),
+                f"No audit row written for {value}",
+            )

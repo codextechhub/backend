@@ -16,7 +16,7 @@ def reverse_target_record(row_result):
     Reverse one imported row. For schools: delete the School record that was created.
     The cascade takes care of branches, admins, and package setup.
     """
-    from vs_schools.models import School
+    from schools.vs_schools.models import School
 
     pk = row_result.target_object_pk
     if not pk:

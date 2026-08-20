@@ -17,7 +17,7 @@ from .models import (
     ConfigurationValue,
 )
 from .services.resolution import validate_value
-from vs_schools.models import Currency, OwnershipType, TermStructure
+from schools.vs_schools.models import Currency, OwnershipType, TermStructure
 
 
 class ActorSerializer(serializers.Serializer):

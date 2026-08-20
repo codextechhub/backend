@@ -12,7 +12,9 @@ backend/
 │   ├── apps/              # project package: settings/, urls.py, celery.py
 │   ├── core/              # response envelope, exception handler, pagination,
 │   │                      # mail, thread-locals, management commands
-│   ├── vs_schools/        # Module 1  - schools, branches, packages, provisioning
+│   ├── schools/           # XVS, the schools product - every school app lives
+│   │   └── vs_schools/    # Module 1  - schools, packages, provisioning
+│   │                      #   (label still "vs_schools"; only the path moved)
 │   ├── vs_admin_console/  # Module 2  - internal backoffice (partial)
 │   ├── vs_user/           # Module 3  - identity, JWT auth, sessions, organogram
 │   ├── vs_rbac/           # Module 4  - two-layer RBAC + tenant context/managers

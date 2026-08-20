@@ -16,6 +16,7 @@ from unittest import mock
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.core.management import call_command
 from django.test import TestCase
@@ -29,7 +30,10 @@ from vs_tenants.models import Tenant
 from vs_exports import analytics, engine, scheduling, services
 from vs_exports.catalogue import get_dataset
 from vs_exports.constants import (
+    ABANDONED_QUEUED_HOURS,
+    ABANDONED_RUNNING_HOURS,
     AuditAction,
+    CONCURRENT_RUN_LIMIT,
     DatasetScope,
     PauseReason,
     Recurrence,
@@ -858,6 +862,139 @@ class QueuePositionTests(_ExportFixture, TestCase):
         self.assertIsNone(progress["rows_total"])
 
 
+class AbandonedRunSweepTests(_ExportFixture, TestCase):
+    """The safety net for a worker that died holding a run.
+
+    ``execute_run`` always leaves the row terminal now, so nothing in the process can
+    strand one. A killed worker never reaches that code at all, and the row it was
+    holding spins forever: nothing to cancel, nothing to retry, and one of the tenant's
+    three in-flight slots gone for good.
+    """
+
+    def setUp(self):
+        self.build()
+        self.definition = self.make_definition()
+
+    def _run(self, *, status, age_hours, **kwargs):
+        run = ExportRun.objects.create(
+            tenant=self.tenant, entity=self.entity, definition=self.definition,
+            frozen_config=services.freeze(self.definition), requested_by=self.admin,
+            status=status, **kwargs
+        )
+        # queued_at is auto_now_add, so it can only be aged through the queryset.
+        stamp = timezone.now() - datetime.timedelta(hours=age_hours)
+        ExportRun.objects.filter(pk=run.pk).update(
+            queued_at=stamp,
+            started_at=stamp if status == RunStatus.RUNNING else None,
+        )
+        run.refresh_from_db()
+        return run
+
+    def test_a_run_whose_worker_died_is_failed_and_retryable(self):
+        run = self._run(status=RunStatus.RUNNING, age_hours=ABANDONED_RUNNING_HOURS + 1)
+
+        self.assertEqual(services.sweep_abandoned_runs()["failed"], 1)
+        run.refresh_from_db()
+
+        self.assertEqual(run.status, RunStatus.FAILED)
+        self.assertEqual(run.failure_code, FailureCode.INFRASTRUCTURE)
+        self.assertIsNotNone(run.ended_at)
+        # Retryable, because "the worker died" is exactly the failure another attempt
+        # can put right - which is the whole reason it is failed rather than left.
+        self.assertTrue(ExportRunDetailSerializer(run).data["failure"]["retryable"])
+
+    def test_a_slow_run_is_left_alone(self):
+        """The ceilings are safety nets, not deadlines."""
+        run = self._run(status=RunStatus.RUNNING, age_hours=ABANDONED_RUNNING_HOURS - 1)
+        services.sweep_abandoned_runs()
+        run.refresh_from_db()
+        self.assertEqual(run.status, RunStatus.RUNNING)
+
+    def test_a_queued_run_gets_the_longer_window(self):
+        """Waiting behind other runs is a queue working, not a queue broken."""
+        waiting = self._run(status=RunStatus.QUEUED, age_hours=ABANDONED_RUNNING_HOURS + 1)
+        dead = self._run(status=RunStatus.QUEUED, age_hours=ABANDONED_QUEUED_HOURS + 1)
+
+        services.sweep_abandoned_runs()
+        waiting.refresh_from_db()
+        dead.refresh_from_db()
+
+        self.assertEqual(waiting.status, RunStatus.QUEUED)
+        self.assertEqual(dead.status, RunStatus.FAILED)
+
+    def test_a_run_the_user_cancelled_ends_cancelled_and_says_nothing(self):
+        run = self._run(
+            status=RunStatus.RUNNING, age_hours=ABANDONED_RUNNING_HOURS + 1,
+            cancel_requested=True,
+        )
+        with mock.patch("vs_exports.services._notify") as notify:
+            closed = services.sweep_abandoned_runs()
+        run.refresh_from_db()
+
+        self.assertEqual(run.status, RunStatus.CANCELLED)
+        self.assertEqual(closed, {"failed": 0, "cancelled": 1, "files_purged": 0})
+        # They stopped it themselves; a failure notice would be noise.
+        notify.assert_not_called()
+
+    def test_a_file_the_dead_worker_stored_is_not_handed_over(self):
+        """The bytes are whole, but the run never recorded what is in them."""
+        run = self._run(status=RunStatus.RUNNING, age_hours=ABANDONED_RUNNING_HOURS + 1)
+        storage_name = default_storage.save("exports/orphan.csv", ContentFile(b"a,b\n1,2\n"))
+        file = ExportFile.objects.create(
+            run=run, name="orphan.csv", format=ExportFormat.CSV,
+            storage_name=storage_name, size_bytes=8, row_count=1,
+            columns_produced=list(COLUMNS), available_until=ExportFile.default_expiry(),
+        )
+
+        self.assertEqual(services.sweep_abandoned_runs()["files_purged"], 1)
+        file.refresh_from_db()
+
+        self.assertTrue(file.is_purged)
+        self.assertFalse(file.is_downloadable)
+        self.assertFalse(default_storage.exists(storage_name))
+        allowed, reason = services.authorise_download(file, self.admin, self.tenant)
+        self.assertFalse(allowed)
+        self.assertEqual(reason, DownloadRefusal.PURGED)
+
+    def test_sweeping_gives_the_tenant_its_export_slots_back(self):
+        """The reason this matters: stranded runs block everyone else's exports."""
+        for _ in range(CONCURRENT_RUN_LIMIT):
+            self._run(status=RunStatus.RUNNING, age_hours=ABANDONED_RUNNING_HOURS + 1)
+        self.assertEqual(services.in_flight(self.tenant), CONCURRENT_RUN_LIMIT)
+        with self.assertRaises(services.ExportServiceError):
+            services.trigger_run(definition=self.definition, actor=self.admin)
+
+        services.sweep_abandoned_runs()
+
+        self.assertEqual(services.in_flight(self.tenant), 0)
+        with mock.patch("vs_exports.services.enqueue"):
+            run, created = services.trigger_run(
+                definition=self.definition, actor=self.admin,
+            )
+        self.assertTrue(created)
+
+    def test_the_sweep_is_idempotent(self):
+        self._run(status=RunStatus.RUNNING, age_hours=ABANDONED_RUNNING_HOURS + 1)
+        self.assertEqual(services.sweep_abandoned_runs()["failed"], 1)
+        self.assertEqual(
+            services.sweep_abandoned_runs(),
+            {"failed": 0, "cancelled": 0, "files_purged": 0},
+        )
+
+    def test_a_healthy_platform_sweeps_nothing(self):
+        self._run(status=RunStatus.RUNNING, age_hours=0)
+        self._run(status=RunStatus.QUEUED, age_hours=0)
+        ExportRun.objects.create(
+            tenant=self.tenant, entity=self.entity, definition=self.definition,
+            frozen_config=services.freeze(self.definition), requested_by=self.admin,
+            status=RunStatus.COMPLETED,
+        )
+        self.assertEqual(
+            services.sweep_abandoned_runs(),
+            {"failed": 0, "cancelled": 0, "files_purged": 0},
+        )
+
+
 class NotificationRegistryTests(_ExportFixture, TestCase):
     """send_notification rejects unregistered keys, so a typo silences a notification
     exactly the way an unregistered action_type silences an audit event. Both
@@ -984,6 +1121,78 @@ class DatasetScopeTests(_ExportFixture, TestCase):
         run.refresh_from_db()
         body = default_storage.open(run.file.storage_name, "rb").read().decode("utf-8")
         self.assertNotIn("Belongs to the other tenant", body)
+
+    def test_a_tenant_scoped_run_may_include_a_sensitive_column(self):
+        """The regression: a restricted column on a dataset that has no entity.
+
+        Recording "this run included a restricted field" read ``run.entity.code``
+        unguarded, so every tenant-scoped dataset with a sensitive column - users,
+        sign-ins, audit events, schools, tickets - raised AFTER the file was written.
+        The quick-export drawer saw a 500 and the run was left stuck in RUNNING with
+        an orphan file attached to it.
+        """
+        from vs_audit.models import AuditEvent
+
+        definition = ExportDefinition.objects.create(
+            tenant=self.tenant, entity=None, dataset_key=self.AUDIT_DATASET,
+            name="Audit trail with actors",
+            columns=["event_at", "action_type", "actor_email"],
+            filters=[{
+                "id": "event_at",
+                "start": (self.today - datetime.timedelta(days=7)).isoformat(),
+                "end": (self.today + datetime.timedelta(days=1)).isoformat(),
+            }],
+            format=ExportFormat.CSV, owner=self.admin,
+        )
+        run, _ = services.trigger_run(definition=definition, actor=self.admin)
+        run.refresh_from_db()
+
+        self.assertEqual(run.status, RunStatus.COMPLETED)
+        self.assertIn("actor_email", run.file.columns_produced)
+
+        event = AuditEvent.objects.filter(
+            action_type=AuditAction.SENSITIVE_FIELD_INCLUDED, entity_id=str(run.pk),
+        ).first()
+        self.assertIsNotNone(event)
+        # No set of books to name, and that is recorded as such rather than guessed.
+        self.assertIsNone(event.metadata["entity"])
+        self.assertEqual(event.metadata["fields"], ["actor_email"])
+
+    def test_a_broken_audit_write_cannot_strand_a_finished_run(self):
+        """Bookkeeping may fail; the run it describes may not be left half-done.
+
+        The class-fix behind the regression above: whatever goes wrong once the file
+        exists, the row still reaches a terminal status and the file is still there.
+        """
+        definition = ExportDefinition.objects.create(
+            tenant=self.tenant, entity=None, dataset_key=self.AUDIT_DATASET,
+            name="Audit trail", columns=["event_at", "summary"],
+            filters=[{
+                "id": "event_at",
+                "start": (self.today - datetime.timedelta(days=7)).isoformat(),
+                "end": (self.today + datetime.timedelta(days=1)).isoformat(),
+            }],
+            format=ExportFormat.CSV, owner=self.admin,
+        )
+        # The trail itself refusing to write - the guard inside audit.record.
+        with patch(
+            "vs_audit.services.emit_audit_event", side_effect=RuntimeError("audit down"),
+        ):
+            run, _ = services.trigger_run(definition=definition, actor=self.admin)
+        run.refresh_from_db()
+        self.assertEqual(run.status, RunStatus.COMPLETED)
+        self.assertTrue(ExportFile.objects.filter(run=run).exists())
+
+        # Anything else in the follow-up work raising - the guard around it. This is
+        # the shape of the original bug: it blew up between storing the file and
+        # marking the run done.
+        with patch(
+            "vs_exports.services._record_sensitive", side_effect=RuntimeError("boom"),
+        ):
+            second, _ = services.trigger_run(definition=definition, actor=self.admin)
+        second.refresh_from_db()
+        self.assertEqual(second.status, RunStatus.COMPLETED)
+        self.assertTrue(ExportFile.objects.filter(run=second).exists())
 
     def test_audit_export_needs_the_audit_export_key(self):
         """The dataset's own permission gate, not the Export Centre's."""

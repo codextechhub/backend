@@ -346,7 +346,7 @@ def make_cx_user(email="staff@codex.test", password="Str0ng!pass123"):
 
 
 def make_school(name="Caleb International College", slug="caleb"):
-    from vs_schools.models import School
+    from schools.vs_schools.models import School
     return School.objects.create(name=name, slug=slug, status="ACTIVE")
 
 
@@ -900,7 +900,7 @@ class SchoolBrandingPayloadTests(TestCase):
 
     def _add_branding(self, logo=True):
         from django.core.files.uploadedfile import SimpleUploadedFile
-        from vs_schools.models import SchoolBranding
+        from schools.vs_schools.models import SchoolBranding
         branding = SchoolBranding(school=self.school)
         if logo:
             branding.logo = SimpleUploadedFile(

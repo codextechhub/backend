@@ -208,8 +208,8 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
         subscription_expires_at optional – YYYY-MM-DD
     """
     from types import SimpleNamespace
-    from vs_schools.models import School
-    from vs_schools.serializers import SchoolCreateSerializer
+    from schools.vs_schools.models import School
+    from schools.vs_schools.serializers import SchoolCreateSerializer
 
     def _s(key: str) -> str:
         return (payload.get(key) or "").strip()
@@ -362,8 +362,8 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
         branch_admin_role       optional – defaults to "Head Teacher"
     """
     from types import SimpleNamespace
-    from vs_schools.models import School
-    from vs_schools.serializers import BranchCreateSerializer
+    from schools.vs_schools.models import School
+    from schools.vs_schools.serializers import BranchCreateSerializer
     from vs_tenants.models import Branch
 
     def _s(key: str) -> str:

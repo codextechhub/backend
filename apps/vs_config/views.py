@@ -88,7 +88,7 @@ from .runtime_settings import (
     resolve_security_settings,
     validate_security_compliance,
 )
-from vs_schools.models import Currency, OwnershipType, TermStructure
+from schools.vs_schools.models import Currency, OwnershipType, TermStructure
 from vs_tenants.models import Tenant
 
 
