@@ -22,6 +22,7 @@ from .base import (
     _date,
     _int,
     _money,
+    _raised_branch,
     _resolve_account,
     _resolve_bank_account,
 )
@@ -73,6 +74,11 @@ class FixedAssetListCreateView(_FinanceBase):
             raise ValidationError({"method": "Choose a valid depreciation method."})
         asset = FixedAsset.objects.create(
             entity=entity, name=name,
+            # An asset is a physical thing standing in a room at one site, so the
+            # strict reading applies: a bursar covering two branches is asked
+            # which site the projector is at rather than having it recorded as
+            # belonging to the school as a whole.
+            branch=_raised_branch(request, entity, body),
             asset_code=body.get("asset_code", ""),
             category=category,
             acquisition_date=_date(body.get("acquisition_date"), "acquisition_date", required=True),

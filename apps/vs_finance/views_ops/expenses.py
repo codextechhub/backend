@@ -23,6 +23,7 @@ from .base import (
     _FinanceBase,
     _date,
     _dec,
+    _raised_branch,
     _money,
     _require_lines,
     _resolve_account,
@@ -94,6 +95,10 @@ class ExpenseClaimListCreateView(_FinanceBase):
         lines = _require_lines(body)
         claim = ExpenseClaim.objects.create(
             entity=entity,
+            # A claim is money one person spent doing their job at one place, so
+            # the strict reading applies: a claims officer covering two branches
+            # is asked which this one is rather than having it filed school-wide.
+            branch=_raised_branch(request, entity, body),
             claimant_name=body.get("claimant_name", ""),
             claim_date=_date(body.get("claim_date"), "claim_date", required=True),
             title=body.get("title", ""),

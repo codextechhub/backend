@@ -355,6 +355,12 @@ def _book_receipt(intent, *, actor_user=None):
     received = datetime.date.today()
     payment = Payment.objects.create(
         entity=intent.entity, customer=intent.customer,
+        # A gateway receipt continues the customer's chain exactly as a
+        # counter receipt does. Without this the online path - which is how most
+        # parents actually pay - would leave every receipt school-wide while the
+        # invoice it settles sat in a branch, splitting one family's ledger
+        # across two scopes.
+        branch=intent.customer.branch,
         payment_date=received, currency=intent.currency,
         method=PaymentMethod.ONLINE, amount=intent.amount, deposit_account=deposit,
         reference=intent.reference,

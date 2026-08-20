@@ -869,8 +869,8 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
         from .receivables import post_invoice, price_invoice
         from .views_ar import _resolve_customer
         from .views_ops import (
-            _date, _dec, _money, _require_lines, _resolve_account,
-            _resolve_cost_center, _resolve_currency, _resolve_tax,
+            _date, _dec, _inherited_branch_id, _money, _require_lines,
+            _resolve_account, _resolve_cost_center, _resolve_currency, _resolve_tax,
         )
 
         entity = resolve_entity(request)
@@ -888,10 +888,18 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
                 days=policy.default_invoice_due_days,
             )
 
+        customer = _resolve_customer(entity, body.get("customer"))
         with transaction.atomic():
             invoice = Invoice.objects.create(
                 entity=entity,
-                customer=_resolve_customer(entity, body.get("customer")),
+                customer=customer,
+                # An invoice continues the customer's chain: the debt is owed by a
+                # family that attends one site, so the receivable belongs there and
+                # no request body may retarget it. A school-wide customer keeps a
+                # school-wide invoice, which is what keeps their ledger consistent.
+                # This is also the check that stops a Lekki bursar billing an Ikeja
+                # family whose id she guessed, which _resolve_customer does not narrow.
+                branch_id=_inherited_branch_id(request, customer),
                 invoice_date=invoice_date,
                 due_date=due_date,
                 currency=_resolve_currency(body.get("currency")),

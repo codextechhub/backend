@@ -29,8 +29,10 @@ from .base import (
     _bool,
     _date,
     _dec,
+    _inherited_branch_id,
     _int,
     _money,
+    _raised_branch,
     _require_lines,
     _resolve_account,
     _resolve_bank_account,
@@ -90,6 +92,10 @@ class PettyCashFundListCreateView(_FinanceBase):
             raise ValidationError({"name": "A fund name is required."})
         fund = PettyCashFund.objects.create(
             entity=entity, name=body["name"],
+            # A float is a physical cash tin with a custodian standing next to
+            # it, so the strict reading applies: "the front-desk float" is a
+            # different tin at Ikeja and at Lekki and the two must not merge.
+            branch=_raised_branch(request, entity, body),
             gl_account=_resolve_account(entity, body.get("gl_account"), "gl_account", required=True),
             custodian=_resolve_user(body.get("custodian"), "custodian"),
             custodian_name=body.get("custodian_name", ""),
@@ -335,6 +341,11 @@ class PettyCashVoucherListCreateView(_FinanceBase):
             raise ValidationError({"fund": f"No petty cash fund '{fund_ref}' in this entity."})
         voucher = PettyCashVoucher.objects.create(
             entity=entity, fund=fund,
+            # A voucher continues the fund's chain: the cash came out of that tin,
+            # so the tin's branch is the answer and the request cannot override it.
+            # This is also the check that stops a Lekki custodian spending Ikeja's
+            # float by naming its id, which the fund lookup above does not narrow.
+            branch_id=_inherited_branch_id(request, fund),
             voucher_date=_date(body.get("voucher_date"), "voucher_date", required=True),
             payee=body.get("payee", ""),
             spent_by=_resolve_user(body.get("spent_by"), "spent_by"),

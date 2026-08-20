@@ -34,6 +34,7 @@ from .base import (
     _bool,
     _date,
     _money,
+    _raised_branch,
     _require_lines,
     _resolve_bank_account,
     _resolve_cost_center,
@@ -78,6 +79,14 @@ class PayrollRunListCreateView(_FinanceBase):
         lines = _require_lines(body)
         run = PayrollRun.objects.create(
             entity=entity,
+            # ``shared_when_ambiguous=True``: a payroll run is drawn from a roster
+            # that has no branch column at all (``EmployeeSalary``), so a run
+            # covering everyone the school employs is the normal shape, not an
+            # accident. A payroll officer who covers two branches and names none
+            # gets that school-wide run rather than being asked to pick a site
+            # the roster cannot express. A branch-pinned officer still stamps her
+            # own branch, because the lines she supplies are her branch's staff.
+            branch=_raised_branch(request, entity, body, shared_when_ambiguous=True),
             pay_date=_date(body.get("pay_date"), "pay_date", required=True),
             period_label=body.get("period_label", ""),
             narration=body.get("narration", ""),

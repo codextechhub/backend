@@ -38,6 +38,7 @@ from .base import (
     _bool,
     _date,
     _int,
+    _raised_branch,
     _require_lines,
     _resolve_account,
     _resolve_currency,
@@ -92,6 +93,13 @@ class BankAccountListCreateView(_FinanceBase):
                     is_primary_collection=False)
             bank = BankAccount.objects.create(
                 entity=entity, name=name,
+                # ``shared_when_ambiguous=True``: one GTBank operations account
+                # that the whole school pays into is the normal arrangement, not
+                # an accident, and forcing a bursar who covers two branches to
+                # pick one would hide the school's own account from every other
+                # branch. A branch-pinned bursar still stamps her branch, so a
+                # site with its own collection account keeps it to itself.
+                branch=_raised_branch(request, entity, body, shared_when_ambiguous=True),
                 bank_name=body.get("bank_name", ""),
                 account_number=body.get("account_number", ""),
                 gl_account=gl_account,

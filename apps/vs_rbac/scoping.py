@@ -313,3 +313,170 @@ def branch_visible(request, qs, prefix: str = "", *, field: str = "branch",
     return branch_scope(request, include_shared=include_shared).filter(
         qs, prefix, field=field,
     )
+
+
+# --------------------------------------------------------------------------- #
+# The write half: what branch goes *on* a row                                 #
+# --------------------------------------------------------------------------- #
+#
+# Everything above answers "whose rows?". None of it does anything until
+# something puts a branch on a row in the first place, and there are exactly two
+# ways a row can get one:
+#
+#   * it **starts** a chain, and captures the branch the person creating it works
+#     in (:func:`raised_branch`);
+#   * it **continues** a chain, and takes the branch from the row it continues and
+#     from nothing else (:func:`inherited_branch_id`).
+#
+# Both were procurement's, written per document type and then generalised there;
+# they now live here because finance needs the identical rules and a second copy
+# of "which branch does this belong to" is how two modules come to disagree about
+# the same school. Procurement keeps its local names as one-line adapters over
+# these, so there is one implementation of each rule on the platform.
+#
+# An absent branch remains a real, valid answer everywhere below - the row belongs
+# to the tenant as a whole - and is never coerced or rejected.
+
+
+def sole_caller_branch_id(request) -> Optional[int]:
+    """The one branch a caller works in, or ``None`` when that is not exactly one.
+
+    Used only where a *default* is needed (creating a row without naming a
+    branch). It is never used to decide what a caller may reach: answering
+    ``None`` for a caller entitled to two branches would read as "unbound", and
+    unbound means the whole tenant.
+    """
+    ids = caller_branch_ids(request)
+    if ids is None or len(ids) != 1:
+        return None
+    return next(iter(ids))
+
+
+def sole_caller_branch(request, tenant):
+    """:func:`sole_caller_branch_id` resolved to a :class:`~vs_tenants.models.Branch`.
+
+    Resolved through the same tenant-checked lookup a request-supplied reference
+    goes through, so a grant naming a branch outside *tenant* (which entity
+    resolution already makes unreachable) answers ``None`` rather than writing a
+    foreign tenant's branch onto a row.
+    """
+    branch_id = sole_caller_branch_id(request)
+    if branch_id is None:
+        return None
+    return resolve_branch(tenant, branch_id)
+
+
+def resolve_branch(tenant, ref, field: str = "branch"):
+    """Resolve a branch reference inside *tenant*, or ``None`` when blank.
+
+    A branch belonging to another tenant is reported exactly like an unknown one,
+    so the parameter cannot be used to discover ids outside the caller's tenant.
+    The rule itself lives with the model it protects
+    (:mod:`vs_tenants.references`); this is only the name the scoping helpers
+    reach it by, so every app that accepts a branch answers an unknown reference
+    the same way.
+    """
+    from vs_tenants.references import resolve_branch_reference
+
+    return resolve_branch_reference(tenant, ref, field)
+
+
+def raised_branch(request, tenant, body, *, field: str = "branch",
+                  shared_when_ambiguous: bool = False):
+    """The branch a newly created row belongs to, from the caller and the body.
+
+    A caller bound to one branch always creates for that branch; naming a
+    different one is refused rather than silently retargeted. A caller who is not
+    bound at all may name any branch belonging to *tenant*, or leave it out -
+    leaving it out means the row belongs to the tenant as a whole and is a valid
+    answer, not missing data.
+
+    ``shared_when_ambiguous`` decides the one case in between: a caller bound to
+    **several** branches who names none.
+
+    ``False`` (the default)
+        Ask them. There is no obvious default, and guessing one is worse than a
+        400: a bursar covering Ikeja and Lekki who raises an invoice has raised
+        it for one of them, and filing it as tenant-wide would leave it visible
+        to every branch for the life of the row, with nothing later in the chain
+        able to narrow it again. Naming a branch outside their own set is refused
+        exactly as a single-branch caller's would be.
+
+    ``True``
+        File it as shared across the tenant. Correct only where tenant-wide is a
+        first-class answer for that kind of row rather than an accident - a fee
+        template a school publishes once for every branch, the bank account the
+        whole school pays into - and where forcing a choice would make a
+        genuinely shared thing invisible to every branch but one.
+
+    The distinction is about the *row*, not the caller, so it is a property of the
+    call site and is spelled out there.
+    """
+    from rest_framework.exceptions import PermissionDenied, ValidationError
+
+    ids = caller_branch_ids(request)
+    raw = body.get(field) if hasattr(body, "get") else None
+    if ids is None:
+        return resolve_branch(tenant, raw, field)
+    if getattr(request.user, "tenant_id", None) != getattr(tenant, "pk", None):
+        # A caller's grants live in their own tenant, so the caller's tenant is an
+        # exact, query-free proxy for the tenant their branches belong to.
+        # Unreachable through the API (entity resolution already pins the caller's
+        # tenant), but fail closed rather than write a foreign tenant's branch.
+        raise PermissionDenied("Your branch does not belong to this entity.")
+    if not ids:
+        # Every branch they were granted has since been suspended or closed.
+        raise PermissionDenied("You are not assigned to a branch that can raise this.")
+    if raw in (None, ""):
+        own = sole_caller_branch(request, tenant)
+        if own is None:
+            if shared_when_ambiguous:
+                return None
+            raise ValidationError(
+                {field: "Name the branch this is for; you work in more than one."},
+            )
+        return own
+    chosen = resolve_branch(tenant, raw, field)
+    if chosen is None or chosen.pk not in ids:
+        raise PermissionDenied("You can only raise documents for your own branch.")
+    return chosen
+
+
+def inherited_branch_id(request, *sources, field: str = "branch",
+                        include_shared: bool = False) -> Optional[int]:
+    """The branch id a downstream row takes from the source(s) it continues.
+
+    The chain decides, not the request: once a source row exists its branch is the
+    answer, and no request body, header or query parameter may override it.
+    Sources that disagree (a payment settling invoices from two branches) resolve
+    to the tenant as a whole. The only check left is that the caller is entitled to
+    work in the resulting scope at all - a branch-bound user may not continue
+    another branch's chain.
+
+    ``include_shared`` is the same fork :class:`BranchScope` draws, and it must be
+    the same answer in both halves or a caller can see a row they may not build on:
+
+    ``False`` (the default)
+        A source with no branch belongs to the institution as a whole, which is a
+        scope of its own that a branch-pinned caller is not in, so they may not
+        continue it either. This is :mod:`vs_procurement`'s reading of spend.
+
+    ``True``
+        A source with no branch is shared across the tenant, so a branch-pinned
+        caller may continue it - and the row they create stays tenant-wide, because
+        the chain, not the caller, decides. This is the platform reading, and the
+        one :mod:`vs_finance` takes: an Ikeja bursar can see a school-wide customer
+        in her list, so she must be able to record that customer's receipt.
+    """
+    from rest_framework.exceptions import PermissionDenied
+
+    known = {getattr(s, f"{field}_id") for s in sources if s is not None}
+    branch_id = known.pop() if len(known) == 1 else None
+    ids = caller_branch_ids(request)
+    if ids is None:
+        return branch_id
+    if branch_id is None and include_shared:
+        return None
+    if branch_id not in ids:
+        raise PermissionDenied("This document belongs to another branch.")
+    return branch_id

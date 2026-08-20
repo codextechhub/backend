@@ -13511,3 +13511,174 @@ class SharedBranchScopeAgreementTests(_BranchTenantsFixture, TestCase):
         self.assertIn("branch_id__in", rendered)
         self.assertIn("branch", rendered)
         self.assertIn("AND", rendered)
+
+
+class SharedBranchWriteRuleAgreementTests(_BranchTenantsFixture, TestCase):
+    """The write half moved out of procurement too; prove nothing moved with it.
+
+    ``_raised_branch``, ``_inherited_branch_id``, ``_sole_caller_branch`` and
+    ``_resolve_branch_reference`` were procurement's, written per document type
+    and then generalised here. They now live in :mod:`vs_rbac.scoping` because
+    finance needed the identical two rules, and what is left in
+    ``views/base.py`` are signature adapters that supply ``entity.tenant`` and
+    name procurement's reading of a null branch.
+
+    A promotion is only safe while it is a *move*. ``_inherited_branch_id`` is
+    asserted **identical** - a copy would pass an equality test and then drift.
+    The other three cannot be, because they change the signature, so they are
+    asserted to agree answer-for-answer with the shared rule across every caller
+    shape that exists: unbound, pinned to one branch, pinned to several, and
+    pinned to a branch that has since been withdrawn. If procurement grows its own
+    second copy of any of these, one of these tests fails rather than the two
+    quietly disagreeing about what a storekeeper may buy.
+    """
+
+    def request_for(self, user):
+        import types
+
+        return types.SimpleNamespace(user=user, query_params={})
+
+    def pinned(self, email, *branches):
+        user = self.user_for(self.multi_tenant, email)
+        for index, branch in enumerate(branches):
+            self.grant(
+                user, "procurement.requisition.create", tenant=self.multi_tenant,
+                role_key=f"{email}-{index}", branch=branch,
+            )
+        return self.request_for(user)
+
+    def unbound(self, email):
+        user = self.user_for(self.multi_tenant, email)
+        self.grant(
+            user, "procurement.requisition.create", tenant=self.multi_tenant,
+            role_key=f"{email}-hq",
+        )
+        return self.request_for(user)
+
+    # -- identity ------------------------------------------------------------- #
+
+    def test_the_inheritance_rule_is_the_platform_one_not_a_copy(self):
+        """Identity, not equivalence: a copy would pass an equality test and drift.
+
+        Nothing to adapt here - procurement's exclusive reading of a null branch is
+        the shared function's own default - so this one is asserted the strict way,
+        exactly as ``_caller_branch_ids`` is.
+        """
+        from vs_rbac.scoping import inherited_branch_id
+
+        from vs_procurement.views.base import _inherited_branch_id
+
+        self.assertIs(_inherited_branch_id, inherited_branch_id)
+
+    def test_the_reference_resolver_is_the_platform_one_for_this_tenant(self):
+        """Same object out, for the same id, through both routes."""
+        from vs_rbac.scoping import resolve_branch
+
+        from vs_procurement.views.base import _resolve_branch_reference
+
+        self.assertEqual(
+            _resolve_branch_reference(self.multi.entity, self.ikeja.pk),
+            resolve_branch(self.multi_tenant, self.ikeja.pk),
+        )
+
+    # -- answer-for-answer agreement ------------------------------------------ #
+
+    def callers(self):
+        """Every shape a caller can be in, so agreement is not proved on one."""
+        from vs_rbac.tests.helpers import make_branch
+        from vs_tenants.models import BranchStatus
+
+        withdrawn_branch = make_branch(
+            self.multi_school, name="Closing Branch", is_main=False,
+        )
+        withdrawn = self.pinned("agree-w-gone@t.com", withdrawn_branch)
+        withdrawn_branch.status = BranchStatus.SUSPENDED
+        withdrawn_branch.save(update_fields=["status"])
+        return {
+            "unbound": self.unbound("agree-w-hq@t.com"),
+            "one branch": self.pinned("agree-w-one@t.com", self.lekki),
+            "two branches": self.pinned(
+                "agree-w-two@t.com", self.lekki, self.ikeja,
+            ),
+            "every branch withdrawn": withdrawn,
+        }
+
+    def outcome(self, call):
+        """The answer, or the exception class, so refusals compare as answers too."""
+        from rest_framework.exceptions import APIException
+
+        try:
+            return ("ok", call())
+        except APIException as exc:
+            return ("raised", type(exc), str(exc))
+
+    def test_raised_branch_agrees_with_the_shared_rule_for_every_caller_shape(self):
+        from vs_rbac.scoping import raised_branch
+
+        from vs_procurement.views.base import _raised_branch
+
+        bodies = [{}, {"branch": self.lekki.pk}, {"branch": self.ikeja.pk},
+                  {"branch": 99_999_999}]
+        for label, request in self.callers().items():
+            for body in bodies:
+                with self.subTest(caller=label, body=body):
+                    self.assertEqual(
+                        self.outcome(
+                            lambda: _raised_branch(request, self.multi.entity, body),
+                        ),
+                        self.outcome(
+                            lambda: raised_branch(
+                                request, self.multi_tenant, body,
+                            ),
+                        ),
+                    )
+
+    def test_procurement_never_takes_the_shared_reading_of_the_ambiguous_case(self):
+        """The deliberate difference from finance, pinned so a change is visible.
+
+        A storekeeper covering Lekki and Ikeja who names no branch is asked which,
+        exactly as she was before the promotion. If this ever starts answering
+        ``None``, procurement's behaviour has changed and it was not this test that
+        changed it.
+        """
+        from rest_framework.exceptions import ValidationError
+
+        from vs_procurement.views.base import _raised_branch
+
+        request = self.pinned("agree-w-amb@t.com", self.lekki, self.ikeja)
+
+        with self.assertRaises(ValidationError) as caught:
+            _raised_branch(request, self.multi.entity, {})
+        self.assertIn("branch", caught.exception.detail)
+
+    def test_sole_caller_branch_agrees_with_the_shared_rule(self):
+        from vs_rbac.scoping import sole_caller_branch
+
+        from vs_procurement.views.base import _sole_caller_branch
+
+        for label, request in self.callers().items():
+            with self.subTest(caller=label):
+                self.assertEqual(
+                    _sole_caller_branch(request, self.multi.entity),
+                    sole_caller_branch(request, self.multi_tenant),
+                )
+
+    def test_procurement_keeps_the_exclusive_reading_when_inheriting(self):
+        """A branch-pinned caller may not continue an entity-wide chain.
+
+        The read side refuses them entity-wide spend (``_BranchScope`` asks for the
+        exclusive form) and the write side must refuse it too, or a caller could be
+        shown a document they may not build on. Finance takes the opposite reading
+        for the opposite reason; both are call-site decisions over one rule.
+        """
+        import types
+
+        from rest_framework.exceptions import PermissionDenied
+
+        from vs_procurement.views.base import _inherited_branch_id
+
+        request = self.pinned("agree-w-excl@t.com", self.lekki)
+        entity_wide = types.SimpleNamespace(branch_id=None)
+
+        with self.assertRaises(PermissionDenied):
+            _inherited_branch_id(request, entity_wide)

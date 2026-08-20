@@ -79,6 +79,8 @@ from .views_ops import (
     _date,
     _money,
     _dec,
+    _inherited_branch_id,
+    _raised_branch,
     _require_lines,
     _resolve_account,
     _resolve_bank_account,
@@ -365,6 +367,13 @@ class CustomerListCreateView(_FinanceBase):
             })
         customer = Customer.objects.create(
             entity=entity, code=code, name=name,
+            # A customer is a payer at a place, and everything downstream - the
+            # invoices, the receipts, the credit notes - inherits this one value,
+            # so it is the single most load-bearing branch in AR. The strict
+            # reading applies: a bursar covering Ikeja and Lekki is asked which
+            # site the family attends rather than having their name, phone and
+            # billing address filed school-wide and visible at every branch.
+            branch=_raised_branch(request, entity, body),
             billing_email=billing_email,
             billing_phone=billing_phone,
             billing_address=body.get("billing_address", ""),
@@ -617,6 +626,10 @@ class CustomerReceiptView(_FinanceBase):
             raise ValidationError({"amount": "A positive amount is required."})
         payment = Payment.objects.create(
             entity=entity, customer=customer,
+            # A receipt continues the customer's chain: the money settles their
+            # invoices, so it belongs where they do. A school-wide customer keeps
+            # a school-wide receipt, which is what keeps their ledger consistent.
+            branch_id=_inherited_branch_id(request, customer),
             payment_date=_date(body.get("payment_date"), "payment_date", required=True),
             method=body.get("method") or "BANK_TRANSFER", amount=amount,
             deposit_account=_resolve_account(
@@ -1124,6 +1137,13 @@ class FeeStructureListCreateView(_FinanceBase):
             raise ValidationError({"name": "A fee structure name is required."})
         structure = FeeStructure.objects.create(
             entity=entity, code=code, name=name,
+            # ``shared_when_ambiguous=True``: a fee structure is a template a
+            # school publishes once for every branch, so school-wide is the point
+            # of it rather than an accident. Forcing a bursar who covers Ikeja and
+            # Lekki to pick one would make "JSS1 Tuition 2026/27" invisible at the
+            # other. A branch-pinned bursar still stamps her branch, so a site
+            # with its own fees keeps them to itself.
+            branch=_raised_branch(request, entity, body, shared_when_ambiguous=True),
             applies_to=_resolve_applies_to(body.get("applies_to")),
             description=body.get("description", ""),
             is_active=bool(body.get("is_active", True)), created_by=request.user,
@@ -1208,6 +1228,10 @@ class FeeStructureDuplicateView(_FinanceBase):
             raise ValidationError({"code": f"A fee structure with code '{new_code}' already exists."})
         clone = FeeStructure.objects.create(
             entity=entity, code=new_code,
+            # A clone continues the source template's chain, so it starts life in
+            # the same scope as what it was copied from - and the caller cannot
+            # widen a branch template into a school-wide one by duplicating it.
+            branch_id=_inherited_branch_id(request, source),
             name=str(body.get("name", "")).strip() or f"{source.name} (copy)",
             applies_to=source.applies_to, description=source.description,
             is_active=False, created_by=request.user,
@@ -1336,15 +1360,22 @@ class CreditNoteListCreateView(_FinanceBase):
         entity = resolve_entity(request)
         body = request.data or {}
         lines = _require_lines(body)
+        customer = _resolve_customer(entity, body.get("customer"))
+        invoice = _resolve_invoice(entity, body.get("invoice"), required=False)
         note = CreditNote.objects.create(
             entity=entity,
-            customer=_resolve_customer(entity, body.get("customer")),
+            customer=customer,
+            # A note continues the chain of what it gives back against: the
+            # invoice when one is named (the more specific source, and itself the
+            # customer's branch), otherwise the customer. Naming a branch in the
+            # body cannot move it, and naming another branch's invoice is refused.
+            branch_id=_inherited_branch_id(request, invoice or customer),
             kind=body.get("kind", "CREDIT"),
             note_date=_date(body.get("note_date"), "note_date", required=True),
             currency=_resolve_currency(body.get("currency")),
             reason=body.get("reason", ""),
             reference=body.get("reference", ""),
-            invoice=_resolve_invoice(entity, body.get("invoice"), required=False),
+            invoice=invoice,
             created_by=request.user,
         )
         for i, ln in enumerate(lines, start=1):
@@ -1602,17 +1633,23 @@ class RefundListCreateView(_FinanceBase):
     # Handle POST requests for this endpoint.
     def post(self, request):
         entity = resolve_entity(request)
-        refund = _build_refund(entity, request.data or {}, actor_user=request.user)
+        refund = _build_refund(request, entity, request.data or {})
         return success_response(
             f"Refund {refund.document_number} created.",
             data=RefundSerializer(refund).data, status=201,
         )
 
 
-def _build_refund(entity, body, *, actor_user):
-    """Build a valid draft refund for both single and batch creation paths."""
+def _build_refund(request, entity, body):
+    """Build a valid draft refund for both single and batch creation paths.
+
+    Takes the whole ``request`` rather than just the actor because the refund's
+    branch is decided from the caller's grants as well as the customer it
+    continues; see :func:`_inherited_branch_id`.
+    """
     from .receivables import customer_refund_available_balance
 
+    actor_user = request.user
     customer = _resolve_customer(entity, body.get("customer"))
     customer = Customer.objects.select_for_update().get(pk=customer.pk)
     refund_date = _date(body.get("refund_date"), "refund_date", required=True)
@@ -1624,6 +1661,9 @@ def _build_refund(entity, body, *, actor_user):
     return Refund.objects.create(
         entity=entity,
         customer=customer,
+        # A refund continues the customer's chain: it hands back credit that
+        # arose on their account, so it belongs where they do.
+        branch_id=_inherited_branch_id(request, customer),
         refund_date=refund_date,
         currency=_resolve_currency(body.get("currency")),
         method=body.get("method", "BANK_TRANSFER"),
@@ -1788,18 +1828,26 @@ class RefundVoidView(_RefundActionBase):
 # --------------------------------------------------------------------------- #
 
 # Support the build write off request workflow.
-def _build_write_off_request(entity, body, *, actor_user):
+def _build_write_off_request(request, entity, body):
     """Create a DRAFT :class:`WriteOffRequest` from an API body (shared by the
     write-off-request create view and the invoice-write-off bridge).
 
     ``amount`` defaults to the invoice's outstanding balance when omitted. Resolves
     the invoice, optional write-off account and optional date within ``entity``.
+
+    Takes the whole ``request`` rather than just the actor because the write-off's
+    branch is decided from the caller's grants as well as the invoice it continues.
     """
+    actor_user = request.user
     invoice = _resolve_invoice(entity, body.get("invoice"))
     amount = _money(body["amount"], "amount") if body.get("amount") not in (None, "") \
         else invoice.balance_due
     return WriteOffRequest.objects.create(
         entity=entity, invoice=invoice, amount=amount,
+        # A write-off continues the invoice's chain: it is that debt being given
+        # up, so it belongs to the branch that raised the debt. This is also what
+        # stops a Lekki bursar writing off an Ikeja invoice she named by id.
+        branch_id=_inherited_branch_id(request, invoice),
         write_off_account=_resolve_account(
             entity, body.get("write_off_account"), "write_off_account"),
         write_off_date=_date(body.get("write_off_date"), "write_off_date"),
@@ -1847,7 +1895,7 @@ class WriteOffRequestListCreateView(_FinanceBase):
     # Handle POST requests for this endpoint.
     def post(self, request):
         entity = resolve_entity(request)
-        wor = _build_write_off_request(entity, request.data or {}, actor_user=request.user)
+        wor = _build_write_off_request(request, entity, request.data or {})
         return success_response(
             f"Write-off request {wor.document_number} created.",
             data=WriteOffRequestSerializer(wor).data, status=201,
@@ -1974,7 +2022,7 @@ class InvoiceWriteOffView(_FinanceBase):
         body = dict(request.data or {})
         # The bridge resolves the invoice from the body; pin it to the URL's invoice.
         body["invoice"] = invoice.pk
-        wor = _build_write_off_request(entity, body, actor_user=request.user)
+        wor = _build_write_off_request(request, entity, body)
 
         if approval_required(wor):
             from vs_workflow.services.submission import submit_for_approval
@@ -2195,6 +2243,9 @@ class ARAdjustmentBatchView(_FinanceBase):
                 documents.append(Refund.objects.create(
                     entity=entity,
                     customer=customer,
+                    # Per line, not per batch: a batch may span branches, and each
+                    # refund belongs where its own customer does.
+                    branch_id=_inherited_branch_id(request, customer),
                     refund_date=common_date,
                     method="BANK_TRANSFER",
                     amount=amount,
@@ -2268,6 +2319,9 @@ class ARAdjustmentBatchView(_FinanceBase):
                     entity=entity,
                     invoice=invoice,
                     amount=amount,
+                    # Per line, not per batch: each write-off belongs to the
+                    # branch that raised the invoice it gives up.
+                    branch_id=_inherited_branch_id(request, invoice),
                     write_off_account=write_off_account,
                     write_off_date=common_date,
                     narration=item.get("narration") or narration,
@@ -2544,6 +2598,9 @@ class InvoicePayView(_FinanceBase):
 
         payment = Payment.objects.create(
             entity=entity, customer=invoice.customer,
+            # A receipt against one invoice continues that invoice's chain, so the
+            # money lands in the branch that raised the debt.
+            branch_id=_inherited_branch_id(request, invoice),
             payment_date=_date(body.get("payment_date"), "payment_date", required=True),
             method=body.get("method") or "BANK_TRANSFER",
             amount=amount,
@@ -2637,10 +2694,15 @@ class ConcessionListCreateView(_FinanceBase):
     def post(self, request):
         entity = resolve_entity(request)
         body = request.data or {}
+        customer = _resolve_customer(entity, body.get("customer"))
+        invoice = _resolve_invoice(entity, body.get("invoice"))
         concession = Concession.objects.create(
             entity=entity,
-            customer=_resolve_customer(entity, body.get("customer")),
-            invoice=_resolve_invoice(entity, body.get("invoice")),
+            customer=customer,
+            invoice=invoice,
+            # A concession continues the invoice's chain: it is that specific debt
+            # being discounted or waived, so it belongs where the debt was raised.
+            branch_id=_inherited_branch_id(request, invoice),
             kind=body.get("kind", "DISCOUNT"),
             concession_date=_date(body.get("concession_date"), "concession_date", required=True),
             amount=_money(body.get("amount", 0), "amount"),
@@ -2853,10 +2915,15 @@ class PaymentPlanListCreateView(_FinanceBase):
         else:
             total = _money(raw_total, "total_amount")
         count = int(body.get("installment_count", 1) or 1)
+        customer = _resolve_customer(entity, body.get("customer"))
         plan = PaymentPlan.objects.create(
             entity=entity,
-            customer=_resolve_customer(entity, body.get("customer")),
+            customer=customer,
             invoice=invoice,
+            # A plan continues the chain of what it spreads: the invoice when one
+            # is named (the more specific source), otherwise the customer whose
+            # account it schedules.
+            branch_id=_inherited_branch_id(request, invoice or customer),
             start_date=_date(body.get("start_date"), "start_date", required=True),
             frequency=body.get("frequency", "MONTHLY"),
             installment_count=count,

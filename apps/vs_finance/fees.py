@@ -54,6 +54,12 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
 
         invoice = Invoice.objects.create(
             entity=structure.entity, customer=customer,  # Scope invoice to the structure entity and customer.
+            # The *customer* decides the branch, not the structure: a school-wide
+            # fee template billed to an Ikeja family raises an Ikeja receivable,
+            # which is the only reading that keeps that family's ledger in one
+            # scope. A structure pinned to a branch is simply billed to the
+            # customers selected for it.
+            branch=customer.branch,
             invoice_date=invoice_date, due_date=due_date,  # Store billing and optional due dates.
             source="MANUAL", reference=reference,  # Mark source and idempotency reference.
             narration=f"{structure.name} ({structure.code})",  # Describe the generated fee bill.

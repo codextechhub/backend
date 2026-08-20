@@ -410,3 +410,224 @@ class AnonymousCallerTests(_RowFixture):
 
     def test_a_request_with_no_user_at_all_is_not_narrowed(self):
         self.assertIs(caller_branch_ids(SimpleNamespace()), WHOLE_TENANT)
+
+
+# --------------------------------------------------------------------------- #
+# The write half                                                              #
+# --------------------------------------------------------------------------- #
+
+
+class SoleCallerBranchTests(_RowFixture):
+    """"Exactly one branch, or no answer" - and why it is never used to gate.
+
+    :func:`sole_caller_branch_id` answers ``None`` in two completely different
+    situations: the caller is unbound, and the caller is bound to several. That
+    ambiguity is safe only because the answer is used as a *default*, never as a
+    permission. These tests pin that it stays a default-shaped answer.
+    """
+
+    def test_one_branch_answers_that_branch(self):
+        from vs_rbac.scoping import sole_caller_branch_id
+
+        user = self.pinned_at(self.tenant, "sole-one@t.com", self.ikeja)
+
+        self.assertEqual(
+            sole_caller_branch_id(self.request_for(user)), self.ikeja.pk,
+        )
+
+    def test_two_branches_answer_nothing_rather_than_picking(self):
+        from vs_rbac.scoping import sole_caller_branch_id
+
+        user = self.pinned_at(self.tenant, "sole-two@t.com", self.ikeja, self.lekki)
+
+        self.assertIsNone(sole_caller_branch_id(self.request_for(user)))
+
+    def test_an_unbound_caller_answers_nothing_too(self):
+        """Deliberately the same answer as "two branches", and deliberately unusable
+        as a permission because of it."""
+        from vs_rbac.scoping import sole_caller_branch_id
+
+        user = self.whole_tenant(self.tenant, "sole-hq@t.com")
+
+        self.assertIsNone(sole_caller_branch_id(self.request_for(user)))
+
+    def test_a_single_branch_school_answers_its_only_branch(self):
+        from vs_rbac.scoping import sole_caller_branch_id
+
+        user = self.pinned_at(self.solo_tenant, "sole-solo@t.com", self.solo_main)
+
+        self.assertEqual(
+            sole_caller_branch_id(self.request_for(user)), self.solo_main.pk,
+        )
+
+
+class RaisedBranchRuleTests(_RowFixture):
+    """The rule that decides what branch goes on a row somebody creates.
+
+    Asserted here at the unit boundary and again over HTTP in
+    ``vs_finance.tests_branch_write`` / ``vs_procurement.tests``. This layer is
+    where the *shape* of the rule is pinned - in particular that the two readings
+    of the ambiguous case differ in exactly one place and nowhere else.
+    """
+
+    def raised(self, user, body=None, **kwargs):
+        from vs_rbac.scoping import raised_branch
+
+        return raised_branch(
+            self.request_for(user), self.tenant, body or {}, **kwargs,
+        )
+
+    def test_a_pinned_caller_gets_their_own_branch_without_naming_it(self):
+        user = self.pinned_at(self.tenant, "raise-one@t.com", self.ikeja)
+
+        self.assertEqual(self.raised(user), self.ikeja)
+
+    def test_a_pinned_caller_naming_another_branch_is_refused(self):
+        from rest_framework.exceptions import PermissionDenied
+
+        user = self.pinned_at(self.tenant, "raise-wrong@t.com", self.ikeja)
+
+        with self.assertRaises(PermissionDenied):
+            self.raised(user, {"branch": self.lekki.pk})
+
+    def test_an_unbound_caller_gets_nothing_and_that_is_a_real_answer(self):
+        user = self.whole_tenant(self.tenant, "raise-hq@t.com")
+
+        self.assertIsNone(self.raised(user))
+
+    def test_an_unbound_caller_may_name_any_branch_in_the_tenant(self):
+        user = self.whole_tenant(self.tenant, "raise-hq2@t.com")
+
+        self.assertEqual(self.raised(user, {"branch": self.yaba.pk}), self.yaba)
+
+    def test_the_ambiguous_case_is_asked_by_default(self):
+        from rest_framework.exceptions import ValidationError
+
+        user = self.pinned_at(self.tenant, "raise-two@t.com", self.ikeja, self.lekki)
+
+        with self.assertRaises(ValidationError) as caught:
+            self.raised(user)
+        self.assertIn("branch", caught.exception.detail)
+
+    def test_the_ambiguous_case_is_shared_when_the_call_site_says_so(self):
+        """The one axis the two readings differ on.
+
+        Same caller, same empty body, opposite answers - and the only thing that
+        changed is a flag the call site had to spell out. Anything else differing
+        between the two readings would be a second rule.
+        """
+        user = self.pinned_at(self.tenant, "raise-two2@t.com", self.ikeja, self.lekki)
+
+        self.assertIsNone(self.raised(user, shared_when_ambiguous=True))
+
+    def test_the_flag_changes_nothing_for_a_caller_who_is_not_ambiguous(self):
+        pinned = self.pinned_at(self.tenant, "raise-flag1@t.com", self.ikeja)
+        unbound = self.whole_tenant(self.tenant, "raise-flag2@t.com")
+
+        self.assertEqual(
+            self.raised(pinned), self.raised(pinned, shared_when_ambiguous=True),
+        )
+        self.assertEqual(
+            self.raised(unbound), self.raised(unbound, shared_when_ambiguous=True),
+        )
+
+    def test_a_caller_whose_every_branch_was_withdrawn_may_not_create(self):
+        """Withdrawing a site withdraws what it carried, on the write side too."""
+        from rest_framework.exceptions import PermissionDenied
+
+        from vs_tenants.models import BranchStatus
+
+        user = self.pinned_at(self.tenant, "raise-gone@t.com", self.ikeja)
+        self.ikeja.status = BranchStatus.SUSPENDED
+        self.ikeja.save(update_fields=["status"])
+
+        with self.assertRaises(PermissionDenied):
+            self.raised(user)
+
+    def test_another_tenants_branch_is_reported_like_an_unknown_one(self):
+        """No id oracle: a real foreign branch and a fictional id are one answer."""
+        from rest_framework.exceptions import ValidationError
+
+        user = self.whole_tenant(self.tenant, "raise-oracle@t.com")
+
+        with self.assertRaises(ValidationError) as foreign:
+            self.raised(user, {"branch": self.rival_ikeja.pk})
+        with self.assertRaises(ValidationError) as unknown:
+            self.raised(user, {"branch": 99_999_999})
+
+        self.assertEqual(foreign.exception.detail, unknown.exception.detail)
+
+
+class InheritedBranchRuleTests(_RowFixture):
+    """The rule that decides what branch a row copies from the row it continues.
+
+    ``include_shared`` here has to mean the same thing it means in
+    :class:`BranchScope`, or a caller can see a row on their screen and then be
+    refused when they act on it - which reads as a broken screen, not a rule.
+    """
+
+    def inherited(self, user, *sources, **kwargs):
+        from vs_rbac.scoping import inherited_branch_id
+
+        return inherited_branch_id(self.request_for(user), *sources, **kwargs)
+
+    def source_at(self, branch):
+        return SimpleNamespace(branch_id=getattr(branch, "pk", None))
+
+    def test_the_source_decides_for_an_unbound_caller(self):
+        user = self.whole_tenant(self.tenant, "inh-hq@t.com")
+
+        self.assertEqual(
+            self.inherited(user, self.source_at(self.lekki)), self.lekki.pk,
+        )
+
+    def test_a_pinned_caller_may_continue_their_own_chain(self):
+        user = self.pinned_at(self.tenant, "inh-own@t.com", self.ikeja)
+
+        self.assertEqual(
+            self.inherited(user, self.source_at(self.ikeja)), self.ikeja.pk,
+        )
+
+    def test_a_pinned_caller_may_not_continue_another_branchs_chain(self):
+        from rest_framework.exceptions import PermissionDenied
+
+        user = self.pinned_at(self.tenant, "inh-other@t.com", self.ikeja)
+
+        with self.assertRaises(PermissionDenied):
+            self.inherited(user, self.source_at(self.lekki))
+
+    def test_a_shared_source_is_refused_exclusively_and_allowed_inclusively(self):
+        """The whole difference between procurement's reading and finance's.
+
+        Procurement: a purchase raised for the school as a whole belongs to head
+        office, and the storekeeper at Ikeja is not in that scope. Finance: a
+        school-wide customer appears on the Ikeja bursar's own screen, so she must
+        be able to record their receipt - and the receipt stays school-wide,
+        because the chain decides and not the caller.
+        """
+        from rest_framework.exceptions import PermissionDenied
+
+        user = self.pinned_at(self.tenant, "inh-shared@t.com", self.ikeja)
+
+        with self.assertRaises(PermissionDenied):
+            self.inherited(user, self.source_at(None))
+
+        self.assertIsNone(
+            self.inherited(user, self.source_at(None), include_shared=True),
+        )
+
+    def test_sources_that_disagree_resolve_to_the_school_as_a_whole(self):
+        user = self.whole_tenant(self.tenant, "inh-split@t.com")
+
+        self.assertIsNone(
+            self.inherited(
+                user, self.source_at(self.ikeja), self.source_at(self.lekki),
+            ),
+        )
+
+    def test_a_missing_source_is_skipped_rather_than_counted_as_a_disagreement(self):
+        user = self.whole_tenant(self.tenant, "inh-none@t.com")
+
+        self.assertEqual(
+            self.inherited(user, None, self.source_at(self.yaba)), self.yaba.pk,
+        )

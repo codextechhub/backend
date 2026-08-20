@@ -225,6 +225,7 @@ def post_opening_balance(customer, *, actor_user=None, date=None):
     )
     invoice = Invoice.objects.create(
         entity=customer.entity, customer=customer,
+        branch=customer.branch,  # Opening balance belongs where the customer does.
         invoice_date=date or datetime.date.today(),
         source=InvoiceSource.OPENING,
         narration=f"Opening balance for {customer.code}",

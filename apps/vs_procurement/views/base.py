@@ -10,12 +10,16 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal, InvalidOperation
 
-from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.views import APIView
 
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 from vs_rbac.scoping import BranchScope, branch_scope
 from vs_rbac.scoping import caller_branch_ids as _rbac_caller_branch_ids
+from vs_rbac.scoping import inherited_branch_id as _rbac_inherited_branch_id
+from vs_rbac.scoping import raised_branch as _rbac_raised_branch
+from vs_rbac.scoping import resolve_branch as _rbac_resolve_branch
+from vs_rbac.scoping import sole_caller_branch as _rbac_sole_caller_branch
 
 from ..models import (
     Vendor,
@@ -103,6 +107,15 @@ def _resolve_cost_center(entity, ref, field="cost_center"):
 #     works in (:func:`_raised_branch`);
 #   * a document that *continues* a chain takes the branch from its source
 #     document and nothing else (:func:`_inherited_branch_id`);
+#
+#     Both of those rules were procurement's and are now the platform's, in
+#     :mod:`vs_rbac.scoping`, because finance needed the identical two.  What is
+#     left here are one-line adapters that supply ``entity.tenant`` - procurement
+#     is entity-scoped, the rules are tenant-scoped - and procurement's own
+#     reading of a null branch.  No policy lives in them; a second copy of "which
+#     branch does this belong to" is exactly how two modules come to disagree
+#     about the same school.
+#
 #   * every read narrows to the caller's branch, whether it is a list, a KPI
 #     total, an analytics report or a single document.  One rule
 #     (:class:`_BranchScope`) is rendered two ways: as a ``Q`` for a single
@@ -132,88 +145,42 @@ _caller_branch_ids = _rbac_caller_branch_ids
 
 
 def _sole_caller_branch(request, entity):
-    """The one branch a caller works in, or ``None`` when that is not a single branch.
-
-    Used only where a *default* is needed (raising a document without naming a
-    branch).  It is never used to decide what a caller may reach: answering
-    ``None`` for a caller entitled to two branches would read as "unbound", and
-    unbound means the whole entity.
-    """
-    ids = _caller_branch_ids(request)
-    if ids is None or len(ids) != 1:
-        return None
-    return _resolve_branch_reference(entity, next(iter(ids)))
+    """:func:`vs_rbac.scoping.sole_caller_branch` for this entity's owning tenant."""
+    return _rbac_sole_caller_branch(request, entity.tenant)
 
 
 def _resolve_branch_reference(entity, ref, field="branch"):
-    """Resolve a branch id inside ``entity``'s owning tenant, or ``None`` when blank.
+    """:func:`vs_rbac.scoping.resolve_branch` for this entity's owning tenant.
 
-    A branch belonging to another tenant is reported exactly like an unknown one,
-    so the parameter cannot be used to discover ids outside the caller's tenant.
-
-    The rule itself lives with the model it protects (vs_schools); this wrapper
-    only says which tenant a procurement caller is entitled to, so every app that
-    accepts a branch answers an unknown reference the same way.
+    Procurement is entity-scoped and the rule is tenant-scoped; supplying
+    ``entity.tenant`` is the whole of what this adds.
     """
-    from vs_tenants.references import resolve_branch_reference
-
-    return resolve_branch_reference(entity.tenant, ref, field)
+    return _rbac_resolve_branch(entity.tenant, ref, field)
 
 
 def _raised_branch(request, entity, body, *, field="branch"):
-    """The branch a newly raised document belongs to.
+    """:func:`vs_rbac.scoping.raised_branch` for this entity's owning tenant.
 
-    A caller bound to one branch always raises for that branch; naming a
-    different one is refused rather than silently retargeted.  A caller bound to
-    several must say which of *theirs* it is, because there is no longer an
-    obvious default - and naming one outside their set is refused exactly as a
-    single-branch caller's would be.  A caller who is not bound at all may name
-    any branch belonging to this entity's tenant, or leave it out - leaving it
-    out means the purchase belongs to the entity as a whole and is a valid
-    answer, not missing data.
+    Procurement takes the strict reading of the ambiguous case: a caller bound to
+    several branches who names none is asked which, rather than having the
+    purchase filed against the entity as a whole.  That is the shared default, so
+    it is not passed - see :func:`vs_rbac.scoping.raised_branch` for why the other
+    reading exists and which kinds of row take it.
     """
-    ids = _caller_branch_ids(request)
-    raw = body.get(field) if hasattr(body, "get") else None
-    if ids is None:
-        return _resolve_branch_reference(entity, raw, field)
-    if request.user.tenant_id != entity.tenant_id:
-        # A caller's grants live in their own tenant, so the caller's tenant is an
-        # exact, query-free proxy for the tenant their branches belong to.
-        # Unreachable through the API (entity resolution already pins the caller's
-        # tenant), but fail closed rather than write a foreign tenant's branch.
-        raise PermissionDenied("Your branch does not belong to this entity.")
-    if not ids:
-        # Every branch they were granted has since been suspended or closed.
-        raise PermissionDenied("You are not assigned to a branch that can raise this.")
-    if raw in (None, ""):
-        own = _sole_caller_branch(request, entity)
-        if own is None:
-            raise ValidationError(
-                {field: "Name the branch this is for; you work in more than one."},
-            )
-        return own
-    chosen = _resolve_branch_reference(entity, raw, field)
-    if chosen is None or chosen.pk not in ids:
-        raise PermissionDenied("You can only raise documents for your own branch.")
-    return chosen
+    return _rbac_raised_branch(request, entity.tenant, body, field=field)
 
 
-def _inherited_branch_id(request, *sources, field="branch"):
-    """The branch id a downstream document takes from the source(s) it continues.
-
-    The chain decides, not the request: once a source document exists its branch
-    is the answer, and no request body, header, or ``?branch=`` may override it.
-    Sources that disagree (a payment settling invoices from two branches) resolve
-    to the entity as a whole.  The only check left is that the caller is entitled
-    to work in the resulting scope at all - a branch-bound user may not continue
-    another branch's chain, nor an entity-wide one.
-    """
-    known = {getattr(s, f"{field}_id") for s in sources if s is not None}
-    branch_id = known.pop() if len(known) == 1 else None
-    ids = _caller_branch_ids(request)
-    if ids is not None and branch_id not in ids:
-        raise PermissionDenied("This document belongs to another branch.")
-    return branch_id
+#: The branch id a downstream document takes from the source it continues.
+#:
+#: The same object as :func:`vs_rbac.scoping.inherited_branch_id`, not a copy -
+#: procurement's exclusive reading of a null branch *is* that function's default,
+#: so there is nothing here to adapt.  A document raised for the entity as a whole
+#: is a scope of its own that a branch-pinned storekeeper is not in, so they may
+#: not continue that chain either; that is the same reading :class:`_BranchScope`
+#: takes on the read side, and the two must agree or a caller could be shown a
+#: document they may not build on.  Finance spells out the opposite reading at its
+#: own call site, for the opposite reason.
+_inherited_branch_id = _rbac_inherited_branch_id
 
 
 def _branch_filter_lookups(request, entity=None, params=None, *, field="branch"):
