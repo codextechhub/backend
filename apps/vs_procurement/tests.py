@@ -13402,3 +13402,112 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
         )
         self.assertEqual(theirs.status_code, 200, theirs.data)
         self.assertEqual(list(theirs.data["data"]), [])
+
+
+class SharedBranchScopeAgreementTests(_BranchTenantsFixture, TestCase):
+    """Procurement and the platform helper must stay the same mechanism.
+
+    ``_caller_branch_ids`` and the ``Q`` it feeds used to live here. They now live
+    in :mod:`vs_rbac.scoping`, because procurement was the only module that ever
+    narrowed a read and every other module needed the same answer. A promotion is
+    only safe while it is a *move*: the moment procurement grows its own second
+    copy, these two rules can disagree, and the way they would disagree is silent -
+    a list that quietly shows a branch too many or a branch too few.
+
+    So this class asserts identity and equality rather than behaviour. The
+    behaviour is asserted by ``ParkedAndOverrideFilterBranchScopeTests`` and the
+    Round 3 acceptance tests; what is asserted here is that those keep testing the
+    same code the rest of the platform runs.
+
+    The one thing procurement is *allowed* to differ on is which reading of a null
+    branch it takes, and that difference is deliberate, named at the call site, and
+    pinned below - not left to be rediscovered from a query plan.
+    """
+
+    def test_the_caller_lookup_is_the_platform_one_not_a_copy(self):
+        """Identity, not equivalence: a copy would pass an equality test and drift."""
+        from vs_rbac.scoping import caller_branch_ids
+
+        from vs_procurement.views.base import _caller_branch_ids
+
+        self.assertIs(_caller_branch_ids, caller_branch_ids)
+
+    def test_procurements_predicate_is_exactly_the_shared_exclusive_one(self):
+        """The rendered ``Q`` must match term for term, for a real pinned caller."""
+        import types
+
+        from vs_rbac.scoping import branch_q
+
+        from vs_procurement.views.base import _branch_q
+
+        user = self.user_for(self.multi_tenant, "agree-pinned@t.com")
+        self.grant(user, "procurement.requisition.view", tenant=self.multi_tenant,
+                   role_key="agree-lekki", branch=self.lekki)
+        request = types.SimpleNamespace(user=user, query_params={})
+
+        self.assertEqual(
+            _branch_q(request),
+            branch_q(request, include_shared=False),
+        )
+
+    def test_procurement_reads_a_null_branch_exclusively_and_says_so(self):
+        """The deliberate difference from the platform default, pinned.
+
+        Elsewhere a null branch means "shared across the school" and stays visible.
+        Here it means "raised for the school as a whole", which is a scope of its
+        own that a branch-pinned storekeeper is not in - matching
+        ``_inherited_branch_id``, which refuses to let them continue an entity-wide
+        chain either. If this ever starts matching the inclusive form, procurement's
+        behaviour has changed and it was not this test that changed it.
+        """
+        import types
+
+        from vs_rbac.scoping import branch_q
+
+        from vs_procurement.views.base import _branch_q
+
+        user = self.user_for(self.multi_tenant, "agree-excl@t.com")
+        self.grant(user, "procurement.requisition.view", tenant=self.multi_tenant,
+                   role_key="agree-ikeja", branch=self.ikeja)
+        request = types.SimpleNamespace(user=user, query_params={})
+
+        rendered = str(_branch_q(request))
+        self.assertIn("branch_id__in", rendered)
+        self.assertNotIn("isnull", rendered)
+        self.assertNotEqual(_branch_q(request), branch_q(request))
+
+    def test_an_unbound_caller_still_renders_to_nothing_at_all(self):
+        """The whole-tenant path is how everyone works today and must not change."""
+        import types
+
+        from django.db.models import Q
+
+        from vs_procurement.views.base import _branch_q
+
+        user = self.user_for(self.flat_tenant, "agree-unbound@t.com")
+        self.grant(user, "procurement.requisition.view", tenant=self.flat_tenant,
+                   role_key="agree-flat")
+        request = types.SimpleNamespace(user=user, query_params={})
+
+        self.assertEqual(_branch_q(request), Q())
+
+    def test_the_query_filter_is_still_anded_on_top_of_the_grant(self):
+        """``?branch=`` narrows within the grant; promoting the grant half kept that."""
+        import types
+
+        from vs_procurement.views.base import _branch_q
+
+        user = self.user_for(self.multi_tenant, "agree-param@t.com")
+        self.grant(user, "procurement.requisition.view", tenant=self.multi_tenant,
+                   role_key="agree-param-role", branch=self.lekki)
+        request = types.SimpleNamespace(
+            user=user, query_params={"branch": str(self.ikeja.pk)},
+        )
+
+        rendered = str(_branch_q(request, self.multi.entity, request.query_params))
+
+        # Both terms present and ANDed: asking for a branch that is not yours
+        # yields an empty answer rather than that branch's rows.
+        self.assertIn("branch_id__in", rendered)
+        self.assertIn("branch", rendered)
+        self.assertIn("AND", rendered)

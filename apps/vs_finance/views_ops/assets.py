@@ -4,6 +4,7 @@ from __future__ import annotations
 
 
 from rest_framework.exceptions import NotFound, ValidationError
+from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 
 from core.response import success_response
 
@@ -45,7 +46,9 @@ class FixedAssetListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = FixedAsset.objects.filter(entity=entity).prefetch_related("schedule")
+        qs = FixedAsset.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).prefetch_related("schedule")
         if (status_val := request.query_params.get("asset_status")):
             qs = qs.filter(asset_status=status_val)
         if (category := request.query_params.get("category")):
@@ -110,7 +113,7 @@ class FixedAssetSummaryView(_FinanceBase):
         from ..constants import AssetStatus
 
         entity = resolve_entity(request)
-        assets = FixedAsset.objects.filter(entity=entity)
+        assets = FixedAsset.objects.filter(branch_q(request, include_shared=True), entity=entity)
         live = assets.exclude(asset_status=AssetStatus.DISPOSED).aggregate(
             cost=Coalesce(Sum("cost"), 0),
             accum=Coalesce(Sum("accumulated_depreciation"), 0),
@@ -139,7 +142,9 @@ class _FixedAssetActionBase(_FinanceBase):
     # Support the asset workflow.
     def _asset(self, request, pk):
         entity = resolve_entity(request)
-        asset = FixedAsset.objects.filter(entity=entity, pk=pk).first()
+        asset = FixedAsset.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk,
+        ).first()
         if asset is None:
             raise NotFound("Fixed asset not found for this entity.")
         return entity, asset

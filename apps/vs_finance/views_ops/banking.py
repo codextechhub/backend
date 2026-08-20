@@ -10,6 +10,7 @@ from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import NotFound, ValidationError
+from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 
 from core.response import success_response
 
@@ -63,7 +64,9 @@ class BankAccountListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = BankAccount.objects.filter(entity=entity).select_related("gl_account")
+        qs = BankAccount.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).select_related("gl_account")
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         return success_response(

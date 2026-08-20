@@ -14,6 +14,8 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from rest_framework.views import APIView
 
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+from vs_rbac.scoping import BranchScope, branch_scope
+from vs_rbac.scoping import caller_branch_ids as _rbac_caller_branch_ids
 
 from ..models import (
     Vendor,
@@ -103,43 +105,30 @@ def _resolve_cost_center(entity, ref, field="cost_center"):
 #     document and nothing else (:func:`_inherited_branch_id`);
 #   * every read narrows to the caller's branch, whether it is a list, a KPI
 #     total, an analytics report or a single document.  One rule
-#     (:func:`_branch_lookups`) is rendered two ways: as a ``Q`` for a single
+#     (:class:`_BranchScope`) is rendered two ways: as a ``Q`` for a single
 #     model (:func:`_branch_q`, and the wrappers :func:`_branch_scoped`,
-#     :func:`_branch_visible`, :func:`_document_or_404`), and as a
-#     :class:`_BranchScope` for a service that spans several models
-#     (:func:`_branch_scope`).
+#     :func:`_branch_visible`, :func:`_document_or_404`), and as the scope object
+#     itself for a service that spans several models (:func:`_branch_scope`).
 #
 # An absent branch is a real, valid answer - the document belongs to the entity
 # as a whole - and is never coerced or rejected.  A tenant with no branches at
 # all therefore behaves exactly as it did before: every value here stays ``None``.
+#
+# Which branches a caller is entitled to is *not* decided here.  That answer is
+# the platform's, given once by :func:`vs_rbac.scoping.caller_branch_ids` and
+# rendered by :class:`vs_rbac.scoping.BranchScope`; procurement only chooses the
+# exclusive reading of a null branch (see :class:`_BranchScope`) and adds the
+# ``?branch=`` request filter on top.
 
 
-def _caller_branch_ids(request):
-    """The branches this caller may work in, or ``None`` for the whole entity.
-
-    Branch context is **not** carried by a header or a query parameter.  It is
-    derived from what the caller has actually been granted, by the one function
-    that also decides whether they may open the screen at all
-    (:func:`vs_rbac.scoping.visible_branch_ids`) - so "may I?" and "whose rows?"
-    cannot give different answers.  DRF's ``request.user`` is the *effective*
-    user, so this stays correct through impersonation.
-
-    A frozenset is the answer rather than one branch because a person can hold
-    "Storekeeper at Ikeja" *and* "Storekeeper at Lekki", which the single
-    ``vs_user.User.branch`` column this used to read cannot express.  That column
-    is still the fallback for a caller whose access is whole-tenant, so a tenant
-    that has never used branch-scoped grants behaves exactly as it did.
-
-    Resolved against the caller's **own** tenant: branch grants only exist there,
-    and cross-tenant reads are refused by entity scoping, which is untouched.
-    """
-    user = getattr(request, "user", None)
-    if user is None or not getattr(user, "is_authenticated", False):
-        return None
-
-    from vs_rbac.scoping import visible_branch_ids
-
-    return visible_branch_ids(user, getattr(user, "tenant", None))
+#: The branches this caller may work in, or ``None`` for the whole entity.
+#:
+#: This was procurement's own function until the same answer was needed outside
+#: procurement; it now lives in :mod:`vs_rbac.scoping` beside the grant lookup it
+#: reads, and the name is kept here only so procurement's own call sites read as
+#: they always did. It is the same object, not a copy - there is exactly one
+#: implementation of "whose rows?" on the platform.
+_caller_branch_ids = _rbac_caller_branch_ids
 
 
 def _sole_caller_branch(request, entity):
@@ -227,48 +216,35 @@ def _inherited_branch_id(request, *sources, field="branch"):
     return branch_id
 
 
-def _branch_lookups(request, entity=None, params=None, *, field="branch"):
-    """The caller's branch narrowing, resolved once into plain lookup/value pairs.
+def _branch_filter_lookups(request, entity=None, params=None, *, field="branch"):
+    """The ``?branch=`` **request filter**, resolved into plain lookup/value pairs.
 
-    This is the actual rule; :func:`_branch_q` and :class:`_BranchScope` are only two
-    renderings of it.  Keeping the *decision* here and the *relation path* out of it is
-    what lets a list, a KPI header and a report aggregate agree even though each reaches
-    the branch column by a different route.
+    This is only the half of the rule the caller asks for.  The half they are *held*
+    to - which branches their grants entitle them to at all - is
+    :func:`vs_rbac.scoping.caller_branch_ids`, and the two are ANDed by every
+    renderer below.
 
-    A caller bound to one or more branches only ever sees those branches' documents -
-    branch narrows *within* the entity and can never widen what the entity scope already
-    allows.  A caller who is not bound to any sees the whole entity and may narrow it
+    A caller who is not bound to any branch sees the whole entity and may narrow it
     with ``?branch=<id>``, or with ``?branch=none`` for the documents raised for the
-    entity as a whole.  The pairs are ANDed by every renderer, so a bound caller asking
-    for somebody else's branch gets an empty answer rather than that branch's rows, while
-    one asking for a branch that *is* theirs narrows to it; the three lookup names used
-    here are distinct, so no term can overwrite another.  An unknown branch is a 400
+    entity as a whole.  Because the two halves are ANDed, a bound caller asking for
+    somebody else's branch gets an empty answer rather than that branch's rows, while
+    one asking for a branch that *is* theirs narrows to it.  An unknown branch is a 400
     rather than a silent empty page, so the filter cannot be used to probe ids in
     another tenant.
 
     ``params`` may be omitted (detail reads take no filter input); the result is then
-    empty for an unbound caller, which filters nothing at all.
+    empty, which filters nothing at all.
     """
-    lookups = {}
-    ids = _caller_branch_ids(request)
-    if ids is not None:
-        # ``__in`` rather than an equality term: a caller may hold grants for
-        # several branches, and an empty set is a real answer (every branch they
-        # were granted has been withdrawn) that must show nothing rather than
-        # everything.
-        lookups[f"{field}_id__in"] = tuple(sorted(ids))
     raw = str((params.get(field) if params else "") or "").strip()
     if not raw:
-        return lookups
+        return {}
     if raw.lower() in ("none", "null"):
-        lookups[f"{field}__isnull"] = True
-        return lookups
-    lookups[field] = _resolve_branch_reference(entity, raw, field)
-    return lookups
+        return {f"{field}__isnull": True}
+    return {field: _resolve_branch_reference(entity, raw, field)}
 
 
 class _BranchScope:
-    """One caller's branch narrowing, renderable against any relation path.
+    """One caller's branch narrowing plus their ``?branch=`` filter, per relation path.
 
     A list filters one model, so a single ``Q`` is enough for it.  A report service
     aggregates several models that reach ``branch`` by different routes (a payment
@@ -277,27 +253,40 @@ class _BranchScope:
     exactly the drift Round 3 removed.  It is handed this instead: the same resolved
     answer, re-rendered per path.
 
+    The grant half is the platform-wide :class:`vs_rbac.scoping.BranchScope`, asked for
+    in its **exclusive** form.  That is procurement's deliberate reading and not the
+    platform default: a purchase raised with no branch belongs to the school as a
+    whole, which is a scope of its own that a branch-pinned storekeeper is not in.
+    A branch-pinned caller therefore does not inherit school-wide spend, matching
+    :func:`_inherited_branch_id`, which refuses to let them continue an entity-wide
+    chain either.  Elsewhere on the platform a null branch means *shared with every
+    branch* and stays visible; see :class:`vs_rbac.scoping.BranchScope`.
+
     ``is_narrowed`` reports whether the caller is looking at less than the whole entity.
     It is deliberately the *only* thing that turns branch-specific fields on in a report
     payload, so an unbound caller and a tenant with no branches keep byte-identical
     responses.
     """
 
-    __slots__ = ("_lookups",)
+    __slots__ = ("_grant", "_lookups", "_field")
 
-    def __init__(self, lookups):
+    def __init__(self, grant: BranchScope, lookups, field="branch"):
+        self._grant = grant
         self._lookups = lookups
+        self._field = field
 
     def q(self, prefix=""):
         """The narrowing as a ``Q``, with ``prefix`` naming the route to ``branch``."""
         from django.db.models import Q
 
-        return Q(**{f"{prefix}{name}": value for name, value in self._lookups.items()})
+        return self._grant.q(prefix, field=self._field) & Q(
+            **{f"{prefix}{name}": value for name, value in self._lookups.items()}
+        )
 
     @property
     def is_narrowed(self) -> bool:
         """True when this caller sees less than the whole entity."""
-        return bool(self._lookups)
+        return self._grant.is_narrowed or bool(self._lookups)
 
 
 def _branch_scope(request, entity=None, params=None, *, field="branch") -> _BranchScope:
@@ -307,7 +296,13 @@ def _branch_scope(request, entity=None, params=None, *, field="branch") -> _Bran
     per request, so an unknown branch is one 400 rather than a different error depending
     on which population the service happened to filter first.
     """
-    return _BranchScope(_branch_lookups(request, entity, params, field=field))
+    return _BranchScope(
+        # ``include_shared=False``: see :class:`_BranchScope` for why procurement
+        # reads an absent branch as a scope of its own rather than as shared.
+        branch_scope(request, include_shared=False),
+        _branch_filter_lookups(request, entity, params, field=field),
+        field,
+    )
 
 
 def _branch_q(request, entity=None, params=None, *, field="branch", prefix=""):

@@ -25,6 +25,12 @@ from vs_rbac.permissions import (
     HasRBACPermission,
     IsAuthenticatedAndActive,
 )
+# ``include_shared=True`` is spelled out at every call site below rather than left
+# to the default. A null branch means "shared across the school", so a row with no
+# branch stays visible to a branch-pinned caller; getting that backwards hides
+# every school-wide record from a branch admin, which looks like missing data
+# rather than a permission error and so goes unreported.
+from vs_rbac.scoping import branch_q
 
 from .models import (
     Account,
@@ -731,7 +737,9 @@ class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
         from django.db.models.functions import Coalesce
 
         qs = (
-            JournalEntry.objects.filter(entity=entity)
+            JournalEntry.objects.filter(
+                branch_q(self.request, include_shared=True), entity=entity,
+            )
             .select_related("period", "created_by")
             .annotate(_total_debit=Coalesce(Sum("lines__debit"), 0))
         )
@@ -773,7 +781,9 @@ class JournalSummaryView(APIView):
         from .constants import DocumentStatus
 
         entity = resolve_entity(request)
-        qs = JournalEntry.objects.filter(entity=entity)
+        qs = JournalEntry.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        )
         params = request.query_params
         if (source := params.get("source")):
             qs = qs.filter(source=source)
@@ -823,7 +833,9 @@ class JournalEntryDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     def get_queryset(self):
         entity = resolve_entity(self.request)
         return (
-            JournalEntry.objects.filter(entity=entity)
+            JournalEntry.objects.filter(
+                branch_q(self.request, include_shared=True), entity=entity,
+            )
             .select_related("period")
             .prefetch_related("lines__account")
         )
@@ -919,7 +931,9 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
     def entity_qs(self, entity):
         from django.db.models import Q
 
-        qs = Invoice.objects.filter(entity=entity).select_related("customer")
+        qs = Invoice.objects.filter(
+            branch_q(self.request, include_shared=True), entity=entity,
+        ).select_related("customer")
         params = self.request.query_params
         if (status_val := params.get("status")):
             qs = qs.filter(status=status_val)
@@ -987,7 +1001,9 @@ class InvoiceSummaryView(APIView):
 
         entity = resolve_entity(request)
         today = datetime.date.today()
-        base = Invoice.objects.filter(entity=entity)
+        base = Invoice.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        )
         if (search := request.query_params.get("search")):
             base = base.filter(
                 Q(document_number__icontains=search)
@@ -999,8 +1015,10 @@ class InvoiceSummaryView(APIView):
         bal = F("total") - F("amount_paid") - F("amount_credited")
 
         invoiced = posted.aggregate(t=Coalesce(Sum("total"), 0))["t"]
-        collected = Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED).aggregate(
-            t=Coalesce(Sum("amount"), 0))["t"]
+        collected = Payment.objects.filter(
+            branch_q(request, include_shared=True),
+            entity=entity, status=DocumentStatus.POSTED,
+        ).aggregate(t=Coalesce(Sum("amount"), 0))["t"]
         overdue_balance = unpaid_posted.filter(due_date__lt=today).aggregate(t=Coalesce(Sum(bal), 0))["t"]
         outstanding = unpaid_posted.aggregate(t=Coalesce(Sum(bal), 0))["t"]
         total_all = base.aggregate(t=Coalesce(Sum("total"), 0))["t"]
@@ -1021,7 +1039,8 @@ class InvoiceSummaryView(APIView):
         inv_m = {r["m"]: int(r["s"] or 0) for r in posted.filter(invoice_date__gte=start)
                  .annotate(m=TruncMonth("invoice_date")).values("m").annotate(s=Sum("total"))}
         col_m = {r["m"]: int(r["s"] or 0) for r in Payment.objects
-                 .filter(entity=entity, status=DocumentStatus.POSTED, payment_date__gte=start)
+                 .filter(branch_q(request, include_shared=True), entity=entity,
+                         status=DocumentStatus.POSTED, payment_date__gte=start)
                  .annotate(m=TruncMonth("payment_date")).values("m").annotate(s=Sum("amount"))}
         monthly, cur = [], start
         for _ in range(12):
@@ -1064,7 +1083,9 @@ class InvoiceDetailView(APIView):
 
         entity = resolve_entity(request)
         inv = (
-            Invoice.objects.filter(entity=entity, pk=pk)
+            Invoice.objects.filter(
+                branch_q(request, include_shared=True), entity=entity, pk=pk,
+            )
             .select_related("customer", "journal")
             .prefetch_related(
                 "lines__revenue_account", "lines__tax_code",
@@ -1278,7 +1299,9 @@ class InvoiceDocumentView(APIView):
     def _invoice(self, request, pk):
         entity = resolve_entity(request)
         inv = (
-            Invoice.objects.filter(entity=entity, pk=pk)
+            Invoice.objects.filter(
+                branch_q(request, include_shared=True), entity=entity, pk=pk,
+            )
             .select_related("entity__tenant__school_profile", "branch", "customer")
             .prefetch_related("lines__revenue_account", "lines__tax_code", "lines__cost_center")
             .first()
@@ -1322,7 +1345,9 @@ class JournalSubmitView(APIView):
         from vs_workflow.services.submission import submit_for_approval
 
         entity = resolve_entity(request)
-        entry = JournalEntry.objects.filter(entity=entity, id=id).first()
+        entry = JournalEntry.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, id=id,
+        ).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
         from vs_workflow.services import release as release_svc
@@ -1359,7 +1384,9 @@ class JournalPostView(APIView):
         from .posting import post_journal
 
         entity = resolve_entity(request)
-        entry = JournalEntry.objects.filter(entity=entity, id=id).first()
+        entry = JournalEntry.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, id=id,
+        ).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
         if approval_required(entry):
@@ -1391,7 +1418,9 @@ class JournalReverseView(APIView):
         from .posting import reverse_journal
 
         entity = resolve_entity(request)
-        entry = JournalEntry.objects.filter(entity=entity, id=id).first()
+        entry = JournalEntry.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, id=id,
+        ).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
         # Optional reversal date; when omitted the service reverses into the original

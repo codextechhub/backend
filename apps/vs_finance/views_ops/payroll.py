@@ -11,6 +11,7 @@ from core.response import success_response
 from rest_framework.exceptions import ValidationError
 
 from django.db.models import Count
+from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 
 from ..constants import SalaryCalcMethod, SalaryComponentKind, StatutoryType
 from ..views import resolve_entity
@@ -59,7 +60,9 @@ class PayrollRunListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = PayrollRun.objects.filter(entity=entity).prefetch_related("lines")
+        qs = PayrollRun.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).prefetch_related("lines")
         if (status_val := request.query_params.get("run_status")):
             qs = qs.filter(run_status=status_val)
         return self.paginate(
@@ -118,7 +121,7 @@ class PayrollRunSummaryView(_FinanceBase):
         from ..constants import PayrollRunStatus
 
         entity = resolve_entity(request)
-        runs = PayrollRun.objects.filter(entity=entity)
+        runs = PayrollRun.objects.filter(branch_q(request, include_shared=True), entity=entity)
         agg = runs.aggregate(
             runs=Count("id"),
             to_pay=Coalesce(
@@ -141,7 +144,9 @@ class _PayrollActionBase(_FinanceBase):
     # Support the run workflow.
     def _run(self, request, pk):
         entity = resolve_entity(request)
-        run = PayrollRun.objects.filter(entity=entity, pk=pk).first()
+        run = PayrollRun.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk,
+        ).first()
         if run is None:
             raise NotFound("Payroll run not found for this entity.")
         return entity, run

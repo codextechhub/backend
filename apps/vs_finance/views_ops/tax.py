@@ -4,6 +4,7 @@ from __future__ import annotations
 
 
 from rest_framework.exceptions import NotFound, ValidationError
+from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 
 from core.response import success_response
 
@@ -184,7 +185,9 @@ class TaxFilingSummaryView(_FinanceBase):
         from ..constants import TaxFilingStatus
 
         entity = resolve_entity(request)
-        agg = TaxFiling.objects.filter(entity=entity).aggregate(
+        agg = TaxFiling.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).aggregate(
             outstanding=Coalesce(
                 Sum(F("amount_due") - F("amount_paid"),
                     filter=~Q(filing_status=TaxFilingStatus.PAID)), 0),
@@ -211,7 +214,9 @@ class TaxFilingListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = TaxFiling.objects.filter(entity=entity).select_related("obligation")
+        qs = TaxFiling.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).select_related("obligation")
         if (ob := request.query_params.get("obligation")):
             qs = qs.filter(obligation_id=ob)
         if (status_val := request.query_params.get("filing_status")):
@@ -250,7 +255,9 @@ class _TaxFilingActionBase(_FinanceBase):
     # Support the filing workflow.
     def _filing(self, request, pk):
         entity = resolve_entity(request)
-        filing = TaxFiling.objects.filter(entity=entity, pk=pk).select_related(
+        filing = TaxFiling.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk,
+        ).select_related(
             "obligation").first()
         if filing is None:
             raise NotFound("Tax filing not found for this entity.")
