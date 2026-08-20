@@ -215,6 +215,61 @@ can trace endpoints → calculations → output shapes without reading the code 
   it was not created, per the standing rule that a missing module FRD is
   reported rather than generated.
 
+- 📝 `vs_health` - documented: 4 slices in `docs/health/` -
+  `health_signal_collection` (the timing middleware, the in-process buffer,
+  `RequestMetric` and its latency histogram, the percentile maths, the golden
+  signals, endpoint and tenant analytics), `health_uptime_availability` (the
+  service registry, the five probe types, raw results and daily rollups, SLOs,
+  the service grid and the posture banner), `health_incidents_alerts` (alert
+  rules, the per-minute evaluator, auto-incidents, the war-room timeline,
+  reliability stats and deployment annotations), and `health_queues_jobs` (the
+  per-minute queue snapshot, the depth trend, the `celery` service card and the
+  task table over `core.BackgroundJob`). Following the `vs_notifications`,
+  `vs_config` and `vs_exports` precedent, the §8 findings live in a dedicated
+  file, **`error/health/health_code_issues.md`**, which each slice points at.
+  Baseline at the time of writing: **`Ran 27 tests in 2.139s` - OK**
+  (`cd apps && DB_NAME=cx_healthslice ../cx/Scripts/python.exe manage.py test
+  vs_health --settings=apps.settings.local --noinput`). The suite is fast
+  because it is small: 27 tests over an app of ~3,400 lines, with no coverage
+  at all for the probes, the queue snapshot, the task table, or nineteen of the
+  twenty endpoints.
+  **Findings are recorded but NOT yet swept** - the loop stopped at step 3
+  (docs written) and steps 4-5 (briefing, fixes) are outstanding.
+  Four findings were **confirmed by execution** against a real JWT in a
+  throwaway test module that was deleted afterwards; the rest are traced to
+  file and line.
+  The worst item: `/v1/health/tasks/` cannot be reached by any request. Two
+  things want the query parameter named `tenant` and want incompatible values -
+  the auth layer requires a slug (`vs_rbac/authentication.py:95-112`) and
+  `TaskListView` feeds that slug into `filter(tenant_id=…)` against a numeric
+  primary key (`views.py:247-249`) - so `?tenant=codex` is a 500, `?tenant=all`
+  and `?tenant=1` are 404s, and omitting it is a 400. The same collision leaves
+  the tenant filter on the Command Center, API & Endpoint Health and Tenant
+  Health screens permanently inert, because `_tenant_id` swallows the
+  `ValueError` and widens to global. Second: nothing is ever alerted -
+  `AlertRule.channel` is seeded with "PagerDuty", "Slack #sre" and "Zoho Cliq"
+  and read by no code, so a SEV1 incident opens silently and waits for someone
+  to open the screen. Third: `duration_sec` ("sustained for") is not
+  implemented, so a metric hovering at its threshold opens and resolves a fresh
+  incident every minute - and that flapping reaches `INC-10000` within a week,
+  at which point the string-sorted code allocator (`tasks.py:221-230`) returns
+  a duplicate and the `IntegrityError` kills the alert engine permanently.
+  Fourth: three seeded probes point at `/v1/` and `/v1/payments/` (which do not
+  resolve) and `/v1/user/` (which refuses anonymous callers), so `api`, `auth`
+  and `payments` sit at WARNING forever and the posture banner reads
+  "3 services degraded" on a healthy platform - which then feeds the rollup's
+  treatment of WARNING as downtime into a permanently breached SLO and a
+  permanently open incident.
+  Worth recording as a strength: `platform.health.view` / `.manage` are
+  declared `PermissionScope.PLATFORM` at creation (`seed.py:71`), so unlike
+  `platform.schools` in `vs_exports` and `platform.audit.view` in `vs_audit`,
+  the cross-tenant aggregates here genuinely cannot be reached from a school
+  role. The residual is that neither key is granted to `xvs_platform_admin`, so
+  in practice only the super admin can open the console.
+  There is **no health FRD folder** under `docs/frd/functional-requirements/`;
+  it was not created, per the standing rule that a missing module FRD is
+  reported rather than generated.
+
 ## The loop (per slice)
 
 1. **Trace the real code** - models, service functions, views (rbac keys + request
