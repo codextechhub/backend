@@ -9,7 +9,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.core.files import File
 from django.core.files.storage import default_storage
-from django.db.models import Count, Q, Value
+from django.db.models import Count, Exists, OuterRef, Q, Value
 from django.db.models.functions import Concat, TruncDate, TruncHour
 from django.http import FileResponse
 from django.utils import timezone
@@ -61,6 +61,99 @@ EXPORT_CSV_HEADER = [
 
 # Rows are written and measured in blocks of this size.
 _EXPORT_CHUNK = 500
+
+
+# -----------------------------------------------------------------------------
+# Who may read an audit row
+# -----------------------------------------------------------------------------
+
+def audit_scope_predicate(request):
+    """The ``Q`` confining an ``AuditEvent`` read to the caller's own tenant.
+
+    Returns ``None`` for a platform-tenant caller, who reads across tenants by
+    construction: that is what the console exists for, and it is the one
+    audience the key's ``platform.`` namespace actually describes.
+
+    Everyone else is confined. ``platform.audit.view`` is deliberately
+    ``PermissionScope.TENANT`` - ``vs_rbac.models.PermissionScope`` and
+    ``seed_platform_permissions.TENANT_HOLDABLE_KEYS`` both say it belongs to
+    "audit officers working inside a tenant" - so holding the key says nothing
+    about whose rows the holder may read. Only the queryset can say that, and
+    until now it did not: Bright Star's audit officer opening the Event Explorer
+    was handed Greenfield's purchase-order approvals, Greenfield's staff names
+    and Greenfield's password resets. The ``tenant_slug`` filter is a narrowing
+    convenience, not a boundary - it narrows if she asks and does nothing if she
+    does not.
+
+    **Why the null-tenant arm exists.** ``AuditEvent.tenant`` is nullable and
+    only started being populated in d1ceccb (2026-08-19), which deliberately did
+    not backfill. A closed historical set of rows therefore sits at
+    ``tenant = NULL`` while still recording the owning tenant's pk in
+    ``metadata['tenant_id']``. Matching on the column alone would hide Bright
+    Star's own history from Bright Star's auditor; widening to every null row
+    would hand her Greenfield's. Matching the id recorded at the time returns
+    exactly the rows that are hers, recovered rather than inferred.
+
+    **The null set here is wider than the identity stream's.** This queryset
+    covers every module, and only three writers ever recorded that id:
+    ``vs_user.services.audit.log_auth_event`` (since 661a73a, the whole IDENTITY
+    stream), ``vs_rbac.signals`` and ``vs_rbac.services`` (role assignments,
+    role templates and permission changes). Finance, procurement, payments,
+    imports and the rest never did, so their pre-d1ceccb rows carry no id and
+    stay platform-only. Post-d1ceccb rows written under a PLATFORM assertion are
+    also null on purpose (see :func:`~vs_audit.services.resolve_event_tenant`)
+    and stay platform-only too. Both are the safe direction to be wrong in: a
+    school sees less of its own history than it might, never another school's.
+
+    The gate is the caller's *home* tenant kind, which no grant and no
+    ``?tenant=`` can change. Under impersonation ``request.user`` is the
+    effective (target) user, so a Codex staffer proxied as a Bright Star account
+    is confined to Bright Star - which is what being proxied means.
+    """
+    user = getattr(request, "user", None)
+    home = getattr(user, "tenant", None)
+    if getattr(home, "kind", None) == Tenant.Kind.PLATFORM:
+        return None
+
+    tenant = getattr(request, "tenant", None) or home
+    if tenant is None:
+        # A caller who is inside no tenant cannot be inside this one. Every
+        # authenticated request carries a tenant today, so this is unreachable;
+        # it fails closed so that it stays unreachable if that ever changes.
+        return Q(pk__in=[])
+
+    return (
+        Q(tenant=tenant)
+        | Q(tenant__isnull=True, metadata__tenant_id=str(tenant.pk))
+    )
+
+
+def scope_events_to_caller(queryset, request):
+    """Confine an ``AuditEvent`` queryset with :func:`audit_scope_predicate`."""
+    predicate = audit_scope_predicate(request)
+    return queryset if predicate is None else queryset.filter(predicate)
+
+
+def scope_export_jobs_to_caller(queryset, request):
+    """Confine an ``AuditExportJob`` queryset to the caller's own tenant.
+
+    ``AuditExportJob`` has no tenant column, so the requester is what bounds it
+    - the same reasoning ``AuditExportJobDownloadView`` already documents, one
+    step wider. The download stays the requester's own; the history is the
+    tenant's, because a school's second audit officer should see that the first
+    one took the trail out of the building.
+
+    A job whose requester has since been deleted (``requested_by`` is
+    ``SET_NULL``) drops out of a tenant's history rather than into everyone's.
+    """
+    user = getattr(request, "user", None)
+    home = getattr(user, "tenant", None)
+    if getattr(home, "kind", None) == Tenant.Kind.PLATFORM:
+        return queryset
+    tenant = getattr(request, "tenant", None) or home
+    if tenant is None:
+        return queryset.none()
+    return queryset.filter(requested_by__tenant=tenant)
 
 
 # -----------------------------------------------------------------------------
@@ -229,6 +322,10 @@ class AuditEventListView(generics.ListAPIView):
         # turns one query into one-per-row on a paginated screen.
         queryset = AuditEvent.objects.select_related("actor_user", "tenant").all()
 
+        # The boundary comes first, so ``tenant_slug`` below can only ever
+        # narrow inside what this caller may already read - never widen it.
+        queryset = scope_events_to_caller(queryset, self.request)
+
         # Validate incoming filters first
         filter_serializer = AuditEventFilterSerializer(data=self.request.query_params)
         filter_serializer.is_valid(raise_exception=True)
@@ -246,13 +343,19 @@ class AuditEventDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     docstring-name: Audit events
     """
 
-    queryset = AuditEvent.objects.select_related(
-        "actor_user", "tenant",
-    ).all()
     serializer_class = AuditEventDetailSerializer
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.audit.view"
     lookup_field = "id"
+
+    def get_queryset(self):
+        # Same boundary as the list, so another tenant's event is a 404 even
+        # when its id is already known - from an export taken before this was
+        # fixed, from a log line, or from a shared link.
+        return scope_events_to_caller(
+            AuditEvent.objects.select_related("actor_user", "tenant").all(),
+            self.request,
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -274,6 +377,23 @@ class EntityAuditTrailListView(generics.ListAPIView):
 
     def get_queryset(self):
         qs = EntityAuditTrail.objects.all()
+
+        # ``EntityAuditTrail`` has no tenant column - it is a rollup keyed only
+        # on (entity_type, entity_id) - so it is bounded by the events behind
+        # it: an entity is listed when the caller can read at least one of its
+        # events. Without this the catalogue names every audited object on the
+        # platform, and ``entity_label`` is a readable name ("Purchase order
+        # 00042 for the science block"), so the list alone tells Bright Star
+        # what Greenfield has been buying.
+        predicate = audit_scope_predicate(self.request)
+        if predicate is not None:
+            qs = qs.filter(Exists(
+                AuditEvent.objects.filter(predicate).filter(
+                    entity_type=OuterRef("entity_type"),
+                    entity_id=OuterRef("entity_id"),
+                )
+            ))
+
         params = self.request.query_params
         if entity_type := params.get("entity_type"):
             qs = qs.filter(entity_type=entity_type)
@@ -365,15 +485,23 @@ class EntityAuditTrailDetailView(APIView):
 
         # The whole trail is serialized in one response, so the tenant column
         # is one join here or one query per event.
-        event_qs = AuditEvent.objects.select_related(
-            "actor_user", "tenant",
-        ).filter(
-            entity_type=entity_type,
-            entity_id=entity_id,
+        #
+        # This route is the enumerable one: ``entity_type`` and ``entity_id``
+        # are guessable in a way a UUID is not, so ``/entity-trails/User/42/``
+        # walked Greenfield's staff one integer at a time. The same boundary as
+        # the Explorer applies, and an entity with no event this caller may read
+        # is a 404 rather than an empty trail - whether Greenfield audited
+        # something is not Bright Star's business either.
+        event_qs = scope_events_to_caller(
+            AuditEvent.objects.select_related("actor_user", "tenant").filter(
+                entity_type=entity_type,
+                entity_id=entity_id,
+            ),
+            request,
         )
 
         trail = trail_qs.first()
-        if not trail:
+        if not trail or not event_qs.exists():
             return error_response(
                 message="No audit trail found for this entity.",
                 status=404,
@@ -503,9 +631,13 @@ class AuditExportJobListView(generics.ListCreateAPIView):
     rbac_permission = "platform.audit.export"
 
     def get_queryset(self):
-        queryset = AuditExportJob.objects.select_related(
-            "requested_by",
-        ).all()
+        # ``requested_by`` is rendered by ``UserSlimSerializer``, so an unscoped
+        # history handed Bright Star the name and email of every Codex and
+        # Greenfield staff member who has ever run an export.
+        queryset = scope_export_jobs_to_caller(
+            AuditExportJob.objects.select_related("requested_by").all(),
+            self.request,
+        )
 
         status_value = self.request.query_params.get("status")
 
@@ -532,9 +664,14 @@ class AuditExportJobListView(generics.ListCreateAPIView):
         filter_serializer.is_valid(raise_exception=True)
         normalized_filter_payload = filter_serializer.validated_data
 
-        # Build exports through exactly the same validated filter path as the list.
+        # Build exports through exactly the same validated filter path as the
+        # list - and the same boundary. This is the copy that leaves the
+        # building, so it must not be able to carry rows the screen would not
+        # have shown.
         qs = apply_audit_event_filters(
-            AuditEvent.objects.select_related("actor_user").all(),
+            scope_events_to_caller(
+                AuditEvent.objects.select_related("actor_user").all(), request,
+            ),
             normalized_filter_payload,
         ).order_by("-event_at")
 
@@ -621,7 +758,26 @@ class AuditDashboardSummaryView(APIView):
         last_14d = now - timedelta(days=14)
         last_30d = now - timedelta(days=30)
 
-        events_24h = AuditEvent.objects.filter(event_at__gte=last_24h)
+        # Every series below is an aggregate over the same rows the Event
+        # Explorer lists, so it answers to the same boundary. A count is still
+        # a disclosure: an unscoped critical_heatmap tells Bright Star which
+        # nights Greenfield has incidents.
+        #
+        # ``LoginSession`` and ``AuthAttempt`` are not filtered here because
+        # their default manager is ``TenantAwareManager``, which already applies
+        # the request's tenant. ``AccountLockout`` has no tenant column at all,
+        # so it goes through its user.
+        predicate = audit_scope_predicate(request)
+        events = AuditEvent.objects.all()
+        lockouts = AccountLockout.objects.all()
+        impersonations = ImpersonationSession.objects.all()
+        if predicate is not None:
+            scope_tenant = getattr(request, "tenant", None) or request.user.tenant
+            events = events.filter(predicate)
+            lockouts = lockouts.filter(user__tenant=scope_tenant)
+            impersonations = impersonations.filter(tenant=scope_tenant)
+
+        events_24h = events.filter(event_at__gte=last_24h)
 
         kpis = {
             "active_sessions": LoginSession.objects.filter(is_active=True).count(),
@@ -630,13 +786,13 @@ class AuditDashboardSummaryView(APIView):
             "failed_denied_24h": events_24h.filter(
                 status__in=[AuditStatus.FAILED, AuditStatus.DENIED]
             ).count(),
-            "locked_accounts": AccountLockout.objects.filter(locked_until__gt=now).count(),
-            "active_impersonations": ImpersonationSession.objects.filter(status="ACTIVE").count(),
+            "locked_accounts": lockouts.filter(locked_until__gt=now).count(),
+            "active_impersonations": impersonations.filter(status="ACTIVE").count(),
         }
 
         # Daily severity rollup for the last 14 days
         severity_rows = (
-            AuditEvent.objects.filter(event_at__gte=last_14d)
+            events.filter(event_at__gte=last_14d)
             .annotate(day=TruncDate("event_at"))
             .values("day", "severity")
             .annotate(count=Count("id"))
@@ -681,10 +837,8 @@ class AuditDashboardSummaryView(APIView):
         ]
 
         # Critical event heatmap: hour x weekday for last 30 days
-        critical_qs = (
-            AuditEvent.objects.filter(
-                event_at__gte=last_30d, severity=AuditSeverity.CRITICAL
-            )
+        critical_qs = events.filter(
+            event_at__gte=last_30d, severity=AuditSeverity.CRITICAL
         )
         grid = [[0] * 24 for _ in range(7)]
         for event in critical_qs.only("event_at"):
@@ -711,13 +865,19 @@ class AuditExportJobDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     docstring-name: Audit export jobs
     """
 
-    queryset = AuditExportJob.objects.select_related(
-        "requested_by",
-    ).all()
     serializer_class = AuditExportJobDetailSerializer
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.audit.export"
     lookup_field = "id"
+
+    def get_queryset(self):
+        # Same boundary as the history list. The download below is narrower
+        # still - the requester's own - so a job visible here may legitimately
+        # answer 404 on its file.
+        return scope_export_jobs_to_caller(
+            AuditExportJob.objects.select_related("requested_by").all(),
+            self.request,
+        )
 
 
 class AuditExportJobDownloadView(APIView):

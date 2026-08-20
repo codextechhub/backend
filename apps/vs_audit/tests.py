@@ -890,3 +890,348 @@ class AuditExportFailureStateTests(AuditExportFileFixture, TestCase):
         self.assertEqual(job.status, ExportJobStatus.FAILED)
         self.assertTrue(job.failure_reason)
         self.assertIsNotNone(job.completed_at)
+
+
+# -----------------------------------------------------------------------------
+# Who may read an audit row: the tenant boundary on every audit surface
+# -----------------------------------------------------------------------------
+
+class AuditTenantIsolationFixture:
+    """Two schools with audit officers of their own, and a Codex reviewer.
+
+    ``bright_officer`` and ``green_officer`` hold exactly the same two keys -
+    ``platform.audit.view`` and ``platform.audit.export`` - inside different
+    tenants, which is the arrangement ``PermissionScope.TENANT`` exists to
+    allow and which ``seed_platform_permissions`` names in so many words.
+    ``reviewer`` holds them on the codex PLATFORM tenant and must keep reading
+    across every school.
+
+    The events are written in all three shapes the table actually holds:
+
+    * ``*_current`` - ``tenant`` populated, the shape every row has had since
+      d1ceccb;
+    * ``*_legacy`` - ``tenant`` NULL with the owner's pk in
+      ``metadata['tenant_id']``, the shape d1ceccb deliberately did not
+      backfill;
+    * ``unattributed`` - NULL with no recorded id at all, older than 661a73a
+      and therefore readable by nobody but platform staff.
+    """
+
+    def build(self):
+        call_command("seed_actions", verbosity=0)
+        call_command("seed_platform_permissions", verbosity=0)
+        # Events below are written outside any request, so the ambient tenant
+        # must not survive from an earlier test and stamp itself on them.
+        clear_request_context()
+
+        self.platform = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+        self.bright_star = Tenant.objects.create(
+            name="Bright Star School", slug="bright-star",
+            kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
+        )
+        self.greenfield = Tenant.objects.create(
+            name="Greenfield School", slug="greenfield",
+            kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
+        )
+
+        self.reviewer = self._officer("cx.reviewer@example.test", self.platform)
+        self.bright_officer = self._officer("bright.officer@example.test", self.bright_star)
+        self.green_officer = self._officer("green.officer@example.test", self.greenfield)
+
+        self.bright_current = self._event("PO-BRIGHT-1", tenant=self.bright_star)
+        self.bright_legacy = self._event("PO-BRIGHT-2", owner=self.bright_star)
+        self.green_current = self._event(
+            "PO-GREEN-1", tenant=self.greenfield, severity=AuditSeverity.CRITICAL,
+        )
+        self.green_legacy = self._event(
+            "PO-GREEN-2", owner=self.greenfield, severity=AuditSeverity.CRITICAL,
+        )
+        self.unattributed = self._event("PO-ANON")
+
+    OWN_ROWS = {"PO-BRIGHT-1", "PO-BRIGHT-2"}
+    OTHER_ROWS = {"PO-GREEN-1", "PO-GREEN-2"}
+    EVERY_ROW = OWN_ROWS | OTHER_ROWS | {"PO-ANON"}
+    FILTER = {"entity_type": "PurchaseOrder"}
+
+    def _officer(self, email, tenant):
+        from vs_rbac.models import (
+            Permission, TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment,
+        )
+
+        user = User.objects.create_user(
+            email=email, password="Str0ng!pass123", status="ACTIVE",
+            first_name=email.split(".")[0].title(), last_name="Officer",
+            tenant=tenant,
+        )
+        template, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=tenant, key="audit_officer",
+            defaults={"name": "Audit officer", "status": "ACTIVE"},
+        )
+        keys = ["platform.audit.view", "platform.audit.export"]
+        for permission in Permission.objects.filter(key__in=keys):
+            TenantRolePermission.objects.get_or_create(
+                role=template, permission=permission, defaults={"granted": True},
+            )
+        TenantUserRoleAssignment.objects.create(
+            tenant=tenant, user=user, role=template, assignment_status="ACTIVE",
+        )
+        return user
+
+    def _event(self, entity_id, *, tenant=None, owner=None, severity=AuditSeverity.WARNING):
+        """Write one procurement event, through the real emitter so a trail exists."""
+        event = emit_audit_event(
+            module_key=AuditModuleKey.PROCUREMENT,
+            action_type=AuditActionType.PROCUREMENT_ACTION,
+            severity=severity,
+            status=AuditStatus.FAILED,
+            tenant=tenant,
+            entity_type="PurchaseOrder",
+            entity_id=entity_id,
+            entity_label=f"Purchase order {entity_id} for the science block",
+            summary=f"Approval failed on purchase order {entity_id}",
+            metadata={"tenant_id": str(owner.pk)} if owner is not None else {},
+        )
+        self.assertIsNotNone(event, f"{entity_id} was swallowed by emit_audit_event")
+        return event
+
+    @staticmethod
+    def rows(response):
+        payload = response.data["data"]
+        if isinstance(payload, dict):
+            return payload.get("results", [])
+        return payload
+
+    def entity_ids(self, response):
+        return {row["entity_id"] for row in self.rows(response)}
+
+
+class AuditEventTenantIsolationTests(AuditTenantIsolationFixture, TestCase):
+    """Bright Star's audit officer may read Bright Star's trail and no other."""
+
+    def setUp(self):
+        self.build()
+        self.bright = TenantAPIClient(self.bright_officer)
+        self.green = TenantAPIClient(self.green_officer)
+        self.cx = TenantAPIClient(self.reviewer)
+
+    def test_a_school_officer_reads_only_their_own_tenants_events(self):
+        response = self.bright.get("/v1/audit/events/", dict(self.FILTER))
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.entity_ids(response), self.OWN_ROWS)
+        # Not merely absent from the id set: nothing of Greenfield's rides
+        # along in a summary, a label or an actor name either.
+        self.assertNotIn("PO-GREEN", str(response.data))
+
+    def test_a_school_officer_still_sees_their_pre_backfill_history(self):
+        # The row d1ceccb left at tenant=NULL is recovered through the pk that
+        # was recorded in metadata at the time - not inferred, and not the
+        # whole null set.
+        self.assertIsNone(self.bright_legacy.tenant_id)
+
+        response = self.bright.get("/v1/audit/events/", dict(self.FILTER))
+
+        self.assertIn("PO-BRIGHT-2", self.entity_ids(response))
+
+    def test_a_null_row_belonging_to_nobody_stays_platform_only(self):
+        # Older than 661a73a: no column, no recorded id, so no school may claim
+        # it. Being invisible to a school is the safe direction to be wrong in.
+        bright = self.bright.get("/v1/audit/events/", dict(self.FILTER))
+        green = self.green.get("/v1/audit/events/", dict(self.FILTER))
+
+        self.assertNotIn("PO-ANON", self.entity_ids(bright))
+        self.assertNotIn("PO-ANON", self.entity_ids(green))
+
+    def test_each_school_sees_its_own_trail_and_only_its_own(self):
+        response = self.green.get("/v1/audit/events/", dict(self.FILTER))
+
+        self.assertEqual(self.entity_ids(response), self.OTHER_ROWS)
+
+    def test_a_platform_reviewer_still_reads_across_tenants(self):
+        response = self.cx.get("/v1/audit/events/", dict(self.FILTER))
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.entity_ids(response), self.EVERY_ROW)
+
+    def test_the_tenant_slug_filter_still_narrows_inside_the_boundary(self):
+        response = self.bright.get(
+            "/v1/audit/events/", {**self.FILTER, "tenant_slug": self.bright_star.slug},
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        # Narrowed to the column, so the legacy null row drops out - which is
+        # what asking for "rows stamped bright-star" means.
+        self.assertEqual(self.entity_ids(response), {"PO-BRIGHT-1"})
+
+    def test_the_tenant_slug_filter_cannot_widen_the_boundary(self):
+        response = self.bright.get(
+            "/v1/audit/events/", {**self.FILTER, "tenant_slug": self.greenfield.slug},
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.entity_ids(response), set())
+
+    def test_the_null_sentinel_cannot_reach_another_schools_null_rows(self):
+        response = self.bright.get(
+            "/v1/audit/events/", {**self.FILTER, "tenant_slug": NO_TENANT},
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.entity_ids(response), {"PO-BRIGHT-2"})
+
+    def test_the_permission_gate_is_unchanged_for_the_holder(self):
+        # Scoping must narrow what a holder reads, never lock them out of the
+        # surface: both officers still get a 200 and rows of their own.
+        for client in (self.bright, self.green, self.cx):
+            response = client.get("/v1/audit/events/", dict(self.FILTER))
+            self.assertEqual(response.status_code, 200, response.data)
+            self.assertTrue(self.rows(response))
+
+
+class AuditEventDetailTenantIsolationTests(AuditTenantIsolationFixture, TestCase):
+    """Knowing an event's id is not authority to read it."""
+
+    def setUp(self):
+        self.build()
+        self.bright = TenantAPIClient(self.bright_officer)
+
+    def test_another_tenants_event_is_a_404_even_with_its_id(self):
+        response = self.bright.get(f"/v1/audit/events/{self.green_current.id}/")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn("PO-GREEN", str(response.data))
+
+    def test_another_tenants_legacy_event_is_a_404_too(self):
+        response = self.bright.get(f"/v1/audit/events/{self.green_legacy.id}/")
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_the_callers_own_events_still_open_in_both_shapes(self):
+        for event in (self.bright_current, self.bright_legacy):
+            response = self.bright.get(f"/v1/audit/events/{event.id}/")
+            self.assertEqual(response.status_code, 200, response.data)
+
+    def test_a_platform_reviewer_still_opens_any_event(self):
+        response = TenantAPIClient(self.reviewer).get(
+            f"/v1/audit/events/{self.green_current.id}/",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+
+
+class EntityAuditTrailTenantIsolationTests(AuditTenantIsolationFixture, TestCase):
+    """The entity catalogue is the enumerable route, so it is bounded too."""
+
+    def setUp(self):
+        self.build()
+        self.bright = TenantAPIClient(self.bright_officer)
+
+    def test_the_catalogue_lists_only_entities_the_caller_can_read(self):
+        response = self.bright.get("/v1/audit/entity-trails/", dict(self.FILTER))
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.entity_ids(response), self.OWN_ROWS)
+        self.assertNotIn("PO-GREEN", str(response.data))
+
+    def test_a_platform_reviewer_still_sees_the_whole_catalogue(self):
+        response = TenantAPIClient(self.reviewer).get(
+            "/v1/audit/entity-trails/", dict(self.FILTER),
+        )
+
+        self.assertEqual(self.entity_ids(response), self.EVERY_ROW)
+
+    def test_another_tenants_trail_is_a_404_not_an_empty_trail(self):
+        response = self.bright.get("/v1/audit/entity-trails/PurchaseOrder/PO-GREEN-1/")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn("science block", str(response.data))
+
+    def test_the_callers_own_trail_still_opens_in_both_shapes(self):
+        for entity_id in sorted(self.OWN_ROWS):
+            response = self.bright.get(
+                f"/v1/audit/entity-trails/PurchaseOrder/{entity_id}/",
+            )
+            self.assertEqual(response.status_code, 200, response.data)
+            events = response.data["data"]["events"]
+            self.assertEqual({row["entity_id"] for row in events}, {entity_id})
+
+
+class AuditDashboardTenantIsolationTests(AuditTenantIsolationFixture, TestCase):
+    """A count is a disclosure: the dashboard answers to the same boundary."""
+
+    def setUp(self):
+        self.build()
+
+    def _kpis(self, user):
+        response = TenantAPIClient(user).get("/v1/audit/dashboard-summary/")
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["data"]
+
+    def test_the_dashboard_counts_only_the_callers_own_events(self):
+        # Both of Greenfield's rows are CRITICAL and nobody else's are.
+        self.assertEqual(self._kpis(self.bright_officer)["kpis"]["critical_24h"], 0)
+        self.assertEqual(self._kpis(self.green_officer)["kpis"]["critical_24h"], 2)
+        self.assertEqual(self._kpis(self.reviewer)["kpis"]["critical_24h"], 2)
+
+    def test_the_critical_heatmap_does_not_leak_another_schools_incidents(self):
+        def total(payload):
+            return sum(sum(row) for row in payload["critical_heatmap"])
+
+        self.assertEqual(total(self._kpis(self.bright_officer)), 0)
+        self.assertEqual(total(self._kpis(self.green_officer)), 2)
+
+    def test_the_severity_series_does_not_leak_another_schools_volume(self):
+        def criticals(payload):
+            return sum(day["CRITICAL"] for day in payload["severity_series"])
+
+        self.assertEqual(criticals(self._kpis(self.bright_officer)), 0)
+        self.assertEqual(criticals(self._kpis(self.green_officer)), 2)
+
+
+class AuditExportTenantIsolationTests(AuditTenantIsolationFixture, TestCase):
+    """The copy that leaves the building carries no more than the screen showed."""
+
+    def setUp(self):
+        self.build()
+        self.bright = TenantAPIClient(self.bright_officer)
+
+    def _export(self, client):
+        response = client.post(
+            "/v1/audit/exports/", {"filter_payload": dict(self.FILTER)}, format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        return AuditExportJob.objects.get(id=response.data["data"]["id"])
+
+    def test_an_export_carries_only_the_callers_own_rows(self):
+        job = self._export(self.bright)
+
+        self.assertEqual(job.row_count, 2)
+        with default_storage.open(job.file_path, "rb") as handle:
+            body = handle.read().decode("utf-8")
+        self.assertIn("PO-BRIGHT-1", body)
+        self.assertIn("PO-BRIGHT-2", body)
+        self.assertNotIn("PO-GREEN", body)
+        self.assertNotIn("PO-ANON", body)
+
+    def test_a_platform_export_still_covers_every_tenant(self):
+        job = self._export(TenantAPIClient(self.reviewer))
+
+        self.assertEqual(job.row_count, len(self.EVERY_ROW))
+
+    def test_export_history_shows_only_the_callers_own_tenant(self):
+        cx_job = self._export(TenantAPIClient(self.reviewer))
+        own_job = self._export(self.bright)
+
+        response = self.bright.get("/v1/audit/exports/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        ids = {row["id"] for row in self.rows(response)}
+        self.assertIn(str(own_job.id), ids)
+        self.assertNotIn(str(cx_job.id), ids)
+
+    def test_another_tenants_export_job_is_not_readable_by_id(self):
+        cx_job = self._export(TenantAPIClient(self.reviewer))
+
+        response = self.bright.get(f"/v1/audit/exports/{cx_job.id}/")
+
+        self.assertEqual(response.status_code, 404)
