@@ -5,8 +5,8 @@ Backfills the CX organogram for an existing database:
 
   1. Builds a starter OrgNode tree (DIVISION → DEPARTMENT → TEAM).
   2. Creates the Positions (seats) for that tree, with solid reporting lines.
-  3. Ensures every CX_STAFF user has a PlatformStaffProfile.
-  4. Auto-assigns CX_STAFF users who have no current primary seat - filling the
+  3. Ensures every platform user has a PlatformStaffProfile.
+  4. Auto-assigns platform users who have no current primary seat - filling the
      management seats first (so line-manager / department-head derivation works)
      then round-robin across the team seats.
 
@@ -29,6 +29,7 @@ from itertools import cycle
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
+from vs_tenants.models import Tenant
 from vs_user.models import User, OrgNode, Position, PlatformStaffProfile
 from vs_user.services.organogram import OrganogramService
 
@@ -157,7 +158,7 @@ class Command(BaseCommand):
                 stats["heads"] += 1
 
     def _backfill_profiles(self, stats):
-        cx_users = User.objects.filter(user_type=User.UserType.CX_STAFF)
+        cx_users = User.objects.filter(tenant__kind=Tenant.Kind.PLATFORM)
         for user in cx_users:
             _, created = PlatformStaffProfile.objects.get_or_create(user=user)
             if created:
@@ -172,7 +173,9 @@ class Command(BaseCommand):
             .filter(role__key="xvs_super_admin", role__tenant__kind="PLATFORM")
             .values_list("user_id", flat=True)
         )
-        cx_users = list(User.objects.filter(user_type=User.UserType.CX_STAFF).order_by("id"))
+        cx_users = list(
+            User.objects.filter(tenant__kind=Tenant.Kind.PLATFORM).order_by("id")
+        )
         cx_users.sort(key=lambda u: (u.id not in admin_ids, u.id))
 
         # Skip anyone who already has a current primary seat (unless --reassign).

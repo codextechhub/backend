@@ -27,10 +27,15 @@ slug_validator = RegexValidator(
 )
 
 
-RESERVED_TENANT_SLUGS = {
-    "admin", "api", "auth", "login", "logout", "www", "root", "static",
-    "media", "health", "status", "support", "system", "internal", "codex",
-}
+# The one list, which now lives in the platform app beside the tenant slug
+# validator: the names it protects are platform hostnames, and an ORGANIZATION
+# or VIGIL tenant gets a subdomain off the same wildcard as a school. Re-exported
+# here because this app, its serializers and vs_import_data all read it by this
+# name. Extend it in vs_tenants, not here.
+from vs_tenants.models import (  # noqa: E402  (kept beside the name it replaces)
+    RESERVED_TENANT_SLUGS,
+    slug_is_reserved,
+)
 
 
 # -----------------------------------------------------------------------------
@@ -120,14 +125,6 @@ class School(TimeStampedModel):
         website / motto / registration_id: Optional metadata displayed in onboarding.
         term_structure: Academic calendar definition (`TermStructure` choices).
         currency: Preferred billing currency (`Currency` choices).
-        operates_branches: Whether the school runs more than one site. This is
-            the *intent*, not a count: onboarding reads it to decide whether the
-            BRANCH_SETUP task exists for this school at all, so a school that
-            plans branches but has not created any yet still says True, and a
-            single-site school never sees a branch step it will never finish.
-            Branch-optional schools are real, so the default is False and
-            creating a school with inline branches raises it to True; a school
-            that decides later corrects it through the update endpoint.
         status: Operational flag (`SchoolStatus` choices, indexed).
         activated_at / deactivated_at: Lifecycle timestamps for activation and deactivation.
 
@@ -166,13 +163,10 @@ class School(TimeStampedModel):
     currency = models.CharField(max_length=8, blank=True, choices=Currency.choices, default=Currency.NGN)
     registration_id = models.CharField(max_length=64, blank=True, default="")
 
-    operates_branches = models.BooleanField(
-        default=False,
-        help_text=(
-            "Whether this school runs more than one site. Onboarding reads this "
-            "to decide whether branch setup is a step the school must complete."
-        ),
-    )
+    # How many sites a school runs is not stored here: it is counted. There was
+    # a boolean for it, and a flag can disagree with the rows it describes, so a
+    # school could claim one site while its ``tenant.branches`` said three. Ask
+    # the branches. Every school has at least one from the moment it is created.
 
     status = models.CharField(
         max_length=16,
@@ -199,11 +193,78 @@ class School(TimeStampedModel):
 
     def clean(self):
         super().clean()
-        slug = (self.slug or "").strip().lower()
-        if slug in RESERVED_TENANT_SLUGS:
+        if slug_is_reserved(self.slug):
             raise ValidationError({"slug": "This slug is reserved. Choose another."})
 
+    def _check_slug_change(self) -> bool:
+        """Refuse a post-go-live rename, and report whether the school is live.
+
+        Returns ``True`` once the school has been live, which is also the
+        answer to "may its slug still be mirrored onto its tenant?" - see
+        :meth:`save`.
+
+        ``School.save()`` seeds ``Tenant.slug`` at creation and deliberately
+        never syncs it afterwards, so the two are only equal because nothing
+        moves either one. Guarding the tenant alone would leave the school's
+        own slug - the ``/v1/i/<slug>/`` path key - free to drift away from the
+        sign-in address after go-live, which is a different bug with the same
+        cause. Same test as ``Tenant._assert_slug_unchanged_once_live`` and for
+        the same reasons: ``activated_at`` is written once, so it answers "has
+        this school ever been live?" rather than "is it live right now?", and a
+        school suspended for an unpaid invoice cannot rename itself while it is
+        off.
+        """
+        stored = self._stored_identity()
+        if stored is None:
+            return False
+        has_been_live = self._has_been_live(stored)
+        if has_been_live and stored["slug"] != self.slug:
+            raise ValidationError({
+                "slug": (
+                    "This school is live, so its address is fixed. Changing it "
+                    "would break every link and sign-in its users already have."
+                )
+            })
+        return has_been_live
+
+    def _stored_identity(self):
+        """The row as the database currently holds it, or ``None`` if unsaved.
+
+        Read as a dict rather than as ``self``, because every caller here is
+        asking what the *stored* school looks like, and the in-memory instance
+        is exactly the thing that may already have been edited.
+        """
+        if not self.pk:
+            return None
+        return (
+            School.objects.filter(pk=self.pk)
+            .values("slug", "activated_at", "status")
+            .first()
+        )
+
+    @staticmethod
+    def _has_been_live(stored) -> bool:
+        return (
+            stored["activated_at"] is not None
+            or stored["status"] == SchoolStatus.ACTIVE
+        )
+
+    def has_ever_been_live(self) -> bool:
+        """Whether this school has been live at any point, per the stored row.
+
+        The public half of :meth:`_check_slug_change`, for callers that need to
+        ask the question before attempting the write - the update serializer
+        refuses a rename in ``validate_slug`` so the caller gets a typed 409
+        rather than a field error escaping from ``save()``. Both read the same
+        row and apply the same test, so the API and the model cannot disagree
+        about which schools are frozen.
+        """
+        stored = self._stored_identity()
+        return stored is not None and self._has_been_live(stored)
+
     def save(self, *args, **kwargs):
+        self.slug = (self.slug or "").strip().lower()
+        slug_is_frozen = self._check_slug_change()
         # Keep direct ORM/test creation safe as well as the onboarding service:
         # the pair is committed or rolled back as one unit.
         with transaction.atomic():
@@ -259,14 +320,29 @@ class School(TimeStampedModel):
                 pending_since=previous.get("pending_since"),
                 warned_at=previous.get("expiry_warned_at"),
             )
-            Tenant.objects.filter(pk=self.tenant_id).update(
-                name=self.name,
-                status=tenant_status,
-                activated_at=self.activated_at,
-                deactivated_at=self.deactivated_at,
-                pending_since=pending_since,
-                expiry_warned_at=expiry_warned_at,
-            )
+            # The slug is mirrored now, where it used to be seeded at creation
+            # and then left alone. Correcting a typo before go-live has to
+            # reach the tenant or it does not reach the sign-in address at all,
+            # which is the only address that matters: a school that fixed
+            # ``corona-secondry`` on its own row would still be served at the
+            # misspelt host its admins actually type.
+            #
+            # And only before go-live. A live school's slug cannot have changed
+            # (``_check_slug_change`` refused it), but a school whose slug
+            # drifted from its tenant's under the old rules must not have that
+            # drift resolved by an ordinary metadata save silently moving a
+            # live school's sign-in address.
+            mirrored = {
+                "name": self.name,
+                "status": tenant_status,
+                "activated_at": self.activated_at,
+                "deactivated_at": self.deactivated_at,
+                "pending_since": pending_since,
+                "expiry_warned_at": expiry_warned_at,
+            }
+            if not slug_is_frozen:
+                mirrored["slug"] = self.slug
+            Tenant.objects.filter(pk=self.tenant_id).update(**mirrored)
             return result
 
     # --- Branch helpers ---
@@ -479,7 +555,6 @@ class BranchPrimaryAdmin(TimeStampedModel):
         related_name="primary_admin_for_branches",
     )
     branch_role = models.CharField(max_length=80, blank=True, default="Head Teacher")
-    role_label = models.CharField(max_length=80, blank=True, default="BRANCH_ADMIN")
 
     invite_status = models.CharField(
         max_length=16,
@@ -500,7 +575,7 @@ class SchoolPrimaryAdmin(TimeStampedModel):
     """
     Same concept as `BranchPrimaryAdmin` but at the school level.
 
-    Stores the primary School contact, optional role labels, and invite
+    Stores the primary School contact, its optional job title, and invite
     status/timestamps so onboarding jobs can reconcile which tenants still need
     primary admins activated. Indexed by (`school`, `invite_status`) for
     efficient filtering.
@@ -517,7 +592,6 @@ class SchoolPrimaryAdmin(TimeStampedModel):
         related_name="primary_admin_for_schools",
     )
     school_role = models.CharField(max_length=80, blank=True, default="IT Head")
-    role_label = models.CharField(max_length=80, blank=True, default="SCHOOL_ADMIN")
 
     invite_status = models.CharField(
         max_length=16,

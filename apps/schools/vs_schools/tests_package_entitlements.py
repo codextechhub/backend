@@ -86,9 +86,20 @@ class SchoolPackageEntitlementTests(TestCase):
                 "teacher_capacity": 10,
                 "admin_capacity": 5,
             },
+            # Every school is created with its main branch. These tests are
+            # about entitlements, so the branch is scenery, but it has to be
+            # there for the payload to be accepted at all.
+            "branches": branches if branches is not None else [{
+                "name": f"{name} Main Branch",
+                "_type": "Main",
+                "state": "Lagos",
+                "is_main": True,
+                "primary_admin_data": {
+                    "full_name": f"{name} Head",
+                    "email": f"head@{slug}.test",
+                },
+            }],
         }
-        if branches is not None:
-            payload["branches"] = branches
         return payload
 
     def _create(self, *args, **kwargs):
@@ -235,7 +246,18 @@ class SchoolPackageEntitlementTests(TestCase):
         means no nested payload and certainly no crash."""
         response = self._client().post(
             reverse("school-create"),
-            {"name": "No Package School", "slug": "ent-nopackage"},
+            {
+                "name": "No Package School",
+                "slug": "ent-nopackage",
+                "branches": [{
+                    "name": "No Package Main", "_type": "Main", "state": "Lagos",
+                    "is_main": True,
+                    "primary_admin_data": {
+                        "full_name": "No Package Head",
+                        "email": "head@ent-nopackage.test",
+                    },
+                }],
+            },
             format="json",
         )
         self.assertEqual(response.status_code, 201, response.data)
@@ -289,7 +311,7 @@ class SchoolPackageEntitlementTests(TestCase):
 
         self.assertTrue(
             AuditEvent.objects.filter(
-                entity_type="School", entity_id=school.slug,
+                entity_type="School", entity_id=str(school.pk),
                 actor_user=self.vision_user,
             ).exists()
         )
@@ -383,8 +405,9 @@ class SchoolPackageEntitlementTests(TestCase):
         grant is branch-specific."""
         self._create("Branch Check School", "ent-branchcheck", ["ent-students"])
         school = School.objects.get(slug="ent-branchcheck")
+        # Not main: the school already has the main branch it was created with.
         branch = make_branch(
-            school, name="Later Branch", status=BranchStatus.ACTIVE,
+            school, name="Later Branch", is_main=False, status=BranchStatus.ACTIVE,
         )
 
         self.assertTrue(

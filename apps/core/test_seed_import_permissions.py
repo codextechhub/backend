@@ -120,3 +120,49 @@ class SeedImportConfigurationTests(TestCase):
                 granted=True,
             ).exists()
         )
+
+
+class SeedImportPermissionGroupScopeTests(TestCase):
+    """The import bundles must be usable by the tenants they are built for.
+
+    ``PermissionGroup.scope`` has no default, deliberately, so every creation
+    path has to declare it. Migration 0007 classified the groups that already
+    existed; this seeder creates them, so a fresh database seeded after that
+    migration produced three unclassified bundles that ``TenantRoleGroup``
+    refuses to attach to any role inside a tenant. Nobody noticed because the
+    dev database had been classified by the migration.
+    """
+
+    def test_seeded_groups_are_tenant_scoped(self):
+        from vs_rbac.models import PermissionGroup, PermissionScope
+
+        _call("seed_actions")
+        _call("seed_import_permissions")
+
+        groups = PermissionGroup.objects.filter(
+            name__in=["Data Import - all", "Import Batch - all", "Import Template - all"],
+        )
+        self.assertEqual(groups.count(), 3)
+        for group in groups:
+            self.assertEqual(group.scope, PermissionScope.TENANT, group.name)
+
+    def test_a_seeded_group_can_be_attached_to_a_school_role(self):
+        from vs_rbac.models import PermissionGroup, TenantRoleGroup
+        from vs_rbac.tests.helpers import make_school
+
+        _call("seed_actions")
+        _call("seed_import_permissions")
+
+        school = make_school(slug="bright-star", name="Bright Star School")
+        role = TenantRoleTemplate.objects.create(
+            tenant=school.tenant, key="data-officer", name="Data Officer",
+        )
+        group = PermissionGroup.objects.get(name="Import Batch - all")
+
+        link = TenantRoleGroup(role=role, group=group)
+        link.full_clean()
+        link.save()
+
+        self.assertTrue(
+            TenantRoleGroup.objects.filter(role=role, group=group).exists(),
+        )

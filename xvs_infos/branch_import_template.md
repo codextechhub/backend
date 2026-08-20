@@ -126,8 +126,8 @@ File: `vs_import_data/services/validation_service.py`
 
 ```
 School Slug,Branch Name,Branch Type,Is Main Branch,Address,Email,Country,State,Opened Date,Admin Full Name,Admin Email,Admin Phone,Admin Role
-greenfield-academy,Lekki Campus,Secondary,TRUE,14 Admiralty Way Lekki,lekki@greenfieldacademy.edu.ng,Nigeria,Lagos,2009-09-01,Mr. Emeka Obi,head.lekki@greenfieldacademy.edu.ng,08061234567,Head Teacher
-greenfield-academy,Ajah Campus,Primary,FALSE,22 Ajah Expressway,ajah@greenfieldacademy.edu.ng,Nigeria,Lagos,2015-03-15,Mrs. Ngozi Ibe,head.ajah@greenfieldacademy.edu.ng,08062345678,Head Teacher
+greenfield-academy,Lekki Branch,Secondary,TRUE,14 Admiralty Way Lekki,lekki@greenfieldacademy.edu.ng,Nigeria,Lagos,2009-09-01,Mr. Emeka Obi,head.lekki@greenfieldacademy.edu.ng,08061234567,Head Teacher
+greenfield-academy,Ajah Branch,Primary,FALSE,22 Ajah Expressway,ajah@greenfieldacademy.edu.ng,Nigeria,Lagos,2015-03-15,Mrs. Ngozi Ibe,head.ajah@greenfieldacademy.edu.ng,08062345678,Head Teacher
 ```
 
 ---

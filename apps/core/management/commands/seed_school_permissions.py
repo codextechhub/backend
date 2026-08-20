@@ -83,7 +83,7 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
 
     ("school", "roles", "view",                _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
     ("school", "roles", "assign",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
-    # Explicit grants replace the removed implicit SCHOOL_ADMIN user_type
+    # Explicit grants replace the removed implicit SCHOOL_ADMIN persona
     # authority over role templates (tenant refactor: personas grant nothing).
     ("school", "roles", "create",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("school", "roles", "update",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
@@ -189,6 +189,7 @@ class Command(BaseCommand):
             PrebuiltRoleTemplate,
             TenantRolePermission,
             TenantRoleTemplate,
+            PermissionScope,
         )
 
         prefix = "  [dry-run]" if dry_run else " "
@@ -252,6 +253,7 @@ class Command(BaseCommand):
                     is_restricted=is_restricted,
                     sensitivity_level=sensitivity,
                     is_active=True,
+                    scope=PermissionScope.TENANT,
                 )
                 perm.save()
                 created_perm_count += 1

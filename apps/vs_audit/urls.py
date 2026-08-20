@@ -11,6 +11,7 @@ from .views import (
     MyActivitySubjectView,
     AuditExportJobListView,
     AuditExportJobDetailView,
+    AuditExportJobDownloadView,
     ComplianceRuleListCreateView,
     ComplianceRuleDetailView,
 )
@@ -49,6 +50,11 @@ urlpatterns = [
     # -------------------------------------------------------------------------
     path("exports/", AuditExportJobListView.as_view(), name="audit-export-list"),
     path("exports/<uuid:id>/", AuditExportJobDetailView.as_view(), name="audit-export-detail"),
+    path(
+        "exports/<uuid:id>/download/",
+        AuditExportJobDownloadView.as_view(),
+        name="audit-export-download",
+    ),
 
     # -------------------------------------------------------------------------
     # Compliance Rules

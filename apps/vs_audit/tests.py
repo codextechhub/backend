@@ -1,11 +1,22 @@
-from django.http import QueryDict
-from django.test import TestCase
+import csv
+import io
+from datetime import timedelta
+from unittest import mock
 
+from django.core.files.storage import default_storage
+from django.core.management import call_command
+from django.http import QueryDict
+from django.test import TestCase, override_settings
+from django.utils import timezone
+
+from core.models import StoredFile
+from core.test_utils import TenantAPIClient
 from vs_admin_console.models import ImpersonationSession
 from vs_tenants.context import (
     clear_request_context,
     get_current_audit_identity,
     set_current_audit_identity,
+    set_current_tenant,
 )
 from vs_tenants.models import Tenant
 from vs_user.models import User
@@ -14,23 +25,42 @@ from .models import (
     AuditActionType,
     AuditActorType,
     AuditEvent,
+    AuditExportJob,
     AuditModuleKey,
     AuditSeverity,
     AuditStatus,
+    ExportFormat,
+    ExportJobStatus,
 )
-from .serializers import AuditEventFilterSerializer
+from .serializers import NO_TENANT, AuditEventFilterSerializer
 from .services import emit_audit_event
-from .views import apply_audit_event_filters
+from .views import (
+    EXPORT_CSV_HEADER,
+    ExportTooLarge,
+    apply_audit_event_filters,
+    write_audit_export_file,
+)
+
+
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
 
 
 class AuditEventFilterContractTests(TestCase):
     def setUp(self):
-        self.actor = User.objects.create_user(
+        self.actor = User.objects.create_user(tenant=_platform_tenant(), 
             email="procurement.auditor@example.test",
             password="Str0ng!pass123",
             first_name="Priya",
             last_name="Buyer",
-            user_type="CX_STAFF",
             status="ACTIVE",
         )
 
@@ -134,31 +164,196 @@ class AuditEventFilterContractTests(TestCase):
         self.assertIn("PROCUREMENT_ACTION", AuditActionType.values)
 
 
+class AuditEventTenantFilterTests(TestCase):
+    """Narrowing the trail to one customer - and finding what belongs to none.
+
+    Bright Star and Greenfield both have events; a nightly sweep has one that
+    belongs to neither. All three have to be reachable, and none of them may
+    leak into another's answer.
+    """
+
+    def setUp(self):
+        self.bright_star = Tenant.objects.create(
+            name="Bright Star School", slug="bright-star",
+            kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
+        )
+        self.greenfield = Tenant.objects.create(
+            name="Greenfield Academy", slug="greenfield",
+            kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
+        )
+        self.bright_star_event = self._event(self.bright_star, "SCH-1")
+        self.greenfield_event = self._event(self.greenfield, "SCH-2")
+        self.platform_event = self._event(None, "SWEEP-1")
+
+    def _event(self, tenant, entity_id):
+        return AuditEvent.objects.create(
+            module_key=AuditModuleKey.SCHOOL,
+            action_type=AuditActionType.UPDATE,
+            actor_type=AuditActorType.SYSTEM,
+            actor_label="Sweep worker",
+            tenant=tenant,
+            entity_type="School",
+            entity_id=entity_id,
+        )
+
+    def _filtered(self, value):
+        serializer = AuditEventFilterSerializer(data={"tenant_slug": value})
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        return set(
+            apply_audit_event_filters(
+                AuditEvent.objects.all(), serializer.validated_data,
+            ).values_list("id", flat=True)
+        )
+
+    def test_the_filter_narrows_to_one_tenant_and_excludes_the_others(self):
+        self.assertEqual(self._filtered("bright-star"), {self.bright_star_event.id})
+        self.assertEqual(self._filtered("greenfield"), {self.greenfield_event.id})
+
+    def test_events_belonging_to_no_tenant_are_reachable(self):
+        self.assertEqual(self._filtered(NO_TENANT), {self.platform_event.id})
+
+    def test_an_unknown_slug_is_refused_rather_than_answered_with_nothing(self):
+        # The trap this filter exists to remove: a near-miss slug that quietly
+        # reports "nothing happened at Bright Star".
+        serializer = AuditEventFilterSerializer(data={"tenant_slug": "bright-star-school"})
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("tenant_slug", serializer.errors)
+
+    def test_a_slug_is_matched_case_and_padding_insensitively(self):
+        self.assertEqual(
+            self._filtered("  BRIGHT-STAR  "), {self.bright_star_event.id},
+        )
+
+    def test_omitting_the_filter_still_returns_every_tenant(self):
+        serializer = AuditEventFilterSerializer(data={})
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        ids = set(
+            apply_audit_event_filters(
+                AuditEvent.objects.all(), serializer.validated_data,
+            ).values_list("id", flat=True)
+        )
+        self.assertEqual(
+            ids,
+            {self.bright_star_event.id, self.greenfield_event.id, self.platform_event.id},
+        )
+
+
+class AmbientTenantInheritanceTests(TestCase):
+    """Where an event's tenant comes from when the caller does not say.
+
+    The filter above is only worth having if the column is populated, and only
+    trustworthy if it is populated correctly. These pin both halves: what is
+    inherited, and what deliberately is not.
+    """
+
+    def setUp(self):
+        self.bright_star = Tenant.objects.create(
+            name="Bright Star School", slug="bright-star",
+            kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
+        )
+        self.greenfield = Tenant.objects.create(
+            name="Greenfield Academy", slug="greenfield",
+            kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
+        )
+        self.codex = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+    def tearDown(self):
+        clear_request_context()
+
+    def _emit(self, **kwargs):
+        return emit_audit_event(
+            module_key=AuditModuleKey.RBAC,
+            action_type=AuditActionType.ROLE_ASSIGNED,
+            entity_type="TenantRoleTemplate",
+            entity_id="bursar",
+            **kwargs,
+        )
+
+    def test_an_event_emitted_in_a_tenant_context_carries_it_with_no_caller_change(self):
+        # vs_rbac's signals never pass a tenant and are not being edited; the
+        # role Bright Star's bursar is granted must still be findable under
+        # Bright Star.
+        set_current_tenant(self.bright_star)
+
+        event = self._emit()
+
+        self.assertEqual(event.tenant_id, self.bright_star.pk)
+
+    def test_an_explicit_tenant_beats_the_ambient_one(self):
+        # The shape that makes this rule load-bearing: a Codex staffer creates
+        # Bright Star while asserting ?tenant=codex, and SchoolCreateSerializer
+        # names the new school's tenant on the event.
+        set_current_tenant(self.codex)
+
+        event = self._emit(tenant=self.bright_star)
+
+        self.assertEqual(event.tenant_id, self.bright_star.pk)
+
+    def test_an_explicit_tenant_beats_a_different_ambient_tenant(self):
+        set_current_tenant(self.greenfield)
+
+        event = self._emit(tenant=self.bright_star)
+
+        self.assertEqual(event.tenant_id, self.bright_star.pk)
+
+    def test_with_no_ambient_tenant_the_event_stays_null(self):
+        # A Celery task or a management command: nothing to inherit, and
+        # inventing one would be worse than leaving it empty.
+        clear_request_context()
+
+        event = self._emit()
+
+        self.assertIsNone(event.tenant_id)
+
+    def test_the_platform_tenant_is_not_inherited(self):
+        # Asserting ?tenant=codex says who is acting, not whose data is being
+        # touched. Stamping codex on it would hide the row from the Bright Star
+        # filter AND show it under Codex, which is worse than null.
+        set_current_tenant(self.codex)
+
+        event = self._emit()
+
+        self.assertIsNone(event.tenant_id)
+
+    def test_an_inherited_tenant_is_findable_through_the_filter(self):
+        set_current_tenant(self.bright_star)
+        event = self._emit()
+        clear_request_context()
+
+        serializer = AuditEventFilterSerializer(data={"tenant_slug": "bright-star"})
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        ids = set(
+            apply_audit_event_filters(
+                AuditEvent.objects.all(), serializer.validated_data,
+            ).values_list("id", flat=True)
+        )
+
+        self.assertIn(event.id, ids)
+
+
 class ProxiedAuditAttributionTests(TestCase):
     def setUp(self):
         self.tenant = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
-        self.proxier = User.objects.create_user(
+        self.proxier = User.objects.create_user(tenant=_platform_tenant(), 
             email="audit-proxier@codex.test",
             password="Str0ng!pass123",
             first_name="Audit",
             last_name="Proxier",
-            user_type="CX_STAFF",
             status="ACTIVE",
         )
-        self.target = User.objects.create_user(
+        self.target = User.objects.create_user(tenant=_platform_tenant(), 
             email="audit-target@codex.test",
             password="Str0ng!pass123",
             first_name="Proxy",
             last_name="Target",
-            user_type="CX_STAFF",
             status="ACTIVE",
         )
-        self.third_party = User.objects.create_user(
+        self.third_party = User.objects.create_user(tenant=_platform_tenant(), 
             email="audit-third-party@codex.test",
             password="Str0ng!pass123",
             first_name="Third",
             last_name="Party",
-            user_type="CX_STAFF",
             status="ACTIVE",
         )
         self.session = ImpersonationSession.objects.create(
@@ -304,3 +499,394 @@ class OnboardingActionTypeRegistrationTests(TestCase):
                 ).exists(),
                 f"No audit row written for {value}",
             )
+
+
+# -----------------------------------------------------------------------------
+# Audit export files: storage, retrieval and the authorisation around it
+# -----------------------------------------------------------------------------
+
+class AuditExportFileFixture:
+    """A codex-tenant audit officer, a stranger, and an outsider in another tenant.
+
+    ``officer`` holds ``platform.audit.export``. ``stranger`` holds nothing.
+    ``outsider`` holds the very same key, but in a different tenant - which is
+    the case that decides whether one school's export is reachable from another.
+    """
+
+    def build(self):
+        call_command("seed_actions", verbosity=0)
+        call_command("seed_platform_permissions", verbosity=0)
+
+        self.tenant = Tenant.objects.get(slug="codex")
+        self.other_tenant = Tenant.objects.create(
+            name="Bright Star School",
+            slug="bright-star",
+            kind=Tenant.Kind.ORGANIZATION,
+            status=Tenant.Status.ACTIVE,
+        )
+
+        self.officer = self._user(
+            "audit.officer@example.test", role="audit_officer",
+            keys=["platform.audit.export", "platform.audit.view"],
+        )
+        self.stranger = self._user("stranger@example.test", role="no_audit", keys=[])
+        self.outsider = self._user(
+            "outsider@example.test", role="audit_officer",
+            keys=["platform.audit.export", "platform.audit.view"],
+            tenant=self.other_tenant,
+        )
+
+    def _user(self, email, *, role, keys, tenant=None):
+        from vs_rbac.models import (
+            Permission, TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment,
+        )
+
+        tenant = tenant or self.tenant
+        user = User.objects.create_user(
+            email=email, password="Str0ng!pass123", status="ACTIVE", first_name=email.split("@")[0], last_name="Tester",
+            tenant=tenant,
+        )
+        template, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=tenant, key=role, defaults={"name": role, "status": "ACTIVE"},
+        )
+        for permission in Permission.objects.filter(key__in=keys):
+            TenantRolePermission.objects.get_or_create(
+                role=template, permission=permission, defaults={"granted": True},
+            )
+        TenantUserRoleAssignment.objects.create(
+            tenant=tenant, user=user, role=template, assignment_status="ACTIVE",
+        )
+        return user
+
+    # Seeding and user creation emit audit rows of their own, so every export
+    # below is filtered to the entity type this fixture writes.
+    FILTER = {"entity_type": "PurchaseOrder"}
+
+    def exported_events(self):
+        return AuditEvent.objects.filter(entity_type="PurchaseOrder")
+
+    def make_events(self, count, *, module_key=AuditModuleKey.PROCUREMENT):
+        """Write *count* events whose rows are comfortably wide (~200 chars each)."""
+        events = [
+            AuditEvent(
+                module_key=module_key,
+                action_type=AuditActionType.PROCUREMENT_ACTION,
+                severity=AuditSeverity.WARNING,
+                status=AuditStatus.FAILED,
+                actor_type=AuditActorType.USER,
+                actor_user=self.officer,
+                actor_label="Priya Buyer, Procurement Officer, Corona Secondary School",
+                entity_type="PurchaseOrder",
+                entity_id=f"PO-{index:05d}",
+                entity_label=f"Purchase order {index:05d} for the science block refurbishment",
+                summary=(
+                    f"Purchase order {index:05d} approval failed because the approver "
+                    "was no longer assigned to the requesting branch."
+                ),
+            )
+            for index in range(count)
+        ]
+        AuditEvent.objects.bulk_create(events)
+        return events
+
+
+class EventExplorerTenantFilterEndpointTests(AuditExportFileFixture, TestCase):
+    """The filter on the wire: same gate, same readers, one new parameter.
+
+    ``officer`` is a Codex audit officer; ``outsider`` holds the very same
+    ``platform.audit.view`` key inside Bright Star, and ``stranger`` holds
+    nothing. Nobody's reach may change.
+    """
+
+    def setUp(self):
+        self.build()
+        self.make_events(2)
+        AuditEvent.objects.filter(entity_type="PurchaseOrder").update(
+            tenant=self.other_tenant,
+        )
+        self.client = TenantAPIClient(self.officer)
+
+    @staticmethod
+    def _rows(response):
+        payload = response.data["data"]
+        return payload["results"] if isinstance(payload, dict) else payload
+
+    def test_the_filter_narrows_the_listing_to_one_tenant(self):
+        response = self.client.get(
+            "/v1/audit/events/", {"tenant_slug": self.other_tenant.slug},
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        rows = self._rows(response)
+        self.assertTrue(rows)
+        self.assertEqual({row["tenant"] for row in rows}, {self.other_tenant.slug})
+
+    def test_the_null_sentinel_finds_events_that_belong_to_no_tenant(self):
+        response = self.client.get("/v1/audit/events/", {"tenant_slug": NO_TENANT})
+
+        self.assertEqual(response.status_code, 200, response.data)
+        rows = self._rows(response)
+        self.assertTrue(rows)
+        self.assertEqual({row["tenant"] for row in rows}, {None})
+
+    def test_an_unknown_tenant_is_a_400_and_not_an_empty_page(self):
+        response = self.client.get("/v1/audit/events/", {"tenant_slug": "no-such-school"})
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_the_permission_gate_is_unchanged(self):
+        # Adding a filter must not open the surface to anyone new.
+        denied = TenantAPIClient(self.stranger).get(
+            "/v1/audit/events/", {"tenant_slug": self.other_tenant.slug},
+        )
+        self.assertEqual(denied.status_code, 403)
+
+        allowed = self.client.get("/v1/audit/events/")
+        self.assertEqual(allowed.status_code, 200)
+
+    def test_the_tenant_roster_is_offered_to_platform_callers_only(self):
+        platform = self.client.get("/v1/audit/events/filter-options/")
+        self.assertEqual(platform.status_code, 200, platform.data)
+        values = {row["value"] for row in platform.data["data"]["tenants"]}
+        self.assertIn(self.other_tenant.slug, values)
+        self.assertIn(NO_TENANT, values)
+
+        # A school audit officer holding the same key is not handed Codex's
+        # customer list just for opening the filter drawer.
+        school_side = TenantAPIClient(self.outsider).get(
+            "/v1/audit/events/filter-options/",
+        )
+        self.assertEqual(school_side.status_code, 200, school_side.data)
+        self.assertEqual(school_side.data["data"]["tenants"], [])
+
+
+class AuditExportStorageTests(AuditExportFileFixture, TestCase):
+    """The export writes a file to storage and records its name, not its body."""
+
+    def setUp(self):
+        self.build()
+        self.client = TenantAPIClient(self.officer)
+
+    def _create_export(self, client=None, payload=None):
+        return (client or self.client).post(
+            "/v1/audit/exports/",
+            payload if payload is not None else {"filter_payload": self.FILTER},
+            format="json",
+        )
+
+    def test_export_of_many_events_stores_a_name_and_not_the_csv_body(self):
+        self.make_events(60)
+
+        response = self._create_export()
+
+        self.assertEqual(response.status_code, 201, response.data)
+        job = AuditExportJob.objects.get(id=response.data["data"]["id"])
+        self.assertEqual(job.status, ExportJobStatus.COMPLETED)
+        self.assertEqual(job.row_count, 60)
+        # The old defect: the whole CSV went into a 500-character column.
+        self.assertLess(len(job.file_path), 500)
+        self.assertNotIn("event_id,event_at", job.file_path)
+        self.assertTrue(job.file_path.startswith("audit-exports/"))
+        self.assertTrue(default_storage.exists(job.file_path))
+        # The body really is in storage, and it is the whole file.
+        with default_storage.open(job.file_path, "rb") as handle:
+            body = handle.read().decode("utf-8")
+        self.assertGreater(len(body), 500)
+        self.assertEqual(len(body.strip().splitlines()), 61)
+
+    def test_detail_payload_offers_a_download_url_and_never_the_storage_key(self):
+        self.make_events(3)
+
+        response = self._create_export()
+        data = response.data["data"]
+
+        job = AuditExportJob.objects.get(id=data["id"])
+        self.assertNotIn("file_path", data)
+        self.assertEqual(data["download_url"], f"/v1/audit/exports/{job.id}/download/")
+
+        detail = self.client.get(f"/v1/audit/exports/{job.id}/")
+        self.assertEqual(detail.status_code, 200)
+        self.assertNotIn("file_path", detail.data["data"])
+
+        # The history list is where the download button lives, so it carries the
+        # link too - and equally never the storage key.
+        listing = self.client.get("/v1/audit/exports/")
+        self.assertEqual(listing.status_code, 200)
+        payload = listing.data["data"]
+        rows = payload["results"] if isinstance(payload, dict) else payload
+        row = next(item for item in rows if item["id"] == data["id"])
+        self.assertNotIn("file_path", row)
+        self.assertEqual(row["download_url"], data["download_url"])
+
+    def test_stored_export_round_trips_through_the_download_route(self):
+        made = self.make_events(60)
+
+        created = self._create_export()
+        job_id = created.data["data"]["id"]
+
+        response = self.client.get(f"/v1/audit/exports/{job_id}/download/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/csv", response["Content-Type"])
+        self.assertIn("attachment", response["Content-Disposition"])
+        body = b"".join(response.streaming_content).decode("utf-8")
+        rows = list(csv.reader(io.StringIO(body)))
+        self.assertEqual(rows[0], EXPORT_CSV_HEADER)
+        self.assertEqual(len(rows) - 1, 60)
+        # Every exported event is in the file, and nothing else is.
+        self.assertEqual(
+            {row[0] for row in rows[1:]},
+            {str(event.id) for event in self.exported_events()},
+        )
+        exported = {row[0]: row for row in rows[1:]}
+        sample = AuditEvent.objects.get(id=made[0].id)
+        self.assertEqual(exported[str(sample.id)][12], sample.summary)
+        self.assertEqual(exported[str(sample.id)][7], self.officer.email)
+
+    def test_zero_event_export_completes_with_a_header_only_file(self):
+        # No events at all: an empty answer is a real answer, not a failure.
+        response = self._create_export()
+
+        self.assertEqual(response.status_code, 201, response.data)
+        job = AuditExportJob.objects.get(id=response.data["data"]["id"])
+        self.assertEqual(job.status, ExportJobStatus.COMPLETED)
+        self.assertEqual(job.row_count, 0)
+        self.assertTrue(default_storage.exists(job.file_path))
+
+        download = self.client.get(f"/v1/audit/exports/{job.id}/download/")
+        self.assertEqual(download.status_code, 200)
+        body = b"".join(download.streaming_content).decode("utf-8")
+        self.assertEqual(list(csv.reader(io.StringIO(body))), [EXPORT_CSV_HEADER])
+
+    def test_download_of_an_unfinished_job_is_refused_rather_than_empty(self):
+        job = AuditExportJob.objects.create(
+            requested_by=self.officer,
+            export_format=ExportFormat.CSV,
+            status=ExportJobStatus.RUNNING,
+        )
+        response = self.client.get(f"/v1/audit/exports/{job.id}/download/")
+        self.assertEqual(response.status_code, 409)
+
+    def test_download_of_an_expired_job_is_gone(self):
+        self.make_events(2)
+        created = self._create_export()
+        job = AuditExportJob.objects.get(id=created.data["data"]["id"])
+        job.expires_at = timezone.now() - timedelta(seconds=1)
+        job.save(update_fields=["expires_at"])
+
+        response = self.client.get(f"/v1/audit/exports/{job.id}/download/")
+        self.assertEqual(response.status_code, 410)
+
+        detail = self.client.get(f"/v1/audit/exports/{job.id}/")
+        self.assertIsNone(detail.data["data"]["download_url"])
+
+
+class AuditExportAuthorisationTests(AuditExportFileFixture, TestCase):
+    """Who may take the trail out of the building."""
+
+    def setUp(self):
+        self.build()
+        self.make_events(5)
+        self.officer_client = TenantAPIClient(self.officer)
+        created = self.officer_client.post(
+            "/v1/audit/exports/", {"filter_payload": self.FILTER}, format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        self.job = AuditExportJob.objects.get(id=created.data["data"]["id"])
+
+    def test_caller_without_the_export_permission_is_refused(self):
+        client = TenantAPIClient(self.stranger)
+
+        self.assertEqual(
+            client.post(
+                "/v1/audit/exports/", {"filter_payload": self.FILTER}, format="json",
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            client.get(f"/v1/audit/exports/{self.job.id}/download/").status_code, 403,
+        )
+
+    def test_caller_cannot_retrieve_another_tenants_export(self):
+        # The outsider holds platform.audit.export in their own tenant, so the
+        # only thing standing between them and this file is the job's requester.
+        client = TenantAPIClient(self.outsider)
+
+        response = client.get(f"/v1/audit/exports/{self.job.id}/download/")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn("event_id", str(response.data))
+
+    def test_outsider_can_still_download_their_own_export(self):
+        client = TenantAPIClient(self.outsider)
+        created = client.post(
+            "/v1/audit/exports/", {"filter_payload": self.FILTER}, format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        job_id = created.data["data"]["id"]
+
+        response = client.get(f"/v1/audit/exports/{job_id}/download/")
+        self.assertEqual(response.status_code, 200)
+
+
+class AuditExportFailureStateTests(AuditExportFileFixture, TestCase):
+    """A job that cannot finish must say so, not sit at RUNNING for ever."""
+
+    def setUp(self):
+        self.build()
+        self.client = TenantAPIClient(self.officer)
+
+    @override_settings(MEDIA_DB_MAX_BYTES=2000)
+    def test_export_past_the_size_ceiling_fails_at_the_final_check(self):
+        # 60 wide rows is well past 2 KB but short of the mid-write checkpoint,
+        # so this exercises the guard that runs after the last row.
+        self.make_events(60)
+
+        response = self.client.post(
+            "/v1/audit/exports/", {"filter_payload": self.FILTER}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 413)
+        job = AuditExportJob.objects.get(id=response.data["error"]["job_id"])
+        self.assertEqual(job.status, ExportJobStatus.FAILED)
+        self.assertIn("2,000 bytes", job.failure_reason)
+        self.assertEqual(job.file_path, "")
+        self.assertIsNotNone(job.completed_at)
+        self.assertFalse(StoredFile.objects.filter(name__startswith="audit-exports/").exists())
+
+    @override_settings(MEDIA_DB_MAX_BYTES=2000)
+    def test_export_past_the_size_ceiling_is_abandoned_mid_write(self):
+        # 600 rows crosses the 500-row checkpoint, so generation stops there
+        # rather than building the whole file and failing at save.
+        self.make_events(600)
+
+        response = self.client.post(
+            "/v1/audit/exports/", {"filter_payload": self.FILTER}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 413)
+        job = AuditExportJob.objects.get(id=response.data["error"]["job_id"])
+        self.assertEqual(job.status, ExportJobStatus.FAILED)
+        self.assertFalse(StoredFile.objects.filter(name__startswith="audit-exports/").exists())
+
+        # Generation really did stop at the checkpoint rather than writing all 600.
+        with self.assertRaises(ExportTooLarge) as caught:
+            write_audit_export_file(job, self.exported_events(), set())
+        self.assertEqual(caught.exception.rows_written, 500)
+
+    def test_an_unexpected_error_leaves_the_job_failed_not_running(self):
+        self.make_events(3)
+
+        with mock.patch(
+            "vs_audit.views.write_audit_export_file",
+            side_effect=OSError("storage went away"),
+        ):
+            response = self.client.post(
+                "/v1/audit/exports/", {"filter_payload": self.FILTER}, format="json",
+            )
+
+        self.assertEqual(response.status_code, 500)
+        job = AuditExportJob.objects.get(id=response.data["error"]["job_id"])
+        self.assertEqual(job.status, ExportJobStatus.FAILED)
+        self.assertTrue(job.failure_reason)
+        self.assertIsNotNone(job.completed_at)

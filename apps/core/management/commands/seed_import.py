@@ -105,7 +105,7 @@ TEMPLATES: list[dict] = [
                 "School Admin Email":    "admin@greenfieldacademy.edu.ng",
                 "School Admin Phone":    "08051234567",
                 "School Admin Role":     "IT Head",
-                "Branch Name":           "Greenfield Academy - Main Campus",
+                "Branch Name":           "Greenfield Academy - Main Branch",
                 "Branch Type":           "Combined",
                 "Branch Address":        "14 Admiralty Way, Lekki Phase 1, Lagos",
                 "Branch Email":          "main@greenfieldacademy.edu.ng",
@@ -314,12 +314,12 @@ TEMPLATES: list[dict] = [
                 "column_name":   "Branch Name",
                 "target_field":  "branch_name",
                 "display_name":  "Branch Name",
-                "help_text":     "Name of the school's initial main branch. Defaults to '<School Name> - Main Campus' if blank.",
+                "help_text":     "Name of the school's initial main branch. Defaults to '<School Name> - Main Branch' if blank.",
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   False,
                 "is_unique":     False,
                 "max_length":    255,
-                "sample_value":  "Greenfield Academy - Main Campus",
+                "sample_value":  "Greenfield Academy - Main Branch",
                 "column_order":  15,
             },
             {
@@ -424,7 +424,7 @@ TEMPLATES: list[dict] = [
                 "column_name":   "Branch Admin Role",
                 "target_field":  "branch_admin_role",
                 "display_name":  "Branch Admin Role",
-                "help_text":     "Job title of the branch admin. Example: Head Teacher, Campus Director. Defaults to Head Teacher.",
+                "help_text":     "Job title of the branch admin. Example: Head Teacher, Branch Director. Defaults to Head Teacher.",
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   False,
                 "is_unique":     False,
@@ -523,7 +523,7 @@ TEMPLATES: list[dict] = [
             "status": TemplateStatusChoices.ACTIVE,
             "default_file_format": FileFormatChoices.CSV,
             "description": (
-                "Template for bulk-creating Branch (campus) records for existing schools. "
+                "Template for bulk-creating Branch records for existing schools. "
                 "Each row defines one branch. The School Slug column must match a slug "
                 "that already exists in the system. Import the Schools template first."
             ),
@@ -537,7 +537,7 @@ TEMPLATES: list[dict] = [
             "allow_sample_row": True,
             "sample_row_data": {
                 "School Slug":     "greenfield-academy",
-                "Branch Name":          "Lekki Campus",
+                "Branch Name":          "Lekki Branch",
                 "Branch Type":          "Secondary",
                 "Is Main Branch":       "TRUE",
                 "Address":              "14 Admiralty Way, Lekki Phase 1, Lagos",
@@ -582,12 +582,12 @@ TEMPLATES: list[dict] = [
                 "column_name":   "Branch Name",
                 "target_field":  "name",
                 "display_name":  "Branch Name",
-                "help_text":     "Display name of the branch. Example: Lekki Campus, Ajah Campus.",
+                "help_text":     "Display name of the branch. Example: Lekki Branch, Ajah Branch.",
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   True,
                 "is_unique":     False,
                 "max_length":    255,
-                "sample_value":  "Lekki Campus",
+                "sample_value":  "Lekki Branch",
                 "column_order":  2,
             },
             {
@@ -610,7 +610,7 @@ TEMPLATES: list[dict] = [
                 "target_field":  "is_main",
                 "display_name":  "Is Main Branch",
                 "help_text": (
-                    "Set to TRUE for the primary campus. Only one branch per school "
+                    "Set to TRUE for the main branch. Only one branch per school "
                     "may be TRUE. All others must be FALSE."
                 ),
                 "data_type":     TemplateColumnDataTypeChoices.BOOLEAN,
@@ -627,7 +627,7 @@ TEMPLATES: list[dict] = [
                 "column_name":   "Address",
                 "target_field":  "address",
                 "display_name":  "Branch Address",
-                "help_text":     "Physical address of this campus.",
+                "help_text":     "Physical address of this branch.",
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   False,
                 "is_unique":     False,
@@ -730,8 +730,8 @@ TEMPLATES: list[dict] = [
                 "target_field":  "branch_admin_role",
                 "display_name":  "Branch Admin Role Title",
                 "help_text": (
-                    "Job title of the branch admin within this campus. "
-                    "Example: Head Teacher, Campus Director, Principal."
+                    "Job title of the branch admin at this branch. "
+                    "Example: Head Teacher, Branch Director, Principal."
                 ),
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   False,

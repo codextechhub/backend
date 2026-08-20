@@ -20,6 +20,7 @@ books call keeps the failure local.
 """
 from __future__ import annotations
 
+import itertools
 from io import StringIO
 from unittest.mock import patch
 
@@ -61,7 +62,18 @@ class _SchoolCreationMixin:
         client.force_authenticate(user=self.vision_user)
         return client
 
+    _branch_email_counter = itertools.count(1)
+
     def _create(self, payload, *, expect=201):
+        # Every school is created with at least one branch, so a payload that
+        # does not care about branches still has to carry its main one. These
+        # tests are about books and entitlements, not about branch shape.
+        payload = dict(payload)
+        payload.setdefault("branches", [self._branch(
+            "Main Branch",
+            is_main=True,
+            email=f"main-{next(self._branch_email_counter)}@branch.test",
+        )])
         response = self._client().post(
             reverse("school-create"), payload, format="json",
         )
@@ -197,7 +209,7 @@ class SchoolSurvivesBooksFailureTests(_SchoolCreationMixin, TestCase):
                 "phone": "+2348000000001",
             },
             "branches": [
-                self._branch("Main Campus", is_main=True, email="main@resilient.test"),
+                self._branch("Main Branch", is_main=True, email="main@resilient.test"),
                 self._branch("Annex", is_main=False, email="annex@resilient.test"),
             ],
         }
@@ -237,7 +249,7 @@ class SchoolSurvivesBooksFailureTests(_SchoolCreationMixin, TestCase):
         branch_names = set(
             Branch.objects.filter(tenant=tenant).values_list("name", flat=True)
         )
-        self.assertEqual(branch_names, {"Main Campus", "Annex"})
+        self.assertEqual(branch_names, {"Main Branch", "Annex"})
 
         # Only the books are missing, and they are recoverable.
         self.assertFalse(LedgerEntity.objects.filter(tenant=tenant).exists())
@@ -332,62 +344,55 @@ class ProvisionSchoolBooksCommandTests(TestCase):
         self.assertFalse(LedgerEntity.objects.filter(tenant=self.other.tenant).exists())
 
 
-class OperatesBranchesTests(_SchoolCreationMixin, TestCase):
-    """Whether a school runs more than one site is now recorded, not guessed.
+class BranchCountIsCountedNotStoredTests(_SchoolCreationMixin, TestCase):
+    """How many sites a school runs is read off its branches, never stored.
 
-    Onboarding reads it to decide whether a branch-setup step exists for the
-    school at all, so a branch-optional school must not be handed one.
+    ``School.operates_branches`` used to record it as a flag, set at creation
+    and correctable afterwards, which meant the school could say one thing while
+    its branch rows said another. The flag is gone; these tests are what stops a
+    replacement being added.
     """
 
-    def test_it_defaults_to_false_for_a_single_site_school(self):
-        self._create({"name": "One Site", "slug": "one-site"})
+    def test_the_school_carries_no_branch_count_flag(self):
+        self._create({"name": "Just Main", "slug": "just-main"})
 
-        self.assertFalse(School.objects.get(slug="one-site").operates_branches)
+        school = School.objects.get(slug="just-main")
+        self.assertEqual(school.branches.count(), 1)
+        self.assertFalse(hasattr(school, "operates_branches"))
 
-    def test_creating_a_school_with_branches_sets_it(self):
+    def test_a_second_branch_is_visible_by_counting_it(self):
         self._create({
             "name": "Multi Site", "slug": "multi-site",
             "branches": [
-                self._branch("Main Campus", is_main=True, email="main@multi-site.test"),
+                self._branch("Main Branch", is_main=True, email="main@multi-site.test"),
+                self._branch("Lekki Annex", is_main=False, email="lekki@multi-site.test"),
             ],
         })
 
-        self.assertTrue(School.objects.get(slug="multi-site").operates_branches)
+        school = School.objects.get(slug="multi-site")
+        self.assertEqual(school.branches.count(), 2)
+        self.assertEqual(school.branches.filter(is_main=True).count(), 1)
 
-    def test_it_can_be_declared_at_creation_before_any_branch_exists(self):
-        """A school that intends branches says so on day one."""
+    def test_the_flag_is_not_accepted_on_create_or_update(self):
+        """A client still sending it writes nothing and is not misled.
+
+        DRF drops an unknown key rather than refusing it, so the check that
+        matters is that no such column comes back on the read side either.
+        """
         self._create({
-            "name": "Planning Ahead", "slug": "planning-ahead",
+            "name": "Old Client", "slug": "old-client",
             "operates_branches": True,
         })
 
-        school = School.objects.get(slug="planning-ahead")
-        self.assertTrue(school.operates_branches)
-        self.assertEqual(school.branches.count(), 0)
-
-    def test_an_explicit_false_survives_inline_branches(self):
-        self._create({
-            "name": "Explicitly Single", "slug": "explicitly-single",
-            "operates_branches": False,
-            "branches": [
-                self._branch("Main Campus", is_main=True, email="main@single.test"),
-            ],
-        })
-
-        self.assertFalse(School.objects.get(slug="explicitly-single").operates_branches)
-
-    def test_it_can_be_corrected_later_through_the_update_endpoint(self):
-        self._create({"name": "Changed Mind", "slug": "changed-mind"})
-
         response = self._client().patch(
-            reverse("school-update", args=["changed-mind"]),
-            {"operates_branches": True}, format="json",
+            reverse("school-update", args=["old-client"]),
+            {"operates_branches": True, "motto": "Onwards"}, format="json",
         )
 
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertTrue(School.objects.get(slug="changed-mind").operates_branches)
-        # Readable back, so the client can render what it just set.
-        self.assertTrue(response.data["data"]["operates_branches"])
+        self.assertNotIn("operates_branches", response.data["data"])
+        detail = self._client().get(reverse("school-detail", args=["old-client"]))
+        self.assertNotIn("operates_branches", detail.data["data"])
 
     def test_the_update_endpoint_still_refuses_to_write_status(self):
         """Activation belongs to onboarding; this endpoint never sets status."""
@@ -395,7 +400,7 @@ class OperatesBranchesTests(_SchoolCreationMixin, TestCase):
 
         self._client().patch(
             reverse("school-update", args=["still-pending"]),
-            {"operates_branches": True, "status": "ACTIVE"}, format="json",
+            {"motto": "Still going", "status": "ACTIVE"}, format="json",
         )
 
         self.assertEqual(School.objects.get(slug="still-pending").status, "PENDING")

@@ -26,6 +26,14 @@ Two rules follow, and they are separate:
    `branch.school.tenant`. If an engine needs a school-only fact, it belongs
    behind the FAL, not behind an import.
 
+   **The word "school" belongs to `apps/schools/`.** Outside that folder, say
+   **tenant**: in parameter names, serializer fields, constants, variables and
+   JSON body keys alike. `LoginService.login(..., tenant=...)`, never
+   `school=...`, because `vs_user` is an engine app. Prose may still mention a
+   school where it explains where a value comes from ("the tenant slug the
+   frontend takes from the school's subdomain") - the ban is on identifiers, not
+   on explanations.
+
 2. **Within XVS, build for every school, not the first one.** XVS is multi-tenant;
    Corona Secondary School (at `xvs.codexng.com`) is simply the first tenant.
    Nothing may be special-cased to one tenant's arrangement - if a feature only
@@ -67,6 +75,22 @@ repeats it.
   zero exit code** - which reads exactly like a passing run with no summary.
 - Treat an exit code alone as insufficient evidence. Quote the `Ran N tests` line.
   If it is missing, the run did not finish and must be repeated.
+- **Iterate with the fast form, verify with the full one.** Two
+  `TransactionTestCase` classes in `schools.vs_schools` are tagged `slow`
+  (`BranchCodeAllocationConcurrencyTests` and `_MigrationHarness` and its
+  subclasses). They flush and rebuild the database around every test and re-run
+  the migration graph, and they are why that app takes ~18 minutes when the
+  other 171 tests take 30 seconds. While working, run
+  `--exclude-tag=slow`. **The run you report must be the full one**, without
+  the flag: the excluded classes are exactly the ones exercising migrations and
+  the branch code allocator, so a change touching either would slip past the
+  fast form. Do not use `--keepdb` for the run you report either - it reuses a
+  stale schema and can pass against code it no longer matches, which is the
+  failure that looks like success. Tag new slow classes the same way; the tag
+  is inherited, so a base class needs marking once.
+- **Run one test class or method** with the dotted path
+  (`manage.py test schools.vs_schools.tests_update_endpoints.SchoolSlugUpdateTests`)
+  when you are working inside a single file. Seconds, not minutes.
 
 ## Pre-ship review (`ship-check`)
 
@@ -137,6 +161,43 @@ How to write it:
 - Keep file/line references out of the breakdown; they belong in `todo.md` and in
   the detail above it.
 - Don't re-explain what I already know from the conversation.
+
+## Asking, suggesting and disputing: use a real example
+
+When you need a decision from me, **ask the question directly**. Do not bury it in
+a paragraph, do not quietly answer it yourself and move on, and do not hand me a
+list of considerations in place of the question.
+
+Then **show me the consequence with a real example** - named people, a named
+school, a specific sequence of events. The example is what makes a choice
+obvious, so it is not decoration and it is not optional.
+
+This applies equally to three things:
+
+- **questions** - what you need me to decide;
+- **suggestions** - something you think we should do;
+- **disputes** - something you think is wrong, including something I decided.
+
+Write the example the way it would actually happen:
+
+> Bright Star School enrols Tunde and the admin mistypes his mother's address as
+> `adaokeye@gmail.com`. That address belongs to a stranger who already has an
+> account, because her own daughter attends Greenfield. If an attached link shows
+> the full record straight away, she opens her app and sees Tunde's class, his
+> fees, his home address and his father's phone number.
+
+Not:
+
+> Attached links may expose PII to an incorrect recipient where the email address
+> is mistyped.
+
+The second one is true and nobody can act on it. Abstractions hide the size of a
+thing in both directions - they make a small risk sound alarming and a serious one
+sound routine. A concrete case is the only way I can weigh it.
+
+Keep it short. One example, the shortest one that still shows the consequence.
+Where a choice has two sides, show the bad case **and** the good case, not only
+the side you favour.
 
 ## Module documentation initiative
 

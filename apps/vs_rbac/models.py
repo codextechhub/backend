@@ -16,6 +16,116 @@ from .managers import TenantAwareManager
 User = settings.AUTH_USER_MODEL
 
 
+# -----------------------------------------------------------------------------
+# Permission scope: who is allowed to hold a key at all
+# -----------------------------------------------------------------------------
+class PermissionScope(models.TextChoices):
+    """The audience a permission key may ever be granted to.
+
+    This is the boundary the platform's security model rests on, stated as a
+    declared field rather than inferred from the key's namespace. A dotted
+    prefix is a naming convention: it is not checked anywhere, it cannot be
+    queried, and a key that is renamed or seeded under a new module silently
+    changes side. ``scope`` says the thing out loud, per key, and every grant
+    path reads the same column.
+
+    ``TENANT``
+        Any tenant's role may hold it - a school's and the platform's alike.
+        The platform tenant is a tenant too: ``xvs_consultant`` is a codex role
+        that deliberately holds ``school.*`` view keys, so "tenant-safe" must
+        not be read as "forbidden to CX".
+
+    ``PLATFORM``
+        Only a role on a ``Tenant.Kind.PLATFORM`` tenant may hold it. These are
+        the keys whose surfaces are cross-tenant by construction: impersonation
+        tiering, the global permission registry, the schools roster, CX team
+        overrides, staff payroll and organogram, the requirements library,
+        compliance rule management, and platform health's cross-tenant
+        aggregates.
+
+    The two are not the same split as the ``platform.`` / everything-else
+    namespaces, and that is the point of storing it. ``platform.team.*`` and
+    ``platform.audit.view`` / ``.export`` are ``TENANT``: the first is how a
+    school adds its own staff through a tenant-filtered viewset, and the second
+    belongs to audit officers working inside a tenant. Enforcing on the prefix
+    would have locked both out. See ``seed_platform_permissions`` for the list
+    and the evidence behind it.
+
+    There is deliberately no third value. "Tenant-only, never platform" was
+    considered and the evidence refutes it: platform roles legitimately hold
+    tenant keys today.
+
+    The field has **no default**. An unclassified key (empty scope) is not
+    tenant-safe by omission - :func:`assert_tenant_may_hold` refuses it for a
+    non-platform tenant and names it in the error, so a seeder that forgets to
+    classify a new key fails closed and loudly instead of quietly handing a
+    school something nobody decided it could have.
+    """
+
+    TENANT = "TENANT", "Tenant (any tenant may hold it)"
+    PLATFORM = "PLATFORM", "Platform (CX staff only)"
+
+
+def platform_only_keys(permission_keys) -> set:
+    """Return the subset of *permission_keys* no tenant role may hold.
+
+    Anything that is not explicitly ``TENANT`` counts, so an unclassified key
+    is refused rather than assumed safe. One query, whatever the input size.
+    """
+    keys = {key for key in permission_keys if key}
+    if not keys:
+        return set()
+    return set(
+        Permission.objects.filter(key__in=keys)
+        .exclude(scope=PermissionScope.TENANT)
+        .values_list("key", flat=True)
+    )
+
+
+def tenant_is_platform(tenant) -> bool:
+    from vs_tenants.models import Tenant
+
+    return getattr(tenant, "kind", None) == Tenant.Kind.PLATFORM
+
+
+def assert_tenant_may_hold(permission_keys, tenant, *, field="permission"):
+    """Raise unless every key in *permission_keys* may be held inside *tenant*.
+
+    A platform tenant may hold anything. Every other tenant may hold only keys
+    declared ``TENANT``. Called from the grant models themselves - not from a
+    serializer - so overrides, role permissions, group attachments, prebuilt
+    defaults and role assignments are all covered by the same rule.
+    """
+    if tenant_is_platform(tenant):
+        return
+    offending = platform_only_keys(permission_keys)
+    if not offending:
+        return
+    listed = ", ".join(sorted(offending))
+    raise ValidationError({
+        field: (
+            f"Permission(s) {listed} are platform-scoped and cannot be granted "
+            f"inside a tenant. If a key is missing a scope, classify it in the "
+            f"seeder that registers it."
+        ),
+    })
+
+
+class ScopeGuardedManager(models.Manager):
+    """Manager whose ``bulk_create`` honours the per-row scope guard.
+
+    ``bulk_create`` bypasses ``save()`` and ``clean()`` entirely, and it is how
+    the role serializers write permission sets - so without this the model
+    guard would be decorative on the exact path an attacker uses.
+    """
+
+    def bulk_create(self, objs, *args, **kwargs):
+        objs = list(objs)
+        for obj in objs:
+            obj.assert_scope_allowed()
+        return super().bulk_create(objs, *args, **kwargs)
+
+
 def _unique_slug(model_class, name, slug_field="id", exclude_pk=None):
     base = slugify(name)
     slug = base
@@ -114,6 +224,10 @@ class Permission(TimeStampedModel):
         resource: FK to PermissionResource (e.g. 'invoice' under 'finance').
         action: FK to PermissionAction (e.g. 'view').
         sensitivity_level: Flagged via ``Sensitivity`` for audit queues.
+        scope: Who may hold the key at all - see :class:`PermissionScope`.
+            Distinct from ``sensitivity_level`` and ``is_restricted``, which
+            grade how dangerous a key is *within* an audience; ``scope`` says
+            which audience exists in the first place.
         is_restricted: Marks permissions that must flow through approvals.
         is_active: Soft-delete / hide toggle.
     """
@@ -153,6 +267,17 @@ class Permission(TimeStampedModel):
         max_length=16,
         choices=Sensitivity.choices,
         default=Sensitivity.NORMAL,
+    )
+
+    # No default, deliberately: see PermissionScope. An unset scope is an
+    # unclassified key, and the grant guard refuses it for any tenant that is
+    # not the platform.
+    scope = models.CharField(
+        max_length=16,
+        choices=PermissionScope.choices,
+        blank=True,
+        db_index=True,
+        help_text="Who may hold this key: TENANT (any tenant) or PLATFORM (CX only).",
     )
 
     is_restricted = models.BooleanField(default=False)
@@ -224,6 +349,12 @@ class PermissionGroup(TimeStampedModel):
     Attributes:
         name: Human-readable group label (case-insensitive unique).
         description: Purpose and intended audience for the group.
+        scope: Who may hold the bundle - see :class:`PermissionScope`. A group
+            is a grant path in its own right (attach it to a role and every key
+            inside it lands in the effective set), so it carries the same
+            declaration a single permission does. A ``TENANT`` group may only
+            contain ``TENANT`` keys; ``GroupPermission`` enforces that, so the
+            declaration cannot drift from the contents.
         is_system: True for Vision-seeded groups; False for custom groups.
         is_active: Soft-delete / hide toggle.
         permissions: M2M to ``Permission`` via ``GroupPermission``.
@@ -232,6 +363,15 @@ class PermissionGroup(TimeStampedModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=120)
     description = models.TextField(blank=True)
+
+    # No default, for the same reason Permission.scope has none.
+    scope = models.CharField(
+        max_length=16,
+        choices=PermissionScope.choices,
+        blank=True,
+        db_index=True,
+        help_text="Who may hold this bundle: TENANT (any tenant) or PLATFORM (CX only).",
+    )
 
     is_system = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
@@ -279,6 +419,33 @@ class GroupPermission(TimeStampedModel):
             models.Index(fields=["group"]),
             models.Index(fields=["permission"]),
         ]
+
+    objects = ScopeGuardedManager()
+
+    def assert_scope_allowed(self):
+        """Keep a group's declared scope honest about what it contains.
+
+        A ``TENANT`` group is attachable to any school role, so a platform key
+        dropped inside one would travel straight through
+        :class:`TenantRoleGroup` into a school's effective set.
+        """
+        if self.group_id and self.group.scope == PermissionScope.PLATFORM:
+            return  # A platform group may carry anything; only CX can attach it.
+        if self.permission_id and platform_only_keys([self.permission_id]):
+            raise ValidationError({
+                "permission": (
+                    f"'{self.permission_id}' is platform-scoped and cannot be placed "
+                    f"in a tenant-scoped permission group."
+                ),
+            })
+
+    def clean(self):
+        super().clean()
+        self.assert_scope_allowed()
+
+    def save(self, *args, **kwargs):
+        self.assert_scope_allowed()
+        return super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"{self.group_id}:{self.permission_id}"
@@ -352,6 +519,33 @@ class PrebuiltRolePermission(models.Model):
         unique_together = [['prebuilt_role', 'permission']]
         verbose_name = 'Prebuilt Role Permission'
         verbose_name_plural = 'Prebuilt Role Permissions'
+
+    objects = ScopeGuardedManager()
+
+    def assert_scope_allowed(self):
+        """Prebuilt roles are tenant blueprints, so their defaults are too.
+
+        Every prebuilt template that exists (``school_admin``, ``branch_admin``,
+        ``teacher``) is provisioned into a tenant's own roles, and a default
+        attached here is copied into every school that adopts it. There is no
+        platform prebuilt role, so a platform key here has no legitimate
+        reading - it would be a fleet-wide grant.
+        """
+        if self.permission_id and platform_only_keys([self.permission_id]):
+            raise ValidationError({
+                "permission": (
+                    f"'{self.permission_id}' is platform-scoped and cannot be a "
+                    f"default on a prebuilt tenant role."
+                ),
+            })
+
+    def clean(self):
+        super().clean()
+        self.assert_scope_allowed()
+
+    def save(self, *args, **kwargs):
+        self.assert_scope_allowed()
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return f'{self.prebuilt_role.key}:{self.permission_id}'
@@ -431,6 +625,28 @@ class TenantRolePermission(TimeStampedModel):
             models.Index(fields=["permission", "granted"]),
         ]
 
+    objects = ScopeGuardedManager()
+
+    def assert_scope_allowed(self):
+        """A tenant's role may only carry keys that tenant is allowed to hold.
+
+        An explicit DENY (``granted=False``) is exempt: taking a key away from
+        a role is never an escalation, and refusing it would make an existing
+        deny row unsaveable.
+        """
+        if not self.granted or not self.permission_id:
+            return
+        tenant = getattr(self.role, "tenant", None) if self.role_id else None
+        assert_tenant_may_hold([self.permission_id], tenant)
+
+    def clean(self):
+        super().clean()
+        self.assert_scope_allowed()
+
+    def save(self, *args, **kwargs):
+        self.assert_scope_allowed()
+        return super().save(*args, **kwargs)
+
 
 class TenantRoleGroup(TimeStampedModel):
     role = models.ForeignKey(
@@ -449,6 +665,40 @@ class TenantRoleGroup(TimeStampedModel):
         constraints = [
             models.UniqueConstraint(fields=["role", "group"], name="uq_tenant_role_group"),
         ]
+
+    objects = ScopeGuardedManager()
+
+    def assert_scope_allowed(self):
+        """Attaching a bundle grants everything in it, so check the contents.
+
+        The group's declared scope is checked *and* its actual members, because
+        a group seeded before this field existed could be declared TENANT while
+        holding something it should not.
+        """
+        if not self.group_id or not self.role_id:
+            return
+        tenant = getattr(self.role, "tenant", None)
+        if tenant_is_platform(tenant):
+            return
+        if self.group.scope != PermissionScope.TENANT:
+            raise ValidationError({
+                "group": (
+                    f"Permission group '{self.group}' is not tenant-scoped and cannot "
+                    f"be attached to a role inside a tenant."
+                ),
+            })
+        member_keys = GroupPermission.objects.filter(
+            group_id=self.group_id,
+        ).values_list("permission_id", flat=True)
+        assert_tenant_may_hold(member_keys, tenant, field="group")
+
+    def clean(self):
+        super().clean()
+        self.assert_scope_allowed()
+
+    def save(self, *args, **kwargs):
+        self.assert_scope_allowed()
+        return super().save(*args, **kwargs)
 
 
 class TenantUserRoleAssignment(TimeStampedModel):
@@ -514,8 +764,35 @@ class TenantUserRoleAssignment(TimeStampedModel):
             models.Index(fields=["tenant", "role", "assignment_status"]),
         ]
 
+    objects = ScopeGuardedManager()
+
+    def assert_scope_allowed(self):
+        """Refuse to hand a person a role carrying keys their tenant may not hold.
+
+        ``clean()`` already pins the role to the assignment's tenant, so this
+        cannot normally fire - the role's own rows are guarded as they are
+        written. It is here for the row that predates the guard: a role that
+        already carries a platform key stops being *assignable* as well as
+        stopping being effective, so the grant cannot be revived by re-issuing
+        it to somebody new.
+        """
+        if not self.role_id or self.assignment_status != self.AssignmentStatus.ACTIVE:
+            return
+        tenant = self.tenant if self.tenant_id else None
+        if tenant_is_platform(tenant):
+            return
+        keys = TenantRolePermission.objects.filter(
+            role_id=self.role_id, granted=True,
+        ).values_list("permission_id", flat=True)
+        assert_tenant_may_hold(keys, tenant, field="role")
+
+    def save(self, *args, **kwargs):
+        self.assert_scope_allowed()
+        return super().save(*args, **kwargs)
+
     def clean(self):
         super().clean()
+        self.assert_scope_allowed()
         errors = {}
         if self.user_id and self.user.tenant_id != self.tenant_id:
             errors["user"] = "User must belong to the assignment tenant."
@@ -634,6 +911,19 @@ class UserPermissionOverride(TimeStampedModel):
     def is_expired(self) -> bool:
         return self.expires_at is not None and self.expires_at <= timezone.now()
 
+    objects = ScopeGuardedManager()
+
+    def assert_scope_allowed(self):
+        """An ALLOW override is a grant, so it obeys the same scope rule.
+
+        This is the path the escalation used: the override serializer offers
+        every active key, and tenant membership was the only thing checked. A
+        DENY is exempt - removing a key from one person cannot escalate them.
+        """
+        if self.mode != self.Mode.ALLOW or not self.permission_id:
+            return
+        assert_tenant_may_hold([self.permission_id], self.tenant if self.tenant_id else None)
+
     def clean(self):
         super().clean()
         errors = {}
@@ -643,6 +933,11 @@ class UserPermissionOverride(TimeStampedModel):
             errors["reason"] = "A reason is required for a permission override."
         if errors:
             raise ValidationError(errors)
+        self.assert_scope_allowed()
+
+    def save(self, *args, **kwargs):
+        self.assert_scope_allowed()
+        return super().save(*args, **kwargs)
 
 
 # -----------------------------------------------------------------------------

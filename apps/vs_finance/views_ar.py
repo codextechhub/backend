@@ -23,6 +23,10 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from core.pagination import XVSPagination
 from core.response import success_response
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
+# ``include_shared=True`` is spelled out at every call site rather than left to the
+# default: a null branch means "shared across the school", so a school-wide fee
+# structure, customer or credit note stays visible to a branch-pinned caller.
+from vs_rbac.scoping import branch_q, branch_scope
 
 
 # Support the paginate workflow.
@@ -273,7 +277,9 @@ class CustomerListCreateView(_FinanceBase):
         from .money import format_naira
 
         entity = resolve_entity(request)
-        qs = Customer.objects.filter(entity=entity).select_related("receivable_account")
+        qs = Customer.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).select_related("receivable_account")
         if (search := request.query_params.get("search")):
             from django.db.models import Q
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
@@ -660,7 +666,7 @@ class CustomerSummaryView(_FinanceBase):
         from django.db.models import Q
 
         entity = resolve_entity(request)
-        qs = Customer.objects.filter(entity=entity)
+        qs = Customer.objects.filter(branch_q(request, include_shared=True), entity=entity)
         if (search := request.query_params.get("search")):
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
         if (active := request.query_params.get("is_active")) in ("true", "false"):
@@ -712,8 +718,9 @@ class PaymentListView(_FinanceBase):
         from .models import Payment
 
         entity = resolve_entity(request)
-        qs = (Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED)
-              .select_related("customer", "deposit_account"))
+        qs = (Payment.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, status=DocumentStatus.POSTED,
+        ).select_related("customer", "deposit_account"))
         if (method := request.query_params.get("method")):
             qs = qs.filter(method=method)
         if (customer := request.query_params.get("customer")):
@@ -765,7 +772,9 @@ class PaymentSummaryView(_FinanceBase):
         from .models import Payment
 
         entity = resolve_entity(request)
-        qs = (Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED))
+        qs = (Payment.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, status=DocumentStatus.POSTED,
+        ))
         if (method := request.query_params.get("method")):
             qs = qs.filter(method=method)
         if (customer := request.query_params.get("customer")):
@@ -828,7 +837,8 @@ class PaymentDetailView(_FinanceBase):
         from .models import CreditNote, Invoice, Payment
 
         entity = resolve_entity(request)
-        p = (Payment.objects.filter(entity=entity, pk=pk)
+        p = (Payment.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk)
              .select_related("customer", "deposit_account", "journal")
              .prefetch_related("allocations__invoice", "debit_note_allocations__note",
                                "journal__lines__account").first())
@@ -894,7 +904,10 @@ class PaymentReceiptView(_FinanceBase):
 
         entity = resolve_entity(request)
         payment = (
-            Payment.objects.filter(entity=entity, pk=pk, status=DocumentStatus.POSTED)
+            Payment.objects.filter(
+                branch_q(request, include_shared=True),
+                entity=entity, pk=pk, status=DocumentStatus.POSTED,
+            )
             .select_related("entity__tenant__school_profile", "branch", "customer")
             .prefetch_related("allocations__invoice")
             .first()
@@ -931,7 +944,8 @@ class PaymentAllocateView(_FinanceBase):
         from .receivables import allocate_payment
 
         entity = resolve_entity(request)
-        p = Payment.objects.filter(entity=entity, pk=pk).first()
+        p = Payment.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
         if p is None:
             raise NotFound("Receipt not found for this entity.")
         body = request.data or {}
@@ -965,7 +979,8 @@ class PaymentVoidView(_FinanceBase):
         from .voids import void_payment
 
         entity = resolve_entity(request)
-        payment = Payment.objects.filter(entity=entity, pk=pk).first()
+        payment = Payment.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
         if payment is None:
             raise NotFound("Receipt not found for this entity.")
         void_payment(
@@ -989,7 +1004,8 @@ class InvoiceVoidView(_FinanceBase):
         from .voids import void_invoice
 
         entity = resolve_entity(request)
-        invoice = Invoice.objects.filter(entity=entity, pk=pk).first()
+        invoice = Invoice.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
         if invoice is None:
             raise NotFound("Invoice not found for this entity.")
         void_invoice(
@@ -1077,7 +1093,9 @@ class FeeStructureListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = FeeStructure.objects.filter(entity=entity).prefetch_related(
+        qs = FeeStructure.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).prefetch_related(
             "items__revenue_account", "items__tax_code")
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
@@ -1286,7 +1304,7 @@ class CreditNoteListCreateView(_FinanceBase):
         # entity__tenant and branch: the serializer's approval_required scopes
         # through the ledger entity's owning tenant and the document's branch,
         # both of which would otherwise load per row on a multi-branch school.
-        qs = (CreditNote.objects.filter(entity=entity)
+        qs = (CreditNote.objects.filter(branch_q(request, include_shared=True), entity=entity)
               .select_related("customer", "invoice", "entity__tenant", "branch")
               .prefetch_related("lines"))
         if (kind := request.query_params.get("kind")):
@@ -1358,7 +1376,8 @@ class _CreditNoteActionBase(_FinanceBase):
     # Support the note workflow.
     def _note(self, request, pk):
         entity = resolve_entity(request)
-        note = CreditNote.objects.filter(entity=entity, pk=pk).first()
+        note = CreditNote.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
         if note is None:
             raise NotFound("Credit note not found for this entity.")
         return entity, note
@@ -1521,7 +1540,9 @@ class RefundAvailabilityView(_FinanceBase):
 
         entity = resolve_entity(request)
         as_of = _date(request.query_params.get("as_of"), "as_of", required=False)
-        qs = Customer.objects.filter(entity=entity, is_active=True)
+        qs = Customer.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, is_active=True,
+        )
         if (search := (request.query_params.get("search") or "").strip()):
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
 
@@ -1566,7 +1587,9 @@ class RefundListCreateView(_FinanceBase):
         # entity__tenant and branch: the serializer's approval_required scopes
         # through the ledger entity's owning tenant and the document's branch,
         # both of which would otherwise load per row on a multi-branch school.
-        qs = Refund.objects.filter(entity=entity).select_related(
+        qs = Refund.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).select_related(
             "customer", "entity__tenant", "branch")
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
@@ -1649,7 +1672,8 @@ class _RefundActionBase(_FinanceBase):
     # Support the refund workflow.
     def _refund(self, request, pk):
         entity = resolve_entity(request)
-        refund = Refund.objects.filter(entity=entity, pk=pk).first()
+        refund = Refund.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
         if refund is None:
             raise NotFound("Refund not found for this entity.")
         return entity, refund
@@ -1809,7 +1833,9 @@ class WriteOffRequestListCreateView(_FinanceBase):
         # entity__tenant and branch: the serializer's approval_required scopes
         # through the ledger entity's owning tenant and the document's branch,
         # both of which would otherwise load per row on a multi-branch school.
-        qs = WriteOffRequest.objects.filter(entity=entity).select_related(
+        qs = WriteOffRequest.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).select_related(
             "invoice", "invoice__customer", "entity__tenant", "branch")
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
@@ -1833,7 +1859,8 @@ class _WriteOffActionBase(_FinanceBase):
     # Support the wor workflow.
     def _wor(self, request, pk):
         entity = resolve_entity(request)
-        wor = WriteOffRequest.objects.filter(entity=entity, pk=pk).select_related(
+        wor = WriteOffRequest.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk).select_related(
             "invoice", "invoice__customer").first()
         if wor is None:
             raise NotFound("Write-off request not found for this entity.")
@@ -1939,7 +1966,8 @@ class InvoiceWriteOffView(_FinanceBase):
         from .credit_notes import post_write_off_request
 
         entity = resolve_entity(request)
-        invoice = Invoice.objects.filter(entity=entity, pk=pk).first()
+        invoice = Invoice.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
         if invoice is None:
             raise NotFound("Invoice not found for this entity.")
 
@@ -2282,7 +2310,7 @@ class ARAdjustmentBatchView(_FinanceBase):
 
 
 # Support the writeoff rows workflow.
-def _writeoff_rows(entity, *, limit=1000, gate=None):
+def _writeoff_rows(entity, *, limit=1000, gate=None, scope=None):
     """Normalised bad-debt write-off rows, from two disjoint sources.
 
     * POSTED write-offs come from the finance audit log (``INVOICE_WRITTEN_OFF``
@@ -2300,10 +2328,20 @@ def _writeoff_rows(entity, *, limit=1000, gate=None):
     ``gate`` is an :class:`~vs_finance.approvals.ApprovalGate` shared with the
     caller's other row builders, so the ``approval_required`` each actionable row
     carries costs one template lookup for the whole page rather than one per row.
+
+    ``scope`` is the caller's branch narrowing
+    (:class:`vs_rbac.scoping.BranchScope`). The two sources reach a branch by
+    different routes, which is exactly what a scope object is for rather than a
+    pre-built ``Q``: a ``WriteOffRequest`` carries its own ``branch`` column,
+    while a posted write-off is reported from the audit log, which has none - its
+    branch is the written-off invoice's and has to be resolved. Omitting ``scope``
+    means no narrowing, which is what an unbound caller gets.
     """
     from .approvals import ApprovalGate
+    from vs_rbac.scoping import UNNARROWED
 
     gate = ApprovalGate() if gate is None else gate
+    scope = UNNARROWED if scope is None else scope
     logs = list(
         FinanceAuditLog.objects.filter(
             entity=entity, action=FinanceAuditAction.INVOICE_WRITTEN_OFF,
@@ -2314,8 +2352,28 @@ def _writeoff_rows(entity, *, limit=1000, gate=None):
                 if not l.metadata.get("customer_code") and str(l.target_id).isdigit()]
     invs = {i.id: i for i in Invoice.objects.filter(id__in=need_ids).select_related("customer")} \
         if need_ids else {}
+
+    # The audit log has no branch column, so a posted write-off's branch is the
+    # branch of the invoice it wrote off. Resolving that costs one extra query,
+    # bounded by ``limit``, and is done only for a caller who is actually
+    # narrowed - an unbound caller's query count is byte-for-byte what it was.
+    # A row whose target is not a resolvable invoice cannot be attributed to a
+    # branch at all, so a narrowed caller does not see it: failing closed on an
+    # oddity is right where failing open would leak another branch's bad debt.
+    visible_ids = None
+    if scope.is_narrowed:
+        log_ids = [int(l.target_id) for l in logs if str(l.target_id).isdigit()]
+        visible_ids = set(
+            scope.filter(Invoice.objects.filter(id__in=log_ids))
+            .values_list("id", flat=True)
+        ) if log_ids else set()
+
     rows = []
     for l in logs:
+        if visible_ids is not None and (
+            not str(l.target_id).isdigit() or int(l.target_id) not in visible_ids
+        ):
+            continue
         inv = invs.get(int(l.target_id)) if str(l.target_id).isdigit() else None
         rows.append({
             "key": f"W{l.id}", "kind": "WRITEOFF", "reference": l.document_number,
@@ -2332,8 +2390,8 @@ def _writeoff_rows(entity, *, limit=1000, gate=None):
 
     # Non-posted write-off requests (drafts + awaiting approval). The audit log
     # only records POSTED write-offs, so these would otherwise never surface.
-    for w in (WriteOffRequest.objects
-              .filter(entity=entity).exclude(status=DocumentStatus.POSTED)
+    for w in (scope.filter(WriteOffRequest.objects.filter(entity=entity))
+              .exclude(status=DocumentStatus.POSTED)
               .select_related("invoice", "invoice__customer", "entity__tenant", "branch")
               .order_by("-id")[:limit]):
         wo_date = w.write_off_date or w.created_at.date()
@@ -2385,7 +2443,7 @@ class ARAdjustmentListView(_FinanceBase):
         # document through its ledger entity's owning tenant and its branch, and
         # without these every row would lazy-load them back - on a multi-branch
         # school that is two extra queries a row for a handful of distinct scopes.
-        for r in (Refund.objects.filter(entity=entity)
+        for r in (Refund.objects.filter(branch_q(request, include_shared=True), entity=entity)
                   .select_related("customer", "entity__tenant", "branch")
                   .order_by("-refund_date", "-id")[:1000]):
             refund_rows.append({
@@ -2396,7 +2454,9 @@ class ARAdjustmentListView(_FinanceBase):
                 "amount_naira": format_naira(r.amount), "status": r.status, "refund_id": r.id,
                 "approval_required": gate.required(r),
             })
-        writeoff_rows = _writeoff_rows(entity, gate=gate)
+        writeoff_rows = _writeoff_rows(
+            entity, gate=gate, scope=branch_scope(request, include_shared=True),
+        )
 
         # KPI totals - from the full sets, independent of the type filter / page.
         year = timezone.now().year
@@ -2407,8 +2467,10 @@ class ARAdjustmentListView(_FinanceBase):
             if w["status"] == "POSTED" and w["date"][:4] == str(year))
         # "Pending" spans both adjustment kinds awaiting posting/approval.
         pending = (
-            Refund.objects.filter(entity=entity).exclude(status=DocumentStatus.POSTED).count()
-            + WriteOffRequest.objects.filter(entity=entity).exclude(status=DocumentStatus.POSTED).count()
+            Refund.objects.filter(branch_q(request, include_shared=True), entity=entity)
+            .exclude(status=DocumentStatus.POSTED).count()
+            + WriteOffRequest.objects.filter(branch_q(request, include_shared=True), entity=entity)
+            .exclude(status=DocumentStatus.POSTED).count()
         )
         from .receivables import customer_refund_available_balances
         active_customer_ids = Customer.objects.filter(
@@ -2468,7 +2530,8 @@ class InvoicePayView(_FinanceBase):
         from .receivables import post_payment
 
         entity = resolve_entity(request)
-        invoice = Invoice.objects.filter(entity=entity, pk=pk).first()
+        invoice = Invoice.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
         if invoice is None:
             raise NotFound("Invoice not found for this entity.")
         if invoice.status != "POSTED":
@@ -2513,7 +2576,8 @@ class InvoiceRemindView(_FinanceBase):
         from .dunning import remind_invoice
 
         entity = resolve_entity(request)
-        invoice = Invoice.objects.filter(entity=entity, pk=pk).first()
+        invoice = Invoice.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
         if invoice is None:
             raise NotFound("Invoice not found for this entity.")
         notice = remind_invoice(
@@ -2549,7 +2613,9 @@ class ConcessionListCreateView(_FinanceBase):
         # entity__tenant and branch: the serializer's approval_required scopes
         # through the ledger entity's owning tenant and the document's branch,
         # both of which would otherwise load per row on a multi-branch school.
-        qs = Concession.objects.filter(entity=entity).select_related(
+        qs = Concession.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).select_related(
             "customer", "invoice", "entity__tenant", "branch")
         if (kind := request.query_params.get("kind")):
             qs = qs.filter(kind=kind)
@@ -2595,7 +2661,8 @@ class _ConcessionActionBase(_FinanceBase):
     # Support the concession workflow.
     def _concession(self, request, pk):
         entity = resolve_entity(request)
-        concession = Concession.objects.filter(entity=entity, pk=pk).first()
+        concession = Concession.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
         if concession is None:
             raise NotFound("Concession not found for this entity.")
         return entity, concession
@@ -2722,7 +2789,7 @@ class ConcessionSummaryView(_FinanceBase):
         from django.utils import timezone
 
         entity = resolve_entity(request)
-        qs = Concession.objects.filter(entity=entity)
+        qs = Concession.objects.filter(branch_q(request, include_shared=True), entity=entity)
         posted_ytd = qs.filter(
             status=DocumentStatus.POSTED, concession_date__year=timezone.now().year,
         ).aggregate(s=Sum("amount"))["s"] or 0
@@ -2755,7 +2822,7 @@ class PaymentPlanListCreateView(_FinanceBase):
     def get(self, request):
         entity = resolve_entity(request)
         qs = (
-            PaymentPlan.objects.filter(entity=entity)
+            PaymentPlan.objects.filter(branch_q(request, include_shared=True), entity=entity)
             .select_related("customer", "invoice").prefetch_related("installments")
         )
         if (status_val := request.query_params.get("status")):
@@ -2812,7 +2879,8 @@ class _PaymentPlanActionBase(_FinanceBase):
     # Support the plan workflow.
     def _plan(self, request, pk):
         entity = resolve_entity(request)
-        plan = PaymentPlan.objects.filter(entity=entity, pk=pk).first()
+        plan = PaymentPlan.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
         if plan is None:
             raise NotFound("Payment plan not found for this entity.")
         return entity, plan
@@ -3189,7 +3257,9 @@ class DunningSummaryView(_FinanceBase):
         # Drop fully-settled invoices in SQL (balance_due is a property); only the
         # date-bucketing is left to Python, over the still-owing set.
         balance = F("total") - F("amount_paid") - F("amount_credited")
-        owing = (Invoice.objects.filter(entity=entity, status=DocumentStatus.POSTED)
+        owing = (Invoice.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, status=DocumentStatus.POSTED,
+        )
                  .exclude(due_date__isnull=True)
                  .annotate(_balance=balance).filter(_balance__gt=0)
                  .only("due_date", "total", "amount_paid", "amount_credited"))
@@ -3223,7 +3293,9 @@ class DunningNoticeListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = DunningNotice.objects.filter(entity=entity).select_related("customer", "invoice")
+        qs = DunningNotice.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).select_related("customer", "invoice")
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(notice_status=status_val)
         if (customer := request.query_params.get("customer")):
@@ -3239,7 +3311,8 @@ class _DunningNoticeActionBase(_FinanceBase):
     # Support the notice workflow.
     def _notice(self, request, pk):
         entity = resolve_entity(request)
-        notice = DunningNotice.objects.filter(entity=entity, pk=pk).first()
+        notice = DunningNotice.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
         if notice is None:
             raise NotFound("Dunning notice not found for this entity.")
         return entity, notice

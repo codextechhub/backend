@@ -471,7 +471,7 @@ class ImportTemplateColumn(TimeStampedModel):
                        if validation rules permit it.
         column_order: Integer used to sort columns in generated files and UI displays.
         reference_model: Optional name of the domain model this column cross-references
-                         during validation. Example: "Staff", "Campus".
+                         during validation. Example: "Staff", "Branch".
         reference_lookup_field: The field on the reference model used to resolve the
                                 cross-reference. Example: "full_name", "code".
 
@@ -536,7 +536,7 @@ class ImportTemplateColumn(TimeStampedModel):
     reference_model = models.CharField(
         max_length=255,
         blank=True,
-        help_text="Example: Staff, Campus, ClassRoom",
+        help_text="Example: Staff, Branch, ClassRoom",
     )
     reference_lookup_field = models.CharField(
         max_length=255,

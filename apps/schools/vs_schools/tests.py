@@ -1,16 +1,32 @@
+import json
 import threading
+from unittest import mock
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, close_old_connections, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, tag
+from django.urls import reverse
+from rest_framework.test import APIClient
 
 from .models import School
 from .serializers import SchoolCreateSerializer
+from .views.school import SchoolDetailView
 from vs_config.models import ConfigurationDefinition
 from vs_config.services.resolution import set_value
-from vs_rbac.tests.helpers import make_vision_user
+from vs_rbac.tests.helpers import make_branch, make_school, make_vision_user
 from vs_tenants.models import Branch, Tenant
+
+
+def _branch_payload(name="Main Branch", *, is_main=True, email="main@branch.test"):
+    """The smallest branch a school can be created with."""
+    return {
+        "name": name,
+        "_type": "Main" if is_main else "Annex",
+        "state": "Lagos",
+        "is_main": is_main,
+        "primary_admin_data": {"full_name": f"{name} Head", "email": email},
+    }
 
 
 class SchoolCodeAllocationTests(TestCase):
@@ -26,6 +42,7 @@ class SchoolCodeAllocationTests(TestCase):
             "address": "1 Test Road",
             "term_structure": "3_TERMS",
             "currency": "NGN",
+            "branches": [_branch_payload(email="head@serializer-school.test")],
         })
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
@@ -47,11 +64,15 @@ class SchoolCodeAllocationTests(TestCase):
             actor=actor,
         )
 
-        omitted = SchoolCreateSerializer(data={"name": "Defaults School"})
+        omitted = SchoolCreateSerializer(data={
+            "name": "Defaults School",
+            "branches": [_branch_payload(email="head@defaults-school.test")],
+        })
         explicit = SchoolCreateSerializer(data={
             "name": "Explicit School",
             "ownership_type": "PRIVATE",
             "currency": "NGN",
+            "branches": [_branch_payload(email="head@explicit-school.test")],
         })
 
         self.assertTrue(omitted.is_valid(), omitted.errors)
@@ -124,11 +145,19 @@ class BranchTenantOwnershipTests(TestCase):
             set_current_tenant(None)
 
     def test_a_tenant_with_no_branches_is_untouched(self):
-        empty = School.objects.create(name="Branchless", slug="branchless")
+        """A bare tenant, not a school: every school has a branch.
+
+        Code allocation has to work for a tenant whose first branch is being
+        created, and a tenant with no product attached is the honest way to
+        express that now that a branchless school is not a shape that exists.
+        """
+        empty = Tenant.objects.create(
+            name="Empty Org", slug="empty-org", kind=Tenant.Kind.ORGANIZATION,
+            status=Tenant.Status.ACTIVE,
+        )
 
         self.assertEqual(empty.branches.count(), 0)
-        self.assertIsNone(empty.main_branch)
-        self.assertEqual(Branch.allocate_next_code(tenant_id=empty.tenant_id), 1)
+        self.assertEqual(Branch.allocate_next_code(tenant_id=empty.pk), 1)
 
 
 class BranchUniquenessConstraintTests(TestCase):
@@ -176,11 +205,11 @@ class BranchUniquenessConstraintTests(TestCase):
     def test_the_existing_main_branch_can_still_be_saved(self):
         main = Branch.objects.create(tenant=self.school.tenant, name="Main", is_main=True)
 
-        main.name = "Main Campus"
+        main.name = "Main Branch"
         main.save()
 
         main.refresh_from_db()
-        self.assertEqual(main.name, "Main Campus")
+        self.assertEqual(main.name, "Main Branch")
 
     def test_a_second_main_that_evades_the_model_guard_is_stopped_by_the_index(self):
         # The model guard is the friendly path; this proves the partial unique
@@ -199,6 +228,12 @@ class BranchUniquenessConstraintTests(TestCase):
         self.assertEqual(Branch.all_objects.filter(is_main=True).count(), 2)
 
 
+# Tagged slow: TransactionTestCase gets no transaction rollback, so Django
+# flushes and rebuilds the database around every test in the class. That, not
+# the assertions, is what makes this app's suite take ~18 minutes. Skip with
+# --exclude-tag=slow while iterating; run it whenever migrations, the branch
+# code allocator or concurrency behaviour change.
+@tag("slow")
 class BranchCodeAllocationConcurrencyTests(TransactionTestCase):
     """The first-branch race: two creates against a tenant that has no branches.
 
@@ -281,6 +316,9 @@ class BranchCodeAllocationConcurrencyTests(TransactionTestCase):
         )
 
 
+# Tagged slow for the same reason, and more so: every subclass re-runs the
+# migration graph. The tag is inherited, so the subclasses need no marking.
+@tag("slow")
 class _MigrationHarness(TransactionTestCase):
     """Drive real migrations forward and back, then leave the database current.
 
@@ -614,3 +652,693 @@ class BranchMoveMigrationTests(_MigrationHarness):
             tenant_id=tenants["multi"].pk, name="Ikoyi", _type="Sub",
         )
         self.assertEqual(fresh.code, 3)
+
+
+class EverySchoolHasAtLeastOneBranchTests(TestCase):
+    """The invariant the product settled and the code did not hold.
+
+    ``SchoolCreateSerializer.branches`` was ``required=False, default=list``, so
+    the live creation endpoint (and the bulk importer, which runs this same
+    serializer) would happily mint a school with nowhere to put a user, a
+    document or a student. Every branch rule in ``validate()`` sat behind an
+    ``if branches:`` and therefore never ran for exactly the payload that needed
+    them.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="branch-invariant@example.com", super_admin=True,
+        )
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        return client
+
+    def _post(self, payload, *, expect):
+        response = self._client().post(
+            reverse("school-create"), payload, format="json",
+        )
+        self.assertEqual(response.status_code, expect, response.data)
+        return response
+
+    # --- refused ----------------------------------------------------------
+
+    def test_a_school_with_no_branches_at_all_is_refused(self):
+        response = self._post(
+            {"name": "Nowhere School", "slug": "nowhere-school"}, expect=400,
+        )
+
+        self.assertIn("branches", self._errors(response))
+        self.assertFalse(School.objects.filter(slug="nowhere-school").exists())
+
+    def test_an_empty_branch_list_is_refused(self):
+        response = self._post(
+            {"name": "Empty List", "slug": "empty-list", "branches": []},
+            expect=400,
+        )
+
+        self.assertIn("branches", self._errors(response))
+        self.assertFalse(School.objects.filter(slug="empty-list").exists())
+
+    def test_the_refusal_is_a_validation_error_not_a_crash(self):
+        """400 with a readable message, never a 500."""
+        response = self._post({"name": "Readable", "slug": "readable"}, expect=400)
+
+        self.assertIn("at least one branch", str(self._errors(response)["branches"]))
+
+    def test_nothing_at_all_is_written_when_the_branch_is_missing(self):
+        """The refusal happens in validation, before the first row is written."""
+        before = (
+            School.objects.count(), Tenant.objects.count(), Branch.all_objects.count(),
+        )
+
+        self._post({"name": "No Trace", "slug": "no-trace"}, expect=400)
+
+        self.assertEqual(
+            (School.objects.count(), Tenant.objects.count(), Branch.all_objects.count()),
+            before,
+        )
+
+    def test_two_branches_still_need_exactly_one_main(self):
+        response = self._post({
+            "name": "Two Mains", "slug": "two-mains",
+            "branches": [
+                _branch_payload("A", is_main=True, email="a@two-mains.test"),
+                _branch_payload("B", is_main=True, email="b@two-mains.test"),
+            ],
+        }, expect=400)
+
+        self.assertIn("branches", self._errors(response))
+        self.assertFalse(School.objects.filter(slug="two-mains").exists())
+
+    def test_two_branches_with_no_main_are_refused(self):
+        """Promotion is only safe when there is one branch to promote."""
+        self._post({
+            "name": "No Main", "slug": "no-main",
+            "branches": [
+                _branch_payload("A", is_main=False, email="a@no-main.test"),
+                _branch_payload("B", is_main=False, email="b@no-main.test"),
+            ],
+        }, expect=400)
+
+        self.assertFalse(School.objects.filter(slug="no-main").exists())
+
+    # --- accepted ---------------------------------------------------------
+
+    def test_one_branch_succeeds_and_that_branch_is_the_main_one(self):
+        self._post({
+            "name": "One Branch", "slug": "one-branch",
+            "branches": [_branch_payload("Main Branch", email="head@one-branch.test")],
+        }, expect=201)
+
+        school = School.objects.get(slug="one-branch")
+        self.assertEqual(school.branches.count(), 1)
+        branch = school.main_branch
+        self.assertIsNotNone(branch)
+        self.assertEqual(branch.name, "Main Branch")
+        self.assertTrue(branch.is_main)
+        self.assertEqual(branch.code, 1)
+        self.assertEqual(branch.tenant_id, school.tenant_id)
+
+    def test_the_only_branch_is_promoted_to_main_when_the_flag_is_omitted(self):
+        """A school's single site is its main site; saying so twice buys nothing."""
+        self._post({
+            "name": "Implied Main", "slug": "implied-main",
+            "branches": [{
+                "name": "Only Branch", "_type": "Main", "state": "Lagos",
+                "primary_admin_data": {
+                    "full_name": "Only Head", "email": "head@implied-main.test",
+                },
+            }],
+        }, expect=201)
+
+        school = School.objects.get(slug="implied-main")
+        self.assertEqual(school.branches.count(), 1)
+        self.assertTrue(school.main_branch.is_main)
+
+    def test_a_multi_branch_school_keeps_the_shape_it_asked_for(self):
+        """One branch proves nothing about a school with several."""
+        self._post({
+            "name": "Multi Branch", "slug": "multi-branch",
+            "branches": [
+                _branch_payload("HQ", is_main=True, email="hq@multi-branch.test"),
+                _branch_payload("Lekki", is_main=False, email="lekki@multi-branch.test"),
+                _branch_payload("Ikoyi", is_main=False, email="ikoyi@multi-branch.test"),
+            ],
+        }, expect=201)
+
+        school = School.objects.get(slug="multi-branch")
+        self.assertEqual(school.branches.count(), 3)
+        self.assertEqual(school.main_branch.name, "HQ")
+        self.assertEqual(
+            sorted(school.branches.values_list("code", flat=True)), [1, 2, 3],
+        )
+
+    @staticmethod
+    def _errors(response):
+        """Field errors live at ``error.detail`` in the project envelope."""
+        data = response.data
+        if isinstance(data, dict) and isinstance(data.get("error"), dict):
+            return data["error"].get("detail", data)
+        return data
+
+
+class BulkImporterSuppliesAMainBranchTests(TestCase):
+    """The second creation path: the bulk school importer.
+
+    It runs the same serializer, so the rule above already binds it. What is
+    pinned here is that an import row with no branch columns filled in still
+    produces a school with a main branch rather than a rejected row.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="branch-importer@example.com", super_admin=True,
+        )
+
+    def test_a_row_with_no_branch_columns_still_gets_a_main_branch(self):
+        from vs_import_data.services.import_executor import import_schools_row
+
+        result = import_schools_row(
+            import_batch=None,
+            payload={
+                "name": "Imported Academy",
+                "slug": "imported-academy",
+                "branch_admin_full_name": "Imported Head",
+                "branch_admin_email": "head@imported-academy.test",
+            },
+            queued_by=self.vision_user,
+        )
+
+        school = result.instance
+        self.assertEqual(school.slug, "imported-academy")
+        self.assertEqual(school.branches.count(), 1)
+        self.assertTrue(school.main_branch.is_main)
+        # The default name the handler builds when the column is blank.
+        self.assertEqual(school.main_branch.name, "Imported Academy - Main Branch")
+
+    def test_a_row_names_its_branch_when_the_column_is_filled(self):
+        from vs_import_data.services.import_executor import import_schools_row
+
+        result = import_schools_row(
+            import_batch=None,
+            payload={
+                "name": "Named Academy",
+                "slug": "named-academy",
+                "branch_name": "Yaba Branch",
+                "branch_state": "Lagos",
+                "branch_admin_full_name": "Yaba Head",
+                "branch_admin_email": "head@named-academy.test",
+            },
+            queued_by=self.vision_user,
+        )
+
+        self.assertEqual(result.instance.main_branch.name, "Yaba Branch")
+
+
+class SeedDataSuppliesABranchTests(TestCase):
+    """The dev seed is a creation path too, and it must not model a shape the
+    product has abolished."""
+
+    def test_every_seeded_school_spec_has_exactly_one_main_branch(self):
+        from core.management.commands.seed_dev_data import SCHOOLS
+
+        self.assertTrue(SCHOOLS)
+        for spec in SCHOOLS:
+            branches = spec["branches"]
+            self.assertTrue(branches, f"{spec['slug']} is seeded with no branch")
+            mains = [b for b in branches if b[2]]
+            self.assertEqual(
+                len(mains), 1, f"{spec['slug']} must have exactly one main branch",
+            )
+
+
+class SchoolDetailMissingSlugTests(TestCase):
+    """A school that does not exist answers 404, and says nothing else.
+
+    The verification 7464999 never wrote. That commit removed a blanket
+    ``except Exception`` from ``SchoolDetailView.retrieve`` which caught every
+    failure - including the ``Http404`` that ``get_object`` raises for an
+    unknown slug - and answered with ``f"DEBUG: {type(exc).__name__}: {exc}"``
+    plus ``traceback.format_exc()``. Two defects in one: an absent school came
+    back as a server fault rather than a 404, and the response was built to hand
+    a Python stack trace, file paths and all, to whoever asked.
+
+    The status code was never the whole defect, so these assert on the body.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="detail-404@example.com", super_admin=True,
+        )
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        return client
+
+    def _get(self, slug):
+        return self._client().get(reverse("school-detail", kwargs={"slug": slug}))
+
+    def test_a_school_that_does_not_exist_answers_404(self):
+        response = self._get("no-such-school")
+
+        self.assertEqual(response.status_code, 404, response.data)
+
+    def test_the_404_body_carries_no_trace_of_the_server(self):
+        response = self._get("no-such-school")
+
+        body = json.dumps(response.data)
+        for leak in (
+            "DEBUG:",
+            "Traceback",
+            "traceback",
+            'File "',
+            "site-packages",
+            "/apps/",
+            "Http404",
+            "Exception",
+        ):
+            self.assertNotIn(leak, body, f"404 body leaked {leak!r}: {body}")
+
+    def test_the_404_uses_the_platform_error_envelope(self):
+        """The same shape any other 404 in this codebase produces, so a caller
+        does not have to special-case this endpoint."""
+        response = self._get("no-such-school")
+
+        self.assertEqual(response.data["success"], False)
+        self.assertIsInstance(response.data["message"], str)
+        self.assertTrue(response.data["message"])
+        self.assertEqual(response.data["error"]["code"], "REQUEST_ERROR")
+
+    def test_an_existing_school_is_unaffected(self):
+        school = make_school(slug="present-school", name="Present School")
+        make_branch(school, name="Main Branch")
+
+        response = self._get("present-school")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["slug"], "present-school")
+
+    def test_an_unexpected_failure_still_leaks_nothing(self):
+        """The other route out of this view.
+
+        Removing the blanket ``except`` handed every non-404 failure to
+        ``core.exceptions.custom_exception_handler``. That handler must answer
+        an unforeseen error with a fixed sentence and log the trace server-side
+        - if it echoed the exception instead, the traceback would simply have
+        moved one layer out rather than gone away.
+        """
+        school = make_school(slug="present-or-not", name="Present Or Not")
+        make_branch(school, name="Main Branch")
+        # Patched on the view class, not on the module-level name: the view
+        # bound ``serializer_class = SchoolDetailSerializer`` when it was
+        # defined, so replacing the module attribute changes nothing and the
+        # request simply succeeds - which is how this test first passed for the
+        # wrong reason.
+        with mock.patch.object(
+            SchoolDetailView, "get_serializer",
+            side_effect=RuntimeError("psql://user:hunter2@db.internal/cx"),
+        ):
+            with self.assertLogs("core.exceptions", level="ERROR"):
+                response = self._get("present-or-not")
+
+        self.assertEqual(response.status_code, 500)
+        body = json.dumps(response.data)
+        self.assertNotIn("hunter2", body)
+        self.assertNotIn("RuntimeError", body)
+        self.assertNotIn("Traceback", body)
+        self.assertEqual(response.data["error"]["code"], "SERVER_ERROR")
+
+
+class SchoolDetailCarriesTheSchoolIdTests(TestCase):
+    """The detail response names the school it is describing.
+
+    ``SchoolListSerializer`` has always carried ``id`` - the scoped endpoints
+    (vs_config entitlements and overrides, notification settings) key on it -
+    but the detail serializer did not, and the detail response is the one a
+    console screen is built from. With audit trails now keyed on the primary
+    key it became load-bearing: a "view this school's audit trail" link needs
+    ``School:<pk>``, and the screen showing the school could not supply it
+    without going back to the list for the id of the school already on screen.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="detail-id@example.com", super_admin=True,
+        )
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        return client
+
+    def _detail(self, school):
+        return self._client().get(
+            reverse("school-detail", kwargs={"slug": school.slug})
+        )
+
+    def test_the_detail_response_carries_the_school_id(self):
+        school = make_school(slug="id-on-detail", name="Id On Detail")
+        make_branch(school, name="Main Branch")
+
+        response = self._detail(school)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["id"], school.pk)
+
+    def test_the_id_matches_the_one_the_list_hands_out(self):
+        """Two payloads for the same school must not disagree about which
+        school it is."""
+        school = make_school(slug="id-agrees", name="Id Agrees")
+        make_branch(school, name="Main Branch")
+
+        detail = self._detail(school)
+        listing = self._client().get(reverse("school-list"), {"q": "Id Agrees"})
+
+        self.assertEqual(listing.status_code, 200, listing.data)
+        # XVSPagination puts the rows straight in ``data``, not under
+        # ``data["results"]``.
+        rows = [
+            row for row in listing.data["data"]
+            if row["slug"] == "id-agrees"
+        ]
+        self.assertEqual(len(rows), 1, listing.data)
+        self.assertEqual(detail.data["data"]["id"], rows[0]["id"])
+
+    def test_the_id_is_what_the_audit_trail_is_keyed_on(self):
+        """The reason the field is needed: the console builds the trail link
+        out of it, and the key on the trail row is the same value."""
+        from vs_audit.models import EntityAuditTrail
+        from vs_audit.services import emit_audit_event
+
+        school = make_school(slug="id-for-trail", name="Id For Trail")
+        make_branch(school, name="Main Branch")
+        emit_audit_event(
+            module_key="SCHOOL", action_type="UPDATE",
+            actor_user=self.vision_user,
+            entity_type="School", entity_id=str(school.pk),
+            entity_label=school.name,
+        )
+
+        response = self._detail(school)
+
+        self.assertTrue(
+            EntityAuditTrail.objects.filter(
+                entity_type="School",
+                entity_id=str(response.data["data"]["id"]),
+            ).exists()
+        )
+
+
+class AdminEmailCaseIsRefusedTests(TestCase):
+    """The school-side creation paths must not admit a case-variant duplicate.
+
+    Both checks folded the address they were GIVEN and compared it with ``=``
+    against addresses that were not folded on the way in, so a stored
+    ``Ada.Okoye@example.test`` was invisible here while
+    ``vs_user.serializers`` - which used ``iexact`` - refused it. Two creation
+    paths disagreeing about "already exists" is how one school ends up able to
+    mint the account another one was told it could not have.
+
+    The incumbent account is created directly rather than by onboarding a first
+    school: ``provision_admin_user`` refuses to mint an admin without a role
+    template, so a school created here leaves its admin link QUEUED and no
+    ``User`` row behind, and the duplicate these tests are about would never
+    exist to be found.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="admin-email-case@example.com", super_admin=True,
+        )
+        # The incumbent: one real account, stored lowercase as it now always is.
+        cls.incumbent = make_vision_user(email="head@bright-star.test")
+
+    def _post(self, payload, *, expect):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        response = client.post(reverse("school-create"), payload, format="json")
+        self.assertEqual(response.status_code, expect, response.data)
+        return response
+
+    def test_school_create_refuses_a_branch_admin_that_is_a_case_variant(self):
+        response = self._post({
+            "name": "Greenfield", "slug": "greenfield",
+            "branches": [_branch_payload("Main Branch", email="HEAD@Bright-Star.TEST")],
+        }, expect=400)
+
+        # The KEY the error lands on, not its wording. A school being created
+        # has no tenant yet, so the address cannot be "already taken here" -
+        # what refuses it is the transitional cross-tenant guard, whose message
+        # deliberately says nothing about where the other account lives. The
+        # case-folding this class is about is still what makes the two
+        # addresses meet in the first place.
+        self.assertIn("primary_admin_data", str(response.data["error"]["detail"]))
+        self.assertFalse(School.objects.filter(slug="greenfield").exists())
+
+    def test_school_create_refuses_a_school_admin_that_is_a_case_variant(self):
+        response = self._post({
+            "name": "Greenfield", "slug": "greenfield",
+            "primary_admin_data": {
+                "full_name": "Head Two", "email": "  Head@Bright-Star.TEST  ",
+            },
+            "branches": [_branch_payload("Main Branch", email="branch@greenfield.test")],
+        }, expect=400)
+
+        self.assertIn("primary_admin_data", str(response.data))
+        self.assertFalse(School.objects.filter(slug="greenfield").exists())
+
+    def test_school_create_still_accepts_an_address_nobody_holds(self):
+        """The refusal must not be a blanket one."""
+        self._post({
+            "name": "Greenfield", "slug": "greenfield",
+            "branches": [_branch_payload("Main Branch", email="head@greenfield.test")],
+        }, expect=201)
+
+    def test_branch_create_refuses_a_case_variant_of_an_existing_admin(self):
+        from .serializers import BranchCreateSerializer
+
+        school = make_school(slug="bright-star", name="Bright Star")
+
+        serializer = BranchCreateSerializer(
+            data={
+                "name": "Lekki", "_type": "Annex", "state": "Lagos", "is_main": False,
+                "primary_admin_data": {
+                    "full_name": "Lekki Head", "email": "  HEAD@Bright-Star.TEST  ",
+                },
+            },
+            context={"school": school},
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("primary_admin_data", serializer.errors)
+
+
+class PrimaryAdminHasNoRoleLabelTests(TestCase):
+    """``role_label`` is gone from both primary-admin link records.
+
+    It defaulted to the literal strings "SCHOOL_ADMIN" and "BRANCH_ADMIN" -
+    persona names belonging to the ``User.user_type`` field that was retired.
+    Once that went, the defaults named values no enum had, and the column was
+    written in five places and read by none: nothing branched on it, filtered
+    on it, or granted from it. ``provision_admin_user`` takes its role from
+    the RBAC template key.
+
+    It was redundant either way. ``school_role``/``branch_role`` on the same
+    rows carry the human job title and the RBAC role carries the authority, so
+    the tests below pin the two survivors rather than merely the absence: a
+    column that vanishes is only safe if what it duplicated is still there.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="role-label-gone@example.com", super_admin=True,
+        )
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        return client
+
+    def _create(self, payload, *, expect=201):
+        response = self._client().post(
+            reverse("school-create"), payload, format="json",
+        )
+        self.assertEqual(response.status_code, expect, response.data)
+        return response
+
+    # --- the link records still create -----------------------------------
+
+    def test_school_and_branch_admin_links_are_created_without_the_field(self):
+        from .models import BranchPrimaryAdmin, InviteStatus, SchoolPrimaryAdmin
+
+        self._create({
+            "name": "Greenfield Academy", "slug": "greenfield-academy",
+            "primary_admin_data": {
+                "full_name": "Ada Okoye",
+                "email": "ada@greenfield-academy.test",
+                "school_role": "IT Head",
+            },
+            "branches": [_branch_payload(
+                "Main Branch", email="head@greenfield-academy.test",
+            )],
+        })
+
+        school = School.objects.get(slug="greenfield-academy")
+
+        school_link = SchoolPrimaryAdmin.objects.get(school=school)
+        self.assertEqual(school_link.school_role, "IT Head")
+        self.assertEqual(school_link.contact.email, "ada@greenfield-academy.test")
+        self.assertFalse(hasattr(school_link, "role_label"))
+
+        branch_link = BranchPrimaryAdmin.objects.get(branch=school.main_branch)
+        self.assertEqual(branch_link.branch_role, "Head Teacher")
+        self.assertEqual(branch_link.invite_status, InviteStatus.QUEUED)
+        self.assertFalse(hasattr(branch_link, "role_label"))
+
+    def test_a_multi_branch_school_gets_a_link_per_branch(self):
+        """One branch proves nothing about a school with several."""
+        from .models import BranchPrimaryAdmin
+
+        self._create({
+            "name": "Multi Site", "slug": "multi-site",
+            "branches": [
+                _branch_payload("HQ", is_main=True, email="hq@multi-site.test"),
+                _branch_payload("Lekki", is_main=False, email="lekki@multi-site.test"),
+                _branch_payload("Ikoyi", is_main=False, email="ikoyi@multi-site.test"),
+            ],
+        })
+
+        school = School.objects.get(slug="multi-site")
+        links = BranchPrimaryAdmin.objects.filter(branch__tenant=school.tenant)
+
+        self.assertEqual(links.count(), 3)
+        self.assertEqual(
+            sorted(links.values_list("branch_role", flat=True)),
+            ["Head Teacher"] * 3,
+        )
+
+    def test_the_job_title_sent_by_the_caller_is_still_honoured(self):
+        """The surviving column is the one that carried the real information."""
+        from .models import BranchPrimaryAdmin, SchoolPrimaryAdmin
+
+        self._create({
+            "name": "Bright Star", "slug": "bright-star-titles",
+            "primary_admin_data": {
+                "full_name": "Ada Okoye",
+                "email": "ada@bright-star-titles.test",
+                "school_role": "Director of ICT",
+            },
+            "branches": [{
+                "name": "Main Branch", "_type": "Main", "state": "Lagos",
+                "is_main": True,
+                "primary_admin_data": {
+                    "full_name": "Tunde Bello",
+                    "email": "tunde@bright-star-titles.test",
+                    "branch_role": "Principal",
+                },
+            }],
+        })
+
+        school = School.objects.get(slug="bright-star-titles")
+
+        self.assertEqual(
+            SchoolPrimaryAdmin.objects.get(school=school).school_role,
+            "Director of ICT",
+        )
+        self.assertEqual(
+            BranchPrimaryAdmin.objects.get(branch=school.main_branch).branch_role,
+            "Principal",
+        )
+
+    # --- an old client still sending it ----------------------------------
+
+    def test_a_payload_still_carrying_role_label_is_accepted_and_ignored(self):
+        """A frontend built against the old contract must not start failing.
+
+        These are plain ``Serializer`` subclasses, so DRF drops input keys it
+        does not declare rather than raising. A school created by a client that
+        has not yet dropped the field is created normally, and nothing of the
+        value survives.
+        """
+        from .models import BranchPrimaryAdmin, SchoolPrimaryAdmin
+
+        self._create({
+            "name": "Legacy Client", "slug": "legacy-client",
+            "primary_admin_data": {
+                "full_name": "Ada Okoye",
+                "email": "ada@legacy-client.test",
+                "school_role": "IT Head",
+                "role_label": "SCHOOL_ADMIN",
+            },
+            "branches": [{
+                "name": "Main Branch", "_type": "Main", "state": "Lagos",
+                "is_main": True,
+                "primary_admin_data": {
+                    "full_name": "Tunde Bello",
+                    "email": "tunde@legacy-client.test",
+                    "branch_role": "Head Teacher",
+                    "role_label": "BRANCH_ADMIN",
+                },
+            }],
+        })
+
+        school = School.objects.get(slug="legacy-client")
+        self.assertTrue(SchoolPrimaryAdmin.objects.filter(school=school).exists())
+        self.assertTrue(
+            BranchPrimaryAdmin.objects.filter(branch=school.main_branch).exists()
+        )
+
+    # --- the response contract -------------------------------------------
+
+    def test_the_school_detail_response_no_longer_carries_role_label(self):
+        self._create({
+            "name": "Detail School", "slug": "detail-school",
+            "primary_admin_data": {
+                "full_name": "Ada Okoye",
+                "email": "ada@detail-school.test",
+                "school_role": "IT Head",
+            },
+            "branches": [_branch_payload(
+                "Main Branch", email="head@detail-school.test",
+            )],
+        })
+
+        response = self._client().get(
+            reverse("school-detail", kwargs={"slug": "detail-school"})
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
+        primary_admin = response.data["data"]["primary_admin"]
+        self.assertNotIn("role_label", primary_admin)
+        self.assertEqual(primary_admin["school_role"], "IT Head")
+
+        branch = response.data["data"]["branches"][0]
+        self.assertNotIn("role_label", branch["primary_admin"])
+        self.assertEqual(branch["primary_admin"]["branch_role"], "Head Teacher")
+
+    def test_the_branch_detail_response_no_longer_carries_role_label(self):
+        self._create({
+            "name": "Branch Detail", "slug": "branch-detail-school",
+            "branches": [_branch_payload(
+                "Main Branch", email="head@branch-detail-school.test",
+            )],
+        })
+        school = School.objects.get(slug="branch-detail-school")
+
+        response = self._client().get(reverse("branch-detail", kwargs={
+            "slug": school.slug, "code": school.main_branch.code,
+        }))
+        self.assertEqual(response.status_code, 200, response.data)
+
+        primary_admin = response.data["data"]["primary_admin"]
+        self.assertNotIn("role_label", primary_admin)
+        self.assertEqual(primary_admin["branch_role"], "Head Teacher")

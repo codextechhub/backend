@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from django.contrib.auth import get_user_model
+from django.urls import reverse
 from rest_framework import serializers
 
 from vs_tenants.models import Tenant
+from vs_tenants.references import TENANT_NOT_FOUND
 from .models import (
     AuditEvent,
     EntityAuditTrail,
@@ -182,7 +184,27 @@ class EntityAuditTrailDetailSerializer(serializers.Serializer):
 # Audit Export Job Serializers
 # -----------------------------------------------------------------------------
 
-class AuditExportJobListSerializer(serializers.ModelSerializer):
+class _ExportDownloadUrlMixin(serializers.Serializer):
+    """Publish the authorised download path, never the storage key.
+
+    ``AuditExportJob.file_path`` holds the key ``core.storage`` chose, and under
+    that storage a key *is* the credential: anything holding it can fetch the
+    bytes from ``/media/<name>`` with nothing but a login, for ever. Publishing
+    it would hand a permanent, unrevocable copy of the audit trail to every
+    reader of the payload, so neither export serializer exposes it. What they
+    expose is the route that re-asks the permission question on every call.
+    """
+
+    download_url = serializers.SerializerMethodField()
+
+    def get_download_url(self, obj):
+        """Return the authorised download path, or None when there is nothing to take."""
+        if obj.status != ExportJobStatus.COMPLETED or not obj.file_path or obj.is_expired:
+            return None
+        return reverse("audit-export-download", kwargs={"id": obj.id})
+
+
+class AuditExportJobListSerializer(_ExportDownloadUrlMixin, serializers.ModelSerializer):
     """
     Lighter serializer for export history listing.
     """
@@ -197,6 +219,7 @@ class AuditExportJobListSerializer(serializers.ModelSerializer):
             "export_format",
             "status",
             "file_name",
+            "download_url",
             "row_count",
             "requested_at",
             "started_at",
@@ -205,7 +228,7 @@ class AuditExportJobListSerializer(serializers.ModelSerializer):
         )
 
 
-class AuditExportJobDetailSerializer(serializers.ModelSerializer):
+class AuditExportJobDetailSerializer(_ExportDownloadUrlMixin, serializers.ModelSerializer):
     """
     Full serializer for one export job.
     """
@@ -221,7 +244,7 @@ class AuditExportJobDetailSerializer(serializers.ModelSerializer):
             "status",
             "filter_payload",
             "file_name",
-            "file_path",
+            "download_url",
             "row_count",
             "failure_reason",
             "requested_at",
@@ -337,6 +360,17 @@ class ChoiceListField(serializers.ListField):
         return super().to_internal_value(data)
 
 
+#: What ``tenant_slug`` accepts to mean "events that belong to no customer" -
+#: platform operations, sweeps and management commands. Without it the filter
+#: could only ever narrow *to* a tenant and the platform-layer rows would be
+#: unreachable from the Explorer entirely.
+#:
+#: It is spelled with underscores because ``tenant_slug_validator`` forbids
+#: them: no school can ever register a slug that collides with this token, so
+#: the sentinel cannot be shadowed by a customer called "None Academy".
+NO_TENANT = "__none__"
+
+
 class AuditEventFilterSerializer(serializers.Serializer):
     """
     This serializer is not for saving to the database.
@@ -373,10 +407,45 @@ class AuditEventFilterSerializer(serializers.Serializer):
     entity_type = serializers.CharField(required=False)
     entity_id = serializers.CharField(required=False)
 
+    # Narrow to one customer. Named ``tenant_slug`` and not ``tenant`` because
+    # ``tenant`` is reserved platform-wide for the tenant *assertion*: every
+    # authenticated request must carry ``?tenant=<slug>``, and
+    # ``TenantJWTAuthentication`` reads it before this serializer ever sees the
+    # query string. A filter of that name would not filter anything - it would
+    # re-scope the whole request, and a CX staffer typing ``?tenant=bright-star``
+    # to narrow the Explorer would be answered with "No tenant matches the
+    # requested context" instead.
+    #
+    # It takes the slug rather than the primary key, unlike ``actor_user_id``
+    # beside it, because that is the identifier ``Tenant`` publishes: "numeric
+    # primary keys are deliberately internal; slug is the stable, human-readable
+    # identifier accepted by tenant-scoped APIs". It is also what
+    # ``AuditEventListSerializer`` already renders in the ``tenant`` column, so
+    # the console filters on exactly the value it displays.
+    tenant_slug = serializers.CharField(required=False)
+
     date_from = serializers.DateTimeField(required=False)
     date_to = serializers.DateTimeField(required=False)
 
     search = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_tenant_slug(self, value):
+        """Reject a slug no tenant answers to, rather than returning nothing.
+
+        The other validated filters on this serializer refuse a value outside
+        their vocabulary - a misspelt ``module_key`` is a 400, not an empty
+        list - and the vocabulary here is "the tenants that exist". Silently
+        answering an unknown slug with zero rows would recreate the exact trap
+        this filter was built to remove: Chidera types ``bright-star-school``
+        for a school registered as ``bright-star``, gets an empty Explorer, and
+        reports that nothing happened there.
+        """
+        value = (value or "").strip().lower()
+        if value == NO_TENANT:
+            return value
+        if not Tenant.objects.filter(slug=value).exists():
+            raise serializers.ValidationError(TENANT_NOT_FOUND)
+        return value
 
     def validate(self, attrs):
         """

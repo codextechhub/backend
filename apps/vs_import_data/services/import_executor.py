@@ -114,24 +114,55 @@ def import_cx_users_row(import_batch, payload: dict, queued_by) -> ImportExecuti
     """
     from types import SimpleNamespace
 
-    from vs_user.models import User
+    from vs_tenants.models import Tenant
+    from vs_user.email_normalization import normalize_email
     from vs_user.serializers import UserCreateSerializer
+    from vs_user.services.email_availability import email_refusal
     from vs_user.services.user import UserCreationService
     from vs_workflow.services.submission import submit_for_approval
 
     def _s(key: str) -> str:
         return (payload.get(key) or "").strip()
 
-    email = _s("email").lower()
-    if email and User.objects.filter(email__iexact=email).exists():
+    email = normalize_email(_s("email"))
+    # Scoped to the tenant that will own the row. This handler names the
+    # platform (codex) tenant as the target regardless of who queued the batch
+    # - it is the CX-user handler - so that is the tenant the address has to be
+    # free in. It used to say the same thing by forcing user_type=CX_STAFF and
+    # letting the serializer translate that back into the tenant it came from.
+    # Unscoped, a CX hire could not be imported because the same person already
+    # has a parent account at the school her own child attends - which Phase 0
+    # settled as legitimate and unconnected.
+    platform_tenant = Tenant.objects.filter(
+        slug='codex', kind=Tenant.Kind.PLATFORM,
+    ).first()
+    if platform_tenant is None:
+        # Refuse rather than fall through. The target tenant is handed to
+        # UserCreateSerializer as ``request.tenant`` below, and that field has
+        # a fallback: a queuer who is not themselves on the platform tenant
+        # would silently get their OWN tenant instead, and a CX hire would be
+        # created inside a school. The old shape could not reach that - it
+        # forced user_type=CX_STAFF and the serializer refused a missing codex
+        # outright - so the refusal is restated here where the target is named.
         return ImportExecutionResult(
             action=ImportRowActionChoices.SKIP,
             instance=None,
             target_model="User",
-            message=f"User with email '{email}' already exists - skipped.",
+            message=(
+                f"User with email '{email}' skipped: the platform (codex) "
+                "tenant is not provisioned."
+            ),
+        )
+    refusal = email_refusal(email, tenant=platform_tenant)
+    if refusal:
+        return ImportExecutionResult(
+            action=ImportRowActionChoices.SKIP,
+            instance=None,
+            target_model="User",
+            message=f"User with email '{email}' skipped: {refusal}",
         )
 
-    data = {"user_type": "CX_STAFF"}
+    data = {}
     for field in (
         "first_name", "last_name", "email", "role", "phone",
         "gender", "employment_type", "position", "date_joined",
@@ -140,7 +171,12 @@ def import_cx_users_row(import_batch, payload: dict, queued_by) -> ImportExecuti
         if value:
             data[field] = value
 
-    request = SimpleNamespace(user=queued_by, tenant=queued_by.tenant)
+    # The target tenant, stated rather than inferred: UserCreateSerializer
+    # reads request.tenant for an actor who is not already on the platform
+    # tenant, and returns the platform tenant for one who is, so naming codex
+    # here gives the same answer for either queuer - which is the answer the
+    # forced user_type used to produce.
+    request = SimpleNamespace(user=queued_by, tenant=platform_tenant)
     serializer = UserCreateSerializer(data=data, context={"request": request})
     serializer.is_valid(raise_exception=True)
 
@@ -186,7 +222,7 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
         school_admin_role       optional – defaults to "IT Head"
 
     Main branch  (one branch per row, always marked is_main=True)
-        branch_name             optional – defaults to "<school name> - Main Campus"
+        branch_name             optional – defaults to "<school name> - Main Branch"
         branch_type             optional – defaults to "Combined"
         branch_address          optional – falls back to school address
         branch_email            optional
@@ -247,7 +283,6 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
             "email": school_admin_email,
             "phone": _s("school_admin_phone"),
             "school_role": _s("school_admin_role") or "IT Head",
-            "role_label": "SCHOOL_ADMIN",
         }
 
     # --- Branch admin ---
@@ -256,11 +291,10 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
         "email": _s("branch_admin_email"),
         "phone": _s("branch_admin_phone"),
         "branch_role": _s("branch_admin_role") or "Head Teacher",
-        "role_label": "BRANCH_ADMIN",
     }
 
     # --- Branch ---
-    branch_name = _s("branch_name") or f"{_s('name')} - Main Campus"
+    branch_name = _s("branch_name") or f"{_s('name')} - Main Branch"
     branch = {
         "name": branch_name,
         "_type": _s("branch_type") or "Combined",
@@ -405,7 +439,6 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
         "email": _s("branch_admin_email"),
         "phone": _s("branch_admin_phone"),
         "branch_role": _s("branch_admin_role") or "Head Teacher",
-        "role_label": "BRANCH_ADMIN",
     }
 
     # --- Branch payload ---

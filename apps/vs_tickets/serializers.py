@@ -14,10 +14,14 @@ from .services.visibility import can_view_internal_notes
 
 class TicketUserSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source="full_name", read_only=True)
+    tenant_kind = serializers.CharField(source="tenant.kind", read_only=True)
 
     class Meta:
         model = User
-        fields = ["id", "name", "email", "user_type", "role"]
+        # ``tenant_kind`` replaces ``user_type``: on a ticket the distinction
+        # that matters is support desk versus the tenant who raised it, and
+        # that is the tenant's kind. ``role`` still says what the person does.
+        fields = ["id", "name", "email", "tenant_kind", "role"]
 
 
 class TicketAttachmentSerializer(serializers.ModelSerializer):

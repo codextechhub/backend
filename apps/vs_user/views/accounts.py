@@ -134,15 +134,25 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             excluded = [s.strip() for s in exclude_status.split(',') if s.strip()]
             qs = qs.exclude(status__in=excluded)
 
-        if user_type := params.get('user_type'):
-            qs = qs.filter(user_type=user_type)
+        # The ``user_type`` filter is gone with the column. ``scope`` below
+        # asks the question it was actually being used for, against the tenant
+        # kind, which is where the CX / School split has always really lived.
 
         # The platform console presents tenant-bound accounts separately from
         # internal platform staff. Keep this filter server-side so pagination
         # totals and every page are scoped correctly (client-side filtering
-        # would not). Keyed off the tenant kind, not user_type.
-        if params.get('scope') == 'school':
+        # would not). Keyed off the tenant kind.
+        # Both directions, deliberately. Only the negative half existed, so the
+        # platform console had no way to ask for its OWN staff: an unfiltered
+        # list is every user on the platform, and the CX tabs and the pickers
+        # built on them - super-admin transfer, organogram, workflow templates -
+        # would offer school users. The transfer one decides who holds platform
+        # super-admin, so "no filter" there is not a cosmetic gap.
+        scope = params.get('scope')
+        if scope == 'school':
             qs = qs.exclude(tenant__kind=Tenant.Kind.PLATFORM)
+        elif scope == 'platform':
+            qs = qs.filter(tenant__kind=Tenant.Kind.PLATFORM)
 
         # Both of these address integer-keyed rows, so a non-numeric or
         # oversized value is a bad request rather than a lookup - handing it
@@ -218,8 +228,11 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             )
             return Response(UserReadSerializer(user).data, status=status.HTTP_201_CREATED)
 
-        # Workflow gate only applies to platform (CX_STAFF) user creation.
-        if serializer.validated_data.get("user_type") == User.UserType.CX_STAFF:
+        # Workflow gate only applies to platform user creation. The serializer
+        # has already resolved which tenant will own the row, so ask that.
+        if getattr(
+            serializer.validated_data.get("tenant"), "kind", None
+        ) == Tenant.Kind.PLATFORM:
             # User, role/profile setup, workflow submission, and any immediate
             # no-approver approval are one unit. A missing/invalid template must
             # never leave an orphaned PENDING_APPROVAL account behind.
@@ -249,9 +262,9 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         """POST /user/users/<id>/submit/ - promote a DRAFT into the normal flow.
 
         Optionally accepts a ``role`` key to assign the role at submit time when
-        the draft doesn't already have one. CX drafts must already have a position
-        or submit one by id/code. CX staff enter the approval workflow; other user
-        types are invited immediately (mirrors single-create).
+        the draft doesn't already have one. Platform drafts must already have a
+        position or submit one by id/code. Platform staff enter the approval
+        workflow; tenant users are invited immediately (mirrors single-create).
         """
         user = self.get_object()
 
@@ -284,7 +297,7 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
         try:
             with transaction.atomic():
-                if user.user_type == User.UserType.CX_STAFF:
+                if user.is_platform_user:
                     existing_position = getattr(
                         getattr(user, "platform_staff_profile", None), "position", None,
                     )
@@ -303,7 +316,7 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                     user=user, requesting_user=request.user, request=request,
                     role_instance=role_instance,
                 )
-                if user.user_type == User.UserType.CX_STAFF:
+                if user.is_platform_user:
                     wf_instance = _wf_submit(document=user, requested_by=request.user)
                 else:
                     UserCreationService.finalize_invitation(user=user, requested_by=request.user)

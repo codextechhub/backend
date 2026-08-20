@@ -451,7 +451,7 @@ class ARDocumentVoidEndpointTests(_ARFixtureMixin, TestCase):
 
         tenant = Tenant.objects.get(slug="codex")
         user = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+            email=email, password="x", status="ACTIVE",
             first_name="Void", last_name="Tester", tenant=tenant,
         )
         role = make_role(tenant, name=f"Role {email}")

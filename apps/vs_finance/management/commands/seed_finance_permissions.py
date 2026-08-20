@@ -129,6 +129,7 @@ class Command(BaseCommand):
             PermissionResource,
             TenantRolePermission,
             TenantRoleTemplate,
+            PermissionScope,
         )
         from vs_tenants.models import Tenant
 
@@ -186,6 +187,7 @@ class Command(BaseCommand):
                         sensitivity_level=sensitivity,
                         is_restricted=sensitivity in _RESTRICTED,
                         is_active=True,
+                        scope=PermissionScope.TENANT,
                     )
                     perm.save()
                     created_perms += 1

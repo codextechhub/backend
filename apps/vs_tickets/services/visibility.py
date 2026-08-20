@@ -57,8 +57,10 @@ def eligible_support_users_qs():
     )
     return (
         User.objects.filter(
+            # One filter, not two. This used to say ``tenant__kind="PLATFORM"``
+            # AND ``user_type=CX_STAFF`` - hedging against the two disagreeing,
+            # which was a reasonable thing to fear while both existed.
             tenant__kind="PLATFORM",
-            user_type=User.UserType.CX_STAFF,
             status=User.Status.ACTIVE,
             is_active=True,
         )
@@ -78,7 +80,11 @@ def has_ticket_permission(user, permission_key: str, tenant=None) -> bool:
 
 # Build the ticket queryset a user may list or search.
 def visible_tickets_qs(user):
-    qs = Ticket.all_objects.select_related("requester", "assignee", "tenant", "branch")
+    # ``__tenant`` on both users: TicketUserSerializer reports the tenant kind,
+    # so without the join every row costs two extra queries.
+    qs = Ticket.all_objects.select_related(
+        "requester__tenant", "assignee__tenant", "tenant", "branch",
+    )
 
     if not user or not getattr(user, "is_authenticated", False):
         return qs.none()

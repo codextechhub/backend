@@ -10,9 +10,12 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
+from ..email_normalization import normalize_email
 from ..models import LoginSession, User, AuthEventLog
 from .audit import log_auth_event, blacklist_all_user_tokens
+from .email_availability import email_refusal
 from vs_rbac.models import TenantUserRoleAssignment
+from vs_tenants.models import Tenant
 
 
 class UserCreationService:
@@ -53,14 +56,19 @@ class UserCreationService:
         position_instance = validated_data.pop('position_instance', None)
         profile_prefill = validated_data.pop('profile_prefill', None) or {}
 
+        target_tenant = validated_data.get('tenant') or requesting_user.tenant
+        creating_platform_staff = (
+            getattr(target_tenant, 'kind', None) == Tenant.Kind.PLATFORM
+        )
+
         if (
-            validated_data.get('user_type') == User.UserType.CX_STAFF
+            creating_platform_staff
             and status != User.Status.DRAFT
             and position_instance is None
         ):
             raise ValueError({
                 'error_code': 'POSITION_REQUIRED',
-                'message': 'A position must be assigned to CX staff.',
+                'message': 'A position must be assigned to platform staff.',
             })
 
         if position_instance is not None:
@@ -75,15 +83,14 @@ class UserCreationService:
             last_name=validated_data['last_name'],
             gender=validated_data['gender'],
             phone=validated_data.get('phone', ''),
-            tenant=(validated_data.get('tenant') or requesting_user.tenant),
-            user_type=validated_data['user_type'],
+            tenant=target_tenant,
             role=validated_data.get('role', ''),
             branch=validated_data.get('branch') if validated_data.get('branch') else None,
             invited_by=requesting_user,
             invited_by_name=getattr(requesting_user, 'full_name', '') or '',
             status=status,
             is_active=False,
-            is_staff=True if validated_data['user_type'] == "CX_STAFF" else False,
+            is_staff=creating_platform_staff,
         )
 
         # role_instance is a native TenantRoleTemplate resolved by the serializer
@@ -98,7 +105,7 @@ class UserCreationService:
                 assigned_by=requesting_user,
             )
 
-        if user.user_type == User.UserType.CX_STAFF:
+        if creating_platform_staff:
             from ..models import PlatformStaffProfile
 
             # Every CX hire must have a staff profile and employee ID before
@@ -222,15 +229,22 @@ class EmailChangeService:
         Changes a user's email immediately.
         Ends all active sessions - the user must log in again with the new email.
         """
-        new_email      = new_email.lower().strip()
+        new_email      = normalize_email(new_email)
         previous_email = target_user.email
 
-        if new_email == target_user.email.lower():
+        if new_email == normalize_email(target_user.email):
             raise ValueError({'error_code': 'SAME_EMAIL', 'message': 'This is already your email address.'})
 
-        # Global uniqueness check - email must be unique across the whole platform.
-        if User.objects.filter(email__iexact=new_email).exclude(pk=target_user.pk).exists():
-            raise ValueError({'error_code': 'DUPLICATE_EMAIL', 'message': 'This email is already in use.'})
+        # Uniqueness is PER TENANT, so the question is asked of the tenant that
+        # owns this account, not of the platform. Unscoped, a Bright Star
+        # parent could not be corrected to ada@gmail.com because Greenfield
+        # already had an account on it - and the refusal told Bright Star's
+        # admin that somebody, somewhere, holds the address.
+        refusal = email_refusal(
+            new_email, tenant=target_user.tenant_id, exclude_pk=target_user.pk,
+        )
+        if refusal:
+            raise ValueError({'error_code': 'DUPLICATE_EMAIL', 'message': refusal})
 
         target_user.email = new_email
         target_user.save(update_fields=['email', 'updated_at'])

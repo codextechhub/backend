@@ -401,7 +401,7 @@ def _post_grn_atomic(grn, *, actor_user=None):
     # debit belongs to this GRN journal; receive_stock must therefore update only the
     # quantity/value sub-ledger, otherwise the same receipt would hit inventory twice.
     # Goods land where they physically arrived: the receipt's own branch picks the
-    # store, so a two-campus school does not have to be told twice where a delivery
+    # store, so a two-branch school does not have to be told twice where a delivery
     # went. A single-store entity resolves to its one location either way.
     receipt_location = location_for_branch(grn.entity, grn.branch)
     for line in lines:

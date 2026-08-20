@@ -171,7 +171,7 @@ class ImportJobContextMixin(ImportBatchContextMixin):
 class SystemImportTemplateListView(generics.ListCreateAPIView):
     """
     GET  -> list available official system templates (all authenticated staff).
-    POST -> create a new system template with columns (CX_STAFF only).
+    POST -> create a new system template with columns (platform staff only).
 
     docstring-name: Import templates
     """
@@ -232,7 +232,7 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
 class SystemImportTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, generics.RetrieveUpdateAPIView):
     """
     GET   -> retrieve one official system template.
-    PATCH -> update template metadata and/or columns (CX_STAFF + TEMPLATE_MANAGE only).
+    PATCH -> update template metadata and/or columns (platform staff + TEMPLATE_MANAGE only).
 
     docstring-name: Import templates
     """

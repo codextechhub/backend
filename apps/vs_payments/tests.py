@@ -59,6 +59,18 @@ from .providers.fake import FakeProvider
 
 
 # Group tests for Payments Fixture Mixin.
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 class _PaymentsFixtureMixin:
     """A seeded ledger entity with a customer, a vendor, and the Fake provider wired in.
 
@@ -1000,9 +1012,9 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
         from vs_tenants.models import Tenant
 
         User = get_user_model()
-        self.user = User.objects.create_user(
+        self.user = User.objects.create_user(tenant=_platform_tenant(), 
             email="pay-admin@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE",
+            status="ACTIVE",
             first_name="Pay", last_name="Admin",
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
@@ -1349,7 +1361,7 @@ class PayoutBatchApprovalTests(TestCase):
             tenant=self.school.tenant, name="Main", is_main=True, status="ACTIVE",
         )
         self.requester = self.User.objects.create_user(
-            email="req-pba@test.com", password="pw", user_type="STAFF", status="ACTIVE",
+            email="req-pba@test.com", password="pw", status="ACTIVE",
             first_name="Req", last_name="Ester", branch=branch,
         )
         ops_role, created = TenantRoleTemplate.objects.get_or_create(
@@ -1415,7 +1427,7 @@ class PayoutBatchApprovalTests(TestCase):
 
     def _make_approver(self, email="apr-pba@test.com"):
         user = self.User.objects.create_user(
-            email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
+            email=email, password="pw", status="ACTIVE",
             first_name="Apr", last_name="Over", tenant=self.school.tenant,
         )
         # The stage names this role directly, so staffing it is one assignment.
@@ -1870,8 +1882,7 @@ class PayoutBatchApprovalTests(TestCase):
         instance = self._instance_for(batch)
 
         stranger = self.User.objects.create_user(
-            email="stranger-pba@test.com", password="pw", user_type="SCHOOL_ADMIN",
-            status="ACTIVE", first_name="Stran", last_name="Ger",
+            email="stranger-pba@test.com", password="pw", status="ACTIVE", first_name="Stran", last_name="Ger",
             tenant=self.school.tenant,
         )
         self.assertFalse(release.may_release(instance, stranger))
@@ -1911,8 +1922,7 @@ class PayoutBatchApprovalTests(TestCase):
 
         batch = self._park_a_batch()
         outsider = self.User.objects.create_user(
-            email="nobody-pba@test.com", password="pw", user_type="SCHOOL_ADMIN",
-            status="ACTIVE", first_name="No", last_name="Body",
+            email="nobody-pba@test.com", password="pw", status="ACTIVE", first_name="No", last_name="Body",
             tenant=self.school.tenant,
         )
         # Nobody holds the key yet, so there is nothing to restore and nothing to see.
@@ -2261,9 +2271,9 @@ class FailedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
         call_command("seed_payments_permissions", verbosity=0)
 
         self.User = get_user_model()
-        self.user = self.User.objects.create_user(
+        self.user = self.User.objects.create_user(tenant=_platform_tenant(), 
             email="webhook-admin@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE", first_name="Hook", last_name="Admin",
+            status="ACTIVE", first_name="Hook", last_name="Admin",
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(
             tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin",
@@ -2279,9 +2289,9 @@ class FailedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
         from vs_tenants.models import Tenant
         from core.test_utils import TenantAPIClient
 
-        user = self.User.objects.create_user(
+        user = self.User.objects.create_user(tenant=_platform_tenant(), 
             email="webhook-nobody@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE", first_name="No", last_name="Rights",
+            status="ACTIVE", first_name="No", last_name="Rights",
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(
             tenant=Tenant.objects.get(slug="codex"), key="xvs_no_rights",
@@ -2443,7 +2453,7 @@ class UnattributedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
 
     # -- actors ------------------------------------------------------------- #
 
-    def _client_holding(self, *keys, email, tenant=None, user_type="CX_STAFF"):
+    def _client_holding(self, *keys, email, tenant=None):
         """A live client for a user holding exactly *keys* in *tenant* (codex default).
 
         Deliberately never the super admin: ``is_vision_super_admin`` bypasses every
@@ -2456,7 +2466,7 @@ class UnattributedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
 
         tenant = tenant or self.codex
         user = self.User.objects.create_user(
-            email=email, password="testpass123", user_type=user_type,
+            email=email, password="testpass123",
             status="ACTIVE", first_name="Hook", last_name="Tester", tenant=tenant,
         )
         role = make_role(tenant, name=f"Role {email}")
@@ -2593,7 +2603,6 @@ class UnattributedWebhookVisibilityTests(_PaymentsFixtureMixin, TestCase):
             "payments.webhook.view", "payments.webhook.replay",
             "payments.unattributed_webhook.view", "payments.unattributed_webhook.replay",
             email="school-hooks@test.com", tenant=self._school_tenant(),
-            user_type="SCHOOL_ADMIN",
         )
 
         self.assertEqual(client.get(self.LIST_URL).status_code, 403)
@@ -2900,7 +2909,7 @@ class UnbookedReceiptAlertTests(_PaymentsFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=f"holder-{permission_key}@test.com", password="pw",
-            tenant=entity.tenant, user_type="CX_STAFF", status="ACTIVE",
+            tenant=entity.tenant, status="ACTIVE",
             first_name="Alert", last_name="Holder",
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(

@@ -43,11 +43,15 @@ class _BranchGrantFixture(TestCase):
     """
 
     def setUp(self):
-        self.school = make_school(slug="grant-multi", name="Multi Campus")
+        self.school = make_school(slug="grant-multi", name="Multi Branch")
         self.tenant = self.school.tenant
-        self.ikeja = make_branch(self.tenant, name="Ikeja", is_main=True)
+        # Yaba carries the main flag, not Ikeja: these tests suspend Ikeja to
+        # withdraw a grant, and a school's *main* branch may not leave service
+        # at all (Branch._assert_may_leave_service). Which branch is canonical
+        # is irrelevant to every assertion below.
+        self.ikeja = make_branch(self.tenant, name="Ikeja", is_main=False)
         self.lekki = make_branch(self.tenant, name="Lekki", is_main=False)
-        self.yaba = make_branch(self.tenant, name="Yaba", is_main=False)
+        self.yaba = make_branch(self.tenant, name="Yaba", is_main=True)
 
         self.flat_school = make_school(slug="grant-flat", name="Single Site")
         self.flat_tenant = self.flat_school.tenant
@@ -65,10 +69,8 @@ class _BranchGrantFixture(TestCase):
 
     def person(self, tenant, email, *, branch=None):
         """A user of ``tenant``; ``branch`` is their legacy home posting."""
-        return make_staff_user(
-            branch, email=email, tenant=tenant,
-            user_type="STAFF" if branch is not None else "SCHOOL_ADMIN",
-        )
+        # No branch is a school-wide posting, and the same STAFF persona.
+        return make_staff_user(branch, email=email, tenant=tenant)
 
 
 class BranchScopedGrantAccessTests(_BranchGrantFixture):

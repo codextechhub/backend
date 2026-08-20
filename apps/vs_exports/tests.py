@@ -134,8 +134,7 @@ class _ExportFixture:
 
         tenant = tenant or Tenant.objects.get(slug="codex")
         user = User.objects.create_user(
-            email=email, password="testpass123", user_type="CX_STAFF",
-            status="ACTIVE", first_name=email.split("@")[0], last_name="Tester",
+            email=email, password="testpass123", status="ACTIVE", first_name=email.split("@")[0], last_name="Tester",
             tenant=tenant,
         )
         template, _ = TenantRoleTemplate.objects.get_or_create(

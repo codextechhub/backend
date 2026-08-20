@@ -65,19 +65,19 @@ SCHOOLS = [
         "name": "Greenfield Academy",
         "slug": "greenfield-academy",
         "code": "GFA",
-        "branches": [("Main Campus", "GFA-MAIN", True), ("Lekki Annex", "GFA-LEKKI", False)],
+        "branches": [("Main Branch", "GFA-MAIN", True), ("Lekki Annex", "GFA-LEKKI", False)],
     },
     {
         "name": "Royal Crest College",
         "slug": "royal-crest-college",
         "code": "RCC",
-        "branches": [("Main Campus", "RCC-MAIN", True), ("Ikeja Campus", "RCC-IKEJA", False)],
+        "branches": [("Main Branch", "RCC-MAIN", True), ("Ikeja Branch", "RCC-IKEJA", False)],
     },
     {
         "name": "Unity Heights School",
         "slug": "unity-heights-school",
         "code": "UHS",
-        "branches": [("Main Campus", "UHS-MAIN", True)],
+        "branches": [("Main Branch", "UHS-MAIN", True)],
     },
 ]
 
@@ -119,7 +119,7 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.MIGRATE_HEADING("Organogram (Codex internal, 40 seats / 7 levels)..."))
         staff = list(
-            User.objects.filter(user_type="CX_STAFF", email__endswith="@vision.edu")
+            User.objects.filter(tenant__kind="PLATFORM", email__endswith="@vision.edu")
             .order_by("email")
         )
         if not staff:
@@ -397,36 +397,52 @@ class Command(BaseCommand):
             main = branches[0]
             domain = f"{school.slug}.example.com"
 
-            def mk(email, first, last, user_type, branch):
-                user = User.objects.filter(email=email).first()
+            def mk(email, first, last, branch):
+                email = normalize_email(email)
+                # Scoped to the school being seeded. The addresses this seeder
+                # mints are already per-school (they carry the slug in their
+                # domain), so the unscoped form found the same rows - but it
+                # was the wrong question, and it would silently reuse another
+                # school's account the moment a shared address is seeded.
+                user = User.objects.filter(email=email, tenant=school.tenant).first()
                 if user is None:
                     user = User.objects.create_user(
                         email=email, password=SCHOOL_USER_PASSWORD,
                         first_name=first, last_name=last,
-                        user_type=user_type, status="ACTIVE",
+                        status="ACTIVE",
                         tenant=school.tenant, branch=branch,
                     )
                 return user
 
             users = {"admins": [], "branch_admins": [], "staff": [], "students": [], "parents": []}
-            users["admins"].append(mk(f"admin@{domain}", "Amaka", school.code.title(), "SCHOOL_ADMIN", main))
+            # The school administrator is posted school-wide: branch=None is a
+            # real posting meaning "every branch", not a missing one. What
+            # separates this person from a teacher is the role assigned in
+            # _rbac below - which is now the only thing that ever did.
+            #
+            # The buckets below still say "students" and "parents" because the
+            # seeder builds a school-shaped cast to look at. They are ordinary
+            # tenant users; nothing marks them, and nothing reads a mark. A
+            # pupil becomes a pupil when the schools app gives him a student
+            # record, and a parent when a guardian record names her.
+            users["admins"].append(mk(f"admin@{domain}", "Amaka", school.code.title(), None))
             for i, br in enumerate(branches):
                 users["branch_admins"].append(
-                    mk(f"branch{i + 1}.admin@{domain}", first_names[i], "Balogun", "BRANCH_ADMIN", br)
+                    mk(f"branch{i + 1}.admin@{domain}", first_names[i], "Balogun", br)
                 )
             for i in range(3):
                 users["staff"].append(
-                    mk(f"teacher{i + 1}@{domain}", first_names[i + 2], "Teacher", "STAFF",
+                    mk(f"teacher{i + 1}@{domain}", first_names[i + 2], "Teacher",
                        branches[i % len(branches)])
                 )
             for i in range(4):
                 users["students"].append(
-                    mk(f"student{i + 1}@{domain}", first_names[i + 5], "Student", "STUDENT",
+                    mk(f"student{i + 1}@{domain}", first_names[i + 5], "Student",
                        branches[i % len(branches)])
                 )
             for i in range(2):
                 users["parents"].append(
-                    mk(f"parent{i + 1}@{domain}", first_names[i + 9], "Parent", "PARENT", main)
+                    mk(f"parent{i + 1}@{domain}", first_names[i + 9], "Parent", main)
                 )
             result[school.pk] = users
             total += sum(len(v) for v in users.values())
@@ -637,7 +653,7 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.MIGRATE_HEADING("CX security history..."))
         staff = list(
-            User.objects.filter(user_type="CX_STAFF", email__endswith="@vision.edu")
+            User.objects.filter(tenant__kind="PLATFORM", email__endswith="@vision.edu")
             .order_by("email")[:6]
         )
         devices = [
@@ -677,9 +693,20 @@ class Command(BaseCommand):
         cs_lead = staff[2] if len(staff) > 2 else staff[0]
         target_school = schools[0] if schools else None
         if target_school is not None:
-            target_user = User.objects.filter(
-                tenant=target_school.tenant, user_type="SCHOOL_ADMIN"
-            ).first()
+            # Whom a CS lead would proxy is a question about authority, and
+            # authority is the role. Asking a persona column used to answer it
+            # only because SCHOOL_ADMIN happened to exist; STAFF said nothing,
+            # and would have picked a random teacher.
+            target_user = (
+                User.objects.filter(
+                    tenant=target_school.tenant,
+                    tenant_role_assignments__tenant=target_school.tenant,
+                    tenant_role_assignments__role__name__iexact="School Administrator",
+                    tenant_role_assignments__assignment_status="ACTIVE",
+                )
+                .order_by("email")
+                .first()
+            )
             if target_user and not ImpersonationSession.objects.filter(
                 staff_user=cs_lead, tenant=target_school.tenant
             ).exists():

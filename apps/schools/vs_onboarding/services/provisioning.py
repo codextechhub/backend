@@ -6,9 +6,10 @@ status: a school that has completed four steps and then gains a fifth from a
 catalog change must not lose the four.
 
 ``is_required`` and ``order_index`` are read from the catalog and never from a
-request. Whether a *conditional* entry exists at all is decided here too, from
-the school's own declared shape: a single-site school has no branch step, and
-the control room shows no empty column where one would have been.
+request. Whether a *conditional* entry exists at all is decided here too, via
+``CatalogEntry.applies``, so the control room shows no empty column for a step
+a school could never fill in. Every entry in the catalog is unconditional
+today; the seam is still the only route by which a task row is created.
 """
 from __future__ import annotations
 

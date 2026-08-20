@@ -58,7 +58,7 @@ class InvitationService:
                     is_used=False,
                 )
                 
-            if user.user_type == User.UserType.CX_STAFF:
+            if user.is_platform_user:
                 profile, _ = PlatformStaffProfile.objects.get_or_create(user=user)
                 # If a seat was assigned at creation time, settle the profile's
                 # position cache (and thus department + line manager) now that

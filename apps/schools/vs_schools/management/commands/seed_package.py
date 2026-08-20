@@ -72,7 +72,7 @@ PLANS = [
         "name": "Enterprise",
         "code": "enterprise",
         "description": (
-            "Unlimited plan for large school networks and multi-campus "
+            "Unlimited plan for large school networks and multi-branch "
             "schools. No capacity ceilings. Custom SLA and support."
         ),
         "billing_cycle": BillingCycle.YEARLY,

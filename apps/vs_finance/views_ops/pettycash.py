@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from django.db import transaction
 from rest_framework.exceptions import NotFound, ValidationError
+from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 
 from core.response import success_response
 
@@ -71,7 +72,9 @@ class PettyCashFundListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = PettyCashFund.objects.filter(entity=entity).select_related("gl_account")
+        qs = PettyCashFund.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).select_related("gl_account")
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         return success_response(
@@ -105,7 +108,9 @@ class _PettyCashFundActionBase(_FinanceBase):
     # Support the fund workflow.
     def _fund(self, request, pk):
         entity = resolve_entity(request)
-        fund = PettyCashFund.objects.filter(entity=entity, pk=pk).first()
+        fund = PettyCashFund.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk,
+        ).first()
         if fund is None:
             raise NotFound("Petty cash fund not found for this entity.")
         return entity, fund
@@ -304,7 +309,9 @@ class PettyCashVoucherListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = PettyCashVoucher.objects.filter(entity=entity).prefetch_related("lines__expense_account")
+        qs = PettyCashVoucher.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).prefetch_related("lines__expense_account")
         if (fund := request.query_params.get("fund")):
             qs = qs.filter(fund_id=fund)
         if (status_val := request.query_params.get("status")):
@@ -365,7 +372,9 @@ class _PettyCashVoucherActionBase(_FinanceBase):
     # Support the voucher workflow.
     def _voucher(self, request, pk):
         entity = resolve_entity(request)
-        voucher = PettyCashVoucher.objects.filter(entity=entity, pk=pk).first()
+        voucher = PettyCashVoucher.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk,
+        ).first()
         if voucher is None:
             raise NotFound("Petty cash voucher not found for this entity.")
         return entity, voucher

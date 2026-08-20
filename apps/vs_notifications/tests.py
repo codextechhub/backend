@@ -44,8 +44,21 @@ User = get_user_model()
 # Fixtures
 # ---------------------------------------------------------------------------
 
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 def _grant_school_permission(user, school, permission_key):
     """Build the full RBAC chain so *user* holds *permission_key* in *school*."""
+    from vs_rbac.tests.helpers import scope_for_key
     from vs_rbac.models import (
         Permission,
         PermissionAction,
@@ -60,7 +73,10 @@ def _grant_school_permission(user, school, permission_key):
     module, _ = PermissionModule.objects.get_or_create(name=module_key)
     resource, _ = PermissionResource.objects.get_or_create(module=module, name=resource_name)
     action, _ = PermissionAction.objects.get_or_create(name=action_key)
-    perm, _ = Permission.objects.get_or_create(module=module, resource=resource, action=action)
+    perm, _ = Permission.objects.get_or_create(
+        module=module, resource=resource, action=action,
+        defaults={"scope": scope_for_key(permission_key)},
+    )
 
     role = TenantRoleTemplate.objects.create(
         tenant=school.tenant, key=f"role-{permission_key.replace('.', '-')}",
@@ -93,8 +109,7 @@ class _NotifFixture(TestCase):
 
         # School-scoped admin in school A, granted the settings permission.
         self.admin_a = User.objects.create_user(
-            email="admin-a@test.com", password="x", user_type="SCHOOL_ADMIN",
-            status="ACTIVE", first_name="Ada", last_name="Admin", tenant=self.school_a.tenant,
+            email="admin-a@test.com", password="x", status="ACTIVE", first_name="Ada", last_name="Admin", tenant=self.school_a.tenant,
         )
         _grant_school_permission(
             self.admin_a, self.school_a, NotificationPermission.ENFORCE_PERMISSIONS,
@@ -102,14 +117,12 @@ class _NotifFixture(TestCase):
 
         # A plain school user with no RBAC grants (for 403 tests).
         self.plain_a = User.objects.create_user(
-            email="plain-a@test.com", password="x", user_type="SCHOOL_ADMIN",
-            status="ACTIVE", first_name="Peter", last_name="Plain", tenant=self.school_a.tenant,
+            email="plain-a@test.com", password="x", status="ACTIVE", first_name="Peter", last_name="Plain", tenant=self.school_a.tenant,
         )
 
         # A CX super admin (bypasses RBAC; no school → platform scope).
-        self.cx = User.objects.create_user(
-            email="cx@test.com", password="x", user_type="CX_STAFF",
-            status="ACTIVE", first_name="Cee", last_name="Ex",
+        self.cx = User.objects.create_user(tenant=_platform_tenant(), 
+            email="cx@test.com", password="x", status="ACTIVE", first_name="Cee", last_name="Ex",
         )
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         role, _ = TenantRoleTemplate.objects.get_or_create(
@@ -259,8 +272,8 @@ class ResolveChannelsBulkTests(_NotifFixture):
 class DispatchTests(_NotifFixture):
 
     def _recipient(self, email="rcpt@test.com"):
-        return User.objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+        return User.objects.create_user(tenant=_platform_tenant(), 
+            email=email, password="x", status="ACTIVE",
             first_name="Rex", last_name="Cipient",
         )
 
@@ -1424,8 +1437,7 @@ class PendingTenantInboxAccessTests(_NotifFixture):
         self.assertEqual(self.pending_tenant.status, Tenant.Status.PENDING)
 
         self.pending_admin = User.objects.create_user(
-            email="pending-admin@test.com", password="x", user_type="SCHOOL_ADMIN",
-            status="ACTIVE", first_name="Pat", last_name="Pending",
+            email="pending-admin@test.com", password="x", status="ACTIVE", first_name="Pat", last_name="Pending",
             tenant=self.pending_tenant,
         )
         # Granted deliberately: with the permission held, a 403 on the settings

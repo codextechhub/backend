@@ -80,7 +80,7 @@ def _team(user, tenant) -> dict:
     from vs_user.models import User
 
     qs = User.objects.filter(
-        user_type=User.UserType.CX_STAFF,
+        tenant__kind=Tenant.Kind.PLATFORM,
         status=User.Status.ACTIVE,
     )
     if getattr(getattr(user, "tenant", None), "kind", None) != Tenant.Kind.PLATFORM:
@@ -427,7 +427,7 @@ def _signals(user, tenant) -> dict:
         if roleless:
             signals["users_without_roles"] = {"count": roleless}
 
-    if getattr(user, "user_type", None) == "CX_STAFF":
+    if getattr(user, "is_platform_user", False):
         # A manager's reports with overdue tasks - own subtree, so the gate is
         # the same hierarchy that scopes the team dashboard, not a key.
         from vs_todo.models import Task
@@ -502,7 +502,7 @@ def console_overview(request) -> dict:
 
     # vs_todo is a CX-staff surface (IsVisionStaff), so school users get no
     # tasks section rather than an empty one.
-    if getattr(user, "user_type", None) == "CX_STAFF":
+    if getattr(user, "is_platform_user", False):
         data["tasks"] = _tasks(user)
 
     # Own queue and own submissions - no key beyond an active account, matching

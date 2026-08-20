@@ -18,13 +18,15 @@ from .models import (
     SchoolBranding,
     SchoolStatus,
     PackagePlan,
+    slug_is_reserved,
 )
-from vs_tenants.exceptions import BranchAlreadyInState
-from vs_tenants.models import Branch, BranchLifecycle, BranchStatus
-from vs_audit.models import AuditModuleKey, AuditActionType
+from vs_tenants.exceptions import BranchAlreadyInState, TenantSlugFrozen
+from vs_tenants.models import Branch, BranchLifecycle, BranchStatus, Tenant
+from vs_audit.models import AuditModuleKey, AuditActionType, AuditSeverity
 from vs_audit.services import AuditDiffService, emit_audit_event
 from vs_config.models import Capability, CapabilityEntitlement
 from vs_config.services.capabilities import set_entitlement
+from vs_user.email_normalization import normalize_email
 
 
 # -----------------------------------------------------------------------------
@@ -52,6 +54,29 @@ def _slug_is_unique(slug: str, exclude_school_slug: Optional[str] = None) -> boo
     if exclude_school_slug:
         qs = qs.exclude(slug=exclude_school_slug)
     return not qs.filter(slug=slug).exists()
+
+
+def full_clean_as_field_errors(instance) -> None:
+    """``instance.full_clean()``, with its refusal renamed into DRF's shape.
+
+    A model ``ValidationError`` is keyed by field - ``{"_type": ["This field
+    cannot be blank."]}`` - but nothing on the update path was translating it,
+    so it travelled all the way to ``core.exceptions.custom_exception_handler``
+    and came back as the bare sentence with no field attached. The caller was
+    told a field was blank and not which one, on an endpoint that writes eight
+    of them.
+
+    ``as_serializer_error`` is DRF's own converter: it keeps the field keys and
+    moves model-level (``__all__``) errors under ``non_field_errors``, so a
+    ``full_clean`` failure lands in exactly the place a caller already reads
+    field errors from this endpoint.
+    """
+    try:
+        instance.full_clean()
+    except DjangoValidationError as exc:
+        raise serializers.ValidationError(
+            serializers.as_serializer_error(exc)
+        ) from exc
 
 
 # -----------------------------------------------------------------------------
@@ -285,7 +310,6 @@ class BranchPrimaryAdminWriteSerializer(serializers.Serializer):
     email = serializers.EmailField()
     phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
     branch_role = serializers.CharField(max_length=80, required=False, allow_blank=True, default="Head Teacher")
-    role_label = serializers.CharField(max_length=80, required=False, allow_blank=True, default="BRANCH_ADMIN")
 
     def validate_full_name(self, value: str) -> str:
         if not value.strip():
@@ -297,7 +321,6 @@ class BranchPrimaryAdminReadSerializer(serializers.Serializer):
     """Read-only view; returns link + contact."""
     id = serializers.CharField()
     branch_role = serializers.CharField()
-    role_label = serializers.CharField()
     invite_status = serializers.CharField()
     invite_queued_at = serializers.DateTimeField(allow_null=True)
     invite_sent_at = serializers.DateTimeField(allow_null=True)
@@ -311,7 +334,6 @@ class SchoolPrimaryAdminWriteSerializer(serializers.Serializer):
     email = serializers.EmailField()
     phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
     school_role = serializers.CharField(max_length=80, required=False, allow_blank=True, default="IT Head")
-    role_label = serializers.CharField(max_length=80, required=False, allow_blank=True, default="SCHOOL_ADMIN")
 
     def validate_full_name(self, value: str) -> str:
         if not value.strip():
@@ -323,7 +345,6 @@ class SchoolPrimaryAdminReadSerializer(serializers.Serializer):
     """Read-only view; returns school admin link + contact."""
     id = serializers.CharField()
     school_role = serializers.CharField()
-    role_label = serializers.CharField()
     invite_status = serializers.CharField()
     invite_queued_at = serializers.DateTimeField(allow_null=True)
     invite_sent_at = serializers.DateTimeField(allow_null=True)
@@ -462,11 +483,20 @@ class BranchCreateSerializer(serializers.ModelSerializer):
 
         primary_admin_data = attrs.get("primary_admin_data")
         if primary_admin_data:
-            from vs_user.models import User
-            email = (primary_admin_data.get("email") or "").lower().strip()
-            if email and User.objects.filter(email=email).exists():
+            from vs_user.services.email_availability import email_refusal
+            # Scoped to the school this branch is being added to, via the one
+            # helper every creation path now shares, so all of them agree on
+            # what "already exists" means. They did not agree twice over: this
+            # path once compared case-sensitively while vs_user compared with
+            # iexact, and then both asked about the whole platform after
+            # uniqueness had narrowed to one address per tenant.
+            refusal = email_refusal(
+                primary_admin_data.get("email"),
+                tenant=school.tenant if school else None,
+            )
+            if refusal:
                 raise serializers.ValidationError({
-                    "primary_admin_data": {"email": "A user with this email already exists."}
+                    "primary_admin_data": {"email": refusal}
                 })
 
         return attrs
@@ -521,7 +551,6 @@ class BranchCreateSerializer(serializers.ModelSerializer):
                 branch=branch,
                 contact=contact,
                 branch_role=primary_admin_data.get("branch_role", "Head Teacher"),
-                role_label=primary_admin_data.get("role_label", "BRANCH_ADMIN"),
                 invite_status=InviteStatus.QUEUED,
                 invite_queued_at=timezone.now(),
                 invite_sent_at=None,
@@ -531,7 +560,6 @@ class BranchCreateSerializer(serializers.ModelSerializer):
                 admin_link=admin_link,
                 school=school,
                 branch=branch,
-                user_type="BRANCH_ADMIN",
                 role=branch_admin_role.key if branch_admin_role else "",
                 actor=self.context.get("actor_id"),
             )
@@ -543,13 +571,39 @@ class BranchCreateSerializer(serializers.ModelSerializer):
             after_instance=branch,
             exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at"],
         )
+        # Keyed on the primary key, not the code. ``Branch.code`` is allocated
+        # per tenant from 1, so every school's main branch is code 1 and
+        # ``EntityAuditTrail`` is unique on (entity_type, entity_id) with no
+        # tenant column: a code-keyed trail put Bright Star's, Greenfield's and
+        # Corona's main branches on one platform-wide row, interleaved, with
+        # nothing on the event saying whose branch it was. The pk is unique
+        # across tenants and a branch cannot change it.
+        #
+        # The code still has to be findable. It is what a school's own staff
+        # call the branch ("branch 2"), and it is no longer in ``entity_id``
+        # where the Event Explorer's free-text search would reach it - worse,
+        # searching "2" there now finds the branch whose *pk* is 2, which is
+        # somebody else's. The summary carries it, together with the school,
+        # because "Main Branch" is not a distinguishing label either.
         emit_audit_event(
             module_key=AuditModuleKey.BRANCH,
             action_type=AuditActionType.CREATE,
             actor_user=self.context.get("actor_id"),
+            # ``branch.tenant``, not ``school.tenant``, and they are the same
+            # row: ``Branch`` is owned directly by ``Tenant`` and this create
+            # passed ``tenant=school.tenant`` a few lines up. Reading it off
+            # the branch says what the audit row means - the tenant this
+            # BRANCH belongs to - and keeps working if the branch ever arrives
+            # from somewhere the school is not in scope.
+            #
+            # Without it the row landed with tenant NULL, and an investigator
+            # asking "show me everything at Bright Star" had to read summaries
+            # and labels instead of filtering a column.
+            tenant=branch.tenant,
             entity_type="Branch",
-            entity_id=str(branch.code),
+            entity_id=str(branch.pk),
             entity_label=branch.name,
+            summary=f"{branch.name} created as branch {branch.code} of {school.name}",
             before_data=_snap["before_data"],
             diff_data=_snap["diff"],
         )
@@ -580,14 +634,31 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         branch: Branch = self.instance
-        # Friendly guard: if turning this branch into main, ensure no other main exists
-        if "is_main" in attrs and attrs["is_main"] is True:
-            exists_other_main = Branch.all_objects.filter(
-                tenant_id=branch.tenant_id,
-                is_main=True,
-            ).exclude(code=branch.code).exists()
-            if exists_other_main:
-                raise serializers.ValidationError({"is_main": "Another main branch already exists for this school."})
+        # ``is_main=true`` used to be refused whenever another main branch
+        # existed, which made promotion impossible for every school that had
+        # one - and a main branch can no longer be retired without promoting a
+        # sibling first, so that refusal was the dead end itself. It is now a
+        # handover: ``Branch.promote_to_main`` demotes the incumbent in the
+        # same transaction. All that is refused here is promoting a branch that
+        # is out of service.
+        if attrs.get("is_main") is True and branch.status not in Branch.IN_SERVICE_STATES:
+            raise serializers.ValidationError({
+                "is_main": (
+                    f"This branch is {branch.status} and cannot become the main "
+                    f"branch. Bring it back into service first."
+                )
+            })
+        # Clearing the flag outright would leave the school with no main branch
+        # at all, which is the same damage by another route: promote the
+        # successor instead and the incumbent is demoted for you.
+        if attrs.get("is_main") is False and branch.is_main:
+            raise serializers.ValidationError({
+                "is_main": (
+                    "A school must always have a main branch. Make another "
+                    "branch the main branch instead; this one is demoted "
+                    "automatically."
+                )
+            })
         return attrs
 
     @transaction.atomic
@@ -596,19 +667,27 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
             instance,
             exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at"],
         )
-        
-        changes = 0
+
+        # Handled by promote_to_main, not by a plain attribute write: the
+        # incumbent has to be demoted first or the partial unique index refuses
+        # the promotion even though the end state is legal.
+        promoting = validated_data.pop("is_main", None) is True and not instance.is_main
+
+        changes = 1 if promoting else 0
         for attr, value in validated_data.items():
-            if getattr(instance, attr) != value:  
+            if getattr(instance, attr) != value:
                 changes += 1
                 setattr(instance, attr, value)
-        
+
         if changes == 0:
             raise serializers.ValidationError({"detail": "No changes detected in update payload."})
-        
-        instance.full_clean()
+
+        full_clean_as_field_errors(instance)
         instance.save()
-        
+
+        if promoting:
+            instance.promote_to_main(actor_id=self.context.get("actor_id"))
+
         after_instance = AuditDiffService.model_instance_to_dict(
             instance,
             exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at"],
@@ -618,8 +697,15 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
             module_key=AuditModuleKey.BRANCH,
             action_type=AuditActionType.UPDATE,
             actor_user=self.context.get("actor_id"),
+            # The branch owns its tenant directly; see the create path.
+            tenant=instance.tenant,
             entity_type="Branch",
-            entity_id=str(instance.code),
+            # The pk, matching the create path, so an edit lands on this
+            # branch's own trail instead of the one row every school's branch
+            # of the same code used to share. The code itself is not repeated
+            # here: it is ``editable=False`` and never changes, so naming it
+            # once on the creation event keeps it findable for good.
+            entity_id=str(instance.pk),
             entity_label=instance.name,
             before_data=before_instance,
             diff_data=AuditDiffService.diff_dicts(
@@ -676,6 +762,13 @@ class SchoolDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = School
         fields = [
+            # The list has carried the pk all along; the detail response is the
+            # one a console screen is actually built from, and it could not
+            # name the school it was showing. Audit trails are keyed on the pk
+            # now, so "view this school's audit trail" needs it, as do the
+            # tenant-scoped endpoints (vs_config entitlements and overrides,
+            # notification settings) that take an id rather than a slug.
+            "id",
             "name",
             "slug",
             "code",
@@ -686,9 +779,6 @@ class SchoolDetailSerializer(serializers.ModelSerializer):
             "term_structure",
             "currency",
             "registration_id",
-            # Writable through create/update, so it has to be readable back:
-            # a flag you can set and never see is one the client cannot render.
-            "operates_branches",
             "status",
             "activated_at",
             "deactivated_at",
@@ -721,11 +811,18 @@ class BranchInlineCreateSerializer(serializers.Serializer):
     inside SchoolCreateSerializer.create(), not here.
 
     Each branch entry must include primary_admin_data.
-    is_main defaults to False. Exactly one branch should have is_main=True.
+    is_main defaults to False. Exactly one branch must end up is_main=True; when
+    a school is created with a single branch, that branch is promoted to main
+    because it is the only site the school has.
     """
 
     name = serializers.CharField(max_length=255)
-    _type = serializers.CharField(max_length=80)
+    # Optional, to match the column and the other branch write paths. This was
+    # the one place a free-form descriptor was mandatory, and it made a school
+    # impossible to create over an import row that had no branch type.
+    _type = serializers.CharField(
+        max_length=80, required=False, allow_blank=True, default="",
+    )
     address = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
     email = serializers.EmailField(required=False, allow_blank=True, default="")
     country = serializers.CharField(max_length=80, required=False)
@@ -744,22 +841,38 @@ class BranchInlineCreateSerializer(serializers.Serializer):
 class SchoolCreateSerializer(serializers.ModelSerializer):
 
     """
-    Creates an School with optional:
+    Creates a School with its branches, plus optional:
       - Branding
       - School-level primary admin
-      - One or more branches (each with their own branch admin)
+      - Package setup
 
-    The `branches` field accepts a list of branch objects.
+    The `branches` field accepts a list of branch objects and is **required**:
+    every school has at least one branch, its main branch, from the moment it
+    exists. It used to be ``required=False, default=list``, which let this
+    endpoint (and the bulk importer behind it) mint a school with nowhere to put
+    a user, a document or a student. Every branch rule below used to sit behind
+    an ``if branches:`` and so never ran for the one payload that needed them.
+
     Business rules enforced here:
-      - At most ONE branch may have is_main=True.
-      - If any branches are submitted, exactly one must be is_main=True.
+      - At least ONE branch must be submitted.
+      - Exactly one branch must have is_main=True.
       - Branch names must be unique within the submission.
     """
 
     slug = serializers.CharField(required=False, allow_blank=True)
     branding = SchoolBrandingSerializer(required=False)
     primary_admin_data = SchoolPrimaryAdminWriteSerializer(required=False, write_only=True)
-    branches = BranchInlineCreateSerializer(many=True, required=False, default=list, write_only=True)
+    branches = BranchInlineCreateSerializer(
+        many=True,
+        required=True,
+        allow_empty=False,
+        write_only=True,
+        error_messages={
+            "required": "A school must be created with at least one branch, its main branch.",
+            "empty": "A school must be created with at least one branch, its main branch.",
+            "null": "A school must be created with at least one branch, its main branch.",
+        },
+    )
     package_setup_data = SchoolPackageSetupWriteSerializer(required=False, write_only=True)
 
     class Meta:
@@ -775,7 +888,6 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             "term_structure",
             "currency",
             "registration_id",
-            "operates_branches",
 
             # optional nested
             "branding",
@@ -828,34 +940,41 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             attrs["slug"] = base
 
         # --- Admin email existence checks (single DB query) ---
-        from vs_user.models import User
+        #
+        # The school being created has no tenant row yet, so there is no tenant
+        # for an address to be taken IN: the same-tenant rule is vacuous here
+        # by construction, and this check exists only to give a readable error
+        # for the transitional refusal in ``User._guard_cross_tenant_email``
+        # while sign-in does not yet name its tenant. When that switch flips
+        # this check goes quiet on its own, and Greenfield can be created with
+        # ada.okoye@example.test even though Bright Star already uses it.
+        from vs_user.services.email_availability import email_refusals
 
         primary_admin_data = attrs.get("primary_admin_data", None)
         branches = attrs.get("branches", [])
 
         _tagged_emails: Dict[str, str] = {}
         if primary_admin_data:
-            sa_email = (primary_admin_data.get("email") or "").lower().strip()
+            sa_email = normalize_email(primary_admin_data.get("email"))
             if sa_email:
                 _tagged_emails["__school__"] = sa_email
 
         for i, branch in enumerate(branches):
             ba_data = branch.get("primary_admin_data") or {}
-            ba_email = (ba_data.get("email") or "").lower().strip()
+            ba_email = normalize_email(ba_data.get("email"))
             if ba_email:
                 _tagged_emails[i] = ba_email
 
         if _tagged_emails:
-            existing = set(
-                User.objects.filter(email__in=_tagged_emails.values()).values_list("email", flat=True)
-            )
+            refused = email_refusals(_tagged_emails.values(), tenant=None)
             email_errors: Dict[str, Any] = {}
-            if "__school__" in _tagged_emails and _tagged_emails["__school__"] in existing:
-                email_errors["primary_admin_data"] = {"email": "A user with this email already exists."}
+            sa_refusal = refused.get(_tagged_emails.get("__school__", ""), "")
+            if sa_refusal:
+                email_errors["primary_admin_data"] = {"email": sa_refusal}
             branch_email_errors = {
-                i: {"primary_admin_data": {"email": "A user with this email already exists."}}
+                i: {"primary_admin_data": {"email": refused[email]}}
                 for i, email in _tagged_emails.items()
-                if i != "__school__" and email in existing
+                if i != "__school__" and email in refused
             }
             if branch_email_errors:
                 email_errors["branches"] = branch_email_errors
@@ -863,31 +982,36 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(email_errors)
 
         # --- Branch-level validations ---
-        if branches:
-            # Rule 1: Branch names must be unique within the submission
-            names = [b["name"].strip().lower() for b in branches]
-            if len(names) != len(set(names)):
-                raise serializers.ValidationError({
-                    "branches": "Each branch must have a unique name within this submission."
-                })
+        # No longer behind ``if branches:``. The field is required and rejects an
+        # empty list, so reaching here means at least one branch was submitted,
+        # and these rules run for every school that is ever created.
+        if not branches:
+            raise serializers.ValidationError({
+                "branches": "A school must be created with at least one branch, its main branch."
+            })
 
-            # Rule 2: Exactly one branch must be marked as main
-            main_branches = [b for b in branches if b.get("is_main", False)]
-            if len(main_branches) == 0:
+        # Rule 1: Branch names must be unique within the submission
+        names = [b["name"].strip().lower() for b in branches]
+        if len(names) != len(set(names)):
+            raise serializers.ValidationError({
+                "branches": "Each branch must have a unique name within this submission."
+            })
+
+        # Rule 2: Exactly one branch must be marked as main
+        main_branches = [b for b in branches if b.get("is_main", False)]
+        if len(main_branches) == 0:
+            if len(branches) == 1:
+                # The lone branch of a new school is its main branch. Making the
+                # caller say so twice buys nothing.
+                branches[0]["is_main"] = True
+            else:
                 raise serializers.ValidationError({
                     "branches": "Exactly one branch must be marked as is_main=true."
                 })
-            if len(main_branches) > 1:
-                raise serializers.ValidationError({
-                    "branches": "Only one branch can be marked as is_main=true."
-                })
-
-            # A school that submits branches at creation plainly operates them,
-            # so the flag is inferred rather than asked for twice. An explicit
-            # value from the caller always wins: a school may declare that it
-            # operates branches before it has created any, and the reverse
-            # (branches now, single-site intent) is theirs to state.
-            attrs.setdefault("operates_branches", True)
+        if len(main_branches) > 1:
+            raise serializers.ValidationError({
+                "branches": "Only one branch can be marked as is_main=true."
+            })
 
         return attrs
 
@@ -934,18 +1058,16 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 school=school,
                 contact=contact,
                 school_role=primary_admin_data.get("school_role", "IT Head"),
-                role_label=primary_admin_data.get("role_label", "SCHOOL_ADMIN"),
                 invite_status=InviteStatus.QUEUED,
                 invite_queued_at=timezone.now(),
                 invite_sent_at=None,
             )
-            school_admin_email = primary_admin_data["email"].lower().strip()
+            school_admin_email = normalize_email(primary_admin_data["email"])
             provision_admin_user(
                 contact=contact,
                 admin_link=school_admin_link,
                 school=school,
                 branch=None,
-                user_type="SCHOOL_ADMIN",
                 role=school_admin_role.key if school_admin_role else "",
                 actor=actor,
             )
@@ -980,7 +1102,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
 
             # Create branch admin if provided
             if branch_admin_data:
-                branch_admin_email = branch_admin_data["email"].lower().strip()
+                branch_admin_email = normalize_email(branch_admin_data["email"])
                 contact = ContactInfo.objects.create(
                     full_name=branch_admin_data["full_name"],
                     email=branch_admin_data["email"],
@@ -990,7 +1112,6 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                     branch=branch,
                     contact=contact,
                     branch_role=branch_admin_data.get("branch_role", "Head Teacher"),
-                    role_label=branch_admin_data.get("role_label", "BRANCH_ADMIN"),
                     invite_status=InviteStatus.QUEUED,
                     invite_queued_at=timezone.now(),
                     invite_sent_at=None,
@@ -1006,7 +1127,6 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                         admin_link=branch_admin_link,
                         school=school,
                         branch=branch,
-                        user_type="BRANCH_ADMIN",
                         role=branch_admin_role.key if branch_admin_role else "",
                         actor=actor,
                     )
@@ -1024,9 +1144,18 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 # the bulk importer puts str(user.id), and a string here makes
                 # emit_audit_event swallow the event and write nothing.
                 actor_user=actor,
+                # Same row as school.tenant - the branch was created with it
+                # immediately above - read off the branch for the same reason
+                # BranchCreateSerializer does.
+                tenant=branch.tenant,
                 entity_type="Branch",
-                entity_id=str(branch.code),
+                # The pk, not the code: codes restart at 1 for every tenant, so
+                # this is the site that used to file every school's main branch
+                # under one shared trail. See BranchCreateSerializer.create for
+                # the full reasoning, including why the summary names the code.
+                entity_id=str(branch.pk),
                 entity_label=branch.name,
+                summary=f"{branch.name} created as branch {branch.code} of {school.name}",
                 before_data=_branch_snap["before_data"],
                 diff_data=_branch_snap["diff"],
             )
@@ -1103,13 +1232,29 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             after_instance=school,
             exclude_fields=["created_at", "updated_at", "activated_at", "deactivated_at"],
         )
+        # Keyed on the primary key, not the slug. A school's slug is editable
+        # right up to go-live, and a slug-keyed trail splits down the middle
+        # the moment it is corrected: the creation event stays filed under
+        # ``bright-star`` while the rename and everything after it file under
+        # ``bright-star-academy``, so whoever opens the trail for the address
+        # the school actually uses never sees it being created. The pk is the
+        # one identifier a school cannot change.
+        #
+        # The slug still has to be findable, because it is the address people
+        # hold and search on, and it is no longer sitting in ``entity_id``
+        # where the Event Explorer's free-text search would reach it. Naming
+        # it in the summary is the same device the rename event uses.
         emit_audit_event(
             module_key=AuditModuleKey.SCHOOL,
             action_type=AuditActionType.CREATE,
             actor_user=actor,
+            # The school's own tenant, so "everything at Bright Star" is a
+            # column filter rather than a search through summaries.
+            tenant=school.tenant,
             entity_type="School",
-            entity_id=str(school.slug),
+            entity_id=str(school.pk),
             entity_label=school.name,
+            summary=f"{school.name} created with sign-in address {school.slug}",
             before_data=_school_snap["before_data"],
             diff_data=_school_snap["diff"],
         )
@@ -1121,13 +1266,34 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
     """
     Updates tenant identity fields only.
     Branch details are updated via BranchUpdateSerializer.
+
+    ``slug`` is writable because a school's address is editable right up to
+    go-live and frozen for ever after (``School._check_slug_change``). Without
+    it on this serializer the correction that rule exists to permit - Bright
+    Star created as ``bright-star`` when its admins meant
+    ``bright-star-academy`` - could only be made from a shell.
+
+    ``name`` deliberately is not writable here. It is not covered by the
+    address rule, and it is not free of consequences either: the spreadsheet
+    importer identifies a school by name when the row carries no slug
+    (``vs_import_data.services.import_executor``), so a rename silently turns a
+    school's own import file into a request to create a second school. That
+    needs its own decision, not a field quietly added beside this one.
+
+    Declared explicitly rather than left to ``ModelSerializer``: the model's
+    ``SlugField`` validator refuses anything that is not already lowercase and
+    hyphenated, which would turn "Bright Star" into a regex complaint. The
+    create path normalises instead, and correcting a typo should behave the
+    same way.
     """
 
+    slug = serializers.CharField(required=False)
     branding = SchoolBrandingSerializer(required=False)
 
     class Meta:
         model = School
         fields = [
+            "slug",
             "ownership_type",
             "address",
             "website",
@@ -1135,29 +1301,101 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
             "term_structure",
             "currency",
             "registration_id",
-            "operates_branches",
 
             # optional nested
             "branding",
         ]
 
+    def validate_slug(self, value: str) -> str:
+        """Settle the address here, so no refusal has to escape from ``save()``.
+
+        Every check below has a backstop deeper down - ``School.clean()`` for
+        the reserved list, the unique index for the collision,
+        ``_check_slug_change()`` for the freeze - and every one of those
+        backstops raises where the caller would receive it as a 500 or as a
+        stray sentence. They stay where they are, because a shell or a data
+        migration must still be refused; this is the same set of rules stated
+        where an HTTP caller can be answered properly.
+        """
+        normalized = _normalize_slug(value)
+        if not normalized:
+            raise serializers.ValidationError(
+                "Provide an address made of lowercase letters, numbers and hyphens."
+            )
+        if normalized == self.instance.slug:
+            return normalized
+
+        # First, because it outranks the rest: a live school may not move to a
+        # free slug either, so "that one is taken" would be misleading advice.
+        if self.instance.has_ever_been_live():
+            raise TenantSlugFrozen(
+                tenant_name=self.instance.name, slug=self.instance.slug,
+            )
+
+        if slug_is_reserved(normalized):
+            raise serializers.ValidationError("This slug is reserved. Choose another.")
+
+        if not _slug_is_unique(normalized, exclude_school_slug=self.instance.slug):
+            raise serializers.ValidationError({
+                "message": "Slug already exists.",
+                "suggestions": [
+                    s for s in _build_slug_suggestions(normalized) if _slug_is_unique(s)
+                ],
+            })
+
+        # The school's slug is mirrored onto its tenant by ``School.save()``,
+        # and that mirror is a queryset ``update()`` - it cannot raise a field
+        # error, only an IntegrityError against the tenant's own unique index.
+        # A clinic group or an ORGANIZATION tenant holding the name is enough
+        # to trigger it, and there is no school row to have caught it above.
+        if Tenant.objects.filter(slug=normalized).exclude(
+            pk=self.instance.tenant_id
+        ).exists():
+            raise serializers.ValidationError(
+                "This address is already in use on the platform. Choose another."
+            )
+
+        return normalized
+
     @transaction.atomic
     def update(self, instance: School, validated_data: Dict[str, Any]) -> School:
+        """Write the change, then record who made it.
+
+        This used to read ``actor_id`` out of the context and drop it on the
+        floor: no audit event was emitted at all, while ``BranchUpdateSerializer``
+        directly above audits every field it touches. That was survivable while
+        the endpoint edited mottos. It stopped being survivable at 0699ada, when
+        ``slug`` became writable here: the slug is mirrored onto the tenant and
+        is therefore the host every one of a school's users signs in at, and it
+        could be moved with no record of who moved it or where from.
+
+        Same shape as the branch above, deliberately: the same
+        ``AuditDiffService`` snapshot, the same before/diff pair, the same
+        ``emit_audit_event`` call, and the same actor resolution - ``.get()``
+        with no default, so an absent actor arrives as ``None`` and the event is
+        attributed to SYSTEM. The old ``"system"`` string default would have been
+        worse than nothing: ``actor_user`` is a FK, a string there raises inside
+        ``emit_audit_event``, and that helper swallows its own failures - so a
+        defaulted actor meant no event at all rather than a system-attributed one.
+        """
         branding_data = validated_data.pop("branding", None)
+
+        before_data = AuditDiffService.model_instance_to_dict(
+            instance,
+            exclude_fields=["created_at", "updated_at", "activated_at", "deactivated_at"],
+        )
 
         changes = 0
         for attr, value in validated_data.items():
-            if getattr(instance, attr) != value:  
+            if getattr(instance, attr) != value:
                 changes += 1
                 setattr(instance, attr, value)
-        
+
         if changes == 0:
             raise serializers.ValidationError({"detail": "No changes detected in update payload."})
-        
-        instance.full_clean()
-        instance.save()
 
-        actor_id = self.context.get("actor_id", "system")
+        full_clean_as_field_errors(instance)
+        instance.save()
 
         # Branding upsert
         if branding_data is not None:
@@ -1165,6 +1403,53 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
                 school=instance,
                 defaults=branding_data,
             )
+
+        after_data = AuditDiffService.model_instance_to_dict(
+            instance,
+            exclude_fields=["created_at", "updated_at", "activated_at", "deactivated_at"],
+        )
+
+        # The address move gets its own sentence and its own severity. The old
+        # slug is already recoverable from ``before_data`` and from the diff,
+        # but neither is searchable: the Event Explorer's free-text search runs
+        # over ``summary``, so naming both addresses there is what lets someone
+        # holding the dead address find out where the school went. Everything
+        # else keeps the generated "{actor} updated School {entity}" summary.
+        previous_slug = before_data.get("slug")
+        slug_moved = previous_slug != instance.slug
+        summary = ""
+        if slug_moved:
+            summary = (
+                f"Sign-in address for {instance.name} moved from "
+                f"{previous_slug} to {instance.slug}"
+            )
+
+        # Best effort, and not silent: ``emit_audit_event`` never raises and
+        # logs its own failures to the ``vs_audit`` logger, which is the audit
+        # app's stated contract ("audit failures must never block business
+        # logic") and what the branch serializer above relies on. A failed
+        # audit write therefore leaves the school edit standing rather than
+        # rolling back a legitimate correction over a logging fault.
+        emit_audit_event(
+            module_key=AuditModuleKey.SCHOOL,
+            action_type=AuditActionType.UPDATE,
+            actor_user=self.context.get("actor_id"),
+            tenant=instance.tenant,
+            entity_type="School",
+            # The pk, and emphatically not the slug: this is the one call site
+            # that can change a school's slug, so keying the event on it would
+            # file the rename under the new address and leave everything before
+            # it under the old one. See the create path for the full reasoning.
+            entity_id=str(instance.pk),
+            entity_label=instance.name,
+            severity=AuditSeverity.WARNING if slug_moved else AuditSeverity.INFO,
+            summary=summary,
+            before_data=before_data,
+            diff_data=AuditDiffService.diff_dicts(
+                before_data=before_data,
+                after_data=after_data,
+            ),
+        )
 
         return instance
 
@@ -1220,7 +1505,6 @@ class SchoolResetConfigSerializer(serializers.Serializer):
     @transaction.atomic
     def save(self, **kwargs) -> School:
         school: School = self.context["school"]
-        actor_id = self.context.get("actor_id", "system")
 
         token = (self.validated_data.get("confirmation_token") or "").strip()
         if not token:
@@ -1230,6 +1514,37 @@ class SchoolResetConfigSerializer(serializers.Serializer):
         # - Remove branding
         # - Disable all modules (or re-seed defaults depending on your product policy)
         # - Clear localization (optional; many teams keep localization)
+        branding = SchoolBranding.objects.filter(school=school).first()
+        # Built by hand rather than through ``model_instance_to_dict``: ``logo``
+        # is an ImageField, ``model_to_dict`` hands back the FieldFile itself,
+        # and a FieldFile in a JSONField raises inside ``emit_audit_event`` -
+        # which swallows its own failures, so the whole event would vanish.
+        before_data = {"logo": str(branding.logo) if branding and branding.logo else ""}
+
         SchoolBranding.objects.filter(school=school).delete()
+
+        # Same gap as SchoolUpdateSerializer had: this read ``actor_id`` from
+        # the context and never used it, so a super admin wiping a school's
+        # branding left no record of it at all. Best effort and non-blocking,
+        # for the reason given on the update path above.
+        emit_audit_event(
+            module_key=AuditModuleKey.SCHOOL,
+            action_type=AuditActionType.CONFIG_CHANGED,
+            actor_user=self.context.get("actor_id"),
+            tenant=school.tenant,
+            entity_type="School",
+            # Same key as the create and update paths, so a reset lands on the
+            # school's one trail rather than starting a second one.
+            entity_id=str(school.pk),
+            entity_label=school.name,
+            severity=AuditSeverity.WARNING,
+            summary=f"Configuration reset for {school.name}: branding cleared",
+            before_data=before_data,
+            diff_data=AuditDiffService.diff_dicts(
+                before_data=before_data,
+                after_data={"logo": ""},
+            ),
+            metadata={"reason": self.validated_data.get("reason", "")},
+        )
 
         return school

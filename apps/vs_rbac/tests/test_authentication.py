@@ -18,6 +18,18 @@ from vs_user.models import User
 from .helpers import make_school, make_branch, make_school_admin
 
 
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 class _FakeView:
     """Stand-in for the DRF view resolved from request.parser_context."""
 
@@ -61,10 +73,9 @@ class TenantJWTAuthenticationTests(TestCase):
         self.assertEqual(get_current_tenant(), school.tenant)
 
     def test_platform_staff_gets_codex_tenant_context(self):
-        user = User.objects.create_user(
+        user = User.objects.create_user(tenant=_platform_tenant(), 
             email="cx@test.com",
             password="testpass123",
-            user_type="CX_STAFF",
             status="ACTIVE",
             first_name="CX",
             last_name="Staff",
@@ -86,8 +97,9 @@ class TenantJWTAuthenticationTests(TestCase):
 
     def test_token_without_tenant_slug_rejected(self):
         user = User.objects.create_user(
+            tenant=_platform_tenant(),
             email="pretenant@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE",
+            status="ACTIVE",
             first_name="Pre", last_name="Tenant",
         )
         # A vanilla AccessToken carries no tenant_slug/tenant_id claims - a
@@ -98,9 +110,9 @@ class TenantJWTAuthenticationTests(TestCase):
             self.auth.authenticate(request)
 
     def test_token_with_mismatched_tenant_id_rejected(self):
-        user = User.objects.create_user(
+        user = User.objects.create_user(tenant=_platform_tenant(), 
             email="moved@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE",
+            status="ACTIVE",
             first_name="Moved", last_name="User",
         )
         access = CodeXRefreshToken.for_user(user).access_token
@@ -136,9 +148,9 @@ class TenantJWTAuthenticationTests(TestCase):
     # ── ITEM 4: platform cross-tenant assertion via view flag ───────────────
 
     def test_platform_actor_cross_tenant_allowed_with_flag(self):
-        cx = User.objects.create_user(
+        cx = User.objects.create_user(tenant=_platform_tenant(), 
             email="cx-cross@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE",
+            status="ACTIVE",
             first_name="CX", last_name="Cross",
         )
         school = make_school(slug="cross-school", name="Cross School")
@@ -152,9 +164,9 @@ class TenantJWTAuthenticationTests(TestCase):
         self.assertEqual(request.rbac_tenant, cx.tenant)
 
     def test_platform_actor_cross_tenant_denied_without_flag(self):
-        cx = User.objects.create_user(
+        cx = User.objects.create_user(tenant=_platform_tenant(), 
             email="cx-noflag@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE",
+            status="ACTIVE",
             first_name="CX", last_name="NoFlag",
         )
         school = make_school(slug="noflag-school", name="No Flag School")
@@ -259,9 +271,9 @@ class TenantJWTAuthenticationTests(TestCase):
         self.assertTrue(TenantSurfaceAllowed().has_permission(request, exempt))
 
         # 3. The platform cross-tenant path onto an ACTIVE school.
-        cx = User.objects.create_user(
+        cx = User.objects.create_user(tenant=_platform_tenant(), 
             email="cx-unchanged@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE",
+            status="ACTIVE",
             first_name="CX", last_name="Unchanged",
         )
         cross = _FakeView(platform_cross_tenant_param=True)

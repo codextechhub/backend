@@ -26,7 +26,11 @@ class UserCreationWorkflowHandler(BaseWorkflowHandler):
             "subtitle": "Platform user creation",
             "fields": [
                 {"label": "Email", "value": email or "-"},
-                {"label": "User type", "value": display("user_type") or "-"},
+                # The "User type" row is gone with the column. It said "CX
+                # Staff" on every card this handler ever rendered - the handler
+                # only accepts platform users - so it told an approver nothing
+                # the title did not. Role is what distinguishes one card here
+                # from the next, and it is already the line below.
                 {"label": "Role", "value": getattr(document, "role", "") or "-"},
                 {"label": "Status", "value": display("status") or "-"},
                 {"label": "Phone", "value": getattr(document, "phone", "") or "-"},
@@ -36,9 +40,9 @@ class UserCreationWorkflowHandler(BaseWorkflowHandler):
     def validate_document(self, document, requested_by) -> None:
         from vs_user.models import User
         from vs_workflow.exceptions import WorkflowError
-        if document.user_type != User.UserType.CX_STAFF:
+        if not document.is_platform_user:
             raise WorkflowError(
-                "Workflow approval is only required for platform (CX_STAFF) user creation.",
+                "Workflow approval is only required for platform user creation.",
                 error_code="INVALID_DOCUMENT_STATE",
             )
         if document.status != User.Status.PENDING_APPROVAL:

@@ -17,26 +17,6 @@ from __future__ import annotations
 from ..constants import TaskKey
 
 
-def _has_main_branch(tenant, school) -> bool:
-    """A site somebody can be posted to, marked as the main one.
-
-    The task asks for a main branch, not for a count: a school with nine
-    branches has satisfied it once, and the one-main-per-tenant rule is a
-    database constraint that is not re-implemented here.
-    """
-    from vs_tenants.models import Branch
-
-    # ``all_objects`` with an explicit tenant, not the tenant-aware default:
-    # the ambient tenant is the *caller's*, and a platform reviewer checking a
-    # school's readiness would otherwise ask for rows belonging to two tenants
-    # at once and find none.
-    return Branch.all_objects.filter(
-        tenant=tenant,
-        is_main=True,
-        status__in=Branch.IN_SERVICE_STATES,
-    ).exists()
-
-
 def _has_first_admin(tenant, school) -> bool:
     """A working administrator, not merely an invited one.
 
@@ -139,7 +119,6 @@ def _has_staff_invitations(tenant, school) -> bool:
 #: condition and is completed on the school's word: ACADEMIC_STRUCTURE has no
 #: backend to check against at all.
 TASK_CONDITIONS = {
-    TaskKey.BRANCH_SETUP: _has_main_branch,
     TaskKey.FIRST_ADMIN: _has_first_admin,
     TaskKey.ROLE_BASELINE: _has_role_baseline,
     TaskKey.SCHOOL_METADATA: _has_school_metadata,
@@ -151,7 +130,6 @@ TASK_CONDITIONS = {
 #: What to tell the school when a condition refuses. Phrased as the thing they
 #: still have to do, not as the predicate that returned False.
 CONDITION_REASONS = {
-    TaskKey.BRANCH_SETUP: "Create a main branch for this school first.",
     TaskKey.FIRST_ADMIN: (
         "This school has no active administrator holding the school "
         "administrator role. Re-send the invitation and try again."

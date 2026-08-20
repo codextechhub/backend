@@ -421,7 +421,11 @@ class EntityAuditTrail(models.Model):
             self.first_event_at = event.event_at
         if not self.last_event_at or event.event_at > self.last_event_at:
             self.last_event_at = event.event_at
-        self.save(update_fields=["event_count", "first_event_at", "last_event_at"])
+        # ``entity_label`` rides along so a caller that refreshed a stale label
+        # before calling this does not need a second write to persist it.
+        self.save(update_fields=[
+            "entity_label", "event_count", "first_event_at", "last_event_at",
+        ])
 
 
 # -----------------------------------------------------------------------------

@@ -116,7 +116,7 @@ class StockLocationListCreateView(_ProcBase):
     """GET (list) / POST (create) the places stock physically sits.
 
     A location may name a branch or none. An entity-wide store leaves it blank; a
-    two-campus school gives each campus its own, and a campus with a main store and a
+    two-branch school gives each branch its own, and a branch with a main store and a
     lab store gives each of those one. Exactly one location per entity is the default,
     which is what a single-store school relies on to keep moving stock without naming
     one.
@@ -273,12 +273,12 @@ class StockItemListCreateView(_ProcBase):
         ``?location=`` narrows the list to one store, and the rows then report **that
         store's** quantity, value, unit cost and reorder state rather than the entity
         roll-up. Reporting the roll-up under a store filter is the contradiction this
-        avoids: an item listed because one campus is short of it, showing a healthy
+        avoids: an item listed because one branch is short of it, showing a healthy
         total held at another.
 
         ``?needs_reorder=true`` is measured against whichever scope is in force, so a
-        store filter answers "what is this campus short of" rather than "what is the
-        school short of, that this campus happens to stock".
+        store filter answers "what is this branch short of" rather than "what is the
+        school short of, that this branch happens to stock".
         """
         entity = resolve_entity(request)
         location = _resolve_location(entity, request.query_params.get("location"))
@@ -468,7 +468,7 @@ class StockIssueView(_ProcBase):
             movement_date=_date(body.get("movement_date"), "movement_date")
             or datetime.date.today(),
             # Which store it left. Optional for an entity with one; required once it
-            # has more, so nobody has to guess which campus the stock came from.
+            # has more, so nobody has to guess which branch the stock came from.
             location=_resolve_location(entity, body.get("location")),
             # An override expense account, if given, must be an active postable EXPENSE.
             expense_account=_resolve_expense_account(
@@ -535,7 +535,7 @@ class StockItemSummaryView(_ProcBase):
     """GET - stock-item KPI strip (tracked / active / low / out / value).
 
     ``?location=`` scopes every figure to one store, so the strip cannot disagree
-    with the list it sits above. Without that, filtering the list to a campus while
+    with the list it sits above. Without that, filtering the list to a branch while
     the KPIs kept reporting the school would put two different answers to the same
     question on one screen.
 

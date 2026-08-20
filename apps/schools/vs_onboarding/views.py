@@ -22,7 +22,11 @@ from rest_framework.views import APIView
 
 from core.pagination import XVSPagination
 from core.response import success_response
-from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+from vs_rbac.permissions import (
+    HasRBACPermission,
+    IsAuthenticatedAndActive,
+    PlatformDecisionAllowed,
+)
 
 from .constants import (
     ONBOARDING_EXPIRY_DAYS,
@@ -56,10 +60,24 @@ from .services.tasks import transition_task
 class OnboardingViewMixin:
     """Shared wiring for every view in this module."""
 
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [
+        IsAuthenticatedAndActive & PlatformDecisionAllowed & HasRBACPermission
+    ]
     # FR-012. Without this the school that most needs these endpoints, the one
     # that is still PENDING, is refused all nine of them.
     pending_tenant_surface = True
+
+    #: Whether this decision is CodeX's rather than the school's. Declared per
+    #: view and enforced by ``PlatformDecisionAllowed`` for the whole module, so
+    #: a view added later opts in with one line instead of writing its own
+    #: check, and the check runs before the key does.
+    #:
+    #: Set it wherever the honest answer to "may the school decide this for
+    #: itself?" is no. It is *not* enough that the key is granted only to
+    #: platform roles by default: every key in this module is
+    #: ``PermissionScope.TENANT``, so a school admin who can mint a role can put
+    #: any of them in it and assign it to themselves.
+    platform_decision = False
 
     @property
     def tenant(self):
@@ -141,6 +159,21 @@ class OnboardingProvisionView(OnboardingViewMixin, APIView):
 
     Idempotent: re-running tops up catalog entries that are missing and leaves
     every existing row exactly as it was, status included.
+
+    Deliberately **not** ``platform_decision``, though the seeder grants its key
+    to platform roles only. Two reasons, and the first is that the flag would
+    make the endpoint uncallable: it sets no ``platform_cross_tenant_param``, so
+    a Codex actor cannot name a school here at all (they get 404), and their own
+    tenant is not a school, so provisioning it is refused outright. The only
+    caller this endpoint can ever have is one inside the school - which is
+    exactly what ``provision_onboarding_for_school`` tells an operator to do
+    when creation failed to build the control room.
+
+    The second is that there is nothing here to escalate to. Provisioning adds
+    missing checklist rows and touches no status, no readiness and no
+    permission; a school admin who ran it against themselves would have restored
+    their own checklist. That is why this view is not the same shape as approve
+    and reject, where the key really did decide whether a school went live.
 
     docstring-name: Provision onboarding state
     """
@@ -275,15 +308,22 @@ class GoLiveApproveView(OnboardingViewMixin, APIView):
 
     ``platform_cross_tenant_param`` is what lets a Codex reviewer assert the
     school's ``?tenant=`` slug. It is set on this view and on reject, and on no
-    other view in the module: a school-tenant caller reaching this endpoint for
-    their own school is still refused, because the key belongs to platform
-    roles.
+    other view in the module.
+
+    Two gates, not one, and the second is the one that matters. The key alone
+    never was a boundary: ``onboarding.go_live.approve`` is TENANT-scoped like
+    every key in this module, so a school admin holding ``school.roles.create``
+    and ``school.roles.assign`` could mint a role carrying it, assign it to
+    themselves and take their own school live with nobody at CodeX ever looking
+    at it. ``platform_decision`` says the caller's own tenant must be the
+    platform tenant, so holding the key buys nothing.
 
     docstring-name: Approve a go-live request
     """
 
     rbac_permission = PERM_GO_LIVE_APPROVE
     platform_cross_tenant_param = True
+    platform_decision = True
 
     def post(self, request, pk: int):
         go_live_request = go_live_service.approve_go_live(
@@ -306,24 +346,27 @@ class OnboardingReinstateView(OnboardingViewMixin, APIView):
     therefore assert their own tenant and name the school here.
 
     Two gates, not one. The permission key is granted to platform roles only,
-    and the caller's asserted tenant must be the platform tenant, so a school
-    admin who somehow held the key still cannot reinstate anybody - including
+    and the caller's own tenant must be the platform tenant, so a school admin
+    who somehow held the key still cannot reinstate anybody - including
     themselves.
+
+    That second gate used to be written out here in ``post`` against
+    ``request.tenant``. It is now ``platform_decision``, shared with approve and
+    reject, which fixes two things beyond the duplication: it runs before the
+    key is evaluated, so the refusal no longer reveals whether the caller held
+    the key, and it reads the caller's own tenant, so it keeps its meaning on a
+    view that also accepts a cross-tenant ``?tenant=`` assertion.
 
     docstring-name: Reinstate a suspended school
     """
 
     rbac_permission = PERM_PROGRESS_REACTIVATE
+    platform_decision = True
 
     def post(self, request, slug: str):
-        from rest_framework.exceptions import NotFound, PermissionDenied
+        from rest_framework.exceptions import NotFound
 
         from vs_tenants.models import Tenant
-
-        if getattr(request.tenant, "kind", None) != Tenant.Kind.PLATFORM:
-            raise PermissionDenied(
-                "Only platform staff may reinstate a suspended school.",
-            )
 
         target = Tenant.objects.filter(
             slug=(slug or "").strip().lower(), kind=Tenant.Kind.SCHOOL,
@@ -346,11 +389,17 @@ class OnboardingReinstateView(OnboardingViewMixin, APIView):
 class GoLiveRejectView(OnboardingViewMixin, APIView):
     """POST /v1/onboarding/go-live/<id>/reject/ - FR-008.
 
+    ``platform_decision`` for the same reason as approve, and rejection is not
+    the harmless half of the pair: it is how a school makes an inconvenient
+    review go away, closing the request with a reason of its own choosing and
+    returning itself to READY as though CodeX had answered.
+
     docstring-name: Reject a go-live request
     """
 
     rbac_permission = PERM_GO_LIVE_REJECT
     platform_cross_tenant_param = True
+    platform_decision = True
 
     def post(self, request, pk: int):
         serializer = GoLiveRejectSerializer(data=request.data)

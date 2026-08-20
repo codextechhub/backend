@@ -155,6 +155,51 @@ class TenantSurfaceAllowed(BasePermission):
         raise TenantNotLive()
 
 
+# Reserve a decision to the platform tenant, whoever happens to hold its key.
+class PlatformDecisionAllowed(BasePermission):
+    """Refuse everyone outside the platform tenant a view marked ``platform_decision``.
+
+    Some decisions are *about* a tenant but are not *the tenant's to make*:
+    approving a school's own go-live is the clearest case. Until this class
+    existed the boundary was a naming convention - the key is "granted to
+    platform roles by default" - which is not a boundary at all. A tenant admin
+    who can create a role can put any key their tenant is allowed to hold into
+    it, and every key in the ``onboarding`` module is ``PermissionScope.TENANT``,
+    so the scope guard on ``Permission`` never runs for them.
+
+    **The tenant tested is the caller's own, not ``request.tenant``.** A view
+    that opts into ``platform_cross_tenant_param`` is reached by a platform
+    actor asserting the *target's* slug, so ``request.tenant`` is the school on
+    exactly the calls that must succeed. The question here is who is asking,
+    which is a fact about the caller's home tenant.
+
+    Reading ``request.user`` rather than ``request.actor_user`` is deliberate:
+    under impersonation the effective user is the person being impersonated, and
+    an actor wearing a school admin's identity holds that admin's authority and
+    no more. A decision reserved to the platform is not one they may launder
+    through a school account.
+
+    It returns False rather than raising, so the refusal is DRF's ordinary 403
+    and reads identically to the one a caller without the key receives. A
+    distinct message here would be a probe: mint the role, call the endpoint,
+    and read from the wording whether the grant landed.
+    """
+
+    def has_permission(self, request, view):
+        from vs_tenants.models import Tenant
+
+        if not getattr(view, "platform_decision", False):
+            return True
+
+        u = _get_user(None, request)
+        if not u or not getattr(u, "is_authenticated", False):
+            return False
+        return (
+            getattr(getattr(u, "tenant", None), "kind", None)
+            == Tenant.Kind.PLATFORM
+        )
+
+
 # Enforce login plus non-terminal account status before RBAC is evaluated.
 class IsAuthenticatedAndActive(BasePermission):
     """
@@ -188,7 +233,8 @@ class IsAuthenticatedAndActive(BasePermission):
 class IsVisionStaff(BasePermission):
     """
     Vision staff can manage global permission registry + approve/deny requests.
-    Assumes your user model has user_type and includes VISION_STAFF (Module 3).
+    "Vision staff" means an account on a PLATFORM-kind tenant, which is what
+    has_permission below reads. There is no persona column to consult.
     """
 
     def has_permission(self, request, view):
@@ -207,21 +253,6 @@ class IsVisionSuperAdmin(BasePermission):
 
     def has_permission(self, request, view):
         return is_vision_super_admin(request.user)
-
-
-# Allow school admins to manage school-local RBAC configuration.
-class IsSchoolAdmin(BasePermission):
-    """
-    School admin can manage roles within their school.
-    This is a simplified check: we treat user_type == SCHOOL_ADMIN as admin.
-    If you want "anyone with permission", wire it to your RBAC evaluator later.
-    """
-
-    def has_permission(self, request, view):
-        u = request.user
-        if not u or not u.is_authenticated:
-            return False
-        return getattr(u, "user_type", "") == "SCHOOL_ADMIN"
 
 
 # Evaluate the permission keys declared by a DRF view.
@@ -369,19 +400,6 @@ class HasAnyModuleAccess(BasePermission):
         keys = get_effective_permissions(u, tenant=tenant)
         prefixes = tuple(f"{m}." for m in modules)  # "finance." must not match "financex.".
         return any(key.startswith(prefixes) for key in keys)
-
-
-# Allow branch admins into branch-scoped management surfaces.
-class IsBranchAdmin(BasePermission):
-    """
-    Grants access only to users with user_type == BRANCH_ADMIN.
-    """
-
-    def has_permission(self, request, view):
-        u = request.user
-        if not u or not u.is_authenticated:
-            return False
-        return getattr(u, "user_type", "") == "BRANCH_ADMIN"
 
 
 # Permit safe HTTP methods on read-only endpoints.

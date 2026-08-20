@@ -123,6 +123,20 @@ def _translate_events(params):
             "The audit export does not filter by actor yet; the file covers everyone "
             "the other filters allow.",
         ))
+    if value := params.get("tenant_slug"):
+        # The Explorer and this dataset do not mean the same thing by "tenant",
+        # and saying so is the whole point of Unmapped. The screen is not
+        # tenant-scoped: a platform reviewer browses every customer's events on
+        # it and narrows with ``tenant_slug``. The export is scoped in ``base``,
+        # to the caller's own organisation, and that boundary is deliberately
+        # not editable by a filter. Left unsaid, a reviewer who narrowed the
+        # screen to Bright Star and pressed Export would get a file covering a
+        # different set of rows than the one on the screen and no hint of it.
+        unmapped.append(Unmapped(
+            "tenant_slug", value,
+            "An audit export always covers your own organisation, so it cannot be "
+            "narrowed to another tenant the way the screen can.",
+        ))
     return filters, unmapped
 
 
@@ -135,6 +149,7 @@ def register_screens():
         handles=(
             "module_key", "severity", "status", "action_type", "entity_type",
             "start", "end", "date_from", "date_to", "search", "actor",
+            "tenant_slug",
         ),
         label="Audit - Activity",
         dataset_key="audit.events",

@@ -81,10 +81,6 @@ class TicketPermission:
     REPORT_VIEW = "tickets.report.view"
 
 
-# Platform support staff are the only users with cross-tenant ticket desk span.
-SUPPORT_USER_TYPES = {"CX_STAFF"}
-
-
 # Allowed lifecycle moves; services reject transitions outside this graph.
 VALID_STATUS_TRANSITIONS = {
     TicketStatus.OPEN: {TicketStatus.ASSIGNED, TicketStatus.IN_PROGRESS, TicketStatus.RESOLVED, TicketStatus.CLOSED},

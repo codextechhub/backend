@@ -82,7 +82,10 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     # Stable ordering keeps pagination consistent between pages.
     queryset = ImpersonationSession.objects.order_by("-started_at", "-pk").select_related(
-        "staff_user", "target_user", "tenant",
+        # ``__tenant`` on both users because the type label reads the tenant's
+        # kind now - see ImpersonationSessionSerializer._staff_type_label -
+        # and without the join that is one extra query per row, twice.
+        "staff_user__tenant", "target_user__tenant", "tenant",
     ).prefetch_related(
         Prefetch(
             "staff_user__tenant_role_assignments",

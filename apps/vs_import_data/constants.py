@@ -10,7 +10,7 @@ class ImportPermission:
     # ── Templates ─────────────────────────────────────────────────────────────
     TEMPLATE_VIEW     = "import.templates.view"
     TEMPLATE_CREATE   = "import.templates.create"
-    TEMPLATE_MANAGE   = "import.templates.manage"   # internal config, CX_STAFF
+    TEMPLATE_MANAGE   = "import.templates.manage"   # internal config, platform staff
 
     # ── Batches ───────────────────────────────────────────────────────────────
     BATCH_VIEW        = "import.batches.view"

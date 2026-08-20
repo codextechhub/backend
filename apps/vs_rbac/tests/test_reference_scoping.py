@@ -89,7 +89,7 @@ class _TwoShapedTenants(TestCase):
 
         # The other tenant whose rows must stay invisible.
         cls.rival = make_school(slug="scope-rival", name="Scope Rival")
-        cls.rival_branch = make_branch(cls.rival, name="Rival Campus")
+        cls.rival_branch = make_branch(cls.rival, name="Rival Branch")
         cls.rival_role = make_role(cls.rival, name="Rival Role")
         cls.rival_user = make_staff_user(
             cls.rival_branch, email="rival.staff@scope.test",

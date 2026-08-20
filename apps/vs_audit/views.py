@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
+import tempfile
 from datetime import timedelta
 
+from django.conf import settings
+from django.core.files import File
+from django.core.files.storage import default_storage
 from django.db.models import Count, Q, Value
 from django.db.models.functions import Concat, TruncDate, TruncHour
+from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import generics
 from rest_framework.views import APIView
@@ -13,6 +19,7 @@ from rest_framework.views import APIView
 from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, DestroyModelMixin
 from core.response import success_response, error_response
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
+from vs_tenants.models import Tenant
 
 from .models import (
     AuditEvent,
@@ -37,7 +44,23 @@ from .serializers import (
     ComplianceRuleDetailSerializer,
     ComplianceRuleCreateUpdateSerializer,
     AuditEventFilterSerializer,
+    NO_TENANT,
 )
+
+logger = logging.getLogger(__name__)
+
+# How long a produced export stays downloadable.
+EXPORT_RETENTION_DAYS = 7
+
+# Columns written by the audit CSV export, in order.
+EXPORT_CSV_HEADER = [
+    "event_id", "event_at", "module_key", "action_type",
+    "severity", "status", "actor_type", "actor_email", "actor_label",
+    "entity_type", "entity_id", "entity_label", "summary",
+]
+
+# Rows are written and measured in blocks of this size.
+_EXPORT_CHUNK = 500
 
 
 # -----------------------------------------------------------------------------
@@ -55,6 +78,15 @@ def apply_audit_event_filters(queryset, filters):
         queryset = queryset.filter(severity__in=severities)
     if statuses := filters.get("status"):
         queryset = queryset.filter(status__in=statuses)
+    if tenant_slug := filters.get("tenant_slug"):
+        # ``__none__`` is a first-class answer, not a fallback: platform
+        # operations, nightly sweeps and management commands legitimately belong
+        # to no customer, and a filter that could only narrow *to* a tenant would
+        # make every one of them unreachable from this screen.
+        if tenant_slug == NO_TENANT:
+            queryset = queryset.filter(tenant__isnull=True)
+        else:
+            queryset = queryset.filter(tenant__slug=tenant_slug)
     if actor_type := filters.get("actor_type"):
         queryset = queryset.filter(actor_type=actor_type)
     if actor_user_id := filters.get("actor_user_id"):
@@ -107,8 +139,43 @@ class AuditEventFilterOptionsView(APIView):
                 "severities": options(AuditSeverity.choices),
                 "statuses": options(AuditStatus.choices),
                 "actor_types": options(AuditActorType.choices),
+                "tenants": self._tenant_options(request),
             },
         )
+
+    def _tenant_options(self, request):
+        """The tenant roster for ``tenant_slug``, and only for platform callers.
+
+        The key that opens this endpoint is ``platform.audit.view``, but a key's
+        namespace is not the same thing as its audience: nothing in the grant
+        path stops that key being attached to a role inside a school tenant, and
+        this app's own export fixture attaches it to one. So the roster is gated
+        on the caller's tenant kind, which cannot be granted away, rather than on
+        the permission. Bright Star's audit officer opening the filter drawer
+        would otherwise be handed the name and slug of every other school on the
+        platform - Codex's customer list - which is a disclosure the Explorer
+        never made before and is not what "narrow the trail to one tenant" asks
+        for. Platform staff already see this list on the schools and proxy
+        screens, so for them it is nothing new. The gate stays correct if the
+        RBAC layer later forbids such grants outright; it just stops being the
+        only thing holding the line.
+
+        An empty list is a complete answer, not a broken one: a single-tenant
+        caller has no tenant dimension to offer, exactly as a single-branch
+        school gets no branch switcher.
+        """
+        tenant = getattr(request, "tenant", None)
+        if getattr(tenant, "kind", None) != Tenant.Kind.PLATFORM:
+            return []
+        rows = [
+            {"value": slug, "label": name}
+            for slug, name in Tenant.objects.order_by("name").values_list("slug", "name")
+        ]
+        # Platform operations, sweeps and management commands belong to nobody,
+        # and they are unreachable from this screen unless the console can offer
+        # the sentinel as a choice beside the real tenants.
+        rows.append({"value": NO_TENANT, "label": "No tenant (platform-level)"})
+        return rows
 
 
 class AuditEventListView(generics.ListAPIView):
@@ -157,7 +224,10 @@ class AuditEventListView(generics.ListAPIView):
         return Response(serializer.data)
 
     def get_queryset(self):
-        queryset = AuditEvent.objects.select_related("actor_user").all()
+        # ``tenant`` rides along because both event serializers render it as a
+        # slug. Now that the column is actually populated, leaving it out
+        # turns one query into one-per-row on a paginated screen.
+        queryset = AuditEvent.objects.select_related("actor_user", "tenant").all()
 
         # Validate incoming filters first
         filter_serializer = AuditEventFilterSerializer(data=self.request.query_params)
@@ -177,7 +247,7 @@ class AuditEventDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     """
 
     queryset = AuditEvent.objects.select_related(
-        "actor_user",
+        "actor_user", "tenant",
     ).all()
     serializer_class = AuditEventDetailSerializer
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
@@ -228,7 +298,9 @@ class MyActivityView(generics.ListAPIView):
     permission_classes = [IsAuthenticatedAndActive]
 
     def get_queryset(self):
-        qs = AuditEvent.objects.select_related("actor_user").filter(actor_user=self.request.user)
+        qs = AuditEvent.objects.select_related("actor_user", "tenant").filter(
+            actor_user=self.request.user,
+        )
 
         params = self.request.query_params
         if module_key := params.get("module_key"):
@@ -258,7 +330,7 @@ class MyActivitySubjectView(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        qs = AuditEvent.objects.select_related("actor_user").filter(
+        qs = AuditEvent.objects.select_related("actor_user", "tenant").filter(
             entity_type="User",
             entity_id=str(user.id),
         ).exclude(actor_user=user)
@@ -291,8 +363,10 @@ class EntityAuditTrailDetailView(APIView):
             entity_id=entity_id,
         )
 
+        # The whole trail is serialized in one response, so the tenant column
+        # is one join here or one query per event.
         event_qs = AuditEvent.objects.select_related(
-            "actor_user",
+            "actor_user", "tenant",
         ).filter(
             entity_type=entity_type,
             entity_id=entity_id,
@@ -322,6 +396,100 @@ class EntityAuditTrailDetailView(APIView):
 # -----------------------------------------------------------------------------
 # Audit Export Job Views
 # -----------------------------------------------------------------------------
+
+class ExportTooLarge(Exception):
+    """Raised while writing when the file passes what storage will accept.
+
+    Carries the row count reached, which is how a caller (and the test) can see
+    that generation stopped at the checkpoint rather than running to the end.
+    """
+
+    def __init__(self, rows_written: int = 0):
+        super().__init__(f"Export exceeded the storage ceiling after {rows_written} rows.")
+        self.rows_written = rows_written
+
+
+def audit_export_size_limit() -> int:
+    """Largest export the configured storage will actually accept, in bytes.
+
+    ``STORAGES["default"]`` is ``core.storage.DatabaseStorage``, which refuses
+    anything over ``MEDIA_DB_MAX_BYTES`` - and refuses it at the very end, after
+    the whole file has been generated. The same ceiling is therefore checked
+    while writing, so an oversized export is abandoned early and reported in its
+    own words rather than as a storage exception.
+    """
+    from core.storage import MAX_BYTES_DEFAULT
+
+    return getattr(settings, "MEDIA_DB_MAX_BYTES", MAX_BYTES_DEFAULT)
+
+
+def readable_byte_ceiling(limit: int) -> str:
+    """Render a byte ceiling the way an operator reads it."""
+    # Sub-megabyte ceilings in bytes: "0 MB" tells the reader nothing.
+    if limit >= 1024 * 1024:
+        return f"{limit / (1024 * 1024):.0f} MB"
+    return f"{limit:,} bytes"
+
+
+def write_audit_export_file(job, queryset, masked_fields):
+    """Write the export through the default storage; return (file_name, name, rows).
+
+    The CSV is streamed to a temporary file rather than held in memory, and the
+    value handed back is the **storage name** - the key ``default_storage``
+    chose, which is what ``AuditExportJob.file_path`` has always been documented
+    to hold. Nothing about the body ever goes into that column.
+
+    The temp file is opened in BINARY mode: storage backends read the handle
+    through ``django.core.files.File`` and write the chunks straight to their
+    destination, and a text-mode handle yields ``str`` chunks that
+    ``DatabaseStorage`` cannot put in a ``BinaryField``. ``csv`` needs a text
+    interface, so a ``TextIOWrapper`` is layered on and detached before the read.
+    """
+    file_name = f"audit_export_{job.id}.csv"
+    size_limit = audit_export_size_limit()
+    row_count = 0
+
+    with tempfile.NamedTemporaryFile(suffix=".csv") as handle:
+        text = io.TextIOWrapper(handle, encoding="utf-8", newline="", write_through=True)
+        try:
+            writer = csv.writer(text)
+            writer.writerow(EXPORT_CSV_HEADER)
+            since_check = 0
+            for event in queryset.iterator(chunk_size=_EXPORT_CHUNK):
+                actor_email = getattr(event.actor_user, "email", "") if event.actor_user else ""
+                summary = event.summary or ""
+                if "summary" in masked_fields:
+                    summary = "[REDACTED]"
+                writer.writerow([
+                    str(event.id), event.event_at.isoformat(), event.module_key,
+                    event.action_type, event.severity, event.status, event.actor_type,
+                    actor_email, event.actor_label or "", event.entity_type,
+                    event.entity_id, event.entity_label or "", summary,
+                ])
+                row_count += 1
+                since_check += 1
+                if since_check >= _EXPORT_CHUNK:
+                    since_check = 0
+                    # Stop as soon as the file passes what storage accepts, rather
+                    # than generating the rest and failing at save.
+                    text.flush()
+                    if handle.tell() > size_limit:
+                        raise ExportTooLarge(row_count)
+            text.flush()
+            if handle.tell() > size_limit:
+                raise ExportTooLarge(row_count)
+        finally:
+            # Detach so closing the wrapper never closes the temp file we are
+            # about to hand to storage.
+            text.detach()
+
+        handle.seek(0)
+        storage_name = default_storage.save(
+            f"audit-exports/{job.id}/{file_name}", File(handle, name=file_name),
+        )
+
+    return file_name, storage_name, row_count
+
 
 class AuditExportJobListView(generics.ListCreateAPIView):
     """
@@ -385,32 +553,39 @@ class AuditExportJobListView(generics.ListCreateAPIView):
             started_at=timezone.now(),
         )
 
-        buffer = io.StringIO()
-        writer = csv.writer(buffer)
-        writer.writerow([
-            "event_id", "event_at", "module_key", "action_type",
-            "severity", "status", "actor_type", "actor_email", "actor_label",
-            "entity_type", "entity_id", "entity_label", "summary",
-        ])
-        rows = 0
-        for event in qs.iterator():
-            actor_email = getattr(event.actor_user, "email", "") if event.actor_user else ""
-            summary = event.summary or ""
-            if "summary" in masked_fields:
-                summary = "[REDACTED]"
-            writer.writerow([
-                str(event.id), event.event_at.isoformat(), event.module_key, event.action_type,
-                event.severity, event.status, event.actor_type, actor_email, event.actor_label or "",
-                event.entity_type, event.entity_id, event.entity_label or "", summary,
-            ])
-            rows += 1
+        # A job that dies mid-write must not sit at RUNNING for ever, so every
+        # failure below ends in FAILED with a reason the requester can act on.
+        try:
+            file_name, storage_name, rows = write_audit_export_file(job, qs, masked_fields)
+        except ExportTooLarge:
+            ceiling = readable_byte_ceiling(audit_export_size_limit())
+            reason = (
+                f"This export is larger than the {ceiling} file limit. "
+                "Narrow the date range or filters and try again."
+            )
+            job.mark_failed(reason)
+            return error_response(
+                message=reason,
+                error={"job_id": str(job.id), "status": job.status},
+                status=413,
+            )
+        except Exception:
+            logger.exception("Audit export %s failed", job.id)
+            reason = "The export could not be generated. Try again or narrow the filters."
+            job.mark_failed(reason)
+            return error_response(
+                message=reason,
+                error={"job_id": str(job.id), "status": job.status},
+                status=500,
+            )
 
-        file_name = f"audit_export_{job.id}.csv"
+        # ``file_path`` holds the storage key the default storage chose, which is
+        # what its help text has always said it holds. The body lives in storage.
         job.mark_completed(
             row_count=rows,
             file_name=file_name,
-            file_path=buffer.getvalue(),  # inline CSV body so the frontend can download it
-            expires_in_days=7,
+            file_path=storage_name,
+            expires_in_days=EXPORT_RETENTION_DAYS,
         )
 
         return success_response(
@@ -543,6 +718,67 @@ class AuditExportJobDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.audit.export"
     lookup_field = "id"
+
+
+class AuditExportJobDownloadView(APIView):
+    """
+    GET /audit/exports/<uuid:id>/download/ - the CSV, if it is yours.
+
+    Audit exports get their own route rather than riding ``/media/<name>``.
+    ``core.views.MediaView`` authenticates the caller and nothing more: it
+    authorises by *knowledge of the storage name*, which is the capability-URL
+    model ``core.storage`` documents. That model fits a school logo, where the
+    name is only ever handed to somebody already allowed to see the record it
+    hangs off. It does not fit an audit CSV, which carries every actor, every
+    target and every summary the filters allowed, across tenants. Under
+    ``MediaView`` any authenticated account on the platform - a parent, a
+    teacher, a suspended-but-not-deactivated staff member - reads the whole
+    trail the moment the name reaches them, and the capability can never be
+    withdrawn or expired.
+
+    So this route asks two questions ``MediaView`` cannot:
+
+    * does the caller hold ``platform.audit.export`` - the same key the Event
+      Explorer's own export surface requires; and
+    * is this the caller's own job? ``AuditExportJob`` has no tenant column, so
+      the requester is what bounds it, and a requester belongs to exactly one
+      tenant. Somebody else's export is a 404, not a 403: whether another
+      tenant ran an export at all is not this caller's business.
+
+    Expiry and a missing file are answered here too, because both are true of
+    the file rather than of the caller.
+
+    docstring-name: Audit export jobs
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.audit.export"
+
+    def get(self, request, id):
+        job = AuditExportJob.objects.filter(id=id, requested_by=request.user).first()
+        if job is None:
+            return error_response(message="Export job not found.", status=404)
+        if job.status != ExportJobStatus.COMPLETED:
+            return error_response(
+                message="This export is not ready to download.",
+                status=409,
+            )
+        if job.is_expired:
+            return error_response(
+                message="This export file has expired. Run the export again.",
+                status=410,
+            )
+        if not job.file_path or not default_storage.exists(job.file_path):
+            return error_response(
+                message="The export file is no longer available.",
+                status=404,
+            )
+        return FileResponse(
+            default_storage.open(job.file_path, "rb"),
+            as_attachment=True,
+            filename=job.file_name or f"audit_export_{job.id}.csv",
+            content_type="text/csv; charset=utf-8",
+        )
 
 
 # -----------------------------------------------------------------------------

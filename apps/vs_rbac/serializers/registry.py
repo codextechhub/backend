@@ -13,6 +13,7 @@ from ..models import (
     PermissionGroup,
     PermissionModule,
     PermissionResource,
+    PermissionScope,
     TenantRoleGroup,
     TenantRoleTemplate,
 )
@@ -361,6 +362,17 @@ class PermissionGroupDetailSerializer(
     @transaction.atomic
     def create(self, validated_data):
         permission_keys = validated_data.pop("permission_keys", [])
+        # ``scope`` is not on this serializer, and the field has no model
+        # default, so without this every group built through the API was
+        # created unclassified - and ``TenantRoleGroup`` refuses to attach an
+        # unclassified bundle to a role inside a tenant. The bundle was
+        # therefore unusable by the only people who can build one.
+        #
+        # TENANT is the only honest default here: ``GroupPermission`` already
+        # refuses to put a PLATFORM-scoped key in a group that is not declared
+        # PLATFORM, so this endpoint could never have produced a platform
+        # bundle anyway. Platform bundles are seeded, not posted.
+        validated_data.setdefault("scope", PermissionScope.TENANT)
         group = PermissionGroup.objects.create(**validated_data)
 
         if permission_keys:
