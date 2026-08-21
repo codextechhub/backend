@@ -82,13 +82,22 @@ class SchoolStatsView(generics.GenericAPIView):
     Returns a single summary payload with school counts broken down
     by status. Designed for the School Management dashboard stat cards.
 
-    Response shape:
+    Response shape - ``all`` plus one lower-cased key per member of
+    :class:`SchoolStatus`, so the four counts below grow with the enum:
         {
-            "all":      47,
-            "active":   32,
-            "pending":  8,
-            "inactive": 7
+            "all":       47,
+            "active":    32,
+            "inactive":   7,
+            "pending":    8,
+            "suspended":  0
         }
+
+    Built from the choices rather than listed by hand. The hand-written version
+    named ACTIVE, PENDING and INACTIVE and omitted SUSPENDED, which had been
+    added to the enum afterwards - so the one tab whose figure was missing had to
+    fetch its own count with a second request, and any status added next would
+    have gone the same way in silence. Deriving it means a new status is counted
+    the moment it exists.
 
     One DB query using conditional aggregation - no N+1.
 
@@ -102,9 +111,10 @@ class SchoolStatsView(generics.GenericAPIView):
 
         result = School.objects.aggregate(
             all=Count("slug"),
-            active=Count("slug", filter=Q(status=SchoolStatus.ACTIVE)),
-            pending=Count("slug", filter=Q(status=SchoolStatus.PENDING)),
-            inactive=Count("slug", filter=Q(status=SchoolStatus.INACTIVE)),
+            **{
+                value.lower(): Count("slug", filter=Q(status=value))
+                for value in SchoolStatus.values
+            },
         )
 
         return success_response(message="School statistics retrieved.", data=result)
