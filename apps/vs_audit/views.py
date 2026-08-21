@@ -34,6 +34,11 @@ from .models import (
     ExportJobStatus,
     ExportFormat,
 )
+from .scoping import (
+    audit_scope_predicate,
+    scope_events_to_caller,
+    visible_trail_counters,
+)
 from .serializers import (
     AuditEventListSerializer,
     AuditEventDetailSerializer,
@@ -66,72 +71,9 @@ _EXPORT_CHUNK = 500
 # -----------------------------------------------------------------------------
 # Who may read an audit row
 # -----------------------------------------------------------------------------
-
-def audit_scope_predicate(request):
-    """The ``Q`` confining an ``AuditEvent`` read to the caller's own tenant.
-
-    Returns ``None`` for a platform-tenant caller, who reads across tenants by
-    construction: that is what the console exists for, and it is the one
-    audience the key's ``platform.`` namespace actually describes.
-
-    Everyone else is confined. ``platform.audit.view`` is deliberately
-    ``PermissionScope.TENANT`` - ``vs_rbac.models.PermissionScope`` and
-    ``seed_platform_permissions.TENANT_HOLDABLE_KEYS`` both say it belongs to
-    "audit officers working inside a tenant" - so holding the key says nothing
-    about whose rows the holder may read. Only the queryset can say that, and
-    until now it did not: Bright Star's audit officer opening the Event Explorer
-    was handed Greenfield's purchase-order approvals, Greenfield's staff names
-    and Greenfield's password resets. The ``tenant_slug`` filter is a narrowing
-    convenience, not a boundary - it narrows if she asks and does nothing if she
-    does not.
-
-    **Why the null-tenant arm exists.** ``AuditEvent.tenant`` is nullable and
-    only started being populated in d1ceccb (2026-08-19), which deliberately did
-    not backfill. A closed historical set of rows therefore sits at
-    ``tenant = NULL`` while still recording the owning tenant's pk in
-    ``metadata['tenant_id']``. Matching on the column alone would hide Bright
-    Star's own history from Bright Star's auditor; widening to every null row
-    would hand her Greenfield's. Matching the id recorded at the time returns
-    exactly the rows that are hers, recovered rather than inferred.
-
-    **The null set here is wider than the identity stream's.** This queryset
-    covers every module, and only three writers ever recorded that id:
-    ``vs_user.services.audit.log_auth_event`` (since 661a73a, the whole IDENTITY
-    stream), ``vs_rbac.signals`` and ``vs_rbac.services`` (role assignments,
-    role templates and permission changes). Finance, procurement, payments,
-    imports and the rest never did, so their pre-d1ceccb rows carry no id and
-    stay platform-only. Post-d1ceccb rows written under a PLATFORM assertion are
-    also null on purpose (see :func:`~vs_audit.services.resolve_event_tenant`)
-    and stay platform-only too. Both are the safe direction to be wrong in: a
-    school sees less of its own history than it might, never another school's.
-
-    The gate is the caller's *home* tenant kind, which no grant and no
-    ``?tenant=`` can change. Under impersonation ``request.user`` is the
-    effective (target) user, so a Codex staffer proxied as a Bright Star account
-    is confined to Bright Star - which is what being proxied means.
-    """
-    user = getattr(request, "user", None)
-    home = getattr(user, "tenant", None)
-    if getattr(home, "kind", None) == Tenant.Kind.PLATFORM:
-        return None
-
-    tenant = getattr(request, "tenant", None) or home
-    if tenant is None:
-        # A caller who is inside no tenant cannot be inside this one. Every
-        # authenticated request carries a tenant today, so this is unreachable;
-        # it fails closed so that it stays unreachable if that ever changes.
-        return Q(pk__in=[])
-
-    return (
-        Q(tenant=tenant)
-        | Q(tenant__isnull=True, metadata__tenant_id=str(tenant.pk))
-    )
-
-
-def scope_events_to_caller(queryset, request):
-    """Confine an ``AuditEvent`` queryset with :func:`audit_scope_predicate`."""
-    predicate = audit_scope_predicate(request)
-    return queryset if predicate is None else queryset.filter(predicate)
+# The predicate itself moved to ``vs_audit.scoping`` so the Export Centre dataset
+# can read the same one without importing this module. It is re-exported here
+# because every view below already reads it under these names.
 
 
 def scope_export_jobs_to_caller(queryset, request):
@@ -401,7 +343,33 @@ class EntityAuditTrailListView(generics.ListAPIView):
             qs = qs.filter(
                 Q(entity_id__icontains=search) | Q(entity_label__icontains=search)
             )
+        # Ordered on the stored ``last_event_at`` because that column is indexed
+        # and the boundary above has already decided membership. It can only
+        # disagree with the caller's own last event on a trail whose events span
+        # two tenants, which no (entity_type, entity_id) pair in this database
+        # does - since 65fdfb4 put school and branch trails on primary keys,
+        # business ids are unique per table and cannot collide at all.
         return qs.order_by("-last_event_at")
+
+    def list(self, request, *args, **kwargs):
+        from rest_framework.response import Response
+
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        trails = page if page is not None else list(queryset)
+
+        # One grouped query for the whole page, never one per row: the counters
+        # on each trail are a rollup over every tenant's events, and a list
+        # endpoint is the last place to ask that question row by row.
+        ctx = {
+            **self.get_serializer_context(),
+            "visible_counters": visible_trail_counters(trails, request),
+        }
+        serializer = self.get_serializer(trails, many=True, context=ctx)
+
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
 
 
 class MyActivityView(generics.ListAPIView):
@@ -500,19 +468,38 @@ class EntityAuditTrailDetailView(APIView):
             request,
         )
 
+        # Materialised once and reused: the rows decide the 404, they are the
+        # response body, and they are the counters. Asking exists() first and
+        # then selecting the same rows was one query more than this page needs.
+        events = list(event_qs.order_by("-event_at"))
+
         trail = trail_qs.first()
-        if not trail or not event_qs.exists():
+        if not trail or not events:
             return error_response(
                 message="No audit trail found for this entity.",
                 status=404,
             )
 
+        # The header must agree with the list under it. The stored rollup counts
+        # every tenant's events on this entity, so a tenant caller is answered
+        # from the rows they were just handed - which costs no query at all,
+        # they are already in memory. A platform caller gets no context and so
+        # keeps the global rollup.
+        counters = None
+        if audit_scope_predicate(request) is not None:
+            counters = {
+                (trail.entity_type, trail.entity_id): {
+                    "event_count": len(events),
+                    "first_event_at": min(event.event_at for event in events),
+                    "last_event_at": max(event.event_at for event in events),
+                }
+            }
+
         data = {
-            "trail": EntityAuditTrailSerializer(trail).data,
-            "events": AuditEventListSerializer(
-                event_qs.order_by("-event_at"),
-                many=True,
+            "trail": EntityAuditTrailSerializer(
+                trail, context={"visible_counters": counters},
             ).data,
+            "events": AuditEventListSerializer(events, many=True).data,
         }
 
         return success_response(

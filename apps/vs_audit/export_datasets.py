@@ -28,10 +28,25 @@ from vs_exports.catalogue import (
 
 
 # Build the tenant-scoped base queryset for audit events.
+#
+# The boundary is ``vs_audit.scoping.tenant_event_predicate``, the same one the
+# Event Explorer and every other audit surface reads, rather than a second copy
+# spelled ``filter(tenant=scope.tenant)``. That copy was narrower: it matched the
+# column alone and missed the pre-d1ceccb rows that carry their owner's pk in
+# ``metadata['tenant_id']``. Bright Star's audit officer saw her old password
+# resets on the screen, exported that same view, and they were not in the file.
+#
+# Only the boundary is shared, not the console's widening for PLATFORM callers:
+# an export always covers your own organisation, which is exactly what
+# ``_translate_events`` tells a platform reviewer who narrowed the screen with
+# ``tenant_slug``. So this reads the predicate directly and never
+# ``audit_scope_predicate``. Codex is a tenant like any other here, and recovers
+# its own pre-backfill rows the same way every school does.
 def _audit_events(scope):
     from .models import AuditEvent
+    from .scoping import tenant_event_predicate
 
-    return AuditEvent.objects.filter(tenant=scope.tenant)
+    return AuditEvent.objects.filter(tenant_event_predicate(scope.tenant))
 
 
 _SEVERITY = choice_labels("vs_audit.models.AuditSeverity")

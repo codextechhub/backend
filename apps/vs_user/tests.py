@@ -279,7 +279,9 @@ class JobAttributionTests(TestCase):
         from vs_user.services.password import PasswordService
 
         with mock.patch("vs_user.tasks.send_password_reset_email_task.delay") as delay:
-            PasswordService.request_reset(email=self.subject.email)
+            PasswordService.request_reset(
+                email=self.subject.email, tenant=self.subject.tenant.slug,
+            )
         kwargs = self._queued_kwargs(delay)
         # SELF origin: the subject *is* the actor, so the row is theirs.
         self.assertEqual(kwargs["_job_owner_id"], str(self.subject.id))
@@ -792,17 +794,23 @@ class LoginLockoutOracleTests(TestCase):
     def test_wrong_password_on_locked_account_says_invalid_credentials(self):
         self._lock()
         with self.assertRaises(ValueError) as ctx:
-            LoginService.login(self.user.email, "wrong-password")
+            LoginService.login(
+                self.user.email, "wrong-password", tenant=self.user.tenant.slug,
+            )
         self.assertEqual(ctx.exception.args[0]["code"], "INVALID_CREDENTIALS")
 
     def test_correct_password_on_locked_account_reveals_lock(self):
         self._lock()
         with self.assertRaises(ValueError) as ctx:
-            LoginService.login(self.user.email, self.password)
+            LoginService.login(
+                self.user.email, self.password, tenant=self.user.tenant.slug,
+            )
         self.assertEqual(ctx.exception.args[0]["code"], "ACCOUNT_LOCKED")
 
     def test_successful_login_returns_tokens(self):
-        result = LoginService.login(self.user.email, self.password)
+        result = LoginService.login(
+            self.user.email, self.password, tenant=self.user.tenant.slug,
+        )
         self.assertIn("access", result)
         self.assertIn("refresh", result)
         self.assertTrue(
@@ -815,7 +823,9 @@ class FailedAttemptAuditTests(TestCase):
 
     def test_unknown_email_is_recorded_as_entered(self):
         with self.assertRaises(ValueError):
-            LoginService.login("ghost@nowhere.test", "whatever")
+            LoginService.login(
+                "ghost@nowhere.test", "whatever", tenant=platform_tenant().slug,
+            )
         attempt = AuthAttempt.objects.latest("id")
         self.assertEqual(attempt.email_entered, "ghost@nowhere.test")
         self.assertEqual(attempt.result, AuthAttempt.Result.FAIL)
@@ -823,7 +833,9 @@ class FailedAttemptAuditTests(TestCase):
     def test_known_email_wrong_password_recorded(self):
         user = make_cx_user()
         with self.assertRaises(ValueError):
-            LoginService.login(user.email, "wrong-password")
+            LoginService.login(
+                user.email, "wrong-password", tenant=user.tenant.slug,
+            )
         attempt = AuthAttempt.objects.latest("id")
         self.assertEqual(attempt.email_entered, user.email)
 
@@ -834,8 +846,12 @@ class SessionScopedLogoutTests(TestCase):
     def setUp(self):
         self.password = "Str0ng!pass123"
         self.user = make_cx_user(password=self.password)
-        self.device_a = LoginService.login(self.user.email, self.password)
-        self.device_b = LoginService.login(self.user.email, self.password)
+        self.device_a = LoginService.login(
+            self.user.email, self.password, tenant=self.user.tenant.slug,
+        )
+        self.device_b = LoginService.login(
+            self.user.email, self.password, tenant=self.user.tenant.slug,
+        )
         self.assertEqual(
             LoginSession.objects.filter(user=self.user, is_active=True).count(), 2
         )
@@ -876,8 +892,12 @@ class SelfServiceSecurityScopeTests(TestCase):
         self.password = "Str0ng!pass123"
         self.user = make_cx_user(email="my-security@codex.test", password=self.password)
         self.other = make_cx_user(email="other-security@codex.test", password=self.password)
-        self.own_login = LoginService.login(self.user.email, self.password)
-        self.other_login = LoginService.login(self.other.email, self.password)
+        self.own_login = LoginService.login(
+            self.user.email, self.password, tenant=self.user.tenant.slug,
+        )
+        self.other_login = LoginService.login(
+            self.other.email, self.password, tenant=self.other.tenant.slug,
+        )
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 
@@ -936,7 +956,9 @@ class SelfServiceSecurityScopeTests(TestCase):
         self.assertTrue(LoginSession.all_objects.get(pk=self.other_login["session_id"]).is_active)
 
     def test_end_other_mine_preserves_current_session_and_revokes_the_rest(self):
-        second_own_login = LoginService.login(self.user.email, self.password)
+        second_own_login = LoginService.login(
+            self.user.email, self.password, tenant=self.user.tenant.slug,
+        )
 
         response = self.client.post(
             "/v1/user/sessions/end-other-mine/",
@@ -996,7 +1018,9 @@ class SchoolBrandingPayloadTests(TestCase):
 
     def _login(self, user, password):
         request = self.factory.post("/v1/user/auth/login/")
-        return LoginService.login(user.email, password, request=request)
+        return LoginService.login(
+            user.email, password, tenant=user.tenant.slug, request=request,
+        )
 
     def _me(self, user):
         client = APIClient()
@@ -1127,7 +1151,11 @@ class EmailFailureResilienceTests(TestCase):
 
         user = make_cx_user(email="reset-smtp@codex.test")
         with mock.patch("vs_notifications.tasks.send_email", side_effect=self._smtp_down):
-            resp = self.client.post(self.RESET_URL, {"email": user.email}, format="json")
+            resp = self.client.post(
+                self.RESET_URL,
+                {"email": user.email, "tenant": user.tenant.slug},
+                format="json",
+            )
 
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(
@@ -1148,7 +1176,11 @@ class EmailFailureResilienceTests(TestCase):
             tasks.send_password_reset_email_task, "delay",
             side_effect=Exception("broker connection refused"),
         ), mock.patch("vs_notifications.tasks.send_email", side_effect=self._smtp_down):
-            resp = self.client.post(self.RESET_URL, {"email": user.email}, format="json")
+            resp = self.client.post(
+                self.RESET_URL,
+                {"email": user.email, "tenant": user.tenant.slug},
+                format="json",
+            )
 
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(
@@ -2089,20 +2121,32 @@ class SignInTenantScopeTests(TestCase):
     def _latest_attempt(self):
         return AuthAttempt.all_objects.latest("id")
 
-    # ── The optional path stays exactly as it was ────────────────────────────
+    # ── A sign-in that names no tenant is refused ────────────────────────────
+    #
+    # These two used to assert the opposite: while the switch was off a
+    # tenantless sign-in resolved by a global email lookup, and the comment
+    # here said "the two live frontends send no tenant; neither may break".
+    # Both now do send one, the switch is on, and the refusal is the point.
 
-    def test_tenant_user_signs_in_with_no_tenant_supplied(self):
-        """The two live frontends send no tenant; neither may break."""
-        result = self._login(self.ada.email, self.password)
+    def test_tenant_user_is_refused_when_no_tenant_is_supplied(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._login(self.ada.email, self.password)
 
-        self.assertIn("access", result)
-        self.assertEqual(result["tenant"]["slug"], self.bright_star.slug)
+        self.assertEqual(ctx.exception.args[0]["code"], "INVALID_CREDENTIALS")
 
-    def test_cx_staff_signs_in_with_no_tenant_supplied(self):
-        result = self._login(self.cx.email, self.password)
+    def test_cx_staff_is_refused_when_no_tenant_is_supplied(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._login(self.cx.email, self.password)
 
-        self.assertIn("access", result)
-        self.assertIsNone(result["school"])
+        self.assertEqual(ctx.exception.args[0]["code"], "INVALID_CREDENTIALS")
+
+    def test_the_refusal_for_a_missing_tenant_is_audited_as_such(self):
+        """Support has to tell "signed in at the wrong address" from "wrong
+        password", and the caller must not be able to tell them apart."""
+        with self.assertRaises(ValueError):
+            self._login(self.ada.email, self.password)
+
+        self.assertEqual(self._latest_attempt().failure_code, "TENANT_REQUIRED")
 
     # ── The scoped path ──────────────────────────────────────────────────────
 
@@ -2314,8 +2358,16 @@ class PasswordResetTenantScopeTests(TestCase):
 
         self.assertFalse(self._resets().exists())
 
-    def test_reset_with_no_tenant_behaves_as_today(self):
+    def test_reset_with_no_tenant_is_refused(self):
+        """It used to fall back to a global email lookup, which is how a reset
+        asked for at Greenfield could rewrite the Bright Star password."""
         self._request()
+
+        self.assertFalse(self._resets().exists())
+
+    def test_reset_with_no_tenant_still_resolved_globally_while_the_switch_is_off(self):
+        with _tenant_required(False):
+            self._request()
 
         self.assertEqual(self._resets().count(), 1)
 
@@ -2519,7 +2571,10 @@ class EmailCaseNormalizationTests(TestCase):
         )
         request = RequestFactory().post("/v1/user/auth/login/")
 
-        result = LoginService.login("  ADA.Okoye@Example.TEST ", password, request=request)
+        result = LoginService.login(
+            "  ADA.Okoye@Example.TEST ", password,
+            tenant=self.bright_star.tenant.slug, request=request,
+        )
 
         self.assertIn("access", result)
         self.assertEqual(result["user"]["email"], ada.email)
@@ -2531,7 +2586,9 @@ class EmailCaseNormalizationTests(TestCase):
         ada = make_school_admin(self.bright_star, email="ada.okoye@example.test")
 
         with mock.patch("vs_user.tasks.send_password_reset_email_task"):
-            PasswordService.request_reset(email="ADA.Okoye@Example.TEST")
+            PasswordService.request_reset(
+                email="ADA.Okoye@Example.TEST", tenant=self.bright_star.tenant.slug,
+            )
 
         self.assertEqual(PasswordResetRequest.objects.filter(user=ada).count(), 1)
 
@@ -2908,15 +2965,20 @@ class EmailUniquePerTenantTests(TestCase):
 
 
 class CrossTenantEmailGuardTests(TestCase):
-    """Until sign-in names its tenant, a second tenant's copy is refused.
+    """While sign-in does not name its tenant, a second tenant's copy is refused.
 
     Uniqueness is per tenant now, so ada.okoye@example.test may legally exist
     at Bright Star AND at Greenfield. Sign-in can only tell those two apart
-    when the request names the tenant, and REQUIRE_TENANT_ON_SIGN_IN is still
-    False because neither frontend sends one. Without this guard the ordering
-    that keeps Ada safe would live only in a plan document: create the pair
-    early and she is signed in to whichever school the unscoped lookup returns
-    first, with her own password, and nothing in any log looks wrong.
+    when the request names the tenant. Without this guard the ordering that
+    keeps Ada safe would live only in a plan document: create the pair while
+    sign-in is unscoped and she is signed in to whichever school the lookup
+    returns first, with her own password, and nothing in any log looks wrong.
+
+    REQUIRE_TENANT_ON_SIGN_IN is now on, so the guard stands down in
+    production and the refusal cases below force it off for their block. Each
+    test therefore pins the mode it is about, rather than inheriting whatever
+    the module constant currently says - which is what let this whole class go
+    red the moment the constant moved.
     """
 
     def setUp(self):
@@ -2932,14 +2994,14 @@ class CrossTenantEmailGuardTests(TestCase):
     # ── refused while the switch is off ──────────────────────────────────────
 
     def test_a_second_tenants_copy_is_refused(self):
-        with self.assertRaises(DjangoValidationError) as ctx:
+        with _tenant_required(False), self.assertRaises(DjangoValidationError) as ctx:
             self._second_copy()
 
         self.assertIn("email", ctx.exception.error_dict)
 
     def test_it_is_refused_on_the_path_that_never_calls_full_clean(self):
         """objects.create() goes straight to save(); the guard sits there too."""
-        with self.assertRaises(DjangoValidationError):
+        with _tenant_required(False), self.assertRaises(DjangoValidationError):
             User.objects.create(
                 email="ada.okoye@example.test", first_name="Ada", last_name="Okoye",
                 status="ACTIVE",
@@ -2947,18 +3009,18 @@ class CrossTenantEmailGuardTests(TestCase):
             )
 
     def test_a_case_variant_at_another_tenant_is_refused_too(self):
-        with self.assertRaises(DjangoValidationError):
+        with _tenant_required(False), self.assertRaises(DjangoValidationError):
             make_school_admin(self.greenfield, email="ADA.Okoye@Example.TEST")
 
     def test_moving_an_existing_account_onto_the_address_is_refused(self):
         mover = make_school_admin(self.greenfield, email="tunde@example.test")
         mover.email = "ada.okoye@example.test"
 
-        with self.assertRaises(DjangoValidationError):
+        with _tenant_required(False), self.assertRaises(DjangoValidationError):
             mover.save()
 
     def test_nothing_is_written_when_it_refuses(self):
-        with self.assertRaises(DjangoValidationError):
+        with _tenant_required(False), self.assertRaises(DjangoValidationError):
             self._second_copy()
 
         self.assertEqual(
@@ -2969,7 +3031,7 @@ class CrossTenantEmailGuardTests(TestCase):
 
     def test_the_refusal_does_not_name_the_other_tenant(self):
         """Greenfield's admin must not learn that Bright Star has this parent."""
-        with self.assertRaises(DjangoValidationError) as ctx:
+        with _tenant_required(False), self.assertRaises(DjangoValidationError) as ctx:
             self._second_copy()
 
         message = " ".join(ctx.exception.messages).lower()
@@ -2980,7 +3042,7 @@ class CrossTenantEmailGuardTests(TestCase):
     def test_the_refusal_is_the_shared_message(self):
         from vs_user.models import CROSS_TENANT_EMAIL_REFUSAL
 
-        with self.assertRaises(DjangoValidationError) as ctx:
+        with _tenant_required(False), self.assertRaises(DjangoValidationError) as ctx:
             self._second_copy()
 
         self.assertEqual(ctx.exception.messages, [CROSS_TENANT_EMAIL_REFUSAL])
@@ -2988,7 +3050,7 @@ class CrossTenantEmailGuardTests(TestCase):
     def test_a_same_tenant_duplicate_gets_the_duplicate_message_not_this_one(self):
         from vs_user.models import CROSS_TENANT_EMAIL_REFUSAL
 
-        with self.assertRaises(DjangoValidationError) as ctx:
+        with _tenant_required(False), self.assertRaises(DjangoValidationError) as ctx:
             make_school_admin(self.bright_star, email="ada.okoye@example.test")
 
         self.assertNotIn(CROSS_TENANT_EMAIL_REFUSAL, ctx.exception.messages)
@@ -3333,9 +3395,20 @@ class ScopedEmailLookupTests(TestCase):
         from vs_user.models import CROSS_TENANT_EMAIL_REFUSAL
         from vs_user.services.email_availability import email_refusal
 
+        with _tenant_required(False):
+            self.assertEqual(
+                email_refusal("ada.okoye@example.test", tenant=self.greenfield.tenant),
+                CROSS_TENANT_EMAIL_REFUSAL,
+            )
+
+    def test_the_helper_permits_the_second_copy_once_the_switch_is_on(self):
+        """The mirror has to follow the model in BOTH directions, or Greenfield
+        is refused Ada's second account by a stale pre-check."""
+        from vs_user.services.email_availability import email_refusal
+
         self.assertEqual(
             email_refusal("ada.okoye@example.test", tenant=self.greenfield.tenant),
-            CROSS_TENANT_EMAIL_REFUSAL,
+            "",
         )
 
     def test_the_helper_ignores_the_account_being_renamed(self):
@@ -3740,7 +3813,7 @@ class ScopedEmailLookupSchoolCreateTests(TestCase):
     def test_it_is_still_refused_while_the_switch_is_off(self):
         from rest_framework.exceptions import ValidationError as DRFValidationError
 
-        with self.assertRaises(DRFValidationError) as ctx:
+        with _tenant_required(False), self.assertRaises(DRFValidationError) as ctx:
             self._create()
 
         self.assertIn("primary_admin_data", ctx.exception.detail)
@@ -4028,7 +4101,7 @@ class ParentAtTwoSchoolsEndToEndTests(TestCase):
         self._create_parent(
             self.bright_star_head, self.bright_star_branch, "Br1ghtStar!pass",
         )
-        with self.assertRaises(DRFValidationError) as ctx:
+        with _tenant_required(False), self.assertRaises(DRFValidationError) as ctx:
             self._create_parent(
                 self.greenfield_head, self.greenfield_branch, "Gr33nfield!pass",
             )

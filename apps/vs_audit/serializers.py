@@ -147,8 +147,25 @@ class AuditEventDetailSerializer(serializers.ModelSerializer):
 # -----------------------------------------------------------------------------
 
 class EntityAuditTrailSerializer(serializers.ModelSerializer):
-    """
-    Serializer for the summary trail table/model.
+    """Serializer for the summary trail table/model.
+
+    ``event_count``, ``first_event_at`` and ``last_event_at`` are a *stored*
+    rollup. ``EntityAuditTrail`` is keyed on ``(entity_type, entity_id)`` with no
+    tenant column, so those three numbers count every event ever written against
+    the entity, from every tenant, whether or not the reader may open a single
+    one of them.
+
+    When the view puts ``visible_counters`` in the context (see
+    :func:`vs_audit.scoping.visible_trail_counters`) the three are answered from
+    it instead, so a tenant caller is told the size of the trail they can
+    actually read and the header agrees with the events listed under it. A
+    platform caller gets no such context and keeps the stored rollup, which is
+    the global figure their console exists to show.
+
+    The stored row is never mutated to do this: the counters are overwritten in
+    the outgoing representation, so nothing that later saves an instance handed
+    out by a read endpoint can write a tenant's partial count back over the
+    rollup.
     """
 
     class Meta:
@@ -162,6 +179,25 @@ class EntityAuditTrailSerializer(serializers.ModelSerializer):
             "first_event_at",
             "last_event_at",
         )
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+
+        counters = self.context.get("visible_counters")
+        if counters is None:
+            return data
+
+        # A trail with no key here is one the caller can read no event on. That
+        # is zero, not the rollup: falling back to the stored number is exactly
+        # the disclosure this exists to close.
+        visible = counters.get((instance.entity_type, instance.entity_id)) or {}
+        data["event_count"] = visible.get("event_count", 0)
+        for field_name in ("first_event_at", "last_event_at"):
+            value = visible.get(field_name)
+            data[field_name] = (
+                self.fields[field_name].to_representation(value) if value else None
+            )
+        return data
 
 
 class EntityAuditTrailDetailSerializer(serializers.Serializer):

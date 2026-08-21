@@ -5,8 +5,10 @@ from unittest import mock
 
 from django.core.files.storage import default_storage
 from django.core.management import call_command
+from django.db import connection
 from django.http import QueryDict
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from core.models import StoredFile
@@ -29,6 +31,7 @@ from .models import (
     AuditModuleKey,
     AuditSeverity,
     AuditStatus,
+    EntityAuditTrail,
     ExportFormat,
     ExportJobStatus,
 )
@@ -1235,3 +1238,278 @@ class AuditExportTenantIsolationTests(AuditTenantIsolationFixture, TestCase):
         response = self.bright.get(f"/v1/audit/exports/{cx_job.id}/")
 
         self.assertEqual(response.status_code, 404)
+
+
+# -----------------------------------------------------------------------------
+# One answer to "which rows are mine": the Explorer and the Export Centre
+# -----------------------------------------------------------------------------
+
+class ExportCentreDatasetScopeTests(AuditTenantIsolationFixture, TestCase):
+    """The Export Centre dataset must answer the question the Explorer answered.
+
+    1da5c2a bounded every read in ``vs_audit.views`` with a predicate that
+    recovers a tenant's pre-d1ceccb rows through ``metadata['tenant_id']``. The
+    ``audit.events`` dataset kept a second, narrower boundary of its own -
+    ``filter(tenant=scope.tenant)`` - so Bright Star's officer read her old
+    password resets on the screen, exported that same view, and opened a file
+    they were missing from.
+    """
+
+    def setUp(self):
+        self.build()
+        # Codex owns rows in both shapes too. It is a tenant like any other as
+        # far as the boundary is concerned; only the *console* widens for it.
+        self.cx_current = self._event("PO-CX-1", tenant=self.platform)
+        self.cx_legacy = self._event("PO-CX-2", owner=self.platform)
+        self.bright = TenantAPIClient(self.bright_officer)
+
+    def _dataset_rows(self, tenant):
+        from vs_exports.catalogue import ScopeContext, get_dataset
+
+        rows = get_dataset("audit.events").base(ScopeContext(tenant=tenant))
+        return set(
+            rows.filter(entity_type="PurchaseOrder").values_list("entity_id", flat=True)
+        )
+
+    def test_the_file_carries_exactly_what_the_explorer_showed(self):
+        """The whole point: one question, one answer, on both screens."""
+        on_screen = self.entity_ids(self.bright.get("/v1/audit/events/", dict(self.FILTER)))
+        in_the_file = self._dataset_rows(self.bright_star)
+
+        self.assertEqual(in_the_file, on_screen)
+        self.assertEqual(in_the_file, self.OWN_ROWS)
+
+    def test_the_pre_backfill_rows_are_in_the_file_too(self):
+        """PO-BRIGHT-2 sits at tenant=NULL and is recovered by the recorded pk.
+
+        This is the row the old ``filter(tenant=...)`` dropped, and it is the
+        shape most of a school's identity history is still in.
+        """
+        self.assertIsNone(self.bright_legacy.tenant_id)
+        self.assertIn("PO-BRIGHT-2", self._dataset_rows(self.bright_star))
+
+    def test_the_file_still_carries_no_other_tenants_rows(self):
+        rows = self._dataset_rows(self.bright_star)
+
+        self.assertNotIn("PO-GREEN-1", rows)
+        self.assertNotIn("PO-GREEN-2", rows)
+        # Written before anyone recorded an owner: it belongs to nobody, so it
+        # stays platform-only rather than falling to whoever asks first.
+        self.assertNotIn("PO-ANON", rows)
+
+    def test_a_platform_export_still_covers_only_its_own_organisation(self):
+        """An export is your own organisation, however wide your console is.
+
+        The reviewer's *screen* lists every tenant's events; her export never
+        did and still does not - ``_translate_events`` tells her so when she
+        narrows the screen with ``tenant_slug``. The boundary is shared, the
+        console's widening is not.
+
+        The one deliberate change for a platform caller: codex now recovers its
+        own pre-backfill rows (PO-CX-2) exactly as every school does. Leaving
+        that out would have meant codex's own IT lead exporting her own trail
+        and finding her June password reset missing, while Bright Star's officer
+        exporting the same period got hers.
+        """
+        rows = self._dataset_rows(self.platform)
+
+        self.assertEqual(rows, {"PO-CX-1", "PO-CX-2"})
+        self.assertNotIn("PO-BRIGHT-1", rows)
+        self.assertNotIn("PO-GREEN-1", rows)
+
+    def test_both_surfaces_read_the_same_function(self):
+        """Not "the same predicate today" - literally the same callable.
+
+        A second copy is what created this defect, so the regression that
+        matters is a second copy reappearing.
+        """
+        import inspect
+
+        from . import export_datasets, scoping, views
+
+        self.assertIs(views.audit_scope_predicate, scoping.audit_scope_predicate)
+        self.assertIn(
+            "tenant_event_predicate",
+            inspect.getsource(export_datasets._audit_events),
+        )
+
+
+# -----------------------------------------------------------------------------
+# The trail counters must be honest for whoever is asking
+# -----------------------------------------------------------------------------
+
+class EntityTrailCounterFixture(AuditTenantIsolationFixture):
+    """One entity that two tenants have both audited.
+
+    No ``(entity_type, entity_id)`` pair in the live database is in this state -
+    622 registry-keyed events exist and exactly 2 were written under a tenant,
+    both codex's - and since 65fdfb4 put school and branch trails on primary
+    keys, business ids are unique per table and cannot collide at all. So this
+    is the shape the rollup is *wrong* for, built deliberately, because the
+    number a school is shown has to be honest before the case arrives rather
+    than after.
+
+    ``Permission`` is the entity type a second tenant could plausibly share: a
+    permission key is global, and both schools' role edits land on the same row.
+    """
+
+    SHARED = ("Permission", "finance.invoice.view")
+
+    def build_shared_trail(self):
+        self.bright_seen = [self._registry_event(self.bright_star) for _ in range(2)]
+        self.green_seen = [self._registry_event(self.greenfield) for _ in range(3)]
+        # Written before anyone recorded an owner - in nobody's count but the
+        # platform's, which is the same rule the events themselves follow.
+        self.nobodys = self._registry_event(None)
+
+    def _registry_event(self, owner):
+        event = emit_audit_event(
+            module_key=AuditModuleKey.RBAC,
+            action_type=AuditActionType.UPDATE,
+            severity=AuditSeverity.INFO,
+            status=AuditStatus.SUCCESS,
+            tenant=owner,
+            entity_type=self.SHARED[0],
+            entity_id=self.SHARED[1],
+            entity_label="View invoices",
+            summary="Permission granted to a role",
+        )
+        self.assertIsNotNone(event)
+        return event
+
+    def trail_row(self, response):
+        for row in self.rows(response):
+            if (row["entity_type"], row["entity_id"]) == self.SHARED:
+                return row
+        self.fail(f"{self.SHARED} was not listed at all")
+
+
+class EntityTrailCounterTests(EntityTrailCounterFixture, TestCase):
+    """A tenant is told the size of the trail it can actually open."""
+
+    def setUp(self):
+        self.build()
+        self.build_shared_trail()
+        self.bright = TenantAPIClient(self.bright_officer)
+        self.cx = TenantAPIClient(self.reviewer)
+
+    def _list(self, client):
+        response = client.get("/v1/audit/entity-trails/", {"entity_type": self.SHARED[0]})
+        self.assertEqual(response.status_code, 200, response.data)
+        return self.trail_row(response)
+
+    def test_the_stored_rollup_is_still_global(self):
+        """The premise, asserted rather than assumed - no tenant column exists."""
+        trail = EntityAuditTrail.objects.get(
+            entity_type=self.SHARED[0], entity_id=self.SHARED[1],
+        )
+        self.assertEqual(trail.event_count, 6)
+        self.assertFalse(
+            any(f.name == "tenant" for f in EntityAuditTrail._meta.get_fields()),
+        )
+
+    def test_a_tenant_caller_counts_only_the_events_they_can_see(self):
+        row = self._list(self.bright)
+
+        self.assertEqual(row["event_count"], 2)
+        self.assertNotEqual(row["event_count"], 6)
+
+    def test_a_tenant_callers_dates_come_from_their_own_events_too(self):
+        """A first/last taken from someone else's events is its own disclosure.
+
+        Bright Star's two edits both happen after Greenfield's, so a global
+        ``first_event_at`` tells Bright Star that somebody else touched this
+        permission before she did - and when.
+        """
+        row = self._list(self.bright)
+
+        own_first = min(event.event_at for event in self.bright_seen)
+        own_last = max(event.event_at for event in self.bright_seen)
+        self.assertEqual(row["first_event_at"], own_first.isoformat().replace("+00:00", "Z"))
+        self.assertEqual(row["last_event_at"], own_last.isoformat().replace("+00:00", "Z"))
+
+    def test_a_platform_caller_keeps_the_full_rollup(self):
+        row = self._list(self.cx)
+
+        self.assertEqual(row["event_count"], 6)
+
+    def test_the_detail_header_agrees_with_the_events_under_it(self):
+        response = self.bright.get(
+            f"/v1/audit/entity-trails/{self.SHARED[0]}/{self.SHARED[1]}/",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        payload = response.data["data"]
+        self.assertEqual(payload["trail"]["event_count"], len(payload["events"]))
+        self.assertEqual(payload["trail"]["event_count"], 2)
+
+    def test_the_detail_header_stays_global_for_a_platform_caller(self):
+        response = self.cx.get(
+            f"/v1/audit/entity-trails/{self.SHARED[0]}/{self.SHARED[1]}/",
+        )
+
+        self.assertEqual(response.data["data"]["trail"]["event_count"], 6)
+
+    def test_a_single_branch_tenant_sees_its_own_ordinary_trails_unchanged(self):
+        """The common case: nobody else has touched this entity, so nothing moves."""
+        response = self.bright.get("/v1/audit/entity-trails/", dict(self.FILTER))
+        rows = {row["entity_id"]: row for row in self.rows(response)}
+
+        self.assertEqual(set(rows), self.OWN_ROWS)
+        for row in rows.values():
+            self.assertEqual(row["event_count"], 1)
+
+
+class EntityTrailCounterQueryCostTests(EntityTrailCounterFixture, TestCase):
+    """The counters are a page-level query, not a per-row one."""
+
+    def setUp(self):
+        self.build()
+        self.build_shared_trail()
+
+    def _request(self, user):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(user=user, tenant=user.tenant)
+
+    def _trails(self):
+        return list(EntityAuditTrail.objects.all())
+
+    def test_one_query_answers_a_whole_page_however_many_trails(self):
+        from .scoping import visible_trail_counters
+
+        trails = self._trails()
+        self.assertGreater(len(trails), 5, "the fixture must be worth measuring")
+
+        with self.assertNumQueries(1):
+            counters = visible_trail_counters(trails, self._request(self.bright_officer))
+
+        self.assertEqual(counters[self.SHARED]["event_count"], 2)
+
+    def test_a_platform_caller_costs_no_query_at_all(self):
+        from .scoping import visible_trail_counters
+
+        trails = self._trails()  # fetched outside the block - only the helper is measured
+
+        with self.assertNumQueries(0):
+            counters = visible_trail_counters(trails, self._request(self.reviewer))
+
+        self.assertIsNone(counters, "a platform caller keeps the stored rollup")
+
+    def test_the_endpoint_does_not_grow_a_query_per_extra_trail(self):
+        """End to end, because a bulk helper is easy to call from an N+1 loop."""
+        client = TenantAPIClient(self.bright_officer)
+        url = "/v1/audit/entity-trails/"
+
+        client.get(url)  # warm every per-request cache the auth stack keeps
+        with CaptureQueriesContext(connection) as small:
+            client.get(url)
+
+        for index in range(6):
+            self._event(f"PO-BRIGHT-EXTRA-{index}", tenant=self.bright_star)
+
+        with CaptureQueriesContext(connection) as larger:
+            response = client.get(url)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(larger), len(small))
