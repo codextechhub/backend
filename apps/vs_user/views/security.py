@@ -515,14 +515,16 @@ class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         rather than inferred. Rows older than 661a73a carry no id and stay
         platform-only, which is the safe direction to be wrong in.
         """
-        user = self.request.user
-        if getattr(getattr(user, 'tenant', None), 'kind', None) == Tenant.Kind.PLATFORM:
-            return qs
-        tenant = getattr(self.request, 'tenant', None) or user.tenant
-        return qs.filter(
-            Q(tenant=tenant)
-            | Q(tenant__isnull=True, metadata__tenant_id=str(tenant.pk))
-        )
+        # Imported rather than written here. This view was fixed before
+        # vs_audit.scoping existed and carried its own copy of the predicate,
+        # which is the shape that produced the last bug of this kind: the Export
+        # Centre had a narrower private copy, so a school's officer saw rows on
+        # screen that were missing from her own export. A second reader with its
+        # own version of "which rows are mine" is how the two answers drift.
+        from vs_audit.scoping import audit_scope_predicate
+
+        predicate = audit_scope_predicate(self.request)
+        return qs if predicate is None else qs.filter(predicate)
 
     def get_queryset(self):
         from vs_audit.models import AuditEvent, AuditModuleKey
