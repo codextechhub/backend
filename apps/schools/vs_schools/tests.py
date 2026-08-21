@@ -1071,7 +1071,22 @@ class AdminEmailCaseIsRefusedTests(TestCase):
     template, so a school created here leaves its admin link QUEUED and no
     ``User`` row behind, and the duplicate these tests are about would never
     exist to be found.
+
+    The incumbent belongs to a DIFFERENT tenant, so what turns the folded match
+    into a refusal is the cross-tenant guard - and 8f3b28b stood that guard down
+    by making the tenant mandatory on sign-in. The refusal cases below therefore
+    force the guard back on for their block, which keeps them testing the thing
+    they are named for: that both creation paths fold the address they are given
+    before comparing it. Without the pin they would simply stop refusing, and a
+    case-folding regression would sail through unnoticed.
     """
+
+    @staticmethod
+    def _guard_on():
+        """Force the transitional cross-tenant guard back on for a block."""
+        return mock.patch(
+            "vs_user.services.sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN", False,
+        )
 
     @classmethod
     def setUpTestData(cls):
@@ -1089,10 +1104,11 @@ class AdminEmailCaseIsRefusedTests(TestCase):
         return response
 
     def test_school_create_refuses_a_branch_admin_that_is_a_case_variant(self):
-        response = self._post({
-            "name": "Greenfield", "slug": "greenfield",
-            "branches": [_branch_payload("Main Branch", email="HEAD@Bright-Star.TEST")],
-        }, expect=400)
+        with self._guard_on():
+            response = self._post({
+                "name": "Greenfield", "slug": "greenfield",
+                "branches": [_branch_payload("Main Branch", email="HEAD@Bright-Star.TEST")],
+            }, expect=400)
 
         # The KEY the error lands on, not its wording. A school being created
         # has no tenant yet, so the address cannot be "already taken here" -
@@ -1104,13 +1120,14 @@ class AdminEmailCaseIsRefusedTests(TestCase):
         self.assertFalse(School.objects.filter(slug="greenfield").exists())
 
     def test_school_create_refuses_a_school_admin_that_is_a_case_variant(self):
-        response = self._post({
-            "name": "Greenfield", "slug": "greenfield",
-            "primary_admin_data": {
-                "full_name": "Head Two", "email": "  Head@Bright-Star.TEST  ",
-            },
-            "branches": [_branch_payload("Main Branch", email="branch@greenfield.test")],
-        }, expect=400)
+        with self._guard_on():
+            response = self._post({
+                "name": "Greenfield", "slug": "greenfield",
+                "primary_admin_data": {
+                    "full_name": "Head Two", "email": "  Head@Bright-Star.TEST  ",
+                },
+                "branches": [_branch_payload("Main Branch", email="branch@greenfield.test")],
+            }, expect=400)
 
         self.assertIn("primary_admin_data", str(response.data))
         self.assertFalse(School.objects.filter(slug="greenfield").exists())
@@ -1137,8 +1154,18 @@ class AdminEmailCaseIsRefusedTests(TestCase):
             context={"school": school},
         )
 
-        self.assertFalse(serializer.is_valid())
+        with self._guard_on():
+            self.assertFalse(serializer.is_valid())
+
         self.assertIn("primary_admin_data", serializer.errors)
+
+    def test_school_create_now_admits_a_case_variant_from_another_tenant(self):
+        """The guard is down, so Ada may hold an account at two schools - and a
+        differently-cased spelling of the same address is the same account."""
+        self._post({
+            "name": "Greenfield", "slug": "greenfield",
+            "branches": [_branch_payload("Main Branch", email="HEAD@Bright-Star.TEST")],
+        }, expect=201)
 
 
 class PrimaryAdminHasNoRoleLabelTests(TestCase):
