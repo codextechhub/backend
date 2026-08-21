@@ -19,6 +19,7 @@ from .views.branch import (
 from .views.lifecycle import BranchTransitionView
 from .views.ops import (
     SchoolResetConfigView,
+    SchoolServiceStateView,
 )
 
 urlpatterns = [
@@ -35,6 +36,7 @@ urlpatterns = [
     path("<str:slug>/", SchoolDetailView.as_view(), name="school-detail"),
     path("<str:slug>/update/", SchoolUpdateView.as_view(), name="school-update"),
     path("<str:slug>/reset-config/", SchoolResetConfigView.as_view(), name="school-reset-config"),
+    path("<str:slug>/service-state/", SchoolServiceStateView.as_view(), name="school-service-state"),
 
     # --------- Branches ---------
     path("<str:slug>/branches/", BranchListView.as_view(), name="branch-list"),

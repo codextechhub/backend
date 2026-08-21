@@ -249,6 +249,64 @@ class School(TimeStampedModel):
             or stored["status"] == SchoolStatus.ACTIVE
         )
 
+    #: The only edges this console may travel. PENDING and SUSPENDED are
+    #: onboarding's to write - reached by going live, by the 90-day expiry
+    #: sweep and by reinstatement - and each does more than move a column.
+    LIFECYCLE_TRANSITIONS = {
+        SchoolStatus.ACTIVE: frozenset({SchoolStatus.INACTIVE}),
+        SchoolStatus.INACTIVE: frozenset({SchoolStatus.ACTIVE}),
+        SchoolStatus.PENDING: frozenset(),
+        SchoolStatus.SUSPENDED: frozenset(),
+    }
+
+    @transaction.atomic
+    def change_service_state(self, *, to_state: str, actor=None, reason: str = ""):
+        """Take the school out of service, or return it to service.
+
+        ONE THING TO UNDERSTAND BEFORE READING ON: the status column is not
+        what stops people signing in. ``save()`` mirrors it onto the tenant,
+        and ``Tenant.AUTHENTICABLE_STATUSES`` admits only ACTIVE and PENDING,
+        so INACTIVE locks out every account at the school the moment this
+        commits. That is the whole effect and it is immediate.
+
+        Branches are deliberately untouched. Their own statuses record which
+        sites were trading, so returning the school to service restores exactly
+        the arrangement it had, including which branch was main. Deactivating
+        them in sympathy would erase the only record of that.
+
+        The reason is required on the way out and optional on the way back.
+        Somebody will ask why a school went dark; nobody asks why it came back.
+        """
+        from vs_tenants.exceptions import (
+            InvalidSchoolTransition,
+            SchoolAlreadyInState,
+            SchoolDeactivationReasonRequired,
+        )
+
+        if self.status == to_state:
+            raise SchoolAlreadyInState(state=to_state)
+        if to_state not in self.LIFECYCLE_TRANSITIONS.get(self.status, frozenset()):
+            raise InvalidSchoolTransition(from_state=self.status, to_state=to_state)
+
+        reason = (reason or "").strip()
+        if to_state == SchoolStatus.INACTIVE and not reason:
+            raise SchoolDeactivationReasonRequired()
+
+        before = self.status
+        now = timezone.now()
+        self.status = to_state
+        if to_state == SchoolStatus.INACTIVE:
+            self.deactivated_at = now
+        else:
+            # Coming back into service: the deactivation is over, so the column
+            # that dates it no longer describes anything.
+            self.deactivated_at = None
+        # No update_fields: School.save() is what mirrors the status onto the
+        # tenant, and that mirror is the thing actually taking access away.
+        self.save()
+
+        return before
+
     def has_ever_been_live(self) -> bool:
         """Whether this school has been live at any point, per the stored row.
 

@@ -154,6 +154,66 @@ class TenantSlugFrozen(TenantsError):
         )
 
 
+class SchoolLifecycleError(TenantsError):
+    """Base for school status-transition refusals.
+
+    409 for the same reason ``BranchLifecycleError`` is: the payload is
+    well-formed and the caller holds the key. What refuses it is the school's
+    current state.
+    """
+
+    error_code = "SCHOOL_LIFECYCLE_ERROR"
+    default_message = "The school lifecycle action could not be completed."
+    http_status = 409
+
+
+class InvalidSchoolTransition(SchoolLifecycleError):
+    """Raised for an edge the console is not the one to travel.
+
+    Only ACTIVE <-> INACTIVE belongs here. PENDING and SUSPENDED are owned by
+    onboarding and are reached by going live, by the 90-day expiry sweep, and
+    by reinstatement - each of which does more than move a column. Letting this
+    endpoint write them would produce a school that looks onboarded to one half
+    of the system and abandoned to the other.
+    """
+
+    error_code = "INVALID_SCHOOL_TRANSITION"
+
+    def __init__(self, *, from_state: str = "", to_state: str = ""):
+        self.from_state = from_state
+        self.to_state = to_state
+        super().__init__(
+            f"A school cannot move from {from_state} to {to_state} here. "
+            f"Only an active school can be taken out of service, and only an "
+            f"inactive one can be returned to it."
+        )
+
+
+class SchoolAlreadyInState(SchoolLifecycleError):
+    """Raised when the caller asks for the state the school is already in."""
+
+    error_code = "SCHOOL_ALREADY_IN_STATE"
+
+    def __init__(self, *, state: str = ""):
+        self.state = state
+        super().__init__(f"This school is already {state.lower()}.")
+
+
+class SchoolDeactivationReasonRequired(SchoolLifecycleError):
+    """Raised when a school is taken out of service with no reason given.
+
+    Every user at the school stops being able to sign in the moment this
+    lands, so "why" is the first question anybody asks afterwards and the
+    audit row is where they will look for it.
+    """
+
+    error_code = "SCHOOL_DEACTIVATION_REASON_REQUIRED"
+    default_message = (
+        "Give a reason for taking this school out of service. Its users lose "
+        "access immediately, and the reason is what explains that later."
+    )
+
+
 class TenantNotLive(TenantsError):
     """Raised when a PENDING tenant reaches a surface that is not open to it.
 

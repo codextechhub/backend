@@ -1494,6 +1494,74 @@ class BranchStateTransitionSerializer(serializers.Serializer):
         return branch
 
 
+#: The two states this endpoint may write. PENDING and SUSPENDED are absent
+#: deliberately: they belong to onboarding, and are reached by going live, by
+#: the expiry sweep and by reinstatement.
+School_Service_State_Choice = [
+    ("ACTIVE", "Returned to service"),
+    ("INACTIVE", "Taken out of service"),
+]
+
+
+class SchoolServiceStateSerializer(serializers.Serializer):
+    """Take a live school out of service, or bring an inactive one back.
+
+    This is the action the branch lifecycle has been pointing at all along:
+    ``LastBranchCannotLeaveService`` tells the operator to deactivate the
+    school instead of its only branch, and until now nothing could.
+    """
+
+    to_state = serializers.ChoiceField(choices=School_Service_State_Choice)
+    reason = serializers.CharField(required=False, allow_blank=True, default="")
+
+    @transaction.atomic
+    def save(self, **kwargs) -> School:
+        school: School = self.context["school"]
+        actor = self.context.get("actor_id")
+        to_state = self.validated_data["to_state"]
+        reason = (self.validated_data.get("reason") or "").strip()
+
+        before_data = AuditDiffService.model_instance_to_dict(
+            school,
+            exclude_fields=["created_at", "updated_at"],
+        )
+        # Every refusal lives on the model, so a shell or a data migration is
+        # held to the same rules as an HTTP caller.
+        previous = school.change_service_state(
+            to_state=to_state, actor=actor, reason=reason,
+        )
+        school.refresh_from_db()
+
+        after_data = AuditDiffService.model_instance_to_dict(
+            school,
+            exclude_fields=["created_at", "updated_at"],
+        )
+        went_dark = to_state == "INACTIVE"
+        emit_audit_event(
+            module_key=AuditModuleKey.SCHOOL,
+            action_type=AuditActionType.UPDATE,
+            actor_user=actor,
+            tenant=school.tenant,
+            entity_type="School",
+            # The pk, so the row lands on the same trail as every other change
+            # to this school and survives a change of address.
+            entity_id=str(school.pk),
+            entity_label=school.name,
+            summary=(
+                f"{school.name} was taken out of service: {reason}"
+                if went_dark
+                else f"{school.name} was returned to service"
+            ),
+            before_data=before_data,
+            diff_data=AuditDiffService.diff_dicts(
+                before_data=before_data, after_data=after_data,
+            ),
+        )
+        # Returned for the caller's benefit; the audit row already has it.
+        self.previous_status = previous
+        return school
+
+
 class SchoolResetConfigSerializer(serializers.Serializer):
     """
     Resets school configuration to baseline (branding/modules/localization),
