@@ -79,6 +79,11 @@ SCHOOL_KEYS = (
 PLATFORM_KEYS = (
     PERM_GO_LIVE_APPROVE, PERM_GO_LIVE_REJECT, PERM_PROGRESS_CREATE,
     PERM_PROGRESS_REACTIVATE,
+    # Held by both sides, and the seeder grants it to the platform roles too
+    # (ONBOARDING_PERMISSIONS marks it a platform default). Without it here the
+    # reviewer could decide on a request but not read the queue it came from,
+    # which is not a reviewer any deployment actually has.
+    PERM_GO_LIVE_VIEW,
 )
 ALL_KEYS = tuple(dict.fromkeys(SCHOOL_KEYS + PLATFORM_KEYS))
 
@@ -579,12 +584,116 @@ class PayloadExposureTests(OnboardingFixture):
         self.assertEqual(
             set(row),
             {
-                "id", "status", "preferred_go_live_at", "note", "acknowledged",
+                "id", "tenant_slug", "school_name",
+                "status", "preferred_go_live_at", "note", "acknowledged",
                 "requested_by_name", "reviewed_by_name", "reviewed_at",
                 "rejection_reason", "failure_reference", "created_at",
             },
         )
         self.assertNotIn("@test.com", str(row))
+
+
+class GoLiveQueueTests(OnboardingFixture):
+    """The reviewer's queue: every school waiting, and nobody else's business.
+
+    Approve and reject take a request id. Until this list crossed tenants there
+    was no endpoint that produced one for a platform caller, so the two
+    decisions CodeX exists to make were reachable only by guessing an integer.
+
+    The widening is the dangerous half. A school must see its own rows and no
+    others whatever the platform branch does, so the isolation cases come
+    first here and would fail loudly if the branch ever read the asserted
+    tenant instead of the caller's own.
+
+    The reviewer asserts their OWN tenant, not the school's. This endpoint
+    takes no cross-tenant assertion and needs none: naming a school would ask
+    the question backwards, since the reviewer is here to find out which
+    schools are waiting.
+    """
+
+    def queue(self, query=""):
+        """The queue as CodeX sees it: the reviewer's own tenant asserted."""
+        return f"{self.scoped('onboarding-go-live-list', tenant=codex_tenant())}{query}"
+
+    def test_a_school_sees_only_its_own_requests(self):
+        mine = self.submit_request()
+        self.submit_request(tenant=self.rival_tenant, actor=self.rival_admin)
+
+        response = self.client_for(self.admin).get(self.scoped("onboarding-go-live-list"))
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual({row["id"] for row in response.data["data"]}, {mine.pk})
+
+    def test_a_school_cannot_widen_its_own_list_by_asserting_another_tenant(self):
+        """The rival's slug in ?tenant= is refused before the queryset runs."""
+        self.submit_request(tenant=self.rival_tenant, actor=self.rival_admin)
+
+        response = self.client_for(self.admin).get(
+            self.scoped("onboarding-go-live-list", tenant=self.rival_tenant),
+        )
+
+        self.assertEqual(response.status_code, 404, response.data)
+
+    def test_the_platform_reviewer_sees_every_school(self):
+        mine = self.submit_request()
+        rival = self.submit_request(tenant=self.rival_tenant, actor=self.rival_admin)
+
+        response = self.client_for(self.reviewer).get(self.queue())
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            {row["id"] for row in response.data["data"]}, {mine.pk, rival.pk},
+        )
+
+    def test_every_row_names_the_school_it_is_for(self):
+        """A queue of ids with no school against them names nobody to decide
+        about, which is what made approve and reject unreachable."""
+        self.submit_request(tenant=self.rival_tenant, actor=self.rival_admin)
+
+        response = self.client_for(self.reviewer).get(self.queue())
+
+        row = next(r for r in response.data["data"] if r["tenant_slug"] == self.rival.slug)
+        self.assertEqual(row["school_name"], self.rival.name)
+
+    def test_the_queue_still_carries_no_account_or_email(self):
+        self.submit_request(tenant=self.rival_tenant, actor=self.rival_admin)
+
+        response = self.client_for(self.reviewer).get(self.queue())
+
+        self.assertNotIn("@test.com", str(response.data))
+        self.assertNotIn("@codex.test", str(response.data))
+
+    # ── narrowing it ────────────────────────────────────────────────────────
+
+    def test_status_narrows_the_queue_to_what_is_waiting(self):
+        pending = self.submit_request()
+        decided = self.submit_request(tenant=self.rival_tenant, actor=self.rival_admin)
+        decided.status = GoLiveStatus.APPROVED
+        decided.save(update_fields=["status"])
+
+        response = self.client_for(self.reviewer).get(self.queue("&status=PENDING"))
+
+        self.assertEqual({row["id"] for row in response.data["data"]}, {pending.pk})
+
+    def test_an_unknown_status_is_refused_rather_than_answered_with_nothing(self):
+        """A misspelt filter answering "nothing is waiting" is how a queue gets
+        believed when it is wrong."""
+        self.submit_request()
+
+        response = self.client_for(self.reviewer).get(self.queue("&status=PEDNING"))
+
+        self.assertEqual(response.status_code, 400, response.data)
+
+    def test_the_status_filter_scopes_a_school_too(self):
+        """The filter runs after the tenant branch, never instead of it."""
+        mine = self.submit_request()
+        self.submit_request(tenant=self.rival_tenant, actor=self.rival_admin)
+
+        response = self.client_for(self.admin).get(
+            f"{self.scoped('onboarding-go-live-list')}&status=PENDING",
+        )
+
+        self.assertEqual({row["id"] for row in response.data["data"]}, {mine.pk})
 
 
 # ══════════════════════════════════════════════════════════════════════════

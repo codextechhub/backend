@@ -18,6 +18,7 @@ a view that worked them out for itself would eventually disagree with the gate.
 from __future__ import annotations
 
 from rest_framework import generics
+from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
 
 from core.pagination import XVSPagination
@@ -29,6 +30,7 @@ from vs_rbac.permissions import (
 )
 
 from .constants import (
+    GoLiveStatus,
     ONBOARDING_EXPIRY_DAYS,
     PERM_GO_LIVE_APPROVE,
     PERM_GO_LIVE_REJECT,
@@ -288,6 +290,26 @@ class GoLiveRequestListView(OnboardingViewMixin, generics.ListAPIView):
     grows without bound: a school that has been rejected four times has four
     rows plus the one it is waiting on.
 
+    TWO AUDIENCES, ONE ENDPOINT. A school sees its own requests and nothing
+    else. A CodeX reviewer sees every school's, because the question they have
+    is "who is waiting on me?" and no per-school endpoint can answer it: they
+    would have to already know which schools to ask about, which is the thing
+    they came here to find out. Approve and reject take a request id, so
+    without this list those two were reachable only by guessing one.
+
+    The widening is keyed on the CALLER'S OWN tenant kind, never on
+    ``request.tenant``, and read off ``request.user`` rather than the effective
+    user - the same rule and the same reason as ``PlatformDecisionAllowed``. A
+    platform admin proxying into a school holds that school admin's authority
+    and no more, so while proxying they see the school's rows only. Getting
+    this wrong the other way would hand a school officer the go-live plans of
+    every other customer.
+
+    ``status`` narrows it. An unknown value is a 400 rather than an empty page,
+    for the reason the audit explorer gives about its own filters: a misspelt
+    ``PEDNING`` answering "nothing is waiting" is how a queue gets believed
+    when it is wrong.
+
     docstring-name: List go-live requests
     """
 
@@ -295,10 +317,35 @@ class GoLiveRequestListView(OnboardingViewMixin, generics.ListAPIView):
     serializer_class = GoLiveRequestSerializer
     pagination_class = XVSPagination
 
-    def get_queryset(self):
+    def _caller_is_platform(self) -> bool:
+        from vs_tenants.models import Tenant
+
+        user = self.request.user
         return (
-            rows_for(GoLiveRequest, getattr(self.request, "tenant", None))
-            .select_related("requested_by", "reviewed_by")
+            getattr(getattr(user, "tenant", None), "kind", None)
+            == Tenant.Kind.PLATFORM
+        )
+
+    def get_queryset(self):
+        if self._caller_is_platform():
+            # ``all_objects`` is the unscoped manager, so this line is the whole
+            # tenant boundary for the platform branch. It is guarded by the
+            # check above and by nothing else - keep the two together.
+            queryset = GoLiveRequest.all_objects.all()
+        else:
+            queryset = rows_for(GoLiveRequest, getattr(self.request, "tenant", None))
+
+        status_value = (self.request.query_params.get("status") or "").strip().upper()
+        if status_value:
+            if status_value not in GoLiveStatus.values:
+                raise ValidationError({"status": "No such go-live status."})
+            queryset = queryset.filter(status=status_value)
+
+        return (
+            queryset
+            # ``tenant__school_profile`` is joined because every row now names
+            # its school; without it a 25-row page is 25 extra queries.
+            .select_related("requested_by", "reviewed_by", "tenant__school_profile")
             .order_by("-created_at")
         )
 

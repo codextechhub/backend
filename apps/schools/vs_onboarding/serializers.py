@@ -46,11 +46,19 @@ class GoLiveRequestSerializer(serializers.ModelSerializer):
 
     requested_by_name = serializers.SerializerMethodField()
     reviewed_by_name = serializers.SerializerMethodField()
+    # Which school this request is for. A school reading its own list learns
+    # nothing it did not already know, and the platform reviewer cannot work
+    # without it: a queue of request ids with no school against them names
+    # nobody to decide about. Still no account, no email, no internal tenant id.
+    tenant_slug = serializers.CharField(source="tenant.slug", read_only=True)
+    school_name = serializers.SerializerMethodField()
 
     class Meta:
         model = GoLiveRequest
         fields = [
             "id",
+            "tenant_slug",
+            "school_name",
             "status",
             "preferred_go_live_at",
             "note",
@@ -63,6 +71,16 @@ class GoLiveRequestSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = fields
+
+    def get_school_name(self, obj) -> str:
+        """The school's name, or its tenant's when no profile exists yet.
+
+        A tenant can exist before its school profile does, so this must not
+        assume the relation is there - an AttributeError here would take out
+        the whole queue rather than one row.
+        """
+        school = getattr(obj.tenant, "school_profile", None)
+        return getattr(school, "name", None) or obj.tenant.name
 
     def _name(self, user):
         if user is None:
