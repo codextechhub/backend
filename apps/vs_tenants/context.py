@@ -112,7 +112,19 @@ def tenant_context_block(tenant) -> dict:
     ``/user/auth/me/``. The console treats a fresh login as equivalent to a
     ``/me`` sync and skips the round trip, so any field present in one and
     missing from the other is silently absent for a whole session.
+
+    ``status`` is here because a client cannot otherwise tell a school that has
+    gone live from one that has not. Every surface but onboarding refuses a
+    PENDING tenant with 403 TENANT_NOT_LIVE, so the app could only discover the
+    fact by being refused - which means a screen that makes no request looks
+    open, and a school still being set up can wander into a page it will never
+    be allowed to use. One field answers it before the first request.
     """
     if tenant is None:
         return {}
-    return {"slug": tenant.slug, "name": tenant.name, "kind": tenant.kind}
+    return {
+        "slug": tenant.slug,
+        "name": tenant.name,
+        "kind": tenant.kind,
+        "status": tenant.status,
+    }

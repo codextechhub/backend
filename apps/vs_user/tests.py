@@ -2075,6 +2075,25 @@ class AuthContextParityTests(TestCase):
         self.assertEqual(tenant_context_block(self.user.tenant)["kind"], "SCHOOL")
         self.assertEqual(tenant_context_block(codex_tenant())["kind"], "PLATFORM")
 
+    def test_the_block_carries_status(self):
+        """Without status a client cannot tell a live school from a pending one.
+
+        The only other way to find out is to be refused - which means a screen
+        that makes no request looks open to a school that is still being set up.
+        """
+        from vs_tenants.context import tenant_context_block
+        from vs_tenants.models import Tenant
+
+        self.assertEqual(
+            tenant_context_block(self.user.tenant)["status"],
+            self.user.tenant.status,
+        )
+
+        pending = self.user.tenant
+        Tenant.objects.filter(pk=pending.pk).update(status=Tenant.Status.PENDING)
+        pending.refresh_from_db()
+        self.assertEqual(tenant_context_block(pending)["status"], "PENDING")
+
     def test_login_response_carries_the_same_tenant_keys(self):
         """The login payload is what the console caches when it skips /me."""
         import inspect
