@@ -265,9 +265,19 @@ class ImportAdminEmailScopeTests(TestCase):
         the row would pass validation and blow up during execution."""
         from .services.validation_service import _validate_branches_rules
 
-        issues = _validate_branches_rules(self._branches_batch())
+        with self.tenant_required(False):
+            issues = _validate_branches_rules(self._branches_batch())
 
         self.assertEqual(len(self._duplicate_issues(issues)), 1)
+
+    def test_it_is_permitted_across_tenants_once_the_switch_is_on(self):
+        """Ada may hold an account at Bright Star and at Greenfield, so an
+        import that gives her the second one must no longer be refused."""
+        from .services.validation_service import _validate_branches_rules
+
+        issues = _validate_branches_rules(self._branches_batch())
+
+        self.assertEqual(self._duplicate_issues(issues), [])
 
     def _schools_batch(self, email="ada.okoye@example.test"):
         from types import SimpleNamespace
@@ -307,9 +317,17 @@ class ImportAdminEmailScopeTests(TestCase):
     def test_a_new_school_is_still_refused_while_the_switch_is_off(self):
         from .services.validation_service import _validate_schools_rules
 
-        issues = _validate_schools_rules(self._schools_batch())
+        with self.tenant_required(False):
+            issues = _validate_schools_rules(self._schools_batch())
 
         self.assertEqual(len(self._duplicate_issues(issues)), 1)
+
+    def test_a_new_school_may_reuse_the_address_once_the_switch_is_on(self):
+        from .services.validation_service import _validate_schools_rules
+
+        issues = _validate_schools_rules(self._schools_batch())
+
+        self.assertEqual(self._duplicate_issues(issues), [])
 
     def test_a_within_file_repeat_is_still_caught(self):
         """The scoping change must not weaken the row-against-row rule."""
