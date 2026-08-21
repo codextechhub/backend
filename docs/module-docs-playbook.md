@@ -471,6 +471,55 @@ can trace endpoints → calculations → output shapes without reading the code 
   `ReviewRequestDispatchTests` seeds the real notification registry and templates
   rather than mocking them.
 
+- 📝 `vs_workflow` - documented: 6 slices in `docs/workflow/` -
+  `workflow_templates` (the blueprint, stage/route publishing, and the
+  platform-shared versus tenant-own two-tier model with adoption and compare),
+  `workflow_engine_routing` (submission, the branch→tenant→platform template
+  cascade, `advance_instance`, the four skips, the terminal transitions, the
+  condition evaluator and the read-only `template_requires_approval` twin the
+  finance direct-post gate depends on), `workflow_approvers` (the four approver
+  sources, approver groups, the per-tenant stage override, delegation, and the
+  containment and self-approval rules applied at both doors),
+  `workflow_actions_lifecycle` (voting, the three advance rules, withdraw,
+  cancel, reverse, resubmit, and the three dashboards),
+  `workflow_parking_release` (the parked state, the repair that refills a frozen
+  snapshot when somebody is finally appointed, and the submitter's
+  continue-without-approval bypass), and `workflow_notifications_audit` (the ten
+  declared event keys against the four the engine emits, the template opt-in, the
+  append-only audit log and the Export Centre dataset). Following the
+  `vs_notifications` precedent, the §8 findings live in a dedicated file,
+  **`error/workflow/workflow_code_issues.md`**, which each slice points at.
+  Baseline at the time of writing: **`Ran 253 tests in 68.765s` - OK**
+  (`cd apps && DB_NAME=cx_workflow_doc ../cx/Scripts/python.exe manage.py test
+  vs_workflow --settings=apps.settings.local --noinput`).
+  **Findings are recorded but NOT yet swept** - the loop stopped at step 3
+  (docs written) and steps 4-5 (briefing, fixes) are outstanding.
+  This is the most carefully reasoned module documented so far, and the issues
+  file says so: the tenant-containment rules in `resolve_approvers`, the
+  freeze-then-repair design for parked stages, and terminating a release through
+  the engine's own `advance_instance` are all right, several with comments
+  recording a defect already found and closed.
+  The worst item is a hard hole: `POST /v1/workflow/instances/` loads the
+  document by content type and primary key with **no tenant filter and no
+  ownership check**, and `document_scope` then files the instance under the
+  *document's* tenant - so a holder of `workflow.instance.submit` can push
+  another tenant's draft payout batch into approval, become its requester, and
+  thereby hold both withdraw and `continue-without-approval` rights over it. On a
+  newly provisioned tenant, whose `payout-approver` role is seeded held by
+  nobody, that path parks and the bypass then dispatches the money.
+  `vs_payments.PayoutBatch` has no tenant-aware manager, so nothing stops the
+  lookup. Second: `services/release.py` - the maker-checker bypass itself - has
+  no test in this module at all. Third: a route condition's `field` is an
+  unbounded `getattr` walk whose result is stringified into the
+  `ROUTE_EVALUATED` audit trace, which the instance detail returns raw, so a
+  template author can copy any attribute reachable from the document (a password
+  hash, a vendor's bank details) into an append-only log. Fourth: one typo in a
+  template's `notification_events` silences that template's entire notification
+  surface, the parking repair's included, with no error anywhere. Fifth: a
+  non-exclusive delegation deadlocks a `UNANIMOUS` stage, because the delegate is
+  added as a second snapshot row without the delegator being removed and
+  unanimity counts rows.
+
 ## The loop (per slice)
 
 1. **Trace the real code** - models, service functions, views (rbac keys + request
