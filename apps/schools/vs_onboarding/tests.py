@@ -91,7 +91,7 @@ ALL_KEYS = tuple(dict.fromkeys(SCHOOL_KEYS + PLATFORM_KEYS))
 def grant_school_admin(tenant, user, *keys):
     """Give ``user`` the tenant's ``school_admin`` role, carrying ``keys``.
 
-    The role key matters: FIRST_ADMIN and ROLE_BASELINE both look for a
+    The role key matters: DEFAULT_ROLES looks for a
     whole-tenant role keyed ``school_admin`` with at least one granted
     permission, which is what school creation provisions from the prebuilt
     template.
@@ -262,7 +262,7 @@ class EndpointPermissionTests(OnboardingFixture):
             ("post", self.scoped("onboarding-provision")),
             ("post", self.scoped("onboarding-revalidate")),
             ("get", self.scoped("onboarding-task-list")),
-            ("patch", self.scoped("onboarding-task-detail", TaskKey.FIRST_ADMIN)),
+            ("patch", self.scoped("onboarding-task-detail", TaskKey.DEFAULT_ROLES)),
             ("post", self.scoped("onboarding-go-live-request")),
             ("get", self.scoped("onboarding-go-live-list")),
             ("post", self.scoped("onboarding-go-live-approve", self.request_row.pk)),
@@ -455,18 +455,18 @@ class CrossTenantIsolationTests(OnboardingFixture):
 
     def test_a_task_key_that_exists_in_both_tenants_cannot_be_crossed(self):
         """The key is identical in both schools, so only the scoping separates them."""
-        before = self.task(TaskKey.FIRST_ADMIN, self.rival_tenant).status
+        before = self.task(TaskKey.DEFAULT_ROLES, self.rival_tenant).status
 
         response = self.client_for(self.admin).patch(
             self.scoped(
-                "onboarding-task-detail", TaskKey.FIRST_ADMIN,
+                "onboarding-task-detail", TaskKey.DEFAULT_ROLES,
                 tenant=self.rival_tenant,
             ),
             {"status": TaskStatus.SKIPPED}, format="json",
         )
 
         self.assertEqual(response.status_code, 404, response.data)
-        self.assertEqual(self.task(TaskKey.FIRST_ADMIN, self.rival_tenant).status, before)
+        self.assertEqual(self.task(TaskKey.DEFAULT_ROLES, self.rival_tenant).status, before)
 
     def test_another_tenants_go_live_request_is_404_not_403(self):
         rival_request = self.submit_request(
@@ -739,7 +739,7 @@ class ProvisioningTests(OnboardingFixture):
     def test_a_new_catalog_entry_is_added_and_nothing_else_is_touched(self):
         from .constants import CatalogEntry
 
-        self.set_status(self.tenant, TaskKey.FIRST_ADMIN, TaskStatus.IN_PROGRESS)
+        self.set_status(self.tenant, TaskKey.DEFAULT_ROLES, TaskStatus.IN_PROGRESS)
         OnboardingTask.all_objects.filter(
             tenant=self.tenant, key=TaskKey.STAFF_INVITATIONS,
         ).delete()
@@ -757,7 +757,7 @@ class ProvisioningTests(OnboardingFixture):
         after = set(self.tasks_for().values_list("key", flat=True))
         self.assertEqual(after - before, {TaskKey.STAFF_INVITATIONS.value})
         self.assertEqual(
-            self.task(TaskKey.FIRST_ADMIN).status, TaskStatus.IN_PROGRESS,
+            self.task(TaskKey.DEFAULT_ROLES).status, TaskStatus.IN_PROGRESS,
         )
 
     def test_an_entry_that_does_not_apply_to_this_school_is_never_created(self):
@@ -998,16 +998,16 @@ class TaskTransitionTests(OnboardingFixture):
         self.assertErrorCode(response, 422, "INVALID_TASK_TRANSITION")
 
     def test_asking_for_the_current_status_is_a_conflict(self):
-        response = self.patch_task(TaskKey.FIRST_ADMIN, TaskStatus.NOT_STARTED)
+        response = self.patch_task(TaskKey.DEFAULT_ROLES, TaskStatus.NOT_STARTED)
 
         self.assertErrorCode(response, 409, "TASK_ALREADY_IN_STATE")
 
     def test_done_is_refused_when_the_platform_can_see_it_is_not_done(self):
-        """SET_OF_BOOKS with no ledger entity: the school says done, we do not."""
-        response = self.patch_task(TaskKey.SET_OF_BOOKS, TaskStatus.DONE)
+        """INITIAL_DATA with no succeeded import: the school says done, we do not."""
+        response = self.patch_task(TaskKey.INITIAL_DATA, TaskStatus.DONE)
 
         self.assertErrorCode(response, 422, "TASK_CONDITION_NOT_MET")
-        self.assertEqual(self.task(TaskKey.SET_OF_BOOKS).status, TaskStatus.NOT_STARTED)
+        self.assertEqual(self.task(TaskKey.INITIAL_DATA).status, TaskStatus.NOT_STARTED)
 
     def test_done_is_allowed_once_the_condition_holds(self):
         """The other side of the previous test: STAFF_INVITATIONS, satisfied.
@@ -1030,7 +1030,7 @@ class TaskTransitionTests(OnboardingFixture):
 
     def test_the_first_admin_condition_reads_a_real_active_assignment(self):
         with self.captureOnCommitCallbacks(execute=True):
-            allowed = self.patch_task(TaskKey.FIRST_ADMIN, TaskStatus.DONE)
+            allowed = self.patch_task(TaskKey.DEFAULT_ROLES, TaskStatus.DONE)
         self.assertEqual(allowed.status_code, 200, allowed.data)
 
         # The rival school's admin exists too, so this cannot be passing on a
@@ -1046,7 +1046,7 @@ class TaskTransitionTests(OnboardingFixture):
         ).update(assignment_status="REVOKED")
         refused = self.client_for(self.rival_admin).patch(
             self.scoped(
-                "onboarding-task-detail", TaskKey.FIRST_ADMIN,
+                "onboarding-task-detail", TaskKey.DEFAULT_ROLES,
                 tenant=self.rival_tenant,
             ),
             {"status": TaskStatus.DONE}, format="json",
@@ -1061,10 +1061,10 @@ class TaskTransitionTests(OnboardingFixture):
         self.assertEqual(response.status_code, 404, response.data)
 
     def test_an_invalid_target_status_is_rejected_before_anything_is_read(self):
-        response = self.patch_task(TaskKey.FIRST_ADMIN, "TELEPORTED")
+        response = self.patch_task(TaskKey.DEFAULT_ROLES, "TELEPORTED")
 
         self.assertEqual(response.status_code, 400, response.data)
-        self.assertEqual(self.task(TaskKey.FIRST_ADMIN).status, TaskStatus.NOT_STARTED)
+        self.assertEqual(self.task(TaskKey.DEFAULT_ROLES).status, TaskStatus.NOT_STARTED)
 
     def test_a_key_this_tenant_does_not_have_is_a_plain_404(self):
         """A real catalog key, and a school with no row for it.
@@ -1110,12 +1110,12 @@ class TaskTransitionTests(OnboardingFixture):
 
     def test_a_required_task_in_progress_cannot_be_skipped_either(self):
         """The refusal is about the task, so it holds from every legal edge."""
-        self.set_status(self.tenant, TaskKey.FIRST_ADMIN, TaskStatus.IN_PROGRESS)
+        self.set_status(self.tenant, TaskKey.DEFAULT_ROLES, TaskStatus.IN_PROGRESS)
 
-        response = self.patch_task(TaskKey.FIRST_ADMIN, TaskStatus.SKIPPED)
+        response = self.patch_task(TaskKey.DEFAULT_ROLES, TaskStatus.SKIPPED)
 
         self.assertErrorCode(response, 422, "REQUIRED_TASK_NOT_SKIPPABLE")
-        self.assertEqual(self.task(TaskKey.FIRST_ADMIN).status, TaskStatus.IN_PROGRESS)
+        self.assertEqual(self.task(TaskKey.DEFAULT_ROLES).status, TaskStatus.IN_PROGRESS)
 
     def test_the_refusal_writes_no_audit_row_and_no_notification(self):
         """A refused transition changed nothing, so it announces nothing."""
@@ -1319,7 +1319,7 @@ class GoLiveSubmissionTests(OnboardingFixture):
     def test_a_request_before_ready_names_every_outstanding_task(self):
         self.complete_all_but(self.tenant, TaskKey.ACADEMIC_STRUCTURE)
         OnboardingTask.all_objects.filter(
-            tenant=self.tenant, key=TaskKey.SET_OF_BOOKS,
+            tenant=self.tenant, key=TaskKey.SCHOOL_METADATA,
         ).update(status=TaskStatus.NOT_STARTED)
 
         response = self.submit()
@@ -1327,7 +1327,7 @@ class GoLiveSubmissionTests(OnboardingFixture):
         self.assertErrorCode(response, 422, "ONBOARDING_NOT_READY")
         self.assertEqual(
             set(response.data["error"]["detail"]["outstanding_required_tasks"]),
-            {TaskKey.SET_OF_BOOKS.value, TaskKey.ACADEMIC_STRUCTURE.value},
+            {TaskKey.SCHOOL_METADATA.value, TaskKey.ACADEMIC_STRUCTURE.value},
         )
         self.assertFalse(GoLiveRequest.all_objects.filter(tenant=self.tenant).exists())
 
@@ -1655,7 +1655,7 @@ class GoLiveListTests(OnboardingFixture):
 
 class StatePayloadTests(OnboardingFixture):
     def test_the_state_payload_counts_and_blocks_from_the_current_rows(self):
-        self.set_status(self.tenant, TaskKey.FIRST_ADMIN, TaskStatus.DONE)
+        self.set_status(self.tenant, TaskKey.DEFAULT_ROLES, TaskStatus.DONE)
         self.set_status(self.tenant, TaskKey.INITIAL_DATA, TaskStatus.SKIPPED)
 
         response = self.client_for(self.admin).get(self.scoped("onboarding-state"))
@@ -1667,7 +1667,7 @@ class StatePayloadTests(OnboardingFixture):
         self.assertEqual(data["counts"]["total"], total)
         self.assertEqual(data["counts"]["remaining"], total - 2)
         self.assertTrue(data["go_live_blocked"])
-        self.assertNotIn(TaskKey.FIRST_ADMIN.value, data["blocking_tasks"])
+        self.assertNotIn(TaskKey.DEFAULT_ROLES.value, data["blocking_tasks"])
         self.assertNotIn(TaskKey.INITIAL_DATA.value, data["blocking_tasks"])
 
     def test_state_is_404_for_a_tenant_that_was_never_provisioned(self):
@@ -1683,7 +1683,7 @@ class StatePayloadTests(OnboardingFixture):
         client = self.client_for(self.admin)
         url = self.scoped("onboarding-state")
         OnboardingTask.all_objects.filter(tenant=self.tenant).exclude(
-            key__in=[TaskKey.FIRST_ADMIN, TaskKey.ROLE_BASELINE],
+            key__in=[TaskKey.DEFAULT_ROLES, TaskKey.DEFAULT_ROLES],
         ).delete()
 
         with CaptureQueriesContext(connection) as captured:
@@ -1890,7 +1890,11 @@ class NotificationTests(OnboardingFixture):
         rows = self._notifications("onboarding.step_completed")
         self.assertTrue(rows.exists())
         body = rows.first().body
-        self.assertIn("Set up your academic structure", body)
+        # The catalogue title, verbatim - this is what proves the template
+        # renders the step rather than a placeholder, so it has to track the
+        # catalogue when a title changes.
+        self.assertIn("Academic Structure", body)
+        self.assertIn("Step 3 of 5", body)
         self.assertIn("Alpha School", str([r.body + r.subject for r in rows]))
         self.assertNotIn("{{", body)
 

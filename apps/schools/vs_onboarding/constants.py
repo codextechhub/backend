@@ -41,15 +41,23 @@ class GoLiveStatus(models.TextChoices):
 
 
 class TaskKey(models.TextChoices):
-    # There is no BRANCH_SETUP. vs_onboarding 0002 removed it along with the
-    # rows that carried it: every school is created with its main branch, so
-    # the step was complete before the school could ever see it, and a step
-    # nobody can have outstanding is not a step. Branch readiness is still a
-    # real fact; it is simply not a thing the school is asked to go and do.
-    FIRST_ADMIN = "FIRST_ADMIN", "First administrator"
-    ROLE_BASELINE = "ROLE_BASELINE", "Role baseline"
+    # Five steps, matching the approved design one for one.
+    #
+    # There is no BRANCH_SETUP: vs_onboarding 0002 removed it, because every
+    # school is created with its main branch and a step that is complete before
+    # the school can see it is not a step.
+    #
+    # There is no FIRST_ADMIN or ROLE_BASELINE either. They were two rows over
+    # one subject - is there a working administrator, and does the role they
+    # hold grant anything - and the design presents that subject as one card.
+    # Both facts are still checked; DEFAULT_ROLES is refused unless both hold.
+    #
+    # There is no SET_OF_BOOKS. Removed by decision (2026-08-22) to match the
+    # design's five. Books are still provisioned at school creation and are
+    # still best effort, so a school whose books silently failed now discovers
+    # it in Finance rather than on this checklist. See migration 0003.
+    DEFAULT_ROLES = "DEFAULT_ROLES", "Default roles and RBAC"
     SCHOOL_METADATA = "SCHOOL_METADATA", "School metadata"
-    SET_OF_BOOKS = "SET_OF_BOOKS", "Set of books"
     ACADEMIC_STRUCTURE = "ACADEMIC_STRUCTURE", "Academic structure"
     INITIAL_DATA = "INITIAL_DATA", "Initial data"
     STAFF_INVITATIONS = "STAFF_INVITATIONS", "Staff invitations"
@@ -110,60 +118,39 @@ class CatalogEntry:
         return bool(self.applies_to(tenant, school))
 
 
-#: The canonical catalog, in display order. Every entry maps to something the
-#: platform can check today or to a dependency named in the FRD.
-#:
-#: There is no branch step. It was here, conditional on a school flag that said
-#: whether the school ran more than one site; the flag is gone and the honest
-#: predicate was the branch count, which every school satisfies at creation. A
-#: step that is complete the moment it could exist is not a step, so it was
-#: removed rather than left in as a box that arrives already ticked.
+#: The canonical catalog, in display order, and the five cards the approved
+#: design draws. Titles are the design's, verbatim, because they are what the
+#: school reads and the API is what supplies them.
 TASK_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry(
-        key=TaskKey.FIRST_ADMIN,
-        title="Confirm your first administrator",
+        key=TaskKey.DEFAULT_ROLES,
+        title="Confirm Default Roles & RBAC",
         is_required=True,
         order_index=1,
     ),
     CatalogEntry(
-        key=TaskKey.ROLE_BASELINE,
-        title="Confirm your roles",
+        key=TaskKey.SCHOOL_METADATA,
+        title="School Metadata Setup",
         is_required=True,
         order_index=2,
     ),
     CatalogEntry(
-        key=TaskKey.SCHOOL_METADATA,
-        title="Complete your school profile",
+        key=TaskKey.ACADEMIC_STRUCTURE,
+        title="Academic Structure",
         is_required=True,
         order_index=3,
     ),
-    # Books are provisioned for every school at creation, entitled to finance or
-    # not, so this is no longer conditional on a capability. It stays REQUIRED
-    # precisely because provisioning is best effort: this task is what surfaces
-    # a school whose books silently failed, and blocking go-live is the point.
     CatalogEntry(
-        key=TaskKey.SET_OF_BOOKS,
-        title="Confirm your set of books",
-        is_required=True,
+        key=TaskKey.INITIAL_DATA,
+        title="Upload Initial Datasets",
+        is_required=False,
         order_index=4,
     ),
     CatalogEntry(
-        key=TaskKey.ACADEMIC_STRUCTURE,
-        title="Set up your academic structure",
-        is_required=True,
-        order_index=5,
-    ),
-    CatalogEntry(
-        key=TaskKey.INITIAL_DATA,
-        title="Import your initial data",
-        is_required=False,
-        order_index=6,
-    ),
-    CatalogEntry(
         key=TaskKey.STAFF_INVITATIONS,
-        title="Invite your staff",
+        title="Add Staff & Invitations",
         is_required=False,
-        order_index=7,
+        order_index=5,
     ),
 )
 

@@ -277,7 +277,7 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
             "context": {
                 "product_area": "Onboarding",
                 "route_pattern": "/onboarding/tasks",
-                "onboarding_task_key": "SET_OF_BOOKS",
+                "onboarding_task_key": "SCHOOL_METADATA",
                 "onboarding_readiness_state": "NOT_READY",
             },
         }, format="json")
@@ -286,7 +286,7 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
         self.assertEqual(response.json()["data"]["context"], {
             "product_area": "Onboarding",
             "route_pattern": "/onboarding/tasks",
-            "onboarding_task_key": "SET_OF_BOOKS",
+            "onboarding_task_key": "SCHOOL_METADATA",
             "onboarding_readiness_state": "NOT_READY",
         })
 
@@ -317,7 +317,7 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
             "category": "HELP",
             "priority": "LOW",
             "context": {
-                "onboarding_task_key": "FIRST_ADMIN",
+                "onboarding_task_key": "DEFAULT_ROLES",
                 "onboarding_student_name": "Ada",
             },
         }, format="json")

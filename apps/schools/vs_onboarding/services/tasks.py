@@ -117,8 +117,12 @@ def transition_task(tenant, key: str, target: str, *, actor=None) -> OnboardingT
         if target == TaskStatus.DONE:
             school = effects.school_of(tenant)
             if not condition_holds(task.key, tenant, school):
+                # The tenant is passed so a merged card can name the half that
+                # failed: "roles are not ready" leaves a school unsure whether
+                # to chase the invitation or the permissions.
                 raise TaskConditionNotMet(
-                    key=task.key, reason=condition_reason(task.key),
+                    key=task.key,
+                    reason=condition_reason(task.key, tenant, school),
                 )
 
         task.status = target

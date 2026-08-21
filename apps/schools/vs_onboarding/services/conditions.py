@@ -72,17 +72,16 @@ def _has_school_metadata(tenant, school) -> bool:
     return not school.missing_profile_fields()
 
 
-def _has_set_of_books(tenant, school) -> bool:
-    """A ledger entity for this tenant.
+def _has_default_roles(tenant, school) -> bool:
+    """Both halves of "can somebody actually operate this school?".
 
-    Books are provisioned for every school at creation, best effort, so this
-    task is normally already satisfied when the school first opens the control
-    room. It stays required because best effort means some school's books did
-    not arrive, and this is the step that says so.
+    One card, two facts, and neither is redundant: school creation can produce
+    an administrator whose role grants nothing, and it can produce a working
+    role with nobody holding it. They were separate checklist rows until
+    2026-08-22; the design presents them as one card, so they are one row that
+    is refused unless both hold.
     """
-    from vs_finance.models import LedgerEntity
-
-    return LedgerEntity.objects.filter(tenant=tenant).exists()
+    return _has_first_admin(tenant, school) and _has_role_baseline(tenant, school)
 
 
 def _has_initial_data(tenant, school) -> bool:
@@ -117,10 +116,8 @@ def _has_staff_invitations(tenant, school) -> bool:
 #: condition and is completed on the school's word: ACADEMIC_STRUCTURE has no
 #: backend to check against at all.
 TASK_CONDITIONS = {
-    TaskKey.FIRST_ADMIN: _has_first_admin,
-    TaskKey.ROLE_BASELINE: _has_role_baseline,
+    TaskKey.DEFAULT_ROLES: _has_default_roles,
     TaskKey.SCHOOL_METADATA: _has_school_metadata,
-    TaskKey.SET_OF_BOOKS: _has_set_of_books,
     TaskKey.INITIAL_DATA: _has_initial_data,
     TaskKey.STAFF_INVITATIONS: _has_staff_invitations,
 }
@@ -128,20 +125,17 @@ TASK_CONDITIONS = {
 #: What to tell the school when a condition refuses. Phrased as the thing they
 #: still have to do, not as the predicate that returned False.
 CONDITION_REASONS = {
-    TaskKey.FIRST_ADMIN: (
-        "This school has no active administrator holding the school "
-        "administrator role. Re-send the invitation and try again."
-    ),
-    TaskKey.ROLE_BASELINE: (
-        "The school administrator role carries no permissions yet."
+    # One card, so one sentence - but it must name which half failed, or a
+    # school reads "roles are not right" and has no idea whether to chase the
+    # invitation or the permissions. Resolved per call by ``condition_reason``.
+    TaskKey.DEFAULT_ROLES: (
+        "Your roles are not ready yet. Check that an administrator has "
+        "accepted their invitation and that the school administrator role "
+        "carries its permissions."
     ),
     TaskKey.SCHOOL_METADATA: (
         "Complete the school profile first: name, code, ownership type, term "
         "structure and currency are all required."
-    ),
-    TaskKey.SET_OF_BOOKS: (
-        "This school has no set of books yet. Contact support to have them "
-        "provisioned."
     ),
     # Says "fully" out loud, because the school may be looking at an import
     # that finished with some rows rejected and wondering why this step will
@@ -162,5 +156,28 @@ def condition_holds(key: str, tenant, school) -> bool:
     return bool(check(tenant, school))
 
 
-def condition_reason(key: str) -> str:
+#: The half-specific sentences behind DEFAULT_ROLES. Kept because a merged card
+#: with a merged sentence tells a school its roles are wrong and nothing about
+#: which thing to go and fix.
+DEFAULT_ROLES_REASONS = {
+    "no_admin": (
+        "This school has no active administrator holding the school "
+        "administrator role. Re-send the invitation and try again."
+    ),
+    "no_permissions": "The school administrator role carries no permissions yet.",
+}
+
+
+def condition_reason(key: str, tenant=None, school=None) -> str:
+    """Why ``key`` was refused, as specifically as the platform can say.
+
+    ``tenant``/``school`` are optional so existing callers keep working, but
+    passing them is what lets the merged roles card name the half that failed
+    rather than describing both.
+    """
+    if key == TaskKey.DEFAULT_ROLES and tenant is not None:
+        if not _has_first_admin(tenant, school):
+            return DEFAULT_ROLES_REASONS["no_admin"]
+        if not _has_role_baseline(tenant, school):
+            return DEFAULT_ROLES_REASONS["no_permissions"]
     return CONDITION_REASONS.get(key, "This onboarding step is not complete yet.")

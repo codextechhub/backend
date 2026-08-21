@@ -133,16 +133,14 @@ class Command(BaseCommand):
 
         if slug == "brightfield-lekki":
             self._set_tasks(built, {
-                "FIRST_ADMIN": TaskStatus.DONE,
-                "ROLE_BASELINE": TaskStatus.DONE,
-                "SET_OF_BOOKS": TaskStatus.DONE,
+                "DEFAULT_ROLES": TaskStatus.DONE,
                 "SCHOOL_METADATA": TaskStatus.IN_PROGRESS,
                 "STAFF_INVITATIONS": TaskStatus.SKIPPED,
             })
             return "mid-progress, one step skipped, gate blocked"
 
         if slug == "riverbank":
-            self._set_tasks(built, {"FIRST_ADMIN": TaskStatus.DONE})
+            self._set_tasks(built, {"DEFAULT_ROLES": TaskStatus.DONE})
             self._age_pending(built, days=80)
             return "not ready, 10 days left in the onboarding window"
 
