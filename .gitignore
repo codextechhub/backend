@@ -14,7 +14,7 @@ Others/
 .qodo/
 frontend_2/
 staticfiles/
-.claude/
+# .claude/
 apps/static/images/imports/
 
 # -- secrets / env --

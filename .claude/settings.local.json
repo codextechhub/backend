@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(../cx/bin/python manage.py test vs_todo --settings=apps.settings.local)",
+      "Bash(SECRET_KEY=x RENDER_API_KEY=x TEMP_PASSWORD_PEPPER=x ../cx/bin/python manage.py check --settings=apps.settings.local)",
+      "Bash(SECRET_KEY=x RENDER_API_KEY=x TEMP_PASSWORD_PEPPER=x ../cx/bin/python manage.py seed_all_permissions --dry-run --settings=apps.settings.local)",
+      "Bash(python *)",
+      "Skill(update-config)"
+    ]
+  }
+}
