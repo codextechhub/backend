@@ -270,6 +270,69 @@ can trace endpoints → calculations → output shapes without reading the code 
   it was not created, per the standing rule that a missing module FRD is
   reported rather than generated.
 
+- 📝 `vs_rbac` - documented: 4 slices in `docs/rbac/` -
+  `rbac_permission_registry` (the module/resource/action vocabulary, the
+  `Permission` registry, `PermissionScope`, the dependency graph, permission
+  groups, the prebuilt role library and the twelve `vision/*` routes),
+  `rbac_roles_assignments` (tenant role templates, role permissions and group
+  attachments, assignments and the branch column, revoke/replace, the
+  super-admin transfer), `rbac_change_requests_overrides` (the four-state
+  approval queue, delta replay, and the per-user ALLOW/DENY exception layer),
+  and `rbac_evaluation_scoping` (the evaluator and `ANY_BRANCH`, the eight DRF
+  permission classes, `BranchScope`, `TenantAwareManager`, FLS,
+  `TenantJWTAuthentication` and the durable `RBACAuditLog`). Following the
+  `vs_notifications`, `vs_config`, `vs_exports` and `vs_health` precedent, the
+  §8 findings live in a dedicated file, **`error/rbac/rbac_code_issues.md`**,
+  which each slice points at.
+  Baseline at the time of writing: **`Ran 326 tests in 89.035s` - OK**
+  (`cd apps && DB_NAME=cx_rbacslice ../cx/Scripts/python.exe manage.py test
+  vs_rbac --settings=apps.settings.local --noinput`). The one traceback in that
+  run is `test_audit`'s deliberate `RuntimeError: boom`, proving the central
+  audit mirror's failure is swallowed.
+  **Findings are recorded but NOT yet swept** - the loop stopped at step 3
+  (docs written) and steps 4-5 (briefing, fixes) are outstanding.
+  Six findings were **confirmed by execution** against a real Postgres test
+  database in a throwaway test module that was deleted afterwards; the rest are
+  traced to file and line.
+  The worst item is a full privilege escalation reachable from the default
+  `school_admin` role: `is_vision_super_admin` (`permissions.py:33-40`) checks
+  for a role keyed `xvs_super_admin` on **the user's own tenant** with no
+  `kind=PLATFORM` filter, and `slugify("xvs_super_admin")` preserves
+  underscores, so a school admin holding the seeded `school.roles.create` can
+  mint that key in their own tenant. The RBAC assignment endpoint refuses the
+  key, but `vs_user`'s user-creation service writes assignments directly
+  (`vs_user/services/user.py:99-106`) and its guard is gated on
+  `creating_platform_staff`, so it never runs for a school. The resulting
+  account returns `True` from `is_vision_super_admin` and bypasses every
+  permission check in the repo, `PermissionScope.PLATFORM` keys included -
+  confirmed by execution. Second: `resolve_users_with_permission` omits the
+  `role__status="ACTIVE"` filter the evaluator applies, so workflow routes
+  approvals to people the gate then refuses with a 403 - also confirmed.
+  Third: editing a role's permission set writes no `RBACAuditLog` row at all,
+  because there is no receiver for `TenantRolePermission` and the serializer
+  writes through `bulk_create`; the only audited role-permission change is the
+  one that went through the optional approval queue. Fourth: a permission
+  created through `POST vision/permissions/` gets `scope = ""` (the field is not
+  on the serializer), so no school role can ever hold it, and the error message
+  tells the caller to "classify it in the seeder" when there is no seeder and no
+  endpoint that can - confirmed. Fifth: `is_active` on a permission, group,
+  module, resource or action revokes nothing, while the audit rows announce a
+  CRITICAL cascade - confirmed.
+  Worth recording as a strength: this module is the best-reasoned in the repo,
+  and `error/rbac/rbac_code_issues.md` closes with a "What is right, and should
+  not be tidied" section listing twelve deliberate choices (the `ANY_BRANCH`
+  sentinel, `ScopeGuardedManager.bulk_create`, the inclusive `BranchScope`
+  default, the split unique constraint on assignments, resolve-inside-the-tenant
+  reference fields) so a later pass does not undo them.
+  Unlike `vs_exports` and `vs_health`, this module **does** have an FRD:
+  `docs/frd/functional-requirements/04-roles-and-permissions-rbac/
+  XVS_M04_Roles_and_Permissions_RBAC_Functional_Requirements_Document_v1.0.docx`.
+  It was not revised in this pass, because the pass changed no code. The
+  findings above - the escalation in particular - are candidates for its
+  **Needs Attention** section and for the latest MRD
+  (`XVS_Module_Requirements_Document_v2.20.docx`) when they are fixed or when
+  the owner decides they should be recorded as known gaps.
+
 ## The loop (per slice)
 
 1. **Trace the real code** - models, service functions, views (rbac keys + request
