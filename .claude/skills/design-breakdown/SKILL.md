@@ -1,6 +1,6 @@
 ---
 name: design-breakdown
-description: Read a Claude Design export (a .dc.html source or a bundled .html) and work out the API behind it - what every screen reads and writes, which endpoints already serve it, which exist but are closed to the caller, which return the wrong shape, and which do not exist at all. Produces an API plan and then builds it. Use when a frontend module is being built from a design and you own the backend it will call.
+description: Read a Claude Design export (a .dc.html source or a bundled .html) and work out the API behind it - what every screen reads and writes, which endpoints already serve it, which exist but are closed to the caller, which return the wrong shape, and which do not exist at all. Reconciles all of it against the module's FRD and reports where the two disagree. Produces an API plan plus an FRD delta, then builds it. Use when a frontend module is being built from a design and you own the backend it will call.
 ---
 
 # design-breakdown - turn a design into the API behind it
@@ -11,8 +11,14 @@ refused, exists in the wrong shape, or does not exist. Guess which, and you
 build the wrong half: usually a new endpoint beside a working one nobody could
 reach, because the real problem was a permission key.
 
-This skill reads the prototype, extracts the data behind every screen, and
-classifies each against this codebase. Then it builds what is missing.
+This skill reads the prototype, extracts the data behind every screen, checks it
+against the module's FRD, and classifies each against this codebase. Then it
+builds what is missing.
+
+**The FRD is the contract the backend builds from, and the design is where the
+requirements actually come from.** Neither contains the other, which is why the
+reconciliation in step 3 is not optional bookkeeping: it is the step that stops
+the API shipping without the half the screens need.
 
 **The plan comes first and the user approves it.** The classification decides
 how big the work is, and the difference between the buckets below is days
@@ -89,7 +95,43 @@ attribute name - go and look at one in the source before planning around it.
 - **Bindings** are the read payload. A binding with no column behind it is a
   finding, not a field to invent.
 
-### 3. Classify every screen against this codebase
+### 3. Reconcile against the FRD
+
+**The FRD sits between the design and the backend now, and this is where the two
+are made to agree.** Skipping it is how M9 went wrong twice in opposite
+directions: designed alone it asked for seventeen things that did not exist;
+specced alone it produced an API missing much of what the screens needed.
+
+Find the module's current FRD - `docs/frd/functional-requirements/<module>/` for
+a release artifact, or the sprint folder for a working one. Take the latest
+version, never an unversioned original.
+
+**If no FRD exists yet**, say so and carry on: what you extracted in step 2 IS
+the input to writing one, and your plan becomes its first draft. Note it in the
+report so the FRD gets written before the backend is built.
+
+**If one exists, compare three things, not two:** what the design shows, what the
+FRD requires, and what the code does. Any two disagreeing is a finding.
+
+| Disagreement | What it means | What to do |
+|---|---|---|
+| Design shows it, FRD does not mention it | The FRD was written from the code and missed a screen need - a filter, a count, a summary figure, a bulk action, an empty state. **This is the common case and the reason this step exists.** | Add it to the FRD delta. It is a requirement. |
+| FRD requires it, design does not show it | Either the design forgot it, or it is backend-only - a permission key, an audit effect, a refusal rule - which is legitimate and needs no screen. | Decide which, and say which. Only the first is a design gap. |
+| Design and FRD contradict each other | One of them is wrong about the product. | **Stop and ask.** Do not pick. A contradiction resolved silently becomes a decision nobody made. |
+| Design shows it, code cannot support it | The design asked for something impossible. | It belongs in the FRD's refusal list, not in your build plan. Name it and why. |
+
+**Produce an FRD delta**, not a rewrite: the requirements this design implies
+that the current FRD does not carry, the ones it carries that the design
+contradicts, and the ones the design asks for that cannot exist. That delta is
+what the FRD's next version is written from - this skill does not revise the
+document itself.
+
+**If the delta is empty, check again.** A design produced without the backend in
+front of it always asks for something that is not there, and an FRD written
+without the design always misses something a screen needs. An empty delta
+usually means the comparison was shallow, not that the two agree.
+
+### 4. Classify every screen against this codebase
 
 Read the route map in `apps/apps/urls.py` first. Then put each screen's data in
 exactly one bucket - and keep the last three apart, because they are hours,
@@ -109,7 +151,7 @@ frontend built against invented shapes is built twice.
 Then audit the other way: endpoints in the module's namespace that no screen
 calls. Each is dead API or a gap in the design.
 
-### 4. Design each endpoint the way this codebase does
+### 5. Design each endpoint the way this codebase does
 
 Before writing anything, know the five conventions the review will check:
 
@@ -133,21 +175,26 @@ Before writing anything, know the five conventions the review will check:
 5. **`success_response` for the envelope**, and a `docstring-name:` line on the
    view so it lands in the generated docs.
 
-### 5. Write the plan
+### 6. Write the plan
 
 To `docs/<module>-api-plan.md`:
 
 1. **Screen → data → endpoint**, one row per screen, with its bucket.
-2. **Endpoints to open** - the view, the flag, the key, who gets it by default.
-3. **Endpoints to add** - path, verb, payload, refusals, permission key.
-4. **Shapes to change** - and every existing consumer of the old shape.
-5. **Not ours** - named modules, and what we need from them.
-6. **Dead API** - endpoints no screen calls.
+2. **The FRD delta** from step 3, first among the prose sections because it is
+   the one that changes a document rather than the code: requirements the design
+   implies and the FRD lacks, requirements the FRD carries that the design
+   contradicts, and things the design asks for that cannot exist. Say plainly
+   whether the FRD needs a new version before the backend is built.
+3. **Endpoints to open** - the view, the flag, the key, who gets it by default.
+4. **Endpoints to add** - path, verb, payload, refusals, permission key.
+5. **Shapes to change** - and every existing consumer of the old shape.
+6. **Not ours** - named modules, and what we need from them.
+7. **Dead API** - endpoints no screen calls.
 
 Summarise in chat and **stop for approval.** Opening a surface and building a
 module are not the same decision.
 
-### 6. Build, in this order
+### 7. Build, in this order
 
 1. The **closed** ones first. A flag and a seeder row unblocks a whole screen,
    and it is the cheapest work in the plan.
@@ -165,7 +212,7 @@ ship-check asks for exactly this:
 
 Then run the module's suite plus anything sharing the serializer.
 
-### 7. Seed something to look at
+### 8. Seed something to look at
 
 A screen cannot be verified against an endpoint that returns nothing. If the
 design shows several states - ready, rejected, live, empty - add or extend a
@@ -177,6 +224,9 @@ Run it twice. A seeder that is not idempotent is a seeder that invents data.
 
 ## What this skill is careful about
 
+- **An FRD that agrees with the design completely has not been checked.** The two
+  are written from different sources - one from screens, one from code - so a
+  genuinely empty delta is rarer than a shallow comparison.
 - **"No API" is two different problems.** Closed is a flag; absent is a module.
   Merging them puts a two-day job next to a two-month one in the same plan.
 - **A binding is not a field.** The design may bind data nothing stores. Say so
