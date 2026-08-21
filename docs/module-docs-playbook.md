@@ -428,6 +428,49 @@ can trace endpoints → calculations → output shapes without reading the code 
   gone live but not `retrieve` or `comments`, so that school gets the reply by
   email and can neither open the ticket nor answer it.
 
+- 📝 `vs_todo` - documented: 4 slices in `docs/todo/` - `todo_tasks` (the `Task`
+  row, derived status, the self-set/assign-down fork, the CRUD surface and the
+  toggle), `todo_hierarchy_scoping` (`TodoHierarchy`, the four questions it
+  answers off the live CX organogram, the `IsVisionStaff` gate and the two
+  predicates that turn the tree into permission), `todo_dashboards_rollup` (the
+  five-number `stats_for` vocabulary, the My Team payload, the single-pass org
+  roll-up and the assignable picker), and `todo_review_requests` (the
+  self-completion review flow, its grace window, the Celery task's guards and
+  the reviewer derivation). Following the `vs_notifications` precedent, the §8
+  findings live in a dedicated file, **`error/todo/todo_code_issues.md`**, which
+  each slice points at.
+  Baseline at the time of writing: **`Ran 21 tests in 15.310s` - FAILED
+  (errors=1)** (`cd apps && DB_NAME=cx_todo_doc ../cx/Scripts/python.exe
+  manage.py test vs_todo --settings=apps.settings.local --noinput`). The single
+  error is the same Windows-only `UnicodeEncodeError` class already recorded for
+  `vs_user`: `test_seed_all_permissions_runs_clean` calls `seed_all_permissions`,
+  which prints a box-drawn banner
+  (`core/management/commands/seed_all_permissions.py:95-98`) that a cp1252 stream
+  cannot encode. Environmental, not a logic failure; the other twenty pass.
+  **Findings are recorded but NOT yet swept** - the loop stopped at step 3
+  (docs written) and steps 4-5 (briefing, fixes) are outstanding.
+  Nothing in this module is graded Critical, which is itself the finding: it
+  holds one tenant's data, has no cross-tenant surface, and no school account can
+  reach it. What is at risk is the integrity of the accountability record.
+  The worst item: `TaskSerializer` is the read serializer reused as the write
+  serializer, so `is_done`, `completed_at`, `department` and `assigned_by_name`
+  are all writable through a plain `PATCH` - a person can mark their own work
+  done without `completed_at` being stamped and **without the review request
+  ever reaching their manager**, and can rewrite who handed them the task. The
+  code comment two lines above says only descriptive fields are editable.
+  Second: the module writes no audit event of any kind, and `DELETE` is a hard
+  delete that anybody above the assignee may perform - a manager can erase a
+  report's missed task before a quarterly review with no trace. Third: being
+  handed a task notifies nobody; `EVENT_TASK_ASSIGNED` is declared, absent from
+  the notification registry and fired from nowhere. Fourth: the completion
+  undo window is `REVIEW_GRACE_SECONDS = 5`, and eager Celery ignores `countdown`
+  entirely, so on local, CI, test and staging the window is zero - and staging's
+  `CELERY_TASK_EAGER_PROPAGATES` turns any uncaught notification error into a
+  500 on a toggle that has already been saved. Also worth recording as a
+  strength: `org_rollup` builds an arbitrarily deep tree in two queries, and
+  `ReviewRequestDispatchTests` seeds the real notification registry and templates
+  rather than mocking them.
+
 ## The loop (per slice)
 
 1. **Trace the real code** - models, service functions, views (rbac keys + request
