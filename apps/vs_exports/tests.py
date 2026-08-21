@@ -123,8 +123,24 @@ class _ExportFixture:
             name="Other Org", slug="other-org", kind=Tenant.Kind.ORGANIZATION,
             status=Tenant.Status.ACTIVE,
         )
+        # Holds the export keys LEGITIMATELY, in their own tenant. This used to
+        # be role="xvs_super_admin", which passed the permission gate through the
+        # platform bypass rather than through a grant - so the cross-tenant tests
+        # below were reaching the queryset by a hole rather than by a key, and
+        # a3b93d6 closed it. The point of these tests is that a real key-holder
+        # in another tenant still cannot see this tenant's rows, which needs the
+        # key to be real.
         self.outsider = self._user(
-            "outsider@test.com", role="xvs_super_admin", tenant=self.other_tenant,
+            "outsider@test.com", role="exports_analyst", tenant=self.other_tenant,
+            keys=[
+                ExportPermission.CATALOGUE_VIEW, ExportPermission.DEFINITION_VIEW,
+                ExportPermission.DEFINITION_CREATE, ExportPermission.DEFINITION_UPDATE,
+                ExportPermission.DEFINITION_DELETE, ExportPermission.DEFINITION_SHARE,
+                ExportPermission.RUN_VIEW, ExportPermission.RUN_CREATE,
+                ExportPermission.RUN_CANCEL, ExportPermission.FILE_DOWNLOAD,
+                ExportPermission.SCHEDULE_VIEW, ExportPermission.SCHEDULE_CREATE,
+                ExportPermission.SCHEDULE_MANAGE,
+            ],
         )
 
     def _user(self, email, *, role, keys=None, tenant=None):
