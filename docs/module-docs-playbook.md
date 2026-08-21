@@ -391,6 +391,43 @@ can trace endpoints → calculations → output shapes without reading the code 
   latest MRD when they are fixed, or sooner if the owner wants them recorded as
   known gaps.
 
+- 📝 `vs_tickets` - documented: 4 slices in `docs/tickets/` -
+  `ticket_lifecycle` (the `Ticket` model, `TK-` numbering, create/update/assign/
+  transition, the five-state graph, the ten list filters and the dashboard
+  aggregate), `ticket_conversation_attachments` (public replies, support-only
+  internal notes, uploads and the verified-content-type download route, and the
+  per-ticket audit trail), `ticket_visibility_permissions` (the nine keys, the
+  two gates, `visible_tickets_qs` and the participant boundary), and
+  `ticket_context_integrations` (the `context` allowlist and the registry other
+  modules extend it through, the eight notification events, the Export Centre
+  dataset and screen binding, and the `vs_audit` mirror). Following the
+  `vs_notifications` precedent, the §8 findings live in a dedicated file,
+  **`error/tickets/ticket_code_issues.md`**, which each slice points at.
+  Baseline at the time of writing: **`Ran 45 tests in 37.854s` - OK**
+  (`cd apps && DB_NAME=cx_tickets_doc ../cx/Scripts/python.exe manage.py test
+  vs_tickets --settings=apps.settings.local --noinput`).
+  **Findings are recorded but NOT yet swept** - the loop stopped at step 3
+  (docs written) and steps 4-5 (briefing, fixes) are outstanding.
+  The worst item is the caller side of the `vs_notifications` defect above, and
+  this module is the proven instance: `ticket.created` is dispatched with
+  `tenant=ticket.tenant` to CX staff on the platform tenant, so the agent's feed
+  never shows it, staging drops the email, and the school admin's delivery
+  history log shows them the CX agents' addresses and message bodies instead -
+  and because no ticket event is `is_transactional`, a school admin can switch
+  the CX support team's notifications off for their own school. Second: this
+  module asks "who works the support desk" in three places and gets three
+  answers - the evaluator (correct), a hand-built picker that ignores personal
+  overrides, and `support_recipients`, which reads only direct role permissions,
+  so a group-granted agent is never told about a ticket and a personally denied
+  one is still emailed every school's. `vs_rbac.evaluator.resolve_users_with_
+  permission` already answers this correctly and neither caller uses it. Third:
+  the `support.tickets` export dataset is gated on `tickets.ticket.view` - seeded
+  to every teacher - over every ticket in the tenant, so the Export Centre hands
+  a teacher the titles of tickets the API answers `404` for. Fourth:
+  `pending_tenant_surface = ("create",)` opens filing to a school that has not
+  gone live but not `retrieve` or `comments`, so that school gets the reply by
+  email and can neither open the ticket nor answer it.
+
 ## The loop (per slice)
 
 1. **Trace the real code** - models, service functions, views (rbac keys + request
