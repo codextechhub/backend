@@ -23,6 +23,7 @@ from ..models import (
 from ..serializers import (
     PasswordResetPreviewSerializer, PasswordChangeSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
 )
+from ..account_scope        import administrable_user
 from ..services.password   import PasswordService
 from ..password_policy      import password_policy_payload
 
@@ -206,6 +207,11 @@ class AdminPasswordResetView(APIView):
     POST /{user_id}/password-reset/
     Admin triggers a 24-hour password reset for a specific user.
 
+    Refused with 422 when the target's status may not hold a password -
+    DEACTIVATED, or one of the never-approved states (DRAFT, PENDING_APPROVAL,
+    REJECTED). The check itself lives in ``PasswordService.admin_reset``, not
+    here, so it covers every caller of the service and not just this door.
+
     Permission: IsAuthenticatedAndActive, HasRBACPermission
     RBAC: identity.user_password.reset
 
@@ -215,10 +221,8 @@ class AdminPasswordResetView(APIView):
     rbac_permission = "platform.team.update"
 
     def post(self, request, user_id):
-        from ..models import User
-        try:
-            user = User.objects.get(id=user_id)
-        except User.DoesNotExist:
+        user = administrable_user(request, user_id)
+        if user is None:
             return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         try:
@@ -230,12 +234,25 @@ class AdminPasswordResetView(APIView):
         except Exception as e:
             raw = e.args[0] if e.args else {}
             if isinstance(raw, dict):
-                message = raw.get('detail', 'Password reset failed.')
+                # The service speaks 'message'; older payloads here used
+                # 'detail'. Read both rather than reporting the generic line
+                # over a refusal that named its reason.
+                message = raw.get('detail') or raw.get('message') or 'Password reset failed.'
                 error_detail = raw
+                # A status refusal is not an authorisation failure - the caller
+                # holds the key and the account is theirs to administer. It is
+                # the same 422 InvitationResendView returns for the same shape
+                # of refusal, so the frontend handles one case, not two.
+                http_status = (
+                    status.HTTP_422_UNPROCESSABLE_ENTITY
+                    if raw.get('error_code') == 'ACCOUNT_NOT_ELIGIBLE'
+                    else status.HTTP_403_FORBIDDEN
+                )
             else:
                 message = str(raw) or 'Password reset failed.'
                 error_detail = {'detail': message}
-            return error_response(message=message, error=error_detail, status=status.HTTP_403_FORBIDDEN)
+                http_status = status.HTTP_403_FORBIDDEN
+            return error_response(message=message, error=error_detail, status=http_status)
 
         return success_response(message="Password reset email sent.")
 
