@@ -520,6 +520,55 @@ can trace endpoints → calculations → output shapes without reading the code 
   added as a second snapshot row without the delegator being removed and
   unanimity counts rows.
 
+- 📝 `core` - documented: 6 slices in `docs/core/` - `core_response_contract`
+  (the `{success, message, data}` envelope, `XVSPagination`, the `core.mixins`
+  replacements for DRF's generic mixins, and `EnvelopeAutoSchema`),
+  `core_error_handling` (`custom_exception_handler` and its ten branches),
+  `core_file_storage` (`StoredFile`, the database-backed storage, the
+  capability-URL access model, `validate_upload`'s magic-byte checks and
+  `MediaView`), `core_background_jobs` (`BackgroundJob`, the `TrackedTask` base
+  every Celery task inherits, the `_job_*` attribution kwargs and the nightly
+  prune), `core_bootstrap_seeds` (`seed_all_permissions`' eighteen-step chain,
+  `create_superuser`, and what `build.sh` actually runs), and
+  `core_operations_and_mail` (the four destructive commands, `seed_dev_data`,
+  `send_email` and `TenantAPIClient`). Following the `vs_notifications`
+  precedent, the §8 findings live in a dedicated file,
+  **`error/core/core_code_issues.md`**, which each slice points at.
+  Baseline at the time of writing: **`Ran 64 tests in 112.087s` - FAILED
+  (errors=1)** (`cd apps && DB_NAME=cx_core_doc ../cx/Scripts/python.exe
+  manage.py test core --settings=apps.settings.local --noinput`). Unlike the
+  `vs_user` and `vs_todo` baselines, this failure is **not** environmental: the
+  cause is in `core` itself and is the finding below.
+  **Findings are recorded but NOT yet swept** - the loop stopped at step 3
+  (docs written) and steps 4-5 (briefing, fixes) are outstanding.
+  `core` is plumbing, not a domain module, so most of its defects are of one
+  shape: a shared helper that is a convention nothing enforces, and a module that
+  quietly did not opt in.
+  Six items are graded High. The one that is red right now:
+  `seed_all_permissions` writes a box-drawn banner and a `✔` summary line that a
+  Windows cp1252 console cannot encode, so the command dies on its last step
+  after all eighteen sub-seeds have committed - and takes `core`'s own suite with
+  it. Fourteen of the seventeen commands carry such characters; the fix is one
+  line (reconfigure the stdout encoding), not fourteen files. Second:
+  `python manage.py create_superuser` with no arguments mints
+  `admin@codexng.com` / `Admin@123456` - a password committed to the repo, on the
+  account the RBAC evaluator gives a runtime bypass - with the environment-driven
+  version present but commented out two lines below, and `reset_db`'s default
+  post-commands running exactly that bare form. Third: `reset_db` drops every
+  table in whatever `--database` points at behind one flag, with no environment
+  guard, no `DEBUG` check and no host in its warning, while its sibling
+  `rebuild_database` requires two independent confirmations for the same job.
+  Fourth: a `/media/` capability URL can never be revoked and nothing ever
+  deletes the bytes, so a file outlives the record that owned it and the URL
+  keeps working. Fifth: `ValueError` from an ORM filter has no branch in the
+  exception handler, which is why the same "non-numeric id parameter is a 500"
+  defect is recorded independently against four modules. Sixth: storage
+  validation raises from inside `_save` and surfaces as a 500, so every upload
+  endpoint has to remember `validate_upload` first - three have historically
+  forgotten. Also worth recording as a strength: `core/test_utils.TenantAPIClient`
+  goes through the real auth layer and is exactly what the ticket, todo and
+  workflow suites should be using instead of `force_authenticate`.
+
 ## The loop (per slice)
 
 1. **Trace the real code** - models, service functions, views (rbac keys + request
