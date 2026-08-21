@@ -333,6 +333,64 @@ can trace endpoints → calculations → output shapes without reading the code 
   (`XVS_Module_Requirements_Document_v2.20.docx`) when they are fixed or when
   the owner decides they should be recorded as known gaps.
 
+- 📝 `vs_schools` (`schools.vs_schools`) - documented: 4 slices in
+  `docs/schools/` - `school_records` (the `School` row, the tenant it is welded
+  to, the slug freeze at go-live, the school code, branding, the school-level
+  primary admin and the five CX console endpoints), `school_branches`
+  (`vs_tenants.Branch` as this app drives it: the per-tenant code allocator, the
+  one-main-branch invariant and its handover, the five-state lifecycle and the
+  six branch routes), `school_packages_entitlements` (`PackagePlan`,
+  `SchoolPackageSetup`, the `vs_config.Capability` module picker and the
+  dependency closure that turns a picked module into a set of grants), and
+  `school_provisioning` (turning a contact into an invited account, the books
+  bridge into `vs_finance`, the backfill command and the reset-config
+  operation). Following the `vs_notifications`, `vs_config`, `vs_exports`,
+  `vs_health` and `vs_rbac` precedent, the §8 findings live in a dedicated file,
+  **`error/schools/school_code_issues.md`**, which each slice points at.
+  Baseline at the time of writing: **`Ran 189 tests in 5224.847s` - OK**
+  (`cd apps && DB_NAME=cx_schoolslice ../cx/Scripts/python.exe manage.py test
+  schools.vs_schools --settings=apps.settings.local --noinput`). Eighty-seven
+  minutes on a contended box, against the ~18 recorded above; treat that as an
+  upper bound, not a regression. The traceback that repeats through the run is
+  not a failure - it is finding §2 firing.
+  **Findings are recorded but NOT yet swept** - the loop stopped at step 3
+  (docs written) and steps 4-5 (briefing, fixes) are outstanding.
+  Six findings were **confirmed by execution** in a throwaway test module that
+  was deleted afterwards; the rest are traced to file and line.
+  The worst item is that **a school admin cannot manage their own branches at
+  all**: `seed_school_permissions` grants `school.branches.view/create/update/
+  manage` to the `school_admin` prebuilt role and
+  `seed_school_permission_groups` bundles them, while every branch endpoint in
+  the repo takes a `platform.branches.*` key - which is `PermissionScope.PLATFORM`
+  and therefore cannot legally be held by a school role at all. Four granted keys
+  that no view reads, and no role edit can fix it. Second: `provision_admin_user`
+  swallows every failure and both callers ignore its return value, so a school
+  whose `school_admin` prebuilt is missing is created with a tenant, branches,
+  books, entitlements and a checklist, no `User`, no invitation - and a 201.
+  There is then no endpoint to see the QUEUED invite, correct the address or
+  re-send it. Third: every seat and branch limit the four seeded plans sell
+  (`max_students`, `max_teachers`, `max_admins`, `max_branch`) is validated only
+  against the number an operator types into the wizard and enforced against no
+  row anywhere - a Basic school sold one site can be given five. Fourth:
+  `POST <slug>/reset-config/` requires a `confirmation_token`, never compares it
+  to anything, and deletes only the branding row while its docstring promises
+  branding, modules and localization; the view carries `IsVisionSuperAdmin`
+  alone, so neither the account-status gate nor the pending-tenant surface gate
+  nor any permission key applies to the app's one destructive write.
+  Worth recording as a strength: the failure-isolation reasoning here is
+  careful and mostly right, and `error/schools/school_code_issues.md` closes with
+  a "What is right, and should not be tidied" section listing twelve deliberate
+  choices (the nested savepoint in the books service, the tenant-scoped existence
+  probe, keying every audit event on the primary key rather than the slug or the
+  branch code, re-reading the school by pk after a rename).
+  This module **does** have an FRD, and the deepest revision history of any:
+  `docs/frd/functional-requirements/01-school-and-branch-management/`, latest
+  `XVS_M01_School_and_Branch_Management_Functional_Requirements_Document_v1.11.docx`.
+  It was not revised in this pass, because the pass changed no code. Findings §1
+  to §4 are strong candidates for its **Needs Attention** section and for the
+  latest MRD when they are fixed, or sooner if the owner wants them recorded as
+  known gaps.
+
 ## The loop (per slice)
 
 1. **Trace the real code** - models, service functions, views (rbac keys + request
