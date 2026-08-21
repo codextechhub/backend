@@ -987,3 +987,47 @@ class RunsCarryTheirBranchTests(_PayrollFixture):
         self.assertEqual(
             [row["name"] for row in response.data["data"]], ["Unassigned Person"],
         )
+
+
+# --------------------------------------------------------------------------- #
+# Telling the screen which question to ask                                    #
+# --------------------------------------------------------------------------- #
+
+
+class PayrollScopeIsReadableBySomebodyWhoRunsPayrollTests(_PayrollFixture):
+    """The screen has to know whether to ask, and could not find out.
+
+    ``payroll.scope`` is a school setting, and reading it through the config API
+    needs ``config.value.view`` - a settings key no payroll officer holds. So the
+    summary the runs tab already fetches carries the scope, and nothing else of
+    the school's configuration.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.salary(self.books, "Ikeja Teacher", self.ikeja)
+        self.salary(self.books, "Lekki Teacher", self.lekki)
+        self.salary(self.books, "Yaba Teacher", self.yaba)
+        self.hq = self.officer(self.tenant, "scope-read@fin.test", "scope-read")
+
+    def summary(self):
+        response = self.hq.get(
+            f"/v1/finance/payroll-runs/summary/?entity={self.books.code}",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["data"]
+
+    def test_a_central_school_reports_central(self):
+        self.assertEqual(self.summary()["payroll_scope"], "CENTRAL")
+
+    def test_a_school_that_switched_reports_per_branch(self):
+        self.set_scope(self.tenant, "PER_BRANCH")
+
+        self.assertEqual(self.summary()["payroll_scope"], "PER_BRANCH")
+
+    def test_the_summary_carries_no_other_configuration(self):
+        """One setting, not a window onto the school's config."""
+        self.assertEqual(
+            set(self.summary()),
+            {"payroll_scope", "runs", "employees", "net", "to_pay"},
+        )

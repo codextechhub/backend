@@ -6124,7 +6124,10 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
         entity, _, _ = self.build_books()
         for path, keys in (
             ("expense-claims", {"open", "month_total", "avg", "awaiting"}),
-            ("payroll-runs", {"runs", "employees", "net", "to_pay"}),
+            # payroll_scope rides along so the payroll screen knows whether to
+            # ask which branch a run is for: reading the setting through the
+            # config API needs `config.value.view`, which no payroll officer has.
+            ("payroll-runs", {"payroll_scope", "runs", "employees", "net", "to_pay"}),
             ("fixed-assets", {"cost", "accum", "nbv", "monthly"}),
             ("tax-filings", {"outstanding", "open", "filed", "paid"}),
         ):

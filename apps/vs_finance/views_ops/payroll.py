@@ -194,9 +194,18 @@ class PayrollRunSummaryView(_FinanceBase):
                 Sum("net_total", filter=Q(run_status=PayrollRunStatus.POSTED)), 0),
         )
         latest = runs.order_by("-pay_date", "-id").first()
+        from ..payroll import payroll_scope
+
         return success_response(
             "Payroll summary retrieved.",
             data={
+                # How this school runs payroll, so the screen knows whether to
+                # ask which branch a new run is for. It is a school setting, but
+                # reading it through the config API needs `config.value.view` -
+                # a settings key no payroll officer holds - and the alternative
+                # was a screen that guesses. Only the scope, never the rest of
+                # the school's configuration.
+                "payroll_scope": payroll_scope(entity),
                 "runs": agg["runs"],
                 "employees": latest.lines.count() if latest else 0,
                 "net": latest.net_total if latest else 0,
