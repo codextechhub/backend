@@ -23,6 +23,37 @@ PLATFORM_ROLE_NAMES = {
     "xvs_platform_admin": "XVS Platform Admin",
 }
 
+#: What a SCHOOL administrator may do with the import engine.
+#:
+#: A school loads its own roll at onboarding - "Import your initial data" is a
+#: step on its checklist - and until this existed the school_admin prebuilt role
+#: carried none of these keys, so the step could be asked for and never done.
+#:
+#: Narrower than the platform set on purpose, and each exclusion is a decision:
+#:
+#: - ``templates.create`` / ``templates.manage`` shape what a valid file IS.
+#:   That is platform configuration; a school picks a template, it does not
+#:   write one.
+#: - ``batches.update`` / ``batches.delete`` rewrite or erase the record of an
+#:   import. A school corrects its data by uploading a corrected file, which is
+#:   a new batch and leaves the old one legible.
+#: - ``rollbacks.*`` unwind data that is already live. That is a support action
+#:   with a person on the other end of it, not a button on an onboarding screen.
+#: - ``audit.view`` / ``notifications.view`` are platform observability over
+#:   every tenant's imports.
+#: - ``validations.update`` resolves an issue in place. The school-facing flow
+#:   is fix-the-file-and-upload-again, which keeps the file and the data in
+#:   step; resolving in place lets them drift.
+SCHOOL_ADMIN_IMPORT_KEYS = {
+    "import.templates.view",
+    "import.batches.view",
+    "import.batches.create",
+    "import.batches.run",
+    "import.batches.import",
+    "import.validations.view",
+    "import.jobs.view",
+}
+
 
 # (resource_name, resource_description, [(action, description, is_restricted, sensitivity), ...])
 IMPORT_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
@@ -202,12 +233,80 @@ class Command(BaseCommand):
                     f"\n  Ensured {granted} import permissions for {role_key} role."
                 )
 
+        # -- School-side defaults ----------------------------------------------
+        # Attached to the prebuilt template AND backfilled into schools that
+        # already exist, for the same reason every seeder in this repo does
+        # both: without the backfill the keys only ever reach schools created
+        # after today, and every existing school admin keeps getting a 403
+        # nobody can explain.
+        self._seed_school_admin_defaults()
+
         # -- Permission Groups -------------------------------------------------
         self._seed_permission_groups(all_keys)
 
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_count} new permission(s) created, {len(all_keys)} total import keys registered.\n"
         ))
+
+    def _seed_school_admin_defaults(self) -> None:
+        from vs_rbac.models import (
+            Permission,
+            PrebuiltRolePermission,
+            PrebuiltRoleTemplate,
+            TenantRolePermission,
+            TenantRoleTemplate,
+        )
+
+        keys = sorted(
+            Permission.objects
+            .filter(key__in=SCHOOL_ADMIN_IMPORT_KEYS)
+            .values_list("key", flat=True)
+        )
+        missing = SCHOOL_ADMIN_IMPORT_KEYS - set(keys)
+        if missing:
+            self.stdout.write(self.style.WARNING(
+                f"\n  ⚠  Not registered, so not granted: {', '.join(sorted(missing))}"
+            ))
+
+        prebuilt = PrebuiltRoleTemplate.objects.filter(key="school_admin").first()
+        if prebuilt is None:
+            self.stdout.write(self.style.WARNING(
+                "\n  ⚠  Prebuilt role 'school_admin' not found - run "
+                "seed_prebuilt_role_templates first; school grants skipped."
+            ))
+            return
+
+        attached = 0
+        for key in keys:
+            _, created = PrebuiltRolePermission.objects.get_or_create(
+                prebuilt_role=prebuilt, permission_id=key,
+            )
+            attached += int(created)
+
+        backfilled = 0
+        roles = [
+            role for role in TenantRoleTemplate.objects.filter(
+                tenant__kind="SCHOOL", is_system_role=True,
+            ).only("id", "key")
+            # The whole-tenant template only. A branch-pinned copy must not gain
+            # the keys that load the whole school's roll.
+            if role.key == "school_admin"
+        ]
+        for role in roles:
+            for key in keys:
+                # get_or_create leaves an existing row alone, so an explicit
+                # deny an administrator set is never flipped back on.
+                _, created = TenantRolePermission.objects.get_or_create(
+                    role=role, permission_id=key,
+                    defaults={"granted": True, "granted_by": None},
+                )
+                backfilled += int(created)
+
+        self.stdout.write(
+            f"\n  school_admin: {len(keys)} import key(s) - "
+            f"{attached} newly attached, {backfilled} backfilled across "
+            f"{len(roles)} existing role template(s)."
+        )
 
     def _seed_permission_groups(self, all_keys: list[str]) -> None:
         from vs_rbac.models import (
