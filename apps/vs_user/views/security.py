@@ -223,7 +223,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         Ends sessions for a specific user or a specific session.
         Also blacklists all outstanding JWT tokens for the user.
         """
-        ser = ForceLogoutSerializer(data=request.data)
+        ser = ForceLogoutSerializer(data=request.data, context={'request': request})
         ser.is_valid(raise_exception=True)
 
         target_user = ser.validated_data.get('user_id')
@@ -428,7 +428,7 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     @action(detail=False, methods=['post'], url_path='unlock')
     def unlock(self, request):
-        ser = UnlockAccountSerializer(data=request.data)
+        ser = UnlockAccountSerializer(data=request.data, context={'request': request})
         ser.is_valid(raise_exception=True)
 
         user         = ser.validated_data['user']
@@ -471,20 +471,64 @@ class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     Filters: actor_id, subject_id (entity_id), school_id, event (action_type),
              ip_address, date_from, date_to.
 
+    Permission: IsAuthenticatedAndActive, HasRBACPermission
+    RBAC: platform.audit.view
+
     docstring-name: Auth event log
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    # The rows this returns are ``AuditEvent`` rows, pre-filtered to the identity
+    # module, so the gate is the one every other read of that table already uses
+    # (``vs_audit.views``: list, detail, entity trails, filter options). A second
+    # key here would mean two different answers to "who may read this row",
+    # decided by which URL it was asked for. ``platform.security.view``, which
+    # the sessions and attempts viewsets above name, is deliberately not reused:
+    # no seeder defines it, so it can be granted to nobody and would shut a
+    # school's own auditor out of their own trail.
+    #
+    # The key is ``PermissionScope.TENANT`` on purpose - audit officers hold it
+    # inside a tenant - so the key alone does not decide isolation. The queryset
+    # does, below.
+    rbac_permission    = 'platform.audit.view'
     pagination_class   = XVSPagination
 
     def get_serializer_class(self):
         from vs_audit.serializers import AuditEventListSerializer
         return AuditEventListSerializer
 
+    def _scope_to_tenant(self, qs):
+        """Narrow the trail to the caller's own tenant unless they are platform.
+
+        Platform-kind actors keep the cross-tenant view; that is what the
+        ``platform.`` surfaces are for, and the Event Explorer in ``vs_audit``
+        divides the two the same way.
+
+        The null-tenant half of the predicate is not defensive padding.
+        ``AuditEvent.tenant`` is nullable and identity events only started
+        carrying it in d1ceccb (2026-08-19), which deliberately did not backfill.
+        Every identity row written before that has ``tenant = NULL`` while still
+        recording the tenant's pk in ``metadata['tenant_id']`` - ``log_auth_event``
+        has written that since 661a73a (2026-07-14). Matching on the column alone
+        would hide Bright Star's own history from Bright Star's auditor; widening
+        to every null row would hand them Greenfield's. Matching the id that was
+        recorded at the time returns exactly the rows that are theirs, recovered
+        rather than inferred. Rows older than 661a73a carry no id and stay
+        platform-only, which is the safe direction to be wrong in.
+        """
+        user = self.request.user
+        if getattr(getattr(user, 'tenant', None), 'kind', None) == Tenant.Kind.PLATFORM:
+            return qs
+        tenant = getattr(self.request, 'tenant', None) or user.tenant
+        return qs.filter(
+            Q(tenant=tenant)
+            | Q(tenant__isnull=True, metadata__tenant_id=str(tenant.pk))
+        )
+
     def get_queryset(self):
         from vs_audit.models import AuditEvent, AuditModuleKey
         params = self.request.query_params
-        qs = AuditEvent.objects.filter(
-            module_key=AuditModuleKey.IDENTITY
+        qs = self._scope_to_tenant(
+            AuditEvent.objects.filter(module_key=AuditModuleKey.IDENTITY)
         ).select_related('actor_user').order_by('-event_at')
 
         if actor_id := params.get('actor_id'):

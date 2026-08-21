@@ -4589,3 +4589,202 @@ class PersonaConfersNoAuthorityTests(TestCase):
                 self.assertFalse(
                     has_permission(user, "platform.team.create", tenant=self.school.tenant)
                 )
+
+
+class AuthEventLogTenantIsolationTests(TestCase):
+    """``GET /v1/user/auth-events/`` is the identity half of the audit trail.
+
+    It reads ``AuditEvent`` rows directly, so it needs the same key and the same
+    tenant boundary the Event Explorer applies. Before this suite the viewset
+    declared no ``rbac_permission`` at all, and ``HasRBACPermission`` starts from
+    ``passed = True``, so every signed-in active account on the platform could
+    read every sign-in, lockout, password reset and email change ever recorded.
+    """
+
+    KEY = "platform.audit.view"
+
+    def setUp(self):
+        from core.test_utils import TenantAPIClient
+        from vs_rbac.tests.helpers import platform_tenant
+
+        self.bright_star = make_school(name="Bright Star School", slug="bright-star")
+        self.greenfield = make_school(name="Greenfield Academy", slug="greenfield")
+        self.codex = platform_tenant()
+
+        # Bright Star's audit officer, and a parent who holds nothing.
+        self.officer = self._user("officer@bright-star.test", self.bright_star.tenant)
+        self.parent = self._user("parent@bright-star.test", self.bright_star.tenant)
+        self.grant(self.officer, self.bright_star.tenant)
+
+        # Codex's audit officer, on the platform tenant, holding the same key.
+        self.cx_officer = self._user("officer@codex.test", self.codex)
+        self.grant(self.cx_officer, self.codex)
+
+        self.own = self._event(self.bright_star.tenant, "ada@bright-star.test")
+        self.other = self._event(self.greenfield.tenant, "tunde@greenfield.test")
+
+        self.client = TenantAPIClient(self.officer)
+
+    # -- fixtures ---------------------------------------------------------
+
+    @staticmethod
+    def _user(email, tenant):
+        return User.objects.create_user(
+            email=email, password="Str0ng!pass123", status="ACTIVE",
+            first_name="Test", last_name="Person", tenant=tenant,
+        )
+
+    @classmethod
+    def grant(cls, user, tenant):
+        from vs_rbac.tests.helpers import (
+            make_assignment, make_permission, make_role, make_role_permission,
+        )
+
+        role = make_role(tenant, name=f"Audit officer {user.email}")
+        make_role_permission(role, make_permission(cls.KEY))
+        make_assignment(tenant, user, role)
+        return role
+
+    @staticmethod
+    def _event(tenant, subject_email, *, metadata=None):
+        """One identity event, shaped the way ``log_auth_event`` writes them."""
+        from vs_audit.models import (
+            AuditActionType, AuditEvent, AuditModuleKey, AuditStatus,
+        )
+
+        meta = {"auth_event": "LOGIN_SUCCESS", "ip_address": "197.210.1.1"}
+        if tenant is not None:
+            meta["tenant_id"] = str(tenant.pk)
+            meta["tenant_slug"] = tenant.slug
+        if metadata is not None:
+            meta.update(metadata)
+        return AuditEvent.objects.create(
+            module_key=AuditModuleKey.IDENTITY,
+            action_type=AuditActionType.LOGIN_SUCCESS,
+            status=AuditStatus.SUCCESS,
+            tenant=tenant,
+            # actor_type defaults to USER, and clean() then insists on an actor.
+            actor_label=subject_email,
+            entity_type="User",
+            entity_id="1",
+            entity_label=subject_email,
+            summary=f"{subject_email} signed in.",
+            metadata=meta,
+        )
+
+    @staticmethod
+    def _rows(response):
+        payload = response.data["data"]
+        return payload["results"] if isinstance(payload, dict) else payload
+
+    def _ids(self, response):
+        return {row["id"] for row in self._rows(response)}
+
+    def get(self, client=None, **params):
+        return (client or self.client).get("/v1/user/auth-events/", params or None)
+
+    # -- the gate ---------------------------------------------------------
+
+    def test_a_signed_in_user_without_the_key_is_refused(self):
+        """The exposure this suite exists to close.
+
+        A Bright Star parent is authenticated and active and holds no audit key
+        whatsoever. Before the fix this returned 200 and every identity event on
+        the platform, Greenfield's included.
+        """
+        from core.test_utils import TenantAPIClient
+
+        response = self.get(TenantAPIClient(self.parent))
+
+        self.assertEqual(response.status_code, 403, response.data)
+
+    def test_a_refusal_does_not_say_whether_any_events_exist(self):
+        """The 403 must read identically whether the trail is full or empty.
+
+        Otherwise the refusal itself answers "has anyone at this school been
+        locked out this week", which is the question the key exists to gate.
+        """
+        from core.test_utils import TenantAPIClient
+        from vs_audit.models import AuditEvent
+
+        populated = self.get(TenantAPIClient(self.parent))
+
+        # Queryset delete bypasses the model's append-only guard, which is what
+        # we want here: the point is an empty table, not an audited deletion.
+        AuditEvent.objects.all().delete()
+        empty = self.get(TenantAPIClient(self.parent))
+
+        self.assertEqual(populated.status_code, empty.status_code)
+        self.assertEqual(populated.data, empty.data)
+
+    # -- the boundary -----------------------------------------------------
+
+    def test_the_officer_sees_their_own_tenant_and_not_another(self):
+        response = self.get()
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self._ids(response), {str(self.own.pk)})
+
+    def test_platform_staff_see_across_tenants(self):
+        """``platform.*`` on the platform tenant is what buys the wide view."""
+        from core.test_utils import TenantAPIClient
+
+        response = self.get(TenantAPIClient(self.cx_officer))
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            self._ids(response), {str(self.own.pk), str(self.other.pk)},
+        )
+
+    def test_a_filter_cannot_reach_across_the_boundary(self):
+        """Scoping is applied before the query parameters, not after."""
+        response = self.get(subject_id=self.other.entity_id)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertNotIn(str(self.other.pk), self._ids(response))
+
+    # -- the null-tenant rows ---------------------------------------------
+
+    def test_a_null_tenant_row_recorded_as_ours_is_returned(self):
+        """Identity events written before d1ceccb have ``tenant = NULL``.
+
+        They still carry the tenant's pk in ``metadata['tenant_id']``, written
+        since 661a73a, so Bright Star's own history is recoverable exactly and
+        must not vanish from Bright Star's own screen.
+        """
+        historical = self._event(None, "ada@bright-star.test", metadata={
+            "tenant_id": str(self.bright_star.tenant.pk),
+        })
+
+        response = self.get()
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIn(str(historical.pk), self._ids(response))
+
+    def test_a_null_tenant_row_recorded_as_another_school_is_not_returned(self):
+        """The half that would have leaked if the predicate were ``isnull=True``."""
+        theirs = self._event(None, "tunde@greenfield.test", metadata={
+            "tenant_id": str(self.greenfield.tenant.pk),
+        })
+
+        response = self.get()
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertNotIn(str(theirs.pk), self._ids(response))
+
+    def test_an_unattributable_null_tenant_row_stays_platform_only(self):
+        """No column and no recorded id: it belongs to nobody in particular.
+
+        Rows older than 661a73a look like this. Handing them to a school would
+        be a guess, so they stay where a guess cannot do harm.
+        """
+        from core.test_utils import TenantAPIClient
+
+        # tenant is None, so ``_event`` records no ``tenant_id`` at all.
+        orphan = self._event(None, "nobody@unknown.test")
+
+        school_side = self.get()
+        self.assertNotIn(str(orphan.pk), self._ids(school_side))
+
+        platform_side = self.get(TenantAPIClient(self.cx_officer))
+        self.assertIn(str(orphan.pk), self._ids(platform_side))
