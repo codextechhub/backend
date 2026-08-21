@@ -59,5 +59,12 @@ run seed_dev_data
 echo "→ Per-school notification settings..."
 run seed_notification_settings --all
 
+# One school that is still PENDING, so the onboarding control room has
+# something to run against. Every other seeded school is created ACTIVE, which
+# means nothing in the dev world exercised onboarding at all.
+echo "→ Test school for onboarding (pending, with school + branch admin)..."
+run seed_test_school
+
 echo ""
 echo "✔ Done. Logins: admin@codexng.com / Admin@123456 · *.vision.edu / Vision@2025 · school users / School@2025"
+echo "  Onboarding test school: admin@bright-star.example.com / branch.admin@bright-star.example.com / School@2025"
