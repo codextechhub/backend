@@ -1398,14 +1398,20 @@ class EntityTrailCounterTests(EntityTrailCounterFixture, TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         return self.trail_row(response)
 
-    def test_the_stored_rollup_is_still_global(self):
-        """The premise, asserted rather than assumed - no tenant column exists."""
-        trail = EntityAuditTrail.objects.get(
-            entity_type=self.SHARED[0], entity_id=self.SHARED[1],
-        )
-        self.assertEqual(trail.event_count, 6)
-        self.assertFalse(
-            any(f.name == "tenant" for f in EntityAuditTrail._meta.get_fields()),
+    def test_the_trail_stores_no_counters_and_no_tenant(self):
+        """The premise, asserted rather than assumed.
+
+        Two facts hold this whole design up. The trail has no tenant column, so
+        its rows cannot be scoped and the counters have to be computed for the
+        caller. And it has no counter columns, so there is nowhere for a stale
+        total to live - a regression that re-adds one fails here rather than
+        being noticed years later by a reviewer reading a wrong number.
+        """
+        stored = {f.name for f in EntityAuditTrail._meta.get_fields()}
+
+        self.assertNotIn("tenant", stored)
+        self.assertEqual(
+            stored & {"event_count", "first_event_at", "last_event_at"}, set(),
         )
 
     def test_a_tenant_caller_counts_only_the_events_they_can_see(self):
@@ -1428,7 +1434,13 @@ class EntityTrailCounterTests(EntityTrailCounterFixture, TestCase):
         self.assertEqual(row["first_event_at"], own_first.isoformat().replace("+00:00", "Z"))
         self.assertEqual(row["last_event_at"], own_last.isoformat().replace("+00:00", "Z"))
 
-    def test_a_platform_caller_keeps_the_full_rollup(self):
+    def test_a_platform_caller_counts_every_tenants_events(self):
+        """Wider, and still counted rather than remembered.
+
+        The platform console is the surface that exists to read across tenants,
+        so all six events are theirs to see. What changed is where the six comes
+        from: ``AuditEvent``, not a stored total that could outlive them.
+        """
         row = self._list(self.cx)
 
         self.assertEqual(row["event_count"], 6)
@@ -1443,12 +1455,14 @@ class EntityTrailCounterTests(EntityTrailCounterFixture, TestCase):
         self.assertEqual(payload["trail"]["event_count"], len(payload["events"]))
         self.assertEqual(payload["trail"]["event_count"], 2)
 
-    def test_the_detail_header_stays_global_for_a_platform_caller(self):
+    def test_the_detail_header_agrees_for_a_platform_caller_too(self):
         response = self.cx.get(
             f"/v1/audit/entity-trails/{self.SHARED[0]}/{self.SHARED[1]}/",
         )
 
-        self.assertEqual(response.data["data"]["trail"]["event_count"], 6)
+        payload = response.data["data"]
+        self.assertEqual(payload["trail"]["event_count"], 6)
+        self.assertEqual(payload["trail"]["event_count"], len(payload["events"]))
 
     def test_a_single_branch_tenant_sees_its_own_ordinary_trails_unchanged(self):
         """The common case: nobody else has touched this entity, so nothing moves."""
@@ -1486,19 +1500,32 @@ class EntityTrailCounterQueryCostTests(EntityTrailCounterFixture, TestCase):
 
         self.assertEqual(counters[self.SHARED]["event_count"], 2)
 
-    def test_a_platform_caller_costs_no_query_at_all(self):
+    def test_one_query_answers_a_platform_callers_page_too(self):
+        """A platform caller pays one query per page, not one per trail.
+
+        This is the one thing the change costs. The stored rollup was free to
+        read and wrong; a real count is one grouped query, and the shape that
+        matters is that it is per *page* - the same shape a tenant caller has
+        had since 25d3a43, not an N+1 introduced for the wider audience.
+        """
         from .scoping import visible_trail_counters
 
         trails = self._trails()  # fetched outside the block - only the helper is measured
+        self.assertGreater(len(trails), 5, "the fixture must be worth measuring")
 
-        with self.assertNumQueries(0):
+        with self.assertNumQueries(1):
             counters = visible_trail_counters(trails, self._request(self.reviewer))
 
-        self.assertIsNone(counters, "a platform caller keeps the stored rollup")
+        self.assertEqual(counters[self.SHARED]["event_count"], 6)
 
     def test_the_endpoint_does_not_grow_a_query_per_extra_trail(self):
         """End to end, because a bulk helper is easy to call from an N+1 loop."""
-        client = TenantAPIClient(self.bright_officer)
+        for user in (self.bright_officer, self.reviewer):
+            with self.subTest(caller=user.email):
+                self._assert_page_cost_is_flat(user)
+
+    def _assert_page_cost_is_flat(self, user):
+        client = TenantAPIClient(user)
         url = "/v1/audit/entity-trails/"
 
         client.get(url)  # warm every per-request cache the auth stack keeps
@@ -1506,10 +1533,249 @@ class EntityTrailCounterQueryCostTests(EntityTrailCounterFixture, TestCase):
             client.get(url)
 
         for index in range(6):
-            self._event(f"PO-BRIGHT-EXTRA-{index}", tenant=self.bright_star)
+            self._event(f"PO-{user.pk}-EXTRA-{index}", tenant=self.bright_star)
 
         with CaptureQueriesContext(connection) as larger:
             response = client.get(url)
 
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(len(larger), len(small))
+
+
+# -----------------------------------------------------------------------------
+# The rollup is retired: a platform caller is counted, not remembered
+# -----------------------------------------------------------------------------
+
+class RetiredTrailRollupTests(EntityTrailCounterFixture, TestCase):
+    """What a platform reviewer reads must be the events actually present.
+
+    The rollup this replaces only ever incremented. In ``cx_db`` that left 11 of
+    889 trails disagreeing with the events beneath them, ``User:1`` claiming
+    1690 against 399, and 10 trails describing entities with no events at all -
+    and the platform console was the surface still reading the stored figure.
+
+    Both shapes are reproduced here through the same door that produced them
+    live: a bulk delete. ``AuditEvent.delete()`` refuses on the instance, but
+    ``queryset.delete()`` goes straight past it, which is exactly how migration
+    0003 removed every ``IMPERSONATED_REQUEST`` row and left the counters
+    standing.
+    """
+
+    def setUp(self):
+        self.build()
+        self.build_shared_trail()
+        self.cx = TenantAPIClient(self.reviewer)
+        self.bright = TenantAPIClient(self.bright_officer)
+
+    def _row(self, client, entity_type, entity_id):
+        # Narrowed with ``search`` as well as ``entity_type``: permission
+        # seeding leaves well over a page of Permission trails, and an emptied
+        # trail sorts last now, so it is legitimately off page one.
+        response = client.get(
+            "/v1/audit/entity-trails/",
+            {"entity_type": entity_type, "search": entity_id},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        for row in self.rows(response):
+            if row["entity_id"] == entity_id:
+                return row
+        self.fail(f"{entity_type}:{entity_id} was not listed at all")
+
+    def test_a_platform_caller_counts_what_is_there_after_a_bulk_delete(self):
+        """The User:1 case, in miniature: 6 claimed, 2 deleted, 4 present."""
+        AuditEvent.objects.filter(
+            id__in=[event.id for event in self.green_seen[:2]],
+        ).delete()
+
+        row = self._row(self.cx, *self.SHARED)
+
+        self.assertEqual(row["event_count"], 4)
+        # The trail row itself survives: which entities have been audited is
+        # still wanted, and so is the label. Only the counting moved.
+        self.assertTrue(
+            EntityAuditTrail.objects.filter(
+                entity_type=self.SHARED[0], entity_id=self.SHARED[1],
+            ).exists(),
+        )
+
+    def test_the_dates_move_with_the_deletion_not_just_the_count(self):
+        """first/last are derived too, so a high-water timestamp cannot survive."""
+        survivors = self.bright_seen + [self.nobodys]
+        AuditEvent.objects.filter(
+            id__in=[event.id for event in self.green_seen],
+        ).delete()
+
+        row = self._row(self.cx, *self.SHARED)
+
+        self.assertEqual(
+            row["first_event_at"],
+            min(e.event_at for e in survivors).isoformat().replace("+00:00", "Z"),
+        )
+        self.assertEqual(
+            row["last_event_at"],
+            max(e.event_at for e in survivors).isoformat().replace("+00:00", "Z"),
+        )
+
+    def test_a_trail_with_no_events_left_reports_zero(self):
+        """One of the 10. Every event gone, the catalogue row still standing.
+
+        A platform reviewer opening the console used to read the trail's stored
+        figure here - a count of events that no longer exist anywhere. Zero is
+        the only true answer, and the trail is still listed, because "this
+        entity was audited once" remains a fact worth keeping.
+        """
+        AuditEvent.objects.filter(
+            entity_type=self.SHARED[0], entity_id=self.SHARED[1],
+        ).delete()
+
+        row = self._row(self.cx, *self.SHARED)
+
+        self.assertEqual(row["event_count"], 0)
+        self.assertIsNone(row["first_event_at"])
+        self.assertIsNone(row["last_event_at"])
+        self.assertEqual(row["entity_label"], "View invoices")
+
+    def test_an_emptied_trail_stays_out_of_a_tenants_catalogue(self):
+        """The tenant boundary is unmoved: no events readable, not listed.
+
+        A platform caller sees the emptied row because their console catalogues
+        every audited entity; Bright Star never saw a row it could open no event
+        on and still does not.
+        """
+        AuditEvent.objects.filter(
+            entity_type=self.SHARED[0], entity_id=self.SHARED[1],
+        ).delete()
+
+        response = self.bright.get(
+            "/v1/audit/entity-trails/", {"entity_type": self.SHARED[0]},
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.rows(response), [])
+
+    def test_the_detail_route_is_a_404_once_the_events_are_gone(self):
+        """Not an empty trail with a stored count on top of it."""
+        AuditEvent.objects.filter(
+            entity_type=self.SHARED[0], entity_id=self.SHARED[1],
+        ).delete()
+
+        response = self.cx.get(
+            f"/v1/audit/entity-trails/{self.SHARED[0]}/{self.SHARED[1]}/",
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_emitting_an_event_no_longer_writes_to_the_trail_table(self):
+        """The steady state costs no UPDATE at all.
+
+        While the counters lived on the row, every emitted event wrote to this
+        table. Now an entity whose label has not moved is read and left alone -
+        which is also what makes a stale total impossible: there is no write.
+        """
+        with CaptureQueriesContext(connection) as queries:
+            self._registry_event(self.bright_star)
+
+        updates = [
+            query["sql"] for query in queries.captured_queries
+            if "UPDATE" in query["sql"] and "entityaudittrail" in query["sql"]
+        ]
+        self.assertEqual(updates, [])
+
+    def test_a_renamed_entity_still_refreshes_its_label(self):
+        """The one write that remains, and the reason the row exists at all."""
+        emit_audit_event(
+            module_key=AuditModuleKey.RBAC,
+            action_type=AuditActionType.UPDATE,
+            tenant=self.bright_star,
+            entity_type=self.SHARED[0],
+            entity_id=self.SHARED[1],
+            entity_label="View invoices and credit notes",
+            summary="Permission renamed",
+        )
+
+        trail = EntityAuditTrail.objects.get(
+            entity_type=self.SHARED[0], entity_id=self.SHARED[1],
+        )
+        self.assertEqual(trail.entity_label, "View invoices and credit notes")
+
+
+class EntityTrailOrderingTests(EntityTrailCounterFixture, TestCase):
+    """The catalogue sorted on the stored ``last_event_at``. That column is gone.
+
+    Ordering now comes from a subquery over the caller's own readable events, so
+    the list is sorted by the very number each row displays. The case that
+    matters is the one the stored column got wrong: a trail whose events were
+    deleted used to keep its high-water timestamp and could sit at the top of
+    the console for ever.
+    """
+
+    def setUp(self):
+        self.build()
+        self.cx = TenantAPIClient(self.reviewer)
+        self.bright = TenantAPIClient(self.bright_officer)
+
+    def _listed(self, client, **params):
+        response = client.get("/v1/audit/entity-trails/", params)
+        self.assertEqual(response.status_code, 200, response.data)
+        return [row["entity_id"] for row in self.rows(response)]
+
+    def _touch(self, entity_id, *, when):
+        """Move an entity's most recent event to ``when``, past the save guard."""
+        AuditEvent.objects.filter(
+            entity_type="PurchaseOrder", entity_id=entity_id,
+        ).update(event_at=when)
+
+    # Newest first, so this is the order the catalogue must produce.
+    NEWEST_FIRST = ["PO-ANON", "PO-BRIGHT-2", "PO-GREEN-1", "PO-GREEN-2", "PO-BRIGHT-1"]
+
+    def _stagger(self):
+        """Give the five purchase orders a known, unambiguous recency order."""
+        now = timezone.now()
+        for days, entity_id in enumerate(self.NEWEST_FIRST):
+            self._touch(entity_id, when=now - timedelta(days=days))
+
+    def test_the_catalogue_is_ordered_by_the_most_recent_event(self):
+        self._stagger()
+
+        self.assertEqual(
+            self._listed(self.cx, entity_type="PurchaseOrder"), self.NEWEST_FIRST,
+        )
+
+    def test_a_tenant_is_ordered_by_its_own_events_not_somebody_elses(self):
+        self._stagger()
+
+        self.assertEqual(
+            self._listed(self.bright, entity_type="PurchaseOrder"),
+            ["PO-BRIGHT-2", "PO-BRIGHT-1"],
+        )
+
+    def test_an_emptied_trail_sorts_last_instead_of_holding_the_top(self):
+        """The high-water mark's worst symptom, now impossible.
+
+        PO-ANON's only event is the newest on the board, so it holds first
+        place. Under the stored column it went on holding it after the event was
+        deleted, because nothing decremented. It is now last, where an entity
+        with nothing to show belongs.
+        """
+        self._stagger()
+
+        self.assertEqual(self._listed(self.cx, entity_type="PurchaseOrder")[0], "PO-ANON")
+
+        AuditEvent.objects.filter(entity_type="PurchaseOrder", entity_id="PO-ANON").delete()
+
+        self.assertEqual(
+            self._listed(self.cx, entity_type="PurchaseOrder"),
+            self.NEWEST_FIRST[1:] + ["PO-ANON"],
+        )
+
+    def test_trails_sharing_a_timestamp_are_ordered_deterministically(self):
+        """Paging over equal timestamps must not repeat or skip a row."""
+        moment = timezone.now()
+        for entity_id in self.EVERY_ROW:
+            self._touch(entity_id, when=moment)
+
+        first = self._listed(self.cx, entity_type="PurchaseOrder")
+        second = self._listed(self.cx, entity_type="PurchaseOrder")
+
+        self.assertEqual(first, second)
+        self.assertEqual(first, sorted(self.EVERY_ROW))

@@ -836,11 +836,23 @@ class SchoolTrailIsKeyedOnThePrimaryKeyTests(TestCase):
     # --- the trail row itself ----------------------------------------------
 
     def test_the_trail_row_is_the_same_row_before_and_after_a_rename(self):
+        """One row, both events on it - counted on the events themselves.
+
+        This used to read ``trail.event_count``. That column is gone (vs_audit
+        migration 0011): it was a stored rollup that only ever incremented, so
+        it could not be trusted to say how many events were really there. What
+        the test wants to know has not changed - did the rename land on the
+        school's existing trail or start a second one - and the events answer it
+        directly.
+        """
         school = self._create_school()
+        events = AuditEvent.objects.filter(
+            entity_type="School", entity_id=str(school.pk),
+        )
         trail_before = EntityAuditTrail.objects.get(
             entity_type="School", entity_id=str(school.pk),
         )
-        self.assertEqual(trail_before.event_count, 1)
+        self.assertEqual(events.count(), 1)
 
         self._rename(school, "bright-star-academy")
 
@@ -848,9 +860,10 @@ class SchoolTrailIsKeyedOnThePrimaryKeyTests(TestCase):
             entity_type="School", entity_id=str(school.pk),
         )
         self.assertEqual(trail_after.pk, trail_before.pk)
-        self.assertEqual(trail_after.event_count, 2)
-        self.assertEqual(trail_after.first_event_at, trail_before.first_event_at)
-        self.assertGreater(trail_after.last_event_at, trail_before.last_event_at)
+        self.assertEqual(events.count(), 2)
+        self.assertEqual(
+            EntityAuditTrail.objects.filter(entity_type="School").count(), 1,
+        )
 
     def test_two_schools_never_share_a_trail(self):
         """A single-school test proves nothing here: the key has to separate
@@ -989,8 +1002,10 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
             set(trails.values_list("entity_label", flat=True)),
             {"Bright Star Main Branch", "Greenfield Main Branch"},
         )
+        # Counted on the events, not on a stored rollup: vs_audit migration
+        # 0011 dropped ``event_count`` because it only ever incremented.
         for trail in trails:
-            self.assertEqual(trail.event_count, 1)
+            self.assertEqual(self._branch_events().filter(entity_id=trail.entity_id).count(), 1)
 
     def test_one_schools_branch_history_never_shows_up_in_anothers(self):
         """Proved through the endpoint the console calls, because that is where
@@ -1061,7 +1076,7 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
         trail_before = EntityAuditTrail.objects.get(
             entity_type="Branch", entity_id=str(branch.pk),
         )
-        self.assertEqual(trail_before.event_count, 1)
+        self.assertEqual(self._branch_events(branch).count(), 1)
 
         self._rename_branch(school, branch, "Lekki Annex")
 
@@ -1069,7 +1084,9 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
             entity_type="Branch", entity_id=str(branch.pk),
         )
         self.assertEqual(trail_after.pk, trail_before.pk)
-        self.assertEqual(trail_after.event_count, 2)
+        # Counted on the events: ``event_count`` was dropped in vs_audit
+        # migration 0011 because nothing ever decremented it.
+        self.assertEqual(self._branch_events(branch).count(), 2)
 
     def test_the_code_is_no_longer_a_trail_of_its_own(self):
         school, main = self._create_school_with_main_branch()

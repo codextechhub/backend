@@ -146,27 +146,41 @@ class AuditEventDetailSerializer(serializers.ModelSerializer):
 # Entity Audit Trail Serializers
 # -----------------------------------------------------------------------------
 
+# The trail's two timestamps are computed, not model fields, so nothing formats
+# them on the way out. Borrowing a real ``DateTimeField`` keeps them rendered
+# exactly like every other datetime the API emits, including under a project
+# ``DATETIME_FORMAT``, rather than whatever ``str()`` happens to produce.
+_TRAIL_DATETIME = serializers.DateTimeField()
+
+
+def _isoformat(value):
+    """Render a computed datetime the way DRF renders a stored one."""
+    return _TRAIL_DATETIME.to_representation(value) if value else None
+
+
 class EntityAuditTrailSerializer(serializers.ModelSerializer):
-    """Serializer for the summary trail table/model.
+    """The catalogue row: which entity, what it is called, how big its trail is.
 
-    ``event_count``, ``first_event_at`` and ``last_event_at`` are a *stored*
-    rollup. ``EntityAuditTrail`` is keyed on ``(entity_type, entity_id)`` with no
-    tenant column, so those three numbers count every event ever written against
-    the entity, from every tenant, whether or not the reader may open a single
-    one of them.
+    Only the first two come off the model. ``EntityAuditTrail`` stores no
+    counters - it stopped being a rollup because the rollup only ever grew (see
+    the model docstring) - so ``event_count``, ``first_event_at`` and
+    ``last_event_at`` are read out of ``visible_counters``, which the view puts
+    in the context and :func:`vs_audit.scoping.visible_trail_counters` fills
+    from ``AuditEvent`` in one grouped query per page.
 
-    When the view puts ``visible_counters`` in the context (see
-    :func:`vs_audit.scoping.visible_trail_counters`) the three are answered from
-    it instead, so a tenant caller is told the size of the trail they can
-    actually read and the header agrees with the events listed under it. A
-    platform caller gets no such context and keeps the stored rollup, which is
-    the global figure their console exists to show.
+    They are declared read-only method fields rather than model fields for a
+    reason worth keeping: there is no longer any column for a write to land in,
+    so no code path can persist a count at all, whether it means to or not.
 
-    The stored row is never mutated to do this: the counters are overwritten in
-    the outgoing representation, so nothing that later saves an instance handed
-    out by a read endpoint can write a tenant's partial count back over the
-    rollup.
+    A pair missing from ``visible_counters`` reports ``0``/``null``: the caller
+    can read no event on that entity, or the entity has none left. That is the
+    honest answer for a trail whose events were deleted underneath it, and it is
+    the answer the old stored figure could not give.
     """
+
+    event_count = serializers.SerializerMethodField()
+    first_event_at = serializers.SerializerMethodField()
+    last_event_at = serializers.SerializerMethodField()
 
     class Meta:
         model = EntityAuditTrail
@@ -180,24 +194,26 @@ class EntityAuditTrailSerializer(serializers.ModelSerializer):
             "last_event_at",
         )
 
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
+    def _counters(self, instance):
+        """The caller's counters for one trail, or an empty dict meaning zero.
 
-        counters = self.context.get("visible_counters")
-        if counters is None:
-            return data
+        A view that forgets the context gets zeros, which is visibly wrong on
+        the screen and discloses nothing - the safe direction for a default to
+        fail in. Both views supply it; ``EntityAuditTrailDetailSerializer``
+        instantiates this class for schema generation only and never serializes
+        through it.
+        """
+        counters = self.context.get("visible_counters") or {}
+        return counters.get((instance.entity_type, instance.entity_id)) or {}
 
-        # A trail with no key here is one the caller can read no event on. That
-        # is zero, not the rollup: falling back to the stored number is exactly
-        # the disclosure this exists to close.
-        visible = counters.get((instance.entity_type, instance.entity_id)) or {}
-        data["event_count"] = visible.get("event_count", 0)
-        for field_name in ("first_event_at", "last_event_at"):
-            value = visible.get(field_name)
-            data[field_name] = (
-                self.fields[field_name].to_representation(value) if value else None
-            )
-        return data
+    def get_event_count(self, instance) -> int:
+        return self._counters(instance).get("event_count", 0)
+
+    def get_first_event_at(self, instance) -> str | None:
+        return _isoformat(self._counters(instance).get("first_event_at"))
+
+    def get_last_event_at(self, instance) -> str | None:
+        return _isoformat(self._counters(instance).get("last_event_at"))
 
 
 class EntityAuditTrailDetailSerializer(serializers.Serializer):

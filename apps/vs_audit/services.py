@@ -236,7 +236,14 @@ def emit_audit_event(
             from vs_tenants.context import mark_audit_event_emitted
             mark_audit_event_emitted()
 
-            trail, _ = EntityAuditTrail.objects.get_or_create(
+            # The catalogue row: which entities have been audited, and what each
+            # one is called. Nothing is counted here. ``EntityAuditTrail`` used
+            # to carry a rollup that this call incremented and nothing ever
+            # decremented, so the stored total drifted from the events beneath
+            # it (see the model docstring, and migration 0003, which deleted
+            # events and left the counters standing). The counters are computed
+            # from AuditEvent at read time now.
+            trail, created = EntityAuditTrail.objects.get_or_create(
                 entity_type=entity_type,
                 entity_id=str(entity_id),
                 defaults={"entity_label": entity_label or ""},
@@ -246,11 +253,14 @@ def emit_audit_event(
             # not: a trail keyed on a primary key shows an opaque number, and
             # the label is the only human handle on the row. Left frozen, the
             # trail list would still be offering "Bright Star" long after the
-            # school became "Bright Star Academy". Costs no extra query -
-            # register_event's save carries the field.
-            if entity_label and trail.entity_label != entity_label:
+            # school became "Bright Star Academy".
+            #
+            # A write only when it actually changed. While the counters lived
+            # here every emitted event cost an UPDATE on this table; now the
+            # steady state - an entity whose label has not moved - costs none.
+            if not created and entity_label and trail.entity_label != entity_label:
                 trail.entity_label = entity_label
-            trail.register_event(event)
+                trail.save(update_fields=["entity_label"])
 
         return event
 

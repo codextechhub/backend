@@ -28,7 +28,7 @@ Two layers, deliberately separate:
 """
 from __future__ import annotations
 
-from django.db.models import Count, Max, Min, Q
+from django.db.models import Count, Max, Min, OuterRef, Q, Subquery
 
 
 def tenant_event_predicate(tenant) -> Q:
@@ -109,34 +109,74 @@ def scope_events_to_caller(queryset, request):
     return queryset if predicate is None else queryset.filter(predicate)
 
 
-def visible_trail_counters(trails, request):
-    """Recount ``EntityAuditTrail`` rollups over only the events this caller reads.
+def latest_visible_event_at(request):
+    """A ``Subquery`` giving each trail's most recent event *this caller* can read.
 
-    ``EntityAuditTrail`` is keyed on ``(entity_type, entity_id)`` with no tenant
-    column, so ``event_count``, ``first_event_at`` and ``last_event_at`` are a
-    stored rollup over every event on that entity from every tenant. 1da5c2a
-    bounded *which* trails a caller may list; it left the three numbers on each
-    listed row global. Handing a school a count it cannot reconcile with the
-    events underneath it is a small disclosure and a large confusion: the trail
-    says 40 and the page below lists 12.
+    Correlated on the outer row's ``(entity_type, entity_id)``, so it is only
+    meaningful annotated onto an ``EntityAuditTrail`` queryset.
 
-    Returns ``None`` for a platform caller, who keeps the stored rollup - the
-    global figure is the true one and the platform console is what it is for.
-    Otherwise returns ``{(entity_type, entity_id): {...}}`` for the trails
-    handed in, and a missing key means the caller can read no event on that
-    entity at all.
+    This exists because the catalogue has to be *ordered* by recency and a page
+    cannot be sorted by something computed after it has been paginated.
+    :func:`visible_trail_counters` produces the same value, but it runs on the
+    rows the paginator already chose - too late to choose them. So the sort key
+    is computed in SQL and the two agree by construction: same table, same
+    predicate, same ``max(event_at)``.
 
-    **Cost: exactly one query for the whole page, or none for a platform
-    caller.** This feeds a list endpoint, so the obvious shape - ask per row at
-    serialization - is an N+1 by construction. The pairs are collected first and
-    aggregated in one grouped query instead, the same bulk-then-attach shape
-    ``AuditEventListView.list`` already uses to resolve entity users.
+    ``None`` for a trail with no readable event, which
+    ``EntityAuditTrailListView`` sorts last. Cost is one index probe per row on
+    ``AuditEvent(entity_type, entity_id, event_at)``: a backward scan stopping
+    at the first match, not a count.
     """
     from .models import AuditEvent
 
+    events = AuditEvent.objects.filter(
+        entity_type=OuterRef("entity_type"),
+        entity_id=OuterRef("entity_id"),
+    )
     predicate = audit_scope_predicate(request)
-    if predicate is None:
-        return None
+    if predicate is not None:
+        events = events.filter(predicate)
+
+    return Subquery(events.order_by("-event_at").values("event_at")[:1])
+
+
+def visible_trail_counters(trails, request):
+    """Count each entity's audit trail over the events *this caller* can read.
+
+    ``EntityAuditTrail`` is keyed on ``(entity_type, entity_id)`` and stores no
+    counters at all - see the model docstring for why the three it used to store
+    were dropped. ``event_count``, ``first_event_at`` and ``last_event_at`` are
+    produced here, from ``AuditEvent``, every time somebody asks.
+
+    Returns ``{(entity_type, entity_id): {...}}`` for the trails handed in. **A
+    missing key means zero**, not "unknown" and not "fall back to something
+    else": either the caller can read no event on that entity, or - for a
+    platform caller, who is confined by no predicate - the entity genuinely has
+    no events left. ``cx_db`` holds 10 such trails, entities whose events were
+    deleted underneath a counter that went on claiming them.
+
+    Both caller kinds are answered the same way, differing only in the predicate:
+
+    * a tenant caller is confined by :func:`tenant_event_predicate`, so the
+      header agrees with the events listed underneath it (1da5c2a bounded
+      *which* trails a school may list and left the numbers on each row global,
+      which is a small disclosure and a large confusion: the trail says 40 and
+      the page below lists 12);
+    * a platform caller is confined by nothing, so the count is every tenant's
+      events on that entity, which is what their console is for. Until this
+      change they were handed the *stored* rollup instead - a high-water mark
+      that only ever grew, and the wrong number for the one audience most
+      likely to act on it.
+
+    **Cost: exactly one query for the whole page, for either caller.** This
+    feeds a list endpoint, so the obvious shape - ask per row at serialization -
+    is an N+1 by construction. The pairs are collected first and aggregated in
+    one grouped query instead, the same bulk-then-attach shape
+    ``AuditEventListView.list`` already uses to resolve entity users. The
+    grouping runs on ``AuditEvent``'s ``(entity_type, entity_id, event_at)``
+    index, which migration 0002 has carried since the table was created.
+    """
+    from .models import AuditEvent
 
     pairs = {(t.entity_type, t.entity_id) for t in trails}
     if not pairs:
@@ -146,15 +186,15 @@ def visible_trail_counters(trails, request):
     for entity_type, entity_id in pairs:
         match |= Q(entity_type=entity_type, entity_id=entity_id)
 
-    rows = (
-        AuditEvent.objects.filter(predicate)
-        .filter(match)
-        .values("entity_type", "entity_id")
-        .annotate(
-            visible_count=Count("id"),
-            visible_first=Min("event_at"),
-            visible_last=Max("event_at"),
-        )
+    rows = AuditEvent.objects.filter(match)
+    predicate = audit_scope_predicate(request)
+    if predicate is not None:
+        rows = rows.filter(predicate)
+
+    rows = rows.values("entity_type", "entity_id").annotate(
+        visible_count=Count("id"),
+        visible_first=Min("event_at"),
+        visible_last=Max("event_at"),
     )
     return {
         (row["entity_type"], row["entity_id"]): {

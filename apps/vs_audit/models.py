@@ -380,16 +380,47 @@ class AuditEvent(models.Model):
 # -----------------------------------------------------------------------------
 
 class EntityAuditTrail(models.Model):
-    """Cached rollup that accelerates per-entity audit trail lookups.
+    """The catalogue of audited entities: which ones, and what each is called.
+
+    Two jobs and no third one. It answers "which entities has anything ever been
+    audited against" - a question no index on ``AuditEvent`` answers cheaply,
+    because it is a DISTINCT over 1.5k rows and growing - and it carries
+    ``entity_label``, the only human handle on a row keyed by a primary key
+    ("Purchase order 00042 for the science block", not ``PurchaseOrder:42``).
+
+    **It is deliberately not a rollup.** It used to store ``event_count``,
+    ``first_event_at`` and ``last_event_at``, maintained by a ``register_event``
+    that only ever incremented. Nothing ever decremented, so the three columns
+    were a high-water mark rather than a count, and the platform console - the
+    one audience still reading the stored figure - was the audience most misled
+    by it. In ``cx_db`` 11 of 889 trails disagreed with the events beneath them,
+    ``User:1`` stored 1690 against 399 real events, and 10 trails described
+    entities with no events at all.
+
+    That is not a bug you patch, because the drift is written into this repo's
+    own history: migration 0003 deleted every ``IMPERSONATED_REQUEST`` event and
+    left the counters standing, and migration 0004 - one migration later, same
+    table - had to carry 25 lines of hand-written recount to avoid repeating it.
+    A stored total obliges every future deletion to remember, and the first one
+    already forgot. Nor could the columns be repaired: the events they counted
+    are gone, and a recomputed number is still a number the next reader has no
+    way to tell apart from a stale one.
+
+    So the three columns were dropped (migration 0011) and the counters are now
+    computed from ``AuditEvent`` for the caller asking, over the index
+    ``(entity_type, entity_id, event_at)`` that has been on that table since
+    migration 0002. See :func:`vs_audit.scoping.visible_trail_counters`: one
+    grouped query answers a whole page, for a tenant caller and a platform
+    caller alike. **Do not add a counter column back.** A number that is stored
+    is a number that goes stale; the only total nobody can misread is the one
+    read off the rows it counts.
 
     Attributes:
-        id (UUIDField): Primary key for the rollup row.
+        id (UUIDField): Primary key for the catalogue row.
         entity_type (CharField): Model or logical type of the tracked entity.
         entity_id (CharField): Identifier of the tracked entity stored as text.
-        entity_label (CharField): Friendly label for UI displays.
-        event_count (PositiveIntegerField): Number of recorded audit events.
-        first_event_at (DateTimeField): Timestamp of the earliest event.
-        last_event_at (DateTimeField): Timestamp of the most recent event.
+        entity_label (CharField): Friendly label for UI displays, refreshed by
+            :func:`vs_audit.services.emit_audit_event` whenever it changes.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
@@ -397,35 +428,15 @@ class EntityAuditTrail(models.Model):
     entity_id = models.CharField(max_length=100, db_index=True)
     entity_label = models.CharField(max_length=255, blank=True)
 
-    event_count = models.PositiveIntegerField(default=0)
-    first_event_at = models.DateTimeField(null=True, blank=True)
-    last_event_at = models.DateTimeField(null=True, blank=True)
-
     class Meta:
         unique_together = ("entity_type", "entity_id")
         indexes = [
             models.Index(fields=["entity_type", "entity_id"]),
-            models.Index(fields=["last_event_at"]),
         ]
 
     def __str__(self) -> str:
         """Represent the summarized trail for admin list displays."""
         return f"Trail<{self.entity_type}:{self.entity_id}>"
-
-    def register_event(self, event: AuditEvent) -> None:
-        """
-        Convenience helper for services/signals.
-        """
-        self.event_count += 1
-        if not self.first_event_at or event.event_at < self.first_event_at:
-            self.first_event_at = event.event_at
-        if not self.last_event_at or event.event_at > self.last_event_at:
-            self.last_event_at = event.event_at
-        # ``entity_label`` rides along so a caller that refreshed a stale label
-        # before calling this does not need a second write to persist it.
-        self.save(update_fields=[
-            "entity_label", "event_count", "first_event_at", "last_event_at",
-        ])
 
 
 # -----------------------------------------------------------------------------

@@ -9,7 +9,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.core.files import File
 from django.core.files.storage import default_storage
-from django.db.models import Count, Exists, OuterRef, Q, Value
+from django.db.models import Count, Exists, F, OuterRef, Q, Value
 from django.db.models.functions import Concat, TruncDate, TruncHour
 from django.http import FileResponse
 from django.utils import timezone
@@ -36,6 +36,7 @@ from .models import (
 )
 from .scoping import (
     audit_scope_predicate,
+    latest_visible_event_at,
     scope_events_to_caller,
     visible_trail_counters,
 )
@@ -320,13 +321,19 @@ class EntityAuditTrailListView(generics.ListAPIView):
     def get_queryset(self):
         qs = EntityAuditTrail.objects.all()
 
-        # ``EntityAuditTrail`` has no tenant column - it is a rollup keyed only
-        # on (entity_type, entity_id) - so it is bounded by the events behind
-        # it: an entity is listed when the caller can read at least one of its
+        # ``EntityAuditTrail`` has no tenant column - it is keyed only on
+        # (entity_type, entity_id) - so it is bounded by the events behind it:
+        # an entity is listed when the caller can read at least one of its
         # events. Without this the catalogue names every audited object on the
         # platform, and ``entity_label`` is a readable name ("Purchase order
         # 00042 for the science block"), so the list alone tells Bright Star
         # what Greenfield has been buying.
+        #
+        # Deliberately kept separate from the ordering annotation below, which
+        # is the same predicate and would give the same set as
+        # ``latest_event_at__isnull=False``. Folding the two together would make
+        # any future change to how the catalogue is *sorted* a change to who can
+        # *see* it, and that is not a trade worth one subquery.
         predicate = audit_scope_predicate(self.request)
         if predicate is not None:
             qs = qs.filter(Exists(
@@ -343,13 +350,27 @@ class EntityAuditTrailListView(generics.ListAPIView):
             qs = qs.filter(
                 Q(entity_id__icontains=search) | Q(entity_label__icontains=search)
             )
-        # Ordered on the stored ``last_event_at`` because that column is indexed
-        # and the boundary above has already decided membership. It can only
-        # disagree with the caller's own last event on a trail whose events span
-        # two tenants, which no (entity_type, entity_id) pair in this database
-        # does - since 65fdfb4 put school and branch trails on primary keys,
-        # business ids are unique per table and cannot collide at all.
-        return qs.order_by("-last_event_at")
+        # Ordered on the caller's own most recent event, computed in SQL.
+        #
+        # This used to sort on a stored ``last_event_at`` column, which is gone:
+        # it was part of a rollup that only ever grew, so it could outlive the
+        # events it described and put a dead trail at the top of the console.
+        # ``latest_event_at`` is the same number the row's ``last_event_at``
+        # will show, read off the same rows through the same predicate, so the
+        # list is sorted by the column the reader can see.
+        #
+        # ``nulls_last`` puts trails with no readable event at the end. For a
+        # tenant caller the Exists above has already removed them; for a
+        # platform caller they are the entities whose events were deleted
+        # underneath them - still catalogued, and no longer sorted as though
+        # something had just happened to them. ``entity_type``/``entity_id``
+        # break ties so paging over equal timestamps cannot repeat or skip a
+        # row.
+        return qs.annotate(
+            latest_event_at=latest_visible_event_at(self.request),
+        ).order_by(
+            F("latest_event_at").desc(nulls_last=True), "entity_type", "entity_id",
+        )
 
     def list(self, request, *args, **kwargs):
         from rest_framework.response import Response
@@ -358,9 +379,12 @@ class EntityAuditTrailListView(generics.ListAPIView):
         page = self.paginate_queryset(queryset)
         trails = page if page is not None else list(queryset)
 
-        # One grouped query for the whole page, never one per row: the counters
-        # on each trail are a rollup over every tenant's events, and a list
-        # endpoint is the last place to ask that question row by row.
+        # One grouped query for the whole page, never one per row. Every caller
+        # is answered this way now: a platform caller used to be handed the
+        # stored rollup for free, which cost no query and was wrong - it only
+        # ever incremented, so it counted events that had since been deleted.
+        # One query per page is what an honest number costs, and it is a
+        # per-page cost, not a per-trail one.
         ctx = {
             **self.get_serializer_context(),
             "visible_counters": visible_trail_counters(trails, request),
@@ -480,20 +504,21 @@ class EntityAuditTrailDetailView(APIView):
                 status=404,
             )
 
-        # The header must agree with the list under it. The stored rollup counts
-        # every tenant's events on this entity, so a tenant caller is answered
-        # from the rows they were just handed - which costs no query at all,
-        # they are already in memory. A platform caller gets no context and so
-        # keeps the global rollup.
-        counters = None
-        if audit_scope_predicate(request) is not None:
-            counters = {
-                (trail.entity_type, trail.entity_id): {
-                    "event_count": len(events),
-                    "first_event_at": min(event.event_at for event in events),
-                    "last_event_at": max(event.event_at for event in events),
-                }
+        # The header must agree with the list under it, so it is counted off
+        # that list: ``events`` is already scoped to the caller and already in
+        # memory, which makes the three numbers free. This is the whole reason
+        # a stored rollup was never needed here - the rows are right there.
+        #
+        # Every caller is answered this way, platform included. Theirs used to
+        # come from the stored rollup, so a platform reviewer opening
+        # ``User:1`` read a header saying 1690 above a list of 399 events.
+        counters = {
+            (trail.entity_type, trail.entity_id): {
+                "event_count": len(events),
+                "first_event_at": min(event.event_at for event in events),
+                "last_event_at": max(event.event_at for event in events),
             }
+        }
 
         data = {
             "trail": EntityAuditTrailSerializer(
