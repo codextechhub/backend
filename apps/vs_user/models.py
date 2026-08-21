@@ -186,6 +186,56 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         DEACTIVATED      = 'DEACTIVATED',      'Deactivated'
         REJECTED         = 'REJECTED',         'Creation Rejected'
 
+    # ── Which statuses may authenticate, and which may hold a password ────────
+    #
+    # These two sets are the single answer to a question that used to be asked
+    # in five places, each of them by listing the statuses it wanted to REFUSE
+    # and letting everything else through:
+    #
+    #   * ``LoginService._check_status`` named PENDING, LOCKED, SUSPENDED and
+    #     DEACTIVATED, so DRAFT, PENDING_APPROVAL and REJECTED signed in;
+    #   * ``IsAuthenticatedAndActive`` (vs_rbac) named SUSPENDED, LOCKED and
+    #     DEACTIVATED, as string literals, so the same three passed;
+    #   * ``AdminPasswordResetView`` named none at all, so an admin could put a
+    #     working password on any account in any state;
+    #   * ``PasswordService.request_reset`` named only DEACTIVATED;
+    #   * ``PasswordService.confirm_reset`` promoted LOCKED and PENDING and left
+    #     every other status where it was, holding a brand-new usable password.
+    #
+    # Naming the refusals is the defect, not a detail of it. Every status added
+    # to the enum since - DRAFT, PENDING_APPROVAL and REJECTED all postdate that
+    # code - became able to sign in the moment it was added, silently, because
+    # no one edited five lists. So the sets below enumerate what is PERMITTED
+    # and everything absent is refused. A status added tomorrow can do nothing
+    # until it is deliberately written into one of them.
+
+    #: The only statuses a sign-in may succeed from. Not a shorthand for
+    #: "not obviously bad": PENDING has been invited but has not set a password,
+    #: LOCKED is mid-incident, SUSPENDED and DEACTIVATED are administratively
+    #: closed, and DRAFT / PENDING_APPROVAL / REJECTED were never granted a
+    #: login at all. Exactly one status means "this person may work today".
+    SIGN_IN_STATUSES = frozenset({Status.ACTIVE})
+
+    #: The statuses that may hold a usable password. Wider than SIGN_IN_STATUSES
+    #: on purpose, and the two cannot be collapsed into one set:
+    #:
+    #:   * PENDING is the normal invited-but-not-activated path - the invitation
+    #:     link exists precisely to put a first password on the account;
+    #:   * LOCKED is unlocked BY a reset, so refusing one would strand the
+    #:     account behind the lockout it is meant to clear;
+    #:   * SUSPENDED may be given a new password (an admin resetting a
+    #:     suspected-compromised credential before reinstating) and still may
+    #:     not sign in, which is what suspension means.
+    #:
+    #: Absent, and refused: DEACTIVATED, which is terminal and which the
+    #: self-service reset already refused while the admin reset did not; and
+    #: DRAFT, PENDING_APPROVAL and REJECTED, which are not accounts anyone has
+    #: been granted yet. A credential on one of those is the bug this exists to
+    #: close - see the two properties below and their call sites.
+    PASSWORD_STATUSES = frozenset({
+        Status.ACTIVE, Status.PENDING, Status.LOCKED, Status.SUSPENDED,
+    })
+
     class Gender(models.TextChoices):
         MALE    = 'MALE',   'Male'
         FEMALE  = 'FEMALE', 'Female'
@@ -581,15 +631,55 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         super().save(*args, **kwargs)
 
     def _sync_is_active(self):
-        if self.status in (self.Status.SUSPENDED, self.Status.DEACTIVATED,
-                           self.Status.PENDING, self.Status.PENDING_APPROVAL,
-                           self.Status.REJECTED):
-            self.is_active = False
-        elif self.status == self.Status.ACTIVE:
-            self.is_active = True
-        # LOCKED: is_active left unchanged - blocked at RBAC layer, not Django auth
+        """Keep Django's ``is_active`` flag derived from ``status``.
+
+        ``is_active`` is NOT a third opinion about whether this account may be
+        used. It is a cache of one bit of ``status``, maintained here so that
+        the Django and SimpleJWT machinery this project does not own - notably
+        ``JWTAuthentication.get_user``, which rejects an inactive user, and the
+        ``user__is_active=True`` filters in ``Position.occupancy`` - agree with
+        the status column instead of drifting from it. ``status`` is the source
+        of truth; every authorisation decision in this codebase reads it, or
+        reads ``may_sign_in`` / ``may_hold_password`` above it.
+
+        Written as a single derivation rather than a list of statuses that mean
+        False. The old form listed five and so silently left DRAFT alone: a
+        draft that had ever been ``is_active=True`` stayed that way, and
+        ``confirm_reset`` set exactly that flag, which is how a parked draft
+        ended up with a working password AND a session the API accepted.
+
+        LOCKED remains the one deliberate exception. A lockout is temporary and
+        clearing it must restore the account as it was, so the flag is left
+        where the last real status put it and the refusal is made by
+        ``may_sign_in`` instead. Every other status now answers here.
+        """
+        if self.status == self.Status.LOCKED:
+            return
+        self.is_active = self.status == self.Status.ACTIVE
 
     # ── Properties ────────────────────────────────────────────────────────────
+
+    @property
+    def may_sign_in(self) -> bool:
+        """Whether a sign-in may succeed for this account right now.
+
+        The one place that question is answered. ``LoginService._check_status``
+        and ``vs_rbac.permissions.IsAuthenticatedAndActive`` both read it, so a
+        session cannot be issued to an account the request gate would refuse,
+        nor the reverse.
+        """
+        return self.status in self.SIGN_IN_STATUSES
+
+    @property
+    def may_hold_password(self) -> bool:
+        """Whether a usable password may be set on this account.
+
+        Read by every route that can put one there: the admin reset, the
+        self-service reset request, the reset confirmation and the logged-in
+        change. Deliberately wider than :attr:`may_sign_in` - see
+        PASSWORD_STATUSES for why the two are separate sets and not one.
+        """
+        return self.status in self.PASSWORD_STATUSES
 
     @property
     def full_name(self) -> str:

@@ -187,7 +187,10 @@ class SpecialLoginPreviewView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        if user.status != User.Status.ACTIVE:
+        # Reads the shared predicate rather than testing ACTIVE by hand. The
+        # two happen to agree today, and phrasing it this way is what keeps
+        # them agreeing if SIGN_IN_STATUSES ever widens.
+        if not user.may_sign_in:
             msg = self._STATUS_MESSAGES.get(
                 user.status,
                 'Account unavailable. Please contact your administrator.',

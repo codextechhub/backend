@@ -175,7 +175,28 @@ class LoginService:
 
     @staticmethod
     def _check_status(user: User) -> dict | None:
-        """Returns an error payload if the account cannot log in, else None."""
+        """Returns an error payload if the account cannot log in, else None.
+
+        The permission decision is ``user.may_sign_in`` and nothing else. The
+        map below only chooses the WORDING of a refusal that has already been
+        made, which is the inversion this method needed: it used to be the map
+        itself, consulted with ``errors.get(user.status)``, so a status nobody
+        had written a message for was signed in. DRAFT, PENDING_APPROVAL and
+        REJECTED were all added to the enum after this code and all three
+        inherited a working login on the day they were added.
+
+        A status with no message here is refused as INVALID_CREDENTIALS -
+        byte-identical to a wrong password, including the 401 the view derives
+        from the code (``LoginView.post``: only the four codes below are 403).
+        That is the right answer for the three it currently catches. A rejected
+        hire, or a draft that was never submitted, must not be able to learn
+        from this endpoint that their record exists at all - and unlike the four
+        below, there is no legitimate holder of that account to inform, because
+        no invitation was ever sent to one.
+        """
+        if user.may_sign_in:
+            return None
+
         errors = {
             User.Status.PENDING: {
                 'code':   'ACCOUNT_NOT_ACTIVATED',
@@ -194,7 +215,10 @@ class LoginService:
                 'detail': 'This account has been deactivated. Please contact your administrator.',
             },
         }
-        return errors.get(user.status)
+        return errors.get(user.status, {
+            'code':   'INVALID_CREDENTIALS',
+            'detail': 'Invalid credentials.',
+        })
 
     @staticmethod
     def _handle_failed_attempt(user, tenant, email_entered, request):

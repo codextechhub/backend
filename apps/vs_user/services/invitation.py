@@ -138,6 +138,24 @@ class InvitationService:
         invitation = InvitationService.get_valid_invitation(activation_key)
         user = invitation.user
 
+        # 1b. ...and validate the ACCOUNT, which the link's own validity says
+        # nothing about. An invitation is issued when a hire is approved, and
+        # the account can change underneath it before the link is clicked: a
+        # withdrawn or cancelled workflow runs on_rejected and drives the same
+        # user to REJECTED while their invitation email sits unread in an
+        # inbox, still unused and still inside its expiry window. Without this,
+        # clicking it set a password and wrote status=ACTIVE - the rejection
+        # undone by the rejected person, through the front door.
+        #
+        # PENDING and nothing else: activation is the one transition this
+        # method performs, and every other status either has not reached it
+        # yet or is already past it.
+        if user.status != User.Status.PENDING:
+            raise ValueError({
+                'error_code': 'INVITATION_NOT_ACTIONABLE',
+                'message':    'This invitation link is no longer valid.',
+            })
+
         # 2. Validate password strength
         try:
             validate_password(password, user=user)

@@ -205,23 +205,50 @@ class IsAuthenticatedAndActive(BasePermission):
     """
     Minimal guardrail:
     - user must be authenticated
-    - if your UserAccount has 'status', block locked/suspended
+    - the account's status must permit a session (``User.may_sign_in``)
     - the tenant being operated on must be live, unless the view declares
       itself part of the pending-tenant surface (see TenantSurfaceAllowed)
     """
+
+    #: Wording only. Whether the request is refused is decided by
+    #: ``User.may_sign_in``; this just says why, for the statuses a person is
+    #: entitled to hear about. Anything absent gets the generic line below.
+    _STATUS_MESSAGES = {
+        "SUSPENDED": "Your account is suspended. Contact your administrator.",
+        "LOCKED": (
+            "Your account is locked due to too many failed login attempts. "
+            "Contact your administrator."
+        ),
+        "DEACTIVATED": "This account has been deactivated. Contact your administrator.",
+        "PENDING": (
+            "Your account has not been activated yet. "
+            "Please use your invitation link or contact your administrator."
+        ),
+    }
 
     def has_permission(self, request, view):
         u = _get_user(None, request)
         if not u or not u.is_authenticated:
             return False
 
-        status = getattr(u, "status", None)
-        if status == "SUSPENDED":
-            raise PermissionDenied("Your account is suspended. Contact your administrator.")
-        if status == "LOCKED":
-            raise PermissionDenied("Your account is locked due to too many failed login attempts. Contact your administrator.")
-        if status == "DEACTIVATED":
-            raise PermissionDenied("This account has been deactivated. Contact your administrator.")
+        # Deny by default, exactly as LoginService does, and for the same
+        # reason. This used to be three ``==`` comparisons against string
+        # literals - SUSPENDED, LOCKED, DEACTIVATED - and every status added to
+        # the enum afterwards passed the gate by not being one of them. That is
+        # three of the eight; DRAFT, PENDING_APPROVAL, REJECTED and PENDING all
+        # walked through. Reading ``may_sign_in`` also makes this class agree
+        # with the sign-in service by construction rather than by both lists
+        # being edited together, which is what did not happen last time.
+        #
+        # ``getattr`` rather than a direct attribute read: this gate runs
+        # against whatever ``request.user`` is, and a request that arrives
+        # without a real ``User`` (a test double, a differently-shaped
+        # principal) must be refused, not crash and not be waved through.
+        if not getattr(u, "may_sign_in", False):
+            status = getattr(u, "status", None)
+            raise PermissionDenied(self._STATUS_MESSAGES.get(
+                status, "This account is not permitted to sign in. Contact your administrator.",
+            ))
 
         # Nearly every authenticated view in the repo composes this class, and
         # DRF's permission_classes replaces DEFAULT_PERMISSION_CLASSES rather

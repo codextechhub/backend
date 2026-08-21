@@ -64,7 +64,11 @@ class TenantJWTAuthentication(JWTAuthentication):
                 "Only platform tenant users may impersonate across tenants.",
             )
         target = impersonation.target_user
-        if not target.is_active or target.status != "ACTIVE":
+        # ``may_sign_in`` rather than a literal "ACTIVE": impersonation issues
+        # what is effectively a session as this person, so it must ask the same
+        # question the sign-in does and get the same answer. ``is_active`` is
+        # kept as a belt-and-braces read of the derived flag.
+        if not target.is_active or not target.may_sign_in:
             impersonation.end()
             raise AuthenticationFailed("The impersonated account is not active.")
         return impersonation, target
