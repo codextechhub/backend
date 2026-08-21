@@ -31,11 +31,28 @@ def is_vision_super_admin(user):
     if cached is not None:
         return cached  # Reuse the request-local assignment check.
     from .models import TenantUserRoleAssignment
+    # The role must live on the PLATFORM tenant, and this clause is the whole
+    # of the bypass's safety. Without it the check asked only "do you hold a
+    # role keyed xvs_super_admin in your OWN tenant", and a role's key is
+    # derived from the name its creator types. So a school admin holding
+    # role-create could name a role "xvs_super_admin", assign it, and the
+    # holder would return True from here - which short-circuits HasRBACPermission
+    # before it examines any key, and therefore bypasses every permission gate
+    # on the platform, in every tenant.
+    #
+    # The guard in vs_user.serializers refuses that key only when
+    # ``creating_platform_staff`` is true, so a school user created with a
+    # school role of that name was never caught.
+    #
+    # There is no legitimate non-platform holder: the role IS the platform's.
+    from vs_tenants.models import Tenant
+
     result = TenantUserRoleAssignment.objects.filter(
         user=user,
         tenant=getattr(user, "tenant", None),
         role__key="xvs_super_admin",
         role__tenant=getattr(user, "tenant", None),
+        role__tenant__kind=Tenant.Kind.PLATFORM,
         assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
     ).exists()
     try:
