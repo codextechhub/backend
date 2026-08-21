@@ -2,9 +2,10 @@
 
 This is the single source of truth for the eight ``onboarding.*`` keys. It
 registers the module, its resources and its permissions, then attaches the
-school-facing ones to the ``school_admin`` prebuilt role, backfills them into
-school role templates that were provisioned before these keys existed, and
-grants the platform-only ones to the two platform roles.
+school-facing ones to the ``school_admin`` prebuilt role and the single
+read-only one to ``branch_admin``, backfills both into school role templates
+that were provisioned before these keys existed, and grants the platform-only
+ones to the two platform roles.
 
 Run order::
 
@@ -29,6 +30,8 @@ from django.db import transaction
 _NORMAL, _SENSITIVE, _CRITICAL = "NORMAL", "SENSITIVE", "CRITICAL"
 
 ROLE_SCHOOL_ADMIN = "school_admin"
+ROLE_BRANCH_ADMIN = "branch_admin"
+SCHOOL_ROLE_KEYS = [ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN]
 PLATFORM_ROLE_KEYS = ["xvs_super_admin", "xvs_platform_admin"]
 
 MODULE_NAME = "onboarding"
@@ -42,24 +45,32 @@ RESOURCE_DESCRIPTIONS = {
     "go_live": "Go-live requests and their review",
 }
 
-# (resource, action, sensitivity, description, school_admin default, platform default)
+# (resource, action, sensitivity, description, school_admin, branch_admin, platform)
 #
 # The split is the product decision the FRD encodes: a school runs its own
 # onboarding and asks to go live; the platform provisions the control room and
 # decides on the request. Approve and reject are CRITICAL because between them
 # they open every other module to a tenant.
-ONBOARDING_PERMISSIONS: list[tuple[str, str, str, str, bool, bool]] = [
-    ("progress", "view",   _NORMAL,    "Read the onboarding control room state.",        True,  True),
-    ("progress", "create", _SENSITIVE, "Provision or re-provision onboarding state.",    False, True),
+#
+# The branch_admin column is narrower than school_admin and holds exactly one
+# key, and the reason is worth stating: a branch admin needs to KNOW where the
+# school stands - whether the books arrived, what is still blocking go-live -
+# because they are often the person being chased for one of the steps. What they
+# do not do is run onboarding. Onboarding belongs to the school as a whole, not
+# to a site, so transitioning a step and asking CodeX to go live stay with the
+# school administrator. Read the state, change nothing.
+ONBOARDING_PERMISSIONS: list[tuple[str, str, str, str, bool, bool, bool]] = [
+    ("progress", "view",   _NORMAL,    "Read the onboarding control room state.",        True,  True,  True),
+    ("progress", "create", _SENSITIVE, "Provision or re-provision onboarding state.",    False, False, True),
     # Reinstatement is platform-only for a reason that is not a policy choice:
     # a suspended school cannot authenticate, so nobody inside it could ever
     # call the endpoint this key gates.
-    ("progress", "reactivate", _SENSITIVE, "Return a suspended school to onboarding.",   False, True),
-    ("task",     "update", _NORMAL,    "Transition an onboarding checklist task.",       True,  True),
-    ("go_live",  "submit", _SENSITIVE, "Submit a go-live request.",                      True,  False),
-    ("go_live",  "view",   _NORMAL,    "Read current and historical go-live requests.",  True,  True),
-    ("go_live",  "approve", _CRITICAL, "Approve a go-live request and activate the school.", False, True),
-    ("go_live",  "reject",  _CRITICAL, "Reject a go-live request with a reason.",        False, True),
+    ("progress", "reactivate", _SENSITIVE, "Return a suspended school to onboarding.",   False, False, True),
+    ("task",     "update", _NORMAL,    "Transition an onboarding checklist task.",       True,  False, True),
+    ("go_live",  "submit", _SENSITIVE, "Submit a go-live request.",                      True,  False, False),
+    ("go_live",  "view",   _NORMAL,    "Read current and historical go-live requests.",  True,  False, True),
+    ("go_live",  "approve", _CRITICAL, "Approve a go-live request and activate the school.", False, False, True),
+    ("go_live",  "reject",  _CRITICAL, "Reject a go-live request with a reason.",        False, False, True),
 ]
 
 
@@ -125,10 +136,14 @@ class Command(BaseCommand):
         resources: dict[str, PermissionResource] = {}
         created_perm_count = 0
         school_keys: list[str] = []
+        branch_keys: list[str] = []
         platform_keys: list[str] = []
         all_keys: list[str] = []
 
-        for resource_name, action_name, sensitivity, description, for_school, for_platform in ONBOARDING_PERMISSIONS:
+        for (
+            resource_name, action_name, sensitivity, description,
+            for_school, for_branch, for_platform,
+        ) in ONBOARDING_PERMISSIONS:
             resource = resources.get(resource_name)
             if resource is None:
                 resource, _ = PermissionResource.objects.get_or_create(
@@ -155,6 +170,8 @@ class Command(BaseCommand):
             all_keys.append(expected_key)
             if for_school:
                 school_keys.append(expected_key)
+            if for_branch:
+                branch_keys.append(expected_key)
             if for_platform:
                 platform_keys.append(expected_key)
 
@@ -176,20 +193,26 @@ class Command(BaseCommand):
                 created_perm_count += 1
                 self.stdout.write(f"{prefix} + {perm.key}")
 
-        # ── Phase 2: school_admin prebuilt defaults ───────────────────────────
+        # ── Phase 2: school-side prebuilt defaults ────────────────────────────
         self.stdout.write(self.style.MIGRATE_HEADING(
-            "\n  Phase 2 - attaching school_admin defaults...\n"
+            "\n  Phase 2 - attaching school-side defaults...\n"
         ))
 
-        prebuilt = PrebuiltRoleTemplate.objects.filter(key=ROLE_SCHOOL_ADMIN).first()
-        if prebuilt is None:
-            self.stdout.write(self.style.WARNING(
-                f"  !  Prebuilt role '{ROLE_SCHOOL_ADMIN}' not found - run "
-                f"seed_prebuilt_role_templates first. Skipping its defaults."
-            ))
-        else:
+        keys_by_role = {
+            ROLE_SCHOOL_ADMIN: school_keys,
+            ROLE_BRANCH_ADMIN: branch_keys,
+        }
+        for role_key in SCHOOL_ROLE_KEYS:
+            role_keys = keys_by_role[role_key]
+            prebuilt = PrebuiltRoleTemplate.objects.filter(key=role_key).first()
+            if prebuilt is None:
+                self.stdout.write(self.style.WARNING(
+                    f"  !  Prebuilt role '{role_key}' not found - run "
+                    f"seed_prebuilt_role_templates first. Skipping its defaults."
+                ))
+                continue
             attached = 0
-            for key in school_keys:
+            for key in role_keys:
                 _, link_created = PrebuiltRolePermission.objects.get_or_create(
                     prebuilt_role=prebuilt, permission_id=key,
                 )
@@ -197,11 +220,11 @@ class Command(BaseCommand):
                     attached += 1
             self.stdout.write(
                 self.style.SUCCESS(
-                    f"{prefix} {ROLE_SCHOOL_ADMIN}: attached {attached} new "
-                    f"default(s) ({len(school_keys)} total)."
+                    f"{prefix} {role_key}: attached {attached} new "
+                    f"default(s) ({len(role_keys)} total)."
                 )
                 if attached else
-                f"{prefix} {ROLE_SCHOOL_ADMIN}: all {len(school_keys)} defaults already attached."
+                f"{prefix} {role_key}: all {len(role_keys)} defaults already attached."
             )
 
         # ── Phase 3: backfill existing school role templates ──────────────────
@@ -212,21 +235,23 @@ class Command(BaseCommand):
             "\n  Phase 3 - backfilling existing school role templates...\n"
         ))
 
-        native_key_re = re.compile(r"^%s(?:-\d+)?$" % re.escape(ROLE_SCHOOL_ADMIN))
-        role_pks = [
-            role.pk
+        # Only the whole-tenant templates. A branch-pinned copy
+        # (``branch_admin-12``) must not gain onboarding keys: onboarding
+        # belongs to the school as a whole, and a key scoped to one site would
+        # be answering a question that was never about that site.
+        existing_roles = [
+            role
             for role in TenantRoleTemplate.objects.filter(
                 tenant__kind="SCHOOL", is_system_role=True,
             ).only("id", "key")
-            # Only the whole-tenant school_admin template: a branch-pinned copy
-            # must not gain the keys that run the school's onboarding.
-            if role.key == ROLE_SCHOOL_ADMIN and native_key_re.match(role.key)
+            if role.key in SCHOOL_ROLE_KEYS
         ]
 
         total_backfilled = 0
-        for role_pk in role_pks:
+        for role in existing_roles:
+            role_pk = role.pk
             granted_here = 0
-            for key in school_keys:
+            for key in keys_by_role[role.key]:
                 # get_or_create with granted=True in defaults leaves an existing
                 # row alone, so an admin's explicit deny is never flipped back.
                 _, row_created = TenantRolePermission.objects.get_or_create(
@@ -239,10 +264,10 @@ class Command(BaseCommand):
             total_backfilled += granted_here
             if granted_here:
                 self.stdout.write(
-                    f"{prefix} tenant role #{role_pk} ({ROLE_SCHOOL_ADMIN}): "
+                    f"{prefix} tenant role #{role_pk} ({role.key}): "
                     f"+{granted_here} grant(s)."
                 )
-        if not role_pks:
+        if not existing_roles:
             self.stdout.write("  No existing school role templates to backfill.")
 
         # ── Phase 4: platform roles ───────────────────────────────────────────
@@ -287,8 +312,8 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_perm_count} new permission(s) created, "
             f"{len(all_keys)} onboarding keys registered; backfilled "
-            f"{total_backfilled} grant(s) across {len(role_pks)} existing role "
-            f"template(s).\n"
+            f"{total_backfilled} grant(s) across {len(existing_roles)} existing "
+            f"role template(s).\n"
         ))
 
 

@@ -1703,17 +1703,19 @@ class StatePayloadTests(OnboardingFixture):
         with self.assertNumQueries(baseline):
             self.assertEqual(client.get(url).status_code, 200)
 
-    def test_an_empty_task_list_is_an_empty_object(self):
-        """``success_response`` writes ``data or {}``, so [] arrives as {}.
+    def test_an_empty_task_list_is_still_a_list(self):
+        """A school with no tasks left must not change the payload's type.
 
-        Not the shape a reader expects, which is exactly why it is pinned.
+        ``success_response`` used to write ``data or {}``, which handed the
+        console an object whenever a list came back empty and crashed every
+        screen that mapped over it. Pinned so it cannot come back.
         """
         OnboardingTask.all_objects.filter(tenant=self.tenant).delete()
 
         response = self.client_for(self.admin).get(self.scoped("onboarding-task-list"))
 
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(response.data["data"], {})
+        self.assertEqual(response.data["data"], [])
 
     def test_the_task_list_is_returned_in_catalog_order(self):
         response = self.client_for(self.admin).get(self.scoped("onboarding-task-list"))
@@ -2014,6 +2016,68 @@ class SeederTests(TestCase):
         self.assertNotIn("onboarding.go_live.approve", held)
         self.assertNotIn("onboarding.progress.create", held)
         self.assertNotIn("onboarding.progress.reactivate", held)
+
+    def test_the_branch_admin_default_is_read_only(self):
+        """A branch admin watches onboarding; they do not run it.
+
+        Exactly one key. The distinction matters at both ends: without
+        ``progress.view`` the person often being chased for a step cannot see
+        which step it is, and with ``task.update`` or ``go_live.submit`` a
+        single site could close the whole school's checklist or ask CodeX to
+        take it live.
+        """
+        from vs_rbac.models import PrebuiltRolePermission
+
+        self._seed()
+
+        held = set(
+            PrebuiltRolePermission.objects
+            .filter(prebuilt_role__key="branch_admin", permission__key__startswith="onboarding.")
+            .values_list("permission_id", flat=True)
+        )
+        self.assertEqual(held, {"onboarding.progress.view"})
+
+    def test_an_existing_branch_admin_template_is_backfilled(self):
+        """A school provisioned before this grant existed gets it too.
+
+        Otherwise the key would only ever reach schools created after today,
+        and every existing branch admin would keep getting a 403 nobody could
+        explain.
+        """
+        from vs_rbac.models import TenantRolePermission, TenantRoleTemplate
+
+        school = make_school(slug="backfill-me", name="Backfill Me")
+        role = TenantRoleTemplate.objects.create(
+            tenant=school.tenant, key="branch_admin", name="Branch Admin",
+            status="ACTIVE", is_system_role=True,
+        )
+
+        self._seed()
+
+        held = set(
+            TenantRolePermission.objects
+            .filter(role=role, granted=True, permission__key__startswith="onboarding.")
+            .values_list("permission_id", flat=True)
+        )
+        self.assertEqual(held, {"onboarding.progress.view"})
+
+    def test_a_branch_pinned_copy_is_not_backfilled(self):
+        """Onboarding belongs to the school, not to one of its sites."""
+        from vs_rbac.models import TenantRolePermission, TenantRoleTemplate
+
+        school = make_school(slug="pinned-copy", name="Pinned Copy")
+        pinned = TenantRoleTemplate.objects.create(
+            tenant=school.tenant, key="branch_admin-7", name="Branch Admin (Annex)",
+            status="ACTIVE", is_system_role=True,
+        )
+
+        self._seed()
+
+        self.assertFalse(
+            TenantRolePermission.objects
+            .filter(role=pinned, permission__key__startswith="onboarding.")
+            .exists()
+        )
 
     def test_the_platform_roles_hold_the_review_keys(self):
         from vs_rbac.models import TenantRolePermission
