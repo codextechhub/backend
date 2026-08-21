@@ -81,6 +81,18 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "settings", "view",             _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "settings", "manage",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
+    # The school's own identity record: ownership type, term structure,
+    # currency, address, website, motto, registration id and logo. NOT its
+    # name, address slug or code - those are allocated by CodeX at creation and
+    # stay on the platform endpoint, which is why this is a separate resource
+    # from ``settings`` rather than another action on it.
+    #
+    # ``.update`` is school_admin only. A branch admin may read the profile
+    # (the currency and term structure govern screens they use) but changing
+    # the school's identity is not a branch-level decision.
+    ("school", "profile", "view",              _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("school", "profile", "update",            _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+
     ("school", "roles", "view",                _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
     ("school", "roles", "assign",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     # Explicit grants replace the removed implicit SCHOOL_ADMIN persona
@@ -140,6 +152,7 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("school", "administrators"): "School administrator accounts",
     ("school", "fees"):           "Fees and billing",
     ("school", "settings"):       "School settings",
+    ("school", "profile"):        "The school's own identity record (ownership, term structure, currency, branding)",
     ("school", "roles"):          "School role management",
     ("school", "user_overrides"): "Per-user permission exceptions on school user profiles",
     ("school", "impersonation"):  "School-scoped proxy (impersonate a user in your own school)",

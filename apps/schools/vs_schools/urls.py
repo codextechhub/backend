@@ -6,6 +6,8 @@ from .views.school import (
     SchoolCreateView,
     SchoolDetailView,
     SchoolListView,
+    SchoolLogoView,
+    SchoolProfileView,
     SchoolUpdateView,
     SchoolStatsView,
 )
@@ -31,6 +33,14 @@ urlpatterns = [
     # --------- Package Plans & Modules ---------
     path("package-plans/", PackagePlanListView.as_view(), name="package-plan-list"),
     path("modules/", XVSModuleListView.as_view(), name="xvs-module-list"),
+
+    # --------- The caller's own school ---------
+    # Two segments, so it can never be shadowed by the ``<str:slug>/`` route
+    # below however a school is named. A single "profile/" would have been
+    # taken by any school whose slug was "profile" - and "profile" is not on
+    # the reserved list.
+    path("me/profile/", SchoolProfileView.as_view(), name="school-profile"),
+    path("me/profile/logo/", SchoolLogoView.as_view(), name="school-profile-logo"),
 
     # --------- School record access ---------
     path("<str:slug>/", SchoolDetailView.as_view(), name="school-detail"),

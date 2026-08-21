@@ -57,21 +57,19 @@ def _has_role_baseline(tenant, school) -> bool:
     ).exists()
 
 
-#: The profile fields a school must have filled in before it trades. Slug and
-#: code are allocated by creation and are here to catch a repaired or imported
-#: row that lost one, not because a school is expected to type them.
-SCHOOL_METADATA_FIELDS = (
-    "name", "slug", "code", "ownership_type", "term_structure", "currency",
-)
-
-
 def _has_school_metadata(tenant, school) -> bool:
+    """Every required profile field filled in.
+
+    The list of fields is the School model's own
+    (``vs_schools.models.REQUIRED_PROFILE_FIELDS``, read here through
+    ``missing_profile_fields``) and deliberately not a second copy kept in this
+    module. The profile screen tells the admin which fields are still empty
+    from the same source, so the screen and this gate cannot name different
+    fields - which they did while each app owned its own tuple.
+    """
     if school is None:
         return False
-    return all(
-        str(getattr(school, field, "") or "").strip()
-        for field in SCHOOL_METADATA_FIELDS
-    )
+    return not school.missing_profile_fields()
 
 
 def _has_set_of_books(tenant, school) -> bool:

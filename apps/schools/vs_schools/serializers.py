@@ -9,10 +9,14 @@ from rest_framework import serializers
 
 from .models import (
     ContactInfo,
+    Currency,
+    OwnershipType,
+    REQUIRED_PROFILE_FIELDS,
     SchoolPackageSetup,
     InviteStatus,
     RESERVED_TENANT_SLUGS,
     School,
+    TermStructure,
     BranchPrimaryAdmin,
     SchoolPrimaryAdmin,
     SchoolBranding,
@@ -1616,3 +1620,132 @@ class SchoolResetConfigSerializer(serializers.Serializer):
         )
 
         return school
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The school's own profile: what a school admin may read and edit about itself.
+#
+# Separate from SchoolCreate/Detail/Update above, which are the PLATFORM's view
+# of a school and are gated on ``platform.schools.*``. These two are the
+# school's, gated on ``school.profile.*``, and they are narrower on purpose:
+# name, slug and code are allocated by CodeX when the school is created, so
+# they are shown and never accepted. A school correcting its own address is a
+# different decision from a school filling in its own ownership type, and only
+# the second one is open here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: Labels for the required fields, so a screen can say "ownership type" rather
+#: than "ownership_type". Keyed on REQUIRED_PROFILE_FIELDS.
+PROFILE_FIELD_LABELS: Dict[str, str] = {
+    "name": "School name",
+    "slug": "School address",
+    "code": "School code",
+    "ownership_type": "Ownership type",
+    "term_structure": "Term structure",
+    "currency": "Currency",
+}
+
+
+def _choice_options(choices) -> List[Dict[str, str]]:
+    """A TextChoices class as ``[{value, label}]`` for a select."""
+    return [{"value": value, "label": label} for value, label in choices.choices]
+
+
+class SchoolProfileSerializer(serializers.ModelSerializer):
+    """The school's profile as its own admin sees it.
+
+    Carries three things the raw columns do not. ``options`` ships the choice
+    vocabularies with the record, so a form cannot drift from the values the
+    model will accept - the alternative is a hard-coded list in the client that
+    nobody updates when a currency is added. ``missing_required`` names the
+    fields still to fill, read from the model's own
+    ``missing_profile_fields()``, which is the same call the onboarding gate
+    makes, so the screen and the gate cannot disagree. ``editable_fields``
+    states plainly which of these the school may change, so the client does not
+    have to infer it from a 400.
+    """
+
+    logo = serializers.SerializerMethodField()
+    missing_required = serializers.SerializerMethodField()
+    options = serializers.SerializerMethodField()
+    editable_fields = serializers.SerializerMethodField()
+
+    class Meta:
+        model = School
+        fields = [
+            # CodeX's to set, the school's to read.
+            "name", "slug", "code", "status",
+            # The school's own.
+            "ownership_type", "term_structure", "currency",
+            "address", "website", "motto", "registration_id",
+            "logo",
+            # Derived.
+            "missing_required", "options", "editable_fields",
+        ]
+        read_only_fields = fields
+
+    def get_logo(self, obj) -> str:
+        branding = getattr(obj, "branding", None)
+        logo = getattr(branding, "logo", None)
+        if not logo:
+            return ""
+        request = self.context.get("request")
+        url = logo.url
+        return request.build_absolute_uri(url) if request else url
+
+    def get_missing_required(self, obj) -> List[Dict[str, str]]:
+        return [
+            {"field": field, "label": PROFILE_FIELD_LABELS.get(field, field)}
+            for field in obj.missing_profile_fields()
+        ]
+
+    def get_options(self, obj) -> Dict[str, List[Dict[str, str]]]:
+        return {
+            "ownership_type": _choice_options(OwnershipType),
+            "term_structure": _choice_options(TermStructure),
+            "currency": _choice_options(Currency),
+        }
+
+    def get_editable_fields(self, obj) -> List[str]:
+        """What this school may change, including the one that is not a field.
+
+        ``logo`` is listed even though it is not on the update serializer: it is
+        a file, so it has its own multipart endpoint. A client asking "may I
+        change the logo?" wants one answer, not a note about how the transport
+        differs.
+        """
+        return [*SchoolProfileUpdateSerializer.Meta.fields, "logo"]
+
+
+class SchoolProfileUpdateSerializer(SchoolUpdateSerializer):
+    """What a school may change about itself.
+
+    Subclasses the platform's updater rather than restating it, so the audit
+    event, the ``full_clean`` and the "no changes detected" refusal are the same
+    code and cannot drift. The only difference is the field list.
+
+    ``slug = None`` removes the address field the parent declares. That is the
+    whole point of this class: an address correction moves the host every one of
+    the school's users signs in at, and it stays a CodeX decision. ``name`` and
+    ``code`` were never on the parent either, for reasons its docstring gives.
+
+    ``branding`` is off too, and for a different reason: it holds a file. A
+    nested ``ImageField`` reached through a JSON body cannot receive one, so
+    leaving it here would advertise a write that silently does nothing. The logo
+    has its own multipart endpoint - see ``SchoolLogoView``.
+    """
+
+    slug = None
+    branding = None
+
+    class Meta(SchoolUpdateSerializer.Meta):
+        model = School
+        fields = [
+            "ownership_type",
+            "term_structure",
+            "currency",
+            "address",
+            "website",
+            "motto",
+            "registration_id",
+        ]

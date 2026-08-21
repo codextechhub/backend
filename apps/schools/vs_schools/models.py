@@ -98,6 +98,23 @@ class Currency(models.TextChoices):
     USD = "USD", "US Dollar"
 
 
+#: The profile fields a school must have filled in before it can trade.
+#:
+#: This lives on the model rather than in the onboarding app because two
+#: readers need the same answer and must never disagree: the onboarding gate,
+#: which refuses to mark the school-profile step done while one is empty, and
+#: the profile screen, which tells the admin which ones to go and fill. Two
+#: copies of this tuple would eventually name different fields, and the school
+#: would be told it was finished by one and blocked by the other.
+#:
+#: ``name``, ``slug`` and ``code`` are allocated when CodeX creates the school
+#: and are here to catch a repaired or imported row that lost one, not because
+#: a school is ever expected to type them.
+REQUIRED_PROFILE_FIELDS: tuple[str, ...] = (
+    "name", "slug", "code", "ownership_type", "term_structure", "currency",
+)
+
+
 class BillingCycle(models.TextChoices):
     YEARLY = "YEARLY", "Yearly"
     MONTHLY = "MONTHLY", "Monthly"
@@ -190,6 +207,18 @@ class School(TimeStampedModel):
 
     def __str__(self) -> str:
         return self.slug
+
+    def missing_profile_fields(self) -> list[str]:
+        """The ``REQUIRED_PROFILE_FIELDS`` this school has not filled in yet.
+
+        Empty means the profile is complete, which is exactly the question the
+        onboarding gate asks. Whitespace does not count as filled in.
+        """
+        return [
+            field
+            for field in REQUIRED_PROFILE_FIELDS
+            if not str(getattr(self, field, "") or "").strip()
+        ]
 
     def clean(self):
         super().clean()
