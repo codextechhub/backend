@@ -832,3 +832,158 @@ class RosterSelectionTests(_PayrollFixture):
         self.assertEqual(
             [row.name for row in roster_for(self.books, self.ikeja)], ["Ikeja Teacher"],
         )
+
+
+# --------------------------------------------------------------------------- #
+# Telling the runs apart                                                      #
+# --------------------------------------------------------------------------- #
+
+
+class RunsCarryTheirBranchTests(_PayrollFixture):
+    """Which site a run covers has to survive the trip to the screen.
+
+    The rule was enforced from the start - a branch run pays that branch's
+    roster and nobody else - but the serializer did not say which branch, so a
+    per-branch school's runs list showed several rows with the same pay date,
+    the same period label and nothing to tell them apart. The officer pinned to
+    one site never noticed, because ``branch_q`` had already narrowed her list
+    to one row. The bursar covering the school is the one who could not tell
+    Ikeja's January run from Lekki's, and she is the one who pays them.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.salary(self.books, "Ikeja Teacher", self.ikeja)
+        self.salary(self.books, "Lekki Teacher", self.lekki)
+        self.salary(self.books, "Yaba Teacher", self.yaba)
+        self.hq = self.officer(self.tenant, "runs-hq@fin.test", "runs-hq")
+
+    def _runs(self, client=None, query=""):
+        response = (client or self.hq).get(
+            f"/v1/finance/payroll-runs/?entity={self.books.code}{query}",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["data"]
+
+    def _make(self, branch):
+        from vs_finance.payroll import generate_run_from_roster
+
+        return generate_run_from_roster(
+            self.books, pay_date=datetime.date(2026, 1, 25), branch=branch,
+        )
+
+    def test_a_branch_run_says_which_branch(self):
+        self._make(self.ikeja)
+
+        row = self._runs()[0]
+
+        self.assertEqual(row["branch_id"], self.ikeja.pk)
+        self.assertEqual(row["branch_name"], "Ikeja Branch")
+
+    def test_a_central_run_says_it_covers_no_particular_branch(self):
+        """Null, not an empty string or the school's name. Every run raised
+        before per-branch payroll existed is this shape, and the frontend has
+        to be able to tell "the whole school" from "a site I cannot read"."""
+        from vs_finance.payroll import generate_run_from_roster
+
+        generate_run_from_roster(self.books, pay_date=datetime.date(2026, 1, 25))
+
+        row = self._runs()[0]
+
+        self.assertIsNone(row["branch_id"])
+        self.assertIsNone(row["branch_name"])
+
+    def test_two_runs_on_the_same_pay_date_are_distinguishable(self):
+        """The failure this whole class exists for."""
+        self._make(self.ikeja)
+        self._make(self.lekki)
+
+        rows = self._runs()
+
+        self.assertEqual(len({r["pay_date"] for r in rows}), 1)
+        self.assertEqual(
+            sorted(r["branch_name"] for r in rows),
+            ["Ikeja Branch", "Lekki Branch"],
+        )
+
+    def test_the_branch_name_costs_no_extra_query_per_run(self):
+        """``select_related``, not a lazy relation walked once per row.
+
+        Measured against one run rather than a fixed number, so the assertion
+        reads "three runs cost what one run costs" and cannot drift when
+        unrelated middleware adds a query of its own. A list that grows a query
+        per item is how a screen that worked with three runs stops working with
+        thirty.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        self._make(self.ikeja)
+        with CaptureQueriesContext(connection) as one_run:
+            self._runs()
+
+        self._make(self.lekki)
+        self._make(self.yaba)
+
+        with self.assertNumQueries(len(one_run)):
+            self._runs()
+
+    # -- filtering ----------------------------------------------------------- #
+
+    def test_the_runs_list_filters_by_branch(self):
+        self._make(self.ikeja)
+        self._make(self.lekki)
+
+        rows = self._runs(query=f"&branch={self.ikeja.pk}")
+
+        self.assertEqual([r["branch_name"] for r in rows], ["Ikeja Branch"])
+
+    def test_the_runs_list_finds_the_central_ones(self):
+        """``?branch=unassigned`` means the same thing on both payroll lists:
+        the rows no branch owns. On the roster that is the people blocking a
+        switch to per-branch payroll; here it is the central runs raised before
+        the school switched."""
+        from vs_finance.payroll import generate_run_from_roster
+
+        generate_run_from_roster(self.books, pay_date=datetime.date(2026, 1, 25))
+        self._make(self.ikeja)
+
+        rows = self._runs(query="&branch=unassigned")
+
+        self.assertEqual([r["branch_name"] for r in rows], [None])
+
+    def test_a_branch_the_caller_cannot_work_in_is_refused_like_an_unknown_one(self):
+        """Reported identically so the parameter cannot be used to enumerate a
+        school's sites."""
+        lekki_only = self.officer(
+            self.tenant, "runs-lekki@fin.test", "runs-lekki", branches=[self.lekki],
+        )
+
+        response = lekki_only.get(
+            f"/v1/finance/payroll-runs/?entity={self.books.code}&branch={self.ikeja.pk}",
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("branch", str(response.data))
+
+    def test_another_tenants_branch_is_refused_the_same_way(self):
+        response = self.hq.get(
+            f"/v1/finance/payroll-runs/?entity={self.books.code}"
+            f"&branch={self.rival_branch.pk}",
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+
+    def test_the_roster_filter_still_works_through_the_shared_helper(self):
+        """The roster's ``?branch=`` was moved onto the same helper as the runs
+        list. It has to keep meaning exactly what it meant."""
+        self.salary(self.books, "Unassigned Person")
+
+        response = self.hq.get(
+            f"/v1/finance/employee-salaries/?entity={self.books.code}&branch=unassigned",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            [row["name"] for row in response.data["data"]], ["Unassigned Person"],
+        )

@@ -539,11 +539,19 @@ class EveryBranchBearingListNarrowsTests(_FinanceBranchFixture):
     # -- the sweep ------------------------------------------------------------- #
 
     def test_every_listed_screen_narrows_and_keeps_the_school_wide_row(self):
-        for path, key, builder in self.SCREENS:
+        for index, (path, key, builder) in enumerate(self.SCREENS):
             with self.subTest(screen=path):
                 e = self.books
                 make = getattr(self, builder)
-                tag = str(abs(hash(path)) % 900 + 100)
+                # The screen's position, not a hash of its path. `hash()` on a
+                # string is salted per process, and folding twelve paths into
+                # 900 buckets collided about one run in fourteen - two screens
+                # drawing the same tag, the second `user_for` failing on a
+                # duplicate email, and a green suite failing for a reason that
+                # had nothing to do with branch scoping. The index is unique by
+                # construction and the tag keeps its three-digit shape, which
+                # `_cash_account` builds a GL code from.
+                tag = str(100 + index)
                 at_ikeja = make(e, self.ikeja, f"{tag}I")
                 at_lekki = make(e, self.lekki, f"{tag}L")
                 shared = make(e, None, f"{tag}S")

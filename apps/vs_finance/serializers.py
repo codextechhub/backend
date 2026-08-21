@@ -1120,6 +1120,13 @@ class PayrollLineSerializer(FieldSecurityMixin, serializers.ModelSerializer):
 class PayrollRunSerializer(serializers.ModelSerializer):
     lines = PayrollLineSerializer(many=True, read_only=True)
     net_total_naira = serializers.SerializerMethodField()
+    # Which site the run covers. Under PER_BRANCH a school raises one run per
+    # branch per pay date, so without this the list shows several rows with the
+    # same date, the same period label and nothing to tell them apart. Null
+    # means a central run over the whole entity, which is what every run was
+    # before per-branch payroll existed. Not FLS-stripped: a site is not a pay
+    # figure, and the officer who has to pick the right run needs to read it.
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
     # Statutory liability accounts the run credited (set on post) - let the FE match the
     # real outstanding balance (trial balance) to show remittance status honestly.
     paye_payable_account = serializers.CharField(source="paye_payable_account.code", read_only=True, default=None)
@@ -1131,6 +1138,7 @@ class PayrollRunSerializer(serializers.ModelSerializer):
             "id", "document_number", "pay_date", "period_label", "narration",
             "run_status", "status", "gross_total", "paye_total", "pension_total",
             "net_total", "net_total_naira", "bank_account_id",
+            "branch_id", "branch_name",
             "paye_payable_account", "paye_payable_account_id",
             "pension_payable_account", "pension_payable_account_id",
             "journal_id", "disbursement_journal_id", "lines",

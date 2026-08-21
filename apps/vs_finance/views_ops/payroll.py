@@ -73,6 +73,34 @@ def _branch_rule(entity) -> dict:
     return {"shared_when_ambiguous": not is_per_branch(entity)}
 
 
+UNASSIGNED_REFS = ("unassigned", "none", "null")
+
+
+# Support the branch filter workflow.
+def _filter_by_branch(qs, request, entity, *, field: str = "branch"):
+    """Narrow *qs* by a ``?branch=`` parameter, or leave it alone.
+
+    One helper for the roster and the runs list because the parameter has to
+    mean the same thing on both. ``?branch=unassigned`` finds the people no
+    branch owns - the ones blocking a school's switch to per-branch payroll -
+    and on the runs list the central runs raised before it switched. Spelled out
+    rather than left blank, because a blank parameter is how a frontend says "no
+    filter at all", and the two answers are not the same list.
+
+    A branch the caller may not work in is reported exactly like one that does
+    not exist, so the parameter cannot be used to enumerate a school's sites.
+    """
+    branch_ref = request.query_params.get(field)
+    if not branch_ref:
+        return qs
+    if str(branch_ref).lower() in UNASSIGNED_REFS:
+        return qs.filter(**{f"{field}__isnull": True})
+    branch = _resolve_branch(entity.tenant, branch_ref)
+    if branch is None or not caller_may_use_branch(request, branch):
+        raise ValidationError({field: "No such branch for this entity."})
+    return qs.filter(**{field: branch})
+
+
 # Group endpoint behavior for Payroll Run List Create View.
 class PayrollRunListCreateView(_FinanceBase):
     """GET (list) / POST (create draft) payroll runs for an entity.
@@ -91,9 +119,10 @@ class PayrollRunListCreateView(_FinanceBase):
         entity = resolve_entity(request)
         qs = PayrollRun.objects.filter(
             branch_q(request, include_shared=True), entity=entity,
-        ).prefetch_related("lines")
+        ).select_related("branch").prefetch_related("lines")
         if (status_val := request.query_params.get("run_status")):
             qs = qs.filter(run_status=status_val)
+        qs = _filter_by_branch(qs, request, entity)
         return self.paginate(
             request, qs.order_by("-pay_date", "-id"), PayrollRunSerializer)
 
@@ -183,7 +212,7 @@ class _PayrollActionBase(_FinanceBase):
         entity = resolve_entity(request)
         run = PayrollRun.objects.filter(
             branch_q(request, include_shared=True), entity=entity, pk=pk,
-        ).first()
+        ).select_related("branch").first()
         if run is None:
             raise NotFound("Payroll run not found for this entity.")
         return entity, run
@@ -338,18 +367,7 @@ class EmployeeSalaryListCreateView(_FinanceBase):
             qs = qs.filter(is_active=active == "true")
         if (search := request.query_params.get("search")):
             qs = qs.filter(name__icontains=search)
-        if (branch_ref := request.query_params.get("branch")):
-            # ``?branch=unassigned`` is how the bursar finds the people who are
-            # blocking the switch to per-branch payroll. Spelled out rather than
-            # left blank, because a blank parameter is how a frontend says "no
-            # filter at all".
-            if str(branch_ref).lower() in ("unassigned", "none", "null"):
-                qs = qs.filter(branch__isnull=True)
-            else:
-                branch = _resolve_branch(entity.tenant, branch_ref)
-                if branch is None or not caller_may_use_branch(request, branch):
-                    raise ValidationError({"branch": "No such branch for this entity."})
-                qs = qs.filter(branch=branch)
+        qs = _filter_by_branch(qs, request, entity)
         return success_response(
             "Employee salaries retrieved.",
             data=EmployeeSalarySerializer(qs.order_by("name"), many=True,
