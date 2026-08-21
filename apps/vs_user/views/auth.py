@@ -27,6 +27,7 @@ from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 from vs_tenants.models import Tenant
 from core.response import success_response, error_response
+from ..account_scope import administrable_user
 from ..email_normalization import normalize_email
 from ..models import (
     User, LoginSession, AuthEventLog,
@@ -457,9 +458,8 @@ class InvitationResendView(APIView):
     rbac_permission = "platform.team.create"
 
     def post(self, request, user_id):
-        try:
-            user = User.objects.get(id=user_id)
-        except User.DoesNotExist:
+        user = administrable_user(request, user_id)
+        if user is None:
             return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         if user.status != User.Status.PENDING:

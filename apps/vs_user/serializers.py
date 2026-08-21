@@ -653,8 +653,50 @@ class EndOtherSessionsSerializer(serializers.Serializer):
     current_session_id = serializers.IntegerField(min_value=1)
 
 
+class AdministrableUserField(serializers.PrimaryKeyRelatedField):
+    """A target account named by id, resolved inside the caller's own scope.
+
+    ``queryset=User.objects.all()`` on a ``PrimaryKeyRelatedField`` is the same
+    hole as ``User.objects.get(id=...)`` in a view, wearing different clothes:
+    the manager is plain, the key is a sequential integer, and the RBAC key that
+    gates the endpoint says nothing about *whose* account 41 is. See
+    :mod:`vs_user.account_scope`.
+
+    An id outside the caller's scope answers ``NotFound``, exactly as an id
+    belonging to nobody does, so the refusal carries no information about which
+    of the two it was. That is deliberately *not* the field's usual
+    ``does_not_exist`` 400: these two endpoints are the only pair in the family
+    that name their target in the body rather than the path, and a caller should
+    not be able to tell them apart from the four that name it in the path.
+
+    Requires ``context['request']`` - a serializer built without it is a
+    programming error, and failing loudly beats silently unscoping.
+    """
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("queryset", User.objects.none())
+        super().__init__(**kwargs)
+
+    def get_queryset(self):
+        from .account_scope import administrable_users
+
+        return administrable_users(self.context["request"])
+
+    def to_internal_value(self, data):
+        from rest_framework.exceptions import NotFound
+
+        try:
+            pk = int(data)
+        except (TypeError, ValueError):
+            self.fail("incorrect_type", data_type=type(data).__name__)
+        user = self.get_queryset().filter(pk=pk).first()
+        if user is None:
+            raise NotFound("User not found.")
+        return user
+
+
 class ForceLogoutSerializer(serializers.Serializer):
-    user_id    = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False, default=None)
+    user_id    = AdministrableUserField(required=False, default=None)
     session_id = serializers.PrimaryKeyRelatedField(queryset=LoginSession.objects.all(), required=False, default=None)
     reason     = serializers.CharField()
 
@@ -695,7 +737,7 @@ class AccountLockoutReadSerializer(serializers.ModelSerializer):
 
 
 class UnlockAccountSerializer(serializers.Serializer):
-    user_id              = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), source='user')
+    user_id              = AdministrableUserField(source='user')
     reason               = serializers.CharField(required=False, allow_blank=True)
     force_password_reset = serializers.BooleanField(default=False)
 

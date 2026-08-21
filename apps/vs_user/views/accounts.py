@@ -19,12 +19,6 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
-# ``include_shared=True`` spelled out rather than left to the default: a null
-# branch means "across the whole tenant" on this very model, and a4916e9 made
-# that the normal shape for a school user - so the shared arm is the common
-# case here, not the edge. Getting it backwards would empty the staff list and
-# every picker built on it.
-from vs_rbac.scoping import branch_q
 from vs_rbac.models import TenantUserRoleAssignment, TenantRoleTemplate
 from vs_tenants.models import Tenant
 from core.mixins import (
@@ -39,6 +33,7 @@ from ..serializers import (
     UserReadSerializer, UserListSerializer, UserCreateSerializer, UserUpdateSerializer,
     EmailChangeSerializer,
 )
+from ..account_scope import administrable_user, administrable_users
 from ..services.user       import UserCreationService, EmailChangeService, UserStatusService
 from vs_workflow.services.submission import submit_for_approval as _wf_submit
 from vs_workflow.serializers import WorkflowInstanceListSerializer as _WFInstanceSerializer
@@ -107,7 +102,6 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         return UserReadSerializer
 
     def get_queryset(self):
-        user   = self.request.user
         params = self.request.query_params
 
         qs = User.objects.select_related(
@@ -122,13 +116,14 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             )
         )
 
-        # Tenant boundary: platform-kind actors keep the platform-wide view
-        # (the endpoint's RBAC keys are the gate); everyone else is scoped to
-        # the asserted request tenant.
-        if getattr(getattr(user, 'tenant', None), 'kind', None) == Tenant.Kind.PLATFORM:
-            pass  # platform tenant - sees all users
-        else:
-            qs = qs.filter(tenant=getattr(self.request, 'tenant', None) or user.tenant)
+        # Who this caller may touch at all: the tenant boundary and the branch
+        # narrowing, both from ``account_scope``. This used to be two clauses
+        # written out here and nowhere else, which is why the six by-id account
+        # actions (suspend, unlock, reactivate, email change, admin password
+        # reset, invitation resend) had neither - the same line is what stops an
+        # Ikeja admin deactivating a Lekki-posted colleague by id, and what stops
+        # a Bright Star admin suspending a Greenfield teacher by id.
+        qs = administrable_users(self.request, qs)
 
         qs = qs.exclude(status__in=[User.Status.PENDING_APPROVAL, User.Status.REJECTED])
 
@@ -167,17 +162,12 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             # school_id query param maps to the tenant's school profile now.
             qs = qs.filter(tenant__school_profile__id=_as_row_id(school_id, 'school_id'))
 
-        # The caller's own entitlement, ANDed with the filter they asked for
-        # below. The two are different questions - "whose staff may I administer?"
-        # and "whose staff am I looking at right now?" - so a pinned admin asking
-        # for somebody else's branch gets an empty page rather than that branch's
+        # ``administrable_users`` above has already applied the caller's own
+        # entitlement. The ``branch_id`` filter below is ANDed with it, because
+        # the two are different questions - "whose staff may I administer?" and
+        # "whose staff am I looking at right now?" - so a pinned admin asking for
+        # somebody else's branch gets an empty page rather than that branch's
         # people, while one asking for her own narrows to it.
-        #
-        # This queryset is also what retrieve/update/destroy resolve through, so
-        # the same line is what stops an Ikeja admin deactivating a Lekki-posted
-        # colleague by id.
-        qs = qs.filter(branch_q(self.request, include_shared=True))
-
         if branch_id := params.get('branch_id'):
             qs = qs.filter(branch_id=_as_row_id(branch_id, 'branch_id'))
 
@@ -374,9 +364,8 @@ class UserEmailChangeView(APIView):
     rbac_permission = "platform.team.update"
 
     def patch(self, request, user_id):
-        try:
-            user = User.objects.get(id=user_id)
-        except User.DoesNotExist:
+        user = administrable_user(request, user_id)
+        if user is None:
             return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         ser = EmailChangeSerializer(data=request.data)
@@ -422,9 +411,8 @@ class UserSuspendView(APIView):
     rbac_permission = "platform.team.suspend"
 
     def post(self, request, user_id):
-        try:
-            user = User.objects.get(id=user_id)
-        except User.DoesNotExist:
+        user = administrable_user(request, user_id)
+        if user is None:
             return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         try:
@@ -453,9 +441,8 @@ class UserReactivateView(APIView):
     rbac_permission = "platform.team.reactivate"
 
     def post(self, request, user_id):
-        try:
-            user = User.objects.get(id=user_id)
-        except User.DoesNotExist:
+        user = administrable_user(request, user_id)
+        if user is None:
             return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         try:
@@ -484,9 +471,8 @@ class UserUnlockView(APIView):
     rbac_permission = "platform.team.reactivate"
 
     def post(self, request, user_id):
-        try:
-            user = User.objects.get(id=user_id)
-        except User.DoesNotExist:
+        user = administrable_user(request, user_id)
+        if user is None:
             return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         try:
