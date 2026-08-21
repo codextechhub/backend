@@ -99,6 +99,8 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
         SCHOOL_WIDE,
         "Read and change the school's own profile and configuration.",
         (
+            "school.profile.view",
+            "school.profile.update",
             "school.settings.view",
             "school.settings.manage",
         ),

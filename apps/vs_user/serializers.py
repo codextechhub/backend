@@ -753,12 +753,27 @@ class AuthEventLogReadSerializer(serializers.ModelSerializer):
 
 
 class PasswordResetAdminSerializer(serializers.ModelSerializer):
-    user = UserInlineSerializer(read_only=True)
+    """One pending reset, as the Password Activity screen shows it.
+
+    The tenant fields are here because this list crosses tenants: a CX
+    operator looking at ``ada.okeye@gmail.com`` cannot otherwise tell whether
+    that is Corona's principal or a parent at Bright Star, and the decision in
+    front of them is whether to kill her reset link. They sit on the row rather
+    than on ``UserInlineSerializer`` because that serializer is shared with
+    sessions and lockouts, which are already scoped to one tenant and would
+    only be repeating themselves.
+    """
+
+    user        = UserInlineSerializer(read_only=True)
+    tenant_id   = serializers.IntegerField(source='user.tenant_id', read_only=True)
+    tenant_slug = serializers.CharField(source='user.tenant.slug', read_only=True)
+    tenant_name = serializers.CharField(source='user.tenant.name', read_only=True)
 
     class Meta:
         model  = PasswordResetRequest
         fields = (
-            'id', 'user', 'requested_by', 'requested_ip',
+            'id', 'user', 'tenant_id', 'tenant_slug', 'tenant_name',
+            'requested_by', 'requested_ip',
             'expires_at', 'used_at', 'created_at',
         )
         read_only_fields = fields

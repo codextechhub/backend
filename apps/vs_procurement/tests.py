@@ -10264,8 +10264,9 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         )
         hidden = ikeja_client.get(url)
         self.assertEqual(hidden.status_code, 200)
-        # success_response coerces an empty list to {} - the shape callers must handle.
-        self.assertEqual(hidden.json()["data"], {})
+        # An empty list stays a list, so a caller mapping over it survives
+        # the no-rows case.
+        self.assertEqual(hidden.json()["data"], [])
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_sourcing_documents_carry_the_branch_to_the_awarded_order(self, _permission):

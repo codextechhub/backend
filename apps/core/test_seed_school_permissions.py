@@ -67,10 +67,16 @@ class SeedSchoolPermissionsKeyTests(TestCase):
             )
 
     def test_total_key_count(self):
+        """48 = the 46 the catalogue shipped with, plus school.profile.{view,update}.
+
+        Deliberately a hand-maintained number: the school permission surface
+        growing is something a person should have to notice and agree to, so
+        adding a key is meant to fail here until someone updates it.
+        """
         _run_school_seed()
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            46,
+            48,
         )
 
     def test_impersonation_keys_are_critical_and_restricted(self):
@@ -129,8 +135,8 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
             .values_list("permission_id", flat=True)
         )
 
-    def test_school_admin_gets_all_46(self):
-        self.assertEqual(len(self._defaults("school_admin")), 46)
+    def test_school_admin_gets_all_48(self):
+        self.assertEqual(len(self._defaults("school_admin")), 48)
 
     def test_only_school_admin_gets_impersonation_by_default(self):
         # The most powerful school keys must never be a branch_admin/teacher
@@ -154,7 +160,15 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         self.assertFalse(overrides & self._defaults("teacher"))
 
     def test_branch_admin_default_count(self):
-        self.assertEqual(len(self._defaults("branch_admin")), 22)
+        """23 = 22, plus reading the school profile.
+
+        A branch admin reads the profile because the currency and term
+        structure on it govern screens they work in; changing it stays with
+        the school admin, so only the .view key lands here.
+        """
+        self.assertEqual(len(self._defaults("branch_admin")), 23)
+        self.assertIn("school.profile.view", self._defaults("branch_admin"))
+        self.assertNotIn("school.profile.update", self._defaults("branch_admin"))
 
     def test_teacher_default_count(self):
         keys = self._defaults("teacher")
@@ -200,8 +214,8 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        # school_admin defaults are all 46 keys.
-        self.assertEqual(len(keys), 46)
+        # school_admin defaults are all 48 keys.
+        self.assertEqual(len(keys), 48)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
         self.assertIn("academics.classes.assign", keys)

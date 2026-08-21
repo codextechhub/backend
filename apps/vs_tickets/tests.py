@@ -634,8 +634,8 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
     def test_empty_comment_list_shape(self):
         self.client_api.force_authenticate(self.requester)
         payload = self.client_api.get(f"/v1/support/tickets/{self.ticket.pk}/comments/").json()
-        # success_response coerces empty lists to {}.
-        self.assertEqual(payload["data"], {})
+        # A ticket with no comments answers with an empty list, not an object.
+        self.assertEqual(payload["data"], [])
 
     def test_dashboard_counts_visible_tickets_only(self):
         ticket_svc.create_ticket(

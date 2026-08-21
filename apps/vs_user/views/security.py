@@ -120,7 +120,10 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             serializer = self.get_serializer(page, many=True)
             return self.get_paginated_response(serializer.data)
         serializer = self.get_serializer(queryset, many=True)
-        return success_response(data=serializer.data)
+        return success_response(
+            message="Data retrieved successfully.",
+            data=serializer.data,
+        )
 
     @action(detail=True, methods=['post'], url_path='end-mine')
     def end_mine(self, request, pk=None):
@@ -323,13 +326,24 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             serializer = self.get_serializer(page, many=True)
             return self.get_paginated_response(serializer.data)
         serializer = self.get_serializer(queryset, many=True)
-        return success_response(data=serializer.data)
+        return success_response(
+            message="Data retrieved successfully.",
+            data=serializer.data,
+        )
 
 
 class PasswordResetListView(APIView):
     """
     GET /user/password-resets/
     Vision Staff only. Lists active (unused, unexpired) reset tokens.
+
+    The list is platform-wide, and deliberately so: IsVisionStaff admits only
+    PLATFORM-tenant accounts, and the screen exists so a CX operator can see -
+    and revoke - a live reset link belonging to a school's principal. Narrowing
+    to the asserted ``?tenant=`` would scope the list to the platform tenant's
+    own staff and leave nobody able to see the rows the page is for.
+    ``?tenant_id=`` narrows to one tenant on demand, the same vocabulary
+    AuthAttemptViewSet uses for the same job.
 
     docstring-name: Password reset requests
     """
@@ -339,9 +353,24 @@ class PasswordResetListView(APIView):
         resets = PasswordResetRequest.objects.filter(
             used_at__isnull=True,
             expires_at__gt=timezone.now(),
-        ).select_related('user').order_by('-created_at')
+        ).select_related('user', 'user__tenant').order_by('-created_at')
+
+        tenant_id = request.query_params.get('tenant_id')
+        if tenant_id:
+            # Handed straight to an integer column, a non-numeric value raises
+            # ValueError deep in the ORM and reaches the client as a 500.
+            if not tenant_id.isdigit():
+                return error_response(
+                    message="tenant_id must be a whole number.",
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            resets = resets.filter(user__tenant_id=tenant_id)
+
         ser = PasswordResetAdminSerializer(resets, many=True)
-        return success_response(data=ser.data)
+        return success_response(
+            message="Data retrieved successfully.",
+            data=ser.data,
+        )
 
 
 class RevokePasswordResetView(APIView):
