@@ -358,15 +358,36 @@ def _signals(user, tenant) -> dict:
         from vs_payments.models import WebhookEvent
 
         # A webhook reaches a tenant through whichever of its two nullable
-        # sides is set. One attached to neither belongs to no tenant and is
-        # therefore counted for no one - platform plumbing, not a signal about
-        # anybody's books.
-        failures = WebhookEvent.objects.filter(
-            Q(collection__entity__tenant=tenant) | Q(payout__entity__tenant=tenant),
+        # sides is set. One attached to neither belongs to no tenant, and is
+        # reported by the separate platform signal below rather than counted
+        # into anybody's books.
+        recent_failures = WebhookEvent.objects.filter(
             status=WebhookStatus.FAILED, created_at__gte=since,
+        )
+        failures = recent_failures.filter(
+            Q(collection__entity__tenant=tenant) | Q(payout__entity__tenant=tenant),
         ).count()
         if failures:
             signals["webhook_failures_24h"] = {"count": failures}
+
+        # Failures belonging to no tenant at all: a bad signature, an
+        # unparseable payload, an event for a reference this platform never
+        # issued. No school can act on them and none should see them, but they
+        # are the shape a broken endpoint takes, so somebody has to be told.
+        #
+        # This is the one platform-only branch in this function, and it is
+        # narrow on purpose. It does NOT widen the count above to "everything"
+        # for a platform caller: that exemption is exactly the defect this
+        # module was repaired for. It selects rows attached to neither side, so
+        # what it reports is nobody's data rather than everybody's.
+        from vs_tenants.models import Tenant
+
+        if getattr(tenant, "kind", None) == Tenant.Kind.PLATFORM:
+            unattributed = recent_failures.filter(
+                collection__isnull=True, payout__isnull=True,
+            ).count()
+            if unattributed:
+                signals["unattributed_webhook_failures_24h"] = {"count": unattributed}
 
     if has_permission(user, PERM_FINANCE_INVOICE_VIEW, tenant=tenant):
         # Posted invoices past due and not fully settled - dunning pressure.

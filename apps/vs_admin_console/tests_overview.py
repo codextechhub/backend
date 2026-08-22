@@ -544,14 +544,12 @@ class OverviewSignalTests(OverviewTestBase):
         grant(self.user, "payments.webhook.view")
         self.assertNotIn("webhook_failures_24h", self.fetch().get("signals", {}))
 
-    def test_unattributed_webhook_failures_count_for_nobody(self):
+    def test_unattributed_webhook_failures_stay_out_of_the_tenant_count(self):
         """A webhook on neither side belongs to no tenant.
 
         Bad signature, unparseable payload: real events, but not evidence about
-        anybody's books. They are counted for no one rather than for everyone,
-        which is the deliberate cost of refusing a platform exemption inside a
-        scoping query. If platform operations needs them they want their own
-        signal, not a hole in this one.
+        anybody's books. They are kept out of every tenant-scoped count rather
+        than folded into one, and reported separately to the platform instead.
         """
         from vs_payments.models import WebhookEvent
 
@@ -560,6 +558,64 @@ class OverviewSignalTests(OverviewTestBase):
 
         grant(self.user, "payments.webhook.view")
         self.assertNotIn("webhook_failures_24h", self.fetch().get("signals", {}))
+
+    def test_platform_is_told_about_unattributed_failures(self):
+        """Nobody's data still needs an owner, and that owner is the platform.
+
+        A broken signature check or a flood of garbage at the webhook endpoint
+        produces failures attached to nothing. No school can act on them, so
+        they belong on CodeX's dashboard rather than on nobody's.
+        """
+        from vs_payments.models import WebhookEvent
+
+        for i in range(3):
+            WebhookEvent.objects.create(
+                provider="PAYSTACK", status="FAILED", dedupe_key=f"sig-wh-orphan-{i}")
+
+        grant(self.user, "payments.webhook.view")
+        signals = self.fetch()["signals"]
+        self.assertEqual(signals["unattributed_webhook_failures_24h"]["count"], 3)
+
+    def test_the_platform_signal_counts_orphans_and_not_everything(self):
+        """The guard against this becoming the exemption it replaced.
+
+        A platform caller must not be handed every tenant's failures under a
+        different name. Only rows attached to neither side are counted.
+        """
+        from vs_finance.models import LedgerEntity
+        from vs_payments.models import CollectionIntent, WebhookEvent
+
+        other = make_school(slug="ov-wh-plat", name="Platform Signal School")
+        theirs = LedgerEntity.objects.create(
+            name="Their Books", code="OVWHPLAT", tenant=other.tenant,
+        )
+        WebhookEvent.objects.create(
+            provider="PAYSTACK", status="FAILED", dedupe_key="sig-wh-theirs",
+            collection=CollectionIntent.objects.create(
+                entity=theirs, provider="PAYSTACK", reference="ov-wh-plat"),
+        )
+        WebhookEvent.objects.create(
+            provider="PAYSTACK", status="FAILED", dedupe_key="sig-wh-nobody")
+
+        grant(self.user, "payments.webhook.view")
+        signals = self.fetch()["signals"]
+        # Two failures exist; exactly one belongs to nobody.
+        self.assertEqual(signals["unattributed_webhook_failures_24h"]["count"], 1)
+
+    def test_a_school_is_never_shown_the_platform_signal(self):
+        from vs_payments.models import WebhookEvent
+        from core.test_utils import TenantAPIClient  # noqa: F401
+
+        WebhookEvent.objects.create(
+            provider="PAYSTACK", status="FAILED", dedupe_key="sig-wh-hidden")
+
+        school = make_school(slug="ov-wh-school", name="Webhook School")
+        branch = make_branch(school)
+        admin = make_school_admin(branch, email="ov-wh-admin@school.test")
+        grant(admin, "payments.webhook.view")
+
+        data = self.fetch(admin)
+        self.assertNotIn("unattributed_webhook_failures_24h", data.get("signals", {}))
 
     def test_fiscal_runway_needs_the_finance_key_and_reports_the_worst_entity(self):
         from datetime import timedelta
