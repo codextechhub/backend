@@ -264,10 +264,22 @@ def _signals(user, tenant) -> dict:
     omitted when the caller lacks the key of the screen it points at, AND when
     there is nothing to act on - a healthy signal is silence, not a green card.
     The frontend renders only what arrives, so quiet days cost no screen space.
+
+    Every count here is scoped to ``tenant`` as well as gated on the key. Holding
+    a key says the caller may see *that kind of number for their own books*, and
+    nothing more: no level of permission reaches another tenant's ledger, and
+    reading one is done by proxying a user who holds the key there. These
+    queries previously carried the gate without the scope, so a school's own
+    dashboard counted every other school's documents and named the school with
+    the worst fiscal runway.
     """
     from django.utils import timezone
 
     signals: dict = {}
+    # No asserted tenant means no scope to report on; a signal cannot be
+    # attributed, so none is offered.
+    if tenant is None:
+        return signals
     since = timezone.now() - timezone.timedelta(hours=SIGNAL_WINDOW_HOURS)
 
     if has_permission(user, PERM_FINANCE_REPORT_VIEW, tenant=tenant):
@@ -278,7 +290,7 @@ def _signals(user, tenant) -> dict:
         from vs_finance.posting import FISCAL_RUNWAY_HEALTHY, fiscal_calendar_runway
 
         worst = None
-        for entity in LedgerEntity.objects.filter(is_active=True):
+        for entity in LedgerEntity.objects.filter(is_active=True, tenant=tenant):
             runway = fiscal_calendar_runway(entity)
             if runway["status"] == FISCAL_RUNWAY_HEALTHY:
                 continue
@@ -300,7 +312,9 @@ def _signals(user, tenant) -> dict:
         from vs_finance.constants import DocumentStatus
         from vs_finance.models import JournalEntry
 
-        drafts = JournalEntry.objects.filter(status=DocumentStatus.DRAFT).count()
+        drafts = JournalEntry.objects.filter(
+            status=DocumentStatus.DRAFT, entity__tenant=tenant,
+        ).count()
         if drafts:
             signals["draft_journals"] = {"count": drafts}
 
@@ -318,6 +332,7 @@ def _signals(user, tenant) -> dict:
 
         rows = (
             PurchaseOrder.objects
+            .filter(entity__tenant=tenant)
             .exclude(status__in=(
                 FinDocStatus.CANCELLED, FinDocStatus.REVERSED,
                 FinDocStatus.DRAFT, FinDocStatus.PENDING_APPROVAL,
@@ -334,10 +349,20 @@ def _signals(user, tenant) -> dict:
             signals["pos_awaiting_receipt"] = {"count": awaiting}
 
     if has_permission(user, PERM_WEBHOOK_VIEW, tenant=tenant):
+        # Imported locally, not read from the module scope: the purchase-order
+        # branch above does `from django.db.models import Q, Sum`, which makes Q
+        # a local name for this whole function. Without its own import here, a
+        # caller holding the webhook key but not the PO key hits an unbound Q.
+        from django.db.models import Q
         from vs_payments.constants import WebhookStatus
         from vs_payments.models import WebhookEvent
 
+        # A webhook reaches a tenant through whichever of its two nullable
+        # sides is set. One attached to neither belongs to no tenant and is
+        # therefore counted for no one - platform plumbing, not a signal about
+        # anybody's books.
         failures = WebhookEvent.objects.filter(
+            Q(collection__entity__tenant=tenant) | Q(payout__entity__tenant=tenant),
             status=WebhookStatus.FAILED, created_at__gte=since,
         ).count()
         if failures:
@@ -352,6 +377,7 @@ def _signals(user, tenant) -> dict:
             Invoice.objects.filter(
                 status=DocumentStatus.POSTED,
                 due_date__lt=timezone.localdate(),
+                entity__tenant=tenant,
             )
             .exclude(payment_status=InvoicePaymentStatus.PAID)
             .count()
@@ -370,6 +396,7 @@ def _signals(user, tenant) -> dict:
         idle = Payment.objects.filter(
             status=DocumentStatus.POSTED,
             amount__gt=F("allocated_amount") + F("refunded_amount"),
+            entity__tenant=tenant,
         ).count()
         if idle:
             signals["unallocated_credit"] = {"count": idle}
@@ -381,7 +408,8 @@ def _signals(user, tenant) -> dict:
         from vs_procurement.models import VendorInvoice
 
         unpaid = (
-            VendorInvoice.objects.filter(status=FinStatus.POSTED)
+            VendorInvoice.objects.filter(
+                status=FinStatus.POSTED, entity__tenant=tenant)
             .exclude(payment_status=PayStatus.PAID)
             .count()
         )
@@ -393,7 +421,9 @@ def _signals(user, tenant) -> dict:
         from vs_procurement.constants import RfqStatus
         from vs_procurement.models import RequestForQuotation
 
-        open_rfqs = RequestForQuotation.objects.filter(rfq_status=RfqStatus.ISSUED).count()
+        open_rfqs = RequestForQuotation.objects.filter(
+            rfq_status=RfqStatus.ISSUED, entity__tenant=tenant,
+        ).count()
         if open_rfqs:
             signals["rfqs_open"] = {"count": open_rfqs}
 
@@ -404,6 +434,7 @@ def _signals(user, tenant) -> dict:
         horizon = timezone.localdate() + timezone.timedelta(days=CONTRACT_EXPIRY_DAYS)
         expiring = VendorContract.objects.filter(
             status=ContractStatus.ACTIVE, end_date__lte=horizon,
+            entity__tenant=tenant,
         ).count()
         if expiring:
             signals["contracts_expiring"] = {"count": expiring}

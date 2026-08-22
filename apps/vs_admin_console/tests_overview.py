@@ -353,6 +353,112 @@ class OverviewWorklistTests(OverviewTestBase):
         self.assertEqual(listed[0], f"ret-{RETURNED_ITEMS_LIMIT}")
 
 
+
+class OverviewSignalTenancyTests(OverviewTestBase):
+    """A signal counts the caller's OWN books and nobody else's.
+
+    The reported instance: a school's dashboard named the school with the worst
+    fiscal runway, which was a different school entirely. The root cause was
+    general - every query in ``_signals`` carried its permission gate but no
+    tenant filter, so nine counts spanned the whole platform - so these cover the
+    rule on both a named leak and a counted one. Holding a key means "this kind
+    of number, for my books"; it never reaches another tenant's ledger.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from vs_finance.models import LedgerEntity
+
+        self.other_school = make_school(slug="ov-other", name="Other School")
+        self.mine = LedgerEntity.objects.create(
+            name="Mine Books", code="OVTENMINE", tenant=self.school.tenant,
+        )
+        self.theirs = LedgerEntity.objects.create(
+            name="Theirs Books", code="OVTENTHEIRS", tenant=self.other_school.tenant,
+        )
+        self.admin = make_school_admin(self.branch, email="ov-ten-admin@school.test")
+
+    def test_fiscal_runway_never_names_another_tenants_entity(self):
+        from vs_finance.models import FiscalPeriod, FiscalYear, LedgerEntity
+
+        today = timezone.localdate()
+
+        def calendar(entity, end):
+            year = FiscalYear.objects.create(
+                entity=entity, year=end.year,
+                start_date=end - timedelta(days=364), end_date=end,
+            )
+            FiscalPeriod.objects.create(
+                entity=entity, fiscal_year=year, period_no=1, name="P1",
+                start_date=end - timedelta(days=364), end_date=end,
+            )
+
+        # The other tenant's books are the worst on the platform by a mile.
+        calendar(self.theirs, today + timedelta(days=1))
+        calendar(self.mine, today + timedelta(days=300))
+        for entity in LedgerEntity.objects.filter(is_active=True).exclude(
+            pk__in=(self.mine.pk, self.theirs.pk),
+        ):
+            calendar(entity, today + timedelta(days=300))
+
+        grant(self.admin, "finance.report.view")
+        data = self.fetch(self.admin)
+        # Everything of mine is healthy, so the signal must be absent entirely -
+        # not present naming someone else's school.
+        self.assertNotIn("fiscal_runway", data.get("signals", {}))
+
+    def test_fiscal_runway_still_reports_the_callers_own_entity(self):
+        from vs_finance.models import FiscalPeriod, FiscalYear, LedgerEntity
+
+        today = timezone.localdate()
+
+        def calendar(entity, end):
+            year = FiscalYear.objects.create(
+                entity=entity, year=end.year,
+                start_date=end - timedelta(days=364), end_date=end,
+            )
+            FiscalPeriod.objects.create(
+                entity=entity, fiscal_year=year, period_no=1, name="P1",
+                start_date=end - timedelta(days=364), end_date=end,
+            )
+
+        calendar(self.mine, today + timedelta(days=10))
+        for entity in LedgerEntity.objects.filter(is_active=True).exclude(pk=self.mine.pk):
+            calendar(entity, today + timedelta(days=300))
+
+        grant(self.admin, "finance.report.view")
+        runway = self.fetch(self.admin)["signals"]["fiscal_runway"]
+        self.assertEqual(runway["entity_name"], "Mine Books")
+
+    def test_draft_journal_count_excludes_other_tenants(self):
+        from vs_finance.constants import DocumentStatus
+        from vs_finance.models import JournalEntry
+
+        for entity in (self.mine, self.theirs, self.theirs):
+            JournalEntry.objects.create(
+                entity=entity, date=timezone.localdate(),
+                narration="draft", status=DocumentStatus.DRAFT,
+            )
+
+        grant(self.admin, "finance.journal.view")
+        signals = self.fetch(self.admin)["signals"]
+        # Three drafts exist; exactly one is mine.
+        self.assertEqual(signals["draft_journals"]["count"], 1)
+
+    def test_a_quiet_tenant_gets_no_signal_from_a_noisy_neighbour(self):
+        from vs_finance.constants import DocumentStatus
+        from vs_finance.models import JournalEntry
+
+        JournalEntry.objects.create(
+            entity=self.theirs, date=timezone.localdate(),
+            narration="their draft", status=DocumentStatus.DRAFT,
+        )
+
+        grant(self.admin, "finance.journal.view")
+        data = self.fetch(self.admin)
+        self.assertNotIn("draft_journals", data.get("signals", {}))
+
+
 class OverviewSignalTests(OverviewTestBase):
     """Module signals - gated by the target screen's key AND silent when quiet.
 
@@ -388,15 +494,72 @@ class OverviewSignalTests(OverviewTestBase):
         self.assertEqual(signals["jobs_failed_24h"]["count"], 1)
 
     def test_webhook_failures_need_the_webhook_key(self):
-        from vs_payments.models import WebhookEvent
+        """Gate plus scope: the key admits the signal, the tenant sizes it.
 
-        WebhookEvent.objects.create(provider="PAYSTACK", status="FAILED", dedupe_key="sig-wh-1")
-        WebhookEvent.objects.create(provider="PAYSTACK", status="PROCESSED", dedupe_key="sig-wh-2")
+        The events are attached to a collection rather than left bare, because a
+        webhook reaches a tenant only through its ``collection``/``payout`` side.
+        An unattached one belongs to nobody and is counted for nobody - see
+        ``test_unattributed_webhook_failures_count_for_nobody``.
+        """
+        from vs_finance.models import LedgerEntity
+        from vs_payments.models import CollectionIntent, WebhookEvent
+
+        entity = LedgerEntity.objects.create(
+            name="Webhook Books", code="OVWH", tenant=self.user.tenant,
+        )
+
+        def collection(ref):
+            return CollectionIntent.objects.create(
+                entity=entity, provider="PAYSTACK", reference=ref,
+            )
+
+        WebhookEvent.objects.create(
+            provider="PAYSTACK", status="FAILED", dedupe_key="sig-wh-1",
+            collection=collection("ov-wh-1"),
+        )
+        WebhookEvent.objects.create(
+            provider="PAYSTACK", status="PROCESSED", dedupe_key="sig-wh-2",
+            collection=collection("ov-wh-2"),
+        )
 
         self.assertNotIn("signals", self.fetch())
         grant(self.user, "payments.webhook.view")
         signals = self.fetch()["signals"]
         self.assertEqual(signals["webhook_failures_24h"]["count"], 1)
+
+    def test_webhook_failures_exclude_another_tenants(self):
+        from vs_finance.models import LedgerEntity
+        from vs_payments.models import CollectionIntent, WebhookEvent
+
+        other = make_school(slug="ov-wh-other", name="Other Webhook School")
+        theirs = LedgerEntity.objects.create(
+            name="Their Webhook Books", code="OVWHOTHER", tenant=other.tenant,
+        )
+        WebhookEvent.objects.create(
+            provider="PAYSTACK", status="FAILED", dedupe_key="sig-wh-other",
+            collection=CollectionIntent.objects.create(
+                entity=theirs, provider="PAYSTACK", reference="ov-wh-other"),
+        )
+
+        grant(self.user, "payments.webhook.view")
+        self.assertNotIn("webhook_failures_24h", self.fetch().get("signals", {}))
+
+    def test_unattributed_webhook_failures_count_for_nobody(self):
+        """A webhook on neither side belongs to no tenant.
+
+        Bad signature, unparseable payload: real events, but not evidence about
+        anybody's books. They are counted for no one rather than for everyone,
+        which is the deliberate cost of refusing a platform exemption inside a
+        scoping query. If platform operations needs them they want their own
+        signal, not a hole in this one.
+        """
+        from vs_payments.models import WebhookEvent
+
+        WebhookEvent.objects.create(
+            provider="PAYSTACK", status="FAILED", dedupe_key="sig-wh-orphan")
+
+        grant(self.user, "payments.webhook.view")
+        self.assertNotIn("webhook_failures_24h", self.fetch().get("signals", {}))
 
     def test_fiscal_runway_needs_the_finance_key_and_reports_the_worst_entity(self):
         from datetime import timedelta
