@@ -64,13 +64,18 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
     ),
     (
         "team",
-        "Vision staff team management",
+        # Staff account management, for whichever tenant holds it. These keys
+        # are held inside schools as well as by CodeX (see TENANT_HOLDABLE_KEYS
+        # below), so the wording must be true for both readers. It used to say
+        # "Vision", which read as CodeX's own staff on a screen where a school
+        # was choosing what its own bursar could do.
+        "Staff account management",
         [
-            ("view",       "View Vision team members",         False, _NORMAL),
-            ("create",     "Invite new Vision team members",   False, _NORMAL),
-            ("update",     "Edit a team member profile",       False, _NORMAL),
-            ("delete",     "Permanently remove a team member", True,  _SENSITIVE),
-            ("suspend",    "Suspend a team member account",    True,  _SENSITIVE),
+            ("view",       "View staff accounts",              False, _NORMAL),
+            ("create",     "Invite new staff members",         False, _NORMAL),
+            ("update",     "Edit a staff member's profile",    False, _NORMAL),
+            ("delete",     "Permanently remove a staff account", True, _SENSITIVE),
+            ("suspend",    "Suspend a staff account",          True,  _SENSITIVE),
             ("reactivate", "Reactivate a suspended account",   True,  _SENSITIVE),
         ],
     ),
@@ -176,6 +181,13 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
 # ``platform.audit.manage`` is deliberately NOT in this list: it edits
 # compliance and retention rules through an unscoped queryset, and nothing
 # grants it to a tenant.
+#
+# The 2026-08-22 note: what was wrong with ``platform.team.*`` was never the
+# scope but the WORDING. These descriptions were written from CodeX's side of
+# the platform, so the school roles screen offered a school admin choosing what
+# her bursar could do "Invite new Vision team members". Reworded above rather
+# than reclassified - reclassifying would have locked schools out of
+# administering their own staff.
 TENANT_HOLDABLE_KEYS = {
     "platform.team.view",
     "platform.team.create",

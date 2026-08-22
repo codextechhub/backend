@@ -173,7 +173,23 @@ class Command(BaseCommand):
                         "description": description,
                         "is_restricted": is_restricted,
                         "sensitivity_level": sensitivity,
-                        "scope": PermissionScope.TENANT,
+                        # ``ImportTemplate`` is a global table - the official
+                        # CodeX templates every school picks from - so
+                        # AUTHORING one is platform-only. The views already
+                        # refuse a non-platform caller (``_is_platform`` in
+                        # vs_import_data.views); this is the same rule said in
+                        # the column the picker reads, so a school is not
+                        # offered a box that the save would refuse.
+                        # ``templates.view`` stays tenant-holdable: a school has
+                        # to see the list to choose one.
+                        "scope": (
+                            PermissionScope.PLATFORM
+                            if key in (
+                                "import.templates.create",
+                                "import.templates.manage",
+                            )
+                            else PermissionScope.TENANT
+                        ),
                         "is_active": True,
                     },
                 )

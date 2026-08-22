@@ -92,7 +92,18 @@ class Command(BaseCommand):
                         sensitivity_level=sensitivity,
                         is_restricted=sensitivity in _RESTRICTED,
                         is_active=True,
-                        scope=PermissionScope.TENANT,
+                        # Templates are a GLOBAL catalogue: one row set for
+                        # the whole platform, with no tenant column and no
+                        # platform guard on the ViewSet. A school holding
+                        # ``notification_templates.configure`` could rewrite the
+                        # mail every other school receives. Everything else in
+                        # this module is the recipient's own post and stays
+                        # tenant-holdable.
+                        scope=(
+                            PermissionScope.PLATFORM
+                            if expected_key == "communication.notification_templates.configure"
+                            else PermissionScope.TENANT
+                        ),
                     )
                     perm.save()
                     created_perms += 1

@@ -53,7 +53,16 @@ class Command(BaseCommand):
                         sensitivity_level=sensitivity,
                         is_restricted=sensitivity in {"SENSITIVE", "CRITICAL"},
                         is_active=True,
-                        scope=PermissionScope.TENANT,
+                        # Platform-only, every one of them. This module is how
+                        # CodeX decides what a school HAS - which capabilities
+                        # are switched on, which entitlements are granted, what
+                        # the security and integration settings are. A tenant
+                        # that could hold these could grant itself the modules
+                        # it had not bought. Filed as TENANT until 2026-08-22,
+                        # which put nineteen keys in front of every school
+                        # editing one of its own roles; no school role has ever
+                        # held one.
+                        scope=PermissionScope.PLATFORM,
                     )
                     permission.save()
                 permissions.append(permission)

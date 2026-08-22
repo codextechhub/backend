@@ -16,6 +16,8 @@ offers a box the save rejects is a picker that lies.
 **What may it change?** Its own roles, inside its own tenant, and not the
 seeded baseline the onboarding gate reads.
 """
+from importlib import import_module
+
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
@@ -423,3 +425,229 @@ class PermissionCatalogueCapabilityTests(TestCase):
         self.assertTrue(rows["school.branches.view"]["available"])
         # And students are separately sold, so they follow their own capability.
         self.assertFalse(rows["school.students.view"]["available"])
+
+
+class ConfigIsPlatformOnlyTests(TestCase):
+    """What a school is offered, after migration 0008.
+
+    The roles screen was the first surface to show a school administrator the
+    permission registry, and it showed her two things it should not have. These
+    are both halves, including the half that turned out NOT to be a scope
+    problem.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="bright-star", name="Bright Star")
+        make_branch(cls.school, name="Main Branch")
+        cls.tenant = cls.school.tenant
+
+        view = make_permission("school.roles.view", scope=PermissionScope.TENANT)
+        update = make_permission(
+            "school.roles.update", scope=PermissionScope.TENANT,
+        )
+        role = make_role(cls.school, name="School Admin", key="school_admin")
+        make_role_permission(role, view)
+        make_role_permission(role, update)
+        cls.admin = make_school_admin(
+            None, email="admin@bright-star.example.com", tenant=cls.tenant,
+        )
+        make_assignment(cls.school, cls.admin, role, branch=None)
+
+    def _client(self):
+        token = str(CodeXRefreshToken.for_user(self.admin).access_token)
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        return client
+
+    def test_the_migration_moves_config_off_the_tenant_surface(self):
+        """CodeX decides what a school HAS; a school does not decide for itself.
+
+        A tenant able to hold ``config.entitlement.manage`` is one row of
+        enforcement away from granting itself the modules it has not paid for.
+
+        The migration's own function is run here rather than the seeded state
+        asserted, because a test database runs migrations and not seeders - so
+        asserting on seeded rows would pass by being vacuous.
+        """
+        from django.apps import apps as registry
+
+        from vs_rbac.models import Permission
+
+        migration = import_module(
+            "vs_rbac.migrations.0008_config_is_platform_only",
+        )
+
+        make_permission("config.entitlement.manage", scope=PermissionScope.TENANT)
+        make_permission("config.value.view", scope=PermissionScope.TENANT)
+
+        migration.forward(registry, None)
+
+        self.assertFalse(
+            Permission.objects.filter(module_id="config")
+            .exclude(scope=PermissionScope.PLATFORM)
+            .exists(),
+            "a config permission is still holdable by a tenant",
+        )
+
+        # And it goes back cleanly, which is what makes it safe to deploy.
+        migration.backward(registry, None)
+        self.assertFalse(
+            Permission.objects.filter(module_id="config")
+            .exclude(scope=PermissionScope.TENANT)
+            .exists(),
+        )
+
+    def test_a_school_is_not_offered_config_permissions(self):
+        response = self._client().get(
+            reverse(
+                "rbac-tenant-permission-catalogue",
+                kwargs={"tenant_slug": self.tenant.slug},
+            ),
+            {"tenant": self.tenant.slug},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertNotIn(
+            "config", {group["module"] for group in response.data["data"]},
+        )
+
+    def test_a_school_cannot_grant_itself_a_config_permission(self):
+        """The listing is a courtesy; this is the rule."""
+        make_permission("config.entitlement.manage", scope=PermissionScope.PLATFORM)
+        make_role(self.school, name="Assistant Bursar", key="assistant-bursar")
+
+        response = self._client().patch(
+            reverse(
+                "rbac-role-detail",
+                kwargs={
+                    "tenant_slug": self.tenant.slug,
+                    "key": "assistant-bursar",
+                },
+            )
+            + f"?tenant={self.tenant.slug}",
+            {"permission_keys": ["config.entitlement.manage"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+
+    def test_the_migration_leaves_the_staff_keys_holdable_by_a_school(self):
+        """Deliberately NOT reclassified, unlike config.
+
+        ``vs_user.account_scope`` states the rule: a school administrator holds
+        ``platform.team.suspend`` because that is how she suspends her own
+        leavers, and the tenant boundary is drawn by ``administrable_users``
+        rather than by the key. Reclassifying these would have locked a school
+        out of administering its own staff, which is why the fix for that family
+        was the caption instead.
+        """
+        from django.apps import apps as registry
+
+        from vs_rbac.models import Permission
+
+        migration = import_module(
+            "vs_rbac.migrations.0008_config_is_platform_only",
+        )
+        made = make_permission(
+            "platform.team.create", scope=PermissionScope.TENANT,
+        )
+        Permission.objects.filter(pk=made.pk).update(
+            description="Invite new Vision team members",
+        )
+
+        migration.forward(registry, None)
+
+        made.refresh_from_db()
+        self.assertEqual(made.scope, PermissionScope.TENANT)
+        # The real defect in that family: a school admin choosing what her
+        # bursar may do was reading a caption about CodeX's own staff console.
+        self.assertNotIn("Vision", made.description)
+        self.assertEqual(made.description, "Invite new staff members")
+
+
+class GlobalTableWritesAreNotTenantHoldableTests(TestCase):
+    """A write key on a table with no tenant column belongs to CodEx alone.
+
+    The registry has a handful of these - one row set shared by every school on
+    the platform. A tenant able to hold a write key on one of them can change
+    what every other school sees.
+
+    The notification-template case was live, not theoretical. Its ViewSet scopes
+    nothing and carries no platform guard, so a school that granted itself the
+    key could read and rewrite the message templates every other school
+    receives. It was reproduced against a running tenant before this was
+    written: 55 templates listed, and a PATCH returned 200.
+    """
+
+    #: Reads on the same tables stay tenant-holdable: a school has to see the
+    #: currency list and the template list in order to use either.
+    STILL_TENANT = [
+        "finance.currency.view",
+        "finance.fxrate.view",
+        "import.templates.view",
+    ]
+
+    def setUp(self):
+        self.school = make_school(slug="bright-star", name="Bright Star")
+        make_branch(self.school, name="Main Branch")
+        self.role = make_role(self.school, name="School Admin", key="school_admin")
+
+    def test_the_migration_moves_every_global_write_key(self):
+        from django.apps import apps as registry
+
+        from vs_rbac.models import Permission
+
+        migration = import_module(
+            "vs_rbac.migrations.0008_config_is_platform_only",
+        )
+        for key in migration.GLOBAL_WRITE_KEYS + self.STILL_TENANT:
+            make_permission(key, scope=PermissionScope.TENANT)
+
+        migration.forward(registry, None)
+
+        for key in migration.GLOBAL_WRITE_KEYS:
+            self.assertEqual(
+                Permission.objects.get(key=key).scope,
+                PermissionScope.PLATFORM,
+                f"{key} writes a global table and must not be tenant-holdable",
+            )
+        for key in self.STILL_TENANT:
+            self.assertEqual(
+                Permission.objects.get(key=key).scope,
+                PermissionScope.TENANT,
+                f"{key} is a read a school genuinely needs",
+            )
+
+    def test_a_school_role_cannot_hold_a_global_write_key(self):
+        """Refused at the grant model, which every path runs through.
+
+        Not at the serializer and not in the view: overrides, group
+        attachments, prebuilt defaults and role assignments all reach the same
+        guard, so there is one place this can be got wrong rather than five.
+        """
+        from django.core.exceptions import ValidationError
+
+        from vs_rbac.models import TenantRolePermission
+
+        permission = make_permission(
+            "communication.notification_templates.configure",
+            scope=PermissionScope.PLATFORM,
+        )
+        with self.assertRaises(ValidationError):
+            TenantRolePermission.objects.create(
+                role=self.role, permission=permission, granted=True,
+            )
+
+    def test_the_platform_may_still_hold_them(self):
+        """The narrowing is the tenant's; CodeX authors these for everybody."""
+        from vs_rbac.models import TenantRolePermission
+
+        platform = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+        cx_role = make_role(platform, name="Platform Admin", key="platform_admin")
+        permission = make_permission(
+            "communication.notification_templates.configure",
+            scope=PermissionScope.PLATFORM,
+        )
+        row = TenantRolePermission.objects.create(
+            role=cx_role, permission=permission, granted=True,
+        )
+        self.assertTrue(row.pk)

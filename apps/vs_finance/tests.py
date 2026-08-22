@@ -7777,7 +7777,7 @@ class DimensionAnalyticsAPITests(_Phase4FixtureMixin, TestCase):
 
 # Group tests for Journal Approval Workflow Tests.
 def _school_finance_requester(school, email, *, exclude_approve=True):
-    """A school STAFF user holding every ``finance.*`` key at *school*.
+    """A school STAFF user holding every tenant-holdable ``finance.*`` key.
 
     The approval-workflow slices operate on a school-owned entity, and under
     the tenant model only that school's users may address it (?tenant= must
@@ -7787,7 +7787,7 @@ def _school_finance_requester(school, email, *, exclude_approve=True):
     """
     from django.contrib.auth import get_user_model
     from vs_rbac.models import (
-        Permission, TenantRolePermission, TenantRoleTemplate,
+        Permission, PermissionScope, TenantRolePermission, TenantRoleTemplate,
         TenantUserRoleAssignment,
     )
     from vs_tenants.models import Branch
@@ -7806,7 +7806,14 @@ def _school_finance_requester(school, email, *, exclude_approve=True):
         defaults={"name": "Finance Ops (all keys)", "status": "ACTIVE"},
     )
     if created:
-        keys = Permission.objects.filter(key__startswith="finance.")
+        # Scope-filtered, not just prefix-filtered: this builds a SCHOOL role,
+        # and a handful of finance keys are platform-only because they write
+        # global reference tables (currencies, FX rates). The grant guard
+        # refuses those, so "every finance key" has to mean every finance key a
+        # tenant may actually hold.
+        keys = Permission.objects.filter(
+            key__startswith="finance.", scope=PermissionScope.TENANT,
+        )
         if exclude_approve:
             keys = keys.exclude(key__endswith=".approve")
         TenantRolePermission.objects.bulk_create(

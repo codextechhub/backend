@@ -1356,7 +1356,13 @@ class PayoutBatchApprovalTests(TestCase):
         # school (the entity is school-owned, so only its tenant may address it;
         # approve verbs excluded so SoD scenarios stay meaningful).
         from vs_tenants.models import Branch
-        from vs_rbac.models import Permission, TenantRolePermission
+        from django.db.models import Q
+
+        from vs_rbac.models import (
+            Permission,
+            PermissionScope,
+            TenantRolePermission,
+        )
         branch = Branch.objects.create(
             tenant=self.school.tenant, name="Main", is_main=True, status="ACTIVE",
         )
@@ -1369,9 +1375,16 @@ class PayoutBatchApprovalTests(TestCase):
             defaults={"name": "Payments Ops (all keys)", "status": "ACTIVE"},
         )
         if created:
+            # Scope-filtered, not just prefix-filtered: this builds a SCHOOL
+            # role, and a handful of finance keys are platform-only because
+            # they write global reference tables (currencies, FX rates). The
+            # grant guard refuses those, so "every finance key" has to mean
+            # every finance key a tenant may actually hold.
             keys = Permission.objects.filter(
-                key__startswith="payments.",
-            ) | Permission.objects.filter(key__startswith="finance.")
+                scope=PermissionScope.TENANT,
+            ).filter(
+                Q(key__startswith="payments.") | Q(key__startswith="finance.")
+            )
             TenantRolePermission.objects.bulk_create(
                 [TenantRolePermission(role=ops_role, permission=p)
                  for p in keys.exclude(key__endswith=".approve")],
