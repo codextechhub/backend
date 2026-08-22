@@ -315,3 +315,111 @@ class OnboardingRolesSurfaceTests(TestCase):
                 tenant_role_permissions__role__tenant=self.tenant,
             ).exists(),
         )
+
+
+class PermissionCatalogueCapabilityTests(TestCase):
+    """Which product each permission belongs to, and whether the school has it.
+
+    Two vocabularies had never been joined: what a school BUYS
+    (``vs_config.Capability``) and what a permission is FILED UNDER
+    (``vs_rbac.PermissionModule``). ``vs_rbac.capability_map`` joins them, and
+    these are the claims that join makes.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="bright-star", name="Bright Star")
+        make_branch(cls.school, name="Main Branch")
+        cls.tenant = cls.school.tenant
+
+        cls.view_perm = make_permission(
+            "school.roles.view", scope=PermissionScope.TENANT,
+        )
+        # One core permission, one governed per resource, one per module.
+        make_permission("school.branches.view", scope=PermissionScope.TENANT)
+        make_permission("school.students.view", scope=PermissionScope.TENANT)
+        make_permission("finance.invoice.view", scope=PermissionScope.TENANT)
+        make_permission("procurement.vendor.view", scope=PermissionScope.TENANT)
+
+        role = make_role(cls.school, name="School Admin", key="school_admin")
+        make_role_permission(role, cls.view_perm)
+        cls.admin = make_school_admin(
+            None, email="admin@bright-star.example.com", tenant=cls.tenant,
+        )
+        make_assignment(cls.school, cls.admin, role, branch=None)
+
+    def _catalogue(self):
+        token = str(CodeXRefreshToken.for_user(self.admin).access_token)
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = client.get(
+            reverse(
+                "rbac-tenant-permission-catalogue",
+                kwargs={"tenant_slug": self.tenant.slug},
+            ),
+            {"tenant": self.tenant.slug},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return {
+            entry["key"]: entry
+            for group in response.data["data"]
+            for entry in group["permissions"]
+        }
+
+    def test_each_permission_says_which_product_it_belongs_to(self):
+        rows = self._catalogue()
+        # Core: every school has its own branches whatever it bought.
+        self.assertIsNone(rows["school.branches.view"]["capability"])
+        # Governed per resource: students are sold separately from the school.
+        self.assertEqual(rows["school.students.view"]["capability"], "students")
+        # Governed per module.
+        self.assertEqual(rows["finance.invoice.view"]["capability"], "finance")
+        self.assertEqual(
+            rows["procurement.vendor.view"]["capability"], "procurement",
+        )
+
+    def test_a_school_with_nothing_switched_on_is_offered_everything(self):
+        """"Not provisioned" and "not bought" are different facts.
+
+        Entitlements are not granted at provisioning yet, so today every school
+        answers no to every capability. Treating that as "bought nothing" would
+        empty this screen for every school on the platform - so a tenant with no
+        capability on at all is offered the lot, and flagged as nothing.
+        """
+        rows = self._catalogue()
+        self.assertTrue(all(row["available"] for row in rows.values()))
+
+    def test_once_a_school_has_a_module_the_others_are_flagged(self):
+        """The flags become real the moment provisioning grants anything."""
+        from vs_config.models import Capability, CapabilityEntitlement
+
+        # Built here rather than read from the seeded catalogue: a test that
+        # skips itself when the catalogue is absent proves nothing on the run
+        # that matters, and the two capabilities this asserts on are named in
+        # ``capability_map`` anyway.
+        finance, _ = Capability.objects.get_or_create(
+            key="finance",
+            defaults={"label": "Finance", "kind": Capability.Kind.MODULE},
+        )
+        Capability.objects.get_or_create(
+            key="procurement",
+            defaults={"label": "Procurement", "kind": Capability.Kind.MODULE},
+        )
+        Capability.objects.get_or_create(
+            key="students",
+            defaults={"label": "Students", "kind": Capability.Kind.MODULE},
+        )
+        CapabilityEntitlement.objects.create(
+            tenant=self.tenant,
+            capability=finance,
+            state=CapabilityEntitlement.State.GRANTED,
+            source=CapabilityEntitlement.Source.PACKAGE,
+        )
+
+        rows = self._catalogue()
+        self.assertTrue(rows["finance.invoice.view"]["available"])
+        self.assertFalse(rows["procurement.vendor.view"]["available"])
+        # Core is never flagged: the school still runs its own branches.
+        self.assertTrue(rows["school.branches.view"]["available"])
+        # And students are separately sold, so they follow their own capability.
+        self.assertFalse(rows["school.students.view"]["available"])

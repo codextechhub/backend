@@ -621,7 +621,56 @@ class TenantPermissionCatalogueView(TenantScopedRBACMixin, APIView):
         self.rbac_permission = ROLE_VIEW_KEYS
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
+    def _capability_reader(self, tenant):
+        """A function answering "is this capability on for this school?".
+
+        Two things it is careful about.
+
+        **It asks the capability service, not the entitlement table.** Whether a
+        capability is on is computed from entitlement AND dependencies AND
+        operator overrides AND its own default; reading the entitlement rows
+        directly would disagree with the rest of the platform.
+
+        **A school with nothing switched on is treated as having everything.**
+        Entitlements are not granted at provisioning yet, so today every school
+        answers False to every capability. "Not provisioned" and "not bought"
+        are different facts and only one of them should hide a permission - and
+        with no way to tell them apart, hiding would empty this screen for every
+        school on the platform. So when a tenant has no capability on at all,
+        the catalogue offers everything and flags nothing. The moment
+        provisioning starts granting entitlements, the flags become real with no
+        change here.
+        """
+        from vs_config.conf import is_capability_enabled
+        from vs_config.models import Capability
+
+        cache: dict[str, bool] = {}
+
+        def enabled(key: str) -> bool:
+            if key not in cache:
+                try:
+                    cache[key] = bool(is_capability_enabled(key, tenant=tenant))
+                except Exception:  # noqa: BLE001 - a broken graph must not 500 a picker
+                    cache[key] = False
+            return cache[key]
+
+        anything_on = any(
+            enabled(key)
+            for key in Capability.objects.filter(is_active=True)
+            .values_list("key", flat=True)
+        )
+
+        def is_on(capability: str | None) -> bool:
+            if capability is None:
+                return True
+            if not anything_on:
+                return True
+            return enabled(capability)
+
+        return is_on
+
     def get(self, request, *args, **kwargs):
+        from .capability_map import capability_for
         from .models import PermissionScope, tenant_is_platform
 
         tenant = self.get_tenant()
@@ -634,21 +683,36 @@ class TenantPermissionCatalogueView(TenantScopedRBACMixin, APIView):
         if not tenant_is_platform(tenant):
             permissions = permissions.filter(scope=PermissionScope.TENANT)
 
+        is_on = self._capability_reader(tenant)
+
         modules: dict[str, dict] = {}
         for permission in permissions:
+            resource = permission.resource.name if permission.resource_id else ""
+            capability = capability_for(permission.module_id, resource)
+            available = is_on(capability)
+
             bucket = modules.setdefault(
                 permission.module_id,
-                {"module": permission.module_id, "permissions": []},
+                {"module": permission.module_id, "available": False, "permissions": []},
             )
+            # A module is offerable when anything in it is. ``school`` holds the
+            # school's own branches and roles alongside its students, so it is
+            # never wholly unavailable even to a school that bought neither the
+            # students nor the teachers module.
+            bucket["available"] = bucket["available"] or available
             bucket["permissions"].append({
                 "key": permission.key,
                 "label": _permission_label(permission),
-                "resource": permission.resource.name if permission.resource_id else "",
+                "resource": resource,
                 "action": permission.action_id,
                 "sensitivity": permission.sensitivity_level,
                 # Flagged so the picker can say so. These flow through an
                 # approval rather than taking effect on save.
                 "is_restricted": permission.is_restricted,
+                # Which product this permission belongs to, and whether the
+                # school has it. Null capability means core: every school.
+                "capability": capability,
+                "available": available,
             })
 
         return success_response(
