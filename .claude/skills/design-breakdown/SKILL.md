@@ -110,21 +110,35 @@ version, never an unversioned original.
 the input to writing one, and your plan becomes its first draft. Note it in the
 report so the FRD gets written before the backend is built.
 
-**If one exists, compare three things, not two:** what the design shows, what the
-FRD requires, and what the code does. Any two disagreeing is a finding.
+**The design outranks the FRD, and this is the rule the whole step turns on.**
+
+The design is the curated artefact. A person looked at it, changed it, and
+approved it. The FRD is derived from it and exists to make it buildable. So the
+FRD moves to match the design, never the other way round - **you do not revise a
+design to fit a specification.**
+
+The one exception is physics: if the code genuinely cannot serve something, that
+is reported, not quietly built or quietly dropped.
+
+**Compare three things, not two:** what the design shows, what the FRD requires,
+and what the code does. Any two disagreeing is a finding.
 
 | Disagreement | What it means | What to do |
 |---|---|---|
-| Design shows it, FRD does not mention it | The FRD was written from the code and missed a screen need - a filter, a count, a summary figure, a bulk action, an empty state. **This is the common case and the reason this step exists.** | Add it to the FRD delta. It is a requirement. |
-| FRD requires it, design does not show it | Either the design forgot it, or it is backend-only - a permission key, an audit effect, a refusal rule - which is legitimate and needs no screen. | Decide which, and say which. Only the first is a design gap. |
-| Design and FRD contradict each other | One of them is wrong about the product. | **Stop and ask.** Do not pick. A contradiction resolved silently becomes a decision nobody made. |
-| Design shows it, code cannot support it | The design asked for something impossible. | It belongs in the FRD's refusal list, not in your build plan. Name it and why. |
+| Design shows it, FRD does not mention it | The FRD missed a screen need - a filter, a count, a summary figure, a bulk action, an empty state. **This is the common case and the reason this step exists.** | **The FRD is wrong. Add it to the delta as a requirement.** No question to ask; the design decided this. |
+| FRD requires it, design does not show it | Usually backend-only and perfectly legitimate - a permission key, an audit effect, a refusal rule, a tenant boundary. Sometimes a screen the design chose not to have. | **Report it and let the user decide. Do not treat it as a design gap and do not design around it.** Say which of the two you think it is, and if it is backend-only say so plainly so they can wave it through. |
+| Design and FRD contradict each other | The FRD is out of date, or it was written against an earlier version of the design. | **The design stands.** Report the contradiction so the user can confirm, but the default is that the FRD changes. Never resolve it by altering what the screens do. |
+| Design shows it, code cannot support it | The only case where the design cannot simply win. | Name it, say exactly why the code cannot serve it, and put it in the FRD's refusal list. **Do not silently drop the screen element and do not invent a column to satisfy it.** The user decides whether to build the capability or change the design. |
 
 **Produce an FRD delta**, not a rewrite: the requirements this design implies
 that the current FRD does not carry, the ones it carries that the design
 contradicts, and the ones the design asks for that cannot exist. That delta is
 what the FRD's next version is written from - this skill does not revise the
 document itself.
+
+**Nothing in the delta ever asks for the design to change.** Where the design
+cannot be served, the delta says so and stops; the decision is the user's, and
+it is the only decision in this step they have to make.
 
 **If the delta is empty, check again.** A design produced without the backend in
 front of it always asks for something that is not there, and an FRD written
