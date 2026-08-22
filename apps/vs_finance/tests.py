@@ -3,6 +3,7 @@ the double-entry ledger (chart of accounts, posting, reversal, trial balance).""
 from __future__ import annotations
 
 import datetime
+import io
 from decimal import Decimal
 from unittest import mock
 
@@ -6214,6 +6215,152 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
             {"JOURNAL_POSTED": "Journal posted", "PAYMENT_POSTED": "Payment posted"})
 
 
+# Group tests for Entity Tenancy Tests.
+class EntityTenancyTests(TestCase):
+    """No seniority reads another tenant's books - not even Codex's own staff.
+
+    The reported instance: the console's entity picker listed every school's set
+    of books, and clicking any of them answered "No ledger entity matches". The
+    root cause was general - the list endpoint and ``resolve_entity`` each
+    decided entity visibility separately and disagreed, the list exempting a
+    PLATFORM caller and the resolver never doing so - so these cover the rule
+    itself (scope is the asserted tenant, full stop) on both paths, not just the
+    picker that surfaced it. Cross-tenant reading is done by proxying a user who
+    holds the permission there, which changes the asserted tenant.
+    """
+
+    # Prepare or verify the setUpTestData test path.
+    @classmethod
+    def setUpTestData(cls):
+        from django.contrib.auth import get_user_model
+        from django.core.management import call_command
+        from vs_rbac.models import (
+            Permission, TenantRolePermission, TenantRoleTemplate,
+            TenantUserRoleAssignment,
+        )
+        from vs_tenants.models import Tenant
+
+        # Finance permission rows and the platform role grants live in these
+        # seeds rather than in migrations, so the RBAC gate has something to
+        # match against. Class-level: seeding 123 keys per test is minutes.
+        # stdout captured: these commands print their whole key inventory,
+        # which otherwise buries the test summary.
+        sink = io.StringIO()
+        call_command("seed_actions", verbosity=0, stdout=sink)
+        call_command("seed_finance_permissions", verbosity=0, stdout=sink)
+        seed_currencies()
+
+        cls.platform = _platform_tenant()
+        cls.school = Tenant.objects.create(
+            name="Bright Star School", slug="bright-star",
+            kind=Tenant.Kind.SCHOOL, status=Tenant.Status.ACTIVE,
+        )
+        # One set of books either side of the boundary.
+        cls.codex_entity = LedgerEntity.objects.create(
+            tenant=cls.platform, name="CodeX Books", code="CXBOOK",
+            kind=LedgerEntity.Kind.PLATFORM,
+        )
+        cls.school_entity = LedgerEntity.objects.create(
+            tenant=cls.school, name="Bright Star Books", code="BRIGHTSTAR",
+            kind=LedgerEntity.Kind.TENANT,
+        )
+
+        User = get_user_model()
+        cls.cx_user = User.objects.create_user(
+            tenant=cls.platform, email="cx-admin@test.com", password="testpass123",
+            status="ACTIVE", first_name="Cx", last_name="Admin",
+        )
+        cx_role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=cls.platform, key="xvs_super_admin",
+            defaults={"name": "Super Admin", "status": "ACTIVE"},
+        )
+        TenantUserRoleAssignment.objects.create(
+            tenant=cls.platform, user=cls.cx_user, role=cx_role,
+            assignment_status="ACTIVE",
+        )
+
+        # The school side: a bursar whose role carries the finance keys
+        # explicitly, since the seeded xvs_super_admin grants belong to the
+        # PLATFORM tenant's template.
+        cls.bursar = User.objects.create_user(
+            tenant=cls.school, email="bursar@bright-star.test",
+            password="testpass123", status="ACTIVE",
+            first_name="Bola", last_name="Bursar",
+        )
+        school_role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=cls.school, key="school_bursar",
+            defaults={"name": "Bursar", "status": "ACTIVE"},
+        )
+        for key in ("finance.entity.view", "finance.account.view"):
+            TenantRolePermission.objects.create(
+                role=school_role, permission=Permission.objects.get(key=key),
+                granted=True,
+            )
+        TenantUserRoleAssignment.objects.create(
+            tenant=cls.school, user=cls.bursar, role=school_role,
+            assignment_status="ACTIVE",
+        )
+
+    # Prepare or verify the setUp test path.
+    def setUp(self):
+        from core.test_utils import TenantAPIClient
+
+        self.client = TenantAPIClient(user=self.cx_user)
+
+    # Verify platform list excludes other tenants books behavior.
+    def test_platform_list_excludes_other_tenants_books(self):
+        resp = self.client.get("/v1/finance/entities/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        codes = {e["code"] for e in resp.json()["data"]}
+        self.assertIn("CXBOOK", codes)
+        # The whole defect: a school's books must not be offered to Codex.
+        self.assertNotIn("BRIGHTSTAR", codes)
+
+    # Verify platform cannot open another tenants books behavior.
+    def test_platform_cannot_open_another_tenants_books(self):
+        resp = self.client.get(
+            f"/v1/finance/accounts/?entity={self.school_entity.code}")
+        self.assertEqual(resp.status_code, 404, resp.content)
+
+    # Verify platform cannot open another tenants books by id behavior.
+    def test_platform_cannot_open_another_tenants_books_by_id(self):
+        # By numeric pk too - the code path forks on isdigit().
+        resp = self.client.get(
+            f"/v1/finance/accounts/?entity={self.school_entity.id}")
+        self.assertEqual(resp.status_code, 404, resp.content)
+
+    # Verify list and resolver agree on every listed entity behavior.
+    def test_list_and_resolver_agree_on_every_listed_entity(self):
+        """The invariant behind the fix: anything listed must also open.
+
+        This is what actually broke. Asserting it directly means a future
+        widening of either side has to widen both or fail here.
+        """
+        listed = self.client.get("/v1/finance/entities/")
+        self.assertEqual(listed.status_code, 200, listed.content)
+        codes = [e["code"] for e in listed.json()["data"]]
+        self.assertTrue(codes, "fixture should list at least one entity")
+        for code in codes:
+            with self.subTest(entity=code):
+                seed_chart_of_accounts(LedgerEntity.objects.get(code=code))
+                resp = self.client.get(f"/v1/finance/accounts/?entity={code}")
+                self.assertEqual(resp.status_code, 200, resp.content)
+
+    # Verify school user sees only its own books behavior.
+    def test_school_user_sees_only_its_own_books(self):
+        from core.test_utils import TenantAPIClient
+
+        client = TenantAPIClient(user=self.bursar)
+
+        resp = client.get("/v1/finance/entities/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        codes = {e["code"] for e in resp.json()["data"]}
+        self.assertEqual(codes, {"BRIGHTSTAR"})
+        # And Codex's own books are just as closed in that direction.
+        denied = client.get(f"/v1/finance/accounts/?entity={self.codex_entity.code}")
+        self.assertEqual(denied.status_code, 404, denied.content)
+
+
 # Group tests for Entity Create Permission Tests.
 class EntityCreatePermissionTests(TestCase):
     """Provisioning a new entity must be gated on ``finance.entity.create``.
@@ -6306,7 +6453,14 @@ class _StubRequest:
 
 # Group tests for Entity List Scoping Tests.
 class EntityListScopingTests(TestCase):
-    """EntityListCreateView.get_queryset is tenancy-scoped for non-platform staff (F1)."""
+    """EntityListCreateView.get_queryset is tenancy-scoped for EVERY caller (F1).
+
+    This class used to assert that CX staff see every entity. That exemption was
+    the defect: the list granted platform callers a latitude ``resolve_entity``
+    never granted, so the console listed every school's books and then refused
+    to open any of them. No level of permission reads another tenant's ledger;
+    cross-tenant work is done by proxying a user who holds the key there.
+    """
 
     # Prepare or verify the setUp test path.
     def setUp(self):
@@ -6329,10 +6483,22 @@ class EntityListScopingTests(TestCase):
         view.request = _StubRequest(user=user, params=params)
         return set(view.get_queryset().values_list("code", flat=True))
 
-    # Verify cx staff sees every entity behavior.
-    def test_cx_staff_sees_every_entity(self):
+    # Verify cx staff sees no other tenants entity behavior.
+    def test_cx_staff_sees_no_other_tenants_entity(self):
         codes = self._codes(_StubUser(platform=True))
-        self.assertTrue({"GREENF1", "BLUEF1"} <= codes)
+        self.assertNotIn("GREENF1", codes)
+        self.assertNotIn("BLUEF1", codes)
+
+    # Verify cx staff sees its own tenants entity behavior.
+    def test_cx_staff_sees_its_own_tenants_entity(self):
+        from vs_tenants.models import Tenant
+
+        codex_books = LedgerEntity.objects.create(
+            name="CodeX Books", code="CODEXF1", kind=LedgerEntity.Kind.PLATFORM,
+            tenant=Tenant.objects.get(slug="codex"),
+        )
+        codes = self._codes(_StubUser(platform=True))
+        self.assertIn(codex_books.code, codes)
 
     # Verify school user sees only own behavior.
     def test_school_user_sees_only_own(self):

@@ -58,6 +58,29 @@ from .serializers import (
 # Entity scoping                                                              #
 # --------------------------------------------------------------------------- #
 
+# Handle the visible entities workflow.
+def visible_entities(request):
+    """The ledger entities the caller is entitled to, and the only source of that
+    answer.
+
+    Scoping is by asserted tenant and nothing else. Seniority does not widen it:
+    a platform (Codex) session sees Codex's own books, exactly as a school
+    session sees its school's. Reading another tenant's ledger is done by
+    proxying a user who holds the finance permission *there*, which swaps the
+    asserted tenant, so the books are always read as someone entitled to them
+    and the act is attributable.
+
+    This exists because the list endpoint and :func:`resolve_entity` each used to
+    decide this separately and drifted: the list exempted PLATFORM callers while
+    the resolver never did, so the console listed every school's books and then
+    404'd on each one. One function now answers for both.
+    """
+    tenant = getattr(request, "tenant", None)
+    if tenant is None:
+        return LedgerEntity.objects.none()
+    return LedgerEntity.objects.filter(tenant=tenant)
+
+
 # Handle the resolve entity workflow.
 def resolve_entity(request):
     """Resolve the ``?entity=`` query param (id or code) to a :class:`LedgerEntity`.
@@ -75,10 +98,7 @@ def resolve_entity(request):
     raw = request.query_params.get("entity")
     if not raw:
         raise ValidationError({"entity": "An 'entity' query parameter (id or code) is required."})
-    tenant = getattr(request, "tenant", None)
-    if tenant is None:
-        raise NotFound(f"No ledger entity matches '{raw}'.")
-    qs = LedgerEntity.objects.filter(tenant=tenant)
+    qs = visible_entities(request)
 
     entity = (
         qs.filter(pk=int(raw)).first() if str(raw).isdigit()
@@ -168,15 +188,9 @@ class EntityListCreateView(generics.ListCreateAPIView):
 
     # Handle the get queryset workflow.
     def get_queryset(self):
-        qs = LedgerEntity.objects.all().order_by("code")
-        # Tenancy (defence-in-depth, matching resolve_entity): platform-tenant users
-        # see every set of books; a school-tenant user sees only entities owned by
-        # their tenant, and a user with no tenant sees none.
-        tenant = getattr(self.request, "tenant", None)
-        if getattr(tenant, "kind", None) != "PLATFORM":
-            if tenant is None:
-                return qs.none()
-            qs = qs.filter(tenant=tenant)
+        # Same authority as resolve_entity, so the list can never offer a set of
+        # books that opening it would refuse.
+        qs = visible_entities(self.request).order_by("code")
         if (kind := self.request.query_params.get("kind")):
             qs = qs.filter(kind=kind)
         if (active := self.request.query_params.get("is_active")) is not None:
