@@ -1,7 +1,7 @@
 from django.urls import path
 
 from .views.package import PackagePlanListView, XVSModuleListView
-
+from .views.staff import SchoolStaffListCreateView, SchoolStaffResendView
 from .views.school import (
     SchoolCreateView,
     SchoolDetailView,
@@ -41,6 +41,12 @@ urlpatterns = [
     # the reserved list.
     path("me/profile/", SchoolProfileView.as_view(), name="school-profile"),
     path("me/profile/logo/", SchoolLogoView.as_view(), name="school-profile-logo"),
+    path("me/staff/", SchoolStaffListCreateView.as_view(), name="school-staff"),
+    path(
+        "me/staff/<int:pk>/resend/",
+        SchoolStaffResendView.as_view(),
+        name="school-staff-resend",
+    ),
 
     # --------- School record access ---------
     path("<str:slug>/", SchoolDetailView.as_view(), name="school-detail"),

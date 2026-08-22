@@ -1749,3 +1749,59 @@ class SchoolProfileUpdateSerializer(SchoolUpdateSerializer):
             "motto",
             "registration_id",
         ]
+
+
+class SchoolStaffSerializer(serializers.Serializer):
+    """One person at this school, as their own school's admin sees them.
+
+    Deliberately narrow. This renders on a screen a school admin opens during
+    onboarding, so it carries what that screen shows - who they are, what they
+    were invited as, and whether the invitation has landed - and none of the
+    account internals the platform's own user payload carries.
+
+    ``email`` IS here, unlike most payloads in this repo: the whole point of the
+    invitations table is to show which address an invitation went to, and a
+    school admin who can invite people can already see the address they typed.
+    """
+
+    id = serializers.IntegerField(read_only=True)
+    full_name = serializers.SerializerMethodField()
+    email = serializers.EmailField(read_only=True)
+    status = serializers.CharField(read_only=True)
+    role = serializers.SerializerMethodField()
+    branch_name = serializers.CharField(
+        source="branch.name", read_only=True, default="",
+    )
+    invited_at = serializers.SerializerMethodField()
+    #: True when this invitation can be sent again - which is exactly when the
+    #: account is still waiting to be activated.
+    can_resend = serializers.SerializerMethodField()
+
+    def get_full_name(self, obj) -> str:
+        full = (getattr(obj, "full_name", "") or "").strip()
+        if full:
+            return full
+        return " ".join(
+            part for part in (obj.first_name, obj.last_name) if part
+        ).strip()
+
+    def get_role(self, obj) -> str:
+        """The whole-school role, read from the prefetched assignments.
+
+        Reads the prefetched list rather than querying, so a page of people
+        does not become a page of queries.
+        """
+        for assignment in obj.tenant_role_assignments.all():
+            if assignment.assignment_status != "ACTIVE":
+                continue
+            role = getattr(assignment, "role", None)
+            if role is not None:
+                return role.name or role.key
+        return ""
+
+    def get_invited_at(self, obj):
+        invitation = getattr(obj, "invitation", None)
+        return getattr(invitation, "created_at", None) or obj.created_at
+
+    def get_can_resend(self, obj) -> bool:
+        return obj.status == "PENDING"
