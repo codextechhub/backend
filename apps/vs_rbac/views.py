@@ -509,6 +509,18 @@ class TenantRoleTemplateListCreateView(TenantScopedRBACMixin, CreateModelMixin, 
     docstring-name: Roles
     """
     pagination_class = XVSPagination
+    # Open to a school that has not gone live. "Confirm Default Roles & RBAC" is
+    # the first step on the onboarding checklist, and a school cannot confirm
+    # roles it is refused sight of. Reading and shaping its OWN roles is safe
+    # before go-live for the same reason it is safe after: a tenant role can
+    # only ever hold keys declared ``PermissionScope.TENANT``, enforced on the
+    # grant models themselves (``assert_tenant_may_hold``) and again in the
+    # evaluator, so nothing here can reach across the tenant boundary.
+    #
+    # DELETE is deliberately absent. Onboarding asks a school to confirm and
+    # extend its roles, not to dismantle the baseline CodeX seeded - and the
+    # gate that checks the baseline is intact reads those very rows.
+    pending_tenant_surface = ("get", "post")
 
     def get_permissions(self):
         if self.request.method == "POST":
@@ -549,6 +561,102 @@ class TenantRoleTemplateListCreateView(TenantScopedRBACMixin, CreateModelMixin, 
         return TenantRoleTemplateListSerializer
 
 
+def _permission_label(permission) -> str:
+    """The sentence a person reads beside the checkbox.
+
+    ``description`` when the registry has one, which is most of them. When it
+    does not, the key is composed back into English from its own parts rather
+    than printed raw: 48 of the keys a school can hold carry no description,
+    and they are all in ``academics`` and ``school`` - precisely the modules a
+    school spends this screen in. "school.administrators.view" is not a label,
+    but "View administrators" is, and it is built from the same two fields the
+    key itself is built from, so it cannot describe a different permission than
+    the one it sits beside.
+    """
+    described = (permission.description or "").strip()
+    if described:
+        return described
+    action = (permission.action_id or "").replace("_", " ").strip()
+    resource = (
+        permission.resource.name if permission.resource_id else ""
+    ).replace("_", " ").strip()
+    if not action and not resource:
+        return permission.key
+    return f"{action} {resource}".strip().capitalize()
+
+
+# The permissions a tenant may pick from, grouped the way a picker shows them.
+class TenantPermissionCatalogueView(TenantScopedRBACMixin, APIView):
+    """GET /rbac/tenants/<slug>/permission-catalogue/ - what this tenant may grant.
+
+    Why this exists beside ``vision/permissions/``: that endpoint is the global
+    registry, gated on ``platform.permissions.view`` and carrying every key on
+    the platform, including the ones only CodeX may ever hold. A school editing
+    its own roles needs the opposite - the short list it is actually allowed to
+    tick - and had no way to ask for it. Without this, the roles screen can
+    show which permissions a role HAS and offer no way to add one.
+
+    The filter is ``PermissionScope.TENANT``, which is the same column the
+    grant guard on the models and the evaluator both read. So the picker cannot
+    offer a key that the save would refuse, and cannot leak the existence of the
+    platform-only ones. A platform tenant sees everything, because it may hold
+    everything.
+
+    Grouped by module and returned whole rather than paginated: it is a
+    vocabulary, not a list of records, and a picker that has to page through
+    its own options in order to tick two boxes is not a picker.
+
+    docstring-name: Permission catalogue
+    """
+
+    # A school confirms its roles during onboarding, so the vocabulary those
+    # roles are written in has to be readable then. Read-only, and narrower
+    # than the registry it stands in front of.
+    pending_tenant_surface = ("get",)
+
+    def get_permissions(self):
+        # Whoever may see this tenant's roles may see what those roles could
+        # hold. Anything narrower would leave a reader able to open a role and
+        # unable to read the labels on its own permissions.
+        self.rbac_permission = ROLE_VIEW_KEYS
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get(self, request, *args, **kwargs):
+        from .models import PermissionScope, tenant_is_platform
+
+        tenant = self.get_tenant()
+
+        permissions = (
+            Permission.objects.filter(is_active=True)
+            .select_related("module", "resource", "action")
+            .order_by("module_id", "resource_id", "action_id")
+        )
+        if not tenant_is_platform(tenant):
+            permissions = permissions.filter(scope=PermissionScope.TENANT)
+
+        modules: dict[str, dict] = {}
+        for permission in permissions:
+            bucket = modules.setdefault(
+                permission.module_id,
+                {"module": permission.module_id, "permissions": []},
+            )
+            bucket["permissions"].append({
+                "key": permission.key,
+                "label": _permission_label(permission),
+                "resource": permission.resource.name if permission.resource_id else "",
+                "action": permission.action_id,
+                "sensitivity": permission.sensitivity_level,
+                # Flagged so the picker can say so. These flow through an
+                # approval rather than taking effect on save.
+                "is_restricted": permission.is_restricted,
+            })
+
+        return success_response(
+            message="Data retrieved successfully",
+            data=list(modules.values()),
+        )
+
+
 # Retrieve or mutate one tenant role template (addressed by per-tenant key).
 class TenantRoleTemplateDetailView(TenantScopedRBACMixin, RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
     """
@@ -561,6 +669,10 @@ class TenantRoleTemplateDetailView(TenantScopedRBACMixin, RetrieveModelMixin, Up
     """
     serializer_class = TenantRoleTemplateDetailSerializer
     lookup_field = "key"
+    # Read and edit, never delete, before go-live. See the note on the list
+    # view above; DELETE stays closed so a school cannot dismantle the seeded
+    # baseline that the onboarding gate is checking.
+    pending_tenant_surface = ("get", "patch", "put")
 
     def get_permissions(self):
         if self.request.method == "DELETE":
