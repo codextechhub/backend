@@ -326,6 +326,16 @@ class GoLiveRequestListView(OnboardingViewMixin, generics.ListAPIView):
             == Tenant.Kind.PLATFORM
         )
 
+    def get_serializer_context(self):
+        """Tell the serializer which audience it is rendering for.
+
+        The books fact is the reviewer's, not the school's - see
+        ``GoLiveRequestSerializer.to_representation``.
+        """
+        context = super().get_serializer_context()
+        context["caller_is_platform"] = self._caller_is_platform()
+        return context
+
     def get_queryset(self):
         if self._caller_is_platform():
             # ``all_objects`` is the unscoped manager, so this line is the whole
@@ -341,11 +351,22 @@ class GoLiveRequestListView(OnboardingViewMixin, generics.ListAPIView):
                 raise ValidationError({"status": "No such go-live status."})
             queryset = queryset.filter(status=status_value)
 
+        from django.db.models import Exists, OuterRef
+
+        from vs_finance.models import LedgerEntity
+
         return (
             queryset
             # ``tenant__school_profile`` is joined because every row now names
             # its school; without it a 25-row page is 25 extra queries.
             .select_related("requested_by", "reviewed_by", "tenant__school_profile")
+            # And the books fact is annotated for the same reason: asking per
+            # row would put a query behind every line of the reviewer's queue.
+            .annotate(
+                has_books=Exists(
+                    LedgerEntity.objects.filter(tenant_id=OuterRef("tenant_id")),
+                ),
+            )
             .order_by("-created_at")
         )
 
@@ -378,7 +399,9 @@ class GoLiveApproveView(OnboardingViewMixin, APIView):
         )
         return success_response(
             "Go-live request approved and the school is now live.",
-            GoLiveRequestSerializer(go_live_request).data,
+            GoLiveRequestSerializer(
+                go_live_request, context={"caller_is_platform": True},
+            ).data,
         )
 
 
@@ -459,5 +482,7 @@ class GoLiveRejectView(OnboardingViewMixin, APIView):
         )
         return success_response(
             "Go-live request rejected.",
-            GoLiveRequestSerializer(go_live_request).data,
+            GoLiveRequestSerializer(
+                go_live_request, context={"caller_is_platform": True},
+            ).data,
         )

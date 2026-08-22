@@ -655,6 +655,70 @@ class GoLiveQueueTests(OnboardingFixture):
         row = next(r for r in response.data["data"] if r["tenant_slug"] == self.rival.slug)
         self.assertEqual(row["school_name"], self.rival.name)
 
+    def test_the_reviewer_is_told_whether_the_school_has_books(self):
+        """The books gate moved here when it left the school's checklist.
+
+        Books are provisioned at school creation on a best-effort basis. That
+        used to be a required step, blocking go-live until somebody looked;
+        removing it took the safety net away, so the fact is put in front of
+        the one person who can still act on it before the school trades.
+        """
+        from vs_finance.models import LedgerEntity
+
+        self.submit_request()
+
+        response = self.client_for(self.reviewer).get(self.queue())
+
+        row = next(
+            r for r in response.data["data"] if r["tenant_slug"] == self.school.slug
+        )
+        self.assertFalse(
+            row["books_provisioned"],
+            "a school with no ledger entity must not read as provisioned",
+        )
+
+        LedgerEntity.objects.create(tenant=self.tenant, code="BOOKS1", name="Books")
+        response = self.client_for(self.reviewer).get(self.queue())
+        row = next(
+            r for r in response.data["data"] if r["tenant_slug"] == self.school.slug
+        )
+        self.assertTrue(row["books_provisioned"])
+
+    def test_the_school_is_not_told_about_its_books(self):
+        """It has no books step and no endpoint that would fix one.
+
+        Naming a problem the reader cannot act on is what removing the step was
+        meant to stop, so the fact is the reviewer's and not the school's.
+        """
+        self.submit_request()
+
+        response = self.client_for(self.admin).get(
+            self.scoped("onboarding-go-live-list"),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertNotIn("books_provisioned", response.data["data"][0])
+
+    def test_the_books_fact_costs_no_query_per_row(self):
+        """Annotated, not asked per row: this is the reviewer's whole queue."""
+        self.submit_request()
+        self.submit_request(tenant=self.rival_tenant, actor=self.rival_admin)
+
+        client = self.client_for(self.reviewer)
+        with CaptureQueriesContext(connection) as captured:
+            response = client.get(self.queue())
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data["data"]), 2)
+        books_queries = [
+            q for q in captured.captured_queries
+            if "ledgerentity" in q["sql"].lower()
+        ]
+        self.assertLessEqual(
+            len(books_queries), 1,
+            f"one row per query would not scale: {len(books_queries)} books queries",
+        )
+
     def test_the_queue_still_carries_no_account_or_email(self):
         self.submit_request(tenant=self.rival_tenant, actor=self.rival_admin)
 

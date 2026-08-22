@@ -52,6 +52,9 @@ class GoLiveRequestSerializer(serializers.ModelSerializer):
     # nobody to decide about. Still no account, no email, no internal tenant id.
     tenant_slug = serializers.CharField(source="tenant.slug", read_only=True)
     school_name = serializers.SerializerMethodField()
+    # Whether this school has a set of books, for the person deciding whether it
+    # goes live. See ``get_books_provisioned`` and ``to_representation``.
+    books_provisioned = serializers.SerializerMethodField()
 
     class Meta:
         model = GoLiveRequest
@@ -69,8 +72,45 @@ class GoLiveRequestSerializer(serializers.ModelSerializer):
             "rejection_reason",
             "failure_reference",
             "created_at",
+            "books_provisioned",
         ]
         read_only_fields = fields
+
+    def get_books_provisioned(self, obj) -> bool:
+        """Does this school have a set of books?
+
+        Books are provisioned at school creation on a best-effort basis, so
+        some school's books do not arrive. This used to be a required
+        checklist step, which blocked go-live until somebody looked; the
+        checklist no longer carries it, so the fact is put in front of the
+        person who decides instead. A school going live without books discovers
+        it in Finance, and by then it is trading.
+
+        Reads the ``has_books`` annotation the list view adds, and falls back to
+        a query only when the serializer is used somewhere that did not
+        annotate - approve and reject render a single object, where one extra
+        query is not worth a second code path.
+        """
+        annotated = getattr(obj, "has_books", None)
+        if annotated is not None:
+            return bool(annotated)
+
+        from vs_finance.models import LedgerEntity
+
+        return LedgerEntity.objects.filter(tenant_id=obj.tenant_id).exists()
+
+    def to_representation(self, instance):
+        """Hide the books fact from the school itself.
+
+        The school has no books step any more and no endpoint that would fix
+        one, so telling it its books are missing states a problem it cannot act
+        on - which is the thing removing the step was meant to stop. The
+        reviewer can act on it, so the reviewer is who sees it.
+        """
+        data = super().to_representation(instance)
+        if not self.context.get("caller_is_platform"):
+            data.pop("books_provisioned", None)
+        return data
 
     def get_school_name(self, obj) -> str:
         """The school's name, or its tenant's when no profile exists yet.
