@@ -1,4 +1,4 @@
-"""Publish the adjustment-approval ladders for tenants that already exist.
+"""Publish finance approval ladders for tenants that already exist.
 
 New tenants get these when their books are created: finance registers a provisioner
 with the entity-creation path, so the ladders arrive with the chart of accounts. This
@@ -24,7 +24,10 @@ Safe to re-run. ``--dry-run`` reports what would change and writes nothing.
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from vs_finance.approvals import ensure_tenant_approval_templates
+from vs_finance.approvals import (
+    ensure_tenant_approval_templates,
+    ensure_tenant_expense_claim_template,
+)
 from vs_finance.constants import (
     WF_ADJUSTMENT_APPROVER_ROLE,
     WF_ADJUSTMENT_THRESHOLD,
@@ -33,7 +36,7 @@ from vs_finance.constants import (
 
 
 class Command(BaseCommand):
-    help = "Publish per-tenant refund, write-off, concession and credit-note ladders."
+    help = "Publish per-tenant finance adjustment and expense-claim ladders."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -90,6 +93,8 @@ class Command(BaseCommand):
         with transaction.atomic():
             for tenant in tenants:
                 results = ensure_tenant_approval_templates(tenant, **ladder_kwargs)
+                expense_template, expense_created = ensure_tenant_expense_claim_template(tenant)
+                results.append((expense_template, expense_created))
                 created = sum(1 for _t, was_created in results if was_created)
                 kept = len(results) - created
                 self.stdout.write(
@@ -103,7 +108,7 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(
             "Done. Refunds and write-offs now need approval, and concessions and "
-            "credit notes need it at or above the threshold. Nobody can approve until "
-            "somebody holds the approving role, so the first one will park until they "
-            "do.",
+            "credit notes need it at or above the threshold. Expense claims now route "
+            "to their approving role. Nobody can approve until somebody holds the "
+            "relevant role, so the first one will park until they do.",
         ))

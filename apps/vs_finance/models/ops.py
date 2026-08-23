@@ -372,6 +372,8 @@ class ExpenseClaim(FinanceDocument):
     """
 
     DOC_TYPE = DocType.EXPENSE_CLAIM
+    workflow_document_type = "finance.expense_claim"
+    workflow_amount_field = "total"
 
     claimant = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,

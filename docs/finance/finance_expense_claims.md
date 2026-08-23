@@ -6,7 +6,7 @@ bank account. A mini accounts-payable cycle that never involves the procurement
 vendor tables.
 
 Routes (mounted at `/v1/finance/`): `expense-claims/`, `expense-claims/summary/`,
-`expense-claims/<pk>/`, `expense-claims/<pk>/{post,reject,settle}/`,
+`expense-claims/<pk>/`, `expense-claims/<pk>/{submit,post,reject,settle}/`,
 `expense-claims/<pk>/lines/<line_id>/receipt/`.
 
 ---
@@ -19,7 +19,8 @@ Routes (mounted at `/v1/finance/`): `expense-claims/`, `expense-claims/summary/`
 - **Posting** (`post_expense_claim`) raises `Dr expense(s) (+ Dr input VAT), Cr
   accrued reimbursement (2400)` - the liability owed to the employee. **Settling**
   (`settle_expense_claim`) pays it: `Dr accrued reimbursement, Cr bank`.
-- Two status axes, like an invoice: document `status` (`DRAFT/POSTED/CANCELLED`) and
+- Two status axes, like an invoice: document `status`
+  (`DRAFT/PENDING_APPROVAL/POSTED/CANCELLED`) and
   `payment_status` (`UNPAID/PARTIAL/PAID`) for how much has been reimbursed.
 
 **This does NOT:**
@@ -49,11 +50,12 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 
 | Method + path | permission key | what it does | request body | response |
 |---|---|---|---|---|
-| `GET /expense-claims/` | `finance.expenseclaim.view` | List (paginated). Query: `status`, `payment_status`, `display_status` (DRAFT/APPROVED/PAID/REJECTED), `q` | - | paginated `ExpenseClaimSerializer` |
+| `GET /expense-claims/` | `finance.expenseclaim.view` | List (paginated). Query: `status`, `payment_status`, `display_status` (DRAFT/PENDING/APPROVED/PAID/REJECTED), `q` | - | paginated `ExpenseClaimSerializer` |
 | `POST /expense-claims/` | `finance.expenseclaim.create` | Create a **DRAFT** (priced) | `claimant_name?`, `claim_date`, `title?`, `lines:[{expense_account, quantity?, unit_price, tax_code?, cost_center?}]` | `201` claim |
 | `GET /expense-claims/summary/` | `finance.expenseclaim.view` | Header KPIs over **all** claims | - | `success_response` |
 | `GET /expense-claims/<pk>/` | `finance.expenseclaim.view` | Claim + lines (+ receipt urls) | - | detail |
-| `POST /expense-claims/<pk>/post/` | `finance.expenseclaim.post` | DRAFT → POSTED (raise the liability journal) | - | claim |
+| `POST /expense-claims/<pk>/submit/` | `finance.expenseclaim.create` | DRAFT → PENDING_APPROVAL and notify the configured approvers | - | claim + approval park state |
+| `POST /expense-claims/<pk>/post/` | `finance.expenseclaim.post` | Direct DRAFT → POSTED only when no approval route applies | - | claim |
 | `POST /expense-claims/<pk>/reject/` | `finance.expenseclaim.post` | DRAFT → CANCELLED (approver's call) | - | claim |
 | `POST /expense-claims/<pk>/settle/` | `finance.expenseclaim.settle` | Reimburse (full or partial) | `bank_account`, `pay_date`, `amount?` | claim |
 | `POST /expense-claims/<pk>/void/` | `finance.expenseclaim.post` | Void a **posted, un-reimbursed** claim (reverses its journal → CANCELLED) | - | claim |
@@ -67,18 +69,20 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 ## 4. Lifecycle / state machine
 
 ```
-DRAFT ──post──▶ POSTED ──settle (×N, partial ok)──▶ payment_status PAID
-  │               │                                   (UNPAID→PARTIAL→PAID)
-  │               └──void (only if un-reimbursed)──▶ CANCELLED (posting journal REVERSED)
-  └──reject──▶ CANCELLED
+DRAFT ──submit──▶ PENDING_APPROVAL ──final approval──▶ POSTED
+  │                    │                                  │
+  │                    └──return/reject──▶ DRAFT          ├──settle (partial ok)──▶ PAID
+  ├──direct post (only when ungated)──▶ POSTED            └──void if unpaid──▶ CANCELLED
+  └──direct reject (only when ungated)──▶ CANCELLED
 ```
-- **Create** makes a priced DRAFT. **post/** raises the liability; **reject/** cancels
-  a DRAFT only. **settle/** reimburses (repeatable until `balance_due` hits 0).
+- **Create** makes a priced DRAFT. **submit/** freezes its approval-stage snapshot and
+  notifies eligible approvers. Final approval raises the liability. **settle/**
+  reimburses (repeatable until `balance_due` hits 0).
 - **void/** undoes a *posted* claim booked in error: it reverses the posting journal
   and marks the claim CANCELLED - but **only while `amount_paid == 0`**; once cash has
   been reimbursed you must reverse that reimbursement first.
-- Approve-vs-reject is one decision by one role: both `post/` and `reject/` use
-  `finance.expenseclaim.post` (§9).
+- A configured `finance.expense_claim` workflow closes the direct-post route. Its
+  approving role receives the standard `workflow.stage_activated` notice.
 
 ## 5. Calculations
 
@@ -121,7 +125,7 @@ Cr  bank (the bank account's GL cash account)   pay
   "lines": [ { "expense_account": "5300", "quantity": 1, "unit_price": 150000,
                "cost_center": "ADM" } ] }
 ```
-→ priced DRAFT (net 150000, total 150000). `post/` → `Dr 5300 150000 (cost centre ADM)
+→ priced DRAFT (net 150000, total 150000). `submit/` routes approval; final approval → `Dr 5300 150000 (cost centre ADM)
 / Cr 2400 150000`, status POSTED, payment UNPAID. `settle/` `{bank_account:"GTB-OPS",
 pay_date:"2026-07-03"}` → `Dr 2400 150000 / Cr <bank GL> 150000`, payment_status PAID.
 A receipt PDF attaches to the line via `lines/<id>/receipt/` (multipart `file`).
@@ -161,8 +165,9 @@ A receipt PDF attaches to the line via `lines/<id>/receipt/` (multipart `file`).
 |---|---|
 | `models/ops.py` | `ExpenseClaim`, `ExpenseClaimLine` |
 | `expenses.py` | `price_expense_claim`, `post_expense_claim`, `settle_expense_claim`, `void_expense_claim` |
-| `views_ops/expenses.py` | list/create (+ `display_status`/`q`), post, reject, settle, receipt, summary |
+| `views_ops/expenses.py` | list/create (+ `display_status`/`q`), submit, post, reject, settle, receipt, summary |
 | `serializers.py` | `ExpenseClaimSerializer`, `ExpenseClaimLineSerializer` (receipt urls) |
+| `workflow_handlers.py` | submission preflight, approval summary, and post-on-final-approval callback |
 | `constants.py` | `ACCRUED_REIMBURSEMENT_CODE` (2400); reuses `InvoicePaymentStatus`, `DocumentStatus` |
 
 ## 11. Test coverage & gaps

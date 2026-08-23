@@ -952,6 +952,7 @@ class ExpenseClaimSerializer(serializers.ModelSerializer):
     lines = ExpenseClaimLineSerializer(many=True, read_only=True)
     balance_due = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
+    approval_required = serializers.SerializerMethodField()
 
     class Meta:
         model = ExpenseClaim
@@ -959,11 +960,19 @@ class ExpenseClaimSerializer(serializers.ModelSerializer):
             "id", "document_number", "claimant_id", "claimant_name", "claim_date",
             "title", "narration", "status", "payment_status",
             "subtotal", "tax_total", "total", "total_naira",
-            "amount_paid", "balance_due", "journal_id", "lines",
+            "amount_paid", "balance_due", "journal_id", "approval_required", "lines",
         ]
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total)
+
+    def get_approval_required(self, obj) -> bool:
+        from .approvals import ApprovalGate
+
+        gate = self.context.get("approval_gate")
+        if gate is None:
+            gate = ApprovalGate()
+        return gate.required(obj)
 
 
 # --------------------------------------------------------------------------- #

@@ -723,6 +723,7 @@ WF_DEFAULT_TEMPLATE_CODE = "standard"
 #: with nobody appointed: a ladder arrives blocked, not open.
 WF_ADJUSTMENT_APPROVER_ROLE = "finance-adjustment-approver"
 WF_SENIOR_ADJUSTMENT_APPROVER_ROLE = "finance-senior-adjustment-approver"
+WF_EXPENSE_CLAIM_APPROVER_ROLE = "finance-expense-claim-approver"
 
 #: Kobo at or above which a concession or credit note needs a second person.
 #:

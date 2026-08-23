@@ -28,6 +28,8 @@ These handlers are auto-discovered by the engine on startup via
 """
 from __future__ import annotations
 
+from urllib.parse import urlencode
+
 from django.db import transaction
 
 from vs_workflow.constants import WorkflowStageAction as StageActionEnum
@@ -36,6 +38,12 @@ from vs_workflow.handlers import BaseWorkflowHandler, register_handler
 
 from .constants import DocumentStatus
 from .money import format_naira
+
+
+def _console_document_link(path: str, document) -> str:
+    """Return a real console list route narrowed to this source document."""
+    reference = document.document_number or str(document.pk)
+    return f"{path}?{urlencode({'search': reference})}"
 
 
 # Shared handler for finance docs that post after approval.
@@ -213,7 +221,7 @@ class JournalHandler(_FinancePostOnApprove):
                 {"label": "Narration", "value": document.narration or "-"},  # Journal narration.
                 {"label": "Total", "value": format_naira(document.total_debit_kobo)},  # Journal total.
             ],
-            "link": f"/finance/journals/{document.pk}/",  # Frontend deep link.
+            "link": _console_document_link("/finance/ledger", document),
         }
 
 
@@ -292,7 +300,7 @@ class RefundHandler(_FinancePostOnApprove):
                 {"label": "Customer", "value": document.customer.code},  # Customer code.
                 {"label": "Amount", "value": format_naira(document.amount)},  # Refund amount.
             ],
-            "link": f"/finance/refunds/{document.pk}/",  # Frontend deep link.
+            "link": _console_document_link("/finance/receivables/refunds", document),
         }
 
 
@@ -378,7 +386,7 @@ class WriteOffHandler(_FinancePostOnApprove):
                 {"label": "Amount", "value": format_naira(amount)},  # Write-off amount.
                 {"label": "Reason", "value": document.reason or "-"},  # Request reason.
             ],
-            "link": f"/finance/write-offs/{document.pk}/",  # Frontend deep link.
+            "link": _console_document_link("/finance/receivables/refunds", document),
         }
 
 
@@ -478,7 +486,7 @@ class ConcessionHandler(_FinancePostOnApprove):
                 {"label": "Amount", "value": format_naira(document.amount)},  # Amount forgiven.
                 {"label": "Reason", "value": document.reason or "-"},  # Stated grounds.
             ],
-            "link": f"/finance/concessions/{document.pk}/",  # Frontend deep link.
+            "link": _console_document_link("/finance/receivables/concessions", document),
         }
 
 
@@ -546,5 +554,71 @@ class CreditNoteHandler(_FinancePostOnApprove):
                 {"label": "Total", "value": format_naira(document.total)},  # Note total.
                 {"label": "Reason", "value": getattr(document, "reason", "") or "-"},  # Grounds.
             ],
-            "link": f"/finance/credit-notes/{document.pk}/",  # Frontend deep link.
+            "link": _console_document_link("/finance/receivables/credit-notes", document),
+        }
+
+
+@register_handler("finance.expense_claim")
+class ExpenseClaimHandler(_FinancePostOnApprove):
+    """Post a staff expense claim only after its approval route completes."""
+
+    @property
+    def document_model(self):
+        from .models import ExpenseClaim
+
+        return ExpenseClaim
+
+    def _mark_approved(self, doc) -> None:
+        # post_expense_claim owns the DRAFT to POSTED transition and guards for a
+        # draft. The temporary reset is inside the workflow action transaction, so
+        # it rolls back if accounting rejects the final approval.
+        if doc.status != DocumentStatus.DRAFT:
+            doc.status = DocumentStatus.DRAFT
+            doc.save(update_fields=["status", "updated_at"])
+
+    def preflight(self, document) -> None:
+        from .accounts import resolve_account
+        from .constants import ACCRUED_REIMBURSEMENT_CODE
+        from .exceptions import ExpenseClaimError
+        from .posting import resolve_period
+
+        # Creation prices and persists every line. Recompute the header in memory so
+        # the approval snapshot cannot rely on a stale roll-up without changing the
+        # draft during validation.
+        document.recompute_totals(save=False)
+        if document.total <= 0:
+            raise ExpenseClaimError("An expense claim must have a positive total to post.")
+        if document.reimbursement_account_id is None:
+            resolve_account(
+                document.entity,
+                ACCRUED_REIMBURSEMENT_CODE,
+                label="accrued reimbursement",
+            )
+        resolve_period(document.entity, document.claim_date)
+
+        for line in document.lines.select_related("tax_code__paid_account"):
+            if line.tax_amount and (
+                line.tax_code_id is None or line.tax_code.paid_account_id is None
+            ):
+                raise ExpenseClaimError(
+                    f"Tax code '{line.tax_code.code}' has no paid (input) account set."
+                    if line.tax_code_id else "Tax amount present without a tax code.",
+                )
+
+    def post(self, document, *, actor_user) -> None:
+        from .expenses import post_expense_claim
+
+        post_expense_claim(document, actor_user=actor_user)
+
+    def summary(self, document) -> dict:
+        return {
+            "title": document.document_number or str(document.pk),
+            "subtitle": "Expense claim",
+            "fields": [
+                {"label": "Date", "value": document.claim_date.isoformat()},
+                {"label": "Claimant", "value": document.claimant_name or "-"},
+                {"label": "Purpose", "value": document.title or "-"},
+                {"label": "Total", "value": format_naira(document.total)},
+            ],
+            "link": "/finance/expenses/claims",
         }

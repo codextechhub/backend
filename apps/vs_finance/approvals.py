@@ -379,3 +379,68 @@ def ensure_tenant_approval_templates(
     # must exist. See the function's docstring for why this lives here.
     ensure_adjustment_submit_permissions()
     return results
+
+
+def ensure_tenant_expense_claim_template(
+    tenant,
+    *,
+    approver_role_key: str | None = None,
+    created_by=None,
+):
+    """Publish the tenant's expense-claim approval route if none exists.
+
+    The route deliberately resolves a named tenant role. It arrives without a
+    holder, so a claim parks visibly until an administrator appoints the people who
+    approve staff reimbursements. Once holders exist, normal workflow stage
+    activation creates their approval notices.
+    """
+    from vs_workflow.models import WorkflowTemplate
+    from vs_workflow.services.roles import ensure_approver_role
+    from vs_workflow.services.templates import publish_template
+
+    from .constants import (
+        WF_DEFAULT_TEMPLATE_CODE,
+        WF_EXPENSE_CLAIM_APPROVER_ROLE,
+    )
+
+    if tenant is None:
+        raise ValueError("A tenant is required to seed its expense-claim approval rule.")
+
+    approver_role_key = approver_role_key or WF_EXPENSE_CLAIM_APPROVER_ROLE
+    existing = WorkflowTemplate.all_objects.filter(
+        tenant=tenant,
+        branch=None,
+        document_type="finance.expense_claim",
+        code=WF_DEFAULT_TEMPLATE_CODE,
+    ).first()
+    if existing is not None:
+        return existing, False
+
+    ensure_approver_role(
+        tenant,
+        approver_role_key,
+        description="Approves staff expense claims. Nobody holds it until an "
+                    "administrator assigns someone, so claims park until then.",
+    )
+    template = publish_template(
+        tenant=tenant,
+        branch=None,
+        document_type="finance.expense_claim",
+        code=WF_DEFAULT_TEMPLATE_CODE,
+        name="Expense claim approval",
+        description="Approval rule for a staff expense claim before it reaches the ledger.",
+        created_by=created_by,
+        stages_payload=[{
+            "code": "finance-approval",
+            "label": "Expense claim approval",
+            "kind": "APPROVAL",
+            "order": 10,
+            "approver_source": "ROLE",
+            "approver_role_key": approver_role_key,
+            "approver_scope": "SCHOOL",
+            "advance_rule": "ANY",
+            "on_rejection": "RETURN_TO_REQUESTER",
+            "skip_if_no_approvers": False,
+        }],
+    )
+    return template, True

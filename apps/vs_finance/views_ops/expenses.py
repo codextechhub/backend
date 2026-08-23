@@ -52,6 +52,7 @@ class ExpenseClaimListCreateView(_FinanceBase):
 
     # Handle GET requests for this endpoint.
     def get(self, request):
+        from ..approvals import ApprovalGate
         from ..constants import DocumentStatus, InvoicePaymentStatus
 
         entity = resolve_entity(request)
@@ -75,6 +76,8 @@ class ExpenseClaimListCreateView(_FinanceBase):
         elif disp == "APPROVED":  # posted but not yet fully reimbursed
             qs = qs.filter(status=DocumentStatus.POSTED).exclude(
                 payment_status=InvoicePaymentStatus.PAID)
+        elif disp == "PENDING":
+            qs = qs.filter(status=DocumentStatus.PENDING_APPROVAL)
         if (search := request.query_params.get("q")):
             from django.db.models import Q
             qs = qs.filter(
@@ -83,7 +86,9 @@ class ExpenseClaimListCreateView(_FinanceBase):
                 | Q(document_number__icontains=search)
             )
         return self.paginate(
-            request, qs.order_by("-claim_date", "-id"), ExpenseClaimSerializer)
+            request, qs.order_by("-claim_date", "-id"), ExpenseClaimSerializer,
+            context={"request": request, "approval_gate": ApprovalGate()},
+        )
 
     @transaction.atomic
     # Handle POST requests for this endpoint.
@@ -126,7 +131,7 @@ class ExpenseClaimListCreateView(_FinanceBase):
         claim.refresh_from_db()
         return success_response(
             f"Expense claim {claim.document_number} created.",
-            data=ExpenseClaimSerializer(claim).data, status=201,
+            data=ExpenseClaimSerializer(claim, context={"request": request}).data, status=201,
         )
 
 
@@ -164,14 +169,45 @@ class ExpenseClaimPostView(_ExpenseClaimActionBase):
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
+        from rest_framework.exceptions import ValidationError
+
+        from ..approvals import approval_required
         from ..expenses import post_expense_claim
 
         _, claim = self._claim(request, pk)
+        if approval_required(claim):
+            raise ValidationError({
+                "detail": "This expense claim is approval-gated; submit it for "
+                          "approval instead of posting it directly."
+            })
         post_expense_claim(claim, actor_user=request.user)
         claim.refresh_from_db()
         return success_response(
             f"Expense claim {claim.document_number} posted.",
             data=ExpenseClaimSerializer(claim, context={"request": request}).data,
+        )
+
+
+class ExpenseClaimSubmitView(_ExpenseClaimActionBase):
+    """POST a draft expense claim into its configured approval workflow."""
+
+    # Submitting cannot post or pay anything. Claim creators already hold the
+    # authority to finish and hand off their own draft, so no new tenant grants are
+    # needed merely to repair the previously missing hand-off.
+    rbac_permission = "finance.expenseclaim.create"
+
+    def post(self, request, pk):
+        from vs_workflow.services import release as release_svc
+        from vs_workflow.services.submission import submit_for_approval
+
+        _, claim = self._claim(request, pk)
+        instance = submit_for_approval(claim, requested_by=request.user)
+        claim.refresh_from_db()
+        return success_response(
+            f"Expense claim {claim.document_number} submitted for approval.",
+            data=ExpenseClaimSerializer(
+                claim, context={"request": request},
+            ).data | {"approval": release_svc.approval_block(instance)},
         )
 
 
@@ -208,10 +244,18 @@ class ExpenseClaimReceiptView(_ExpenseClaimActionBase):
 
     # Support the line workflow.
     def _line(self, request, pk, line_id):
+        from rest_framework.exceptions import ValidationError
+
+        from ..constants import DocumentStatus
+
         _, claim = self._claim(request, pk)
         line = claim.lines.filter(pk=line_id).first()
         if line is None:
             raise NotFound("Line not found on this claim.")
+        if claim.status != DocumentStatus.DRAFT:
+            raise ValidationError({
+                "detail": "Receipt evidence can only be changed while the claim is a draft."
+            })
         return claim, line
 
     # Handle POST requests for this endpoint.
@@ -320,7 +364,9 @@ class ExpenseClaimSummaryView(_FinanceBase):
         agg = ExpenseClaim.objects.filter(
             branch_q(request, include_shared=True), entity=entity,
         ).aggregate(
-            open=Count("id", filter=Q(status=DocumentStatus.DRAFT) | awaiting_q),
+            open=Count("id", filter=Q(status__in=[
+                DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL,
+            ]) | awaiting_q),
             month_total=Coalesce(Sum("total", filter=live & Q(
                 claim_date__year=today.year, claim_date__month=today.month)), 0),
             live_total=Coalesce(Sum("total", filter=live), 0),
@@ -338,4 +384,3 @@ class ExpenseClaimSummaryView(_FinanceBase):
                 "awaiting": agg["awaiting_total"] - agg["awaiting_paid"],
             },
         )
-
