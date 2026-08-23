@@ -672,6 +672,7 @@ class TenantPermissionCatalogueView(TenantScopedRBACMixin, APIView):
     def get(self, request, *args, **kwargs):
         from .capability_map import capability_for
         from .models import PermissionScope, tenant_is_platform
+        from .unenforced import UNENFORCED_KEYS
 
         tenant = self.get_tenant()
 
@@ -682,6 +683,12 @@ class TenantPermissionCatalogueView(TenantScopedRBACMixin, APIView):
         )
         if not tenant_is_platform(tenant):
             permissions = permissions.filter(scope=PermissionScope.TENANT)
+            # Withhold keys that gate nothing. A box that changes nothing when
+            # ticked is worse than an absent one: it tells the person editing
+            # the role she has granted something she has not. See
+            # ``unenforced.py`` for what each one was expected to control and
+            # what actually controls it.
+            permissions = permissions.exclude(key__in=UNENFORCED_KEYS)
 
         is_on = self._capability_reader(tenant)
 

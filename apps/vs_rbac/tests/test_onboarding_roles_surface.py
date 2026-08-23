@@ -651,3 +651,173 @@ class GlobalTableWritesAreNotTenantHoldableTests(TestCase):
             role=cx_role, permission=permission, granted=True,
         )
         self.assertTrue(row.pk)
+
+
+class ScopeAuditCommandTests(TestCase):
+    """The audit that found the five, kept runnable.
+
+    A one-off sweep rots the moment somebody adds a view. These assert the
+    command still detects the shape it was written for, and that its allowlist
+    cannot quietly grow into a way of silencing it.
+    """
+
+    def test_it_finds_a_write_key_on_a_table_with_no_tenant(self):
+        from vs_rbac.management.commands.audit_permission_scope import (
+            Command, WRITE_VERBS,
+        )
+        from vs_notifications.models import NotificationTemplate
+        from vs_rbac.models import TenantRoleTemplate
+
+        command = Command()
+        command._models = {}
+
+        # The exact model the live hole was found on: no tenant column, and no
+        # parent that has one.
+        self.assertFalse(
+            command._is_scoped(NotificationTemplate),
+            "NotificationTemplate is global; the audit must say so",
+        )
+        # And a model that is scoped must not be flagged.
+        self.assertTrue(command._is_scoped(TenantRoleTemplate))
+
+        self.assertIn("configure", WRITE_VERBS)
+        self.assertNotIn("view", WRITE_VERBS)
+
+    def test_it_follows_a_foreign_key_to_find_the_tenant(self):
+        """A child row is not global just because it carries no tenant itself.
+
+        Before this, JournalLine and three others were reported as findings
+        purely because the column is on the parent.
+        """
+        from vs_rbac.management.commands.audit_permission_scope import Command
+        from vs_rbac.models import TenantRolePermission
+
+        command = Command()
+        command._models = {}
+        self.assertTrue(command._is_scoped(TenantRolePermission))
+
+    def test_every_allowlisted_key_carries_its_reason(self):
+        """An allowlist entry without a stated reason is just a mute button."""
+        from vs_rbac.management.commands.audit_permission_scope import REVIEWED
+
+        for key, reason in REVIEWED.items():
+            self.assertGreater(
+                len(reason), 80,
+                f"{key} is allowlisted without explaining why",
+            )
+            self.assertIn(
+                "test", reason.lower(),
+                f"{key} is allowlisted without naming what proves it safe",
+            )
+
+    def test_the_command_runs_and_reports(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        out = StringIO()
+        call_command("audit_permission_scope", stdout=out)
+        printed = out.getvalue()
+        # The limits must always be printed: a clean run here means "nothing
+        # found by these means", which is weaker than "nothing there".
+        self.assertIn("reached by no resolved route", printed)
+
+
+class UnenforcedKeysAreWithheldTests(TestCase):
+    """Boxes that change nothing are not offered.
+
+    A permission that no view checks is worse than a missing one: ticking it
+    tells the person editing the role she has granted something she has not.
+    Adaeze ticks "Approve journals" for her deputy, saves, and Ngozi is still
+    refused, because approval is decided by the workflow stage's approver role
+    and never looks at a permission.
+    """
+
+    def setUp(self):
+        self.school = make_school(slug="bright-star", name="Bright Star")
+        make_branch(self.school, name="Main Branch")
+        self.tenant = self.school.tenant
+
+        view = make_permission("school.roles.view", scope=PermissionScope.TENANT)
+        role = make_role(self.school, name="School Admin", key="school_admin")
+        make_role_permission(role, view)
+        self.admin = make_school_admin(
+            None, email="admin@bright-star.example.com", tenant=self.tenant,
+        )
+        make_assignment(self.school, self.admin, role, branch=None)
+
+    def _catalogue(self):
+        token = str(CodeXRefreshToken.for_user(self.admin).access_token)
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = client.get(
+            reverse(
+                "rbac-tenant-permission-catalogue",
+                kwargs={"tenant_slug": self.tenant.slug},
+            ),
+            {"tenant": self.tenant.slug},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return {
+            p["key"]
+            for group in response.data["data"]
+            for p in group["permissions"]
+        }
+
+    def test_an_unenforced_key_is_not_offered(self):
+        from vs_rbac.unenforced import UNENFORCED_KEYS
+
+        for key in UNENFORCED_KEYS:
+            make_permission(key, scope=PermissionScope.TENANT)
+
+        offered = self._catalogue()
+        for key in UNENFORCED_KEYS:
+            self.assertNotIn(key, offered, f"{key} gates nothing and was offered")
+
+    def test_an_enforced_lookalike_is_still_offered(self):
+        """The narrowing is by key, never by the word "approve".
+
+        ``finance.budget.approve`` is a real gate - ``budgets.py`` declares it -
+        and hiding the whole family would have taken it away.
+        """
+        make_permission("finance.budget.approve", scope=PermissionScope.TENANT)
+        make_permission(
+            "procurement.vendor_invoice.attach", scope=PermissionScope.TENANT,
+        )
+
+        offered = self._catalogue()
+        self.assertIn("finance.budget.approve", offered)
+        self.assertIn("procurement.vendor_invoice.attach", offered)
+
+    def test_every_entry_says_what_really_controls_it(self):
+        from vs_rbac.unenforced import UNENFORCED_KEYS
+
+        self.assertTrue(UNENFORCED_KEYS)
+        for key, reason in UNENFORCED_KEYS.items():
+            self.assertGreater(
+                len(reason), 30, f"{key} is hidden without saying why",
+            )
+
+    def test_wiring_one_up_fails_this_test_rather_than_rotting(self):
+        """The guard that stops this list outliving the problem.
+
+        A list of "not implemented yet" keys is exactly the kind of thing that
+        survives the feature being implemented. If somebody points a view at one
+        of these, it becomes reachable by a route and this fails, naming the key
+        to delete from ``unenforced.py``.
+        """
+        from vs_rbac.management.commands.audit_permission_scope import Command
+        from vs_rbac.unenforced import UNENFORCED_KEYS
+
+        command = Command()
+        command._models = {}
+        reachable = set()
+        for cls, source in command._views():
+            reachable |= command._keys_for(cls, source)
+
+        now_wired = sorted(set(UNENFORCED_KEYS) & reachable)
+        self.assertEqual(
+            now_wired, [],
+            "These keys are now enforced by a view, so they must be removed "
+            f"from vs_rbac/unenforced.py and offered again: {now_wired}",
+        )
