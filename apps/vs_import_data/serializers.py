@@ -561,6 +561,10 @@ class ImportBatchListSerializer(serializers.ModelSerializer):
     warning_count = serializers.IntegerField(read_only=True)
     template_name = serializers.CharField(source="template.name", read_only=True, default=None)
     template_code = serializers.CharField(source="template.code", read_only=True, default=None)
+    # The column is on the row already; it was simply never exposed, so every
+    # client listing batches had to join back to the template to say what a file
+    # held. A list of uploads that cannot name what was uploaded is not a list.
+    dataset_type = serializers.CharField(read_only=True)
 
     class Meta:
         model = ImportBatch
@@ -569,6 +573,7 @@ class ImportBatchListSerializer(serializers.ModelSerializer):
             "template",
             "template_name",
             "template_code",
+            "dataset_type",
             "original_filename",
             "file_format",
             "status",
