@@ -6,7 +6,14 @@ from rest_framework.reverse import reverse
 from core.uploads import MAX_TICKET_ATTACHMENT_BYTES, TICKET_EXTENSIONS, validate_upload
 from vs_user.models import User
 
-from .constants import CommentVisibility, TicketCategory, TicketPriority, TicketStatus
+from .constants import (
+    CommentVisibility,
+    GuideAnalyticsEventName,
+    GuideAnalyticsOutcome,
+    TicketCategory,
+    TicketPriority,
+    TicketStatus,
+)
 from .context import allowed_keys, registered_choice_fields
 from .models import Ticket, TicketAttachment, TicketAuditLog, TicketComment
 from .services.visibility import can_view_internal_notes
@@ -258,3 +265,96 @@ class TicketDashboardSerializer(serializers.Serializer):
     by_category = serializers.DictField(child=serializers.IntegerField())
     assigned_to_me = serializers.IntegerField()
     requested_by_me = serializers.IntegerField()
+
+
+class GuideAnalyticsEventSerializer(serializers.Serializer):
+    """Closed browser event contract with no arbitrary metadata channel."""
+
+    name = serializers.ChoiceField(choices=GuideAnalyticsEventName.choices)
+    guide_id = serializers.RegexField(
+        r"^[a-z0-9][a-z0-9.-]{0,119}$",
+        required=False,
+        allow_blank=True,
+    )
+    walkthrough_id = serializers.RegexField(
+        r"^[a-z0-9][a-z0-9.-]{0,139}$",
+        required=False,
+        allow_blank=True,
+    )
+    step_id = serializers.RegexField(
+        r"^[a-z0-9][a-z0-9-]{0,99}$",
+        required=False,
+        allow_blank=True,
+    )
+    outcome = serializers.ChoiceField(
+        choices=GuideAnalyticsOutcome.choices,
+        required=False,
+        allow_blank=True,
+    )
+    query = serializers.CharField(required=False, allow_blank=True, max_length=160)
+    route_pattern = serializers.RegexField(
+        r"^/[a-z0-9_./:-]{0,199}$",
+        required=False,
+        allow_blank=True,
+    )
+    result_count = serializers.IntegerField(required=False, min_value=0, max_value=0)
+
+    EVENT_FIELDS = {
+        GuideAnalyticsEventName.GUIDE_VIEWED: {"name", "guide_id"},
+        GuideAnalyticsEventName.GUIDE_COMPLETED: {"name", "guide_id"},
+        GuideAnalyticsEventName.HELPFUL_VOTED: {"name", "guide_id", "outcome"},
+        GuideAnalyticsEventName.OUTDATED_REPORTED: {"name", "guide_id"},
+        GuideAnalyticsEventName.WALKTHROUGH_EXITED: {
+            "name", "guide_id", "walkthrough_id", "step_id", "outcome",
+        },
+        GuideAnalyticsEventName.SEARCH_NO_RESULTS: {
+            "name", "query", "route_pattern", "result_count",
+        },
+    }
+
+    def to_internal_value(self, data):
+        if not isinstance(data, dict):
+            raise serializers.ValidationError("Analytics event must be an object.")
+        name = data.get("name")
+        allowed = self.EVENT_FIELDS.get(name, {"name"})
+        unknown = sorted(set(data) - allowed)
+        if unknown:
+            raise serializers.ValidationError({
+                key: ["This analytics field is not allowed for the event."]
+                for key in unknown
+            })
+        return super().to_internal_value(data)
+
+    def validate_route_pattern(self, value):
+        if "?" in value or "#" in value or any(character.isdigit() for character in value):
+            raise serializers.ValidationError(
+                "Use a normalized route pattern without record, query, or fragment data."
+            )
+        return value
+
+    def validate(self, attrs):
+        name = attrs["name"]
+        if name == GuideAnalyticsEventName.SEARCH_NO_RESULTS:
+            if not attrs.get("query", "").strip():
+                raise serializers.ValidationError({"query": "A no-result search needs a query."})
+            attrs.setdefault("result_count", 0)
+            return attrs
+
+        if not attrs.get("guide_id"):
+            raise serializers.ValidationError({"guide_id": "This event needs a guide id."})
+        if name == GuideAnalyticsEventName.HELPFUL_VOTED and attrs.get("outcome") not in {
+            GuideAnalyticsOutcome.HELPFUL,
+            GuideAnalyticsOutcome.NOT_HELPFUL,
+        }:
+            raise serializers.ValidationError({"outcome": "Choose helpful or not_helpful."})
+        if name == GuideAnalyticsEventName.WALKTHROUGH_EXITED:
+            missing = [key for key in ("walkthrough_id", "step_id", "outcome") if not attrs.get(key)]
+            if missing:
+                raise serializers.ValidationError({key: "This field is required." for key in missing})
+            if attrs["outcome"] not in {
+                GuideAnalyticsOutcome.FINISHED,
+                GuideAnalyticsOutcome.PAUSED,
+                GuideAnalyticsOutcome.TARGET_UNAVAILABLE,
+            }:
+                raise serializers.ValidationError({"outcome": "Invalid walkthrough exit outcome."})
+        return attrs

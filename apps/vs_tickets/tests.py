@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 from unittest import mock
 
 from django.core.management import call_command
@@ -25,8 +26,14 @@ from schools.vs_schools.models import School, SchoolStatus
 from vs_tenants.models import Branch
 from vs_user.models import User
 
-from .constants import CommentVisibility, TicketPermission, TicketStatus
-from .models import TicketAuditLog, TicketSubscription
+from . import analytics as guide_analytics
+from .constants import (
+    CommentVisibility,
+    GuideAnalyticsEventName,
+    TicketPermission,
+    TicketStatus,
+)
+from .models import GuideAnalyticsEvent, TicketAuditLog, TicketSubscription
 from .services import tickets as ticket_svc
 from .services import visibility
 
@@ -119,6 +126,111 @@ class TicketFixtureMixin:
             self.other_support.tenant, self.other_support,
             (TicketPermission.MANAGE,), role_name="CX Support Tier 2",
         )
+
+
+class GuideAnalyticsTests(TicketFixtureMixin, TestCase):
+    def setUp(self):
+        self.build_users()
+        self.client = APIClient()
+        self.client.force_authenticate(self.requester)
+
+    def test_active_user_can_record_only_closed_guide_event_fields(self):
+        response = self.client.post(
+            "/v1/support/guides/analytics/events/",
+            {
+                "name": GuideAnalyticsEventName.HELPFUL_VOTED,
+                "guide_id": "getting-started.console-basics",
+                "outcome": "helpful",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        event = GuideAnalyticsEvent.objects.get()
+        self.assertEqual(event.guide_id, "getting-started.console-basics")
+        self.assertEqual(event.outcome, "helpful")
+        self.assertNotIn("tenant", {
+            field.name for field in GuideAnalyticsEvent._meta.get_fields()
+        })
+
+        refused = self.client.post(
+            "/v1/support/guides/analytics/events/",
+            {
+                "name": GuideAnalyticsEventName.GUIDE_VIEWED,
+                "guide_id": "getting-started.console-basics",
+                "email": "reader@alpha.test",
+            },
+            format="json",
+        )
+        self.assertEqual(refused.status_code, 400)
+        self.assertEqual(GuideAnalyticsEvent.objects.count(), 1)
+
+    def test_no_result_search_redacts_unknown_words_and_numbers(self):
+        response = self.client.post(
+            "/v1/support/guides/analytics/events/",
+            {
+                "name": GuideAnalyticsEventName.SEARCH_NO_RESULTS,
+                "query": "permission denied for Ada Okafor invoice 8842",
+                "route_pattern": "/support/guides",
+                "result_count": 0,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        event = GuideAnalyticsEvent.objects.get()
+        self.assertEqual(
+            event.search_query,
+            "permission denied [redacted] invoice",
+        )
+        self.assertNotIn("Ada", event.search_query)
+        self.assertNotIn("8842", event.search_query)
+
+    def test_summary_requires_platform_health_permission_and_exposes_no_tenant_split(self):
+        GuideAnalyticsEvent.objects.create(
+            name=GuideAnalyticsEventName.GUIDE_VIEWED,
+            guide_id="getting-started.console-basics",
+        )
+        GuideAnalyticsEvent.objects.create(
+            name=GuideAnalyticsEventName.GUIDE_VIEWED,
+            guide_id="audit.investigate-event",
+        )
+
+        denied = self.client.get("/v1/support/guides/analytics/summary/")
+        self.assertEqual(denied.status_code, 403)
+
+        _grant(
+            self.support.tenant,
+            self.support,
+            ("platform.health.view",),
+            role_name="Guide Editor",
+        )
+        self.client.force_authenticate(self.support)
+        response = self.client.get("/v1/support/guides/analytics/summary/?days=30")
+        self.assertEqual(response.status_code, 200, response.content)
+        data = response.json()["data"]
+        self.assertEqual(data["totals"][GuideAnalyticsEventName.GUIDE_VIEWED], 2)
+        self.assertEqual(
+            [row["guide_id"] for row in data["guides"]],
+            ["audit.investigate-event", "getting-started.console-basics"],
+        )
+        self.assertNotIn("tenant", str(data))
+
+    def test_prune_deletes_only_events_past_retention(self):
+        from .tasks import prune_guide_analytics_task
+
+        old = GuideAnalyticsEvent.objects.create(
+            name=GuideAnalyticsEventName.GUIDE_VIEWED,
+            guide_id="getting-started.console-basics",
+        )
+        recent = GuideAnalyticsEvent.objects.create(
+            name=GuideAnalyticsEventName.GUIDE_COMPLETED,
+            guide_id="getting-started.console-basics",
+        )
+        cutoff = timezone.now() - datetime.timedelta(days=guide_analytics.RETENTION_DAYS + 1)
+        GuideAnalyticsEvent.objects.filter(pk=old.pk).update(occurred_at=cutoff)
+
+        self.assertEqual(prune_guide_analytics_task()["deleted"], 1)
+        self.assertFalse(GuideAnalyticsEvent.objects.filter(pk=old.pk).exists())
+        self.assertTrue(GuideAnalyticsEvent.objects.filter(pk=recent.pk).exists())
 
 
 class TicketServiceTests(TicketFixtureMixin, TestCase):

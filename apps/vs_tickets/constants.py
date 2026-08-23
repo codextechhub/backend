@@ -66,6 +66,25 @@ class TicketAuditAction(models.TextChoices):
     ATTACHMENT_ADDED = "ATTACHMENT_ADDED", "Attachment added"
 
 
+# Closed product-analytics vocabulary for the Console how-to system.
+# These events contain guide keys and coarse outcomes only, never record data.
+class GuideAnalyticsEventName(models.TextChoices):
+    GUIDE_VIEWED = "guide.viewed", "Guide viewed"
+    GUIDE_COMPLETED = "guide.completed", "Guide completed"
+    WALKTHROUGH_EXITED = "walkthrough.exited", "Walkthrough exited"
+    HELPFUL_VOTED = "guide.helpful_voted", "Helpful vote recorded"
+    OUTDATED_REPORTED = "guide.outdated_reported", "Outdated guide reported"
+    SEARCH_NO_RESULTS = "search.no_results", "Guide search returned no results"
+
+
+class GuideAnalyticsOutcome(models.TextChoices):
+    HELPFUL = "helpful", "Helpful"
+    NOT_HELPFUL = "not_helpful", "Not helpful"
+    FINISHED = "finished", "Finished"
+    PAUSED = "paused", "Paused"
+    TARGET_UNAVAILABLE = "target_unavailable", "Target unavailable"
+
+
 # RBAC keys for ticket desk actions; creation remains available to active users.
 class TicketPermission:
     # Ticket creation is deliberately keyless: any authenticated active user

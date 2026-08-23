@@ -97,6 +97,10 @@ app.conf.beat_schedule = {
         "task": "vs_exports.prune_analytics",
         "schedule": crontab(hour=3, minute=45),
     },
+    "guides-prune-analytics": {
+        "task": "vs_tickets.prune_guide_analytics",
+        "schedule": crontab(hour=3, minute=50),
+    },
 
     # --- vs_onboarding (abandoned onboarding, go-live history) ------------
     # Daily: suspend schools that have been PENDING for 90 days, then warn the

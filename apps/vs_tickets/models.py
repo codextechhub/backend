@@ -11,6 +11,8 @@ from vs_user.models import TimeStampedModel
 
 from .constants import (
     CommentVisibility,
+    GuideAnalyticsEventName,
+    GuideAnalyticsOutcome,
     TicketAuditAction,
     TicketCategory,
     TicketPriority,
@@ -285,3 +287,45 @@ class TicketAuditLog(models.Model):
 
     def __str__(self) -> str:
         return f"{self.ticket.ticket_number} {self.action}"
+
+
+class GuideAnalyticsEvent(models.Model):
+    """Disposable, privacy-safe product telemetry for the how-to system.
+
+    This is intentionally separate from the immutable support and security audit
+    trails. It stores no tenant, actor, object id, form value, amount, email, or
+    free-text report. The deliberately dimensionless rows support platform-wide
+    editorial decisions without making one person's reading history visible.
+    """
+
+    name = models.CharField(
+        max_length=40,
+        choices=GuideAnalyticsEventName.choices,
+        db_index=True,
+    )
+    guide_id = models.CharField(max_length=120, blank=True, default="")
+    walkthrough_id = models.CharField(max_length=140, blank=True, default="")
+    step_id = models.CharField(max_length=100, blank=True, default="")
+    outcome = models.CharField(
+        max_length=24,
+        choices=GuideAnalyticsOutcome.choices,
+        blank=True,
+        default="",
+    )
+    # No-result searches are normalised through a closed safe-word vocabulary.
+    # Unknown tokens become [redacted], so a name or other user value cannot land here.
+    search_query = models.CharField(max_length=160, blank=True, default="")
+    route_pattern = models.CharField(max_length=200, blank=True, default="")
+    occurred_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "vs_tickets_guide_analytics_event"
+        ordering = ["-occurred_at"]
+        indexes = [
+            models.Index(fields=["name", "-occurred_at"], name="vst_gan_name_time_idx"),
+            models.Index(fields=["guide_id", "-occurred_at"], name="vst_gan_guide_time_idx"),
+        ]
+
+    def __str__(self) -> str:
+        subject = self.guide_id or self.search_query or "guide-system"
+        return f"{self.name} {subject} @{self.occurred_at:%Y-%m-%d %H:%M}"

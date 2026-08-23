@@ -7,12 +7,13 @@ from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import NotFound, PermissionDenied
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.views import APIView
 
 from core.mixins import XVSModelViewSetMixin
 from core.response import success_response
 from vs_user.models import User
+from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 
 from .constants import (
     ACTIVE_TICKET_STATUSES,
@@ -23,6 +24,7 @@ from .constants import (
     TicketStatus,
 )
 from .models import Ticket, TicketAttachment, TicketComment
+from . import analytics as guide_analytics
 from .permissions import TICKET_PERMISSIONS
 from .serializers import (
     TicketAssignSerializer,
@@ -34,6 +36,7 @@ from .serializers import (
     TicketCreateSerializer,
     TicketDashboardSerializer,
     TicketDetailSerializer,
+    GuideAnalyticsEventSerializer,
     TicketSerializer,
     TicketTransitionSerializer,
     TicketUpdateSerializer,
@@ -369,4 +372,49 @@ class TicketDashboardView(APIView):
         return success_response(
             message="Ticket dashboard retrieved successfully.",
             data=TicketDashboardSerializer(payload).data,
+        )
+
+
+class GuideAnalyticsEventView(APIView):
+    """Record one closed, privacy-safe how-to event with no user or tenant id."""
+
+    permission_classes = [IsAuthenticatedAndActive]
+
+    def post(self, request):
+        serializer = GuideAnalyticsEventSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        event = guide_analytics.record(
+            payload=serializer.validated_data,
+        )
+        return success_response(
+            message="Guide analytics recorded.",
+            data={"accepted": event is not None},
+        )
+
+
+class GuideAnalyticsSummaryView(APIView):
+    """Return platform-wide editorial aggregates to health operators only.
+
+    ``platform.health.view`` is platform-scoped and cannot be granted inside a
+    tenant. Raw events carry no tenant, actor, or record dimension, so the
+    summary cannot reveal one tenant's reading activity.
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.health.view"
+
+    def get(self, request):
+        import datetime
+
+        days = request.query_params.get("days", "30")
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            raise ValidationError({"days": "Give a whole number of days, 1 to 365."})
+        if not 1 <= days <= 365:
+            raise ValidationError({"days": "Give a whole number of days, 1 to 365."})
+        since = timezone.now() - datetime.timedelta(days=days)
+        return success_response(
+            message="Guide analytics retrieved successfully.",
+            data=guide_analytics.summary(since=since),
         )
