@@ -338,7 +338,7 @@ class Command(BaseCommand):
         groups = [
             (
                 "Data Import - all",
-                "Full access to the entire data import pipeline - templates, batches, jobs, and related resources.",
+                "Full access to the tenant-holdable data import pipeline - template selection, batches, jobs, and related resources.",
                 all_keys,
             ),
             (
@@ -348,7 +348,7 @@ class Command(BaseCommand):
             ),
             (
                 "Import Template - all",
-                "Full access to import template management: view, create, and manage system templates.",
+                "Access to the system import templates a tenant may use. Authoring them is platform-only and is not carried here.",
                 TEMPLATE_KEYS,
             ),
         ]
@@ -365,9 +365,9 @@ class Command(BaseCommand):
                     # classified the groups that already existed; a group seeded
                     # after it without this line is created unclassified, and
                     # ``TenantRoleGroup`` refuses to attach an unclassified
-                    # bundle to any role inside a tenant. Every import key is
-                    # TENANT-scoped (see the Permission rows above), so the
-                    # bundle is too.
+                    # bundle to any role inside a tenant. These bundles are
+                    # built to be tenant-attachable, so they are TENANT-scoped
+                    # and carry only tenant-holdable keys (see the link loop).
                     "scope": PermissionScope.TENANT,
                     "is_system": True,
                     "is_active": True,
@@ -380,6 +380,15 @@ class Command(BaseCommand):
             for key in keys:
                 perm = Permission.objects.filter(key=key).first()
                 if not perm:
+                    continue
+                # Not every import key is tenant-holdable: authoring a system
+                # template is platform-only. A TENANT bundle travels into a
+                # school's effective set through ``TenantRoleGroup``, so
+                # ``GroupPermission`` rejects a platform key inside one. Filter
+                # here, at the point all three bundles link through, so a
+                # platform-scoped key added later is excluded by construction
+                # rather than crashing the seed.
+                if perm.scope != PermissionScope.TENANT:
                     continue
                 _, link_created = GroupPermission.objects.get_or_create(
                     group=group,
