@@ -27,3 +27,6 @@ COLLEAGUE_SETUP.md
 # Running note of frontend work owed by backend changes. Local-only: it is a
 # working list that churns every session, not a release artifact like docs/frd/.
 docs/FRONTEND_CHANGES_OWED.md
+
+# agent worktrees (never commit)
+.claude/worktrees/
