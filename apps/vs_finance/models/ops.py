@@ -983,10 +983,29 @@ class EmployeeSalary(TimeStampedModel):
     for the whole active roster in one click, instead of typing every line. It never
     posts on its own; :func:`vs_finance.payroll.generate_run_from_roster` copies the
     active rows into a draft :class:`PayrollRun`.
+
+    ``branch`` is what lets a school run payroll **per branch** instead of centrally.
+    It is the roster row, not the run, that decides who a branch run covers, and a
+    branch run reads it **exclusively** - the one place in finance that does. See
+    :func:`vs_finance.payroll.roster_for` for the argument.
+
+    Null does **not** mean "shared across the school" here, unlike everywhere else
+    in this codebase. Head office is a branch in this product, so there is no such
+    person as an employee who belongs to no site: a null branch is an *unassigned*
+    row, a data gap rather than a meaning. It stays null for every school running
+    payroll centrally, which is all of them until one deliberately opts in, and
+    opting in is refused while any active row is still unassigned.
     """
 
     entity = models.ForeignKey(
         LedgerEntity, on_delete=models.PROTECT, related_name="employee_salaries",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        related_name="finance_employee_salaries", null=True, blank=True,
+        help_text="The branch this person is on the payroll of. Empty means not yet "
+                  "assigned; per-branch payroll cannot be switched on while any "
+                  "active employee is unassigned.",
     )
     employee = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
@@ -1009,7 +1028,14 @@ class EmployeeSalary(TimeStampedModel):
     is_active = models.BooleanField(default=True)
 
     class Meta:
-        indexes = [models.Index(fields=["entity", "is_active"])]
+        indexes = [
+            models.Index(fields=["entity", "is_active"]),
+            # The branch run's own filter: entity + branch + is_active. Without it
+            # a school running per-branch payroll scans the whole roster once per
+            # branch to build each run, and the unassigned-row check that gates the
+            # switch scans it again.
+            models.Index(fields=["entity", "branch", "is_active"]),
+        ]
         ordering = ["entity", "name"]
 
     @property

@@ -129,6 +129,7 @@ class Command(BaseCommand):
             PermissionResource,
             TenantRolePermission,
             TenantRoleTemplate,
+            PermissionScope,
         )
         from vs_tenants.models import Tenant
 
@@ -186,6 +187,20 @@ class Command(BaseCommand):
                         sensitivity_level=sensitivity,
                         is_restricted=sensitivity in _RESTRICTED,
                         is_active=True,
+                        # Currencies and FX rates are global reference data -
+                        # both views say "**global** reference data (no entity)"
+                        # in their own docstrings, and both POST straight into a
+                        # table with no tenant column and no platform guard. So
+                        # CREATING one is platform-only. Reading stays tenant-
+                        # holdable: a school's finance module needs the list.
+                        scope=(
+                            PermissionScope.PLATFORM
+                            if expected_key in (
+                                "finance.currency.create",
+                                "finance.fxrate.create",
+                            )
+                            else PermissionScope.TENANT
+                        ),
                     )
                     perm.save()
                     created_perms += 1

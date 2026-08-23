@@ -441,7 +441,7 @@ class StockItemDetailSerializer(StockItemListSerializer):
 
 
 class StockLocationSerializer(serializers.ModelSerializer):
-    """A place stock physically sits, and the campus it belongs to if any."""
+    """A place stock physically sits, and the branch it belongs to if any."""
 
     branch_name = serializers.CharField(
         source="branch.name", read_only=True, default=None,

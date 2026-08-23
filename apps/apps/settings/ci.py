@@ -39,3 +39,10 @@ REST_FRAMEWORK = {
 # would hold a DB connection open and block test-database teardown, and it
 # would race the explicit flush() the collector tests assert on.
 HEALTH_METRICS_BACKGROUND_FLUSH = False
+
+# vs_notifications.W001 (active event types with no active template) is true
+# and useless here: the test database is built by migrations, so it holds the
+# whole event-type registry from vs_notifications migration 0008 and no
+# templates at all, which the suite seeds per test. Real environments keep the
+# warning; see vs_notifications/checks.py.
+SILENCED_SYSTEM_CHECKS = [*SILENCED_SYSTEM_CHECKS, "vs_notifications.W001"]

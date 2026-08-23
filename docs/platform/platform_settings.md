@@ -254,7 +254,7 @@ Backend:
 - `apps/vs_config/migrations/0004_seed_platform_settings.py`
 - `apps/vs_config/migrations/0005_seed_runtime_settings.py`
 - `apps/vs_finance/documents.py`
-- `apps/vs_schools/serializers.py`
+- `apps/schools/vs_schools/serializers.py`
 - `apps/core/mail.py`
 - `apps/vs_user/services/auth.py`
 - `apps/vs_user/services/password.py`

@@ -88,6 +88,11 @@ urlpatterns = [
         views.TenantRoleTemplateDetailView.as_view(),
         name="rbac-role-detail",
     ),
+    path(
+        "tenants/<slug:tenant_slug>/permission-catalogue/",
+        views.TenantPermissionCatalogueView.as_view(),
+        name="rbac-tenant-permission-catalogue",
+    ),
 
     # -------------------------------------------------------------------------
     # Tenant-scoped Role Assignments

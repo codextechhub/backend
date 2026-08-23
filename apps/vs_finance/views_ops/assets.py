@@ -4,6 +4,7 @@ from __future__ import annotations
 
 
 from rest_framework.exceptions import NotFound, ValidationError
+from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 
 from core.response import success_response
 
@@ -21,6 +22,7 @@ from .base import (
     _date,
     _int,
     _money,
+    _raised_branch,
     _resolve_account,
     _resolve_bank_account,
 )
@@ -45,7 +47,9 @@ class FixedAssetListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = FixedAsset.objects.filter(entity=entity).prefetch_related("schedule")
+        qs = FixedAsset.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).prefetch_related("schedule")
         if (status_val := request.query_params.get("asset_status")):
             qs = qs.filter(asset_status=status_val)
         if (category := request.query_params.get("category")):
@@ -70,6 +74,11 @@ class FixedAssetListCreateView(_FinanceBase):
             raise ValidationError({"method": "Choose a valid depreciation method."})
         asset = FixedAsset.objects.create(
             entity=entity, name=name,
+            # An asset is a physical thing standing in a room at one site, so the
+            # strict reading applies: a bursar covering two branches is asked
+            # which site the projector is at rather than having it recorded as
+            # belonging to the school as a whole.
+            branch=_raised_branch(request, entity, body),
             asset_code=body.get("asset_code", ""),
             category=category,
             acquisition_date=_date(body.get("acquisition_date"), "acquisition_date", required=True),
@@ -110,7 +119,7 @@ class FixedAssetSummaryView(_FinanceBase):
         from ..constants import AssetStatus
 
         entity = resolve_entity(request)
-        assets = FixedAsset.objects.filter(entity=entity)
+        assets = FixedAsset.objects.filter(branch_q(request, include_shared=True), entity=entity)
         live = assets.exclude(asset_status=AssetStatus.DISPOSED).aggregate(
             cost=Coalesce(Sum("cost"), 0),
             accum=Coalesce(Sum("accumulated_depreciation"), 0),
@@ -139,7 +148,9 @@ class _FixedAssetActionBase(_FinanceBase):
     # Support the asset workflow.
     def _asset(self, request, pk):
         entity = resolve_entity(request)
-        asset = FixedAsset.objects.filter(entity=entity, pk=pk).first()
+        asset = FixedAsset.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk,
+        ).first()
         if asset is None:
             raise NotFound("Fixed asset not found for this entity.")
         return entity, asset

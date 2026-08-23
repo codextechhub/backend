@@ -21,13 +21,18 @@ def _job_probe_boom():
 
 
 def _cx(email, *, platform_admin=False, **extra):
+    from vs_tenants.models import Tenant
+
+    extra.setdefault(
+        "tenant", Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM),
+    )
     user = User.objects.create_user(
-        email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+        email=email, password="x", status="ACTIVE",
         first_name="T", last_name="User", **extra,
     )
     if platform_admin:
-        # can_view_all_jobs reads the codex-tenant role assignment; CX_STAFF
-        # users derive their tenant to the codex PLATFORM tenant on save.
+        # can_view_all_jobs reads the codex-tenant role assignment, which is
+        # the tenant these accounts are created in.
         role, _ = TenantRoleTemplate.objects.get_or_create(
             tenant=user.tenant, key="xvs_platform_admin",
             defaults={"name": "XVS Platform Admin", "status": "ACTIVE",

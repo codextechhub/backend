@@ -118,6 +118,18 @@ from vs_procurement.stock import (
 from vs_procurement.exceptions import InsufficientStockError, StockError
 
 
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 class _P2PFixtureMixin:
     """Builds an entity (seeded chart + open period), a vendor and tax codes."""
 
@@ -529,7 +541,7 @@ class VendorQuotationPortalTests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email="buyer-capture@test.com", password="pw", tenant=self.entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Buyer", last_name="Tester",
+            status="ACTIVE", first_name="Buyer", last_name="Tester",
         )
         response = TenantAPIClient(user=user).post(
             f"/v1/procurement/quotations/?entity={self.entity.code}",
@@ -596,7 +608,7 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Vendor", last_name="Tester",
+            status="ACTIVE", first_name="Vendor", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -876,7 +888,7 @@ class VendorCategoryConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Category", last_name="Tester",
+            status="ACTIVE", first_name="Category", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -1249,7 +1261,7 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         line = po.lines.first()
         user = get_user_model().objects.create_user(
             email="grn-quantity@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="GRN", last_name="Tester",
+            status="ACTIVE", first_name="GRN", last_name="Tester",
         )
         client = TenantAPIClient(user=user)
         base = {
@@ -1311,7 +1323,7 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         from core.test_utils import TenantAPIClient
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Quantity", last_name="Tester",
+            status="ACTIVE", first_name="Quantity", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -1531,7 +1543,7 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         line_a, line_b = list(po.lines.order_by("line_no"))
         user = get_user_model().objects.create_user(
             email="grn-edit@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="GRN", last_name="Editor",
+            status="ACTIVE", first_name="GRN", last_name="Editor",
         )
         client = TenantAPIClient(user=user)
         created = client.post(
@@ -1573,7 +1585,7 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         grn = self.make_grn(entity, vendor, po, [(line, 3)])
         user = get_user_model().objects.create_user(
             email="grn-edit-guard@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="GRN", last_name="Guard",
+            status="ACTIVE", first_name="GRN", last_name="Guard",
         )
         client = TenantAPIClient(user=user)
 
@@ -1600,7 +1612,7 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         grn = self.make_grn(entity, vendor, po, [(po.lines.first(), 3)])
         user = get_user_model().objects.create_user(
             email="grn-edit-nogrant@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="No", last_name="Grant",
+            status="ACTIVE", first_name="No", last_name="Grant",
         )
         response = TenantAPIClient(user=user).patch(
             f"/v1/procurement/goods-receipts/{grn.id}/?entity={entity.code}",
@@ -2137,7 +2149,7 @@ class VendorInvoiceConsoleAPITests(_P2PFixtureMixin, TestCase):
         from core.test_utils import TenantAPIClient
         user = get_user_model().objects.create_user(
             email="vendor-invoice-console@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Invoice", last_name="Tester",
+            status="ACTIVE", first_name="Invoice", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -2632,7 +2644,7 @@ class VendorPaymentConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email="vendor-payment-console@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Payment", last_name="Tester",
+            status="ACTIVE", first_name="Payment", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -3116,7 +3128,7 @@ class RequisitionConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=f"requisitions-{entity.code.lower()}@test.com", password="pw",
-            tenant=entity.tenant, user_type="CX_STAFF", status="ACTIVE",
+            tenant=entity.tenant, status="ACTIVE",
             first_name="Console", last_name="Tester",
         )
         return TenantAPIClient(user=user)
@@ -3347,7 +3359,7 @@ class RequisitionConsoleAPITests(_P2PFixtureMixin, TestCase):
         entity, _, _, _, _ = self.build_p2p()
         user = get_user_model().objects.create_user(
             email="req-no-grant@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="No", last_name="Grant",
+            status="ACTIVE", first_name="No", last_name="Grant",
         )
         client = TenantAPIClient(user=user)
         for path in (
@@ -3480,7 +3492,7 @@ class ProcurementAnalyticsReportAPITests(_P2PFixtureMixin, TestCase):
 
         return get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Rep", last_name="Ort",
+            status="ACTIVE", first_name="Rep", last_name="Ort",
         )
 
     def _second_entity(self):
@@ -3641,7 +3653,7 @@ class VendorAssessmentTests(_P2PFixtureMixin, TestCase):
 
         return get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Assess", last_name="Or",
+            status="ACTIVE", first_name="Assess", last_name="Or",
         )
 
     def _second_entity(self):
@@ -3814,7 +3826,7 @@ class AnalyticsDrawerEndpointTests(_P2PFixtureMixin, TestCase):
 
         return get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Drawer", last_name="Viewer",
+            status="ACTIVE", first_name="Drawer", last_name="Viewer",
         )
 
     def _second_entity(self):
@@ -3960,7 +3972,7 @@ class GRIRPoLinesTests(_P2PFixtureMixin, TestCase):
 
         return get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="GR", last_name="Lines",
+            status="ACTIVE", first_name="GR", last_name="Lines",
         )
 
     def _other_entity(self):
@@ -4459,7 +4471,7 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
         )
         user = get_user_model().objects.create_user(
             email="sourced-budget@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Budget", last_name="Tester",
+            status="ACTIVE", first_name="Budget", last_name="Tester",
         )
         response = TenantAPIClient(user=user).get(
             f"/v1/procurement/requisitions/budget-availability/"
@@ -4774,7 +4786,7 @@ class SourcingConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Sourcing", last_name="Tester",
+            status="ACTIVE", first_name="Sourcing", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -5404,7 +5416,7 @@ class CatalogItemConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Catalog", last_name="Tester",
+            status="ACTIVE", first_name="Catalog", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -5805,7 +5817,7 @@ class ContractConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Contract", last_name="Tester",
+            status="ACTIVE", first_name="Contract", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -6274,7 +6286,7 @@ class PurchaseOrderConsoleDataTests(_P2PFixtureMixin, TestCase):
         original_lines = list(po.lines.values_list("id", flat=True))
         user = get_user_model().objects.create_user(
             email="po-edit@test.com", password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="PO", last_name="Editor",
+            status="ACTIVE", first_name="PO", last_name="Editor",
         )
         client = TenantAPIClient(user=user)
         response = client.patch(
@@ -6373,9 +6385,9 @@ class PurchaseOrderConsoleDataTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(summary["open"], {"count": 1, "amount": 1_000_000})
 
         # No procurement grant → the endpoint is refused before any data is returned.
-        user = get_user_model().objects.create_user(
+        user = get_user_model().objects.create_user(tenant=_platform_tenant(), 
             email="po-summary-no-grant@test.com", password="pw",
-            user_type="CX_STAFF", status="ACTIVE", first_name="No", last_name="Grant",
+            status="ACTIVE", first_name="No", last_name="Grant",
         )
         response = TenantAPIClient(user=user).get(
             f"/v1/procurement/purchase-orders/summary/?entity={entity.code}",
@@ -6395,7 +6407,7 @@ class PurchaseOrderVendorEmailTests(_P2PFixtureMixin, TestCase):
         self.vendor.save(update_fields=["email", "address", "updated_at"])
         self.user = get_user_model().objects.create_user(
             email="buyer-po-email@test.com", password="pw", tenant=self.entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Purchase", last_name="Buyer",
+            status="ACTIVE", first_name="Purchase", last_name="Buyer",
         )
 
     def _po(self, *, approved=True):
@@ -6623,16 +6635,16 @@ class ProcurementDashboardTests(_P2PFixtureMixin, TestCase):
             tenant=entity.tenant,
         )
         User = get_user_model()
-        requester = User.objects.create_user(
-            email="dash-requester@test.com", user_type="CX_STAFF", status="ACTIVE",
+        requester = User.objects.create_user(tenant=_platform_tenant(), 
+            email="dash-requester@test.com", status="ACTIVE",
             first_name="Dash", last_name="Requester",
         )
-        approver = User.objects.create_user(
-            email="dash-approver@test.com", user_type="CX_STAFF", status="ACTIVE",
+        approver = User.objects.create_user(tenant=_platform_tenant(), 
+            email="dash-approver@test.com", status="ACTIVE",
             first_name="Dash", last_name="Approver",
         )
-        stranger = User.objects.create_user(
-            email="dash-stranger@test.com", user_type="CX_STAFF", status="ACTIVE",
+        stranger = User.objects.create_user(tenant=_platform_tenant(), 
+            email="dash-stranger@test.com", status="ACTIVE",
             first_name="Dash", last_name="Stranger",
         )
         template = WorkflowTemplate.objects.create(
@@ -6687,12 +6699,12 @@ class ProcurementDashboardTests(_P2PFixtureMixin, TestCase):
 
         entity, _, vendor, _, _ = self.build_p2p()
         User = get_user_model()
-        requester = User.objects.create_user(
-            email="dash-pay-requester@test.com", user_type="CX_STAFF", status="ACTIVE",
+        requester = User.objects.create_user(tenant=_platform_tenant(), 
+            email="dash-pay-requester@test.com", status="ACTIVE",
             first_name="Pay", last_name="Requester",
         )
-        approver = User.objects.create_user(
-            email="dash-pay-approver@test.com", user_type="CX_STAFF", status="ACTIVE",
+        approver = User.objects.create_user(tenant=_platform_tenant(), 
+            email="dash-pay-approver@test.com", status="ACTIVE",
             first_name="Pay", last_name="Approver",
         )
         payment = VendorPayment.objects.create(
@@ -6730,9 +6742,9 @@ class ProcurementDashboardTests(_P2PFixtureMixin, TestCase):
         from core.test_utils import TenantAPIClient
 
         entity, _, _, _, _ = self.build_p2p()
-        user = get_user_model().objects.create_user(
+        user = get_user_model().objects.create_user(tenant=_platform_tenant(), 
             email="dashboard-no-grant@test.com", password="pw",
-            user_type="CX_STAFF", status="ACTIVE", first_name="No", last_name="Grant",
+            status="ACTIVE", first_name="No", last_name="Grant",
         )
         response = TenantAPIClient(user=user).get(
             f"/v1/procurement/reports/dashboard/?entity={entity.code}",
@@ -6754,8 +6766,8 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
     def _user(email):
         from django.contrib.auth import get_user_model
 
-        return get_user_model().objects.create_user(
-            email=email, user_type="CX_STAFF", first_name="T", last_name="U",
+        return get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email=email, first_name="T", last_name="U",
         )
 
     def _make_requisition(self, entity, *, unit_price, qty=1):
@@ -6982,8 +6994,7 @@ class _ParkingFixtureMixin(_P2PFixtureMixin):
         from django.contrib.auth import get_user_model
 
         return get_user_model().objects.create_user(
-            email=email, password="pw", tenant=tenant, user_type="CX_STAFF",
-            status="ACTIVE", first_name=email.split("@")[0], last_name="Tester",
+            email=email, password="pw", tenant=tenant, status="ACTIVE", first_name=email.split("@")[0], last_name="Tester",
             **extra,
         )
 
@@ -6995,6 +7006,7 @@ class _ParkingFixtureMixin(_P2PFixtureMixin):
         the permission checks these views run see a genuine grant. Approver
         *resolution* no longer reads permissions; use :meth:`_appoint` for that.
         """
+        from vs_rbac.tests.helpers import scope_for_key
         from vs_rbac.models import (
             Permission, PermissionAction, PermissionModule, PermissionResource,
             TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment,
@@ -7008,7 +7020,10 @@ class _ParkingFixtureMixin(_P2PFixtureMixin):
         action, _ = PermissionAction.objects.get_or_create(name=action_name)
         permission, _ = Permission.objects.get_or_create(
             key=permission_key,
-            defaults={"module": module, "resource": resource, "action": action},
+            defaults={
+                "module": module, "resource": resource, "action": action,
+                "scope": scope_for_key(permission_key),
+            },
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(
             tenant=tenant, key=role_key, defaults={"name": role_key, "status": "ACTIVE"},
@@ -8488,7 +8503,7 @@ class ProcurementApprovalQueueTests(_P2PFixtureMixin, TestCase):
 
         return get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE",
+            status="ACTIVE",
             first_name=first_name, last_name="Tester",
         )
 
@@ -8979,7 +8994,7 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Stock", last_name="Tester",
+            status="ACTIVE", first_name="Stock", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -9542,7 +9557,7 @@ class ProcurementReportHardeningTests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=f"report-hardening-{entity.pk}@test.com", password="pw",
-            tenant=entity.tenant, user_type="CX_STAFF", status="ACTIVE",
+            tenant=entity.tenant, status="ACTIVE",
             first_name="Report", last_name="Tester",
         )
         return TenantAPIClient(user=user)
@@ -9934,7 +9949,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
     """Branch is captured once, inherited down the chain, and never widens access.
 
     Two differently shaped tenants run through every case: ``multi`` has two
-    campuses, ``flat`` has none at all. The flat tenant must behave exactly as
+    branches, ``flat`` has none at all. The flat tenant must behave exactly as
     procurement did before branch awareness existed - no new required field, no
     error, and a null branch on every document.
     """
@@ -9946,10 +9961,10 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
 
         seed_currencies()
         self.multi_school = make_school(
-            slug="branch-multi", name="Multi Campus Group", status="ACTIVE",
+            slug="branch-multi", name="Multi Branch Group", status="ACTIVE",
         )
-        self.lekki = make_branch(self.multi_school, name="Lekki Campus")
-        self.ikeja = make_branch(self.multi_school, name="Ikeja Campus", is_main=False)
+        self.lekki = make_branch(self.multi_school, name="Lekki Branch")
+        self.ikeja = make_branch(self.multi_school, name="Ikeja Branch", is_main=False)
         self.multi = self.build_books("MULTIBK", self.multi_school.tenant)
 
         # A tenant with no branches at all - the branch-optional shape.
@@ -9962,7 +9977,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         self.foreign_school = make_school(
             slug="branch-foreign", name="Foreign School", status="ACTIVE",
         )
-        self.foreign_branch = make_branch(self.foreign_school, name="Foreign Campus")
+        self.foreign_branch = make_branch(self.foreign_school, name="Foreign Branch")
         self.foreign = self.build_books("FORGNBK", self.foreign_school.tenant)
 
     def build_books(self, code, tenant):
@@ -9995,8 +10010,8 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=tenant, branch=branch,
-            # SCHOOL_ADMIN is the branch-optional user type; STAFF must have one.
-            user_type="STAFF" if branch is not None else "SCHOOL_ADMIN",
+            # One persona either way: a null branch is a school-wide posting,
+            # not a different kind of person.
             status="ACTIVE", first_name="Branch", last_name="Tester",
         )
         client = TenantAPIClient(user=user)
@@ -10045,7 +10060,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(req.branch_id, self.lekki.pk)
         data = response.json()["data"]
         self.assertEqual(data["branch_id"], self.lekki.pk)
-        self.assertEqual(data["branch_name"], "Lekki Campus")
+        self.assertEqual(data["branch_name"], "Lekki Branch")
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_branch_bound_raiser_may_restate_their_own_branch(self, _permission):
@@ -10190,7 +10205,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(grn_response.status_code, 201, grn_response.data)
         grn = GoodsReceivedNote.objects.get(pk=grn_response.json()["data"]["id"])
         self.assertEqual(grn.branch_id, self.lekki.pk)
-        self.assertEqual(grn_response.json()["data"]["branch_name"], "Lekki Campus")
+        self.assertEqual(grn_response.json()["data"]["branch_name"], "Lekki Branch")
         # Post the receipt so the bill below matches three ways and can be posted.
         post_grn(grn)
 
@@ -10249,8 +10264,9 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         )
         hidden = ikeja_client.get(url)
         self.assertEqual(hidden.status_code, 200)
-        # success_response coerces an empty list to {} - the shape callers must handle.
-        self.assertEqual(hidden.json()["data"], {})
+        # An empty list stays a list, so a caller mapping over it survives
+        # the no-rows case.
+        self.assertEqual(hidden.json()["data"], [])
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_sourcing_documents_carry_the_branch_to_the_awarded_order(self, _permission):
@@ -10271,7 +10287,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(rfq_response.status_code, 201, rfq_response.data)
         rfq = RequestForQuotation.objects.get(pk=rfq_response.json()["data"]["id"])
         self.assertEqual(rfq.branch_id, self.lekki.pk)
-        self.assertEqual(rfq_response.json()["data"]["branch_name"], "Lekki Campus")
+        self.assertEqual(rfq_response.json()["data"]["branch_name"], "Lekki Branch")
 
         set_rfq_invitations(rfq, [vendor])
         issue_rfq(rfq)
@@ -10310,7 +10326,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
             {lekki_req.id, ikeja_req.id, entity_req.id},
         )
         by_id = {row["id"]: row for row in self.rows(everything)}
-        self.assertEqual(by_id[lekki_req.id]["branch_name"], "Lekki Campus")
+        self.assertEqual(by_id[lekki_req.id]["branch_name"], "Lekki Branch")
         self.assertIsNone(by_id[entity_req.id]["branch_id"])
 
         one_branch = hq_client.get(f"{url}&branch={self.lekki.pk}")
@@ -10453,16 +10469,16 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
 
         ensure_default_approval_templates()
         # A tenant-scoped ROLE stage only publishes against a role the tenant has.
-        ensure_approver_role(self.multi_school.tenant, "campus-manager")
+        ensure_approver_role(self.multi_school.tenant, "branch-manager")
         branch_template = publish_template(
             tenant=self.multi_school.tenant, branch=self.lekki,
             document_type=WF_DOCTYPE_REQUISITION, code=WF_DEFAULT_TEMPLATE_CODE,
             name="Lekki requisition approval",
-            description="Campus-specific ladder.",
+            description="Branch-specific ladder.",
             stages_payload=[{
-                "code": "manager", "label": "Campus manager", "kind": "APPROVAL",
+                "code": "manager", "label": "Branch manager", "kind": "APPROVAL",
                 "order": 10, "approver_source": "ROLE",
-                "approver_role_key": "campus-manager",
+                "approver_role_key": "branch-manager",
                 "approver_scope": "PLATFORM", "advance_rule": "ANY",
                 "on_rejection": "TERMINAL", "skip_if_no_approvers": True,
             }],
@@ -10494,7 +10510,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
 class _BranchTenantsFixture(_P2PFixtureMixin):
     """Two differently shaped tenants, used by every Round 3 test class.
 
-    ``multi`` has two campuses, ``flat`` has none at all, and ``foreign`` exists only
+    ``multi`` has two branches, ``flat`` has none at all, and ``foreign`` exists only
     to prove nothing crosses a tenant boundary. A single-shape fixture would prove
     nothing about tenancy, so every behaviour below is asserted on both shapes.
     """
@@ -10504,10 +10520,10 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
 
         seed_currencies()
         self.multi_school = make_school(
-            slug="r3-multi", name="Multi Campus Group", status="ACTIVE",
+            slug="r3-multi", name="Multi Branch Group", status="ACTIVE",
         )
-        self.lekki = make_branch(self.multi_school, name="Lekki Campus")
-        self.ikeja = make_branch(self.multi_school, name="Ikeja Campus", is_main=False)
+        self.lekki = make_branch(self.multi_school, name="Lekki Branch")
+        self.ikeja = make_branch(self.multi_school, name="Ikeja Branch", is_main=False)
         self.multi_tenant = self.multi_school.tenant
         self.multi = self.build_books("R3MULTI", self.multi_tenant)
 
@@ -10554,8 +10570,8 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
 
         return get_user_model().objects.create_user(
             email=email, password="pw", tenant=tenant, branch=branch,
-            # SCHOOL_ADMIN is the branch-optional user type; STAFF must have one.
-            user_type="STAFF" if branch is not None else "SCHOOL_ADMIN",
+            # One persona either way: a null branch is a school-wide posting,
+            # not a different kind of person.
             status="ACTIVE", first_name=first_name, last_name="Tester",
         )
 
@@ -10576,6 +10592,7 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
         honours a branch-scoped assignment is exactly what is under test, so the grant
         has to be the real thing.
         """
+        from vs_rbac.tests.helpers import scope_for_key
         from vs_rbac.models import (
             Permission, PermissionAction, PermissionModule, PermissionResource,
             TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment,
@@ -10587,7 +10604,10 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
         action, _ = PermissionAction.objects.get_or_create(name=action_name)
         permission, _ = Permission.objects.get_or_create(
             key=permission_key,
-            defaults={"module": module, "resource": resource, "action": action},
+            defaults={
+                "module": module, "resource": resource, "action": action,
+                "scope": scope_for_key(permission_key),
+            },
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(
             tenant=tenant, key=role_key, defaults={"name": role_key, "status": "ACTIVE"},
@@ -11280,7 +11300,7 @@ class ParkedAndOverrideFilterBranchScopeTests(_BranchTenantsFixture, TestCase):
     isolation work, and nothing until now asserted the two compose.
 
     The failure being excluded is specific: a filter that *widens*. ``?parked=1``
-    must never surface a neighbouring campus's stuck spend, and its negation must
+    must never surface a neighbouring branch's stuck spend, and its negation must
     never surface the rest of the school either, because ``exclude()`` on a
     tenant-wide subquery is just as capable of reaching outside the caller's set.
 
@@ -11356,7 +11376,7 @@ class ParkedAndOverrideFilterBranchScopeTests(_BranchTenantsFixture, TestCase):
     # -- the parked filter ---------------------------------------------------- #
 
     def test_the_parked_filter_shows_only_the_callers_own_branchs_stuck_spend(self):
-        """``?parked=1`` narrows to the campus, and reports it as parked there."""
+        """``?parked=1`` narrows to the branch, and reports it as parked there."""
         mine = self.park(self.lekki)
         theirs = self.park(self.ikeja)
         entity_wide = self.park(None)
@@ -11366,8 +11386,8 @@ class ParkedAndOverrideFilterBranchScopeTests(_BranchTenantsFixture, TestCase):
 
         self.assertEqual(listed, {mine.pk})
         self.assertNotIn(theirs.pk, listed)
-        # A purchase raised for the school as a whole belongs to no campus, so a
-        # campus-scoped caller does not inherit it either.
+        # A purchase raised for the school as a whole belongs to no branch, so a
+        # branch-scoped caller does not inherit it either.
         self.assertNotIn(entity_wide.pk, listed)
 
     def test_the_negated_parked_filter_cannot_reach_past_the_callers_branch(self):
@@ -11415,15 +11435,15 @@ class ParkedAndOverrideFilterBranchScopeTests(_BranchTenantsFixture, TestCase):
 
         listed = self.ids(client, f"&parked=1&branch={self.ikeja.pk}")
 
-        # Both terms are ANDed, so asking for somebody else's campus yields an empty
-        # answer rather than that campus's rows.
+        # Both terms are ANDed, so asking for somebody else's branch yields an empty
+        # answer rather than that branch's rows.
         self.assertEqual(listed, set())
         self.assertNotIn(theirs.pk, listed)
 
     # -- the override filter --------------------------------------------------- #
 
     def test_the_override_filter_shows_only_the_callers_own_branchs_releases(self):
-        """Spend released without review is the last thing that should cross a campus."""
+        """Spend released without review is the last thing that should cross a branch."""
         mine = self.release(self.park(self.lekki))
         theirs = self.release(self.park(self.ikeja))
         still_parked = self.park(self.lekki)
@@ -11463,7 +11483,7 @@ class ParkedAndOverrideFilterBranchScopeTests(_BranchTenantsFixture, TestCase):
     # -- the other shape of school -------------------------------------------- #
 
     def test_a_tenant_with_no_branches_filters_exactly_as_it_always_did(self):
-        """Where a school has no campuses the dimension recedes rather than narrows.
+        """Where a school has no branches the dimension recedes rather than narrows.
 
         A single-tenant, single-shape test proves nothing about tenancy, so the same
         filters are asserted on the school that has no branches at all: the caller is
@@ -11616,7 +11636,7 @@ class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
         """
         from vs_rbac.tests.helpers import make_branch
 
-        foreign_branch = make_branch(self.foreign_school, name="Foreign Campus")
+        foreign_branch = make_branch(self.foreign_school, name="Foreign Branch")
 
         report = self.coverage()
         branch_ids = [scope["branch_id"] for scope in report["scopes"]]
@@ -11629,7 +11649,7 @@ class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
         from vs_procurement.approvals import ensure_tenant_approval_templates
         from vs_rbac.tests.helpers import make_branch
 
-        make_branch(self.foreign_school, name="Foreign Campus")
+        make_branch(self.foreign_school, name="Foreign Branch")
         ensure_tenant_approval_templates(self.flat_tenant)
 
         report = self.coverage(self.flat_tenant)
@@ -11792,7 +11812,7 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
 
     Round 3 made lists, single documents, KPI headers and the dashboard agree by routing
     every "what can this caller see" question through one helper. The analytics reports
-    were left out, so a branch-bound bursar's own list showed one campus while the spend
+    were left out, so a branch-bound bursar's own list showed one branch while the spend
     report beside it showed the whole tenant. These tests pin the closed version: for
     every report, the figure equals the sum over the documents that same caller can
     actually open, on a multi-branch tenant and on a tenant with no branches at all.
@@ -12159,7 +12179,7 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
     def test_grir_aging_withholds_the_gl_comparison_from_a_narrowed_caller(self, _permission):
         """No branch-level control balance exists, so none is invented.
 
-        The ledger has no branch column. Comparing one campus's open receipts against the
+        The ledger has no branch column. Comparing one branch's open receipts against the
         entity's clearing account would report a difference on every read and bury the
         genuine "a posting bypassed the subledger" alarm this field carries.
         """
@@ -12238,7 +12258,7 @@ class ProcurementBranchReportTests(_BranchTenantsFixture, TestCase):
     def test_a_branch_with_no_documents_returns_an_empty_report_not_an_error(self, _permission):
         from vs_rbac.tests.helpers import make_branch
 
-        empty = make_branch(self.multi_school, name="Yaba Campus", is_main=False)
+        empty = make_branch(self.multi_school, name="Yaba Branch", is_main=False)
         client = self.client_for(self.multi_tenant, "rpt-yaba@t.com", branch=empty)
 
         spend = self.report(client, "spend-analysis")
@@ -12287,7 +12307,7 @@ class VendorAdvanceDrawdownEndpointTests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="AP", last_name="Tester",
+            status="ACTIVE", first_name="AP", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -12495,7 +12515,7 @@ class ProcurementOnboardingSeedTests(TestCase):
         """Every movement needs a location, so an entity must never have none."""
         from vs_finance.models import LedgerEntity
         from vs_finance.provisioning import provision_entity
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
 
         from vs_procurement.models import StockLocation
 
@@ -12510,7 +12530,7 @@ class ProcurementOnboardingSeedTests(TestCase):
         location = StockLocation.objects.get(entity=entity)
         self.assertEqual(location.code, "MAIN")
         self.assertTrue(location.is_default)
-        self.assertIsNone(location.branch)  # Entity-wide until a campus needs its own.
+        self.assertIsNone(location.branch)  # Entity-wide until a branch needs its own.
 
     def _entity_payload(self, code="ONBRD"):
         return {"name": "Onboarded Books", "code": code}
@@ -12518,7 +12538,7 @@ class ProcurementOnboardingSeedTests(TestCase):
     def test_creating_books_publishes_this_tenants_spend_ladders(self):
         from vs_finance.models import LedgerEntity
         from vs_finance.provisioning import provision_entity
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
         from vs_workflow.models import WorkflowTemplate
 
         from vs_procurement.constants import PROCUREMENT_APPROVAL_TYPES
@@ -12541,7 +12561,7 @@ class ProcurementOnboardingSeedTests(TestCase):
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_finance.models import LedgerEntity
         from vs_finance.provisioning import provision_entity
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
 
         from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
 
@@ -12561,7 +12581,7 @@ class ProcurementOnboardingSeedTests(TestCase):
     def test_a_second_entity_in_one_tenant_does_not_republish(self):
         from vs_finance.models import LedgerEntity
         from vs_finance.provisioning import provision_entity
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
         from vs_workflow.models import WorkflowTemplate
 
         school = School.objects.create(
@@ -12634,11 +12654,11 @@ class NonPoInvoicePolicyDefaultTests(TestCase):
 
 
 class StockLocationTests(_P2PFixtureMixin, TestCase):
-    """Stock is held per location, and one campus cannot spend another's.
+    """Stock is held per location, and one branch cannot spend another's.
 
     Before this, an item carried a single quantity and a single value for the whole
     entity. A thousand books existed; nothing recorded that seven hundred stood at one
-    campus. An issue at the other drew against stock it did not physically have and the
+    branch. An issue at the other drew against stock it did not physically have and the
     availability check allowed it, because it was checking the entity total.
     """
 
@@ -12679,11 +12699,11 @@ class StockLocationTests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=self.entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Stock", last_name="Tester",
+            status="ACTIVE", first_name="Stock", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
-    def test_one_campus_cannot_issue_stock_standing_at_another(self):
+    def test_one_branch_cannot_issue_stock_standing_at_another(self):
         """700 at Lekki, 300 at Ikeja. Ikeja issuing 500 must be refused."""
         from vs_procurement.exceptions import InsufficientStockError
         from vs_procurement.stock import issue_stock
@@ -12703,7 +12723,7 @@ class StockLocationTests(_P2PFixtureMixin, TestCase):
             )
 
     def test_each_location_issues_at_its_own_average_cost(self):
-        """A campus that bought dearer relieves inventory at its own price."""
+        """A branch that bought dearer relieves inventory at its own price."""
         from vs_procurement.stock import issue_stock
 
         lekki = self._location("LEKKI", "Lekki store")
@@ -12892,7 +12912,7 @@ class VendorDocumentAttachmentTests(_P2PFixtureMixin, TestCase):
 
         user = get_user_model().objects.create_user(
             email=email, password="pw", tenant=entity.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Attach", last_name="Tester",
+            status="ACTIVE", first_name="Attach", last_name="Tester",
         )
         return TenantAPIClient(user=user)
 
@@ -13144,7 +13164,7 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
     Every other branch test in this file patches ``HasRBACPermission`` to True and
     then checks the narrowing. These deliberately do not: whether the grant opens
     the screen at all is half of what is under test. Before this, a role granted
-    for one campus let its holder do nothing anywhere - the permission gate asked
+    for one branch let its holder do nothing anywhere - the permission gate asked
     the evaluator for whole-tenant grants only, so the branch column was stored,
     shown back to administrators, and ignored.
 
@@ -13158,10 +13178,10 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
         super().setUp()
         from vs_rbac.tests.helpers import make_branch
 
-        # A third campus nobody in these tests is ever granted. Two branches can
+        # A third branch nobody in these tests is ever granted. Two branches can
         # only show that a narrowing happened; the third shows it stopped in the
         # right place.
-        self.yaba = make_branch(self.multi_school, name="Yaba Campus", is_main=False)
+        self.yaba = make_branch(self.multi_school, name="Yaba Branch", is_main=False)
 
     @staticmethod
     def as_client(user):
@@ -13176,10 +13196,11 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
         """Grant ``role_key`` at one branch, allowing the same role at several.
 
         ``_BranchTenantsFixture.grant`` keys its ``get_or_create`` on
-        (tenant, user, role), so a second call for another campus would find the
+        (tenant, user, role), so a second call for another branch would find the
         first row and silently change nothing - which is the very arrangement
         these tests exist to prove works.
         """
+        from vs_rbac.tests.helpers import scope_for_key
         from vs_rbac.models import (
             Permission, PermissionAction, PermissionModule, PermissionResource,
             TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment,
@@ -13191,7 +13212,10 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
         action, _ = PermissionAction.objects.get_or_create(name=action_name)
         permission, _ = Permission.objects.get_or_create(
             key=permission_key,
-            defaults={"module": module, "resource": resource, "action": action},
+            defaults={
+                "module": module, "resource": resource, "action": action,
+                "scope": scope_for_key(permission_key),
+            },
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(
             tenant=tenant, key=role_key, defaults={"name": role_key, "status": "ACTIVE"},
@@ -13205,7 +13229,7 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
         )
 
     def orders_in_every_branch(self):
-        """One purchase order per campus, plus one for the entity as a whole."""
+        """One purchase order per branch, plus one for the entity as a whole."""
         return {
             "ikeja": self.purchase_order(self.multi, branch=self.ikeja),
             "lekki": self.purchase_order(self.multi, branch=self.lekki),
@@ -13258,7 +13282,7 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
     def test_mr_sunday_sees_both_his_branches_and_only_those_two(self):
         """Acceptance 2. The arrangement one ``User.branch`` column cannot hold.
 
-        He is a storekeeper at Ikeja *and* at Lekki. Not a third campus, and not
+        He is a storekeeper at Ikeja *and* at Lekki. Not a third branch, and not
         the school at large - which is exactly why branch scope had to become a
         set of grants rather than a single field.
         """
@@ -13323,12 +13347,12 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
             adebayo, self.PO_VIEW, tenant=self.multi_tenant,
             role_key="bursar", branch=self.ikeja,
         )
-        self.ikeja.suspend(actor_id="test", reason="Campus closed")
+        self.ikeja.suspend(actor_id="test", reason="Branch closed")
 
         response = self.as_client(user=adebayo).get(
             f"/v1/procurement/purchase-orders/?entity={self.multi.entity.code}",
         )
-        # It was her only grant, so withdrawing the campus withdraws her access
+        # It was her only grant, so withdrawing the branch withdraws her access
         # rather than promoting her to the whole school.
         self.assertEqual(response.status_code, 403, response.data)
 
@@ -13379,3 +13403,283 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
         )
         self.assertEqual(theirs.status_code, 200, theirs.data)
         self.assertEqual(list(theirs.data["data"]), [])
+
+
+class SharedBranchScopeAgreementTests(_BranchTenantsFixture, TestCase):
+    """Procurement and the platform helper must stay the same mechanism.
+
+    ``_caller_branch_ids`` and the ``Q`` it feeds used to live here. They now live
+    in :mod:`vs_rbac.scoping`, because procurement was the only module that ever
+    narrowed a read and every other module needed the same answer. A promotion is
+    only safe while it is a *move*: the moment procurement grows its own second
+    copy, these two rules can disagree, and the way they would disagree is silent -
+    a list that quietly shows a branch too many or a branch too few.
+
+    So this class asserts identity and equality rather than behaviour. The
+    behaviour is asserted by ``ParkedAndOverrideFilterBranchScopeTests`` and the
+    Round 3 acceptance tests; what is asserted here is that those keep testing the
+    same code the rest of the platform runs.
+
+    The one thing procurement is *allowed* to differ on is which reading of a null
+    branch it takes, and that difference is deliberate, named at the call site, and
+    pinned below - not left to be rediscovered from a query plan.
+    """
+
+    def test_the_caller_lookup_is_the_platform_one_not_a_copy(self):
+        """Identity, not equivalence: a copy would pass an equality test and drift."""
+        from vs_rbac.scoping import caller_branch_ids
+
+        from vs_procurement.views.base import _caller_branch_ids
+
+        self.assertIs(_caller_branch_ids, caller_branch_ids)
+
+    def test_procurements_predicate_is_exactly_the_shared_exclusive_one(self):
+        """The rendered ``Q`` must match term for term, for a real pinned caller."""
+        import types
+
+        from vs_rbac.scoping import branch_q
+
+        from vs_procurement.views.base import _branch_q
+
+        user = self.user_for(self.multi_tenant, "agree-pinned@t.com")
+        self.grant(user, "procurement.requisition.view", tenant=self.multi_tenant,
+                   role_key="agree-lekki", branch=self.lekki)
+        request = types.SimpleNamespace(user=user, query_params={})
+
+        self.assertEqual(
+            _branch_q(request),
+            branch_q(request, include_shared=False),
+        )
+
+    def test_procurement_reads_a_null_branch_exclusively_and_says_so(self):
+        """The deliberate difference from the platform default, pinned.
+
+        Elsewhere a null branch means "shared across the school" and stays visible.
+        Here it means "raised for the school as a whole", which is a scope of its
+        own that a branch-pinned storekeeper is not in - matching
+        ``_inherited_branch_id``, which refuses to let them continue an entity-wide
+        chain either. If this ever starts matching the inclusive form, procurement's
+        behaviour has changed and it was not this test that changed it.
+        """
+        import types
+
+        from vs_rbac.scoping import branch_q
+
+        from vs_procurement.views.base import _branch_q
+
+        user = self.user_for(self.multi_tenant, "agree-excl@t.com")
+        self.grant(user, "procurement.requisition.view", tenant=self.multi_tenant,
+                   role_key="agree-ikeja", branch=self.ikeja)
+        request = types.SimpleNamespace(user=user, query_params={})
+
+        rendered = str(_branch_q(request))
+        self.assertIn("branch_id__in", rendered)
+        self.assertNotIn("isnull", rendered)
+        self.assertNotEqual(_branch_q(request), branch_q(request))
+
+    def test_an_unbound_caller_still_renders_to_nothing_at_all(self):
+        """The whole-tenant path is how everyone works today and must not change."""
+        import types
+
+        from django.db.models import Q
+
+        from vs_procurement.views.base import _branch_q
+
+        user = self.user_for(self.flat_tenant, "agree-unbound@t.com")
+        self.grant(user, "procurement.requisition.view", tenant=self.flat_tenant,
+                   role_key="agree-flat")
+        request = types.SimpleNamespace(user=user, query_params={})
+
+        self.assertEqual(_branch_q(request), Q())
+
+    def test_the_query_filter_is_still_anded_on_top_of_the_grant(self):
+        """``?branch=`` narrows within the grant; promoting the grant half kept that."""
+        import types
+
+        from vs_procurement.views.base import _branch_q
+
+        user = self.user_for(self.multi_tenant, "agree-param@t.com")
+        self.grant(user, "procurement.requisition.view", tenant=self.multi_tenant,
+                   role_key="agree-param-role", branch=self.lekki)
+        request = types.SimpleNamespace(
+            user=user, query_params={"branch": str(self.ikeja.pk)},
+        )
+
+        rendered = str(_branch_q(request, self.multi.entity, request.query_params))
+
+        # Both terms present and ANDed: asking for a branch that is not yours
+        # yields an empty answer rather than that branch's rows.
+        self.assertIn("branch_id__in", rendered)
+        self.assertIn("branch", rendered)
+        self.assertIn("AND", rendered)
+
+
+class SharedBranchWriteRuleAgreementTests(_BranchTenantsFixture, TestCase):
+    """The write half moved out of procurement too; prove nothing moved with it.
+
+    ``_raised_branch``, ``_inherited_branch_id``, ``_sole_caller_branch`` and
+    ``_resolve_branch_reference`` were procurement's, written per document type
+    and then generalised here. They now live in :mod:`vs_rbac.scoping` because
+    finance needed the identical two rules, and what is left in
+    ``views/base.py`` are signature adapters that supply ``entity.tenant`` and
+    name procurement's reading of a null branch.
+
+    A promotion is only safe while it is a *move*. ``_inherited_branch_id`` is
+    asserted **identical** - a copy would pass an equality test and then drift.
+    The other three cannot be, because they change the signature, so they are
+    asserted to agree answer-for-answer with the shared rule across every caller
+    shape that exists: unbound, pinned to one branch, pinned to several, and
+    pinned to a branch that has since been withdrawn. If procurement grows its own
+    second copy of any of these, one of these tests fails rather than the two
+    quietly disagreeing about what a storekeeper may buy.
+    """
+
+    def request_for(self, user):
+        import types
+
+        return types.SimpleNamespace(user=user, query_params={})
+
+    def pinned(self, email, *branches):
+        user = self.user_for(self.multi_tenant, email)
+        for index, branch in enumerate(branches):
+            self.grant(
+                user, "procurement.requisition.create", tenant=self.multi_tenant,
+                role_key=f"{email}-{index}", branch=branch,
+            )
+        return self.request_for(user)
+
+    def unbound(self, email):
+        user = self.user_for(self.multi_tenant, email)
+        self.grant(
+            user, "procurement.requisition.create", tenant=self.multi_tenant,
+            role_key=f"{email}-hq",
+        )
+        return self.request_for(user)
+
+    # -- identity ------------------------------------------------------------- #
+
+    def test_the_inheritance_rule_is_the_platform_one_not_a_copy(self):
+        """Identity, not equivalence: a copy would pass an equality test and drift.
+
+        Nothing to adapt here - procurement's exclusive reading of a null branch is
+        the shared function's own default - so this one is asserted the strict way,
+        exactly as ``_caller_branch_ids`` is.
+        """
+        from vs_rbac.scoping import inherited_branch_id
+
+        from vs_procurement.views.base import _inherited_branch_id
+
+        self.assertIs(_inherited_branch_id, inherited_branch_id)
+
+    def test_the_reference_resolver_is_the_platform_one_for_this_tenant(self):
+        """Same object out, for the same id, through both routes."""
+        from vs_rbac.scoping import resolve_branch
+
+        from vs_procurement.views.base import _resolve_branch_reference
+
+        self.assertEqual(
+            _resolve_branch_reference(self.multi.entity, self.ikeja.pk),
+            resolve_branch(self.multi_tenant, self.ikeja.pk),
+        )
+
+    # -- answer-for-answer agreement ------------------------------------------ #
+
+    def callers(self):
+        """Every shape a caller can be in, so agreement is not proved on one."""
+        from vs_rbac.tests.helpers import make_branch
+        from vs_tenants.models import BranchStatus
+
+        withdrawn_branch = make_branch(
+            self.multi_school, name="Closing Branch", is_main=False,
+        )
+        withdrawn = self.pinned("agree-w-gone@t.com", withdrawn_branch)
+        withdrawn_branch.status = BranchStatus.SUSPENDED
+        withdrawn_branch.save(update_fields=["status"])
+        return {
+            "unbound": self.unbound("agree-w-hq@t.com"),
+            "one branch": self.pinned("agree-w-one@t.com", self.lekki),
+            "two branches": self.pinned(
+                "agree-w-two@t.com", self.lekki, self.ikeja,
+            ),
+            "every branch withdrawn": withdrawn,
+        }
+
+    def outcome(self, call):
+        """The answer, or the exception class, so refusals compare as answers too."""
+        from rest_framework.exceptions import APIException
+
+        try:
+            return ("ok", call())
+        except APIException as exc:
+            return ("raised", type(exc), str(exc))
+
+    def test_raised_branch_agrees_with_the_shared_rule_for_every_caller_shape(self):
+        from vs_rbac.scoping import raised_branch
+
+        from vs_procurement.views.base import _raised_branch
+
+        bodies = [{}, {"branch": self.lekki.pk}, {"branch": self.ikeja.pk},
+                  {"branch": 99_999_999}]
+        for label, request in self.callers().items():
+            for body in bodies:
+                with self.subTest(caller=label, body=body):
+                    self.assertEqual(
+                        self.outcome(
+                            lambda: _raised_branch(request, self.multi.entity, body),
+                        ),
+                        self.outcome(
+                            lambda: raised_branch(
+                                request, self.multi_tenant, body,
+                            ),
+                        ),
+                    )
+
+    def test_procurement_never_takes_the_shared_reading_of_the_ambiguous_case(self):
+        """The deliberate difference from finance, pinned so a change is visible.
+
+        A storekeeper covering Lekki and Ikeja who names no branch is asked which,
+        exactly as she was before the promotion. If this ever starts answering
+        ``None``, procurement's behaviour has changed and it was not this test that
+        changed it.
+        """
+        from rest_framework.exceptions import ValidationError
+
+        from vs_procurement.views.base import _raised_branch
+
+        request = self.pinned("agree-w-amb@t.com", self.lekki, self.ikeja)
+
+        with self.assertRaises(ValidationError) as caught:
+            _raised_branch(request, self.multi.entity, {})
+        self.assertIn("branch", caught.exception.detail)
+
+    def test_sole_caller_branch_agrees_with_the_shared_rule(self):
+        from vs_rbac.scoping import sole_caller_branch
+
+        from vs_procurement.views.base import _sole_caller_branch
+
+        for label, request in self.callers().items():
+            with self.subTest(caller=label):
+                self.assertEqual(
+                    _sole_caller_branch(request, self.multi.entity),
+                    sole_caller_branch(request, self.multi_tenant),
+                )
+
+    def test_procurement_keeps_the_exclusive_reading_when_inheriting(self):
+        """A branch-pinned caller may not continue an entity-wide chain.
+
+        The read side refuses them entity-wide spend (``_BranchScope`` asks for the
+        exclusive form) and the write side must refuse it too, or a caller could be
+        shown a document they may not build on. Finance takes the opposite reading
+        for the opposite reason; both are call-site decisions over one rule.
+        """
+        import types
+
+        from rest_framework.exceptions import PermissionDenied
+
+        from vs_procurement.views.base import _inherited_branch_id
+
+        request = self.pinned("agree-w-excl@t.com", self.lekki)
+        entity_wide = types.SimpleNamespace(branch_id=None)
+
+        with self.assertRaises(PermissionDenied):
+            _inherited_branch_id(request, entity_wide)

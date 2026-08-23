@@ -10,6 +10,7 @@ from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import NotFound, ValidationError
+from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 
 from core.response import success_response
 
@@ -37,6 +38,7 @@ from .base import (
     _bool,
     _date,
     _int,
+    _raised_branch,
     _require_lines,
     _resolve_account,
     _resolve_currency,
@@ -63,7 +65,9 @@ class BankAccountListCreateView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = BankAccount.objects.filter(entity=entity).select_related("gl_account")
+        qs = BankAccount.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).select_related("gl_account")
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         return success_response(
@@ -89,6 +93,13 @@ class BankAccountListCreateView(_FinanceBase):
                     is_primary_collection=False)
             bank = BankAccount.objects.create(
                 entity=entity, name=name,
+                # ``shared_when_ambiguous=True``: one GTBank operations account
+                # that the whole school pays into is the normal arrangement, not
+                # an accident, and forcing a bursar who covers two branches to
+                # pick one would hide the school's own account from every other
+                # branch. A branch-pinned bursar still stamps her branch, so a
+                # site with its own collection account keeps it to itself.
+                branch=_raised_branch(request, entity, body, shared_when_ambiguous=True),
                 bank_name=body.get("bank_name", ""),
                 account_number=body.get("account_number", ""),
                 gl_account=gl_account,

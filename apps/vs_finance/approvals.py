@@ -166,7 +166,7 @@ def ensure_adjustment_submit_permissions():
     """
     from vs_rbac.models import (
         Permission, PermissionAction, PermissionModule, PermissionResource,
-        TenantRolePermission, TenantRoleTemplate,
+        PermissionScope, TenantRolePermission, TenantRoleTemplate,
     )
     from vs_tenants.models import Tenant
 
@@ -198,6 +198,7 @@ def ensure_adjustment_submit_permissions():
                 module=module, resource=resource, action=action,
                 description=f"Submit {resource_label}.",
                 sensitivity_level=sensitivity, is_restricted=True, is_active=True,
+                scope=PermissionScope.TENANT,
             )
             permission.save()
         permissions.append(permission)

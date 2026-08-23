@@ -58,7 +58,7 @@ _EXACT_SAMPLES = {
     "entity_name":      "Corona Secondary School",
     "tenant_name":      "Corona Secondary School",
     "entity_code":      "CSS-MAIN",
-    "branch_name":      "Main Campus",
+    "branch_name":      "Main Branch",
     "class_name":       "JSS 2 Blue",
     "session_name":     "2026/2027",
     "customer_name":    "Mr. Adeola Bakare",

@@ -24,10 +24,22 @@ from vs_workflow.services import actions as actions_service
 from vs_workflow.services import routing as routing_service
 
 
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 def _user(email, first_name="Test", last_name="User"):
     from django.contrib.auth import get_user_model
-    return get_user_model().objects.create_user(
-        email=email, user_type="CX_STAFF", first_name=first_name, last_name=last_name,
+    return get_user_model().objects.create_user(tenant=_platform_tenant(), 
+        email=email, first_name=first_name, last_name=last_name,
     )
 
 

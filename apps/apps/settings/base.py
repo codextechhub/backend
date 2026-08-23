@@ -24,6 +24,24 @@ TEMP_PASSWORD_PEPPER = config("TEMP_PASSWORD_PEPPER")
 
 AUTH_USER_MODEL = "vs_user.User"
 
+# auth.E003 says USERNAME_FIELD must be globally unique. It deliberately is
+# not: one real address can be a login at more than one customer of this
+# platform (a parent with a child at two schools), so uniqueness lives on
+# vs_user.User's uq_user_email_per_tenant instead - see the per-tenant email
+# work in vs_user/models.py and migration 0007.
+#
+# The check exists because django.contrib.auth's ModelBackend resolves a login
+# with get_by_natural_key(), a bare .get() on the username field, which would
+# raise MultipleObjectsReturned. Nothing here goes through it: requests
+# authenticate with JWT via vs_rbac.authentication, LoginService checks the
+# password itself against a tenant-scoped lookup, and django.contrib.admin -
+# the other ModelBackend caller - is deliberately absent from INSTALLED_APPS.
+#
+# Silenced in base, not per environment: the design decision is the same in
+# development, CI, staging and production. Environment files that add their own
+# entries must extend this list rather than replace it.
+SILENCED_SYSTEM_CHECKS = ["auth.E003"]
+
 REST_FRAMEWORK = {
     # JSON only by default - local.py adds the browsable API for development.
     "DEFAULT_RENDERER_CLASSES": [
@@ -36,6 +54,12 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
+        # A tenant that has not gone live reaches the onboarding surface and
+        # nothing else. The gate sits in the defaults so a view that declares
+        # no permission_classes at all is closed to it rather than open by
+        # omission; views that set their own list get the same check through
+        # IsAuthenticatedAndActive / HasRBACPermission.
+        "vs_rbac.permissions.TenantSurfaceAllowed",
     ],
     "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
     "DEFAULT_SCHEMA_CLASS": "core.schema.EnvelopeAutoSchema",
@@ -87,7 +111,12 @@ INSTALLED_APPS = [
 
     # apps
     "vs_tenants",
-    "vs_schools",
+    # XVS, the schools product. Everything school-shaped lives under
+    # apps/schools/; the app label stays "vs_schools" (see its AppConfig).
+    "schools.vs_schools",
+    # M9. School-specific by construction, so it sits beside vs_schools under
+    # apps/schools/ and never beside the domain-neutral engines.
+    "schools.vs_onboarding",
     "vs_admin_console",
     "vs_user",
     "vs_rbac",
@@ -143,6 +172,20 @@ CORS_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in config(
         "CORS_ALLOWED_ORIGINS", default="https://intranet.codexng.com"
+    ).split(",")
+    if origin.strip()
+]
+# Every school is served from its own subdomain (bright-star.xvs.codexng.com),
+# so the browser origin differs per tenant and cannot be enumerated in advance.
+# The pattern matches one label only - it does not reach a.b.xvs.codexng.com -
+# and the bare product site keeps its explicit entry above.
+# django-cors-headers echoes the specific matched origin rather than "*", which
+# is what keeps this legal alongside CORS_ALLOW_CREDENTIALS.
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    origin.strip()
+    for origin in config(
+        "CORS_ALLOWED_ORIGIN_REGEXES",
+        default=r"^https://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.xvs\.codexng\.com$",
     ).split(",")
     if origin.strip()
 ]

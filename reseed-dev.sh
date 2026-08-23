@@ -59,5 +59,14 @@ run seed_dev_data
 echo "→ Per-school notification settings..."
 run seed_notification_settings --all
 
+# A school per onboarding state, so every screen in the control room can be
+# opened rather than imagined. Every other seeded school is created ACTIVE,
+# which means nothing else in the dev world exercises onboarding at all.
+echo "→ Onboarding scenario schools (one per state)..."
+run seed_onboarding_scenarios
+
 echo ""
 echo "✔ Done. Logins: admin@codexng.com / Admin@123456 · *.vision.edu / Vision@2025 · school users / School@2025"
+echo "  Onboarding cast (School@2025): brightfield-lekki not-ready · st-monicas ready · holy-cross pending"
+echo "                                grace-fields rejected · crescent-model failed · lagoon-view live"
+echo "                                new-dawn unprovisioned · riverbank expiring — admin@<slug>.example.com"

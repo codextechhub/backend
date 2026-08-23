@@ -21,7 +21,7 @@ from vs_rbac.tests.helpers import (
     make_role,
     make_role_permission,
 )
-from vs_schools.models import School, SchoolStatus
+from schools.vs_schools.models import School, SchoolStatus
 from vs_tenants.models import Branch
 from vs_user.models import User
 
@@ -47,14 +47,24 @@ def _branch(school, name):
     )
 
 
-def _user(email, first, last, *, user_type, school=None, branch=None):
-    # ``school`` is accepted for call-site readability but the tenant is derived
-    # from the branch (or defaults to codex for CX staff) - User.school is gone.
+def _user(email, first, last, *, school=None, branch=None, tenant=None):
+    """A ticket-side account. ``school`` is accepted for call-site readability.
+
+    With no branch and no tenant the account is platform support: being support
+    staff IS being on the platform tenant, and there is no persona column left
+    to say so on the account itself. The tenant is named here rather than
+    derived, because a derivation from an absence is exactly what this change
+    removed.
+    """
+    if tenant is None and branch is None:
+        from vs_tenants.models import Tenant
+
+        tenant = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
     return User.objects.create_user(
         email=email,
         first_name=first,
         last_name=last,
-        user_type=user_type,
+        tenant=tenant,
         branch=branch,
         status=User.Status.ACTIVE,
     )
@@ -76,27 +86,25 @@ class TicketFixtureMixin:
         self.branch_b = _branch(self.school_b, "Main")
         self.requester = _user(
             "requester@alpha.test", "Rita", "Requester",
-            user_type=User.UserType.STAFF, school=self.school_a, branch=self.branch_a,
+            school=self.school_a, branch=self.branch_a,
         )
         self.peer = _user(
             "peer@alpha.test", "Paul", "Peer",
-            user_type=User.UserType.STAFF, school=self.school_a, branch=self.branch_a,
+            school=self.school_a, branch=self.branch_a,
         )
         self.norole = _user(
             "norole@alpha.test", "Nora", "Norole",
-            user_type=User.UserType.STAFF, school=self.school_a, branch=self.branch_a,
+            school=self.school_a, branch=self.branch_a,
         )
         self.outsider = _user(
             "outsider@beta.test", "Bola", "Outsider",
-            user_type=User.UserType.STAFF, school=self.school_b, branch=self.branch_b,
+            school=self.school_b, branch=self.branch_b,
         )
         self.support = _user(
             "support@cx.test", "Ada", "Support",
-            user_type=User.UserType.CX_STAFF,
         )
         self.other_support = _user(
             "tier2@cx.test", "Tolu", "Tier",
-            user_type=User.UserType.CX_STAFF,
         )
         _grant(self.school_a, self.requester, REQUESTER_KEYS, role_name="Alpha Requester")
         _grant(self.school_a, self.peer, REQUESTER_KEYS, role_name="Alpha Peer")
@@ -251,6 +259,72 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
         self.assertIn("email", str(unknown.json()))
         self.assertEqual(live_url.status_code, 400)
 
+    def test_a_ticket_may_carry_the_registered_onboarding_context(self):
+        """Registered by vs_onboarding from its own AppConfig, not declared here.
+
+        The values are asserted against the school module's own constants, so
+        this test fails if the registration is dropped, and it does it without
+        this app importing anything under ``apps/schools/`` in production code.
+        """
+        client = APIClient()
+        client.force_authenticate(self.requester)
+
+        response = client.post("/v1/support/tickets/", {
+            "title": "Cannot finish the books step",
+            "description": "The set of books task will not complete.",
+            "category": "HELP",
+            "priority": "LOW",
+            "context": {
+                "product_area": "Onboarding",
+                "route_pattern": "/onboarding/tasks",
+                "onboarding_task_key": "SCHOOL_METADATA",
+                "onboarding_readiness_state": "NOT_READY",
+            },
+        }, format="json")
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["data"]["context"], {
+            "product_area": "Onboarding",
+            "route_pattern": "/onboarding/tasks",
+            "onboarding_task_key": "SCHOOL_METADATA",
+            "onboarding_readiness_state": "NOT_READY",
+        })
+
+    def test_a_registered_key_still_refuses_a_value_outside_its_vocabulary(self):
+        """Registering a key widens the allowlist; it does not open the field."""
+        client = APIClient()
+        client.force_authenticate(self.requester)
+
+        response = client.post("/v1/support/tickets/", {
+            "title": "Smuggled value",
+            "description": "This payload must fail.",
+            "category": "HELP",
+            "priority": "LOW",
+            "context": {"onboarding_task_key": "Ada Obi, 12 Marina Road"},
+        }, format="json")
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("onboarding_task_key", str(response.json()))
+
+    def test_an_unregistered_key_is_still_rejected_after_registration_exists(self):
+        """The allowlist is still an allowlist, not a door left open."""
+        client = APIClient()
+        client.force_authenticate(self.requester)
+
+        response = client.post("/v1/support/tickets/", {
+            "title": "Unregistered key",
+            "description": "This payload must fail.",
+            "category": "HELP",
+            "priority": "LOW",
+            "context": {
+                "onboarding_task_key": "DEFAULT_ROLES",
+                "onboarding_student_name": "Ada",
+            },
+        }, format="json")
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("onboarding_student_name", str(response.json()))
+
     def test_requester_reply_on_unassigned_ticket_notifies_support_queue(self):
         ticket = ticket_svc.create_ticket(
             actor=self.requester,
@@ -391,7 +465,6 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
     def test_consultant_role_can_create_a_ticket(self):
         consultant = _user(
             "consultant@cx.test", "Cora", "Consultant",
-            user_type=User.UserType.CX_STAFF,
         )
         call_command("seed_consultant_role", verbosity=0)
         role = TenantRoleTemplate.objects.get(
@@ -431,7 +504,6 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
     def test_assignment_options_include_only_active_ticket_handlers(self):
         non_handler = _user(
             "observer@cx.test", "Olivia", "Observer",
-            user_type=User.UserType.CX_STAFF,
         )
         self.client_api.force_authenticate(self.support)
 
@@ -562,8 +634,8 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
     def test_empty_comment_list_shape(self):
         self.client_api.force_authenticate(self.requester)
         payload = self.client_api.get(f"/v1/support/tickets/{self.ticket.pk}/comments/").json()
-        # success_response coerces empty lists to {}.
-        self.assertEqual(payload["data"], {})
+        # A ticket with no comments answers with an empty list, not an object.
+        self.assertEqual(payload["data"], [])
 
     def test_dashboard_counts_visible_tickets_only(self):
         ticket_svc.create_ticket(
@@ -669,13 +741,13 @@ class TicketBranchTenantGuardTests(TestCase):
         cls.branchless = _school("guard-solo", "Guard Solo")
         cls.requester = _user(
             "guard.requester@alpha.test", "Gina", "Guard",
-            user_type=User.UserType.STAFF, branch=cls.branch,
+            branch=cls.branch,
         )
-        # SCHOOL_ADMIN, not STAFF: a branch-level user must have a branch, and
-        # this tenant has none - which is exactly the shape being tested.
+        # A tenant user with no branch: this tenant owns no branches, and a
+        # null branch is a legal school-wide posting - the shape tested here.
         cls.branchless_requester = User.objects.create_user(
             email="guard.solo@solo.test", first_name="Solo", last_name="Guard",
-            user_type=User.UserType.SCHOOL_ADMIN, status=User.Status.ACTIVE,
+            status=User.Status.ACTIVE,
             tenant=cls.branchless.tenant,
         )
 
@@ -712,3 +784,100 @@ class TicketBranchTenantGuardTests(TestCase):
                 requester=self.branchless_requester,
                 branch=self.branch,
             ).clean()
+
+
+# ---------------------------------------------------------------------------
+# The context registry itself
+# ---------------------------------------------------------------------------
+
+class TicketContextRegistryTests(TestCase):
+    """The mechanism that lets a module widen the allowlist without an import.
+
+    The same shape the Export Centre uses for datasets: the owning app calls in
+    from its own ``AppConfig.ready``. What is tested here is that calling in is
+    the only way, and that it cannot be used to smuggle a free-text field past
+    an allowlist that exists precisely to prevent one.
+    """
+
+    def setUp(self):
+        from vs_tickets import context
+
+        self.context = context
+        self.original = dict(context._REGISTERED)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        self.context._REGISTERED.clear()
+        self.context._REGISTERED.update(self.original)
+
+    def test_onboarding_registered_its_two_keys_with_closed_vocabularies(self):
+        from schools.vs_onboarding.constants import ReadinessState, TaskKey
+
+        registered = self.context.registered_choice_fields()
+
+        self.assertEqual(
+            registered["onboarding_task_key"], tuple(TaskKey.values),
+        )
+        self.assertEqual(
+            registered["onboarding_readiness_state"], tuple(ReadinessState.values),
+        )
+        self.assertIn("onboarding_task_key", self.context.allowed_keys())
+        self.assertIn("guide_id", self.context.allowed_keys())
+
+    def test_a_value_that_is_not_a_plain_identifier_cannot_be_registered(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured):
+            self.context.register_context_choice_field(
+                "demo_key", choices=["Ada Obi, 12 Marina Road"],
+            )
+
+    def test_a_key_cannot_shadow_one_this_app_declares_itself(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured):
+            self.context.register_context_choice_field(
+                "product_area", choices=["Anything"],
+            )
+
+    def test_re_registering_the_same_values_is_a_no_op(self):
+        self.context.register_context_choice_field("demo_key", choices=["A", "B"])
+        self.context.register_context_choice_field("demo_key", choices=["A", "B"])
+
+        self.assertEqual(
+            self.context.registered_choice_fields()["demo_key"], ("A", "B"),
+        )
+
+    def test_re_registering_different_values_is_refused(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        self.context.register_context_choice_field("demo_key", choices=["A"])
+
+        with self.assertRaises(ImproperlyConfigured):
+            self.context.register_context_choice_field("demo_key", choices=["B"])
+
+    def test_an_empty_vocabulary_is_refused(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured):
+            self.context.register_context_choice_field("demo_key", choices=[])
+
+    def test_vs_tickets_does_not_import_the_school_package(self):
+        """The boundary this mechanism exists to keep, asserted as text.
+
+        A grep, deliberately: an import test that only checked ``sys.modules``
+        would pass in a process where something else had already imported the
+        school app.
+        """
+        import pathlib
+
+        app_dir = pathlib.Path(__file__).resolve().parent
+        offenders = []
+        for path in app_dir.rglob("*.py"):
+            if path.name == "tests.py":
+                continue  # the tests may name the module they are asserting about
+            source = path.read_text()
+            if "from schools." in source or "import schools." in source:
+                offenders.append(path.name)
+
+        self.assertEqual(offenders, [])

@@ -15,7 +15,7 @@ usual backstop - rows being tenant-scoped, so a school actor sees nothing anyway
 specs describing every customer's system rather than any tenant's data. So the
 CX-only boundary is stated explicitly by ``IsPlatformActor``.
 
-The gate is deliberately *not* ``user.user_type == CX_STAFF``:
+The gate is deliberately *not* "is this account on the platform tenant":
 ``vs_user.models.User`` documents that field as an inert domain marker that must
 never drive authorization.
 """

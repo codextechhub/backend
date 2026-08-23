@@ -24,7 +24,7 @@ from vs_finance.settings_ownership import (
     BANKING_SETTING_CONSUMERS,
     DOCUMENT_SETTING_CONSUMERS,
 )
-from vs_schools.models import School
+from schools.vs_schools.models import School
 
 
 class FinanceAccountSettingsAPITests(TestCase):
@@ -40,7 +40,7 @@ class FinanceAccountSettingsAPITests(TestCase):
         seed_chart_of_accounts(self.entity)
         self.user = get_user_model().objects.create_user(
             email="finance-settings@test.com", password="pw", tenant=self.school.tenant,
-            user_type="CX_STAFF", status="ACTIVE", first_name="Finance", last_name="Settings",
+            status="ACTIVE", first_name="Finance", last_name="Settings",
         )
         self.client = TenantAPIClient(user=self.user)
         self.url = f"/v1/finance/settings/account-mappings/?entity={self.entity.code}"
@@ -110,7 +110,7 @@ class FinanceDocumentSettingsAPITests(TestCase):
         seed_chart_of_accounts(self.entity)
         self.user = get_user_model().objects.create_user(
             email="document-settings@test.com", password="pw",
-            tenant=self.school.tenant, user_type="CX_STAFF", status="ACTIVE",
+            tenant=self.school.tenant, status="ACTIVE",
             first_name="Document", last_name="Settings",
         )
         self.client = TenantAPIClient(user=self.user)
@@ -236,7 +236,7 @@ class FinanceBankingSettingsAPITests(TestCase):
         seed_chart_of_accounts(self.entity)
         self.user = get_user_model().objects.create_user(
             email="banking-settings@test.com", password="pw",
-            tenant=self.school.tenant, user_type="CX_STAFF", status="ACTIVE",
+            tenant=self.school.tenant, status="ACTIVE",
             first_name="Banking", last_name="Settings",
         )
         self.client = TenantAPIClient(user=self.user)

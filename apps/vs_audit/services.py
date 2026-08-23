@@ -6,6 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
+from django.db import transaction
 from django.forms.models import model_to_dict
 
 logger = logging.getLogger("vs_audit")
@@ -94,6 +95,66 @@ def _build_summary(action_type: str, actor_user, entity_label: str, entity_type:
     )
 
 
+def resolve_event_tenant(tenant):
+    """Return the tenant an event belongs to, inheriting the request's when sound.
+
+    ``AuditEvent.tenant`` is nullable and most emitters never passed one, so the
+    column was empty on all but the school and branch rows. That is worse than a
+    missing feature: an investigator who narrows the Event Explorer to Bright
+    Star sees the two events that happened to carry a tenant, and concludes
+    nothing else did. The filter is only worth having if the column is populated,
+    and the column is only trustworthy if it is populated *correctly*.
+
+    Three rules, in order.
+
+    **An explicit tenant always wins.** A caller that names one knows something
+    this function cannot: ``SchoolCreateSerializer`` writes Bright Star's tenant
+    onto the creation event while the Codex staffer who pressed the button is
+    asserting ``?tenant=codex``. Only ``None`` - "I did not say" - is filled in
+    here.
+
+    **A business tenant in the ambient context is inherited.** ``?tenant=`` is
+    mandatory on every authenticated request and ``TenantJWTAuthentication``
+    refuses any slug but the caller's own unless the caller is platform staff on
+    a view that opts in. So for a SCHOOL or ORGANIZATION tenant the ambient value
+    is the boundary the whole request is authorised inside - the one
+    ``TenantAwareManager`` scopes its querysets to - and the event cannot be
+    about somebody else without a separate authorisation bug having let the
+    request reach another tenant's rows in the first place. That is what makes
+    inheriting it safe, and it is why the PLATFORM case below is different in
+    kind rather than merely riskier.
+
+    **The PLATFORM tenant is not inherited; the event stays null.** Asserting
+    ``?tenant=codex`` means "I am acting as Codex", and says nothing whatever
+    about whose data is being touched - a Codex staffer creates Bright Star while
+    asserting ``codex``, and every role assignment and onboarding row written
+    during that request belongs to Bright Star, not to Codex. Stamping ``codex``
+    on them would be worse than leaving them empty: the Bright Star filter would
+    still miss them *and* the Codex filter would show somebody else's school.
+    Null is the honest answer, and it is the answer the platform already gives
+    elsewhere - ``vs_config.services.scopes.resolve_request_scope`` collapses a
+    PLATFORM assertion to ``tenant=None`` and calls that the platform layer.
+
+    Nothing is inherited outside a request at all. A Celery task, a management
+    command and the login endpoint (which is unauthenticated, so authentication
+    never ran) all see an empty context, and ``TenantContextCleanupMiddleware``
+    clears it at both ends of every request so a stale value cannot survive into
+    the next one. Emitters on those paths that know their tenant pass it
+    explicitly - ``log_auth_event`` and ``create_import_audit_log`` do - because
+    there is nothing here for them to inherit.
+    """
+    if tenant is not None:
+        return tenant
+
+    from vs_tenants.context import get_current_tenant
+    from vs_tenants.models import Tenant
+
+    ambient = get_current_tenant()
+    if ambient is None or getattr(ambient, "kind", None) == Tenant.Kind.PLATFORM:
+        return None
+    return ambient
+
+
 def emit_audit_event(
     *,
     module_key: str,
@@ -116,52 +177,90 @@ def emit_audit_event(
     Central helper: creates an AuditEvent + upserts EntityAuditTrail.
 
     - actor_user: pass a User instance; if None the event is attributed to SYSTEM.
+    - tenant: the customer the event belongs to. Left out, it is inherited from
+      the request in flight when that is sound - see :func:`resolve_event_tenant`
+      for exactly when it is not. Passing one always wins; passing ``None`` means
+      "I did not say", not "definitely nobody", because the pass-through helpers
+      in vs_exports and vs_tenants forward their own ``tenant=None`` default and
+      must not be able to erase the context that way.
     - summary: auto-generated from action_type + entity context when not provided.
     - Never raises - audit failures must never block business logic.
     - Returns the created AuditEvent, or None on failure.
+
+    The writes below run in their own savepoint, which is what makes the
+    promise above true for the callers that matter. Most of them emit from
+    inside their own ``transaction.atomic`` block - the school and branch
+    serializers, the onboarding effects - and a *database* error here (not a
+    Python one) marks the whole enclosing transaction for rollback. Catching
+    the exception was not enough: the caller carried on, and its own legitimate
+    write was then refused at commit with TransactionManagementError. So an
+    audit failure used to be able to destroy the business change it was only
+    supposed to describe. Rolling back to a savepoint confines the damage to
+    the audit row, which is the stated contract.
     """
     from .models import AuditEvent, AuditActorType, EntityAuditTrail
 
     try:
-        from vs_tenants.context import resolve_audit_identity
-        actor_user, effective_user, impersonation_session = resolve_audit_identity(
-            actor_user, effective_user, impersonation_session,
-        )
-        actor_type = AuditActorType.USER if actor_user is not None else AuditActorType.SYSTEM
+        with transaction.atomic():
+            from vs_tenants.context import resolve_audit_identity
+            actor_user, effective_user, impersonation_session = resolve_audit_identity(
+                actor_user, effective_user, impersonation_session,
+            )
+            actor_type = AuditActorType.USER if actor_user is not None else AuditActorType.SYSTEM
+            tenant = resolve_event_tenant(tenant)
 
-        resolved_summary = summary or _build_summary(action_type, actor_user, entity_label, entity_type)
+            resolved_summary = summary or _build_summary(action_type, actor_user, entity_label, entity_type)
 
-        event = AuditEvent.objects.create(
-            module_key=module_key,
-            action_type=action_type,
-            actor_type=actor_type,
-            actor_user=actor_user if actor_type == AuditActorType.USER else None,
-            effective_user=effective_user,
-            tenant=tenant,
-            impersonation_session=impersonation_session,
-            entity_type=entity_type,
-            entity_id=str(entity_id),
-            entity_label=entity_label or "",
-            severity=severity,
-            status=status,
-            summary=resolved_summary,
-            before_data=before_data or {},
-            diff_data=diff_data or {},
-            metadata=metadata or {},
-        )
+            event = AuditEvent.objects.create(
+                module_key=module_key,
+                action_type=action_type,
+                actor_type=actor_type,
+                actor_user=actor_user if actor_type == AuditActorType.USER else None,
+                effective_user=effective_user,
+                tenant=tenant,
+                impersonation_session=impersonation_session,
+                entity_type=entity_type,
+                entity_id=str(entity_id),
+                entity_label=entity_label or "",
+                severity=severity,
+                status=status,
+                summary=resolved_summary,
+                before_data=before_data or {},
+                diff_data=diff_data or {},
+                metadata=metadata or {},
+            )
 
-        # The proxy middleware uses this request-local marker to avoid adding a
-        # vague fallback event when the feature already recorded the real
-        # business action.
-        from vs_tenants.context import mark_audit_event_emitted
-        mark_audit_event_emitted()
+            # The proxy middleware uses this request-local marker to avoid adding a
+            # vague fallback event when the feature already recorded the real
+            # business action.
+            from vs_tenants.context import mark_audit_event_emitted
+            mark_audit_event_emitted()
 
-        trail, _ = EntityAuditTrail.objects.get_or_create(
-            entity_type=entity_type,
-            entity_id=str(entity_id),
-            defaults={"entity_label": entity_label or ""},
-        )
-        trail.register_event(event)
+            # The catalogue row: which entities have been audited, and what each
+            # one is called. Nothing is counted here. ``EntityAuditTrail`` used
+            # to carry a rollup that this call incremented and nothing ever
+            # decremented, so the stored total drifted from the events beneath
+            # it (see the model docstring, and migration 0003, which deleted
+            # events and left the counters standing). The counters are computed
+            # from AuditEvent at read time now.
+            trail, created = EntityAuditTrail.objects.get_or_create(
+                entity_type=entity_type,
+                entity_id=str(entity_id),
+                defaults={"entity_label": entity_label or ""},
+            )
+            # The label was previously written once and never revisited, which
+            # was survivable only while entity_id was itself readable. It is
+            # not: a trail keyed on a primary key shows an opaque number, and
+            # the label is the only human handle on the row. Left frozen, the
+            # trail list would still be offering "Bright Star" long after the
+            # school became "Bright Star Academy".
+            #
+            # A write only when it actually changed. While the counters lived
+            # here every emitted event cost an UPDATE on this table; now the
+            # steady state - an entity whose label has not moved - costs none.
+            if not created and entity_label and trail.entity_label != entity_label:
+                trail.entity_label = entity_label
+                trail.save(update_fields=["entity_label"])
 
         return event
 

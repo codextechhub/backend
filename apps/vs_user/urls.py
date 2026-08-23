@@ -96,12 +96,21 @@ urlpatterns = [
     path('auth/password/reset/<uuid:activation_key>/confirm/', PasswordResetConfirmView.as_view(),    name='password-reset-confirm'),
 
     # ── User management actions ───────────────────────────────────────────────
-    path('<str:user_id>/email/change/',   UserEmailChangeView.as_view(),   name='user-email-change'),
-    path('<str:user_id>/invite/resend/',  InvitationResendView.as_view(),  name='user-invite-resend'),
-    path('<str:user_id>/suspend/',        UserSuspendView.as_view(),       name='user-suspend'),
-    path('<str:user_id>/reactivate/',     UserReactivateView.as_view(),    name='user-reactivate'),
-    path('<str:user_id>/unlock/',         UserUnlockView.as_view(),        name='user-unlock'),
-    path('<str:user_id>/password-reset/', AdminPasswordResetView.as_view(),name='user-password-reset'),
+    #
+    # ``<int:...>``, not ``<str:...>``. The account key is an integer, and a
+    # string converter here did two bad things at once: it handed
+    # ``/v1/user/abc/suspend/`` straight to the ORM, where it raised ValueError
+    # and answered 500 for what is plainly a bad address; and - because these
+    # patterns are resolved before the router below - it swallowed the router's
+    # own ``account-lockouts/unlock/``, matching it as user_id="account-lockouts"
+    # and 500ing on every call. ``AccountLockoutViewSet.unlock`` was unreachable
+    # for as long as that converter was a string.
+    path('<int:user_id>/email/change/',   UserEmailChangeView.as_view(),   name='user-email-change'),
+    path('<int:user_id>/invite/resend/',  InvitationResendView.as_view(),  name='user-invite-resend'),
+    path('<int:user_id>/suspend/',        UserSuspendView.as_view(),       name='user-suspend'),
+    path('<int:user_id>/reactivate/',     UserReactivateView.as_view(),    name='user-reactivate'),
+    path('<int:user_id>/unlock/',         UserUnlockView.as_view(),        name='user-unlock'),
+    path('<int:user_id>/password-reset/', AdminPasswordResetView.as_view(),name='user-password-reset'),
     path('password-resets/',              PasswordResetListView.as_view(),  name='password-reset-list'),
     path('password-resets/<int:pk>/revoke/', RevokePasswordResetView.as_view(), name='password-reset-revoke'),
 

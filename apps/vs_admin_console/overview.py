@@ -61,7 +61,7 @@ RETURNED_ITEMS_LIMIT = 3
 
 def _schools() -> dict:
     """Active-school count - the conditional aggregate SchoolStatsView uses."""
-    from vs_schools.models import School, SchoolStatus
+    from schools.vs_schools.models import School, SchoolStatus
 
     row = School.objects.aggregate(
         active=Count("slug", filter=Q(status=SchoolStatus.ACTIVE)),
@@ -80,7 +80,7 @@ def _team(user, tenant) -> dict:
     from vs_user.models import User
 
     qs = User.objects.filter(
-        user_type=User.UserType.CX_STAFF,
+        tenant__kind=Tenant.Kind.PLATFORM,
         status=User.Status.ACTIVE,
     )
     if getattr(getattr(user, "tenant", None), "kind", None) != Tenant.Kind.PLATFORM:
@@ -264,10 +264,22 @@ def _signals(user, tenant) -> dict:
     omitted when the caller lacks the key of the screen it points at, AND when
     there is nothing to act on - a healthy signal is silence, not a green card.
     The frontend renders only what arrives, so quiet days cost no screen space.
+
+    Every count here is scoped to ``tenant`` as well as gated on the key. Holding
+    a key says the caller may see *that kind of number for their own books*, and
+    nothing more: no level of permission reaches another tenant's ledger, and
+    reading one is done by proxying a user who holds the key there. These
+    queries previously carried the gate without the scope, so a school's own
+    dashboard counted every other school's documents and named the school with
+    the worst fiscal runway.
     """
     from django.utils import timezone
 
     signals: dict = {}
+    # No asserted tenant means no scope to report on; a signal cannot be
+    # attributed, so none is offered.
+    if tenant is None:
+        return signals
     since = timezone.now() - timezone.timedelta(hours=SIGNAL_WINDOW_HOURS)
 
     if has_permission(user, PERM_FINANCE_REPORT_VIEW, tenant=tenant):
@@ -278,7 +290,7 @@ def _signals(user, tenant) -> dict:
         from vs_finance.posting import FISCAL_RUNWAY_HEALTHY, fiscal_calendar_runway
 
         worst = None
-        for entity in LedgerEntity.objects.filter(is_active=True):
+        for entity in LedgerEntity.objects.filter(is_active=True, tenant=tenant):
             runway = fiscal_calendar_runway(entity)
             if runway["status"] == FISCAL_RUNWAY_HEALTHY:
                 continue
@@ -300,7 +312,9 @@ def _signals(user, tenant) -> dict:
         from vs_finance.constants import DocumentStatus
         from vs_finance.models import JournalEntry
 
-        drafts = JournalEntry.objects.filter(status=DocumentStatus.DRAFT).count()
+        drafts = JournalEntry.objects.filter(
+            status=DocumentStatus.DRAFT, entity__tenant=tenant,
+        ).count()
         if drafts:
             signals["draft_journals"] = {"count": drafts}
 
@@ -318,6 +332,7 @@ def _signals(user, tenant) -> dict:
 
         rows = (
             PurchaseOrder.objects
+            .filter(entity__tenant=tenant)
             .exclude(status__in=(
                 FinDocStatus.CANCELLED, FinDocStatus.REVERSED,
                 FinDocStatus.DRAFT, FinDocStatus.PENDING_APPROVAL,
@@ -334,14 +349,45 @@ def _signals(user, tenant) -> dict:
             signals["pos_awaiting_receipt"] = {"count": awaiting}
 
     if has_permission(user, PERM_WEBHOOK_VIEW, tenant=tenant):
+        # Imported locally, not read from the module scope: the purchase-order
+        # branch above does `from django.db.models import Q, Sum`, which makes Q
+        # a local name for this whole function. Without its own import here, a
+        # caller holding the webhook key but not the PO key hits an unbound Q.
+        from django.db.models import Q
         from vs_payments.constants import WebhookStatus
         from vs_payments.models import WebhookEvent
 
-        failures = WebhookEvent.objects.filter(
+        # A webhook reaches a tenant through whichever of its two nullable
+        # sides is set. One attached to neither belongs to no tenant, and is
+        # reported by the separate platform signal below rather than counted
+        # into anybody's books.
+        recent_failures = WebhookEvent.objects.filter(
             status=WebhookStatus.FAILED, created_at__gte=since,
+        )
+        failures = recent_failures.filter(
+            Q(collection__entity__tenant=tenant) | Q(payout__entity__tenant=tenant),
         ).count()
         if failures:
             signals["webhook_failures_24h"] = {"count": failures}
+
+        # Failures belonging to no tenant at all: a bad signature, an
+        # unparseable payload, an event for a reference this platform never
+        # issued. No school can act on them and none should see them, but they
+        # are the shape a broken endpoint takes, so somebody has to be told.
+        #
+        # This is the one platform-only branch in this function, and it is
+        # narrow on purpose. It does NOT widen the count above to "everything"
+        # for a platform caller: that exemption is exactly the defect this
+        # module was repaired for. It selects rows attached to neither side, so
+        # what it reports is nobody's data rather than everybody's.
+        from vs_tenants.models import Tenant
+
+        if getattr(tenant, "kind", None) == Tenant.Kind.PLATFORM:
+            unattributed = recent_failures.filter(
+                collection__isnull=True, payout__isnull=True,
+            ).count()
+            if unattributed:
+                signals["unattributed_webhook_failures_24h"] = {"count": unattributed}
 
     if has_permission(user, PERM_FINANCE_INVOICE_VIEW, tenant=tenant):
         # Posted invoices past due and not fully settled - dunning pressure.
@@ -352,6 +398,7 @@ def _signals(user, tenant) -> dict:
             Invoice.objects.filter(
                 status=DocumentStatus.POSTED,
                 due_date__lt=timezone.localdate(),
+                entity__tenant=tenant,
             )
             .exclude(payment_status=InvoicePaymentStatus.PAID)
             .count()
@@ -370,6 +417,7 @@ def _signals(user, tenant) -> dict:
         idle = Payment.objects.filter(
             status=DocumentStatus.POSTED,
             amount__gt=F("allocated_amount") + F("refunded_amount"),
+            entity__tenant=tenant,
         ).count()
         if idle:
             signals["unallocated_credit"] = {"count": idle}
@@ -381,7 +429,8 @@ def _signals(user, tenant) -> dict:
         from vs_procurement.models import VendorInvoice
 
         unpaid = (
-            VendorInvoice.objects.filter(status=FinStatus.POSTED)
+            VendorInvoice.objects.filter(
+                status=FinStatus.POSTED, entity__tenant=tenant)
             .exclude(payment_status=PayStatus.PAID)
             .count()
         )
@@ -393,7 +442,9 @@ def _signals(user, tenant) -> dict:
         from vs_procurement.constants import RfqStatus
         from vs_procurement.models import RequestForQuotation
 
-        open_rfqs = RequestForQuotation.objects.filter(rfq_status=RfqStatus.ISSUED).count()
+        open_rfqs = RequestForQuotation.objects.filter(
+            rfq_status=RfqStatus.ISSUED, entity__tenant=tenant,
+        ).count()
         if open_rfqs:
             signals["rfqs_open"] = {"count": open_rfqs}
 
@@ -404,6 +455,7 @@ def _signals(user, tenant) -> dict:
         horizon = timezone.localdate() + timezone.timedelta(days=CONTRACT_EXPIRY_DAYS)
         expiring = VendorContract.objects.filter(
             status=ContractStatus.ACTIVE, end_date__lte=horizon,
+            entity__tenant=tenant,
         ).count()
         if expiring:
             signals["contracts_expiring"] = {"count": expiring}
@@ -427,7 +479,7 @@ def _signals(user, tenant) -> dict:
         if roleless:
             signals["users_without_roles"] = {"count": roleless}
 
-    if getattr(user, "user_type", None) == "CX_STAFF":
+    if getattr(user, "is_platform_user", False):
         # A manager's reports with overdue tasks - own subtree, so the gate is
         # the same hierarchy that scopes the team dashboard, not a key.
         from vs_todo.models import Task
@@ -502,7 +554,7 @@ def console_overview(request) -> dict:
 
     # vs_todo is a CX-staff surface (IsVisionStaff), so school users get no
     # tasks section rather than an empty one.
-    if getattr(user, "user_type", None) == "CX_STAFF":
+    if getattr(user, "is_platform_user", False):
         data["tasks"] = _tasks(user)
 
     # Own queue and own submissions - no key beyond an active account, matching

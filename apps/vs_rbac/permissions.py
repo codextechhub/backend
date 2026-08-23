@@ -31,11 +31,28 @@ def is_vision_super_admin(user):
     if cached is not None:
         return cached  # Reuse the request-local assignment check.
     from .models import TenantUserRoleAssignment
+    # The role must live on the PLATFORM tenant, and this clause is the whole
+    # of the bypass's safety. Without it the check asked only "do you hold a
+    # role keyed xvs_super_admin in your OWN tenant", and a role's key is
+    # derived from the name its creator types. So a school admin holding
+    # role-create could name a role "xvs_super_admin", assign it, and the
+    # holder would return True from here - which short-circuits HasRBACPermission
+    # before it examines any key, and therefore bypasses every permission gate
+    # on the platform, in every tenant.
+    #
+    # The guard in vs_user.serializers refuses that key only when
+    # ``creating_platform_staff`` is true, so a school user created with a
+    # school role of that name was never caught.
+    #
+    # There is no legitimate non-platform holder: the role IS the platform's.
+    from vs_tenants.models import Tenant
+
     result = TenantUserRoleAssignment.objects.filter(
         user=user,
         tenant=getattr(user, "tenant", None),
         role__key="xvs_super_admin",
         role__tenant=getattr(user, "tenant", None),
+        role__tenant__kind=Tenant.Kind.PLATFORM,
         assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
     ).exists()
     try:
@@ -76,35 +93,192 @@ def user_has_rbac_permission(
     )
 
 
+# Decide whether the view being called is open to a tenant that is not yet live.
+def _view_opens_to_pending_tenant(view, request) -> bool:
+    """Read the view's ``pending_tenant_surface`` declaration.
+
+    The attribute is the whole of the allowlist, and its absence means closed:
+    a surface opened by default would silently admit every endpoint added
+    afterwards, which is the failure this gate exists to prevent.
+
+    Accepted forms:
+      ``True``                 the whole view is open;
+      an iterable of names     open only for those ViewSet actions or HTTP
+                               methods, compared case-insensitively. This is
+                               how a router-backed view opens one verb without
+                               opening its siblings (POST /support/tickets/
+                               without the ticket list, for instance).
+    """
+    declared = getattr(view, "pending_tenant_surface", False)
+    if declared is True:
+        return True
+    if not declared:
+        return False
+    if isinstance(declared, str):
+        declared = [declared]
+    names = {str(name).lower() for name in declared}
+    action = getattr(view, "action", None)
+    if action and str(action).lower() in names:
+        return True
+    return (getattr(request, "method", "") or "").lower() in names
+
+
+# Close every surface but onboarding to a tenant that has not gone live (FR-012).
+class TenantSurfaceAllowed(BasePermission):
+    """Refuse a PENDING tenant anything outside the onboarding surface.
+
+    Authentication admits a tenant whose status is ACTIVE or PENDING, because
+    the first School Admin has to sign in before the school is live. Deciding
+    *what* they may then reach is a question about the view being called, not
+    about the caller's identity, so it is answered here rather than at the
+    door. A view opts in with ``pending_tenant_surface``; anything that does
+    not declare it is closed.
+
+    This is not a permission key, deliberately: a role grant must never be able
+    to reopen the platform to a school that has not gone live.
+
+    Installed everywhere a view can pick up its permissions, because DRF's
+    ``permission_classes`` replaces ``DEFAULT_PERMISSION_CLASSES`` rather than
+    adding to it, so the defaults alone would leave almost the whole repo
+    ungated: in ``DEFAULT_PERMISSION_CLASSES`` (a view that declares nothing),
+    in :class:`IsAuthenticatedAndActive` (which nearly every authenticated view
+    composes), and in :class:`HasRBACPermission` / :class:`HasAnyModuleAccess`
+    (for views that pair those with a bare ``IsAuthenticated``).
+
+    Either returns True or raises ``TenantNotLive``; it never returns False, so
+    the refusal carries its own error code rather than DRF's generic one.
+    """
+
+    def has_permission(self, request, view):
+        from vs_tenants.exceptions import TenantNotLive
+        from vs_tenants.models import Tenant
+
+        u = _get_user(None, request)
+        if not u or not getattr(u, "is_authenticated", False):
+            # Unauthenticated callers hold no tenant; IsAuthenticated (or
+            # AllowAny) owns that decision, not this class.
+            return True
+
+        # ``request.tenant`` is the tenant being operated on: the caller's own
+        # for an ordinary call, and the target tenant when a platform actor
+        # rides an impersonation session, which is exactly the scope that must
+        # be governed in both cases.
+        tenant = getattr(request, "tenant", None) or getattr(u, "tenant", None)
+        if getattr(tenant, "status", None) != Tenant.Status.PENDING:
+            return True
+
+        if _view_opens_to_pending_tenant(view, request):
+            return True
+        raise TenantNotLive()
+
+
+# Reserve a decision to the platform tenant, whoever happens to hold its key.
+class PlatformDecisionAllowed(BasePermission):
+    """Refuse everyone outside the platform tenant a view marked ``platform_decision``.
+
+    Some decisions are *about* a tenant but are not *the tenant's to make*:
+    approving a school's own go-live is the clearest case. Until this class
+    existed the boundary was a naming convention - the key is "granted to
+    platform roles by default" - which is not a boundary at all. A tenant admin
+    who can create a role can put any key their tenant is allowed to hold into
+    it, and every key in the ``onboarding`` module is ``PermissionScope.TENANT``,
+    so the scope guard on ``Permission`` never runs for them.
+
+    **The tenant tested is the caller's own, not ``request.tenant``.** A view
+    that opts into ``platform_cross_tenant_param`` is reached by a platform
+    actor asserting the *target's* slug, so ``request.tenant`` is the school on
+    exactly the calls that must succeed. The question here is who is asking,
+    which is a fact about the caller's home tenant.
+
+    Reading ``request.user`` rather than ``request.actor_user`` is deliberate:
+    under impersonation the effective user is the person being impersonated, and
+    an actor wearing a school admin's identity holds that admin's authority and
+    no more. A decision reserved to the platform is not one they may launder
+    through a school account.
+
+    It returns False rather than raising, so the refusal is DRF's ordinary 403
+    and reads identically to the one a caller without the key receives. A
+    distinct message here would be a probe: mint the role, call the endpoint,
+    and read from the wording whether the grant landed.
+    """
+
+    def has_permission(self, request, view):
+        from vs_tenants.models import Tenant
+
+        if not getattr(view, "platform_decision", False):
+            return True
+
+        u = _get_user(None, request)
+        if not u or not getattr(u, "is_authenticated", False):
+            return False
+        return (
+            getattr(getattr(u, "tenant", None), "kind", None)
+            == Tenant.Kind.PLATFORM
+        )
+
+
 # Enforce login plus non-terminal account status before RBAC is evaluated.
 class IsAuthenticatedAndActive(BasePermission):
     """
     Minimal guardrail:
     - user must be authenticated
-    - if your UserAccount has 'status', block locked/suspended
+    - the account's status must permit a session (``User.may_sign_in``)
+    - the tenant being operated on must be live, unless the view declares
+      itself part of the pending-tenant surface (see TenantSurfaceAllowed)
     """
+
+    #: Wording only. Whether the request is refused is decided by
+    #: ``User.may_sign_in``; this just says why, for the statuses a person is
+    #: entitled to hear about. Anything absent gets the generic line below.
+    _STATUS_MESSAGES = {
+        "SUSPENDED": "Your account is suspended. Contact your administrator.",
+        "LOCKED": (
+            "Your account is locked due to too many failed login attempts. "
+            "Contact your administrator."
+        ),
+        "DEACTIVATED": "This account has been deactivated. Contact your administrator.",
+        "PENDING": (
+            "Your account has not been activated yet. "
+            "Please use your invitation link or contact your administrator."
+        ),
+    }
 
     def has_permission(self, request, view):
         u = _get_user(None, request)
         if not u or not u.is_authenticated:
             return False
 
-        status = getattr(u, "status", None)
-        if status == "SUSPENDED":
-            raise PermissionDenied("Your account is suspended. Contact your administrator.")
-        if status == "LOCKED":
-            raise PermissionDenied("Your account is locked due to too many failed login attempts. Contact your administrator.")
-        if status == "DEACTIVATED":
-            raise PermissionDenied("This account has been deactivated. Contact your administrator.")
+        # Deny by default, exactly as LoginService does, and for the same
+        # reason. This used to be three ``==`` comparisons against string
+        # literals - SUSPENDED, LOCKED, DEACTIVATED - and every status added to
+        # the enum afterwards passed the gate by not being one of them. That is
+        # three of the eight; DRAFT, PENDING_APPROVAL, REJECTED and PENDING all
+        # walked through. Reading ``may_sign_in`` also makes this class agree
+        # with the sign-in service by construction rather than by both lists
+        # being edited together, which is what did not happen last time.
+        #
+        # ``getattr`` rather than a direct attribute read: this gate runs
+        # against whatever ``request.user`` is, and a request that arrives
+        # without a real ``User`` (a test double, a differently-shaped
+        # principal) must be refused, not crash and not be waved through.
+        if not getattr(u, "may_sign_in", False):
+            status = getattr(u, "status", None)
+            raise PermissionDenied(self._STATUS_MESSAGES.get(
+                status, "This account is not permitted to sign in. Contact your administrator.",
+            ))
 
-        return True
+        # Nearly every authenticated view in the repo composes this class, and
+        # DRF's permission_classes replaces DEFAULT_PERMISSION_CLASSES rather
+        # than adding to it, so the surface gate has to live here too.
+        return TenantSurfaceAllowed().has_permission(request, view)
 
 
 # Allow only Vision staff into platform-owned RBAC administration surfaces.
 class IsVisionStaff(BasePermission):
     """
     Vision staff can manage global permission registry + approve/deny requests.
-    Assumes your user model has user_type and includes VISION_STAFF (Module 3).
+    "Vision staff" means an account on a PLATFORM-kind tenant, which is what
+    has_permission below reads. There is no persona column to consult.
     """
 
     def has_permission(self, request, view):
@@ -123,21 +297,6 @@ class IsVisionSuperAdmin(BasePermission):
 
     def has_permission(self, request, view):
         return is_vision_super_admin(request.user)
-
-
-# Allow school admins to manage school-local RBAC configuration.
-class IsSchoolAdmin(BasePermission):
-    """
-    School admin can manage roles within their school.
-    This is a simplified check: we treat user_type == SCHOOL_ADMIN as admin.
-    If you want "anyone with permission", wire it to your RBAC evaluator later.
-    """
-
-    def has_permission(self, request, view):
-        u = request.user
-        if not u or not u.is_authenticated:
-            return False
-        return getattr(u, "user_type", "") == "SCHOOL_ADMIN"
 
 
 # Evaluate the permission keys declared by a DRF view.
@@ -173,6 +332,14 @@ class HasRBACPermission(BasePermission):
         u = request.user
         if not u or not u.is_authenticated:
             return False
+
+        # A handful of views pair this class with a bare ``IsAuthenticated``
+        # instead of ``IsAuthenticatedAndActive``, so the surface gate is
+        # applied here as well. It raises rather than returning False, hence
+        # the discarded result. It runs before the super-admin bypass on
+        # purpose: the question is whether the tenant being operated on is
+        # live, not what the caller holds.
+        TenantSurfaceAllowed().has_permission(request, view)
 
         # Vision super admin bypasses all RBAC permission checks.
         if is_vision_super_admin(u):
@@ -250,6 +417,11 @@ class HasAnyModuleAccess(BasePermission):
         if not u or not u.is_authenticated:
             return False
 
+        # Same reasoning as HasRBACPermission: this class can be the only RBAC
+        # gate on a view, so it must carry the surface check too. It raises
+        # rather than returning False, hence the discarded result.
+        TenantSurfaceAllowed().has_permission(request, view)
+
         # Vision super admin bypasses all RBAC permission checks.
         if is_vision_super_admin(u):
             return True
@@ -272,19 +444,6 @@ class HasAnyModuleAccess(BasePermission):
         keys = get_effective_permissions(u, tenant=tenant)
         prefixes = tuple(f"{m}." for m in modules)  # "finance." must not match "financex.".
         return any(key.startswith(prefixes) for key in keys)
-
-
-# Allow branch admins into branch-scoped management surfaces.
-class IsBranchAdmin(BasePermission):
-    """
-    Grants access only to users with user_type == BRANCH_ADMIN.
-    """
-
-    def has_permission(self, request, view):
-        u = request.user
-        if not u or not u.is_authenticated:
-            return False
-        return getattr(u, "user_type", "") == "BRANCH_ADMIN"
 
 
 # Permit safe HTTP methods on read-only endpoints.

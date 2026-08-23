@@ -16,18 +16,21 @@
 from unittest import mock
 
 from django.contrib.auth import get_user_model
+from django.core import checks as checks_module
+from django.core.checks.registry import registry as check_registry
 from django.core import mail
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.test import TestCase, override_settings
 
-from vs_schools.models import School
+from schools.vs_schools.models import School
 
 from .constants import ChannelChoices, NotificationErrorCode, NotificationPermission, NotificationStatus
 from .models import (
     Notification,
     NotificationEventType,
     NotificationSetting,
+    NotificationTemplate,
 )
 from .services.dispatch import NotificationService, UnregisteredRecipient
 from .services.settings import resolve_channels, resolve_channels_bulk
@@ -41,8 +44,21 @@ User = get_user_model()
 # Fixtures
 # ---------------------------------------------------------------------------
 
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 def _grant_school_permission(user, school, permission_key):
     """Build the full RBAC chain so *user* holds *permission_key* in *school*."""
+    from vs_rbac.tests.helpers import scope_for_key
     from vs_rbac.models import (
         Permission,
         PermissionAction,
@@ -57,7 +73,10 @@ def _grant_school_permission(user, school, permission_key):
     module, _ = PermissionModule.objects.get_or_create(name=module_key)
     resource, _ = PermissionResource.objects.get_or_create(module=module, name=resource_name)
     action, _ = PermissionAction.objects.get_or_create(name=action_key)
-    perm, _ = Permission.objects.get_or_create(module=module, resource=resource, action=action)
+    perm, _ = Permission.objects.get_or_create(
+        module=module, resource=resource, action=action,
+        defaults={"scope": scope_for_key(permission_key)},
+    )
 
     role = TenantRoleTemplate.objects.create(
         tenant=school.tenant, key=f"role-{permission_key.replace('.', '-')}",
@@ -90,8 +109,7 @@ class _NotifFixture(TestCase):
 
         # School-scoped admin in school A, granted the settings permission.
         self.admin_a = User.objects.create_user(
-            email="admin-a@test.com", password="x", user_type="SCHOOL_ADMIN",
-            status="ACTIVE", first_name="Ada", last_name="Admin", tenant=self.school_a.tenant,
+            email="admin-a@test.com", password="x", status="ACTIVE", first_name="Ada", last_name="Admin", tenant=self.school_a.tenant,
         )
         _grant_school_permission(
             self.admin_a, self.school_a, NotificationPermission.ENFORCE_PERMISSIONS,
@@ -99,14 +117,12 @@ class _NotifFixture(TestCase):
 
         # A plain school user with no RBAC grants (for 403 tests).
         self.plain_a = User.objects.create_user(
-            email="plain-a@test.com", password="x", user_type="SCHOOL_ADMIN",
-            status="ACTIVE", first_name="Peter", last_name="Plain", tenant=self.school_a.tenant,
+            email="plain-a@test.com", password="x", status="ACTIVE", first_name="Peter", last_name="Plain", tenant=self.school_a.tenant,
         )
 
         # A CX super admin (bypasses RBAC; no school → platform scope).
-        self.cx = User.objects.create_user(
-            email="cx@test.com", password="x", user_type="CX_STAFF",
-            status="ACTIVE", first_name="Cee", last_name="Ex",
+        self.cx = User.objects.create_user(tenant=_platform_tenant(), 
+            email="cx@test.com", password="x", status="ACTIVE", first_name="Cee", last_name="Ex",
         )
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         role, _ = TenantRoleTemplate.objects.get_or_create(
@@ -256,8 +272,8 @@ class ResolveChannelsBulkTests(_NotifFixture):
 class DispatchTests(_NotifFixture):
 
     def _recipient(self, email="rcpt@test.com"):
-        return User.objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+        return User.objects.create_user(tenant=_platform_tenant(), 
+            email=email, password="x", status="ACTIVE",
             first_name="Rex", last_name="Cipient",
         )
 
@@ -1375,7 +1391,7 @@ class SeedNotificationPermissionsTests(TestCase):
 
     def test_native_school_role_backfilled_in_tenant_table(self):
         from vs_rbac.models import TenantRolePermission, TenantRoleTemplate
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
 
         school = School.objects.create(name="Notif Backfill", slug="notif-bf", code="NBF")
         role = TenantRoleTemplate.objects.create(
@@ -1392,3 +1408,243 @@ class SeedNotificationPermissionsTests(TestCase):
         )
         self.assertIn("communication.communication_permissions.enforce", keys)
         self.assertIn("communication.message_activity.audit", keys)
+
+
+# ---------------------------------------------------------------------------
+# Pending-tenant surface (FR-012) - the inbox is open, the rest is not
+# ---------------------------------------------------------------------------
+
+class PendingTenantInboxAccessTests(_NotifFixture):
+    """A school that has not gone live must be able to read its own inbox.
+
+    Onboarding dispatches in-app notifications while the tenant is still
+    PENDING (onboarding.step_completed, onboarding.go_live_ready). Those
+    messages were being written and left unreadable, because /v1/notify/ was
+    not part of the pending-tenant surface. NotificationViewSet now declares
+    the personal-inbox actions; nothing else in the module was opened.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from vs_tenants.models import Tenant
+
+        self.pending_school = School.objects.create(
+            name="Pending Notif", slug="pending-notif", code="PNDNT",
+            status="PENDING",
+        )
+        self.pending_tenant = self.pending_school.tenant
+        self.pending_tenant.refresh_from_db()
+        self.assertEqual(self.pending_tenant.status, Tenant.Status.PENDING)
+
+        self.pending_admin = User.objects.create_user(
+            email="pending-admin@test.com", password="x", status="ACTIVE", first_name="Pat", last_name="Pending",
+            tenant=self.pending_tenant,
+        )
+        # Granted deliberately: with the permission held, a 403 on the settings
+        # endpoint can only be the surface gate, never a missing grant.
+        _grant_school_permission(
+            self.pending_admin, self.pending_school,
+            NotificationPermission.ENFORCE_PERMISSIONS,
+        )
+
+        self.onboarding_notification = Notification.objects.create(
+            tenant=self.pending_tenant, recipient=self.pending_admin,
+            event_type=self._event("onboarding.step_completed"),
+            channel=ChannelChoices.IN_APP, body="Step complete",
+            subject="Onboarding step completed", status=NotificationStatus.SENT,
+        )
+
+    # ── open: the personal inbox ──────────────────────────────────────────
+
+    def test_pending_tenant_can_list_own_notifications(self):
+        resp = self._client(self.pending_admin).get("/v1/notify/")
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        ids = [row["id"] for row in resp.json()["data"]]
+        self.assertIn(str(self.onboarding_notification.id), ids)
+
+    def test_pending_tenant_can_read_and_mark_the_inbox(self):
+        """Retrieve, unread-count and the mark-read actions come with it."""
+        client = self._client(self.pending_admin)
+
+        detail = client.get(f"/v1/notify/{self.onboarding_notification.id}/")
+        self.assertEqual(detail.status_code, 200, detail.data)
+
+        count = client.get("/v1/notify/unread-count/")
+        self.assertEqual(count.status_code, 200, count.data)
+        self.assertEqual(count.json()["data"]["unread_count"], 1)
+
+        marked = client.post(
+            "/v1/notify/mark-read/",
+            {"ids": [str(self.onboarding_notification.id)]}, format="json",
+        )
+        self.assertEqual(marked.status_code, 200, marked.data)
+        self.onboarding_notification.refresh_from_db()
+        self.assertTrue(self.onboarding_notification.is_read)
+
+        all_read = client.post("/v1/notify/mark-all-read/", {}, format="json")
+        self.assertEqual(all_read.status_code, 200, all_read.data)
+
+    # ── still closed: everything that is not the personal inbox ───────────
+
+    def test_pending_tenant_is_still_refused_the_settings_surface(self):
+        resp = self._client(self.pending_admin).get("/v1/notify/settings/")
+
+        self.assertEqual(resp.status_code, 403, resp.data)
+        self.assertEqual(resp.data["error"]["code"], "TENANT_NOT_LIVE")
+
+    def test_pending_tenant_is_still_refused_history_and_the_catalogue(self):
+        client = self._client(self.pending_admin)
+
+        for path in ("/v1/notify/history/", "/v1/notify/event-types/"):
+            with self.subTest(path=path):
+                resp = client.get(path)
+                self.assertEqual(resp.status_code, 403, resp.data)
+                self.assertEqual(resp.data["error"]["code"], "TENANT_NOT_LIVE")
+
+    # ── unchanged: a live tenant ──────────────────────────────────────────
+
+    def test_active_tenant_behaviour_is_unchanged(self):
+        client = self._client(self.admin_a)
+
+        inbox = client.get("/v1/notify/")
+        self.assertEqual(inbox.status_code, 200, inbox.data)
+
+        settings_matrix = client.get("/v1/notify/settings/")
+        self.assertEqual(settings_matrix.status_code, 200, settings_matrix.data)
+
+        catalogue = client.get("/v1/notify/event-types/")
+        self.assertEqual(catalogue.status_code, 200, catalogue.data)
+
+
+# ---------------------------------------------------------------------------
+# System check - an active event type with no active template sends nothing
+# ---------------------------------------------------------------------------
+
+# Snapshot the check registry as this module is imported, which is before any
+# test here imports vs_notifications.checks. Anything in it arrived through an
+# AppConfig.ready(), so it is the evidence that the wiring is real.
+_CHECK_MODULES_AT_IMPORT_TIME = {
+    check.__module__ for check in check_registry.get_checks()
+}
+
+
+class TemplateCoverageCheckTests(TestCase):
+    """checks.check_event_types_have_templates turns the dispatcher's silent
+    channel skip into a signal at check time.
+
+    Event types are not seeded here: migration 0008 installs the whole registry,
+    so the test database already has them. Templates are the thing under test,
+    so each case seeds or removes them explicitly.
+    """
+
+    def setUp(self):
+        from .services.seed import seed_notification_templates
+
+        seed_notification_templates()
+
+    def _run_check(self, databases=("default",)):
+        from .checks import check_event_types_have_templates
+
+        return check_event_types_have_templates(
+            app_configs=None,
+            databases=list(databases) if databases else databases,
+        )
+
+    # ── registration ──────────────────────────────────────────────────────
+
+    def test_the_check_is_registered_against_the_database_tag(self):
+        """The tag is the load-bearing part: untagged and unguarded, the check
+        would query the database during collectstatic and during migrate on an
+        empty database."""
+        from django.core.checks import Tags
+
+        registered = [
+            check for check in check_registry.get_checks()
+            if check.__module__ == "vs_notifications.checks"
+        ]
+
+        self.assertEqual(len(registered), 1, registered)
+        self.assertIn(Tags.database, registered[0].tags)
+
+    def test_the_app_config_registers_the_check_on_ready(self):
+        """Registration has to come from VsNotificationsConfig.ready().
+
+        _CHECK_MODULES_AT_IMPORT_TIME was taken before any test in this file
+        imported vs_notifications.checks, so the module can only be in it
+        because ready() pulled it in.
+        """
+        self.assertIn("vs_notifications.checks", _CHECK_MODULES_AT_IMPORT_TIME)
+
+    # ── the healthy case ──────────────────────────────────────────────────
+
+    def test_a_seeded_database_reports_no_gaps(self):
+        """The check has to be able to reach clean, or it becomes noise people
+        learn to ignore. This also guards the seed itself: a new registry entry
+        with no default template fails here."""
+        self.assertEqual(self._run_check(), [])
+
+    def test_no_database_named_means_no_query_and_no_message(self):
+        with self.assertNumQueries(0):
+            self.assertEqual(self._run_check(databases=None), [])
+            self.assertEqual(self._run_check(databases=[]), [])
+
+    # ── the gaps it exists to find ────────────────────────────────────────
+
+    def test_an_active_event_type_with_no_template_is_reported_by_key(self):
+        event_type = NotificationEventType.objects.create(
+            key="checks.probe_missing", label="Probe missing",
+            source_module="vs_notifications",
+            supported_channels=[ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        )
+
+        messages = self._run_check()
+
+        self.assertEqual(len(messages), 1, messages)
+        self.assertEqual(messages[0].id, "vs_notifications.W001")
+        self.assertEqual(messages[0].level, checks_module.WARNING)
+        self.assertIn(event_type.key, messages[0].msg)
+        self.assertIn(ChannelChoices.IN_APP, messages[0].msg)
+        self.assertIn(ChannelChoices.EMAIL, messages[0].msg)
+        self.assertIn("seed_notification_templates", messages[0].hint)
+
+    def test_an_inactive_template_counts_as_missing(self):
+        event_type = NotificationEventType.objects.create(
+            key="checks.probe_inactive_template", label="Probe inactive template",
+            source_module="vs_notifications",
+            supported_channels=[ChannelChoices.EMAIL],
+        )
+        NotificationTemplate.objects.create(
+            event_type=event_type, channel=ChannelChoices.EMAIL,
+            subject="Present", body="Present but switched off.", is_active=False,
+        )
+
+        messages = self._run_check()
+
+        self.assertEqual(len(messages), 1, messages)
+        self.assertIn(event_type.key, messages[0].msg)
+
+    def test_an_inactive_event_type_with_no_template_is_not_reported(self):
+        NotificationEventType.objects.create(
+            key="checks.probe_retired", label="Probe retired",
+            source_module="vs_notifications",
+            supported_channels=[ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+            is_active=False,
+        )
+
+        self.assertEqual(self._run_check(), [])
+
+    # ── it must not break a database that has no tables yet ───────────────
+
+    def test_absent_tables_are_reported_as_no_messages_not_as_a_crash(self):
+        from django.db.utils import OperationalError, ProgrammingError
+
+        for error in (
+            ProgrammingError('relation "vs_notifications_notificationeventtype" does not exist'),
+            OperationalError("could not connect to server"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                with mock.patch.object(
+                    NotificationEventType.objects, "using", side_effect=error,
+                ):
+                    self.assertEqual(self._run_check(), [])

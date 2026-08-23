@@ -3,6 +3,7 @@ the double-entry ledger (chart of accounts, posting, reversal, trial balance).""
 from __future__ import annotations
 
 import datetime
+import io
 from decimal import Decimal
 from unittest import mock
 
@@ -183,11 +184,23 @@ from vs_finance.close import (
     reopen_period,
 )
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies, seed_tax_obligations
-from vs_schools.models import School
+from schools.vs_schools.models import School
 from vs_tenants.models import Branch
 
 
 # Group tests for Money Tests.
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 class MoneyTests(TestCase):
     # Verify to kobo from string is exact behavior.
     def test_to_kobo_from_string_is_exact(self):
@@ -754,7 +767,7 @@ class PostingWindowEndpointTests(TestCase):
         )
 
         user = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+            email=email, password="x", status="ACTIVE",
             first_name="Gate", last_name="Test", tenant=self.tenant,
         )
         role = make_role(self.tenant, name=f"Role {email}")
@@ -831,7 +844,7 @@ class FiscalCalendarPermissionTests(TestCase):
         )
 
         user = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+            email=email, password="x", status="ACTIVE",
             first_name="Calendar", last_name="Test", tenant=self.tenant,
         )
         role = make_role(self.tenant, name=f"Role {email}")
@@ -4449,9 +4462,9 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         from vs_tenants.models import Tenant
 
         User = get_user_model()
-        self.user = User.objects.create_user(
+        self.user = User.objects.create_user(tenant=_platform_tenant(), 
             email="fin-admin@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE",
+            status="ACTIVE",
             first_name="Finance", last_name="Admin",
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
@@ -6067,9 +6080,9 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
         from vs_tenants.models import Tenant
 
         User = get_user_model()
-        self.user = User.objects.create_user(
+        self.user = User.objects.create_user(tenant=_platform_tenant(), 
             email="ops-admin@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE", first_name="Ops", last_name="Admin",
+            status="ACTIVE", first_name="Ops", last_name="Admin",
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), 
@@ -6112,7 +6125,10 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
         entity, _, _ = self.build_books()
         for path, keys in (
             ("expense-claims", {"open", "month_total", "avg", "awaiting"}),
-            ("payroll-runs", {"runs", "employees", "net", "to_pay"}),
+            # payroll_scope rides along so the payroll screen knows whether to
+            # ask which branch a run is for: reading the setting through the
+            # config API needs `config.value.view`, which no payroll officer has.
+            ("payroll-runs", {"payroll_scope", "runs", "employees", "net", "to_pay"}),
             ("fixed-assets", {"cost", "accum", "nbv", "monthly"}),
             ("tax-filings", {"outstanding", "open", "filed", "paid"}),
         ):
@@ -6199,6 +6215,152 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
             {"JOURNAL_POSTED": "Journal posted", "PAYMENT_POSTED": "Payment posted"})
 
 
+# Group tests for Entity Tenancy Tests.
+class EntityTenancyTests(TestCase):
+    """No seniority reads another tenant's books - not even Codex's own staff.
+
+    The reported instance: the console's entity picker listed every school's set
+    of books, and clicking any of them answered "No ledger entity matches". The
+    root cause was general - the list endpoint and ``resolve_entity`` each
+    decided entity visibility separately and disagreed, the list exempting a
+    PLATFORM caller and the resolver never doing so - so these cover the rule
+    itself (scope is the asserted tenant, full stop) on both paths, not just the
+    picker that surfaced it. Cross-tenant reading is done by proxying a user who
+    holds the permission there, which changes the asserted tenant.
+    """
+
+    # Prepare or verify the setUpTestData test path.
+    @classmethod
+    def setUpTestData(cls):
+        from django.contrib.auth import get_user_model
+        from django.core.management import call_command
+        from vs_rbac.models import (
+            Permission, TenantRolePermission, TenantRoleTemplate,
+            TenantUserRoleAssignment,
+        )
+        from vs_tenants.models import Tenant
+
+        # Finance permission rows and the platform role grants live in these
+        # seeds rather than in migrations, so the RBAC gate has something to
+        # match against. Class-level: seeding 123 keys per test is minutes.
+        # stdout captured: these commands print their whole key inventory,
+        # which otherwise buries the test summary.
+        sink = io.StringIO()
+        call_command("seed_actions", verbosity=0, stdout=sink)
+        call_command("seed_finance_permissions", verbosity=0, stdout=sink)
+        seed_currencies()
+
+        cls.platform = _platform_tenant()
+        cls.school = Tenant.objects.create(
+            name="Bright Star School", slug="bright-star",
+            kind=Tenant.Kind.SCHOOL, status=Tenant.Status.ACTIVE,
+        )
+        # One set of books either side of the boundary.
+        cls.codex_entity = LedgerEntity.objects.create(
+            tenant=cls.platform, name="CodeX Books", code="CXBOOK",
+            kind=LedgerEntity.Kind.PLATFORM,
+        )
+        cls.school_entity = LedgerEntity.objects.create(
+            tenant=cls.school, name="Bright Star Books", code="BRIGHTSTAR",
+            kind=LedgerEntity.Kind.TENANT,
+        )
+
+        User = get_user_model()
+        cls.cx_user = User.objects.create_user(
+            tenant=cls.platform, email="cx-admin@test.com", password="testpass123",
+            status="ACTIVE", first_name="Cx", last_name="Admin",
+        )
+        cx_role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=cls.platform, key="xvs_super_admin",
+            defaults={"name": "Super Admin", "status": "ACTIVE"},
+        )
+        TenantUserRoleAssignment.objects.create(
+            tenant=cls.platform, user=cls.cx_user, role=cx_role,
+            assignment_status="ACTIVE",
+        )
+
+        # The school side: a bursar whose role carries the finance keys
+        # explicitly, since the seeded xvs_super_admin grants belong to the
+        # PLATFORM tenant's template.
+        cls.bursar = User.objects.create_user(
+            tenant=cls.school, email="bursar@bright-star.test",
+            password="testpass123", status="ACTIVE",
+            first_name="Bola", last_name="Bursar",
+        )
+        school_role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=cls.school, key="school_bursar",
+            defaults={"name": "Bursar", "status": "ACTIVE"},
+        )
+        for key in ("finance.entity.view", "finance.account.view"):
+            TenantRolePermission.objects.create(
+                role=school_role, permission=Permission.objects.get(key=key),
+                granted=True,
+            )
+        TenantUserRoleAssignment.objects.create(
+            tenant=cls.school, user=cls.bursar, role=school_role,
+            assignment_status="ACTIVE",
+        )
+
+    # Prepare or verify the setUp test path.
+    def setUp(self):
+        from core.test_utils import TenantAPIClient
+
+        self.client = TenantAPIClient(user=self.cx_user)
+
+    # Verify platform list excludes other tenants books behavior.
+    def test_platform_list_excludes_other_tenants_books(self):
+        resp = self.client.get("/v1/finance/entities/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        codes = {e["code"] for e in resp.json()["data"]}
+        self.assertIn("CXBOOK", codes)
+        # The whole defect: a school's books must not be offered to Codex.
+        self.assertNotIn("BRIGHTSTAR", codes)
+
+    # Verify platform cannot open another tenants books behavior.
+    def test_platform_cannot_open_another_tenants_books(self):
+        resp = self.client.get(
+            f"/v1/finance/accounts/?entity={self.school_entity.code}")
+        self.assertEqual(resp.status_code, 404, resp.content)
+
+    # Verify platform cannot open another tenants books by id behavior.
+    def test_platform_cannot_open_another_tenants_books_by_id(self):
+        # By numeric pk too - the code path forks on isdigit().
+        resp = self.client.get(
+            f"/v1/finance/accounts/?entity={self.school_entity.id}")
+        self.assertEqual(resp.status_code, 404, resp.content)
+
+    # Verify list and resolver agree on every listed entity behavior.
+    def test_list_and_resolver_agree_on_every_listed_entity(self):
+        """The invariant behind the fix: anything listed must also open.
+
+        This is what actually broke. Asserting it directly means a future
+        widening of either side has to widen both or fail here.
+        """
+        listed = self.client.get("/v1/finance/entities/")
+        self.assertEqual(listed.status_code, 200, listed.content)
+        codes = [e["code"] for e in listed.json()["data"]]
+        self.assertTrue(codes, "fixture should list at least one entity")
+        for code in codes:
+            with self.subTest(entity=code):
+                seed_chart_of_accounts(LedgerEntity.objects.get(code=code))
+                resp = self.client.get(f"/v1/finance/accounts/?entity={code}")
+                self.assertEqual(resp.status_code, 200, resp.content)
+
+    # Verify school user sees only its own books behavior.
+    def test_school_user_sees_only_its_own_books(self):
+        from core.test_utils import TenantAPIClient
+
+        client = TenantAPIClient(user=self.bursar)
+
+        resp = client.get("/v1/finance/entities/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        codes = {e["code"] for e in resp.json()["data"]}
+        self.assertEqual(codes, {"BRIGHTSTAR"})
+        # And Codex's own books are just as closed in that direction.
+        denied = client.get(f"/v1/finance/accounts/?entity={self.codex_entity.code}")
+        self.assertEqual(denied.status_code, 404, denied.content)
+
+
 # Group tests for Entity Create Permission Tests.
 class EntityCreatePermissionTests(TestCase):
     """Provisioning a new entity must be gated on ``finance.entity.create``.
@@ -6213,9 +6375,9 @@ class EntityCreatePermissionTests(TestCase):
         from rest_framework.test import APIClient
 
         User = get_user_model()
-        self.user = User.objects.create_user(
+        self.user = User.objects.create_user(tenant=_platform_tenant(), 
             email="no-grant@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE",
+            status="ACTIVE",
             first_name="No", last_name="Grant",
         )
         from core.test_utils import TenantAPIClient
@@ -6253,14 +6415,22 @@ class EntityCreatePermissionTests(TestCase):
 
 # Group tests for Stub User.
 class _StubUser:
-    """A minimal user carrying just the attributes get_queryset reads."""
+    """A minimal user carrying just the attributes get_queryset reads.
+
+    Which is the TENANT, and only the tenant. This used to take a
+    ``user_type`` and turn "CX_STAFF" into the codex tenant, which was the
+    persona standing in for the fact the view was really asking about. The
+    column is gone and the view never read it; the stub says the fact directly.
+
+    ``platform=True`` is the codex tenant, a ``school`` is that school's, and
+    neither is a tenantless account - the shape a scoping test still needs.
+    """
     # Initialize this object with its required state.
-    def __init__(self, user_type, school=None):
-        self.user_type = user_type
+    def __init__(self, *, platform=False, school=None):
         self.school = school
         if school is not None:
             self.tenant = school.tenant
-        elif user_type == "CX_STAFF":
+        elif platform:
             from vs_tenants.models import Tenant
             self.tenant = Tenant.objects.filter(slug="codex").first()
         else:
@@ -6283,7 +6453,14 @@ class _StubRequest:
 
 # Group tests for Entity List Scoping Tests.
 class EntityListScopingTests(TestCase):
-    """EntityListCreateView.get_queryset is tenancy-scoped for non-platform staff (F1)."""
+    """EntityListCreateView.get_queryset is tenancy-scoped for EVERY caller (F1).
+
+    This class used to assert that CX staff see every entity. That exemption was
+    the defect: the list granted platform callers a latitude ``resolve_entity``
+    never granted, so the console listed every school's books and then refused
+    to open any of them. No level of permission reads another tenant's ledger;
+    cross-tenant work is done by proxying a user who holds the key there.
+    """
 
     # Prepare or verify the setUp test path.
     def setUp(self):
@@ -6306,23 +6483,35 @@ class EntityListScopingTests(TestCase):
         view.request = _StubRequest(user=user, params=params)
         return set(view.get_queryset().values_list("code", flat=True))
 
-    # Verify cx staff sees every entity behavior.
-    def test_cx_staff_sees_every_entity(self):
-        codes = self._codes(_StubUser("CX_STAFF"))
-        self.assertTrue({"GREENF1", "BLUEF1"} <= codes)
+    # Verify cx staff sees no other tenants entity behavior.
+    def test_cx_staff_sees_no_other_tenants_entity(self):
+        codes = self._codes(_StubUser(platform=True))
+        self.assertNotIn("GREENF1", codes)
+        self.assertNotIn("BLUEF1", codes)
+
+    # Verify cx staff sees its own tenants entity behavior.
+    def test_cx_staff_sees_its_own_tenants_entity(self):
+        from vs_tenants.models import Tenant
+
+        codex_books = LedgerEntity.objects.create(
+            name="CodeX Books", code="CODEXF1", kind=LedgerEntity.Kind.PLATFORM,
+            tenant=Tenant.objects.get(slug="codex"),
+        )
+        codes = self._codes(_StubUser(platform=True))
+        self.assertIn(codex_books.code, codes)
 
     # Verify school user sees only own behavior.
     def test_school_user_sees_only_own(self):
-        codes = self._codes(_StubUser("SCHOOL_STAFF", school=self.school))
+        codes = self._codes(_StubUser(school=self.school))
         self.assertEqual(codes, {"GREENF1"})
 
     # Verify user without school sees none behavior.
     def test_user_without_school_sees_none(self):
-        self.assertEqual(self._codes(_StubUser("SCHOOL_STAFF")), set())
+        self.assertEqual(self._codes(_StubUser()), set())
 
     # Verify scoping composes with kind filter behavior.
     def test_scoping_composes_with_kind_filter(self):
-        codes = self._codes(_StubUser("SCHOOL_STAFF", school=self.school),
+        codes = self._codes(_StubUser(school=self.school),
                             params={"kind": LedgerEntity.Kind.TENANT})
         self.assertEqual(codes, {"GREENF1"})
 
@@ -6343,9 +6532,9 @@ class FinanceDashboardTests(_ARFixtureMixin, TestCase):
 
         # A journal with a real author guards the actor-label path (the custom User
         # model has no get_full_name; recent_journals must compose first/last/email).
-        author = get_user_model().objects.create_user(
+        author = get_user_model().objects.create_user(tenant=_platform_tenant(), 
             email="fin.officer@test.com", password="x",
-            user_type="CX_STAFF", status="ACTIVE",
+            status="ACTIVE",
             first_name="Fin", last_name="Officer",
         )
         je = JournalEntry.objects.create(
@@ -6440,8 +6629,8 @@ class InvoiceDetailEndpointTests(_ARFixtureMixin, TestCase):
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, vat)])
         post_invoice(inv)
 
-        u = get_user_model().objects.create_user(
-            email="inv-detail@test.com", password="x", user_type="CX_STAFF", status="ACTIVE",
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email="inv-detail@test.com", password="x", status="ACTIVE",
             first_name="Inv", last_name="Detail")
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
@@ -6492,8 +6681,8 @@ class InvoiceDetailEndpointTests(_ARFixtureMixin, TestCase):
         write_off_invoice(inv, write_off_date=datetime.date(2026, 1, 28))
         inv.refresh_from_db()
 
-        u = get_user_model().objects.create_user(
-            email="inv-settle@test.com", password="x", user_type="CX_STAFF", status="ACTIVE",
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email="inv-settle@test.com", password="x", status="ACTIVE",
             first_name="Inv", last_name="Settle")
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
@@ -6538,8 +6727,8 @@ class FinanceDocumentEndpointTests(_ARFixtureMixin, TestCase):
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
 
-        u = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email=email, password="x", status="ACTIVE",
             first_name="Finance", last_name="Docs",
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
@@ -6743,8 +6932,8 @@ class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
         from django.contrib.auth import get_user_model
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
-        u = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email=email, password="x", status="ACTIVE",
             first_name="Inv", last_name="Maker")
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
@@ -6853,9 +7042,8 @@ class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
         from django.contrib.auth import get_user_model
         entity, _p, _c, _vat = self.build_ar()
         # A plain active user with no super-admin role lacks finance.invoice.create.
-        u = get_user_model().objects.create_user(
-            email="inv-nobody@test.com", password="x", user_type="CX_STAFF",
-            status="ACTIVE", first_name="No", last_name="Perm")
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email="inv-nobody@test.com", password="x", status="ACTIVE", first_name="No", last_name="Perm")
         resp = self._post(entity, u, {
             "customer": "CUST1", "invoice_date": "2026-01-10",
             "lines": [{"revenue_account": "4100", "quantity": 1, "unit_price": 30000}],
@@ -6880,8 +7068,8 @@ class InvoicePayRemindEndpointTests(_ARFixtureMixin, TestCase):
         from django.contrib.auth import get_user_model
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
-        u = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email=email, password="x", status="ACTIVE",
             first_name="Pay", last_name="Tester")
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
@@ -6943,9 +7131,8 @@ class InvoicePayRemindEndpointTests(_ARFixtureMixin, TestCase):
         from vs_finance.models import Payment
         from vs_finance.views_ar import InvoicePayView
         entity, inv = self._posted_invoice()
-        u = get_user_model().objects.create_user(
-            email="pay-nobody@test.com", password="x", user_type="CX_STAFF",
-            status="ACTIVE", first_name="No", last_name="Perm")
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email="pay-nobody@test.com", password="x", status="ACTIVE", first_name="No", last_name="Perm")
         resp = self._call(InvoicePayView, entity, u, inv.pk, {
             "amount": inv.total, "payment_date": "2026-01-20", "deposit_account": "1100",
         })
@@ -6989,8 +7176,8 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
         from django.contrib.auth import get_user_model
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
-        u = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email=email, password="x", status="ACTIVE",
             first_name="Cust", last_name="Tester")
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
@@ -7199,9 +7386,8 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
         from rest_framework.test import APIRequestFactory, force_authenticate
         from vs_finance.views_ar import CustomerReceiptView
         entity, customer, inv = self._fixture()
-        u = get_user_model().objects.create_user(
-            email="cust-noperm@test.com", password="x", user_type="CX_STAFF",
-            status="ACTIVE", first_name="No", last_name="Perm")
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email="cust-noperm@test.com", password="x", status="ACTIVE", first_name="No", last_name="Perm")
         req = APIRequestFactory().post(
             f"/v1/finance/customers/{customer.pk}/receipt/?entity={entity.code}",
             {"amount": 5000, "payment_date": "2026-01-20", "deposit_account": "1100"},
@@ -7245,8 +7431,8 @@ class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
         from django.contrib.auth import get_user_model
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
-        u = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email=email, password="x", status="ACTIVE",
             first_name="Rcpt", last_name="Tester")
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
@@ -7327,9 +7513,8 @@ class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
         entity, _p, customer, _v = self.build_ar()
         a = self.make_invoice(entity, customer, lines=[("4100", 1, 7900, None)]); post_invoice(a)
         p = self._unallocated_receipt(entity, customer, 9000)
-        u = get_user_model().objects.create_user(
-            email="rcpt-noperm@test.com", password="x", user_type="CX_STAFF",
-            status="ACTIVE", first_name="No", last_name="Perm")
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email="rcpt-noperm@test.com", password="x", status="ACTIVE", first_name="No", last_name="Perm")
         req = APIRequestFactory().post(f"/v1/finance/payments/{p.pk}/allocate/?entity={entity.code}", {"auto_allocate": True}, format="json")
         force_authenticate(req, user=u)
         req.tenant = u.tenant  # factory requests bypass the auth layer
@@ -7506,9 +7691,9 @@ class DimensionAnalyticsAPITests(_Phase4FixtureMixin, TestCase):
         from vs_tenants.models import Tenant
 
         User = get_user_model()
-        self.user = User.objects.create_user(
+        self.user = User.objects.create_user(tenant=_platform_tenant(), 
             email="dim-admin@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE", first_name="Dim", last_name="Admin",
+            status="ACTIVE", first_name="Dim", last_name="Admin",
         )
         role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
         TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), 
@@ -7580,9 +7765,8 @@ class DimensionAnalyticsAPITests(_Phase4FixtureMixin, TestCase):
         from rest_framework.test import APIRequestFactory, force_authenticate
         from vs_finance.views import AnalyticsSliceView
         entity, _, _ = self.build_books()
-        u = get_user_model().objects.create_user(
-            email="dim-noperm@test.com", password="x", user_type="CX_STAFF",
-            status="ACTIVE", first_name="No", last_name="Perm")
+        u = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email="dim-noperm@test.com", password="x", status="ACTIVE", first_name="No", last_name="Perm")
         req = APIRequestFactory().get(
             f"/v1/finance/reports/analytics-slice/?entity={entity.code}&axis=cost_center")
         force_authenticate(req, user=u)
@@ -7593,7 +7777,7 @@ class DimensionAnalyticsAPITests(_Phase4FixtureMixin, TestCase):
 
 # Group tests for Journal Approval Workflow Tests.
 def _school_finance_requester(school, email, *, exclude_approve=True):
-    """A school STAFF user holding every ``finance.*`` key at *school*.
+    """A school STAFF user holding every tenant-holdable ``finance.*`` key.
 
     The approval-workflow slices operate on a school-owned entity, and under
     the tenant model only that school's users may address it (?tenant= must
@@ -7603,7 +7787,7 @@ def _school_finance_requester(school, email, *, exclude_approve=True):
     """
     from django.contrib.auth import get_user_model
     from vs_rbac.models import (
-        Permission, TenantRolePermission, TenantRoleTemplate,
+        Permission, PermissionScope, TenantRolePermission, TenantRoleTemplate,
         TenantUserRoleAssignment,
     )
     from vs_tenants.models import Branch
@@ -7614,7 +7798,7 @@ def _school_finance_requester(school, email, *, exclude_approve=True):
         )
     )
     user = get_user_model().objects.create_user(
-        email=email, password="pw", user_type="STAFF", status="ACTIVE",
+        email=email, password="pw", status="ACTIVE",
         first_name="Reqi", last_name="Ester", branch=branch,
     )
     role, created = TenantRoleTemplate.objects.get_or_create(
@@ -7622,7 +7806,14 @@ def _school_finance_requester(school, email, *, exclude_approve=True):
         defaults={"name": "Finance Ops (all keys)", "status": "ACTIVE"},
     )
     if created:
-        keys = Permission.objects.filter(key__startswith="finance.")
+        # Scope-filtered, not just prefix-filtered: this builds a SCHOOL role,
+        # and a handful of finance keys are platform-only because they write
+        # global reference tables (currencies, FX rates). The grant guard
+        # refuses those, so "every finance key" has to mean every finance key a
+        # tenant may actually hold.
+        keys = Permission.objects.filter(
+            key__startswith="finance.", scope=PermissionScope.TENANT,
+        )
         if exclude_approve:
             keys = keys.exclude(key__endswith=".approve")
         TenantRolePermission.objects.bulk_create(
@@ -7733,7 +7924,7 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
     def _make_approver(self, email="apr-jaw@test.com"):
         """A school user holding finance.journal.approve at self.school."""
         user = self.User.objects.create_user(
-            email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
+            email=email, password="pw", status="ACTIVE",
             first_name="Apro", last_name="Ver", tenant=self.school.tenant,
         )
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
@@ -8056,7 +8247,7 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
     # Support the make approver workflow.
     def _make_approver(self, email="apr-raw@test.com"):
         user = self.User.objects.create_user(
-            email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
+            email=email, password="pw", status="ACTIVE",
             first_name="Apro", last_name="Ver", tenant=self.school.tenant,
         )
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
@@ -8376,7 +8567,7 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
     # Support the make approver workflow.
     def _make_approver(self, email="apr-woa@test.com"):
         user = self.User.objects.create_user(
-            email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
+            email=email, password="pw", status="ACTIVE",
             first_name="Apro", last_name="Ver", tenant=self.school.tenant,
         )
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
@@ -9931,7 +10122,7 @@ class AdjustmentApprovalSeedTests(TestCase):
     """
 
     def _tenant(self, slug, code):
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
 
         return School.objects.create(
             name=code.title(), slug=slug, code=code, status="ACTIVE").tenant
@@ -10119,7 +10310,7 @@ class AdjustmentThresholdGateTests(TestCase):
         import io
 
         from django.core.management import call_command
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
 
         from core.test_utils import TenantAPIClient
         from vs_finance.approvals import ensure_tenant_approval_templates
@@ -10360,7 +10551,7 @@ class AdjustmentThresholdGateTests(TestCase):
         from vs_finance.constants import WF_ADJUSTMENT_THRESHOLD
 
         branch = Branch.objects.create(
-            tenant=self.school.tenant, name="Second Campus", is_main=False,
+            tenant=self.school.tenant, name="Second Branch", is_main=False,
             status="ACTIVE")
 
         small = self._concession(20_000)
@@ -10496,7 +10687,7 @@ class AdjustmentThresholdRepairMigrationTests(TestCase):
     def _ladder(self, slug, *, senior_condition, first_condition=None,
                 with_senior=True, document_type="finance.concession",
                 code="standard"):
-        from vs_schools.models import School
+        from schools.vs_schools.models import School
         from vs_workflow.models import WorkflowStage, WorkflowTemplate
 
         # School codes are globally unique, so number them rather than deriving
@@ -10636,8 +10827,8 @@ class DocumentEmailTests(_ARFixtureMixin, TestCase):
         from vs_tenants.models import Tenant
 
         tenant = Tenant.objects.get(slug=tenant_slug)
-        user = get_user_model().objects.create_user(
-            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+        user = get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email=email, password="x", status="ACTIVE",
             first_name="Mail", last_name="Tester",
         )
         role_key = "xvs_super_admin" if keys is None else f"limited_{email.split('@')[0]}"

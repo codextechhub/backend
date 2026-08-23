@@ -8,7 +8,7 @@ preserved for existing callers, but they now return the tenant objects.
 """
 import itertools
 from django.utils.text import slugify
-from vs_schools.models import School
+from schools.vs_schools.models import School
 from vs_user.models import User
 from vs_tenants.models import Branch, Tenant
 from vs_rbac.models import (
@@ -25,6 +25,26 @@ from vs_rbac.models import (
 
 _school_counter = itertools.count(1)
 _role_key_counter = itertools.count(1)
+
+
+def scope_for_key(key):
+    """The scope the real seeders declare for *key*.
+
+    Fixtures across the repo build permission rows by hand, and a row with no
+    scope is refused by the grant guards - correctly, but it would make every
+    such fixture fail for the wrong reason. This mirrors what the seeders do,
+    including the two families inside the ``platform`` module that a tenant
+    role legitimately holds, so a fixture grants exactly what production would.
+    """
+    from core.management.commands.seed_platform_permissions import (
+        TENANT_HOLDABLE_KEYS,
+    )
+    from vs_rbac.models import PermissionScope
+
+    module = (key or "").split(".")[0]
+    if module != "platform" or key in TENANT_HOLDABLE_KEYS:
+        return PermissionScope.TENANT
+    return PermissionScope.PLATFORM
 
 
 def _as_tenant(school_or_tenant):
@@ -69,13 +89,23 @@ def make_branch(school_or_tenant, name="Main Branch", is_main=True, **kwargs):
     )
 
 
+def platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant. There is no persona column
+    standing in for it any more, so a fixture that wants a CX account names the
+    tenant, exactly as production code does.
+    """
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 def make_vision_user(email="vision@test.com", password="testpass123",
                      super_admin=False, **kwargs):
-    """Create a CX_STAFF user. With ``super_admin=True`` also grant the
+    """Create a platform-tenant user. With ``super_admin=True`` also grant the
     ``xvs_super_admin`` platform role so the user bypasses RBAC checks
     (mirrors how real Vision admins operate the platform)."""
     defaults = {
-        "user_type": "CX_STAFF",
+        "tenant": platform_tenant(),
         "status": "ACTIVE",
         "first_name": "Vision",
         "last_name": "Staff",
@@ -98,8 +128,14 @@ def make_vision_user(email="vision@test.com", password="testpass123",
 
 
 def make_school_admin(branch, email="admin@test.com", password="testpass123", **kwargs):
+    """A tenant staff account. The name says what the fixture is *for*.
+
+    There is no persona at all any more - a principal and a teacher are the
+    same kind of row, and their roles separate them - so this differs from
+    ``make_staff_user`` only in the name it gives the person. Callers that want
+    school-wide reach pass ``branch=None``.
+    """
     defaults = {
-        "user_type": "SCHOOL_ADMIN",
         "status": "ACTIVE",
         "branch": branch,
         "first_name": "School",
@@ -116,7 +152,6 @@ def make_school_admin(branch, email="admin@test.com", password="testpass123", **
 
 def make_staff_user(branch, email="staff@test.com", password="testpass123", **kwargs):
     defaults = {
-        "user_type": "STAFF",
         "status": "ACTIVE",
         "branch": branch,
         "first_name": "Staff",
@@ -136,8 +171,15 @@ def make_permission(key, module_key=None, action=None, **kwargs):
 
     The registry is fully relational (module → resource → action FKs), so the
     key is split into its parts and each level is get_or_create'd.
+
+    ``scope`` defaults to what the real seeders declare for that module -
+    ``PLATFORM`` for the ``platform`` module, ``TENANT`` for everything else -
+    so a fixture reads the way production does. Pass ``scope=`` explicitly to
+    build a key whose scope and namespace deliberately disagree.
     """
-    from vs_rbac.models import PermissionAction, PermissionModule, PermissionResource
+    from vs_rbac.models import (
+        PermissionAction, PermissionModule, PermissionResource, PermissionScope,
+    )
 
     parts = key.split(".")
     if len(parts) == 3:
@@ -155,6 +197,7 @@ def make_permission(key, module_key=None, action=None, **kwargs):
     existing = Permission.objects.filter(key=key).first()
     if existing:
         return existing
+    kwargs.setdefault("scope", scope_for_key(key))
     return Permission.objects.create(
         module=module, resource=resource, action=action_obj, **kwargs
     )

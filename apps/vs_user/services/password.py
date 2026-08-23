@@ -14,8 +14,37 @@ from django.utils import timezone
 
 from ..models import User, PasswordResetRequest, AuthEventLog, AccountLockout
 from .audit import log_auth_event, blacklist_all_user_tokens, get_client_ip
+from .sign_in_scope import resolve_sign_in_account
 
 logger = logging.getLogger(__name__)
+
+#: Refusal raised by every route that would put a usable password on an account
+#: whose status may not hold one. One payload, so the four call sites below
+#: cannot drift into four different answers the way their status checks did.
+PASSWORD_NOT_PERMITTED = {
+    "error_code": "ACCOUNT_NOT_ELIGIBLE",
+    "message": "This account cannot be given a password in its current state.",
+}
+
+
+def _require_password_eligible(user):
+    """Refuse a password write to an account that may not hold one.
+
+    The single gate for this service. It reads ``User.may_hold_password``, the
+    same property ``LoginService`` reads the sign-in half of, so "may this
+    account be given a working password" has one answer for the admin reset,
+    the self-service request, the reset confirmation and the logged-in change.
+
+    Before this, each of those four asked separately and got a different
+    answer: the admin reset asked nothing at all, ``request_reset`` refused
+    only DEACTIVATED, and ``confirm_reset`` refused nothing and merely declined
+    to PROMOTE anything that was not LOCKED or PENDING - which left a rejected
+    hire holding a brand-new working password under an unchanged REJECTED
+    status.
+    """
+    if not user.may_hold_password:
+        raise ValueError(PASSWORD_NOT_PERMITTED)
+
 
 class PasswordService:
 
@@ -26,6 +55,11 @@ class PasswordService:
         Changes the password for a logged-in user.
         Ends all active sessions - the user must log in again.
         """
+        # Cannot fire today - only an ACTIVE account can hold the session that
+        # reaches this method - and it is here so that stays true by assertion
+        # rather than by the reader tracing back to who the caller is.
+        _require_password_eligible(user)
+
         try:
             validate_password(new_password, user=user)
         except DjangoValidationError as e:
@@ -42,14 +76,33 @@ class PasswordService:
         )
 
     @staticmethod
-    def request_reset(email: str, request=None):
+    def request_reset(email: str, tenant: str | None = None, request=None):
         """
         Self-service password reset request.
         Silently does nothing if the email is not found -- prevents enumeration.
-        """
-        user = User.objects.filter(email__iexact=email).first()
 
-        if not user or user.status == User.Status.DEACTIVATED:
+        ``tenant`` is the asserted tenant slug, which the frontend reads off the
+        subdomain the request was made from. It is optional and governed by the
+        same switch as sign-in (``sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN``).
+
+        Scoping matters here for the same reason it matters at sign-in, and the
+        consequence is worse: this endpoint sends a link that CHANGES a
+        password. An unscoped ``.first()`` on an address held at two customers
+        would let a reset asked for at Greenfield rewrite the Bright Star
+        account instead - silently, and looking correct in every log. The
+        refusal stays silent because a reset request must never say whether the
+        address exists, here or anywhere else on the platform.
+        """
+        user, _resolved, scope_failure = resolve_sign_in_account(
+            email=email, tenant=tenant,
+        )
+
+        # The status test is the shared one now. It used to name DEACTIVATED
+        # alone, which meant a request against a REJECTED hire sent them a live
+        # reset link. The refusal stays SILENT rather than raising: this
+        # endpoint must answer identically whether or not the address exists,
+        # so an ineligible account has to look like an unknown one.
+        if scope_failure or not user or not user.may_hold_password:
             return  # Do not reveal whether the account exists
 
         PasswordService._create_and_send_reset(
@@ -62,7 +115,20 @@ class PasswordService:
         """
         Admin triggers a password reset for another user.
         Uses the configured admin-reset window and emails it to the user.
+
+        The eligibility check lives HERE and not in ``AdminPasswordResetView``
+        because the view is not the only door: the service is the choke point
+        every admin-initiated reset passes through, and a check in the view
+        would have to be copied to the next caller that appears. This one is
+        loud (a raised refusal the view turns into an error response) whereas
+        ``request_reset``'s is silent, and the difference is correct: the admin
+        is authenticated, already holds ``platform.team.update`` over this
+        account, and can see its status on the screen they clicked from, so
+        telling them why is not a disclosure. An anonymous reset requester is
+        told nothing either way.
         """
+        _require_password_eligible(target_user)
+
         sender_name = requesting_user.full_name if requesting_user else "CodeX System"
         PasswordService._create_and_send_reset(
             target_user, origin="ADMIN", sender_name=sender_name, actor=requesting_user,
@@ -82,7 +148,16 @@ class PasswordService:
         """
         Confirms a password reset using the activation key.
         Ends all active sessions on success.
+
+        Checked again here, not only where the link was issued. A reset row can
+        outlive the state it was created in - an account suspended, deactivated
+        or rejected in the hours between the email going out and the link being
+        clicked - and this is the moment the password actually lands. Refusing
+        at issue time only would leave a live link that reinstates a credential
+        on an account that has since been closed.
         """
+        _require_password_eligible(user)
+
         pr = PasswordResetRequest.objects.filter(
             user=user, used_at__isnull=True
         ).last()
@@ -99,8 +174,22 @@ class PasswordService:
             user.set_password(new_password)
             user.password_changed_at = timezone.now()
             user.activation_key = uuid.uuid4()
-            user.is_active = True
 
+            # ``is_active`` is not set by hand any more. It is derived from
+            # ``status`` in ``User._sync_is_active`` and forcing it True here
+            # was how a parked DRAFT - the one status that derivation used to
+            # skip - came out of a reset with a flag that made its session
+            # valid to SimpleJWT. It stays in update_fields below because the
+            # derivation still writes it.
+            #
+            # This promotion is now total over the statuses that can reach
+            # here: ``_require_password_eligible`` admits exactly ACTIVE,
+            # PENDING, LOCKED and SUSPENDED. LOCKED and PENDING become ACTIVE
+            # (the reset IS the unlock, and the activation); ACTIVE is already
+            # there; SUSPENDED deliberately stays suspended, because a new
+            # password is not a reinstatement. There is no longer any status
+            # that lands here, keeps its own value and walks away with a
+            # working credential - which is what REJECTED used to do.
             if user.status in (User.Status.LOCKED, User.Status.PENDING):
                 if user.status == User.Status.LOCKED:
                     lockout = AccountLockout.objects.select_for_update().filter(user=user).first()

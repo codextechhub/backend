@@ -50,7 +50,7 @@ from .models import (
     NotificationSetting,
     NotificationTemplate,
 )
-from vs_rbac.permissions import HasRBACPermission
+from vs_rbac.permissions import HasRBACPermission, TenantSurfaceAllowed
 
 from .serializers import (
     AcknowledgeRouteSerializer,
@@ -115,7 +115,31 @@ class NotificationViewSet(viewsets.GenericViewSet):
 
     docstring-name: My notifications
     """
-    permission_classes = [IsAuthenticated]
+    # A bare IsAuthenticated replaces DEFAULT_PERMISSION_CLASSES, which would
+    # drop the pending-tenant surface gate (FR-012), so it is named here.
+    permission_classes = [IsAuthenticated, TenantSurfaceAllowed]
+
+    # Open to a tenant that has not gone live yet (FR-012). Onboarding writes
+    # in-app notifications to a school WHILE it is still PENDING
+    # (onboarding.step_completed, onboarding.go_live_ready), so if this stayed
+    # closed the school would be sent messages it could not read until go-live.
+    # Do not remove this as an oversight: the inbox has to be readable before
+    # activation for those messages to mean anything.
+    #
+    # The actions are listed rather than declared as ``True`` so that the
+    # opening covers today's personal-inbox surface only. Every one of these is
+    # recipient-owned (see get_queryset: recipient=request.user, IN_APP only);
+    # anything added to this ViewSet later stays closed until someone decides
+    # it belongs here too. The rest of the module - settings, the event-type
+    # catalogue, history, templates - remains shut to a pending tenant.
+    pending_tenant_surface = (
+        "list",
+        "retrieve",
+        "unread_count",
+        "mark_read",
+        "mark_all_read",
+        "acknowledge_route",
+    )
     pagination_class   = XVSPagination
 
     def get_queryset(self):
@@ -372,7 +396,7 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
 
     def list(self, request):
         """GET /notifications/history/"""
-        is_vision_staff = getattr(request.user, "is_vision_staff", False)
+        is_vision_staff = getattr(request.user, "is_platform_user", False)
         qs = self.get_queryset()
 
         try:
@@ -859,7 +883,11 @@ class NotificationEventTypeViewSet(viewsets.GenericViewSet):
 
     docstring-name: Notification event types
     """
-    permission_classes = [IsAuthenticated]
+    # See MyNotifications above: a bare IsAuthenticated would bypass the
+    # pending-tenant surface gate that the project defaults install. No
+    # ``pending_tenant_surface`` here on purpose: only the personal inbox was
+    # opened to a pending tenant, and the catalogue is not part of it.
+    permission_classes = [IsAuthenticated, TenantSurfaceAllowed]
 
     def get_queryset(self):
         return NotificationEventType.objects.filter(is_active=True).order_by(

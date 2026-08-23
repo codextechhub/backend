@@ -466,19 +466,19 @@ class CatalogItem(_AutoMasterCodeMixin, TimeStampedModel):
 # --------------------------------------------------------------------------- #
 
 class StockLocation(TimeStampedModel):
-    """Somewhere stock physically sits: a campus store, a lab, a kitchen.
+    """Somewhere stock physically sits: a branch store, a lab, a kitchen.
 
     Stock used to be one pool per entity, which is wrong the moment a school has two
-    campuses. The pool told you a thousand books existed; it could not tell you that
+    branches. The pool told you a thousand books existed; it could not tell you that
     seven hundred were at one site and three hundred at the other, so an issue at the
     smaller site drew against stock it did not have and the availability check allowed
-    it. Worse quietly: one blended average cost meant a campus that bought at a higher
+    it. Worse quietly: one blended average cost meant a branch that bought at a higher
     price and one that bought lower both issued at the middle, so each site's expense
     was wrong in opposite directions.
 
     ``branch`` is optional on purpose. A school with no branches has one location and
-    the dimension recedes; a branch may hold several locations, because "which campus"
-    and "which store on that campus" are different questions and the second one does
+    the dimension recedes; a branch may hold several locations, because "which branch"
+    and "which store on that branch" are different questions and the second one does
     not disappear just because a school is single-site.
 
     Exactly one location per entity carries ``is_default``, which is what lets a
@@ -492,7 +492,7 @@ class StockLocation(TimeStampedModel):
     branch = models.ForeignKey(
         "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="stock_locations", null=True, blank=True,
-        help_text="Campus this store belongs to. Blank for an entity-wide store.",
+        help_text="Branch this store belongs to. Blank for an entity-wide store.",
     )
     code = models.CharField(max_length=40, help_text="Location code, unique within the entity.")
     name = models.CharField(max_length=200)
@@ -627,9 +627,9 @@ class StockBalance(TimeStampedModel):
     same numbers; the difference is that those numbers are now a sum of these rows
     rather than the only record.
 
-    Weighted-average cost is held per row, which is the correctness point: a campus
+    Weighted-average cost is held per row, which is the correctness point: a branch
     that bought at a higher price values its own stock at that price instead of at a
-    blend with the other campus.
+    blend with the other branch.
     """
 
     stock_item = models.ForeignKey(

@@ -64,7 +64,11 @@ class TenantJWTAuthentication(JWTAuthentication):
                 "Only platform tenant users may impersonate across tenants.",
             )
         target = impersonation.target_user
-        if not target.is_active or target.status != "ACTIVE":
+        # ``may_sign_in`` rather than a literal "ACTIVE": impersonation issues
+        # what is effectively a session as this person, so it must ask the same
+        # question the sign-in does and get the same answer. ``is_active`` is
+        # kept as a belt-and-braces read of the derived flag.
+        if not target.is_active or not target.may_sign_in:
             impersonation.end()
             raise AuthenticationFailed("The impersonated account is not active.")
         return impersonation, target
@@ -99,8 +103,15 @@ class TenantJWTAuthentication(JWTAuthentication):
         impersonation = None
 
         if slug:
+            # ACTIVE or PENDING (FR-012). A school that has not gone live still
+            # has to sign its first administrator in to complete onboarding, so
+            # authentication admits it and the permission layer decides which
+            # surfaces are open to it (vs_rbac.permissions.TenantSurfaceAllowed).
+            # Authentication answers who you are; it must not answer what you
+            # may reach, because the view - and therefore the surface - is not
+            # its business. SUSPENDED and INACTIVE stay out entirely.
             tenant = Tenant.objects.filter(
-                slug=slug, status=Tenant.Status.ACTIVE,
+                slug=slug, status__in=Tenant.AUTHENTICABLE_STATUSES,
             ).first()
             if tenant is None:
                 raise NotFound("No tenant matches the requested context.")

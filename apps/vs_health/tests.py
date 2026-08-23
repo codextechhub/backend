@@ -30,6 +30,18 @@ from vs_health.models import (
 )
 
 
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 def _hist_from(latencies):
     h = [0] * HISTOGRAM_SIZE
     for lat in latencies:
@@ -419,9 +431,9 @@ class RBACGatingTests(APITestCase):
         from django.contrib.auth import get_user_model
 
         User = get_user_model()
-        user = User.objects.create_user(
+        user = User.objects.create_user(tenant=_platform_tenant(), 
             email="sre@codexng.com", first_name="S", last_name="RE",
-            user_type=User.UserType.CX_STAFF, status=User.Status.ACTIVE,
+            status=User.Status.ACTIVE,
         )
         self.client.force_authenticate(user=user)
         # Grant the platform.health.view permission for this request.

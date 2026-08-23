@@ -28,10 +28,25 @@ from vs_exports.catalogue import (
 
 
 # Build the tenant-scoped base queryset for audit events.
+#
+# The boundary is ``vs_audit.scoping.tenant_event_predicate``, the same one the
+# Event Explorer and every other audit surface reads, rather than a second copy
+# spelled ``filter(tenant=scope.tenant)``. That copy was narrower: it matched the
+# column alone and missed the pre-d1ceccb rows that carry their owner's pk in
+# ``metadata['tenant_id']``. Bright Star's audit officer saw her old password
+# resets on the screen, exported that same view, and they were not in the file.
+#
+# Only the boundary is shared, not the console's widening for PLATFORM callers:
+# an export always covers your own organisation, which is exactly what
+# ``_translate_events`` tells a platform reviewer who narrowed the screen with
+# ``tenant_slug``. So this reads the predicate directly and never
+# ``audit_scope_predicate``. Codex is a tenant like any other here, and recovers
+# its own pre-backfill rows the same way every school does.
 def _audit_events(scope):
     from .models import AuditEvent
+    from .scoping import tenant_event_predicate
 
-    return AuditEvent.objects.filter(tenant=scope.tenant)
+    return AuditEvent.objects.filter(tenant_event_predicate(scope.tenant))
 
 
 _SEVERITY = choice_labels("vs_audit.models.AuditSeverity")
@@ -123,6 +138,20 @@ def _translate_events(params):
             "The audit export does not filter by actor yet; the file covers everyone "
             "the other filters allow.",
         ))
+    if value := params.get("tenant_slug"):
+        # The Explorer and this dataset do not mean the same thing by "tenant",
+        # and saying so is the whole point of Unmapped. The screen is not
+        # tenant-scoped: a platform reviewer browses every customer's events on
+        # it and narrows with ``tenant_slug``. The export is scoped in ``base``,
+        # to the caller's own organisation, and that boundary is deliberately
+        # not editable by a filter. Left unsaid, a reviewer who narrowed the
+        # screen to Bright Star and pressed Export would get a file covering a
+        # different set of rows than the one on the screen and no hint of it.
+        unmapped.append(Unmapped(
+            "tenant_slug", value,
+            "An audit export always covers your own organisation, so it cannot be "
+            "narrowed to another tenant the way the screen can.",
+        ))
     return filters, unmapped
 
 
@@ -135,6 +164,7 @@ def register_screens():
         handles=(
             "module_key", "severity", "status", "action_type", "entity_type",
             "start", "end", "date_from", "date_to", "search", "actor",
+            "tenant_slug",
         ),
         label="Audit - Activity",
         dataset_key="audit.events",

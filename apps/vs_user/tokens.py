@@ -81,10 +81,12 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         and adds the user object to the response data so the frontend gets
         the user profile alongside the tokens in a single response.
 
-        The response body carries id, email, full_name, user_type,
-        account_status, tenant_slug and branch_id. Note that user_type is a
-        response-body field only: it is deliberately not a token claim, since
-        authorization runs through tenant RBAC rather than user_type.
+        The response body carries id, email, full_name, tenant_kind,
+        account_status, tenant_slug and branch_id. ``tenant_kind`` replaces the
+        old ``user_type`` key and answers the only question it was ever asked
+        here - which side of the platform boundary this account is on. Like its
+        predecessor it is a response-body field only, never a token claim:
+        authorization runs through tenant RBAC, not through either of them.
         """
         data = super().validate(attrs)
 
@@ -93,7 +95,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             'id':             str(self.user.id),
             'email':          self.user.email,
             'full_name':      self.user.full_name,
-            'user_type':      self.user.user_type,
+            'tenant_kind':    self.user.tenant.kind,
             'account_status': self.user.status,
             'tenant_slug':    self.user.tenant.slug,
             'branch_id':      str(self.user.branch_id) if self.user.branch_id else None,

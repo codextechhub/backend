@@ -1,5 +1,37 @@
 # AGENTS.md - backend
 
+## What this codebase is - and what XVS is
+
+**This repo is a multi-domain platform, not a schools application.** The engine
+apps - `vs_finance`, `vs_procurement`, `vs_payments`, `vs_rbac`, `vs_workflow`,
+`vs_notifications`, `vs_audit`, `core` - are deliberately **domain-neutral**.
+They know about entities, customers, invoices, vendors, roles and approvals;
+they know nothing about schools. `vs_health` (VIGIL) is already a second domain
+standing on the same foundation, and there will be more.
+
+**XVS is the first product built on that platform** - the schools product.
+Corona Secondary School is simply its first tenant.
+
+Two rules follow, and they are separate.
+
+**1. Keep the engines domain-neutral.** School concepts - students, guardians,
+classes, terms, sessions - live in the school apps (`apps/schools/`) and reach
+the engines through the FAL, which lives under `apps/schools/` and not in
+`core/`, because it is school-specific by design. If you find yourself adding a
+`student` or `term` field to a generic app, stop: that leak is exactly what the
+FAL exists to prevent.
+
+**The engines must not import `vs_schools`**, or anything else under
+`apps/schools/`. The site primitive is `vs_tenants.Branch`, owned directly by
+`Tenant`: reach it as `row.branch` or `tenant.branches`, never as
+`branch.school.tenant`. `Branch` has no `school` column. If an engine needs a
+school-only fact, it belongs behind the FAL, not behind an import.
+
+**2. Build for every school, not the first one.** Nothing may be special-cased
+to one tenant's arrangement. If a feature only works because of how the first
+school happens to be set up, it is not finished. The section below on branches
+is the most common instance of this.
+
 ## Holistic problem solving
 
 When the user asks for a problem to be fixed, trace it to its root cause and
@@ -25,6 +57,43 @@ pre-existing changes in the worktree or work completed in an earlier request.
 - Documentation-only changes do not require application tests; validate only
   the documentation or formatting affected, when such validation exists.
 
+## The word "school" belongs to the schools folder
+
+School concepts - students, guardians, classes, terms, sessions - live in
+`apps/schools/`. Outside that folder, say **tenant**.
+
+This covers naming, not just models: parameter names, serializer fields,
+constants, local variables and JSON body keys. `LoginService.login(..., tenant=...)`,
+never `school=...`, because `vs_user` is an engine app and the engines must stay
+domain-neutral.
+
+Prose may still mention a school where it explains where a value comes from -
+"the tenant slug the frontend takes from the school's subdomain" is good
+documentation. The rule bans school vocabulary in identifiers, not in
+explanations.
+
+## Every school has at least one branch
+
+XVS is multi-tenant. Corona Secondary School is simply the first tenant, and
+nothing may be special-cased to one tenant's arrangement.
+
+**A school is created with a main branch and can never have none**, so every user,
+document and record can always be given one. Do not write code that handles a
+branchless school; that shape does not exist.
+
+**A school with exactly one branch still needs the dimension to recede.** One
+branch is the common case, and a switcher with a single entry, a column repeating
+the same value on every row, or a filter with one option are all noise. Where a
+school has one branch the control is absent, not disabled. Where it has several,
+branch appears wherever it changes meaning.
+
+**A null branch means "shared across the school", never "no branches exist".**
+That is a deliberate, first-class value - see academic structure and procurement
+documents - and it keeps that meaning however many branches a school has.
+
+Test more than one shape of school. A single-branch test proves nothing about a
+multi-branch one.
+
 ## Running the test suite on this machine
 
 This box cannot run two suites at once. A parallel run from another session
@@ -43,6 +112,22 @@ repeats it.
   zero exit code** - which reads exactly like a passing run with no summary.
 - Treat an exit code alone as insufficient evidence. Quote the `Ran N tests` line.
   If it is missing, the run did not finish and must be repeated.
+- **Iterate with the fast form, verify with the full one.** Two
+  `TransactionTestCase` classes in `schools.vs_schools` are tagged `slow`
+  (`BranchCodeAllocationConcurrencyTests` and `_MigrationHarness` and its
+  subclasses). They flush and rebuild the database around every test and re-run
+  the migration graph, and they are why that app takes ~18 minutes when the
+  other 171 tests take 30 seconds. While working, run
+  `--exclude-tag=slow`. **The run you report must be the full one**, without
+  the flag: the excluded classes are exactly the ones exercising migrations and
+  the branch code allocator, so a change touching either would slip past the
+  fast form. Do not use `--keepdb` for the run you report either - it reuses a
+  stale schema and can pass against code it no longer matches, which is the
+  failure that looks like success. Tag new slow classes the same way; the tag
+  is inherited, so a base class needs marking once.
+- **Run one test class or method** with the dotted path
+  (`manage.py test schools.vs_schools.tests_update_endpoints.SchoolSlugUpdateTests`)
+  when you are working inside a single file. Seconds, not minutes.
 
 ## Pre-ship review (`ship-check`)
 
@@ -101,6 +186,11 @@ an empty heading is worse than no heading, and never pad a section to fill it ou
 - **Where to go next** - the order of the next steps, and which of them are
   unblocked right now.
 
+That list is closed. Do not invent a heading for something that does not fit one
+of them: put it under the heading it belongs to, and if it belongs under none of
+them, leave it out of the breakdown entirely. A section the user did not ask for
+is one they must decode before they can tell whether it needs them.
+
 How to write it:
 
 - Plain words beat precise jargon. "Purchases can approve themselves" lands;
@@ -114,6 +204,43 @@ How to write it:
 - Keep file/line references out of the breakdown; they belong in `todo.md` and in
   the detail above it.
 - Don't re-explain what I already know from the conversation.
+
+## Asking, suggesting and disputing: use a real example
+
+When you need a decision from the user, **ask the question directly**. Do not bury
+it in a paragraph, do not quietly answer it yourself and move on, and do not hand
+over a list of considerations in place of the question.
+
+Then **show the consequence with a real example** - named people, a named school,
+a specific sequence of events. The example is what makes a choice obvious, so it
+is not decoration and it is not optional.
+
+This applies equally to three things:
+
+- **questions** - what needs deciding;
+- **suggestions** - something you think should be done;
+- **disputes** - something you think is wrong, including a decision already taken.
+
+Write the example the way it would actually happen:
+
+> Bright Star School enrols Tunde and the admin mistypes his mother's address as
+> `adaokeye@gmail.com`. That address belongs to a stranger who already has an
+> account, because her own daughter attends Greenfield. If an attached link shows
+> the full record straight away, she opens her app and sees Tunde's class, his
+> fees, his home address and his father's phone number.
+
+Not:
+
+> Attached links may expose PII to an incorrect recipient where the email address
+> is mistyped.
+
+The second one is true and nobody can act on it. Abstractions hide the size of a
+thing in both directions - they make a small risk sound alarming and a serious one
+sound routine. A concrete case is the only way it can be weighed.
+
+Keep it short. One example, the shortest one that still shows the consequence.
+Where a choice has two sides, show the bad case **and** the good case, not only
+the side you favour.
 
 ## Module documentation initiative
 

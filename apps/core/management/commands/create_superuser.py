@@ -12,10 +12,13 @@
 #     --first-name Custom \
 #     --last-name Admin
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from vs_tenants.references import find_tenant
+from vs_user.email_normalization import normalize_email
 from vs_user.models import User
+from vs_user.services.email_availability import email_refusal
 from vs_user.services.audit import log_auth_event
 from vs_user.models import AuthEventLog
 from vs_rbac.models import (
@@ -28,6 +31,16 @@ def _codex_tenant():
     """Return the codex platform tenant, or None if migrations have not run."""
     from vs_tenants.models import Tenant
     return Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
+
+
+def _resolve_tenant(ref):
+    """Turn a ``--tenant_id`` argument into a Tenant, or None when not given."""
+    if ref in (None, ""):
+        return None
+    tenant = find_tenant(ref)
+    if tenant is None:
+        raise CommandError(f"No tenant found for --tenant_id {ref!r} (id or slug).")
+    return tenant
 
 
 def _assign_super_admin(user):
@@ -136,6 +149,16 @@ class Command(BaseCommand):
             action='store_true',
             help='Skip user creation - just assign Vision Super Admin role to an existing user (use with --email)',
         )
+        parser.add_argument(
+            '--tenant_id',
+            metavar='TENANT',
+            help=(
+                'Tenant that owns the account to act on: its numeric id or its '
+                'slug. Only meaningful with --assign-role, and only needed when '
+                'the address exists at more than one tenant. Creation always '
+                'targets the platform (codex) tenant.'
+            ),
+        )
     
     @transaction.atomic
     def handle(self, *args, **options):
@@ -156,12 +179,17 @@ class Command(BaseCommand):
             phone      = self._prompt('Phone (optional)', '')
             password   = self._prompt_password()
         else:
-            email      = options['email'].strip().lower()
+            email      = options['email']
             password   = options['password']
             first_name = options['first_name'].strip()
             last_name  = options['last_name'].strip()
             phone      = options['phone'].strip()
-        
+
+        # Both branches, not just the non-interactive one: the prompt used to
+        # hand its answer through unfolded, so an operator typing 'Admin@...'
+        # got past the duplicate check below and created a second account.
+        email = normalize_email(email)
+
         force = options['force']
         
         # ── Display Configuration ─────────────────────────────────────────────
@@ -180,12 +208,21 @@ class Command(BaseCommand):
         
         existing_count, user_exist, len_pass = None, None, None
         # Check if platform-tenant staff already exist (unless --force is used).
-        # Keyed off the tenant kind, not user_type.
         if not force:
             existing_count = User.objects.filter(tenant__kind='PLATFORM').count()
         
-        # Check for duplicate email
-        if User.objects.filter(email__iexact=email).exists():
+        # Check for duplicate email, IN THE TENANT this account will belong to.
+        # This command only ever mints CX staff on the platform (codex) tenant,
+        # so that - not the platform as a whole - is where the address has to
+        # be free. Phase 0 settled that a CX staff member may also be a parent
+        # at a school that uses the product: admin@codexng.com existing at
+        # Bright Star must not block the bootstrap superuser.
+        #
+        # A codex tenant that does not exist yet cannot hold the address, so
+        # the fall-back to None is the honest answer, not a silent skip: the
+        # transitional cross-tenant guard in User.save still refuses the pair
+        # while sign-in does not name its tenant.
+        if email_refusal(email, tenant=_codex_tenant()):
             user_exist = True
         
         # Validate password length
@@ -214,7 +251,11 @@ class Command(BaseCommand):
             first_name=first_name,
             last_name=last_name,
             phone=phone,
-            user_type=User.UserType.CX_STAFF,
+            # Named, not derived. The platform tenant used to be filled in by
+            # User._derive_tenant() off a CX_STAFF persona - which was the
+            # answer arriving back where it started. A caller minting platform
+            # staff says so by naming the platform tenant.
+            tenant=_codex_tenant(),
             status=User.Status.ACTIVE,
             is_active=True,
             is_staff=True,      # Django admin access
@@ -237,7 +278,6 @@ class Command(BaseCommand):
             event=AuthEventLog.Event.USER_CREATED,
             metadata={
                 'bootstrap': True,
-                'user_type': User.UserType.CX_STAFF,
                 'is_superuser': True,
                 'created_via': 'management_command',
                 'used_defaults': not options['interactive'],
@@ -253,7 +293,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_LABEL('Account Details:'))
         self.stdout.write(f'  Email:      {user.email}')
         self.stdout.write(f'  Name:       {user.full_name}')
-        self.stdout.write(f'  User Type:  {user.user_type}')
+        self.stdout.write(f'  Tenant:     {user.tenant.slug} ({user.tenant.kind})')
         self.stdout.write(f'  Status:     {user.status}')
         self.stdout.write(f'  Role:       XVS Super Admin (can create permissions on onset)')
         self.stdout.write(f'  ID:         {user.id}')
@@ -298,13 +338,39 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(f"⚠️  Permission bootstrap: {e}"))
 
     def _assign_role_to_existing(self, options):
-        email = options['email'].strip().lower()
+        email = normalize_email(options['email'])
 
-        try:
-            user = User.objects.get(email__iexact=email)
-        except User.DoesNotExist:
-            self.stdout.write(self.style.ERROR(f"No user found with email: {email}"))
+        # ``.get(email=...)`` used to be a question with one answer. It is not:
+        # one address can be a login at several tenants, so the unscoped form
+        # raises MultipleObjectsReturned - and the role being granted here is
+        # Vision Super Admin, the most privileged seat on the platform. Ada
+        # Okoye's parent account at Bright Star must never be the row that
+        # picks up because it happened to sort first.
+        #
+        # The role itself is a codex-tenant role, so the sensible default is to
+        # look on the codex tenant; --tenant_id overrides it for the rare case
+        # of promoting an account that lives elsewhere.
+        scope = _resolve_tenant(options.get('tenant_id')) or _codex_tenant()
+        matches = list(
+            User.objects.filter(
+                email=email, **({'tenant': scope} if scope else {}),
+            ).order_by('tenant_id')
+        )
+        if len(matches) > 1:
+            where = ', '.join(
+                f"{getattr(u.tenant, 'slug', '?')} (--tenant_id {u.tenant_id})"
+                for u in matches
+            )
+            self.stdout.write(self.style.ERROR(
+                f"{email} exists at more than one tenant ({where}). "
+                f"Re-run with --tenant_id to say which account you mean."
+            ))
             return
+        if not matches:
+            where = f" on tenant {scope.slug}" if scope else ""
+            self.stdout.write(self.style.ERROR(f"No user found with email: {email}{where}"))
+            return
+        user = matches[0]
 
         if _assign_super_admin(user):
             self.stdout.write(self.style.SUCCESS(

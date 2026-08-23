@@ -31,10 +31,12 @@ from django.utils import timezone
 
 from .models import (
     GroupPermission,
+    PermissionScope,
     TenantRoleGroup,
     TenantRolePermission,
     TenantUserRoleAssignment,
     UserPermissionOverride,
+    tenant_is_platform,
 )
 
 
@@ -79,14 +81,29 @@ def _assignment_branch_q(branch) -> Q:
     return Q(branch__isnull=True) | (Q(branch=branch) & live)
 
 
-def _group_permission_keys(group_ids) -> Set[str]:
+def _holdable_filter(tenant) -> dict:
+    """Extra queryset filter dropping keys *tenant* is not allowed to hold.
+
+    Defence in depth for the grant guards on the models: a row written before
+    ``Permission.scope`` existed, restored from an old backup, or inserted by
+    raw SQL still confers nothing, because evaluation refuses to return a key
+    whose scope is not ``TENANT`` to a tenant that is not the platform. The
+    filter is on an indexed column and costs nothing measurable.
+
+    A platform tenant is unrestricted: CX legitimately holds both scopes.
+    """
+    if tenant_is_platform(tenant):
+        return {}
+    return {"permission__scope": PermissionScope.TENANT}
+
+
+def _group_permission_keys(group_ids, tenant=None) -> Set[str]:
     if not group_ids:
         return set()
-    return set(
-        GroupPermission.objects.filter(group_id__in=group_ids).values_list(
-            "permission_id", flat=True,
-        )
-    )
+    qs = GroupPermission.objects.filter(group_id__in=group_ids)
+    if tenant is not None:
+        qs = qs.filter(**_holdable_filter(tenant))
+    return set(qs.values_list("permission_id", flat=True))
 
 
 def _normalize_tenant(user, tenant=None):
@@ -116,9 +133,8 @@ def get_user_override_keys(user, tenant) -> Tuple[Set[str], Set[str]]:
     """
     allows: Set[str] = set()
     denies: Set[str] = set()
-    for key, mode in _active_override_qs(tenant).filter(user=user).values_list(
-        "permission_id", "mode",
-    ):
+    qs = _active_override_qs(tenant).filter(user=user, **_holdable_filter(tenant))
+    for key, mode in qs.values_list("permission_id", "mode"):
         (denies if mode == UserPermissionOverride.Mode.DENY else allows).add(key)
     return allows, denies
 
@@ -151,14 +167,14 @@ def _role_permission_keys(user, tenant, branch) -> Set[str]:
 
     granted, denied = set(), set()
     for key, is_granted in TenantRolePermission.objects.filter(
-        role_id__in=role_ids,
+        role_id__in=role_ids, **_holdable_filter(tenant),
     ).values_list("permission_id", "granted"):
         (granted if is_granted else denied).add(key)
 
     group_ids = TenantRoleGroup.objects.filter(role_id__in=role_ids).values_list(
         "group_id", flat=True,
     )
-    granted.update(_group_permission_keys(group_ids))
+    granted.update(_group_permission_keys(group_ids, tenant=tenant))
     return granted - denied
 
 
@@ -173,6 +189,10 @@ def get_effective_permissions(user, tenant=None, branch=ANY_BRANCH) -> Set[str]:
     ALLOW. The whole result (roles + overrides) is memoised on the user instance
     for the life of the request, so overrides cost one extra query per request,
     not one per permission check.
+
+    Keys the tenant may not hold are never returned, whatever row grants them:
+    see :func:`_holdable_filter`. That is a backstop, not the boundary - the
+    grant models refuse to write such a row in the first place.
     """
     tenant = _normalize_tenant(user, tenant=tenant)
     if not user or not getattr(user, "is_authenticated", False) or tenant is None:
@@ -238,6 +258,17 @@ def resolve_users_with_permission(tenant, branch, permission_key: str):
     tenant = getattr(tenant, "tenant", tenant)
     if tenant is None:
         return get_user_model().objects.none()
+
+    # Routing must agree with the permission gate: nobody in a tenant that may
+    # not hold this key can be nominated to act on it, however they were granted.
+    if not tenant_is_platform(tenant):
+        from .models import Permission
+
+        holdable = Permission.objects.filter(
+            key=permission_key, scope=PermissionScope.TENANT,
+        ).exists()
+        if not holdable:
+            return get_user_model().objects.none()
 
     group_ids = GroupPermission.objects.filter(permission_id=permission_key).values_list(
         "group_id", flat=True,

@@ -13,11 +13,12 @@ from ..models import User, LoginSession, AccountLockout, AuthAttempt, AuthEventL
 from ..tokens import CodeXRefreshToken
 from ..serializers import UserReadSerializer, school_public_info
 from .audit import log_auth_event, record_attempt, blacklist_all_user_tokens, get_client_ip, get_device_label
+from .sign_in_scope import resolve_sign_in_account
 
 class LoginService:
 
     @staticmethod
-    def login(email: str, password: str, request=None) -> dict:
+    def login(email: str, password: str, tenant: str | None = None, request=None) -> dict:
         """
         Authenticates a user and returns tokens + user data.
 
@@ -27,9 +28,17 @@ class LoginService:
         ValueError. Only the success path (session + token + user update) is
         wrapped in its own atomic block.
 
+        ``tenant`` is the asserted tenant SLUG, which the frontend reads off the
+        subdomain it is served from: a school's page at
+        ``bright-star.xvs.codexng.com`` sends ``bright-star``. It is now
+        MANDATORY: ``sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN`` is on, so a
+        sign-in that names no tenant is refused rather than resolved by an
+        ambiguous email lookup. The tenant is resolved BEFORE the account
+        lookup and the lookup is scoped to it.
+
         Steps:
-          1. Find user by email
-          2. Enforce school context (non-Vision Staff must provide slug)
+          1. Resolve the asserted tenant, then find the user inside it
+          2. Refuse a non-platform user whose tenant has no school profile
           3. Authenticate credentials
           4. Check account lockout - only AFTER a correct password, so the
              locked state is never revealed to someone who doesn't know it
@@ -40,12 +49,29 @@ class LoginService:
         """
         email = email.lower().strip()
 
-        # 1. Find user
-        user = User.objects.filter(email__iexact=email).first()
-        tenant = user.tenant if user else None
+        # 1. Resolve the tenant first, then find the user within it. The name
+        # ``tenant`` is deliberately rebound here: it arrives as an asserted
+        # slug and leaves as the row that slug resolved to, so every later step
+        # reads the checked object and never the caller's raw claim.
+        user, tenant, scope_failure = resolve_sign_in_account(email=email, tenant=tenant)
+
+        if scope_failure:
+            # The refusal is indistinguishable from a wrong password to the
+            # caller, and the audit row names only the tenant they ASSERTED -
+            # never the one the address really belongs to, and no user FK.
+            # Recording either would put "this address has an account at some
+            # other customer" into an attempt log that a customer's own staff
+            # can read.
+            record_attempt(
+                email_entered=email,
+                user=None, tenant=tenant,
+                result=AuthAttempt.Result.FAIL, failure_code=scope_failure,
+                request=request,
+            )
+            raise ValueError({'code': 'INVALID_CREDENTIALS', 'detail': 'Invalid credentials.'})
 
         # 2. School-binding enforcement - non-platform tenants must resolve to a
-        # school profile. Gated by the actor's TENANT KIND, not their user_type.
+        # school profile. Gated by the actor's TENANT KIND.
         if user and getattr(user.tenant, 'kind', None) != Tenant.Kind.PLATFORM:
             if getattr(user.tenant, 'school_profile', None) is None:
                 record_attempt(
@@ -149,7 +175,28 @@ class LoginService:
 
     @staticmethod
     def _check_status(user: User) -> dict | None:
-        """Returns an error payload if the account cannot log in, else None."""
+        """Returns an error payload if the account cannot log in, else None.
+
+        The permission decision is ``user.may_sign_in`` and nothing else. The
+        map below only chooses the WORDING of a refusal that has already been
+        made, which is the inversion this method needed: it used to be the map
+        itself, consulted with ``errors.get(user.status)``, so a status nobody
+        had written a message for was signed in. DRAFT, PENDING_APPROVAL and
+        REJECTED were all added to the enum after this code and all three
+        inherited a working login on the day they were added.
+
+        A status with no message here is refused as INVALID_CREDENTIALS -
+        byte-identical to a wrong password, including the 401 the view derives
+        from the code (``LoginView.post``: only the four codes below are 403).
+        That is the right answer for the three it currently catches. A rejected
+        hire, or a draft that was never submitted, must not be able to learn
+        from this endpoint that their record exists at all - and unlike the four
+        below, there is no legitimate holder of that account to inform, because
+        no invitation was ever sent to one.
+        """
+        if user.may_sign_in:
+            return None
+
         errors = {
             User.Status.PENDING: {
                 'code':   'ACCOUNT_NOT_ACTIVATED',
@@ -168,7 +215,10 @@ class LoginService:
                 'detail': 'This account has been deactivated. Please contact your administrator.',
             },
         }
-        return errors.get(user.status)
+        return errors.get(user.status, {
+            'code':   'INVALID_CREDENTIALS',
+            'detail': 'Invalid credentials.',
+        })
 
     @staticmethod
     def _handle_failed_attempt(user, tenant, email_entered, request):

@@ -20,11 +20,22 @@ from vs_workflow.services.approvers import EligibleApprover, resolve_approvers
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 def _make_user(email="u@test.com"):
     from django.contrib.auth import get_user_model
-    return get_user_model().objects.create_user(
-        email=email, user_type="CX_STAFF",
-        first_name="Test", last_name="User",
+    return get_user_model().objects.create_user(tenant=_platform_tenant(), 
+        email=email, first_name="Test", last_name="User",
     )
 
 
@@ -450,8 +461,8 @@ class RoleSourceResolveApproversTests(TestCase):
 
 def _make_active_user(email):
     from django.contrib.auth import get_user_model
-    return get_user_model().objects.create_user(
-        email=email, user_type="CX_STAFF", status="ACTIVE",
+    return get_user_model().objects.create_user(tenant=_platform_tenant(), 
+        email=email, status="ACTIVE",
         first_name="Test", last_name="User",
     )
 
@@ -459,7 +470,7 @@ def _make_active_user(email):
 def _make_user_in_branch(email, branch):
     from django.contrib.auth import get_user_model
     return get_user_model().objects.create_user(
-        email=email, user_type="STAFF", status="ACTIVE",
+        email=email, status="ACTIVE",
         first_name="Branch", last_name="User", branch=branch,
     )
 
@@ -1436,8 +1447,8 @@ class OrganogramSourceResolutionTests(TestCase):
         """An active CX staff member, whose home tenant is the codex PLATFORM one."""
         from django.contrib.auth import get_user_model
 
-        return get_user_model().objects.create_user(
-            email=email, user_type="CX_STAFF", status="ACTIVE",
+        return get_user_model().objects.create_user(tenant=_platform_tenant(), 
+            email=email, status="ACTIVE",
             first_name="Platform", last_name="Staff",
         )
 

@@ -140,16 +140,24 @@ class DocumentPermissionTests(DocumentLibraryTestBase):
         resp = self.get(f"{LIST_URL}{MRD_SLUG}/download/")
         self.assertEqual(resp.status_code, 403)
 
-    def test_school_user_cannot_reach_the_library(self):
+    def test_a_school_tenant_cannot_even_be_granted_the_key(self):
         """The disclosure case: these documents describe every tenant's internals.
 
-        A school admin granted the key *on their own school tenant* still must
-        not get in. The key is a platform-module key seeded only on the codex
-        PLATFORM tenant, so a school-tenant grant of the same string is not the
-        same authority.
+        ``platform.documents.view`` is declared ``PermissionScope.PLATFORM``, so
+        a school-tenant grant of the same string is refused at the model - the
+        authority cannot be manufactured inside a tenant at all. This used to
+        rest on the key merely being seeded on the codex tenant, which stopped
+        nothing: any school admin holding the override or role-create key could
+        write the row themselves.
         """
+        from django.core.exceptions import ValidationError
+
         admin = make_school_admin(self.branch, email="docs-school-admin@test.com")
-        grant(admin, PERM_VIEW)
+        with self.assertRaises(ValidationError):
+            grant(admin, PERM_VIEW)
+
+    def test_school_user_cannot_reach_the_library(self):
+        admin = make_school_admin(self.branch, email="docs-school-read@test.com")
         resp = self.get(LIST_URL, user=admin)
         self.assertEqual(
             resp.status_code, 403,
@@ -158,7 +166,6 @@ class DocumentPermissionTests(DocumentLibraryTestBase):
 
     def test_school_user_cannot_download(self):
         admin = make_school_admin(self.branch, email="docs-school-dl@test.com")
-        grant(admin, PERM_VIEW)
         resp = self.get(f"{LIST_URL}{MRD_SLUG}/download/", user=admin)
         self.assertEqual(resp.status_code, 403)
 

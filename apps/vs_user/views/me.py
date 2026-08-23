@@ -42,6 +42,9 @@ class CurrentUserView(APIView):
     # Operates purely on request.user - home tenant is derived from the token,
     # so ?tenant= is not required. request.tenant is still bound by auth.
     tenant_param_required = False
+    # Part of the pending-tenant surface (FR-012): the first School Admin of a
+    # school that has not gone live must be able to sign in and see themselves.
+    pending_tenant_surface = True
 
     def get(self, request):
         from vs_rbac.evaluator import get_effective_permissions
@@ -75,6 +78,7 @@ class MySecurityStatsView(APIView):
     """
     permission_classes = [IsAuthenticatedAndActive]
     tenant_param_required = False
+    pending_tenant_surface = True  # Self-scoped: see FR-012.
 
     def get(self, request):
         seven_days_ago = timezone.now() - timedelta(days=7)
@@ -100,6 +104,7 @@ class MyPasswordResetsView(APIView):
     """
     permission_classes = [IsAuthenticatedAndActive]
     tenant_param_required = False
+    pending_tenant_surface = True  # Self-scoped: see FR-012.
 
     def get(self, request):
         from ..serializers import MyPasswordResetSerializer

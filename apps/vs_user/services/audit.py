@@ -72,6 +72,14 @@ def log_auth_event(*, actor, subject, tenant, event: str, request=None, metadata
             module_key=AuditModuleKey.IDENTITY,
             action_type=action_type,
             actor_user=actor,
+            # The subject's own tenant, and it has to be passed rather than
+            # inherited: sign-in, password reset and account lockout all happen
+            # on unauthenticated endpoints, so authentication has not run and
+            # there is no ambient tenant to fall back on. Without this every
+            # LOGIN_FAILED on the platform was unattributable to a customer -
+            # the single most-investigated event class in the trail, invisible
+            # to the filter that exists to find it.
+            tenant=tenant,
             entity_type="User",
             entity_id=entity_id,
             entity_label=entity_label,

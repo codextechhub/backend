@@ -24,11 +24,23 @@ from vs_workflow.models import (
 from vs_workflow.services import actions as svc
 
 
-def _make_user(email="u@test.com", user_type="CX_STAFF"):
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
+def _make_user(email="u@test.com", tenant=None):
     from django.contrib.auth import get_user_model
     User = get_user_model()
     return User.objects.create_user(
-        email=email, user_type=user_type,
+        email=email, tenant=tenant or _platform_tenant(),
         first_name="Test", last_name="User",
     )
 

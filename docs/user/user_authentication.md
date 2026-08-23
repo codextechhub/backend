@@ -47,8 +47,8 @@ values in use are `LOGOUT`, `FORCE_LOGOUT`, `EXPIRED`, `SUSPENDED` and
 
 | Method + path | permission | request body / query | response |
 |---|---|---|---|
-| `POST /auth/login/` | `AllowAny`, throttle `login` 5/min | `email`, `password` | `{access, refresh, session_id, user, tenant, school, permissions}` (`views/auth.py:43-84`) |
-| `GET /auth/special_login/preview/` | `AllowAny`, throttle `login_preview` 10/min | Query `email` | `200 {full_name}` / `403` status message / `404` unknown / `400` missing param (`views/auth.py:87-145`) |
+| `POST /auth/login/` | `AllowAny`, throttle `login` 5/min | `email`, `password`, optional `tenant` | `{access, refresh, session_id, user, tenant, school, permissions}` (`views/auth.py:43-84`) |
+| `GET /auth/special_login/preview/` | `AllowAny`, throttle `login_preview` 10/min | Query `email` | CX staff only (PLATFORM tenant): `200 {full_name}` / `403` status message / `404` unknown **or non-CX** / `400` missing param (`views/auth.py`) |
 | `POST /auth/logout/` | `IsAuthenticated`, no `?tenant=` | `refresh` | `200` always, even for an already-blacklisted token (`views/auth.py:148-205`) |
 | `POST /auth/token/refresh/` | `AllowAny`, no `?tenant=` | `refresh` | `{access, refresh?}`; `401` with `TOKEN_EXPIRED` / `TOKEN_REVOKED` / `TOKEN_INVALID` (`views/auth.py:208-308`) |
 | `GET /auth/me/` | `IsAuthenticatedAndActive`, no `?tenant=` | - | `{user, tenant, school, permissions}` (`views/me.py:32-62`) |
@@ -68,7 +68,9 @@ can refresh its cache after a token refresh (`services/auth.py:134-145`;
 
 ```text
 POST /auth/login/
-  1. find user by email (case-insensitive)
+  0. resolve the asserted `tenant` slug (ACTIVE or PENDING) if one was sent
+  1. find user by email (case-insensitive), scoped to that tenant when one was asserted
+     ── no match ─▶ AuthAttempt(FAIL, TENANT_MISMATCH) ─▶ INVALID_CREDENTIALS
   2. tenant-kind gate: a non-PLATFORM tenant with no school profile → INVALID_CREDENTIALS
   3. check_password  ── fail ─▶ register_failure ─(count ≥ threshold)─▶ user.status = LOCKED
   4. lockout check (only AFTER a correct password)  ── locked ─▶ 403 ACCOUNT_LOCKED
@@ -81,6 +83,21 @@ Session:  active ──logout (this JTI)──────▶ ended  LOGOUT
                  ├─email change ───────────▶ ended  EMAIL_CHANGE
                  └─refresh token expired ──▶ ended  EXPIRED  (swept lazily on list)
 ```
+
+The `tenant` body key is a slug the frontend reads off the subdomain it is
+served from - a school's page at `bright-star.xvs.codexng.com` sends
+`bright-star` - and is not the `?tenant=` query assertion the authenticated
+endpoints take, because there is no token yet to check one against.
+
+It is optional. Two frontends call this endpoint and neither sends it yet, so a
+request that omits it behaves exactly as before: the tenant is derived from the
+row found by email, which is correct only while `User.email` is unique across the
+platform. A request that sends it is scoped and checked, and an account that
+belongs to a different tenant is refused with the wrong-password message and no
+hint of where it really lives - the audit row names only the tenant the caller
+asserted, with no user FK. The single switch that makes `tenant` mandatory is
+`REQUIRE_TENANT_ON_SIGN_IN` in `services/sign_in_scope.py`; the same resolver
+scopes `PasswordService.request_reset`.
 
 The ordering of steps 3 and 4 is the security-relevant part: the lock is only
 revealed to a caller who has already proved they know the password, so the

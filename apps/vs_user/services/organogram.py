@@ -53,10 +53,10 @@ class OrganogramService:
         synced to this position, so department, line manager, and the whole
         reporting chain settle immediately off that one seat.
         """
-        if user.user_type != User.UserType.CX_STAFF:
+        if not user.is_platform_user:
             raise ValueError({
-                'error_code': 'NOT_CX_STAFF',
-                'message': 'Only CX Staff can be assigned to a position.',
+                'error_code': 'NOT_PLATFORM_STAFF',
+                'message': 'Only platform staff can be assigned to a position.',
             })
 
         start = start_date or timezone.localdate()

@@ -141,48 +141,33 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
         return code
 
     def create(self, validated_data):
-        from django.db import transaction
-        from django.utils import timezone
-
-        from .provisioning import provision_entity
-        from .seed import seed_chart_of_accounts, seed_currencies, seed_fiscal_year
+        from .provisioning import provision_books
 
         fiscal_year = validated_data.pop("fiscal_year", None)
         start_month = validated_data.pop("fiscal_start_month", 1)
         period_frequency = validated_data.pop("fiscal_period_frequency", "MONTHLY")
         start_day = validated_data.pop("fiscal_start_day", 1)
-        validated_data.setdefault("kind", LedgerEntity.Kind.TENANT)
 
         # The owning tenant comes from the asserted request context; the entity
         # save() falls back to the codex platform tenant when none is present.
         request = self.context.get("request")
         request_tenant = getattr(request, "tenant", None) if request else None
-        if request_tenant is not None and not validated_data.get("tenant"):
-            validated_data["tenant"] = request_tenant
+        tenant = validated_data.get("tenant") or request_tenant
 
-        # Provision a fully usable set of books in one call: the entity, the default
-        # currencies, a starter chart of accounts, open fiscal periods, and whatever
-        # dependent apps register (the procurement and payout approval ladders).
-        # This keeps the bootstrap API-driven (no CLI seed_finance step required).
-        # The fiscal anchors let a school open e.g. a Sept–Aug year on a chosen day.
-        with transaction.atomic():
-            entity = LedgerEntity.objects.create(
-                is_active=True, activated_at=timezone.now(), **validated_data,
-            )
-            seed_currencies()
-            seed_chart_of_accounts(entity)
-            seed_fiscal_year(
-                entity,
-                year=fiscal_year,
-                start_month=start_month,
-                fiscal_period_frequency=period_frequency,
-                fiscal_start_day=start_day,
-            )
-            # Inside the transaction on purpose: books without their approval ladders
-            # are the open door this closes, so a failure here takes the entity with
-            # it rather than leaving an ungated tenant behind.
-            provision_entity(entity)
-        return entity
+        # Everything that makes a set of books usable now lives in one service,
+        # so this endpoint is a caller of it rather than the only door to it.
+        return provision_books(
+            tenant=tenant,
+            name=validated_data.get("name"),
+            code=validated_data.get("code"),
+            base_currency=validated_data.get("base_currency"),
+            kind=validated_data.get("kind") or LedgerEntity.Kind.TENANT,
+            number_code=validated_data.get("number_code", ""),
+            fiscal_year=fiscal_year,
+            fiscal_start_month=start_month,
+            fiscal_period_frequency=period_frequency,
+            fiscal_start_day=start_day,
+        )
 
     def to_representation(self, instance):
         # Echo back the canonical read shape so the caller sees base_currency code.
@@ -1135,6 +1120,13 @@ class PayrollLineSerializer(FieldSecurityMixin, serializers.ModelSerializer):
 class PayrollRunSerializer(serializers.ModelSerializer):
     lines = PayrollLineSerializer(many=True, read_only=True)
     net_total_naira = serializers.SerializerMethodField()
+    # Which site the run covers. Under PER_BRANCH a school raises one run per
+    # branch per pay date, so without this the list shows several rows with the
+    # same date, the same period label and nothing to tell them apart. Null
+    # means a central run over the whole entity, which is what every run was
+    # before per-branch payroll existed. Not FLS-stripped: a site is not a pay
+    # figure, and the officer who has to pick the right run needs to read it.
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
     # Statutory liability accounts the run credited (set on post) - let the FE match the
     # real outstanding balance (trial balance) to show remittance status honestly.
     paye_payable_account = serializers.CharField(source="paye_payable_account.code", read_only=True, default=None)
@@ -1146,6 +1138,7 @@ class PayrollRunSerializer(serializers.ModelSerializer):
             "id", "document_number", "pay_date", "period_label", "narration",
             "run_status", "status", "gross_total", "paye_total", "pension_total",
             "net_total", "net_total_naira", "bank_account_id",
+            "branch_id", "branch_name",
             "paye_payable_account", "paye_payable_account_id",
             "pension_payable_account", "pension_payable_account_id",
             "journal_id", "disbursement_journal_id", "lines",
@@ -1186,6 +1179,11 @@ class SalaryStructureSerializer(serializers.ModelSerializer):
 class EmployeeSalarySerializer(FieldSecurityMixin, serializers.ModelSerializer):
     cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
     structure_name = serializers.CharField(source="structure.name", read_only=True, default=None)
+    # Not FLS-stripped: which site somebody works at is not a pay figure, and it has
+    # to be readable by whoever is assigning branches before a school can switch to
+    # per-branch payroll. ``branch_name`` is null for an unassigned row, which is
+    # the state the frontend filters on to find who is still blocking the switch.
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
     # PAYE/pension/net/components are derived when a structure is assigned, else the stored
     # flat figures. Computed once per row (memoised) to avoid re-walking the components.
     paye_amount = serializers.SerializerMethodField()
@@ -1209,8 +1207,8 @@ class EmployeeSalarySerializer(FieldSecurityMixin, serializers.ModelSerializer):
     class Meta:
         model = EmployeeSalary
         fields = [
-            "id", "name", "structure_id", "structure_name", "gross_amount",
-            "paye_amount", "pension_amount", "net_amount", "components",
+            "id", "name", "branch_id", "branch_name", "structure_id", "structure_name",
+            "gross_amount", "paye_amount", "pension_amount", "net_amount", "components",
             "cost_center", "is_active",
         ]
 

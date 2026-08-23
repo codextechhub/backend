@@ -44,7 +44,7 @@ def _log(stdout, msg):
 
 # Ensure the RBAC contract for health read/manage access exists.
 def seed_permissions(stdout=None):
-    from vs_rbac.models import PermissionModule, PermissionResource, PermissionAction, Permission
+    from vs_rbac.models import PermissionModule, PermissionResource, PermissionAction, Permission, PermissionScope
 
     module, _ = PermissionModule.objects.get_or_create(
         name="platform", defaults={"description": "Platform-wide capabilities."})
@@ -67,6 +67,8 @@ def seed_permissions(stdout=None):
                 action=PermissionAction.objects.get(name=action),
                 description=f"Health: {action}",
                 sensitivity_level=sens,
+                # Tenant Health reads cross-tenant aggregates: CX only.
+                scope=PermissionScope.PLATFORM,
             )
         elif permission.description != f"Health: {action}":
             permission.description = f"Health: {action}"

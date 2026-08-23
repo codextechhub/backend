@@ -33,8 +33,17 @@ DOCUMENT_EXTENSIONS = frozenset({"pdf", "png", "jpg", "jpeg", "webp"})
 #: (minus the leading dots), which is what vs_tickets validated against before.
 TICKET_EXTENSIONS = DOCUMENT_EXTENSIONS | frozenset({"gif", "csv", "xlsx", "xls"})
 
+#: A school's own logo. Narrower than DOCUMENT_EXTENSIONS on purpose: this file is
+#: rendered inline in the app shell and the browser favicon, so a PDF has no meaning
+#: here, and GIF is left out because an animated logo in a sidebar is nobody's intent.
+LOGO_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "webp"})
+
 #: 5 MB. Comfortable for a phone photo of a receipt, far below the storage ceiling.
 MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
+
+#: 2 MB. A logo is a small image shown at 30px in a sidebar; anything larger is a
+#: photograph somebody has not resized, and it is served on every page load.
+MAX_LOGO_BYTES = 2 * 1024 * 1024
 
 #: 10 MB. A support ticket carries logs and spreadsheets, not just a photo.
 MAX_TICKET_ATTACHMENT_BYTES = 10 * 1024 * 1024

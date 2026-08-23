@@ -30,7 +30,7 @@ from core.mixins import (
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
 from ..models import (
-    User, PlatformStaffProfile, OrgNode, Position,
+    PlatformStaffProfile, OrgNode, Position,
     PositionAssignment, MatrixReport,
 )
 from ..serializers import (
@@ -45,6 +45,90 @@ from django.utils.dateparse import parse_date as _parse_date
 
 
 # =============================================================================
+# Who may see an organogram row
+# =============================================================================
+#
+# Every table in this file is CX-internal by construction, not by convention:
+# ``PlatformStaffProfile.clean`` and ``PositionAssignment.clean`` both refuse a
+# user who is not on a PLATFORM tenant, ``OrganogramService.assign_position``
+# refuses the same, and the write serializers declare
+# ``queryset=User.objects.filter(tenant__kind=PLATFORM)``. There is no such
+# thing as a school's organogram row, so there is no legitimate tenant caller
+# for any of these surfaces.
+#
+# That was already asserted on the chart reads, which pair
+# ``IsVisionStaff`` - a question about the caller's tenant kind - with
+# authentication. It was NOT asserted anywhere the only gate was an RBAC key.
+# Those surfaces were safe because ``platform.organogram.*`` and
+# ``platform.staff_profile.*`` are ``PermissionScope.PLATFORM`` and ad41a03
+# refuses such a key to a tenant role, which is a real guard and stays. But it
+# is a statement about who holds the key, and this codebase has now twice
+# found that argument false in practice: 02c42e6 (go-live approve/reject) and
+# 677b469 / 297814b (the six account actions). It also has one live hole of its
+# own: ``is_vision_super_admin`` asks only for an ACTIVE assignment to a role
+# keyed ``xvs_super_admin`` *in the caller's own tenant*, and never asks that
+# the tenant be PLATFORM-kind - and ``HasRBACPermission`` returns True for such
+# a caller without consulting the key at all.
+#
+# So the tenant-kind question is now asked directly wherever a key was the only
+# gate, and the one table that carries a tenant dimension - assignments, via
+# ``user.tenant`` - is confined by the query as well. Two independent answers,
+# neither leaning on the other.
+
+
+def scope_assignments_to_caller(queryset, request):
+    """Confine a ``PositionAssignment`` read to the caller's own tenant.
+
+    A platform-tenant caller is returned untouched: reading the whole CX chart
+    is the point of the console, and every row in the table is theirs anyway.
+
+    Everyone else is confined to assignments held by users of their own tenant,
+    which is the empty set today - the model forbids assigning anyone else - and
+    that is the correct answer rather than a coincidence. It means an escalated
+    tenant caller who gets past the gate is handed nothing instead of the full
+    CX reporting line: who reports to whom, who is acting in a vacant seat, and
+    when each tenure started and ended.
+
+    The gate is the caller's *home* tenant kind, the discriminator 1da5c2a and
+    677b469 both use. ``?tenant=`` cannot move it (a non-platform caller cannot
+    assert another tenant at all), and under impersonation ``request.user`` is
+    the effective user, so a CX staffer proxied into a school stays confined to
+    the school - which is what being proxied means.
+    """
+    user = getattr(request, 'user', None)
+    home = getattr(user, 'tenant', None)
+    if getattr(home, 'kind', None) == Tenant.Kind.PLATFORM:
+        return queryset
+    tenant = getattr(request, 'tenant', None) or home
+    if tenant is None:
+        # Unreachable today: ``User.tenant`` is non-null and every
+        # authenticated request carries one. It fails closed so that it stays
+        # unreachable if that ever changes.
+        return queryset.none()
+    return queryset.filter(user__tenant=tenant)
+
+
+def filter_by_id(queryset, **lookups):
+    """Apply pk-valued query-parameter filters, safely.
+
+    The values come from the caller, and ``qs.filter(user_id='abc')`` raises
+    ``ValueError`` inside the ORM, which DRF renders as a 500. 677b469 settled
+    what a malformed reference means: it is one of the ways an id can fail to
+    name a row, not a server error. Nothing has the id ``'abc'``, so the honest
+    answer is an empty page.
+
+    Every caller applies this *after* the queryset has been confined, so a
+    filter can only narrow what the caller may already see.
+    """
+    for field, raw in lookups.items():
+        value = str(raw).strip()
+        if not value.isdigit() or int(value) > 9_223_372_036_854_775_807:
+            return queryset.none()
+        queryset = queryset.filter(**{field: int(value)})
+    return queryset
+
+
+# =============================================================================
 # # PLATFORM STAFF PROFILE VIEWS
 # =============================================================================
 
@@ -53,7 +137,7 @@ class PlatformStaffProfileViewSet(
     mixins.ListModelMixin, viewsets.GenericViewSet,
 ):
     """
-    CX Staff HR / personal profiles. One profile per CX_STAFF user.
+    Platform staff HR / personal profiles. One profile per platform user.
 
     GET    /platform-staff-profiles/         - list (slim, no payroll)
     POST   /platform-staff-profiles/         - create a profile for a CX staff user
@@ -69,9 +153,17 @@ class PlatformStaffProfileViewSet(
     Permission matrix:
       list:                   any active user, current-tenant staff only
       retrieve:               any active user; brief unless owner or authorised
-      create:                 platform.staff_profile.create
-      update / partial_update: platform.staff_profile.update
+      create:                 platform staff + platform.staff_profile.create
+      update / partial_update: platform staff + platform.staff_profile.update
       me:                     IsAuthenticatedAndActive (self-service)
+
+    The reads are open to any authenticated caller because the queryset answers
+    the question for them: it is filtered to the caller's own tenant, and no
+    profile can belong to a tenant user, so a school caller gets an empty list
+    and a 404 on any id. The writes are not open in the same way - ``create``
+    resolves its target through the serializer's own PLATFORM-only queryset
+    rather than through this one - so they ask the tenant-kind question
+    directly instead of resting on the scope of the key.
 
     docstring-name: Staff profiles
     """
@@ -94,7 +186,7 @@ class PlatformStaffProfileViewSet(
             'partial_update': 'platform.staff_profile.update',
         }
         self.rbac_permission = action_permissions.get(self.action, 'platform.staff_profile.view')
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+        return [IsAuthenticatedAndActive(), IsVisionStaff(), HasRBACPermission()]
 
     def get_queryset(self):
         params = self.request.query_params
@@ -111,7 +203,6 @@ class PlatformStaffProfileViewSet(
                 'position__reports_to',
             )
             .filter(
-                user__user_type=User.UserType.CX_STAFF,
                 user__tenant=tenant,
             )
             .order_by('-created_at')
@@ -120,7 +211,8 @@ class PlatformStaffProfileViewSet(
         if user := params.get('user'):
             # Look a profile up by its owner - powers Team Management's
             # "View Details", which knows the user id but not the profile id.
-            qs = qs.filter(user_id=user)
+            # Applied after the tenant clause above, so it narrows.
+            qs = filter_by_id(qs, user_id=user)
 
         if org_node := params.get('org_node'):
             # The org node the person's seat belongs to. Accept PK or code.
@@ -130,7 +222,7 @@ class PlatformStaffProfileViewSet(
                 qs = qs.filter(position__org_node__code__iexact=org_node)
 
         if position := params.get('position'):
-            qs = qs.filter(position_id=position)
+            qs = filter_by_id(qs, position_id=position)
 
         if employment_status := params.get('employment_status'):
             qs = qs.filter(employment_status=employment_status)
@@ -238,7 +330,12 @@ class OrgNodeViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     CX org nodes (hierarchical): Division → Department → Team.
 
     Active platform employees may read the organisational structure. Writes
-    require platform.organogram.manage.
+    require platform staff plus platform.organogram.manage.
+
+    This table has no tenant column - the CX org tree belongs to CX and to
+    nobody else - so there is nothing for a queryset to narrow. The boundary
+    can only be the caller's tenant kind, which the reads already asserted and
+    the writes now assert too.
 
     docstring-name: Org nodes
     """
@@ -251,7 +348,7 @@ class OrgNodeViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         if self.action in read_actions:
             return [IsAuthenticatedAndActive(), IsVisionStaff()]
         self.rbac_permission = 'platform.organogram.manage'
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+        return [IsAuthenticatedAndActive(), IsVisionStaff(), HasRBACPermission()]
 
     def get_queryset(self):
         params = self.request.query_params
@@ -280,7 +377,7 @@ class OrgNodeViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         if kind := params.get('kind'):
             qs = qs.filter(kind=kind.upper())
         if parent := params.get('parent'):
-            qs = qs.filter(parent_id=parent)
+            qs = filter_by_id(qs, parent_id=parent)
         if (roots := params.get('roots')) and str(roots).lower() in ('1', 'true', 'yes'):
             qs = qs.filter(parent__isnull=True)
         if search := params.get('search'):
@@ -293,8 +390,12 @@ class PositionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     Seats in the org chart. People are attached via position assignments.
 
     Active platform employees may read seats and the reporting tree. Summary
-    data such as vacancies requires platform.organogram.view; writes require
-    platform.organogram.manage.
+    data such as vacancies requires platform staff plus platform.organogram.view;
+    writes require platform staff plus platform.organogram.manage.
+
+    Like OrgNode, a seat belongs to the CX chart and carries no tenant column,
+    so the caller's tenant kind is the only boundary available - and vacancies
+    is a read of the same chart the list actions already gate that way.
 
     docstring-name: Positions
     """
@@ -310,7 +411,7 @@ class PositionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             'platform.organogram.view' if self.action == 'vacancies'
             else 'platform.organogram.manage'
         )
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+        return [IsAuthenticatedAndActive(), IsVisionStaff(), HasRBACPermission()]
 
     def get_queryset(self):
         params = self.request.query_params
@@ -333,9 +434,9 @@ class PositionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         )
 
         if org_node := params.get('org_node'):
-            qs = qs.filter(org_node_id=org_node)
+            qs = filter_by_id(qs, org_node_id=org_node)
         if reports_to := params.get('reports_to'):
-            qs = qs.filter(reports_to_id=reports_to)
+            qs = filter_by_id(qs, reports_to_id=reports_to)
         if (is_active := params.get('is_active')) is not None:
             qs = qs.filter(is_active=str(is_active).lower() in ('1', 'true', 'yes'))
         if search := params.get('search'):
@@ -357,7 +458,9 @@ class PositionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         root_id = request.query_params.get('root')
         root = None
         if root_id:
-            root = Position.objects.filter(pk=root_id).select_related('org_node').first()
+            root = filter_by_id(
+                Position.objects.select_related('org_node'), pk=root_id,
+            ).first()
             if root is None:
                 return error_response(
                     message="Root position not found.",
@@ -382,6 +485,10 @@ class PositionAssignmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     Creating / closing assignments routes through OrganogramService so the
     "one current primary per user" invariant and department sync are honoured.
 
+    Every action except ``mine`` is platform staff only, asserted here and
+    confined again by ``scope_assignments_to_caller`` in the queryset. ``mine``
+    is self-service and bounded by the caller's own id, so it needs neither.
+
     docstring-name: Position assignments
     """
 
@@ -399,19 +506,24 @@ class PositionAssignmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             'platform.staff_profile.view' if self.action in read_actions
             else 'platform.organogram.manage'
         )
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+        return [IsAuthenticatedAndActive(), IsVisionStaff(), HasRBACPermission()]
 
     def get_queryset(self):
         params = self.request.query_params
-        qs = (
+        # Confine first, filter second. ``?user=`` is a user id chosen by the
+        # caller: applied to the whole table it selected any CX employee's
+        # tenure history, and applied here it can only pick from the rows the
+        # caller was already entitled to.
+        qs = scope_assignments_to_caller(
             PositionAssignment.objects
             .select_related('user', 'position', 'position__org_node')
-            .order_by('-start_date')
+            .order_by('-start_date'),
+            self.request,
         )
         if user_id := params.get('user'):
-            qs = qs.filter(user_id=user_id)
+            qs = filter_by_id(qs, user_id=user_id)
         if position_id := params.get('position'):
-            qs = qs.filter(position_id=position_id)
+            qs = filter_by_id(qs, position_id=position_id)
         if (current := params.get('current')) is not None:
             if str(current).lower() in ('1', 'true', 'yes'):
                 qs = qs.filter(end_date__isnull=True)
@@ -446,11 +558,12 @@ class PositionAssignmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         public organogram needs only the holder, seat and acting flag, so avoid
         exposing tenure dates or historical rows here.
         """
-        queryset = (
+        queryset = scope_assignments_to_caller(
             PositionAssignment.objects
             .filter(end_date__isnull=True, user__is_active=True)
             .select_related('user', 'position', 'position__org_node')
-            .order_by('position__title', '-is_primary', 'id')
+            .order_by('position__title', '-is_primary', 'id'),
+            request,
         )
         data = [
             {
@@ -504,6 +617,10 @@ class PositionAssignmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 class MatrixReportViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     """Dotted-line (matrix) reporting between positions.
 
+    Two CX seats and nothing else, so - as with OrgNode and Position - the
+    caller's tenant kind is the only boundary there is, and the writes now ask
+    for it rather than trusting the scope of the key.
+
     docstring-name: Matrix reports
     """
 
@@ -515,7 +632,7 @@ class MatrixReportViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         if self.action in read_actions:
             return [IsAuthenticatedAndActive(), IsVisionStaff()]
         self.rbac_permission = 'platform.organogram.manage'
-        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+        return [IsAuthenticatedAndActive(), IsVisionStaff(), HasRBACPermission()]
 
     def get_queryset(self):
         params = self.request.query_params
@@ -525,7 +642,7 @@ class MatrixReportViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             .order_by('-created_at')
         )
         if position_id := params.get('position'):
-            qs = qs.filter(position_id=position_id)
+            qs = filter_by_id(qs, position_id=position_id)
         if reports_to := params.get('reports_to'):
-            qs = qs.filter(reports_to_id=reports_to)
+            qs = filter_by_id(qs, reports_to_id=reports_to)
         return qs

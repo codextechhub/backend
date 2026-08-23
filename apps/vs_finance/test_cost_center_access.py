@@ -38,7 +38,6 @@ class CostCenterProcurementAccessTests(TestCase):
         user = get_user_model().objects.create_user(
             email=email,
             password="x",
-            user_type="CX_STAFF",
             status="ACTIVE",
             first_name="Cost",
             last_name="Centre Reader",

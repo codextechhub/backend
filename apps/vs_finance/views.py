@@ -25,6 +25,12 @@ from vs_rbac.permissions import (
     HasRBACPermission,
     IsAuthenticatedAndActive,
 )
+# ``include_shared=True`` is spelled out at every call site below rather than left
+# to the default. A null branch means "shared across the school", so a row with no
+# branch stays visible to a branch-pinned caller; getting that backwards hides
+# every school-wide record from a branch admin, which looks like missing data
+# rather than a permission error and so goes unreported.
+from vs_rbac.scoping import branch_q
 
 from .models import (
     Account,
@@ -52,6 +58,29 @@ from .serializers import (
 # Entity scoping                                                              #
 # --------------------------------------------------------------------------- #
 
+# Handle the visible entities workflow.
+def visible_entities(request):
+    """The ledger entities the caller is entitled to, and the only source of that
+    answer.
+
+    Scoping is by asserted tenant and nothing else. Seniority does not widen it:
+    a platform (Codex) session sees Codex's own books, exactly as a school
+    session sees its school's. Reading another tenant's ledger is done by
+    proxying a user who holds the finance permission *there*, which swaps the
+    asserted tenant, so the books are always read as someone entitled to them
+    and the act is attributable.
+
+    This exists because the list endpoint and :func:`resolve_entity` each used to
+    decide this separately and drifted: the list exempted PLATFORM callers while
+    the resolver never did, so the console listed every school's books and then
+    404'd on each one. One function now answers for both.
+    """
+    tenant = getattr(request, "tenant", None)
+    if tenant is None:
+        return LedgerEntity.objects.none()
+    return LedgerEntity.objects.filter(tenant=tenant)
+
+
 # Handle the resolve entity workflow.
 def resolve_entity(request):
     """Resolve the ``?entity=`` query param (id or code) to a :class:`LedgerEntity`.
@@ -69,10 +98,7 @@ def resolve_entity(request):
     raw = request.query_params.get("entity")
     if not raw:
         raise ValidationError({"entity": "An 'entity' query parameter (id or code) is required."})
-    tenant = getattr(request, "tenant", None)
-    if tenant is None:
-        raise NotFound(f"No ledger entity matches '{raw}'.")
-    qs = LedgerEntity.objects.filter(tenant=tenant)
+    qs = visible_entities(request)
 
     entity = (
         qs.filter(pk=int(raw)).first() if str(raw).isdigit()
@@ -162,15 +188,9 @@ class EntityListCreateView(generics.ListCreateAPIView):
 
     # Handle the get queryset workflow.
     def get_queryset(self):
-        qs = LedgerEntity.objects.all().order_by("code")
-        # Tenancy (defence-in-depth, matching resolve_entity): platform-tenant users
-        # see every set of books; a school-tenant user sees only entities owned by
-        # their tenant, and a user with no tenant sees none.
-        tenant = getattr(self.request, "tenant", None)
-        if getattr(tenant, "kind", None) != "PLATFORM":
-            if tenant is None:
-                return qs.none()
-            qs = qs.filter(tenant=tenant)
+        # Same authority as resolve_entity, so the list can never offer a set of
+        # books that opening it would refuse.
+        qs = visible_entities(self.request).order_by("code")
         if (kind := self.request.query_params.get("kind")):
             qs = qs.filter(kind=kind)
         if (active := self.request.query_params.get("is_active")) is not None:
@@ -731,7 +751,9 @@ class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
         from django.db.models.functions import Coalesce
 
         qs = (
-            JournalEntry.objects.filter(entity=entity)
+            JournalEntry.objects.filter(
+                branch_q(self.request, include_shared=True), entity=entity,
+            )
             .select_related("period", "created_by")
             .annotate(_total_debit=Coalesce(Sum("lines__debit"), 0))
         )
@@ -773,7 +795,9 @@ class JournalSummaryView(APIView):
         from .constants import DocumentStatus
 
         entity = resolve_entity(request)
-        qs = JournalEntry.objects.filter(entity=entity)
+        qs = JournalEntry.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        )
         params = request.query_params
         if (source := params.get("source")):
             qs = qs.filter(source=source)
@@ -823,7 +847,9 @@ class JournalEntryDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     def get_queryset(self):
         entity = resolve_entity(self.request)
         return (
-            JournalEntry.objects.filter(entity=entity)
+            JournalEntry.objects.filter(
+                branch_q(self.request, include_shared=True), entity=entity,
+            )
             .select_related("period")
             .prefetch_related("lines__account")
         )
@@ -857,8 +883,8 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
         from .receivables import post_invoice, price_invoice
         from .views_ar import _resolve_customer
         from .views_ops import (
-            _date, _dec, _money, _require_lines, _resolve_account,
-            _resolve_cost_center, _resolve_currency, _resolve_tax,
+            _date, _dec, _inherited_branch_id, _money, _require_lines,
+            _resolve_account, _resolve_cost_center, _resolve_currency, _resolve_tax,
         )
 
         entity = resolve_entity(request)
@@ -876,10 +902,18 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
                 days=policy.default_invoice_due_days,
             )
 
+        customer = _resolve_customer(entity, body.get("customer"))
         with transaction.atomic():
             invoice = Invoice.objects.create(
                 entity=entity,
-                customer=_resolve_customer(entity, body.get("customer")),
+                customer=customer,
+                # An invoice continues the customer's chain: the debt is owed by a
+                # family that attends one site, so the receivable belongs there and
+                # no request body may retarget it. A school-wide customer keeps a
+                # school-wide invoice, which is what keeps their ledger consistent.
+                # This is also the check that stops a Lekki bursar billing an Ikeja
+                # family whose id she guessed, which _resolve_customer does not narrow.
+                branch_id=_inherited_branch_id(request, customer),
                 invoice_date=invoice_date,
                 due_date=due_date,
                 currency=_resolve_currency(body.get("currency")),
@@ -919,7 +953,9 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
     def entity_qs(self, entity):
         from django.db.models import Q
 
-        qs = Invoice.objects.filter(entity=entity).select_related("customer")
+        qs = Invoice.objects.filter(
+            branch_q(self.request, include_shared=True), entity=entity,
+        ).select_related("customer")
         params = self.request.query_params
         if (status_val := params.get("status")):
             qs = qs.filter(status=status_val)
@@ -987,7 +1023,9 @@ class InvoiceSummaryView(APIView):
 
         entity = resolve_entity(request)
         today = datetime.date.today()
-        base = Invoice.objects.filter(entity=entity)
+        base = Invoice.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        )
         if (search := request.query_params.get("search")):
             base = base.filter(
                 Q(document_number__icontains=search)
@@ -999,8 +1037,10 @@ class InvoiceSummaryView(APIView):
         bal = F("total") - F("amount_paid") - F("amount_credited")
 
         invoiced = posted.aggregate(t=Coalesce(Sum("total"), 0))["t"]
-        collected = Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED).aggregate(
-            t=Coalesce(Sum("amount"), 0))["t"]
+        collected = Payment.objects.filter(
+            branch_q(request, include_shared=True),
+            entity=entity, status=DocumentStatus.POSTED,
+        ).aggregate(t=Coalesce(Sum("amount"), 0))["t"]
         overdue_balance = unpaid_posted.filter(due_date__lt=today).aggregate(t=Coalesce(Sum(bal), 0))["t"]
         outstanding = unpaid_posted.aggregate(t=Coalesce(Sum(bal), 0))["t"]
         total_all = base.aggregate(t=Coalesce(Sum("total"), 0))["t"]
@@ -1021,7 +1061,8 @@ class InvoiceSummaryView(APIView):
         inv_m = {r["m"]: int(r["s"] or 0) for r in posted.filter(invoice_date__gte=start)
                  .annotate(m=TruncMonth("invoice_date")).values("m").annotate(s=Sum("total"))}
         col_m = {r["m"]: int(r["s"] or 0) for r in Payment.objects
-                 .filter(entity=entity, status=DocumentStatus.POSTED, payment_date__gte=start)
+                 .filter(branch_q(request, include_shared=True), entity=entity,
+                         status=DocumentStatus.POSTED, payment_date__gte=start)
                  .annotate(m=TruncMonth("payment_date")).values("m").annotate(s=Sum("amount"))}
         monthly, cur = [], start
         for _ in range(12):
@@ -1064,7 +1105,9 @@ class InvoiceDetailView(APIView):
 
         entity = resolve_entity(request)
         inv = (
-            Invoice.objects.filter(entity=entity, pk=pk)
+            Invoice.objects.filter(
+                branch_q(request, include_shared=True), entity=entity, pk=pk,
+            )
             .select_related("customer", "journal")
             .prefetch_related(
                 "lines__revenue_account", "lines__tax_code",
@@ -1278,7 +1321,9 @@ class InvoiceDocumentView(APIView):
     def _invoice(self, request, pk):
         entity = resolve_entity(request)
         inv = (
-            Invoice.objects.filter(entity=entity, pk=pk)
+            Invoice.objects.filter(
+                branch_q(request, include_shared=True), entity=entity, pk=pk,
+            )
             .select_related("entity__tenant__school_profile", "branch", "customer")
             .prefetch_related("lines__revenue_account", "lines__tax_code", "lines__cost_center")
             .first()
@@ -1322,7 +1367,9 @@ class JournalSubmitView(APIView):
         from vs_workflow.services.submission import submit_for_approval
 
         entity = resolve_entity(request)
-        entry = JournalEntry.objects.filter(entity=entity, id=id).first()
+        entry = JournalEntry.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, id=id,
+        ).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
         from vs_workflow.services import release as release_svc
@@ -1359,7 +1406,9 @@ class JournalPostView(APIView):
         from .posting import post_journal
 
         entity = resolve_entity(request)
-        entry = JournalEntry.objects.filter(entity=entity, id=id).first()
+        entry = JournalEntry.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, id=id,
+        ).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
         if approval_required(entry):
@@ -1391,7 +1440,9 @@ class JournalReverseView(APIView):
         from .posting import reverse_journal
 
         entity = resolve_entity(request)
-        entry = JournalEntry.objects.filter(entity=entity, id=id).first()
+        entry = JournalEntry.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, id=id,
+        ).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
         # Optional reversal date; when omitted the service reverses into the original

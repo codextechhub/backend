@@ -20,7 +20,8 @@ from django.urls import path, include
 from core.views import MediaView
 
 urlpatterns = [
-    path("v1/i/", include("vs_schools.urls")),
+    path("v1/i/", include("schools.vs_schools.urls")),
+    path("v1/onboarding/", include("schools.vs_onboarding.urls")),
     path("v1/admin/", include("vs_admin_console.urls")),
     path("v1/user/", include("vs_user.urls")),
     path("v1/rbac/", include("vs_rbac.urls")),
@@ -36,6 +37,7 @@ urlpatterns = [
     path("v1/todo/", include("vs_todo.urls")),
     path("v1/support/", include("vs_tickets.urls")),
     path("v1/health/", include("vs_health.urls")),
+    path("v1/tenants/", include("vs_tenants.urls")),
 ]
 
 # Media is database-backed (core.storage.DatabaseStorage) and served with

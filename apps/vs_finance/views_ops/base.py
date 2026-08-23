@@ -9,6 +9,8 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
 
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+from vs_rbac.scoping import inherited_branch_id as _rbac_inherited_branch_id
+from vs_rbac.scoping import raised_branch as _rbac_raised_branch
 
 from ..models import (
     Account,
@@ -20,6 +22,70 @@ from ..models import (
     TaxCode,
 )
 
+
+# --------------------------------------------------------------------------- #
+# Branch sub-scope: the write half                                            #
+# --------------------------------------------------------------------------- #
+#
+# Every finance row that carries a branch (:attr:`FinanceDocument.branch`, plus
+# ``Customer``, ``FeeStructure``, ``BankAccount`` and ``PettyCashFund``) gets it
+# from exactly one of two places, and never from both:
+#
+#   * a row that *starts* a chain captures the branch the person creating it works
+#     in (:func:`_raised_branch`);
+#   * a row that *continues* a chain takes the branch from the row it continues and
+#     from nothing else (:func:`_inherited_branch_id`) - a receipt is the customer's
+#     branch, a credit note is the invoice's, a journal is its source document's.
+#
+# Both rules are the platform's, in :mod:`vs_rbac.scoping`, shared with
+# :mod:`vs_procurement`; what is here are one-line adapters supplying
+# ``entity.tenant`` (finance is entity-scoped, the rules are tenant-scoped) and
+# finance's own reading of a null branch.
+#
+# **Finance reads a null branch inclusively**, which is the platform default and
+# the opposite of procurement's: a row with no branch is *shared across the
+# school*, not a scope of its own, so a branch-pinned bursar sees it and may build
+# on it.  The two halves have to agree - a caller who can see a school-wide
+# customer in her list must be able to record that customer's receipt - which is
+# why ``include_shared=True`` is spelled out below and at every
+# ``branch_q`` call site in this app.
+#
+# An absent branch stays a real, valid answer: the row belongs to the school as a
+# whole.  Nothing here backfills or coerces an existing null.
+
+
+def _raised_branch(request, entity, body, *, field="branch",
+                   shared_when_ambiguous=False):
+    """:func:`vs_rbac.scoping.raised_branch` for this entity's owning tenant.
+
+    ``shared_when_ambiguous`` is the one judgement each call site makes, and it
+    only decides what happens to a caller bound to **several** branches who names
+    none.  The default asks them, because a document records something that
+    happened at one place: an invoice raised by a bursar who covers Ikeja and
+    Lekki belongs to one of them, and filing it school-wide would leave it visible
+    to every branch for the life of the row with nothing later able to narrow it.
+    Master data a school genuinely publishes once - a fee template, the bank
+    account everyone pays into - passes ``True`` and says why in a comment there.
+    """
+    return _rbac_raised_branch(
+        request, entity.tenant, body, field=field,
+        shared_when_ambiguous=shared_when_ambiguous,
+    )
+
+
+def _inherited_branch_id(request, *sources, field="branch"):
+    """:func:`vs_rbac.scoping.inherited_branch_id`, in finance's inclusive reading.
+
+    ``include_shared=True`` is spelled out rather than left to the shared default
+    (which is procurement's exclusive reading): a source with no branch is shared
+    across the school, so a branch-pinned caller may continue its chain, and the
+    row she creates stays school-wide because the chain decides, not the caller.
+    Without it, an Ikeja bursar could see a school-wide customer in her list and
+    then be refused when she tried to record that customer's receipt.
+    """
+    return _rbac_inherited_branch_id(
+        request, *sources, field=field, include_shared=True,
+    )
 
 
 # --------------------------------------------------------------------------- #

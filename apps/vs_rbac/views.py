@@ -509,6 +509,18 @@ class TenantRoleTemplateListCreateView(TenantScopedRBACMixin, CreateModelMixin, 
     docstring-name: Roles
     """
     pagination_class = XVSPagination
+    # Open to a school that has not gone live. "Confirm Default Roles & RBAC" is
+    # the first step on the onboarding checklist, and a school cannot confirm
+    # roles it is refused sight of. Reading and shaping its OWN roles is safe
+    # before go-live for the same reason it is safe after: a tenant role can
+    # only ever hold keys declared ``PermissionScope.TENANT``, enforced on the
+    # grant models themselves (``assert_tenant_may_hold``) and again in the
+    # evaluator, so nothing here can reach across the tenant boundary.
+    #
+    # DELETE is deliberately absent. Onboarding asks a school to confirm and
+    # extend its roles, not to dismantle the baseline CodeX seeded - and the
+    # gate that checks the baseline is intact reads those very rows.
+    pending_tenant_surface = ("get", "post")
 
     def get_permissions(self):
         if self.request.method == "POST":
@@ -549,6 +561,166 @@ class TenantRoleTemplateListCreateView(TenantScopedRBACMixin, CreateModelMixin, 
         return TenantRoleTemplateListSerializer
 
 
+def _permission_label(permission) -> str:
+    """The sentence a person reads beside the checkbox.
+
+    ``description`` when the registry has one, which is most of them. When it
+    does not, the key is composed back into English from its own parts rather
+    than printed raw: 48 of the keys a school can hold carry no description,
+    and they are all in ``academics`` and ``school`` - precisely the modules a
+    school spends this screen in. "school.administrators.view" is not a label,
+    but "View administrators" is, and it is built from the same two fields the
+    key itself is built from, so it cannot describe a different permission than
+    the one it sits beside.
+    """
+    described = (permission.description or "").strip()
+    if described:
+        return described
+    action = (permission.action_id or "").replace("_", " ").strip()
+    resource = (
+        permission.resource.name if permission.resource_id else ""
+    ).replace("_", " ").strip()
+    if not action and not resource:
+        return permission.key
+    return f"{action} {resource}".strip().capitalize()
+
+
+# The permissions a tenant may pick from, grouped the way a picker shows them.
+class TenantPermissionCatalogueView(TenantScopedRBACMixin, APIView):
+    """GET /rbac/tenants/<slug>/permission-catalogue/ - what this tenant may grant.
+
+    Why this exists beside ``vision/permissions/``: that endpoint is the global
+    registry, gated on ``platform.permissions.view`` and carrying every key on
+    the platform, including the ones only CodeX may ever hold. A school editing
+    its own roles needs the opposite - the short list it is actually allowed to
+    tick - and had no way to ask for it. Without this, the roles screen can
+    show which permissions a role HAS and offer no way to add one.
+
+    The filter is ``PermissionScope.TENANT``, which is the same column the
+    grant guard on the models and the evaluator both read. So the picker cannot
+    offer a key that the save would refuse, and cannot leak the existence of the
+    platform-only ones. A platform tenant sees everything, because it may hold
+    everything.
+
+    Grouped by module and returned whole rather than paginated: it is a
+    vocabulary, not a list of records, and a picker that has to page through
+    its own options in order to tick two boxes is not a picker.
+
+    docstring-name: Permission catalogue
+    """
+
+    # A school confirms its roles during onboarding, so the vocabulary those
+    # roles are written in has to be readable then. Read-only, and narrower
+    # than the registry it stands in front of.
+    pending_tenant_surface = ("get",)
+
+    def get_permissions(self):
+        # Whoever may see this tenant's roles may see what those roles could
+        # hold. Anything narrower would leave a reader able to open a role and
+        # unable to read the labels on its own permissions.
+        self.rbac_permission = ROLE_VIEW_KEYS
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def _capability_reader(self, tenant):
+        """A function answering "is this capability on for this school?".
+
+        Two things it is careful about.
+
+        **It asks the capability service, not the entitlement table.** Whether a
+        capability is on is computed from entitlement AND dependencies AND
+        operator overrides AND its own default; reading the entitlement rows
+        directly would disagree with the rest of the platform.
+
+        **A school with nothing switched on is treated as having everything.**
+        Entitlements are not granted at provisioning yet, so today every school
+        answers False to every capability. "Not provisioned" and "not bought"
+        are different facts and only one of them should hide a permission - and
+        with no way to tell them apart, hiding would empty this screen for every
+        school on the platform. So when a tenant has no capability on at all,
+        the catalogue offers everything and flags nothing. The moment
+        provisioning starts granting entitlements, the flags become real with no
+        change here.
+        """
+        from vs_config.conf import is_capability_enabled
+        from vs_config.models import Capability
+
+        cache: dict[str, bool] = {}
+
+        def enabled(key: str) -> bool:
+            if key not in cache:
+                try:
+                    cache[key] = bool(is_capability_enabled(key, tenant=tenant))
+                except Exception:  # noqa: BLE001 - a broken graph must not 500 a picker
+                    cache[key] = False
+            return cache[key]
+
+        anything_on = any(
+            enabled(key)
+            for key in Capability.objects.filter(is_active=True)
+            .values_list("key", flat=True)
+        )
+
+        def is_on(capability: str | None) -> bool:
+            if capability is None:
+                return True
+            if not anything_on:
+                return True
+            return enabled(capability)
+
+        return is_on
+
+    def get(self, request, *args, **kwargs):
+        from .capability_map import capability_for
+        from .models import PermissionScope, tenant_is_platform
+
+        tenant = self.get_tenant()
+
+        permissions = (
+            Permission.objects.filter(is_active=True)
+            .select_related("module", "resource", "action")
+            .order_by("module_id", "resource_id", "action_id")
+        )
+        if not tenant_is_platform(tenant):
+            permissions = permissions.filter(scope=PermissionScope.TENANT)
+
+        is_on = self._capability_reader(tenant)
+
+        modules: dict[str, dict] = {}
+        for permission in permissions:
+            resource = permission.resource.name if permission.resource_id else ""
+            capability = capability_for(permission.module_id, resource)
+            available = is_on(capability)
+
+            bucket = modules.setdefault(
+                permission.module_id,
+                {"module": permission.module_id, "available": False, "permissions": []},
+            )
+            # A module is offerable when anything in it is. ``school`` holds the
+            # school's own branches and roles alongside its students, so it is
+            # never wholly unavailable even to a school that bought neither the
+            # students nor the teachers module.
+            bucket["available"] = bucket["available"] or available
+            bucket["permissions"].append({
+                "key": permission.key,
+                "label": _permission_label(permission),
+                "resource": resource,
+                "action": permission.action_id,
+                "sensitivity": permission.sensitivity_level,
+                # Flagged so the picker can say so. These flow through an
+                # approval rather than taking effect on save.
+                "is_restricted": permission.is_restricted,
+                # Which product this permission belongs to, and whether the
+                # school has it. Null capability means core: every school.
+                "capability": capability,
+                "available": available,
+            })
+
+        return success_response(
+            message="Data retrieved successfully",
+            data=list(modules.values()),
+        )
+
+
 # Retrieve or mutate one tenant role template (addressed by per-tenant key).
 class TenantRoleTemplateDetailView(TenantScopedRBACMixin, RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
     """
@@ -561,6 +733,10 @@ class TenantRoleTemplateDetailView(TenantScopedRBACMixin, RetrieveModelMixin, Up
     """
     serializer_class = TenantRoleTemplateDetailSerializer
     lookup_field = "key"
+    # Read and edit, never delete, before go-live. See the note on the list
+    # view above; DELETE stays closed so a school cannot dismantle the seeded
+    # baseline that the onboarding gate is checking.
+    pending_tenant_surface = ("get", "patch", "put")
 
     def get_permissions(self):
         if self.request.method == "DELETE":
@@ -1193,6 +1369,9 @@ class UserPermissionOverrideListCreateView(
         target = getattr(self, "_target", None) or self.get_target_user()
         self._target = target
         context["role_permission_keys"] = self._role_permission_keys(target)
+        # The tenant the override will land in decides which keys may be
+        # granted through it (see UserPermissionOverrideSerializer.validate).
+        context["tenant"] = self.tenant
         return context
 
     def create(self, request, *args, **kwargs):
