@@ -34,6 +34,17 @@ class BaseWorkflowHandler:
         """
         return {}
 
+    def get_source_document_link(self, document: Any) -> Optional[str]:
+        """Return the current console route for the source record, when one exists.
+
+        Summary fields are an immutable submission snapshot, but navigation is
+        live application metadata. Resolving the link again on detail reads lets
+        route repairs and entity scope apply to approvals created in the past.
+        """
+        summary = self.get_document_summary(document)
+        link = summary.get("link") if isinstance(summary, dict) else None
+        return link if isinstance(link, str) and link else None
+
     # Lifecycle callbacks let the source app mirror workflow outcomes on its document.
     def on_submitted(self, instance, context: Dict) -> None: ...
     def on_approved(self, instance, context: Dict) -> None: ...

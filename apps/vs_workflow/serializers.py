@@ -277,6 +277,7 @@ class WorkflowInstanceListSerializer(serializers.ModelSerializer):
 class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
     stage_instances = WorkflowStageInstanceReadSerializer(many=True, read_only=True)
     audit_logs      = WorkflowAuditLogReadSerializer(many=True, read_only=True)
+    document_summary = serializers.SerializerMethodField()
     next_stage      = serializers.SerializerMethodField()
 
     class Meta(WorkflowInstanceListSerializer.Meta):
@@ -287,6 +288,22 @@ class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
     def get_next_stage(self, obj):
         from vs_workflow.services.routing import preview_next_approval_stage
         return preview_next_approval_stage(obj)
+
+    def get_document_summary(self, obj):
+        from vs_workflow.exceptions import UnknownDocumentTypeError
+        from vs_workflow.handlers import get_handler
+
+        summary = dict(obj.document_summary or {})
+        document = obj.document
+        if document is None:
+            return summary
+        try:
+            link = get_handler(obj.document_type).get_source_document_link(document)
+        except UnknownDocumentTypeError:
+            return summary
+        if link:
+            summary["link"] = link
+        return summary
 
 
 class SubmitForApprovalSerializer(serializers.Serializer):

@@ -18,6 +18,8 @@ Auto-discovered by the engine on startup via ``autodiscover_modules("workflow_ha
 """
 from __future__ import annotations
 
+from urllib.parse import urlencode
+
 from django.db import transaction
 
 from vs_workflow.constants import WorkflowStageAction as StageActionEnum
@@ -96,7 +98,7 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
                 {"label": "Total", "value": format_naira(document.total_amount)},  # Total disbursed.
                 {"label": "Provider", "value": document.provider},  # PSP the batch goes through.
             ],
-            "link": f"/finance/payments/batches?document={document.pk}",
+            "link": f"/finance/payments/batches?{urlencode({'document': document.pk, 'entity': document.entity.code})}",
         }
 
     def on_submitted(self, instance, context) -> None:

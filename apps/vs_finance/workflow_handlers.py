@@ -43,7 +43,12 @@ from .money import format_naira
 def _console_document_link(path: str, document) -> str:
     """Return a real console list route narrowed to this source document."""
     reference = document.document_number or str(document.pk)
-    return f"{path}?{urlencode({'search': reference})}"
+    return f"{path}?{urlencode({'search': reference, 'entity': document.entity.code})}"
+
+
+def _console_document_id_link(path: str, document) -> str:
+    """Return a console detail route scoped to the document's ledger entity."""
+    return f"{path}?{urlencode({'document': document.pk, 'entity': document.entity.code})}"
 
 
 # Shared handler for finance docs that post after approval.
@@ -620,5 +625,5 @@ class ExpenseClaimHandler(_FinancePostOnApprove):
                 {"label": "Purpose", "value": document.title or "-"},
                 {"label": "Total", "value": format_naira(document.total)},
             ],
-            "link": "/finance/expenses/claims",
+            "link": _console_document_id_link("/finance/expenses/claims", document),
         }

@@ -12,6 +12,8 @@ These handlers are imported (and thus registered) from ``VsProcurementConfig.rea
 """
 from __future__ import annotations
 
+from urllib.parse import urlencode
+
 from vs_finance.money import format_naira
 from vs_workflow.handlers import BaseWorkflowHandler, register_handler
 
@@ -35,9 +37,14 @@ class _ProcApprovalHandler(BaseWorkflowHandler):
 
     #: Built into the summary subtitle ("Requisition", "Purchase order", …).
     noun = "Document"
+    source_path = ""
 
     def resolve_default_template_code(self, document) -> str:
         return WF_DEFAULT_TEMPLATE_CODE
+
+    def get_source_document_link(self, document) -> str:
+        query = urlencode({"document": document.pk, "entity": document.entity.code})
+        return f"{self.source_path}?{query}"
 
     def get_document_summary(self, document) -> dict:
         amount = getattr(document, document.workflow_amount_field, 0) or 0
@@ -49,6 +56,7 @@ class _ProcApprovalHandler(BaseWorkflowHandler):
             "title": document.document_number or str(document.pk),
             "subtitle": self.noun,
             "fields": fields,
+            "link": self.get_source_document_link(document),
         }
 
     # --- terminal callbacks ------------------------------------------------- #
@@ -71,6 +79,7 @@ class _ProcApprovalHandler(BaseWorkflowHandler):
 @register_handler(WF_DOCTYPE_REQUISITION)
 class RequisitionApprovalHandler(_ProcApprovalHandler):
     noun = "Purchase requisition"
+    source_path = "/procurement/requisitions"
 
     @property
     def document_model(self):
@@ -81,6 +90,7 @@ class RequisitionApprovalHandler(_ProcApprovalHandler):
 @register_handler(WF_DOCTYPE_PURCHASE_ORDER)
 class PurchaseOrderApprovalHandler(_ProcApprovalHandler):
     noun = "Purchase order"
+    source_path = "/procurement/purchase-orders"
 
     @property
     def document_model(self):
@@ -91,6 +101,7 @@ class PurchaseOrderApprovalHandler(_ProcApprovalHandler):
 @register_handler(WF_DOCTYPE_VENDOR_INVOICE)
 class VendorInvoiceApprovalHandler(_ProcApprovalHandler):
     noun = "Vendor invoice"
+    source_path = "/procurement/vendor-invoices"
 
     @property
     def document_model(self):
@@ -101,6 +112,7 @@ class VendorInvoiceApprovalHandler(_ProcApprovalHandler):
 @register_handler(WF_DOCTYPE_VENDOR_PAYMENT)
 class VendorPaymentApprovalHandler(_ProcApprovalHandler):
     noun = "Vendor payment"
+    source_path = "/procurement/vendor-payments"
 
     @property
     def document_model(self):

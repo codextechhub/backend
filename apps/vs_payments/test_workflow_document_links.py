@@ -13,11 +13,12 @@ class PayoutWorkflowDocumentLinkTests(SimpleTestCase):
             item_count=3,
             total_amount=250_000,
             provider="PAYSTACK",
+            entity=SimpleNamespace(code="TES"),
         )
 
         summary = PayoutBatchApprovalHandler().get_document_summary(batch)
 
         self.assertEqual(
             summary["link"],
-            "/finance/payments/batches?document=29",
+            "/finance/payments/batches?document=29&entity=TES",
         )
