@@ -78,6 +78,23 @@ def run_create_serializer(*, serializer_class, payload: dict, context: dict, tar
 def execute_dataset_handler(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
     dataset_type = import_batch.template.dataset_type
 
+    # The last of the three gates, and the one that does not assume the other
+    # two ran. A batch uploaded before this rule existed, or reached by a path
+    # nobody has thought of, still cannot execute a CodeX dataset on behalf of a
+    # school. It is checked per row, where the write actually happens.
+    #
+    # Refused rather than raised: a row that must not run is a skipped row with
+    # a reason on it, not a crashed job, so the rest of the batch still reports.
+    from ..datasets import REFUSAL_MESSAGE, may_import
+
+    if not may_import(queued_by, dataset_type):
+        return ImportExecutionResult(
+            action=ImportRowActionChoices.SKIP,
+            instance=None,
+            target_model=dataset_type,
+            message=REFUSAL_MESSAGE,
+        )
+
     if dataset_type == "schools":
         return import_schools_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
 

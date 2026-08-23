@@ -69,6 +69,11 @@ from .services.validation_service import validate_import_batch
 # =========================================================
 # Helpers
 # =========================================================
+from .datasets import (  # noqa: E402 - grouped with the module's own helpers
+    PLATFORM_ONLY_DATASETS,
+)
+
+
 def _is_platform(user) -> bool:
     """True when the user belongs to the platform (Codex) tenant."""
     return getattr(getattr(user, "tenant", None), "kind", None) == "PLATFORM"
@@ -215,7 +220,7 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
             queryset = queryset.filter(
                 status=TemplateStatusChoices.ACTIVE,
                 is_download_enabled=True,
-            )
+            ).exclude(dataset_type__in=PLATFORM_ONLY_DATASETS)
 
         dataset_type = self.request.query_params.get("dataset_type")
         if dataset_type:
@@ -398,6 +403,7 @@ class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.L
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
         self.perform_create(serializer)
         response_serializer = ImportBatchListSerializer(serializer.instance)
         return success_response(
