@@ -6,7 +6,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from core.models import BackgroundJob
-from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
 from vs_user.models import User
 
 
@@ -21,17 +21,26 @@ def _job_probe_boom():
 
 
 def _cx(email, *, platform_admin=False, **extra):
+    from vs_tenants.models import Tenant
+
+    extra.setdefault(
+        "tenant", Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM),
+    )
     user = User.objects.create_user(
-        email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+        email=email, password="x", status="ACTIVE",
         first_name="T", last_name="User", **extra,
     )
     if platform_admin:
-        role, _ = PlatformRoleTemplate.objects.get_or_create(
-            id="xvs_platform_admin",
-            defaults={"name": "Platform Admin", "status": "ACTIVE"},
+        # can_view_all_jobs reads the codex-tenant role assignment, which is
+        # the tenant these accounts are created in.
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=user.tenant, key="xvs_platform_admin",
+            defaults={"name": "XVS Platform Admin", "status": "ACTIVE",
+                      "is_system_role": True, "is_locked": True},
         )
-        PlatformUserRoleAssignment.objects.get_or_create(
-            user=user, role=role, defaults={"assignment_status": "ACTIVE"},
+        TenantUserRoleAssignment.objects.get_or_create(
+            tenant=user.tenant, user=user, role=role,
+            defaults={"assignment_status": "ACTIVE"},
         )
     return user
 
@@ -39,6 +48,13 @@ def _cx(email, *, platform_admin=False, **extra):
 class TrackedTaskTests(TestCase):
     def setUp(self):
         self.owner = _cx("owner@codexng.com")
+        # _notify_owner dispatches task.completed / task.failed through the
+        # notification engine, which needs the event registry + DB templates.
+        from vs_notifications.services.seed import (
+            seed_event_types, seed_notification_templates,
+        )
+        seed_event_types()
+        seed_notification_templates()
 
     def test_owned_task_lifecycle_and_notification(self):
         _job_probe_ok.delay(
@@ -55,10 +71,16 @@ class TrackedTaskTests(TestCase):
         self.assertIsNotNone(job.started_at)
         self.assertIsNotNone(job.finished_at)
 
+        # task.completed is IN_APP only; the label is carried in the body, so the
+        # notification exists and names the job even though the subject is empty.
+        from vs_notifications.constants import ChannelChoices
         from vs_notifications.models import Notification
-        note = Notification.objects.get(recipient=self.owner)
-        self.assertIn("Probe job", note.subject)
-        self.assertIsNone(note.school_id)
+        note = Notification.objects.get(
+            recipient=self.owner, channel=ChannelChoices.IN_APP,
+        )
+        self.assertEqual(note.event_type.key, "task.completed")
+        self.assertIn("Probe job", note.body)
+        self.assertEqual(note.tenant_id, self.owner.tenant_id)
 
     def test_failure_recorded_with_error(self):
         with self.assertRaises(RuntimeError):
@@ -68,6 +90,23 @@ class TrackedTaskTests(TestCase):
         job = BackgroundJob.objects.get(owner=self.owner)
         self.assertEqual(job.status, BackgroundJob.Status.FAILED)
         self.assertIn("probe failure", job.error)
+
+    def test_notify_opt_out_tracks_the_job_but_stays_silent(self):
+        from vs_notifications.models import Notification
+
+        _job_probe_ok.delay(
+            1,
+            _job_owner_id=str(self.owner.id),
+            _job_label="Fan-out email",
+            _job_kind="email",
+            _job_notify=False,
+        )
+        job = BackgroundJob.objects.get(owner=self.owner)
+        # Still a queue row the owner can track…
+        self.assertEqual(job.status, BackgroundJob.Status.SUCCEEDED)
+        self.assertFalse(job.notify_owner)
+        # …but no bell notification, so 200 imported rows stay 200 rows and 0 bells.
+        self.assertFalse(Notification.objects.filter(recipient=self.owner).exists())
 
     def test_system_task_recorded_without_owner(self):
         _job_probe_ok.delay(1)
@@ -82,12 +121,15 @@ class MyTasksAPITests(TestCase):
         self.other = _cx("other@codexng.com")
         self.admin = _cx("padmin@codexng.com", platform_admin=True)
         BackgroundJob.objects.create(
-            owner=self.me, celery_task_id="t-1", label="Mine", status="SUCCEEDED", kind="export",
+            owner=self.me, tenant=self.me.tenant,
+            celery_task_id="t-1", label="Mine", status="SUCCEEDED", kind="export",
         )
         BackgroundJob.objects.create(
-            owner=self.other, celery_task_id="t-2", label="Theirs", status="FAILED", kind="import",
+            owner=self.other, tenant=self.other.tenant,
+            celery_task_id="t-2", label="Theirs", status="FAILED", kind="import",
         )
         BackgroundJob.objects.create(
+            tenant=self.admin.tenant,
             celery_task_id="t-3", label="", task_name="beat.thing", status="SUCCEEDED", kind="system",
         )
         self.client = APIClient()

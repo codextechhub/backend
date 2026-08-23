@@ -1,4 +1,4 @@
-# Dependabot — keeps requirements.txt current without surprise breakage.
+# Dependabot - keeps requirements.txt current without surprise breakage.
 #
 # Every Monday it checks PyPI and opens one PR per outdated package (grouped
 # for minor/patch bumps). Each PR runs the full CI suite on PostgreSQL; merge

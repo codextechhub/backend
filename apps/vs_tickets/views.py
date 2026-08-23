@@ -1,0 +1,353 @@
+from __future__ import annotations
+
+import mimetypes
+
+from django.db.models import Count, Q
+from django.http import FileResponse
+from django.shortcuts import get_object_or_404
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.exceptions import NotFound, PermissionDenied
+from rest_framework.views import APIView
+
+from core.mixins import XVSModelViewSetMixin
+from core.response import success_response
+from vs_user.models import User
+
+from .constants import (
+    ACTIVE_TICKET_STATUSES,
+    CommentVisibility,
+    TicketCategory,
+    TicketPermission,
+    TicketPriority,
+    TicketStatus,
+)
+from .models import Ticket, TicketAttachment, TicketComment
+from .permissions import TICKET_PERMISSIONS
+from .serializers import (
+    TicketAssignSerializer,
+    TicketAttachmentCreateSerializer,
+    TicketAttachmentSerializer,
+    TicketAuditLogSerializer,
+    TicketCommentCreateSerializer,
+    TicketCommentSerializer,
+    TicketCreateSerializer,
+    TicketDashboardSerializer,
+    TicketDetailSerializer,
+    TicketSerializer,
+    TicketTransitionSerializer,
+    TicketUpdateSerializer,
+    TicketUserSerializer,
+)
+from .services import tickets as ticket_svc
+from .services import visibility
+
+
+# API surface for ticket creation, assignment, lifecycle, comments, files, and audit.
+class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
+    """Ticket CRUD plus assignment, transitions, comments, attachments and audit."""
+
+    permission_classes = TICKET_PERMISSIONS
+
+    # Filing a ticket is the one escalation route a school that has not gone
+    # live still has, so POST /v1/support/tickets/ is part of the pending-tenant
+    # surface (FR-010, FR-012). Only the create action: the rest of the desk
+    # (lists, threads, attachments, assignment) opens at go-live like everything
+    # else.
+    pending_tenant_surface = ("create",)
+
+    # Actions gated by an RBAC key (support staff bypass in the permission
+    # class). Absent actions rely on queryset/object scoping: anyone may file
+    # a ticket and participants always keep access to their own thread.
+    RBAC_ACTION_KEYS = {
+        "assign": TicketPermission.ASSIGN,
+        "transition": TicketPermission.MANAGE,
+        "audit": TicketPermission.AUDIT_VIEW,
+        "eligible_assignees": TicketPermission.ASSIGN,
+    }
+
+    @property
+    def rbac_permission(self):
+        return self.RBAC_ACTION_KEYS.get(self.action)
+
+    def get_queryset(self):
+        # Internal notes (and their attachments) stay out of the counts for
+        # users who cannot see them.
+        if visibility.sees_internal_notes_by_default(self.request.user):
+            comment_filter = Q()
+            attachment_filter = Q()
+        else:
+            # Public users see counts that exclude internal-note conversations and files.
+            comment_filter = Q(comments__visibility=CommentVisibility.PUBLIC)
+            attachment_filter = Q(attachments__comment__isnull=True) | Q(
+                attachments__comment__visibility=CommentVisibility.PUBLIC
+            )
+        qs = visibility.visible_tickets_qs(self.request.user).annotate(
+            comments_count=Count("comments", filter=comment_filter, distinct=True),
+            attachments_count=Count("attachments", filter=attachment_filter, distinct=True),
+        )
+        params = self.request.query_params
+        if value := params.get("status"):
+            qs = qs.filter(status=value)
+        # `state=active` is the list-shaped twin of the workload counters: the
+        # dashboard cards link here, and a card must land on exactly the rows
+        # it counted.
+        if params.get("state") == "active":
+            qs = qs.filter(status__in=ACTIVE_TICKET_STATUSES)
+        if value := params.get("priority"):
+            qs = qs.filter(priority=value)
+        if value := params.get("category"):
+            qs = qs.filter(category=value)
+        if value := params.get("assignee"):
+            # `me` spares callers a round trip for their own id, and keeps the
+            # "assigned to me" deep-link a static URL.
+            qs = (
+                qs.filter(assignee=self.request.user)
+                if value == "me"
+                else qs.filter(assignee_id=value)
+            )
+        if value := params.get("requester"):
+            qs = qs.filter(requester_id=value)
+        if value := params.get("school"):
+            # Legacy display filter: resolve the school through its canonical
+            # tenant (School.tenant is OneToOne, related_name="school_profile").
+            qs = qs.filter(tenant__school_profile__id=value)
+        if value := params.get("created_from"):
+            qs = qs.filter(created_at__date__gte=value)
+        if value := params.get("created_to"):
+            qs = qs.filter(created_at__date__lte=value)
+        if value := params.get("q"):
+            # Search only after visibility scoping so hidden tickets cannot be discovered.
+            qs = qs.filter(
+                Q(title__icontains=value)
+                | Q(description__icontains=value)
+                | Q(ticket_number__icontains=value)
+            )
+        return qs.order_by("-created_at")
+
+    # Use narrower serializers for create/update while returning richer detail on retrieve.
+    def get_serializer_class(self):
+        if self.action == "retrieve":
+            return TicketDetailSerializer
+        if self.action == "create":
+            return TicketCreateSerializer
+        if self.action in ("update", "partial_update"):
+            return TicketUpdateSerializer
+        return TicketSerializer
+
+    # Resolve by primary key but return 404 when object-level visibility fails.
+    def get_object(self):
+        ticket = get_object_or_404(
+            Ticket.all_objects.select_related(
+                "requester__tenant", "assignee__tenant", "tenant", "branch",
+            ),
+            pk=self.kwargs["pk"],
+        )
+        if not visibility.can_view_ticket(self.request.user, ticket):
+            # Hidden tickets are indistinguishable from missing tickets to callers.
+            raise NotFound("No such ticket.")
+        return ticket
+
+    # File a new ticket through the service so audit and triage notifications stay coupled.
+    def create(self, request, *args, **kwargs):
+        serializer = TicketCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        ticket = ticket_svc.create_ticket(actor=request.user, **serializer.validated_data)
+        return success_response(
+            message="Ticket created successfully.",
+            data=TicketDetailSerializer(ticket, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    # Edit ticket fields through the service to enforce field allowlisting.
+    def update(self, request, *args, **kwargs):
+        ticket = self.get_object()
+        serializer = TicketUpdateSerializer(data=request.data, partial=kwargs.pop("partial", False))
+        serializer.is_valid(raise_exception=True)
+        ticket = ticket_svc.update_ticket(ticket, actor=request.user, **serializer.validated_data)
+        return success_response(
+            message="Ticket updated successfully.",
+            data=TicketDetailSerializer(ticket, context={"request": request}).data,
+        )
+
+    # PATCH shares the same service path as PUT with partial validation enabled.
+    def partial_update(self, request, *args, **kwargs):
+        kwargs["partial"] = True
+        return self.update(request, *args, **kwargs)
+
+    # Tickets are append-only operational records; deletion would break audit history.
+    def destroy(self, request, *args, **kwargs):
+        raise PermissionDenied("Tickets are retained for audit history and cannot be deleted.")
+
+    # Assign support ownership or return the ticket to the unassigned queue.
+    @action(detail=True, methods=["post"])
+    def assign(self, request, pk=None):
+        ticket = self.get_object()
+        serializer = TicketAssignSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        assignee_id = serializer.validated_data.get("assignee_id")
+        # The service validates that a selected assignee is support-capable.
+        assignee = User.objects.get(pk=assignee_id) if assignee_id else None
+        ticket = ticket_svc.assign_ticket(ticket, actor=request.user, assignee=assignee)
+        return success_response(
+            message="Ticket assigned successfully.",
+            data=TicketDetailSerializer(ticket, context={"request": request}).data,
+        )
+
+    # Return support-capable users for assignment pickers.
+    @action(detail=True, methods=["get"], url_path="eligible-assignees")
+    def eligible_assignees(self, request, pk=None):
+        ticket = self.get_object()
+        if not visibility.can_assign_ticket(request.user, ticket):
+            raise PermissionDenied("You cannot assign this ticket.")
+        users = visibility.eligible_support_users_qs()
+        return success_response(
+            message="Eligible ticket assignees retrieved successfully.",
+            data=TicketUserSerializer(users, many=True).data,
+        )
+
+    # Move a ticket through the service-owned lifecycle graph.
+    @action(detail=True, methods=["post"])
+    def transition(self, request, pk=None):
+        ticket = self.get_object()
+        serializer = TicketTransitionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        ticket = ticket_svc.transition_ticket(ticket, actor=request.user, status=serializer.validated_data["status"])
+        return success_response(
+            message="Ticket status updated successfully.",
+            data=TicketDetailSerializer(ticket, context={"request": request}).data,
+        )
+
+    # List visible comments or add a new public reply/internal note.
+    @action(detail=True, methods=["get", "post"])
+    def comments(self, request, pk=None):
+        ticket = self.get_object()
+        if request.method == "GET":
+            comments = (
+                ticket.comments.select_related("author__tenant")
+                .prefetch_related("attachments__uploaded_by__tenant")
+            )
+            if not visibility.can_view_internal_notes(request.user, ticket):
+                # Internal notes are support-only and must not leak through list responses.
+                comments = comments.filter(visibility=CommentVisibility.PUBLIC)
+            return success_response(
+                message="Comments retrieved successfully.",
+                data=TicketCommentSerializer(comments, many=True, context={"request": request}).data,
+            )
+
+        serializer = TicketCommentCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        comment = ticket_svc.add_comment(ticket, actor=request.user, **serializer.validated_data)
+        return success_response(
+            message="Comment added successfully.",
+            data=TicketCommentSerializer(comment, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    # Attach uploaded evidence to a ticket or visible comment thread.
+    @action(detail=True, methods=["post"])
+    def attachments(self, request, pk=None):
+        ticket = self.get_object()
+        serializer = TicketAttachmentCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        comment = None
+        comment_id = serializer.validated_data.get("comment_id")
+        if comment_id:
+            # Scoped to this ticket so foreign comment ids 404 instead of
+            # leaking their existence through a different error.
+            comment = get_object_or_404(TicketComment, pk=comment_id, ticket=ticket)
+        attachment = ticket_svc.add_attachment(
+            ticket,
+            actor=request.user,
+            file_obj=serializer.validated_data["file"],
+            comment=comment,
+        )
+        return success_response(
+            message="Attachment added successfully.",
+            data=TicketAttachmentSerializer(attachment, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path=r"attachments/(?P<attachment_id>[^/.]+)/download",
+        url_name="attachment-download",
+    )
+    # Stream an attachment only after ticket and internal-note visibility checks.
+    def attachment_download(self, request, pk=None, attachment_id=None):
+        ticket = self.get_object()
+        attachment = get_object_or_404(
+            TicketAttachment.objects.select_related("comment", "uploaded_by__tenant"),
+            pk=attachment_id,
+            ticket=ticket,
+        )
+        if (
+            # Internal-note attachments inherit the note visibility.
+            attachment.comment_id
+            and attachment.comment.visibility == CommentVisibility.INTERNAL
+            and not visibility.can_view_internal_notes(request.user, ticket)
+        ):
+            raise NotFound("No such attachment.")
+        if not attachment.file:
+            raise NotFound("No file is attached.")
+
+        # Stored content type wins; otherwise derive a safe browser fallback from filename.
+        content_type = attachment.content_type or mimetypes.guess_type(
+            attachment.original_filename
+        )[0] or "application/octet-stream"
+        return FileResponse(
+            attachment.file.open("rb"),
+            content_type=content_type,
+            as_attachment=not content_type.startswith("image/"),
+            filename=attachment.original_filename,
+        )
+
+    # Return the immutable ticket-local audit trail.
+    @action(detail=True, methods=["get"], url_path="audit")
+    def audit(self, request, pk=None):
+        ticket = self.get_object()
+        qs = ticket.audit_logs.select_related("actor__tenant").all()
+        return success_response(
+            message="Ticket audit trail retrieved successfully.",
+            data=TicketAuditLogSerializer(qs, many=True).data,
+        )
+
+
+# Aggregate visible ticket workload for dashboard counters.
+class TicketDashboardView(APIView):
+    permission_classes = TICKET_PERMISSIONS
+
+    def get(self, request):
+        # Dashboard numbers must use the same visibility boundary as the ticket list.
+        qs = visibility.visible_tickets_qs(request.user)
+        # The per-person counters are workload, not history: they answer "what
+        # is still on me", so finished tickets are excluded. `total` and the
+        # by_status/by_priority/by_category breakdowns stay whole-population -
+        # a per-status count that filtered by status would be nonsense.
+        active = Q(status__in=ACTIVE_TICKET_STATUSES)
+        aggregates = {
+            "total": Count("id"),
+            "assigned_to_me": Count("id", filter=Q(assignee=request.user) & active),
+            "requested_by_me": Count("id", filter=Q(requester=request.user) & active),
+        }
+        for key, _ in TicketStatus.choices:
+            # Build stable keys for every enum value, even when the count is zero.
+            aggregates[f"status__{key}"] = Count("id", filter=Q(status=key))
+        for key, _ in TicketPriority.choices:
+            aggregates[f"priority__{key}"] = Count("id", filter=Q(priority=key))
+        for key, _ in TicketCategory.choices:
+            aggregates[f"category__{key}"] = Count("id", filter=Q(category=key))
+        row = qs.aggregate(**aggregates)
+        payload = {
+            "total": row["total"],
+            "by_status": {key: row[f"status__{key}"] for key, _ in TicketStatus.choices},
+            "by_priority": {key: row[f"priority__{key}"] for key, _ in TicketPriority.choices},
+            "by_category": {key: row[f"category__{key}"] for key, _ in TicketCategory.choices},
+            "assigned_to_me": row["assigned_to_me"],
+            "requested_by_me": row["requested_by_me"],
+        }
+        return success_response(
+            message="Ticket dashboard retrieved successfully.",
+            data=TicketDashboardSerializer(payload).data,
+        )

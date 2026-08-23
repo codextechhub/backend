@@ -9,6 +9,7 @@ from ..constants import (
     CreditNoteKind,
     DocType,
     InstallmentStatus,
+    InvoicePaymentStatus,
     PaymentMethod,
     PaymentPlanFrequency,
     PaymentPlanStatus,
@@ -19,7 +20,7 @@ from .gl import Account, CostCenter, Currency, TaxCode
 from .ar import Customer, Invoice
 
 # ---------------------------------------------------------------------------
-# Phase 4 — AR adjustments (credit/debit notes, refunds, write-offs)
+# Phase 4 - AR adjustments (credit/debit notes, refunds, write-offs)
 # ---------------------------------------------------------------------------
 #
 # The other side of the revenue cycle: not every billed amount is collected as first
@@ -41,6 +42,15 @@ class CreditNote(FinanceDocument):
     """
 
     DOC_TYPE = DocType.CREDIT_NOTE  # overridden per-instance for DEBIT notes (DRN)
+
+    #: Approval-gate identity. A credit note reduces a receivable without cash moving,
+    #: which above a threshold deserves the same second pair of eyes a refund gets.
+    #: A DEBIT note increases the receivable and is deliberately covered by the same
+    #: type: the risk is a mistaken note either way, and one gate is simpler to
+    #: administer than two. The gate is opt-in by template.
+    workflow_document_type = "finance.credit_note"
+    #: The field a threshold-gated stage reads to decide whether it applies.
+    workflow_amount_field = "total"
 
     customer = models.ForeignKey(
         Customer, on_delete=models.PROTECT, related_name="credit_notes",
@@ -67,6 +77,20 @@ class CreditNote(FinanceDocument):
     allocated_amount = MoneyField(
         help_text="Portion of a CREDIT note applied to invoices, in kobo.",
     )
+    refunded_amount = MoneyField(
+        help_text="Portion of a CREDIT note's unapplied value already paid back out as "
+                  "a customer refund, in kobo. Maintained by RefundAllocation.",
+    )
+    # A DEBIT note is a supplementary charge that debits AR, so - like an invoice - it
+    # is *settled* by receipts. ``amount_paid`` tracks cash allocated against it and
+    # ``settlement_status`` mirrors Invoice.payment_status. Both are inert on CREDIT
+    # notes (which are the ones with balances *given back*, tracked by allocated_amount).
+    amount_paid = MoneyField(help_text="Cash allocated to this DEBIT note, in kobo.")
+    settlement_status = models.CharField(
+        max_length=8, choices=InvoicePaymentStatus.choices,
+        default=InvoicePaymentStatus.UNPAID,
+        help_text="How much of a DEBIT note has been settled by receipts.",
+    )
 
     journal = models.ForeignKey(
         "JournalEntry", on_delete=models.PROTECT, related_name="credit_notes",
@@ -87,8 +111,41 @@ class CreditNote(FinanceDocument):
 
     @property
     def unallocated_amount(self) -> int:
-        """Credit not yet applied to an invoice (CREDIT notes only)."""
+        """Credit not yet applied to an invoice (CREDIT notes only).
+
+        A sub-ledger fact, blind to refunds - see :attr:`credit_remaining` for the
+        amount actually still available to spend.
+        """
         return self.total - self.allocated_amount
+
+    @property
+    def credit_remaining(self) -> int:
+        """CREDIT-note value still sitting in the customer-credit liability (2140).
+
+        Unapplied value less whatever has since been refunded out of it. This is the
+        spendable figure; ``unallocated_amount`` is not.
+        """
+        return self.total - self.allocated_amount - self.refunded_amount
+
+    @property
+    def balance_due(self) -> int:
+        """Outstanding amount a DEBIT note still owes (total minus cash allocated).
+
+        Meaningful for DEBIT notes only; a CREDIT note never carries a balance due.
+        """
+        return self.total - self.amount_paid
+
+    def refresh_settlement_status(self, *, save: bool = True) -> None:
+        """Derive a DEBIT note's ``settlement_status`` from ``amount_paid`` vs total."""
+        if self.amount_paid <= 0:
+            status = InvoicePaymentStatus.UNPAID
+        elif self.amount_paid >= self.total:
+            status = InvoicePaymentStatus.PAID
+        else:
+            status = InvoicePaymentStatus.PARTIAL
+        self.settlement_status = status
+        if save:
+            self.save(update_fields=["settlement_status", "updated_at"])
 
     def recompute_totals(self, *, save: bool = True) -> None:
         agg = self.lines.aggregate(
@@ -162,31 +219,136 @@ class CreditNoteAllocation(TimeStampedModel):
         Invoice, on_delete=models.PROTECT, related_name="credit_allocations",
     )
     amount = MoneyField(help_text="Amount of the note applied to this invoice, in kobo.")
+    effective_date = models.DateField(
+        null=True, blank=True,
+        help_text="Accounting date this settlement took effect - the date of the "
+                  "journal that credited AR for it. Null only on rows predating the "
+                  "column, where it is reconstructed as max(note date, invoice date).",
+    )
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(
-                fields=["note", "invoice"], name="uniq_finance_cnalloc_note_invoice",
-            ),
             models.CheckConstraint(
                 check=models.Q(amount__gte=0), name="ck_finance_cnalloc_non_negative",
             ),
         ]
-        indexes = [models.Index(fields=["invoice"]), models.Index(fields=["note"])]
+        indexes = [
+            models.Index(fields=["invoice"]),
+            models.Index(fields=["note"]),
+            models.Index(fields=["effective_date"]),
+        ]
         ordering = ["note", "id"]
 
     def __str__(self) -> str:
         return f"{self.note_id}→{self.invoice_id}: {self.amount}"
 
 
+class DebitNoteAllocation(TimeStampedModel):
+    """Links a slice of a :class:`Payment` to a specific DEBIT :class:`CreditNote`.
+
+    A DEBIT note debits AR when it posts (the customer owes it), so a receipt settles
+    it exactly like an invoice: the GL already credits AR for the applied cash (in
+    :func:`vs_finance.receivables._post_payment_atomic`); this row is the sub-ledger
+    record of which debit note that cash cleared, and bumps the note's ``amount_paid``.
+    The invoice-settlement twin is :class:`PaymentAllocation`.
+    """
+
+    payment = models.ForeignKey(
+        "Payment", on_delete=models.CASCADE, related_name="debit_note_allocations",
+    )
+    note = models.ForeignKey(
+        CreditNote, on_delete=models.PROTECT, related_name="settlements",
+    )
+    amount = MoneyField(help_text="Amount of the payment applied to this debit note, in kobo.")
+    effective_date = models.DateField(
+        null=True, blank=True,
+        help_text="Accounting date this settlement took effect - the date of the "
+                  "journal that credited AR for it. Null only on rows predating the "
+                  "column, where it is reconstructed as max(receipt date, note date).",
+    )
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(amount__gte=0), name="ck_finance_dnalloc_non_negative",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["note"]),
+            models.Index(fields=["payment"]),
+            models.Index(fields=["effective_date"]),
+        ]
+        ordering = ["payment", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.payment_id}→DN{self.note_id}: {self.amount}"
+
+
+class CustomerCreditAllocationJournal(TimeStampedModel):
+    """Durable link from a later customer-credit allocation to its GL journal.
+
+    Receipts and CREDIT notes may initially leave value in the customer-credit
+    liability, then apply it to AR later.  Each later application raises its own
+    reclassification journal.  Keeping that journal explicitly attached to the
+    source document lets a document-level void reverse *all* of its GL effects.
+    """
+
+    payment = models.ForeignKey(
+        "Payment", on_delete=models.PROTECT, related_name="allocation_journals",
+        null=True, blank=True,
+    )
+    note = models.ForeignKey(
+        CreditNote, on_delete=models.PROTECT, related_name="allocation_journals",
+        null=True, blank=True,
+    )
+    journal = models.OneToOneField(
+        "JournalEntry", on_delete=models.PROTECT,
+        related_name="customer_credit_allocation",
+    )
+    amount = MoneyField(help_text="Customer credit reclassified to AR, in kobo.")
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(payment__isnull=False, note__isnull=True)
+                    | models.Q(payment__isnull=True, note__isnull=False)
+                ),
+                name="ck_finance_ccallocjournal_one_source",
+            ),
+        ]
+        ordering = ["journal_id", "id"]
+
+
 class Refund(FinanceDocument):
     """A cash refund paid back to a :class:`Customer` for an over-paid credit balance.
 
-    Posting (:func:`vs_finance.credit_notes.post_refund`) raises ``Dr AR control,
-    Cr bank`` — handing money back and restoring the customer's receivable to zero.
+    Posting (:func:`vs_finance.credit_notes.post_refund`) raises ``Dr customer credit
+    (2140), Cr bank`` - paying out the customer's stored credit balance (not an open
+    receivable), capped at their available credit.
+
+    Args:
+        customer: The customer receiving the refund.
+        refund_date: The date the refund is paid.
+        currency: The currency of the refund (optional, defaults to entity's).
+        method: How the refund is paid (bank transfer, cash, etc.).
+        amount: The amount refunded, in kobo.
+        bank_account: The bank account the refund is paid from (optional).
+        deposit_account: The GL account credited (where the money left from).
+        reference: Optional reference for the refund.
+        narration: Optional narration for the refund.
     """
 
     DOC_TYPE = DocType.REFUND
+
+    #: vs_workflow document-type token. When a WorkflowTemplate exists for this
+    #: token at the refund's (school, branch) scope, the payout is gated behind
+    #: approval (opt-in by template); otherwise the direct-post path is unchanged.
+    #: ``amount`` (kobo) is the plain magnitude field threshold conditions read via
+    #: ``{"op": "gte", "field": "amount", ...}``.
+    workflow_document_type = "finance.refund"
+    #: The field a threshold-gated stage reads to decide whether it applies.
+    workflow_amount_field = "amount"
 
     customer = models.ForeignKey(
         Customer, on_delete=models.PROTECT, related_name="refunds",
@@ -225,17 +387,167 @@ class Refund(FinanceDocument):
         ]
 
 
+class RefundAllocation(TimeStampedModel):
+    """Links a slice of a :class:`Refund` to the credit lot it was paid out of.
+
+    A refund debits the customer-credit liability (2140) as one lump, but that
+    liability is made of dated parcels - individual receipts and CREDIT notes, each
+    with its own accounting date. Without this row the sub-ledger could not say
+    *which* credit was handed back, so a receipt went on reporting its cash as
+    unapplied and available long after it had been refunded, and two different parts
+    of the system disagreed about whether the money was still there.
+
+    Exactly one of ``payment`` / ``note`` is set - the lot the money came from.
+    :func:`vs_finance.chronology.plan_credit_draw` chooses the lots oldest-first, and
+    posting keeps the lot's ``refunded_amount`` in step inside the same transaction.
+    """
+
+    refund = models.ForeignKey(
+        Refund, on_delete=models.CASCADE, related_name="allocations",
+    )
+    payment = models.ForeignKey(
+        "Payment", on_delete=models.PROTECT, related_name="refund_allocations",
+        null=True, blank=True,
+        help_text="The receipt whose unapplied cash funded this slice of the refund.",
+    )
+    note = models.ForeignKey(
+        CreditNote, on_delete=models.PROTECT, related_name="refund_allocations",
+        null=True, blank=True,
+        help_text="The CREDIT note whose unapplied value funded this slice of the refund.",
+    )
+    amount = MoneyField(help_text="Amount of the refund drawn from this lot, in kobo.")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["refund", "payment"], name="uniq_finance_refalloc_refund_payment",
+                condition=models.Q(payment__isnull=False),
+            ),
+            models.UniqueConstraint(
+                fields=["refund", "note"], name="uniq_finance_refalloc_refund_note",
+                condition=models.Q(note__isnull=False),
+            ),
+            models.CheckConstraint(
+                check=models.Q(amount__gte=0), name="ck_finance_refalloc_non_negative",
+            ),
+            # Exactly one source lot - a slice funded by both or neither is meaningless
+            # and would silently break the 2140 attribution.
+            models.CheckConstraint(
+                check=(
+                    models.Q(payment__isnull=False, note__isnull=True)
+                    | models.Q(payment__isnull=True, note__isnull=False)
+                ),
+                name="ck_finance_refalloc_one_source",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["refund"]),
+            models.Index(fields=["payment"]),
+            models.Index(fields=["note"]),
+        ]
+        ordering = ["refund", "id"]
+
+    @property
+    def source(self):
+        """The credit lot this slice was drawn from (a Payment or a CreditNote)."""
+        return self.payment or self.note
+
+    def __str__(self) -> str:
+        return f"{self.refund_id}←{self.source}: {self.amount}"
+
+
+class WriteOffRequest(FinanceDocument):
+    """A first-class, approvable bad-debt write-off against a posted :class:`Invoice`.
+
+    Historically a write-off was a bare invoice action recorded only in the audit log.
+    Making it a numbered :class:`FinanceDocument` gives it a lifecycle the workflow
+    engine can attach to: it is created DRAFT, optionally routed through approval, and
+    only on approval (or a direct post when ungated) does
+    :func:`vs_finance.credit_notes.write_off_invoice` run - unchanged - to post the
+    ``Dr bad-debt expense, Cr AR control`` journal and clear that much of the invoice
+    via :attr:`Invoice.amount_credited`. The posted journal is linked back on
+    :attr:`journal`.
+
+    Args:
+        invoice: The posted invoice whose outstanding balance is being written off.
+        amount: Amount to write off, in kobo. When left 0/omitted the service defaults
+            it to the invoice's full outstanding balance at post time.
+        write_off_account: Expense account debited; defaults to the entity's bad-debt
+            account (CoA ``5300``) inside the service when left null.
+        write_off_date: Accounting date for the write-off journal (defaults to the
+            invoice date inside the service when null).
+        narration: Optional narration carried onto the journal.
+        reason: Optional free-text reason for the write-off (governance/audit).
+        journal: The bad-debt :class:`JournalEntry` once posted.
+    """
+
+    DOC_TYPE = DocType.WRITE_OFF
+
+    #: vs_workflow document-type token. When a WorkflowTemplate exists for this token
+    #: at the request's (school, branch) scope, the write-off is gated behind approval
+    #: (opt-in by template); otherwise the direct-post path is unchanged. ``amount``
+    #: (kobo) is the magnitude threshold conditions read.
+    workflow_document_type = "finance.write_off"
+    #: The field a threshold-gated stage reads to decide whether it applies.
+    workflow_amount_field = "amount"
+
+    invoice = models.ForeignKey(
+        Invoice, on_delete=models.PROTECT, related_name="write_off_requests",
+    )
+    amount = MoneyField(help_text="Amount to write off, in kobo.")
+    write_off_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="write_off_requests",
+        null=True, blank=True,
+        help_text="Expense account debited; defaults to the entity's bad-debt account.",
+    )
+    write_off_date = models.DateField(null=True, blank=True)
+    narration = models.CharField(max_length=255, blank=True, default="")
+    reason = models.CharField(max_length=255, blank=True, default="")
+    journal = models.ForeignKey(
+        "JournalEntry", on_delete=models.PROTECT, related_name="write_off_requests",
+        null=True, blank=True,
+    )
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["invoice"]),
+            models.Index(fields=["entity", "write_off_date"]),
+        ]
+
+    @property
+    def amount_kobo(self) -> int:
+        """Stable alias for :attr:`amount` (kobo) for threshold conditions."""
+        return self.amount
+
+
 class Concession(FinanceDocument):
-    """A non-cash reduction of a receivable — a discount, waiver or scholarship.
+    """A non-cash reduction of a receivable - a discount, waiver or scholarship.
 
     Posting (:func:`vs_finance.installments.post_concession`) raises ``Dr discounts &
     allowances, Cr AR control`` for ``amount`` and clears that much of the linked
-    invoice via :attr:`Invoice.amount_credited` — exactly like a targeted, single-line
+    invoice via :attr:`Invoice.amount_credited` - exactly like a targeted, single-line
     credit note, but tagged by :class:`~vs_finance.constants.ConcessionKind` for
     reporting (a school tenant's *scholarship*/*bursary* is just ``kind=SCHOLARSHIP``).
+
+    Arguments:
+        customer: The customer receiving the concession.
+        invoice: The invoice whose balance this concession reduces.
+        kind: The type of concession (discount, waiver, scholarship).
+        concession_date: The date the concession is granted.
+        amount: The amount of the receivable forgiven/discounted, in kobo.
+        allowance_account: The contra-revenue/expense account debited (optional).
+        reason: Optional reason for the concession.
     """
 
     DOC_TYPE = DocType.CONCESSION
+
+    #: Approval-gate identity. A concession forgives revenue outright, so above a
+    #: threshold it should need a second person exactly as a refund does. The gate is
+    #: opt-in by template; see :mod:`vs_finance.approvals`.
+    workflow_document_type = "finance.concession"
+    #: The field a threshold-gated stage reads to decide whether it applies.
+    workflow_amount_field = "amount"
 
     customer = models.ForeignKey(
         Customer, on_delete=models.PROTECT, related_name="concessions",
@@ -275,7 +587,7 @@ class Concession(FinanceDocument):
 class PaymentPlan(FinanceDocument):
     """An installment schedule that spreads a receivable over dated installments.
 
-    A pure scheduling overlay — it never posts to the GL. The invoice it references
+    A pure scheduling overlay - it never posts to the GL. The invoice it references
     already sits in AR; the plan only says *when* the customer is expected to pay and
     *how much* each time, so reminders/dunning and progress tracking have something to
     measure against. Settlement is reflected by distributing the linked invoice's
@@ -303,6 +615,11 @@ class PaymentPlan(FinanceDocument):
     )
     installment_count = models.PositiveSmallIntegerField(default=1)
     total_amount = MoneyField(help_text="Total amount being spread, in kobo.")
+    baseline_settled = MoneyField(
+        help_text="Invoice settlement (cash + non-cash credits) already applied when "
+                  "the plan was activated. Excluded from installment progress so "
+                  "pre-plan credits/waivers aren't miscounted as installment payments.",
+    )
     notes = models.CharField(max_length=255, blank=True, default="")
 
     class Meta(FinanceDocument.Meta):
@@ -367,5 +684,3 @@ class PaymentPlanInstallment(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"#{self.seq_no} due {self.due_date}: {self.amount} ({self.status})"
-
-

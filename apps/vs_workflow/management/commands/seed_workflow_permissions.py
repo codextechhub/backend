@@ -5,7 +5,7 @@ Run order:
     python manage.py create_superuser             # ensures xvs_super_admin + xvs_platform_admin
     python manage.py seed_workflow_permissions
 
-Safe to re-run — all operations use get_or_create.
+Safe to re-run - all operations use get_or_create.
 """
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -31,6 +31,14 @@ WORKFLOW_RESOURCES = [
         ],
     ),
     (
+        "group",
+        "Workflow approver groups",
+        [
+            ("manage", "Create, edit, and delete approver groups and their members", True),
+            ("view",   "View approver groups and their resolved members",             False),
+        ],
+    ),
+    (
         "action",
         "Workflow stage actions",
         [
@@ -40,6 +48,7 @@ WORKFLOW_RESOURCES = [
 ]
 
 PLATFORM_ROLE_IDS = ["xvs_super_admin", "xvs_platform_admin"]
+_PLATFORM_ROLE_NAMES = {"xvs_super_admin": "XVS Super Admin", "xvs_platform_admin": "XVS Platform Admin"}
 
 
 class Command(BaseCommand):
@@ -52,9 +61,11 @@ class Command(BaseCommand):
             PermissionAction,
             PermissionModule,
             PermissionResource,
-            PlatformRolePermission,
-            PlatformRoleTemplate,
+            TenantRolePermission,
+            TenantRoleTemplate,
+            PermissionScope,
         )
+        from vs_tenants.models import Tenant
 
         self.stdout.write(self.style.MIGRATE_HEADING("\n  Seeding workflow permissions...\n"))
 
@@ -79,7 +90,7 @@ class Command(BaseCommand):
                 action = PermissionAction.objects.filter(name=action_name).first()
                 if not action:
                     self.stdout.write(self.style.WARNING(
-                        f"  ⚠  Action '{action_name}' not found — run seed_actions first."
+                        f"  ⚠  Action '{action_name}' not found - run seed_actions first."
                     ))
                     continue
 
@@ -98,6 +109,7 @@ class Command(BaseCommand):
                         is_restricted=is_restricted,
                         sensitivity_level="SENSITIVE" if is_restricted else "NORMAL",
                         is_active=True,
+                        scope=PermissionScope.TENANT,
                     )
                     perm.save()
                     created_count += 1
@@ -105,34 +117,42 @@ class Command(BaseCommand):
 
                 all_perms.append(perm)
 
-        # ── Grant to platform roles ────────────────────────────────────────────
+        # ── Grant to platform roles (codex tenant) ─────────────────────────────
 
         self.stdout.write(self.style.MIGRATE_HEADING("\n  Granting to platform roles...\n"))
 
-        for role_id in PLATFORM_ROLE_IDS:
-            try:
-                role = PlatformRoleTemplate.objects.get(id=role_id)
-            except PlatformRoleTemplate.DoesNotExist:
-                self.stdout.write(self.style.WARNING(
-                    f"  ⚠  Role '{role_id}' not found — run create_superuser first."
-                ))
-                continue
-
-            granted = 0
-            for perm in all_perms:
-                _, link_created = PlatformRolePermission.objects.get_or_create(
-                    role=role,
-                    permission=perm,
-                    defaults={"granted": True, "granted_by": None},
+        codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
+        if codex is None:
+            self.stdout.write(self.style.WARNING(
+                "  ⚠  Codex platform tenant not found - run migrations first; grants skipped."
+            ))
+        else:
+            for role_id in PLATFORM_ROLE_IDS:
+                role, _ = TenantRoleTemplate.objects.get_or_create(
+                    tenant=codex,
+                    key=role_id,
+                    defaults={
+                        "name": _PLATFORM_ROLE_NAMES.get(role_id, role_id),
+                        "status": "ACTIVE",
+                        "is_system_role": True,
+                        "is_locked": True,
+                    },
                 )
-                if link_created:
-                    granted += 1
+                granted = 0
+                for perm in all_perms:
+                    _, link_created = TenantRolePermission.objects.get_or_create(
+                        role=role,
+                        permission=perm,
+                        defaults={"granted": True, "granted_by": None},
+                    )
+                    if link_created:
+                        granted += 1
 
-            self.stdout.write(
-                self.style.SUCCESS(f"  {role_id}: granted {granted} new permission(s).")
-                if granted else
-                f"  {role_id}: all permissions already assigned."
-            )
+                self.stdout.write(
+                    self.style.SUCCESS(f"  {role_id}: granted {granted} new permission(s).")
+                    if granted else
+                    f"  {role_id}: all permissions already assigned."
+                )
 
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_count} new permission(s) created, "

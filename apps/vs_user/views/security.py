@@ -11,12 +11,15 @@
 #   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet
 
 from __future__ import annotations
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status, viewsets, mixins
 from rest_framework.decorators import action
+from rest_framework.filters import SearchFilter
 from rest_framework.views import APIView
 from vs_rbac.permissions import IsAuthenticatedAndActive, IsVisionStaff, HasRBACPermission
+from vs_tenants.models import Tenant
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
 from ..models import (
@@ -24,11 +27,14 @@ from ..models import (
     AuthEventLog, PasswordResetRequest,
 )
 from ..serializers import (
-    LoginSessionReadSerializer, ForceLogoutSerializer, AuthAttemptReadSerializer, AccountLockoutReadSerializer,
+    LoginSessionReadSerializer, EndOtherSessionsSerializer, ForceLogoutSerializer, AuthAttemptReadSerializer, AccountLockoutReadSerializer,
     UnlockAccountSerializer, PasswordResetAdminSerializer,
 )
 from ..services.password   import PasswordService
-from ..services.audit      import log_auth_event, blacklist_all_user_tokens, blacklist_token_by_jti
+from ..services.audit      import (
+    log_auth_event, blacklist_all_user_tokens, blacklist_token_by_jti,
+    blacklist_tokens_by_jti, expire_stale_login_sessions,
+)
 
 
 from .me import _get_date_param
@@ -53,20 +59,40 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
     serializer_class = LoginSessionReadSerializer
     pagination_class = XVSPagination
+    filter_backends = [SearchFilter]
+    search_fields = (
+        'user__email',
+        'user__first_name',
+        'user__last_name',
+        'ip_address',
+        'device_label',
+        'user_agent',
+        'tenant__name',
+        'tenant__slug',
+    )
 
     def get_permissions(self):
+        if self.action in {'mine', 'end_mine', 'end_other_mine', 'end_all_mine'}:
+            return [IsAuthenticatedAndActive()]
         if self.action == 'force_logout':
             self.rbac_permission = 'platform.team.suspend'
             return [IsAuthenticatedAndActive(), HasRBACPermission()]
-        return [IsAuthenticatedAndActive()]
+        self.rbac_permission = 'platform.security.view'
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
         user = self.request.user
-        qs   = LoginSession.objects.select_related('user', 'school').order_by('-last_seen_at')
 
-        if getattr(user, 'user_type', None) == User.UserType.CX_STAFF:
-            pass  # no tenant boundary — sees all sessions
+        # Platform-kind actors see every session in the asserted tenant scope
+        # (the TenantAwareManager applies request.tenant); everyone else sees
+        # only their own sessions.
+        if getattr(getattr(user, 'tenant', None), 'kind', None) == Tenant.Kind.PLATFORM:
+            expire_stale_login_sessions(tenant=getattr(self.request, 'tenant', None))
         else:
+            expire_stale_login_sessions(user=user)
+
+        qs = LoginSession.objects.select_related('user', 'tenant').order_by('-last_seen_at')
+        if getattr(getattr(user, 'tenant', None), 'kind', None) != Tenant.Kind.PLATFORM:
             qs = qs.filter(user=user)
 
         if is_active := self.request.query_params.get('is_active'):
@@ -77,6 +103,122 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
         return qs
 
+    @action(detail=False, methods=['get'], url_path='mine')
+    def mine(self, request):
+        """List only the signed-in user's sessions (self-service)."""
+        expire_stale_login_sessions(user=request.user)
+        queryset = (
+            LoginSession.objects
+            .filter(user=request.user)
+            .select_related('user', 'tenant')
+            .order_by('-last_seen_at')
+        )
+        if is_active := request.query_params.get('is_active'):
+            queryset = queryset.filter(is_active=is_active.lower() == 'true')
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return success_response(
+            message="Data retrieved successfully.",
+            data=serializer.data,
+        )
+
+    @action(detail=True, methods=['post'], url_path='end-mine')
+    def end_mine(self, request, pk=None):
+        """End one session only when it belongs to the signed-in user."""
+        session = LoginSession.objects.filter(pk=pk, user=request.user).first()
+        if session is None:
+            return error_response(
+                message="Session not found.", status=status.HTTP_404_NOT_FOUND,
+            )
+        ended = 0
+        if session.is_active:
+            session.end(reason='FORCE_LOGOUT')
+            session.save(update_fields=['is_active', 'ended_at', 'end_reason', 'updated_at'])
+            blacklist_token_by_jti(session.refresh_jti)
+            ended = 1
+        log_auth_event(
+            actor=request.user,
+            subject=request.user,
+            tenant=request.user.tenant,
+            event=AuthEventLog.Event.FORCE_LOGOUT,
+            request=request,
+            metadata={'ended_sessions': ended, 'reason': 'SELF_SIGNOUT'},
+        )
+        return success_response(message="Session ended.", data={'ended_sessions': ended})
+
+    @action(detail=False, methods=['post'], url_path='end-all-mine')
+    def end_all_mine(self, request):
+        """End all active sessions belonging to the signed-in user."""
+        ended = LoginSession.all_objects.filter(
+            user=request.user, is_active=True,
+        ).update(
+            is_active=False,
+            ended_at=timezone.now(),
+            end_reason='FORCE_LOGOUT',
+        )
+        blacklist_all_user_tokens(request.user)
+        log_auth_event(
+            actor=request.user,
+            subject=request.user,
+            tenant=request.user.tenant,
+            event=AuthEventLog.Event.FORCE_LOGOUT,
+            request=request,
+            metadata={'ended_sessions': ended, 'reason': 'SUSPECTED_COMPROMISE'},
+        )
+        return success_response(
+            message="All sessions ended.", data={'ended_sessions': ended},
+        )
+
+    @action(detail=False, methods=['post'], url_path='end-other-mine')
+    def end_other_mine(self, request):
+        """End every active session owned by the caller except this device."""
+        serializer = EndOtherSessionsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        current_session_id = serializer.validated_data['current_session_id']
+        expire_stale_login_sessions(user=request.user)
+
+        with transaction.atomic():
+            active_sessions = list(
+                LoginSession.all_objects
+                .select_for_update()
+                .filter(user=request.user, is_active=True)
+                .values_list('pk', 'refresh_jti')
+            )
+            if not any(pk == current_session_id for pk, _ in active_sessions):
+                return error_response(
+                    message="Current session not found.",
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            other_sessions = [
+                session for session in active_sessions
+                if session[0] != current_session_id
+            ]
+            other_ids = [session_id for session_id, _ in other_sessions]
+            ended = LoginSession.all_objects.filter(pk__in=other_ids).update(
+                is_active=False,
+                ended_at=timezone.now(),
+                end_reason='FORCE_LOGOUT',
+            )
+            blacklist_tokens_by_jti(
+                refresh_jti for _, refresh_jti in other_sessions
+            )
+
+        log_auth_event(
+            actor=request.user,
+            subject=request.user,
+            tenant=request.user.tenant,
+            event=AuthEventLog.Event.FORCE_LOGOUT,
+            request=request,
+            metadata={'ended_sessions': ended, 'reason': 'SELF_SIGNOUT_OTHERS'},
+        )
+        return success_response(
+            message="Other sessions ended.", data={'ended_sessions': ended},
+        )
+
     @action(detail=False, methods=['post'], url_path='force-logout')
     def force_logout(self, request):
         """
@@ -84,7 +226,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         Ends sessions for a specific user or a specific session.
         Also blacklists all outstanding JWT tokens for the user.
         """
-        ser = ForceLogoutSerializer(data=request.data)
+        ser = ForceLogoutSerializer(data=request.data, context={'request': request})
         ser.is_valid(raise_exception=True)
 
         target_user = ser.validated_data.get('user_id')
@@ -102,7 +244,10 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             ended = 1
 
         if target_user:
-            ended = LoginSession.objects.filter(user=target_user, is_active=True).update(
+            # all_objects: the target is explicitly authorized via RBAC and may
+            # live outside the ambient tenant (platform actor acting on a
+            # school user) - every one of their sessions must end.
+            ended = LoginSession.all_objects.filter(user=target_user, is_active=True).update(
                 is_active=False,
                 ended_at=timezone.now(),
                 end_reason='FORCE_LOGOUT',
@@ -112,7 +257,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         log_auth_event(
             actor=request.user,
             subject=target_user if target_user else (session.user if session else None),
-            school=getattr(request.user, 'school', None),
+            tenant=request.user.tenant,
             event=AuthEventLog.Event.FORCE_LOGOUT,
             request=request,
             metadata={'ended_sessions': ended, 'reason': reason},
@@ -134,18 +279,23 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     docstring-name: Auth attempts
     """
     serializer_class   = AuthAttemptReadSerializer
-    permission_classes = [IsAuthenticatedAndActive, IsVisionStaff]
     pagination_class   = XVSPagination
+
+    def get_permissions(self):
+        if self.action == 'mine':
+            return [IsAuthenticatedAndActive()]
+        self.rbac_permission = 'platform.security.view'
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
         params = self.request.query_params
-        qs = AuthAttempt.objects.select_related('user', 'user__school', 'school').order_by('-created_at')
+        qs = AuthAttempt.objects.select_related('user', 'tenant').order_by('-created_at')
 
         if user_id := params.get('user_id'):
             qs = qs.filter(user_id=user_id)
 
-        if school_id := params.get('school_id'):
-            qs = qs.filter(school_id=school_id)
+        if tenant_id := params.get('tenant_id'):
+            qs = qs.filter(tenant_id=tenant_id)
 
         if email := params.get('email'):
             qs = qs.filter(email_entered__icontains=email)
@@ -167,11 +317,33 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
         return qs
 
+    @action(detail=False, methods=['get'], url_path='mine')
+    def mine(self, request):
+        """List only the signed-in user's authentication attempts."""
+        queryset = AuthAttempt.objects.filter(user=request.user).order_by('-created_at')
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return success_response(
+            message="Data retrieved successfully.",
+            data=serializer.data,
+        )
+
 
 class PasswordResetListView(APIView):
     """
     GET /user/password-resets/
     Vision Staff only. Lists active (unused, unexpired) reset tokens.
+
+    The list is platform-wide, and deliberately so: IsVisionStaff admits only
+    PLATFORM-tenant accounts, and the screen exists so a CX operator can see -
+    and revoke - a live reset link belonging to a school's principal. Narrowing
+    to the asserted ``?tenant=`` would scope the list to the platform tenant's
+    own staff and leave nobody able to see the rows the page is for.
+    ``?tenant_id=`` narrows to one tenant on demand, the same vocabulary
+    AuthAttemptViewSet uses for the same job.
 
     docstring-name: Password reset requests
     """
@@ -181,9 +353,24 @@ class PasswordResetListView(APIView):
         resets = PasswordResetRequest.objects.filter(
             used_at__isnull=True,
             expires_at__gt=timezone.now(),
-        ).select_related('user').order_by('-created_at')
+        ).select_related('user', 'user__tenant').order_by('-created_at')
+
+        tenant_id = request.query_params.get('tenant_id')
+        if tenant_id:
+            # Handed straight to an integer column, a non-numeric value raises
+            # ValueError deep in the ORM and reaches the client as a 500.
+            if not tenant_id.isdigit():
+                return error_response(
+                    message="tenant_id must be a whole number.",
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            resets = resets.filter(user__tenant_id=tenant_id)
+
         ser = PasswordResetAdminSerializer(resets, many=True)
-        return success_response(data=ser.data)
+        return success_response(
+            message="Data retrieved successfully.",
+            data=ser.data,
+        )
 
 
 class RevokePasswordResetView(APIView):
@@ -211,7 +398,7 @@ class RevokePasswordResetView(APIView):
 class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
     GET /account-lockouts/
-    Vision Staff only — lists all locked accounts.
+    Vision Staff only - lists all locked accounts.
 
     POST /account-lockouts/unlock/
     School Admins and Vision Staff can unlock accounts.
@@ -238,8 +425,11 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         user = self.request.user
         qs = AccountLockout.objects.select_related('user').order_by('-updated_at')
 
-        if getattr(user, 'user_type', None) != User.UserType.CX_STAFF:
-            qs = qs.filter(user__school=user.school)
+        # Non-platform actors only see lockouts inside the asserted tenant;
+        # platform-kind actors keep the platform-wide view (IsVisionStaff +
+        # RBAC gate the endpoint).
+        if getattr(getattr(user, 'tenant', None), 'kind', None) != Tenant.Kind.PLATFORM:
+            qs = qs.filter(user__tenant=getattr(self.request, 'tenant', None) or user.tenant)
 
         if user_id := params.get('user_id'):
             qs = qs.filter(user_id=user_id)
@@ -267,7 +457,7 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     @action(detail=False, methods=['post'], url_path='unlock')
     def unlock(self, request):
-        ser = UnlockAccountSerializer(data=request.data)
+        ser = UnlockAccountSerializer(data=request.data, context={'request': request})
         ser.is_valid(raise_exception=True)
 
         user         = ser.validated_data['user']
@@ -295,7 +485,7 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         log_auth_event(
             actor=request.user,
             subject=user,
-            school=getattr(user, 'school', None),
+            tenant=user.tenant,
             event=AuthEventLog.Event.ACCOUNT_UNLOCKED,
             request=request,
             metadata={'force_password_reset': force_reset, 'reason': reason},
@@ -310,20 +500,66 @@ class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     Filters: actor_id, subject_id (entity_id), school_id, event (action_type),
              ip_address, date_from, date_to.
 
+    Permission: IsAuthenticatedAndActive, HasRBACPermission
+    RBAC: platform.audit.view
+
     docstring-name: Auth event log
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    # The rows this returns are ``AuditEvent`` rows, pre-filtered to the identity
+    # module, so the gate is the one every other read of that table already uses
+    # (``vs_audit.views``: list, detail, entity trails, filter options). A second
+    # key here would mean two different answers to "who may read this row",
+    # decided by which URL it was asked for. ``platform.security.view``, which
+    # the sessions and attempts viewsets above name, is deliberately not reused:
+    # no seeder defines it, so it can be granted to nobody and would shut a
+    # school's own auditor out of their own trail.
+    #
+    # The key is ``PermissionScope.TENANT`` on purpose - audit officers hold it
+    # inside a tenant - so the key alone does not decide isolation. The queryset
+    # does, below.
+    rbac_permission    = 'platform.audit.view'
     pagination_class   = XVSPagination
 
     def get_serializer_class(self):
         from vs_audit.serializers import AuditEventListSerializer
         return AuditEventListSerializer
 
+    def _scope_to_tenant(self, qs):
+        """Narrow the trail to the caller's own tenant unless they are platform.
+
+        Platform-kind actors keep the cross-tenant view; that is what the
+        ``platform.`` surfaces are for, and the Event Explorer in ``vs_audit``
+        divides the two the same way.
+
+        The null-tenant half of the predicate is not defensive padding.
+        ``AuditEvent.tenant`` is nullable and identity events only started
+        carrying it in d1ceccb (2026-08-19), which deliberately did not backfill.
+        Every identity row written before that has ``tenant = NULL`` while still
+        recording the tenant's pk in ``metadata['tenant_id']`` - ``log_auth_event``
+        has written that since 661a73a (2026-07-14). Matching on the column alone
+        would hide Bright Star's own history from Bright Star's auditor; widening
+        to every null row would hand them Greenfield's. Matching the id that was
+        recorded at the time returns exactly the rows that are theirs, recovered
+        rather than inferred. Rows older than 661a73a carry no id and stay
+        platform-only, which is the safe direction to be wrong in.
+        """
+        # Imported rather than written here. This view was fixed before
+        # vs_audit.scoping existed and carried its own copy of the predicate,
+        # which is the shape that produced the last bug of this kind: the Export
+        # Centre had a narrower private copy, so a school's officer saw rows on
+        # screen that were missing from her own export. A second reader with its
+        # own version of "which rows are mine" is how the two answers drift.
+        from vs_audit.scoping import audit_scope_predicate
+
+        predicate = audit_scope_predicate(self.request)
+        return qs if predicate is None else qs.filter(predicate)
+
     def get_queryset(self):
         from vs_audit.models import AuditEvent, AuditModuleKey
         params = self.request.query_params
-        qs = AuditEvent.objects.filter(
-            module_key=AuditModuleKey.IDENTITY
+        qs = self._scope_to_tenant(
+            AuditEvent.objects.filter(module_key=AuditModuleKey.IDENTITY)
         ).select_related('actor_user').order_by('-event_at')
 
         if actor_id := params.get('actor_id'):
@@ -349,5 +585,3 @@ class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             qs = qs.filter(event_at__date__lte=date_to)
 
         return qs
-
-

@@ -8,7 +8,6 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from vs_schools.models import School
 from vs_rbac.managers import TenantAwareManager
 
 
@@ -67,7 +66,9 @@ class AuditModuleKey(models.TextChoices):
     PROCUREMENT = "PROCUREMENT", "Procurement"
     SCHOOL = "SCHOOL", "School Management"
     BRANCH = "BRANCH", "Branch Management"
+    EXPORTS = "EXPORTS", "Export Centre"
     SYSTEM = "SYSTEM", "System"
+    PLATFORM = "PLATFORM", "Platform Operations"
 
 
 class AuditActionType(models.TextChoices):
@@ -107,6 +108,15 @@ class AuditActionType(models.TextChoices):
     ROLE_ASSIGNED = "ROLE_ASSIGNED", "Role Assigned"
     ROLE_CHANGED = "ROLE_CHANGED", "Role Changed"
     PERMISSION_CHANGED = "PERMISSION_CHANGED", "Permission Changed"
+    # Per-user permission overrides (exceptions layered on role grants).
+    OVERRIDE_CREATED = "OVERRIDE_CREATED", "Permission Override Created"
+    OVERRIDE_LIFTED = "OVERRIDE_LIFTED", "Permission Override Lifted"
+
+    # Impersonation (dual-identity support sessions)
+    IMPERSONATION_STARTED = "IMPERSONATION_STARTED", "Impersonation Started"
+    IMPERSONATION_ENDED = "IMPERSONATION_ENDED", "Impersonation Ended"
+    PROXY_CHANGE = "PROXY_CHANGE", "Change Through Proxy"
+    PROXY_ACTION_FAILED = "PROXY_ACTION_FAILED", "Proxy Action Failed"
 
     # Other
     CONFIG_CHANGED = "CONFIG_CHANGED", "Configuration Changed"
@@ -115,6 +125,45 @@ class AuditActionType(models.TextChoices):
     EXPORT_REQUESTED = "EXPORT_REQUESTED", "Export Requested"
     EXPORT_COMPLETED = "EXPORT_COMPLETED", "Export Completed"
     EXPORT_FAILED = "EXPORT_FAILED", "Export Failed"
+
+    # Export Centre (vs_exports). The vocabulary is closed and validated on save,
+    # so every event the module emits must be registered here - an unregistered
+    # action_type is silently swallowed by emit_audit_event and the trail is lost.
+    # Labels carry the design's dotted event name so the two stay traceable.
+    EXPORT_DEFINITION_CREATED = "EXPORT_DEFINITION_CREATED", "Export Defined (export.definition.created)"
+    EXPORT_DEFINITION_UPDATED = "EXPORT_DEFINITION_UPDATED", "Export Changed (export.definition.updated)"
+    EXPORT_DEFINITION_DELETED = "EXPORT_DEFINITION_DELETED", "Export Archived (export.definition.deleted)"
+    EXPORT_DEFINITION_SHARED = "EXPORT_DEFINITION_SHARED", "Export Shared (export.definition.shared)"
+    EXPORT_SENSITIVE_FIELD_INCLUDED = "EXPORT_SENSITIVE_FIELD_INCLUDED", "Sensitive Field Exported (export.sensitive_field.included)"
+    EXPORT_SCHEDULE_CREATED = "EXPORT_SCHEDULE_CREATED", "Export Scheduled (export.schedule.created)"
+    EXPORT_SCHEDULE_PAUSED = "EXPORT_SCHEDULE_PAUSED", "Export Schedule Paused (export.schedule.paused)"
+    EXPORT_SCHEDULE_RESUMED = "EXPORT_SCHEDULE_RESUMED", "Export Schedule Resumed (export.schedule.resumed)"
+    EXPORT_RUN_OMITTED_FIELDS = "EXPORT_RUN_OMITTED_FIELDS", "Export Omitted Fields (export.run.omitted_fields)"
+    EXPORT_FILE_DOWNLOADED = "EXPORT_FILE_DOWNLOADED", "Export File Downloaded (export.file.downloaded)"
+    EXPORT_FILE_DOWNLOAD_REFUSED = "EXPORT_FILE_DOWNLOAD_REFUSED", "Export Download Refused (export.file.download_refused)"
+    EXPORT_FILE_EXPIRED = "EXPORT_FILE_EXPIRED", "Export File Expired (export.file.expired)"
+    EXPORT_ADMIN_VIEWED_ACTIVITY = "EXPORT_ADMIN_VIEWED_ACTIVITY", "Export Activity Viewed (export.admin.viewed_activity)"
+
+    # School onboarding (M9). Registered here before the module emits anything:
+    # the vocabulary is closed and validated on save, and emit_audit_event never
+    # raises, so an unregistered value is dropped silently and the trail this
+    # module promises would simply be empty.
+    ONBOARDING_PROVISIONED = "ONBOARDING_PROVISIONED", "Onboarding Provisioned"
+    ONBOARDING_TASK_COMPLETED = "ONBOARDING_TASK_COMPLETED", "Onboarding Task Completed"
+    ONBOARDING_TASK_SKIPPED = "ONBOARDING_TASK_SKIPPED", "Onboarding Task Skipped"
+    ONBOARDING_TASK_REOPENED = "ONBOARDING_TASK_REOPENED", "Onboarding Task Reopened"
+    GO_LIVE_REQUESTED = "GO_LIVE_REQUESTED", "Go-Live Requested"
+    GO_LIVE_APPROVED = "GO_LIVE_APPROVED", "Go-Live Approved"
+    GO_LIVE_REJECTED = "GO_LIVE_REJECTED", "Go-Live Rejected"
+    GO_LIVE_ACTIVATED = "GO_LIVE_ACTIVATED", "Go-Live Activated"
+    GO_LIVE_FAILED = "GO_LIVE_FAILED", "Go-Live Failed"
+    # The two ends of the abandoned-onboarding decision: a school that stayed
+    # pending too long is suspended by a sweep nobody watches, and a platform
+    # operator can put it back. Both are status changes made to somebody else's
+    # school, so both have to be findable afterwards.
+    ONBOARDING_EXPIRED = "ONBOARDING_EXPIRED", "Onboarding Expired"
+    ONBOARDING_REINSTATED = "ONBOARDING_REINSTATED", "Onboarding Reinstated"
+
     CUSTOM = "CUSTOM", "Custom"
 
 
@@ -206,6 +255,27 @@ class AuditEvent(models.Model):
         blank=True,
         related_name="performed_audit_events",
     )
+    effective_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="effective_audit_events",
+    )
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="audit_events",
+    )
+    impersonation_session = models.ForeignKey(
+        "vs_admin_console.ImpersonationSession",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="audit_events",
+    )
     actor_label = models.CharField(
         max_length=255,
         blank=True,
@@ -217,7 +287,7 @@ class AuditEvent(models.Model):
     entity_type = models.CharField(
         max_length=100,
         db_index=True,
-        help_text="Examples: UserAccount, School, ImportJob, Invoice, SchoolRoleTemplate"
+        help_text="Examples: UserAccount, School, ImportJob, Invoice, TenantRoleTemplate"
     )
     entity_id = models.CharField(
         max_length=100,
@@ -270,6 +340,8 @@ class AuditEvent(models.Model):
             models.Index(fields=["entity_type", "entity_id", "event_at"]),
             models.Index(fields=["actor_type", "actor_user", "event_at"]),
             models.Index(fields=["severity", "status", "event_at"]),
+            models.Index(fields=["tenant", "event_at"]),
+            models.Index(fields=["impersonation_session", "event_at"]),
         ]
 
     def __str__(self) -> str:
@@ -308,16 +380,47 @@ class AuditEvent(models.Model):
 # -----------------------------------------------------------------------------
 
 class EntityAuditTrail(models.Model):
-    """Cached rollup that accelerates per-entity audit trail lookups.
+    """The catalogue of audited entities: which ones, and what each is called.
+
+    Two jobs and no third one. It answers "which entities has anything ever been
+    audited against" - a question no index on ``AuditEvent`` answers cheaply,
+    because it is a DISTINCT over 1.5k rows and growing - and it carries
+    ``entity_label``, the only human handle on a row keyed by a primary key
+    ("Purchase order 00042 for the science block", not ``PurchaseOrder:42``).
+
+    **It is deliberately not a rollup.** It used to store ``event_count``,
+    ``first_event_at`` and ``last_event_at``, maintained by a ``register_event``
+    that only ever incremented. Nothing ever decremented, so the three columns
+    were a high-water mark rather than a count, and the platform console - the
+    one audience still reading the stored figure - was the audience most misled
+    by it. In ``cx_db`` 11 of 889 trails disagreed with the events beneath them,
+    ``User:1`` stored 1690 against 399 real events, and 10 trails described
+    entities with no events at all.
+
+    That is not a bug you patch, because the drift is written into this repo's
+    own history: migration 0003 deleted every ``IMPERSONATED_REQUEST`` event and
+    left the counters standing, and migration 0004 - one migration later, same
+    table - had to carry 25 lines of hand-written recount to avoid repeating it.
+    A stored total obliges every future deletion to remember, and the first one
+    already forgot. Nor could the columns be repaired: the events they counted
+    are gone, and a recomputed number is still a number the next reader has no
+    way to tell apart from a stale one.
+
+    So the three columns were dropped (migration 0011) and the counters are now
+    computed from ``AuditEvent`` for the caller asking, over the index
+    ``(entity_type, entity_id, event_at)`` that has been on that table since
+    migration 0002. See :func:`vs_audit.scoping.visible_trail_counters`: one
+    grouped query answers a whole page, for a tenant caller and a platform
+    caller alike. **Do not add a counter column back.** A number that is stored
+    is a number that goes stale; the only total nobody can misread is the one
+    read off the rows it counts.
 
     Attributes:
-        id (UUIDField): Primary key for the rollup row.
+        id (UUIDField): Primary key for the catalogue row.
         entity_type (CharField): Model or logical type of the tracked entity.
         entity_id (CharField): Identifier of the tracked entity stored as text.
-        entity_label (CharField): Friendly label for UI displays.
-        event_count (PositiveIntegerField): Number of recorded audit events.
-        first_event_at (DateTimeField): Timestamp of the earliest event.
-        last_event_at (DateTimeField): Timestamp of the most recent event.
+        entity_label (CharField): Friendly label for UI displays, refreshed by
+            :func:`vs_audit.services.emit_audit_event` whenever it changes.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
@@ -325,31 +428,15 @@ class EntityAuditTrail(models.Model):
     entity_id = models.CharField(max_length=100, db_index=True)
     entity_label = models.CharField(max_length=255, blank=True)
 
-    event_count = models.PositiveIntegerField(default=0)
-    first_event_at = models.DateTimeField(null=True, blank=True)
-    last_event_at = models.DateTimeField(null=True, blank=True)
-
     class Meta:
         unique_together = ("entity_type", "entity_id")
         indexes = [
             models.Index(fields=["entity_type", "entity_id"]),
-            models.Index(fields=["last_event_at"]),
         ]
 
     def __str__(self) -> str:
         """Represent the summarized trail for admin list displays."""
         return f"Trail<{self.entity_type}:{self.entity_id}>"
-
-    def register_event(self, event: AuditEvent) -> None:
-        """
-        Convenience helper for services/signals.
-        """
-        self.event_count += 1
-        if not self.first_event_at or event.event_at < self.first_event_at:
-            self.first_event_at = event.event_at
-        if not self.last_event_at or event.event_at > self.last_event_at:
-            self.last_event_at = event.event_at
-        self.save(update_fields=["event_count", "first_event_at", "last_event_at"])
 
 
 # -----------------------------------------------------------------------------
@@ -476,7 +563,7 @@ class ComplianceRule(TimeStampedModel):
         name (CharField): Human-readable identifier shown in admin tools.
         description (TextField): Optional longer explanation of the rule.
         rule_type (CharField): Category such as retention, masking, or export.
-        school (ForeignKey): Tenant that owns the rule, if any.
+        tenant (ForeignKey): Tenant that owns the rule, if any.
         module_key (CharField): Optional module filter that narrows scope.
         action_type (CharField): Optional action filter that narrows scope.
         is_active (BooleanField): Indicates whether enforcement is enabled.
@@ -485,6 +572,11 @@ class ComplianceRule(TimeStampedModel):
         config (JSONField): Arbitrary structured settings for custom logic.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.CASCADE,
+        related_name="compliance_rules", null=True, blank=True,
+        help_text="Null means a global platform rule.",
+    )
 
     name = models.CharField(max_length=150, unique=True)
     description = models.TextField(blank=True)
@@ -496,14 +588,6 @@ class ComplianceRule(TimeStampedModel):
     )
 
     # Scope
-    school = models.ForeignKey(
-        School,
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name="audit_compliance_rules",
-        help_text="Null means global rule."
-    )
     module_key = models.CharField(
         max_length=40,
         choices=AuditModuleKey.choices,
@@ -544,7 +628,7 @@ class ComplianceRule(TimeStampedModel):
         ordering = ["name"]
         indexes = [
             models.Index(fields=["rule_type", "is_active"]),
-            models.Index(fields=["school", "rule_type"]),
+            models.Index(fields=["tenant", "rule_type"]),
         ]
 
     def __str__(self) -> str:
@@ -561,7 +645,7 @@ class ComplianceRule(TimeStampedModel):
         if not self.is_active:
             return False
 
-        if self.school_id and str(self.school_id) != str((event.metadata or {}).get("school_id", "")):
+        if self.tenant_id and self.tenant_id != event.tenant_id:
             return False
 
         if self.module_key and event.module_key != self.module_key:

@@ -1,8 +1,11 @@
 """Seed vs_procurement permission keys and grant them to platform roles (idempotent).
 
 Registers every ``procurement.<resource>.<action>`` key enforced by the
-vs_procurement views into the RBAC Permission registry and grants them to the
-platform admin roles.
+vs_procurement views into the RBAC Permission registry and grants newly-created links
+to the platform admin roles - except the break-glass keys in
+:data:`NEVER_GRANTED_BY_DEFAULT`, which are registered but handed to nobody. Existing
+permission rows and explicit role-link decisions are never rewritten, which makes the
+command safe to re-run after administrators have customised RBAC data.
 
 Run order::
 
@@ -10,7 +13,7 @@ Run order::
     python manage.py create_superuser
     python manage.py seed_procurement_permissions
 
-Safe to re-run — all operations are idempotent.
+Safe to re-run - all operations are idempotent.
 """
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -18,45 +21,76 @@ from django.db import transaction
 MODULE_NAME = "procurement"
 MODULE_DESCRIPTION = "Procure-to-pay: requisitions, sourcing, receipts, vendor invoicing and payments."
 PLATFORM_ROLE_IDS = ["xvs_super_admin", "xvs_platform_admin"]
+_PLATFORM_ROLE_NAMES = {"xvs_super_admin": "XVS Super Admin", "xvs_platform_admin": "XVS Platform Admin"}
 
 # sensitivity → whether the permission must flow through approvals / audit
 _RESTRICTED = {"SENSITIVE", "CRITICAL"}
 
+#: Keys that are **registered but never granted** by seeding, to any role.
+#:
+#: Ordinary seeding is additive: every key is handed to the platform admin roles so the
+#: product works out of the box. A break-glass control must not arrive that way - if
+#: releasing a spend approval without review were granted by default, "granted to nobody"
+#: would be a comment rather than a fact. These keys exist in the registry so an
+#: administrator can assign them deliberately, and until somebody does, nobody holds them.
+NEVER_GRANTED_BY_DEFAULT = frozenset({
+    "procurement.approval.override",
+})
+
 # (resource_name, resource_label, [(action, sensitivity), ...])
 PROCUREMENT_RESOURCES = [
-    ("approval",       "spend approvals",       [("approve", "SENSITIVE"), ("approve_senior", "CRITICAL"), ("manage", "SENSITIVE")]),
+    ("approval",       "spend approvals",       [("approve", "SENSITIVE"), ("approve_senior", "CRITICAL"), ("manage", "SENSITIVE"),
+                                                 ("override", "CRITICAL")]),
+    ("settings",       "procurement settings",  [("view", "NORMAL"), ("update", "SENSITIVE")]),
+    ("competition",    "competitive bidding policy", [("override", "CRITICAL")]),
     ("catalog_item",   "catalog items",         [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL")]),
-    ("category",       "vendor categories",     [("view", "NORMAL"), ("create", "NORMAL")]),
+    ("category",       "vendor categories",     [("view", "NORMAL"), ("create", "NORMAL"), ("update", "SENSITIVE")]),
     ("contract",       "vendor contracts",      [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"),
                                                  ("activate", "SENSITIVE"), ("renew", "SENSITIVE"), ("terminate", "SENSITIVE")]),
-    ("goods_receipt",  "goods-received notes",  [("view", "NORMAL"), ("create", "SENSITIVE"), ("post", "CRITICAL")]),
-    ("purchase_order", "purchase orders",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("submit", "SENSITIVE")]),
-    ("quotation",      "vendor quotations",     [("view", "NORMAL"), ("create", "NORMAL"), ("submit", "SENSITIVE"), ("award", "SENSITIVE")]),
+    ("goods_receipt",  "goods-received notes",  [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("post", "CRITICAL")]),
+    ("purchase_order", "purchase orders",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("submit", "SENSITIVE"),
+                                                   ("email_vendor", "SENSITIVE")]),
+    ("quotation",      "vendor quotations",     [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL"), ("submit", "SENSITIVE"), ("award", "SENSITIVE")]),
     ("report",         "procurement reports",   [("view", "NORMAL")]),
-    ("requisition",    "purchase requisitions", [("view", "NORMAL"), ("create", "NORMAL"), ("submit", "SENSITIVE")]),
-    ("rfq",            "requests for quotation", [("view", "NORMAL"), ("create", "NORMAL"), ("issue", "SENSITIVE")]),
+    ("requisition",    "purchase requisitions", [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL"), ("submit", "SENSITIVE")]),
+    ("rfq",            "requests for quotation", [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL"), ("issue", "SENSITIVE")]),
     ("stock",          "stock items",           [("view", "NORMAL"), ("manage", "SENSITIVE"), ("issue", "SENSITIVE"), ("adjust", "SENSITIVE")]),
-    ("vendor",         "vendors",               [("view", "NORMAL"), ("create", "SENSITIVE"),
-                                                 ("view_sensitive", "SENSITIVE")]),
-    ("vendor_invoice", "vendor invoices",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("submit", "SENSITIVE"),
-                                                 ("match", "SENSITIVE"), ("post", "CRITICAL")]),
-    ("vendor_payment", "vendor payments",       [("view", "NORMAL"), ("create", "CRITICAL"), ("post", "CRITICAL")]),
+    ("vendor",         "vendors",               [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"),
+                                                 ("manage", "SENSITIVE"), ("view_sensitive", "SENSITIVE")]),
+    ("vendor_assessment", "vendor assessments",  [("create", "SENSITIVE")]),
+    ("vendor_invoice", "vendor invoices",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("submit", "SENSITIVE"),
+                                                 ("match", "SENSITIVE"), ("post", "CRITICAL"), ("override_variance", "CRITICAL"),
+                                                 ("attach", "NORMAL")]),
+    ("vendor_payment", "vendor payments",       [("view", "NORMAL"), ("create", "CRITICAL"), ("update", "CRITICAL"),
+                                                 ("submit", "CRITICAL"), ("post", "CRITICAL"), ("cancel", "CRITICAL"),
+                                                 ("reverse", "CRITICAL"),
+                                                 ("allocate", "SENSITIVE"), ("attach", "NORMAL")]),
 ]
 
 
 class Command(BaseCommand):
+    """Materialise procurement's declarative permission matrix in platform RBAC.
+
+    The surrounding transaction prevents a partially seeded matrix: action verbs,
+    module/resources, permission keys, and platform-role grants either complete together
+    or roll back. Every write uses a natural key, so reruns converge instead of duplicate.
+    """
+
     help = "Seed vs_procurement permission keys and grant them to platform admin roles."
 
     @transaction.atomic
     def handle(self, *args, **options):
+        """Create missing registry rows and additive grants without overwriting policy."""
         from vs_rbac.models import (
             Permission,
             PermissionAction,
             PermissionModule,
             PermissionResource,
-            PlatformRolePermission,
-            PlatformRoleTemplate,
+            TenantRolePermission,
+            TenantRoleTemplate,
+            PermissionScope,
         )
+        from vs_tenants.models import Tenant
 
         self.stdout.write(self.style.MIGRATE_HEADING(f"\n  Seeding {MODULE_NAME} permissions...\n"))
 
@@ -75,7 +109,7 @@ class Command(BaseCommand):
             )
             if created:
                 self.stdout.write(
-                    f"  + action '{name}' (auto-registered — run seed_actions for full description)"
+                    f"  + action '{name}' (auto-registered - run seed_actions for full description)"
                 )
 
         # ── Module bucket ─────────────────────────────────────────────────────
@@ -104,6 +138,8 @@ class Command(BaseCommand):
 
                 perm = Permission.objects.filter(key=expected_key).first()
                 if perm is None:
+                    # Existing permissions are policy-owned: a rerun must not silently
+                    # reset sensitivity/restriction changes made by RBAC administrators.
                     perm = Permission(
                         module=module,
                         resource=resource,
@@ -112,35 +148,50 @@ class Command(BaseCommand):
                         sensitivity_level=sensitivity,
                         is_restricted=sensitivity in _RESTRICTED,
                         is_active=True,
+                        scope=PermissionScope.TENANT,
                     )
                     perm.save()
                     created_perms += 1
                     self.stdout.write(f"  + {perm.key}  [{sensitivity}]")
                 all_perms.append(perm)
 
-        # ── Grant every key to the platform admin roles ───────────────────────
-        for role_id in PLATFORM_ROLE_IDS:
-            try:
-                role = PlatformRoleTemplate.objects.get(id=role_id)
-            except PlatformRoleTemplate.DoesNotExist:
-                self.stdout.write(self.style.WARNING(
-                    f"  ⚠  role '{role_id}' not found — run create_superuser first; grants skipped."
-                ))
-                continue
-
-            granted = 0
-            for perm in all_perms:
-                _, link_created = PlatformRolePermission.objects.get_or_create(
-                    role=role,
-                    permission=perm,
-                    defaults={"granted": True, "granted_by": None},
+        # ── Grant every key to the platform admin roles (codex tenant) ────────
+        codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
+        if codex is None:
+            self.stdout.write(self.style.WARNING(
+                "  ⚠  Codex platform tenant not found - run migrations first; grants skipped."
+            ))
+        else:
+            for role_id in PLATFORM_ROLE_IDS:
+                role, _ = TenantRoleTemplate.objects.get_or_create(
+                    tenant=codex,
+                    key=role_id,
+                    defaults={
+                        "name": _PLATFORM_ROLE_NAMES.get(role_id, role_id),
+                        "status": "ACTIVE",
+                        "is_system_role": True,
+                        "is_locked": True,
+                    },
                 )
-                if link_created:
-                    granted += 1
-            self.stdout.write(
-                f"  {role_id}: granted {granted} new key(s)." if granted
-                else f"  {role_id}: all keys already assigned."
-            )
+                granted = 0
+                for perm in all_perms:
+                    # A break-glass key is registered but never auto-granted; assigning
+                    # it stays an explicit administrative act.
+                    if perm.key in NEVER_GRANTED_BY_DEFAULT:
+                        continue
+                    _, link_created = TenantRolePermission.objects.get_or_create(
+                        role=role,
+                        permission=perm,
+                        defaults={"granted": True, "granted_by": None},
+                    )
+                    # An existing denied/revoked link stays untouched; seeding is additive,
+                    # not an authority to reverse an administrator's explicit decision.
+                    if link_created:
+                        granted += 1
+                self.stdout.write(
+                    f"  {role_id}: granted {granted} new key(s)." if granted
+                    else f"  {role_id}: all keys already assigned."
+                )
 
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_perms} new permission(s), {len(all_perms)} total "

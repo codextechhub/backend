@@ -7,7 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from vs_schools.models import Branch, School
+from vs_tenants.models import Branch
 from vs_rbac.managers import TenantAwareManager
 
 
@@ -48,6 +48,8 @@ class FileFormatChoices(models.TextChoices):
 class DatasetTypeChoices(models.TextChoices):
     SCHOOLS = "schools", "Schools"
     BRANCHES = "branches", "Branches"
+    CX_USERS = "cx_users", "CX Users"
+    BANK_STATEMENTS = "bank_statements", "Bank Statements"
 
 
 class ImportBatchStatusChoices(models.TextChoices):
@@ -139,8 +141,8 @@ class TemplateColumnDataTypeChoices(models.TextChoices):
 # =========================================================
 def import_file_upload_to(instance: "ImportBatch", filename: str) -> str:
     ext = os.path.splitext(filename)[1].lower()
-    if instance.school_id:
-        scope = getattr(instance.school, "slug", "school")
+    if instance.tenant_id:
+        scope = getattr(instance.tenant, "slug", "tenant")
     elif instance.branch_id:
         scope = f"branch_{getattr(instance.branch, 'slug', instance.branch_id)}"
     else:
@@ -209,12 +211,9 @@ class ImportBatch(TimeStampedModel):
           to serve dashboard and filter queries efficiently.
     """
 
-    school = models.ForeignKey(
-        School,
-        on_delete=models.CASCADE,
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
         related_name="import_batches",
-        null=True,
-        blank=True,
     )
 
     branch = models.ForeignKey(
@@ -294,20 +293,33 @@ class ImportBatch(TimeStampedModel):
         base_manager_name = "all_objects"
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["school", "status"]),
-            models.Index(fields=["school", "dataset_type"]),
+            models.Index(fields=["tenant", "status"]),
+            models.Index(fields=["tenant", "dataset_type"]),
             models.Index(fields=["branch", "status"]),
             models.Index(fields=["created_at"]),
         ]
 
     def __str__(self) -> str:
-        scope = self.school or self.branch or "internal"
+        scope = self.tenant
         return f"{scope} - {self.dataset_type} - {self.original_filename}"
 
     def clean(self):
         allowed = {FileFormatChoices.CSV, FileFormatChoices.XLSX, FileFormatChoices.XLS}
         if self.file_format and self.file_format not in allowed:
             raise ValidationError({"file_format": "Only CSV and Excel files are supported."})
+
+    @property
+    def school(self):
+        return getattr(self.tenant, "school_profile", None)
+
+    @property
+    def school_id(self):
+        return getattr(self.school, "pk", None)
+
+    def save(self, *args, **kwargs):
+        if not self.tenant_id and self.uploaded_by_id:
+            self.tenant_id = self.uploaded_by.tenant_id
+        super().save(*args, **kwargs)
 
     @property
     def error_count(self) -> int:
@@ -459,7 +471,7 @@ class ImportTemplateColumn(TimeStampedModel):
                        if validation rules permit it.
         column_order: Integer used to sort columns in generated files and UI displays.
         reference_model: Optional name of the domain model this column cross-references
-                         during validation. Example: "Staff", "Campus".
+                         during validation. Example: "Staff", "Branch".
         reference_lookup_field: The field on the reference model used to resolve the
                                 cross-reference. Example: "full_name", "code".
 
@@ -524,7 +536,7 @@ class ImportTemplateColumn(TimeStampedModel):
     reference_model = models.CharField(
         max_length=255,
         blank=True,
-        help_text="Example: Staff, Campus, ClassRoom",
+        help_text="Example: Staff, Branch, ClassRoom",
     )
     reference_lookup_field = models.CharField(
         max_length=255,

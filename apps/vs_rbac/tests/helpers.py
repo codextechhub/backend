@@ -1,27 +1,70 @@
 """
 Shared test helpers and fixture factories for vs_rbac tests.
+
+Role / assignment / change-request factories single-write the canonical
+**tenant** RBAC tables (``TenantRoleTemplate`` / ``TenantRolePermission`` /
+``TenantUserRoleAssignment`` / ``TenantRoleChangeRequest``). Function names are
+preserved for existing callers, but they now return the tenant objects.
 """
 import itertools
-from django.utils import timezone
-from vs_schools.models import School, Branch
+from django.utils.text import slugify
+from schools.vs_schools.models import School
 from vs_user.models import User
+from vs_tenants.models import Branch, Tenant
 from vs_rbac.models import (
     Permission,
     PermissionDependency,
-    SchoolRoleTemplate,
-    SchoolRolePermission,
-    SchoolUserRoleAssignment,
-    SchoolRoleChangeRequest,
-    SchoolRoleChangeDeltaItem,
-    PlatformRoleTemplate,
-    PlatformRolePermission,
-    PlatformUserRoleAssignment,
-    PlatformRoleChangeRequest,
-    PlatformRoleChangeDeltaItem,
+    TenantRoleTemplate,
+    TenantRolePermission,
+    TenantRoleGroup,
+    TenantUserRoleAssignment,
+    TenantRoleChangeRequest,
+    TenantRoleChangeDeltaItem,
 )
 
 
 _school_counter = itertools.count(1)
+_role_key_counter = itertools.count(1)
+
+
+def scope_for_key(key):
+    """The scope the real seeders declare for *key*.
+
+    Fixtures across the repo build permission rows by hand, and a row with no
+    scope is refused by the grant guards - correctly, but it would make every
+    such fixture fail for the wrong reason. This mirrors what the seeders do,
+    including the two families inside the ``platform`` module that a tenant
+    role legitimately holds, so a fixture grants exactly what production would.
+    """
+    from core.management.commands.seed_platform_permissions import (
+        TENANT_HOLDABLE_KEYS,
+    )
+    from vs_rbac.models import PermissionScope
+
+    module = (key or "").split(".")[0]
+    if module != "platform" or key in TENANT_HOLDABLE_KEYS:
+        return PermissionScope.TENANT
+    return PermissionScope.PLATFORM
+
+
+def _as_tenant(school_or_tenant):
+    """Accept a School or a Tenant and return the Tenant."""
+    if isinstance(school_or_tenant, Tenant):
+        return school_or_tenant
+    return school_or_tenant.tenant
+
+
+def _unique_role_key(tenant, name):
+    base = slugify(name) or "role"
+    key = base
+    while TenantRoleTemplate.objects.filter(tenant=tenant, key=key).exists():
+        key = f"{base}-{next(_role_key_counter)}"
+    return key
+
+
+def codex_tenant():
+    """Return the codex platform tenant (created by the vs_tenants migrations)."""
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
 
 
 def make_school(slug="test-school", name="Test School", **kwargs):
@@ -32,19 +75,37 @@ def make_school(slug="test-school", name="Test School", **kwargs):
     return School.objects.create(slug=slug, name=name, **defaults)
 
 
-def make_branch(school, name="Main Branch", is_main=True, **kwargs):
+def make_branch(school_or_tenant, name="Main Branch", is_main=True, **kwargs):
+    """Build a site under a School *or* a bare Tenant.
+
+    Taking a Tenant is the point: these engine tests no longer need a school to
+    exist in order to have a branch, which is the clearest evidence that the
+    decoupling is real. Existing callers pass a School and are unaffected.
+    """
     defaults = {"status": "ACTIVE"}
     defaults.update(kwargs)
-    return Branch.objects.create(school=school, name=name, is_main=is_main, **defaults)
+    return Branch.objects.create(
+        tenant=_as_tenant(school_or_tenant), name=name, is_main=is_main, **defaults
+    )
+
+
+def platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant. There is no persona column
+    standing in for it any more, so a fixture that wants a CX account names the
+    tenant, exactly as production code does.
+    """
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
 
 
 def make_vision_user(email="vision@test.com", password="testpass123",
                      super_admin=False, **kwargs):
-    """Create a CX_STAFF user. With ``super_admin=True`` also grant the
+    """Create a platform-tenant user. With ``super_admin=True`` also grant the
     ``xvs_super_admin`` platform role so the user bypasses RBAC checks
     (mirrors how real Vision admins operate the platform)."""
     defaults = {
-        "user_type": "CX_STAFF",
+        "tenant": platform_tenant(),
         "status": "ACTIVE",
         "first_name": "Vision",
         "last_name": "Staff",
@@ -52,41 +113,56 @@ def make_vision_user(email="vision@test.com", password="testpass123",
     defaults.update(kwargs)
     user = User.objects.create_user(email=email, password=password, **defaults)
     if super_admin:
-        role, _ = PlatformRoleTemplate.objects.get_or_create(
-            id="xvs_super_admin",
-            defaults={"name": "Vision Super Admin", "status": "ACTIVE"},
+        # Single-write the tenant tables: the xvs_super_admin codex role grants
+        # the RBAC bypass that is_vision_super_admin() checks.
+        tenant_role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=user.tenant, key="xvs_super_admin",
+            defaults={"name": "Vision Super Admin", "status": "ACTIVE",
+                      "is_system_role": True},
         )
-        PlatformUserRoleAssignment.objects.get_or_create(
-            user=user,
-            role=role,
+        TenantUserRoleAssignment.objects.get_or_create(
+            tenant=user.tenant, user=user, role=tenant_role,
             defaults={"assignment_status": "ACTIVE"},
         )
     return user
 
 
 def make_school_admin(branch, email="admin@test.com", password="testpass123", **kwargs):
+    """A tenant staff account. The name says what the fixture is *for*.
+
+    There is no persona at all any more - a principal and a teacher are the
+    same kind of row, and their roles separate them - so this differs from
+    ``make_staff_user`` only in the name it gives the person. Callers that want
+    school-wide reach pass ``branch=None``.
+    """
     defaults = {
-        "user_type": "SCHOOL_ADMIN",
         "status": "ACTIVE",
-        "school": branch.school,
         "branch": branch,
         "first_name": "School",
         "last_name": "Admin",
     }
     defaults.update(kwargs)
+    # Legacy callers still pass school=; the column is gone - the tenant
+    # derives from the branch (or an explicit tenant= kwarg).
+    school = defaults.pop("school", None)
+    if school is not None and "tenant" not in defaults and defaults.get("branch") is None:
+        defaults["tenant"] = school.tenant
     return User.objects.create_user(email=email, password=password, **defaults)
 
 
 def make_staff_user(branch, email="staff@test.com", password="testpass123", **kwargs):
     defaults = {
-        "user_type": "STAFF",
         "status": "ACTIVE",
-        "school": branch.school,
         "branch": branch,
         "first_name": "Staff",
         "last_name": "User",
     }
     defaults.update(kwargs)
+    # Legacy callers still pass school=; the column is gone - the tenant
+    # derives from the branch (or an explicit tenant= kwarg).
+    school = defaults.pop("school", None)
+    if school is not None and "tenant" not in defaults and defaults.get("branch") is None:
+        defaults["tenant"] = school.tenant
     return User.objects.create_user(email=email, password=password, **defaults)
 
 
@@ -95,8 +171,15 @@ def make_permission(key, module_key=None, action=None, **kwargs):
 
     The registry is fully relational (module → resource → action FKs), so the
     key is split into its parts and each level is get_or_create'd.
+
+    ``scope`` defaults to what the real seeders declare for that module -
+    ``PLATFORM`` for the ``platform`` module, ``TENANT`` for everything else -
+    so a fixture reads the way production does. Pass ``scope=`` explicitly to
+    build a key whose scope and namespace deliberately disagree.
     """
-    from vs_rbac.models import PermissionAction, PermissionModule, PermissionResource
+    from vs_rbac.models import (
+        PermissionAction, PermissionModule, PermissionResource, PermissionScope,
+    )
 
     parts = key.split(".")
     if len(parts) == 3:
@@ -114,6 +197,7 @@ def make_permission(key, module_key=None, action=None, **kwargs):
     existing = Permission.objects.filter(key=key).first()
     if existing:
         return existing
+    kwargs.setdefault("scope", scope_for_key(key))
     return Permission.objects.create(
         module=module, resource=resource, action=action_obj, **kwargs
     )
@@ -130,31 +214,50 @@ def make_dependency(permission_key, depends_on_key):
     )
 
 
-def make_role(school, name="Test Role", **kwargs):
+def make_role(school_or_tenant, name="Test Role", **kwargs):
+    """Create a TenantRoleTemplate for a school's tenant (or a tenant directly)."""
+    tenant = _as_tenant(school_or_tenant)
     defaults = {"status": "ACTIVE"}
     defaults.update(kwargs)
-    return SchoolRoleTemplate.objects.create(school=school, name=name, **defaults)
+    key = defaults.pop("key", None) or _unique_role_key(tenant, name)
+    return TenantRoleTemplate.objects.create(
+        tenant=tenant, key=key, name=name, **defaults
+    )
 
 
 def make_role_permission(role, permission, granted=True, **kwargs):
-    return SchoolRolePermission.objects.create(
+    return TenantRolePermission.objects.create(
         role=role, permission=permission, granted=granted, **kwargs
     )
 
 
-def make_assignment(school, user, role, **kwargs):
+def make_role_group(role, group, **kwargs):
+    return TenantRoleGroup.objects.create(role=role, group=group, **kwargs)
+
+
+def make_assignment(school_or_tenant, user, role, **kwargs):
+    """Assign ``role`` to ``user``.
+
+    The assignment inherits the role template's branch unless the caller names
+    one. Pinning the *assignment* is the case that matters: one person can hold
+    the same role at two sites, which is a fact about the assignment, not the
+    template.
+    """
+    tenant = _as_tenant(school_or_tenant)
     defaults = {"assignment_status": "ACTIVE"}
     defaults.update(kwargs)
-    return SchoolUserRoleAssignment.objects.create(
-        school=school, user=user, role=role, **defaults
+    branch = defaults.pop("branch", role.branch)
+    return TenantUserRoleAssignment.objects.create(
+        tenant=tenant, user=user, role=role, branch=branch, **defaults
     )
 
 
-def make_role_change_request(school, user, role, justification="Test justification", **kwargs):
+def make_role_change_request(school_or_tenant, user, role, justification="Test justification", **kwargs):
+    tenant = _as_tenant(school_or_tenant)
     defaults = {"status": "PENDING"}
     defaults.update(kwargs)
-    return SchoolRoleChangeRequest.objects.create(
-        school=school,
+    return TenantRoleChangeRequest.objects.create(
+        tenant=tenant,
         requested_by=user,
         target_role=role,
         justification=justification,
@@ -163,13 +266,18 @@ def make_role_change_request(school, user, role, justification="Test justificati
 
 
 def make_platform_role(name="Platform Role", **kwargs):
-    defaults = {"status": "ACTIVE"}
+    """Create a TenantRoleTemplate on the codex platform tenant."""
+    codex = codex_tenant()
+    defaults = {"status": "ACTIVE", "is_system_role": True}
     defaults.update(kwargs)
-    return PlatformRoleTemplate.objects.create(name=name, **defaults)
+    key = defaults.pop("key", None) or _unique_role_key(codex, name)
+    return TenantRoleTemplate.objects.create(
+        tenant=codex, key=key, name=name, **defaults
+    )
 
 
 def make_platform_role_permission(role, permission, granted=True, **kwargs):
-    return PlatformRolePermission.objects.create(
+    return TenantRolePermission.objects.create(
         role=role, permission=permission, granted=granted, **kwargs
     )
 
@@ -177,15 +285,16 @@ def make_platform_role_permission(role, permission, granted=True, **kwargs):
 def make_platform_assignment(user, role, **kwargs):
     defaults = {"assignment_status": "ACTIVE"}
     defaults.update(kwargs)
-    return PlatformUserRoleAssignment.objects.create(
-        user=user, role=role, **defaults
+    return TenantUserRoleAssignment.objects.create(
+        tenant=role.tenant, user=user, role=role, **defaults
     )
 
 
 def make_platform_change_request(user, role, justification="Test justification", **kwargs):
     defaults = {"status": "PENDING"}
     defaults.update(kwargs)
-    return PlatformRoleChangeRequest.objects.create(
+    return TenantRoleChangeRequest.objects.create(
+        tenant=role.tenant,
         requested_by=user,
         target_role=role,
         justification=justification,

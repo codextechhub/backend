@@ -2,8 +2,10 @@
 
 import logging
 
+from django.core.exceptions import NON_FIELD_ERRORS
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
+from django.db.models import ProtectedError, RestrictedError
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import exception_handler
@@ -34,6 +36,58 @@ def _is_unique_violation(exc: IntegrityError) -> bool:
     return 'unique constraint' in text or 'duplicate entry' in text
 
 
+def _blocker_summary(exc) -> tuple[str, dict]:
+    """Human phrase + machine detail for a ProtectedError / RestrictedError.
+
+    Returns e.g. ("2 positions", {"vs_user.position": 2}). Only model names and
+    counts are exposed - never the blocking rows themselves, which may live
+    outside the caller's tenant/entity scope.
+    """
+    objects = (
+        getattr(exc, 'protected_objects', None)
+        or getattr(exc, 'restricted_objects', None)
+        or ()
+    )
+    counts: dict = {}
+    for obj in objects:
+        model = type(obj)
+        counts[model] = counts.get(model, 0) + 1
+
+    phrases, detail = [], {}
+    for model, count in sorted(counts.items(), key=lambda kv: kv[0]._meta.label):
+        meta = model._meta
+        label = meta.verbose_name if count == 1 else meta.verbose_name_plural
+        phrases.append(f'{count} {str(label).lower()}')
+        detail[meta.label_lower] = count
+
+    if not phrases:
+        return 'other records', {}
+    return ' and '.join(phrases), detail
+
+
+def _validation_error_detail(exc: DjangoValidationError) -> dict:
+    """A Django ValidationError as ``{field: [message, ...]}``.
+
+    Errors raised without a field - and every ``ValidationError("some text")``
+    from a service is one - collect under ``NON_FIELD_ERRORS`` (``__all__``),
+    which is where Django itself puts them, so the shape is the same either
+    way and a caller never has to branch on it.
+    """
+    if hasattr(exc, 'error_dict'):
+        return exc.message_dict
+    messages = exc.messages if hasattr(exc, 'messages') else [str(exc)]
+    return {NON_FIELD_ERRORS: messages}
+
+
+def _validation_error_message(detail: dict) -> str:
+    """One human sentence naming the fields that failed."""
+    parts = []
+    for field, messages in detail.items():
+        prefix = '' if field == NON_FIELD_ERRORS else f'{field}: '
+        parts.extend(f'{prefix}{message}' for message in messages)
+    return '; '.join(parts) or 'Validation failed.'
+
+
 def custom_exception_handler(exc, context):
 
     # Let DRF handle it first
@@ -51,14 +105,39 @@ def custom_exception_handler(exc, context):
             }
         }, status=status.HTTP_401_UNAUTHORIZED)
 
-    # Intercept Django model/form validation errors (args[0] is a list, not a dict)
+    # Intercept Django model/form validation errors.
+    #
+    # This used to read `exc.messages`, which flattens a field-keyed error into
+    # a bare list of sentences. A `full_clean()` on a model with eight editable
+    # columns therefore answered "This field cannot be blank." and never said
+    # which field, leaving the caller nothing to act on. `message_dict` keeps
+    # the keys; `messages` is still the fallback for the errors that genuinely
+    # have no field (`ValidationError("...")` raised from a service).
     if isinstance(exc, DjangoValidationError):
-        messages = exc.messages if hasattr(exc, 'messages') else [str(exc)]
+        detail = _validation_error_detail(exc)
         return Response({
             "success": False,
-            "message": '; '.join(messages),
-            "error": {"code": "VALIDATION_ERROR", "detail": messages},
+            "message": _validation_error_message(detail),
+            "error": {"code": "VALIDATION_ERROR", "detail": detail},
         }, status=status.HTTP_400_BAD_REQUEST)
+
+    # A delete blocked by an on_delete=PROTECT / RESTRICT foreign key is the
+    # client asking for something the data model forbids, not a server bug -
+    # so it must carry an actionable message. This branch MUST stay above the
+    # IntegrityError one: ProtectedError/RestrictedError subclass IntegrityError
+    # and would otherwise be logged as an opaque 500 ("An unexpected error
+    # occurred."), which is what the whole platform did before.
+    if isinstance(exc, (ProtectedError, RestrictedError)):
+        phrase, detail = _blocker_summary(exc)
+        logger.info("Delete blocked by protected references: %s", detail or exc)
+        return Response({
+            "success": False,
+            "message": (
+                f"This record cannot be deleted because {phrase} still "
+                "reference it. Remove or reassign them first."
+            ),
+            "error": {"code": "PROTECTED_REFERENCE", "detail": detail},
+        }, status=status.HTTP_409_CONFLICT)
 
     # Intercept DB integrity violations. ONLY unique violations are the
     # client's fault ("already exists"); FK / NOT NULL / CHECK violations are
@@ -87,16 +166,26 @@ def custom_exception_handler(exc, context):
 
     # Handle all other DRF exceptions
     if response is not None:
+        fallback = "An error occurred. Check the error details for more information."
+        data = response.data
+        if isinstance(data, dict):
+            message = data.get("detail", fallback)
+        elif isinstance(data, list) and len(data) == 1 and isinstance(data[0], str):
+            # DRF renders ValidationError("some text") as a bare list, not a
+            # dict - reading .get() off it used to turn a 400 into a 500.
+            message = data[0]
+        else:
+            message = fallback
         return Response({
             "success": False,
-            "message": response.data.get("detail", "An error occurred. Check the error details for more information."),
+            "message": message,
             "error": {
                 "code": "REQUEST_ERROR",
-                "detail": response.data,
+                "detail": data,
             }
         }, status=response.status_code)
 
-    # Non-DRF, non-DB exception — log it and return JSON 500 instead of Django HTML page
+    # Non-DRF, non-DB exception - log it and return JSON 500 instead of Django HTML page
     logger.exception("Unhandled exception in request", exc_info=exc)
     return Response({
         "success": False,

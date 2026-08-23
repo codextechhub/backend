@@ -1,11 +1,11 @@
-"""Expense-claim services — staff reimbursements as a mini accounts-payable cycle.
+"""Expense-claim services - staff reimbursements as a mini accounts-payable cycle.
 
 An employee spends their own money on the entity's behalf; the entity owes them. That
 liability is recognised on posting and cleared when they are paid back:
 
 * **Post** (:func:`post_expense_claim`): ``Dr expense(s) (+ Dr recoverable input VAT),
-  Cr accrued reimbursement`` — the amount owed to the employee.
-* **Settle** (:func:`settle_expense_claim`): ``Dr accrued reimbursement, Cr bank`` —
+  Cr accrued reimbursement`` - the amount owed to the employee.
+* **Settle** (:func:`settle_expense_claim`): ``Dr accrued reimbursement, Cr bank`` -
   the reimbursement payment.
 
 All amounts are integer kobo; tax uses the same basis-point discipline as the rest of
@@ -31,181 +31,246 @@ from .posting import post_journal, resolve_period
 from .receivables import compute_line_net, compute_tax
 
 
+# Recalculate claim line and header totals.
 def price_expense_claim(claim) -> None:
     """Compute each line's ``net_amount``/``tax_amount`` and roll up the claim totals."""
     from .models import ExpenseClaimLine
 
-    for line in claim.lines.all():
-        net = compute_line_net(line.quantity, line.unit_price)
-        rate = line.tax_code.rate_bps if line.tax_code_id else 0
-        tax = compute_tax(net, rate)
-        if line.net_amount != net or line.tax_amount != tax:
+    for line in claim.lines.all():  # Reprice every claim line.
+        net = compute_line_net(line.quantity, line.unit_price)  # Compute net amount in kobo.
+        rate = line.tax_code.rate_bps if line.tax_code_id else 0  # Use tax code basis points when present.
+        tax = compute_tax(net, rate)  # Compute recoverable input tax in kobo.
+        if line.net_amount != net or line.tax_amount != tax:  # Avoid unnecessary writes when values are unchanged.
             ExpenseClaimLine.objects.filter(pk=line.pk).update(net_amount=net, tax_amount=tax)
-    claim.recompute_totals(save=True)
+    claim.recompute_totals(save=True)  # Roll line totals up to the claim header.
 
 
+# Public wrapper that posts a claim and audits failures.
 def post_expense_claim(claim, *, actor_user=None):
     """Price, validate and post an :class:`ExpenseClaim`, raising its liability journal.
 
     Records a durable rejection audit on any :class:`FinanceError`, then re-raises.
     """
-    try:
-        return _post_expense_claim_atomic(claim, actor_user=actor_user)
-    except FinanceError as exc:
-        record_rejection(
-            entity=claim.entity, action=FinanceAuditAction.EXPENSE_CLAIM_POST_REJECTED,
-            exc=exc, actor_user=actor_user, target=claim,
+    try:  # Atomic worker performs the accounting mutation.
+        return _post_expense_claim_atomic(claim, actor_user=actor_user)  # Post the claim in one transaction.
+    except FinanceError as exc:  # Failed postings should leave durable audit evidence.
+        record_rejection(  # Record the rejection outside the rolled-back posting work.
+            entity=claim.entity, action=FinanceAuditAction.EXPENSE_CLAIM_POST_REJECTED,  # Audit action for rejected claim post.
+            exc=exc, actor_user=actor_user, target=claim,  # Capture error and actor context.
         )
         raise
 
 
 @transaction.atomic
+# Transactional claim posting implementation.
 def _post_expense_claim_atomic(claim, *, actor_user=None):
     from .models import JournalEntry, JournalLine
 
-    if claim.status != DocumentStatus.DRAFT:
+    if claim.status != DocumentStatus.DRAFT:  # Only draft claims can be posted.
         raise ExpenseClaimError(
             f"Expense claim {claim.document_number or claim.pk} is '{claim.status}', "
             f"only a draft can be posted.",
         )
 
-    price_expense_claim(claim)
-    if claim.total <= 0:
+    price_expense_claim(claim)  # Ensure line and header amounts are current before posting.
+    if claim.total <= 0:  # A claim must create a positive liability.
         raise ExpenseClaimError("An expense claim must have a positive total to post.")
 
-    reimbursement = claim.reimbursement_account or resolve_account(
-        claim.entity, ACCRUED_REIMBURSEMENT_CODE, label="accrued reimbursement",
+    reimbursement = claim.reimbursement_account or resolve_account(  # Use configured claim account or default control account.
+        claim.entity, ACCRUED_REIMBURSEMENT_CODE, label="accrued reimbursement",  # Resolve accrued reimbursement liability.
     )
-    period = resolve_period(claim.entity, claim.claim_date)
+    period = resolve_period(claim.entity, claim.claim_date)  # Find the open accounting period.
 
     entry = JournalEntry.objects.create(
-        entity=claim.entity, branch=claim.branch,
-        date=claim.claim_date, period=period,
-        source=JournalSource.PURCHASE, currency=claim.currency,
-        narration=claim.narration or claim.title or f"Expense claim {claim.document_number or ''}".strip(),
-        created_by=actor_user,
+        entity=claim.entity, branch=claim.branch,  # Scope entry to entity and optional branch.
+        date=claim.claim_date, period=period,  # Use claim date and resolved period.
+        source=JournalSource.PURCHASE, currency=claim.currency,  # Treat the claim as a purchase-side journal.
+        narration=claim.narration or claim.title or f"Expense claim {claim.document_number or ''}".strip(),  # Prefer explicit narration.
+        created_by=actor_user,  # Attribute the journal to the acting user.
     )
 
-    line_no = 0
-    expense_by_account: dict[int, int] = defaultdict(int)
-    expense_objs: dict[int, object] = {}
-    tax_by_account: dict[int, int] = defaultdict(int)
-    tax_objs: dict[int, object] = {}
-    for line in claim.lines.select_related("expense_account", "tax_code__paid_account"):
-        expense_by_account[line.expense_account_id] += line.net_amount
-        expense_objs[line.expense_account_id] = line.expense_account
-        if line.tax_amount:
-            tax_acc = line.tax_code.paid_account if line.tax_code_id else None
-            if tax_acc is None:
+    line_no = 0  # Journal line counter.
+    # Dr expense, grouped by (account, cost centre) so the cost-centre split survives into
+    # the GL. Expense is P&L, so it carries the analytics; the input-tax and reimbursement
+    # liability lines (below) do not.  # Preserve analytics only where financially meaningful.
+    expense_by_key: dict[tuple[int, int | None], int] = defaultdict(int)  # Net expense grouped by account and cost center.
+    expense_objs: dict[tuple[int, int | None], tuple] = {}  # Account/cost-center objects for grouped expense lines.
+    tax_by_account: dict[int, int] = defaultdict(int)  # Recoverable input tax grouped by tax account.
+    tax_objs: dict[int, object] = {}  # Tax account objects for grouped tax lines.
+    for line in claim.lines.select_related(
+        "expense_account", "tax_code__paid_account", "cost_center",  # Expense, tax, and analytics relations.
+    ):
+        key = (line.expense_account_id, line.cost_center_id)  # Group expense by account and cost center.
+        expense_by_key[key] += line.net_amount  # Accumulate net expense amount.
+        expense_objs[key] = (line.expense_account, line.cost_center)  # Store objects for journal creation.
+        if line.tax_amount:  # Tax-bearing lines require an input tax account.
+            tax_acc = line.tax_code.paid_account if line.tax_code_id else None  # Resolve recoverable tax account.
+            if tax_acc is None:  # A tax amount without a paid account cannot post.
                 raise ExpenseClaimError(
                     f"Tax code '{line.tax_code.code}' has no paid (input) account set."
                     if line.tax_code_id else "Tax amount present without a tax code.",
                 )
-            tax_by_account[tax_acc.id] += line.tax_amount
-            tax_objs[tax_acc.id] = tax_acc
+            tax_by_account[tax_acc.id] += line.tax_amount  # Accumulate input tax amount.
+            tax_objs[tax_acc.id] = tax_acc  # Store the tax account object.
 
-    for acc_id, amount in expense_by_account.items():
-        if amount == 0:
+    for (acc_id, cc_id), amount in expense_by_key.items():  # Emit grouped expense debit lines.
+        if amount == 0:  # Skip empty groups.
             continue
-        line_no += 1
+        line_no += 1  # Advance the journal line number.
+        expense_account, cost_center = expense_objs[(acc_id, cc_id)]  # Retrieve objects for this group.
         JournalLine.objects.create(
-            entry=entry, account=expense_objs[acc_id], debit=amount, credit=0,
-            description="Expense", line_no=line_no,
+            entry=entry, account=expense_account, debit=amount, credit=0,  # Dr expense.
+            description="Expense", cost_center=cost_center, line_no=line_no,  # Preserve cost-center analytics.
         )
-    for acc_id, amount in tax_by_account.items():
-        line_no += 1
+    for acc_id, amount in tax_by_account.items():  # Emit grouped input tax debit lines.
+        line_no += 1  # Advance the journal line number.
         JournalLine.objects.create(
-            entry=entry, account=tax_objs[acc_id], debit=amount, credit=0,
-            description="Input tax", line_no=line_no,
+            entry=entry, account=tax_objs[acc_id], debit=amount, credit=0,  # Dr input tax.
+            description="Input tax", line_no=line_no,  # Label the tax line.
         )
-    line_no += 1
+    line_no += 1  # Final line is the reimbursement liability credit.
     JournalLine.objects.create(
-        entry=entry, account=reimbursement, debit=0, credit=claim.total,
-        description=f"Owed to {claim.claimant_name or claim.claimant_id or 'claimant'}",
-        line_no=line_no,
+        entry=entry, account=reimbursement, debit=0, credit=claim.total,  # Cr reimbursement liability.
+        description=f"Owed to {claim.claimant_name or claim.claimant_id or 'claimant'}",  # Identify claimant where possible.
+        line_no=line_no,  # Store line order.
     )
 
-    post_journal(entry, actor_user=actor_user)
+    post_journal(entry, actor_user=actor_user)  # Validate balance and mark journal posted.
 
-    claim.journal = entry
-    claim.reimbursement_account = reimbursement
-    claim.status = DocumentStatus.POSTED
-    claim.refresh_payment_status(save=False)
+    claim.journal = entry  # Link the claim to its posting journal.
+    claim.reimbursement_account = reimbursement  # Persist the liability account used.
+    claim.status = DocumentStatus.POSTED  # Mark claim as posted.
+    claim.refresh_payment_status(save=False)  # Initialize paid/unpaid status.
     claim.save(update_fields=[
-        "journal", "reimbursement_account", "status", "payment_status", "updated_at",
+        "journal", "reimbursement_account", "status", "payment_status", "updated_at",  # Posting and settlement fields.
     ])
 
-    record(
-        entity=claim.entity, action=FinanceAuditAction.EXPENSE_CLAIM_POSTED,
-        actor_user=actor_user, target=claim,
-        message=f"Posted expense claim ({claim.total} kobo).",
-        journal_id=entry.pk, total=claim.total, tax=claim.tax_total,
+    record(  # Audit the successful claim posting.
+        entity=claim.entity, action=FinanceAuditAction.EXPENSE_CLAIM_POSTED,  # Audit action for posted claim.
+        actor_user=actor_user, target=claim,  # Actor and target context.
+        message=f"Posted expense claim ({claim.total} kobo).",  # Human-readable audit message.
+        journal_id=entry.pk, total=claim.total, tax=claim.tax_total,  # Structured audit metadata.
     )
-    return claim
+    return claim  # Return the posted claim.
 
 
+# Public wrapper for reimbursements.
 def settle_expense_claim(claim, *, bank_account, pay_date, amount=None, actor_user=None):
     """Reimburse a posted claim: ``Dr accrued reimbursement, Cr bank``.
 
     ``amount`` defaults to the full outstanding balance; a smaller amount records a
     partial reimbursement. Records a durable rejection audit on any FinanceError.
     """
-    try:
-        return _settle_expense_claim_atomic(
-            claim, bank_account=bank_account, pay_date=pay_date,
-            amount=amount, actor_user=actor_user,
+    try:  # Atomic worker performs reimbursement accounting.
+        return _settle_expense_claim_atomic(  # Settle all or part of the claim.
+            claim, bank_account=bank_account, pay_date=pay_date,  # Payment source and date.
+            amount=amount, actor_user=actor_user,  # Optional partial amount and actor.
         )
-    except FinanceError as exc:
-        record_rejection(
-            entity=claim.entity, action=FinanceAuditAction.EXPENSE_CLAIM_SETTLED,
-            exc=exc, actor_user=actor_user, target=claim,
+    except FinanceError as exc:  # Failed settlements should be auditable.
+        record_rejection(  # Record the rejected settlement attempt.
+            entity=claim.entity, action=FinanceAuditAction.EXPENSE_CLAIM_SETTLED,  # Existing audit action for settlement attempts.
+            exc=exc, actor_user=actor_user, target=claim,  # Capture error and actor context.
         )
         raise
 
 
 @transaction.atomic
+# Transactional reimbursement.
 def _settle_expense_claim_atomic(claim, *, bank_account, pay_date, amount=None, actor_user=None):
     from .models import JournalEntry, JournalLine
 
-    if claim.status != DocumentStatus.POSTED:
+    if claim.status != DocumentStatus.POSTED:  # Only posted liabilities can be settled.
         raise ExpenseClaimError("Only a posted expense claim can be settled.")
-    outstanding = claim.balance_due
-    if outstanding <= 0:
+
+    # A reimbursement cannot predate the claim accrual: debiting the liability
+    # earlier would leave accrued reimbursement negative until the claim date.
+    from .chronology import ensure_on_or_after
+    ensure_on_or_after(
+        subject=f"Reimbursement of {claim.document_number or claim.pk}",
+        subject_date=pay_date,
+        source=f"expense claim {claim.document_number or claim.pk}",
+        source_date=claim.claim_date,
+        remedy=f"Date the reimbursement {claim.claim_date} or later.",
+    )
+
+    outstanding = claim.balance_due  # Amount still owed to the claimant.
+    if outstanding <= 0:  # Fully reimbursed claims cannot be settled again.
         raise ExpenseClaimError("This claim has no outstanding balance to settle.")
-    pay = outstanding if amount is None else min(int(amount), outstanding)
-    if pay <= 0:
+    pay = outstanding if amount is None else min(int(amount), outstanding)  # Default to full balance and cap partials.
+    if pay <= 0:  # Reject zero or negative settlement requests.
         raise ExpenseClaimError("Settlement amount must be positive.")
 
-    reimbursement = claim.reimbursement_account or resolve_account(
-        claim.entity, ACCRUED_REIMBURSEMENT_CODE, label="accrued reimbursement",
+    reimbursement = claim.reimbursement_account or resolve_account(  # Use stored liability account or resolve default.
+        claim.entity, ACCRUED_REIMBURSEMENT_CODE, label="accrued reimbursement",  # Resolve accrued reimbursement account.
     )
-    period = resolve_period(claim.entity, pay_date)
+    period = resolve_period(claim.entity, pay_date)  # Find the open accounting period for payment date.
 
     entry = JournalEntry.objects.create(
-        entity=claim.entity, branch=claim.branch,
-        date=pay_date, period=period, source=JournalSource.BANK,
-        currency=claim.currency,
-        narration=f"Reimburse {claim.document_number or claim.pk}",
-        created_by=actor_user,
+        entity=claim.entity, branch=claim.branch,  # Scope entry to entity and optional branch.
+        date=pay_date, period=period, source=JournalSource.BANK,  # Bank source because cash leaves the bank.
+        currency=claim.currency,  # Use claim currency.
+        narration=f"Reimburse {claim.document_number or claim.pk}",  # Identify the reimbursed claim.
+        created_by=actor_user,  # Attribute the journal to the acting user.
     )
     JournalLine.objects.create(
-        entry=entry, account=reimbursement, debit=pay, credit=0,
-        description="Reimbursement", line_no=1,
+        entry=entry, account=reimbursement, debit=pay, credit=0,  # Dr liability.
+        description="Reimbursement", line_no=1,  # First reimbursement line.
     )
     JournalLine.objects.create(
-        entry=entry, account=bank_account.gl_account, debit=0, credit=pay,
-        description="Reimbursement paid", line_no=2,
+        entry=entry, account=bank_account.gl_account, debit=0, credit=pay,  # Cr bank account.
+        description="Reimbursement paid", line_no=2,  # Second reimbursement line.
     )
-    post_journal(entry, actor_user=actor_user)
+    post_journal(entry, actor_user=actor_user)  # Validate balance and mark journal posted.
 
-    claim.amount_paid += pay
-    claim.refresh_payment_status(save=False)
+    claim.amount_paid += pay  # Increase reimbursed amount.
+    claim.refresh_payment_status(save=False)  # Recompute unpaid/partial/paid status.
     claim.save(update_fields=["amount_paid", "payment_status", "updated_at"])
 
-    record(
-        entity=claim.entity, action=FinanceAuditAction.EXPENSE_CLAIM_SETTLED,
-        actor_user=actor_user, target=claim,
-        message=f"Reimbursed {pay} kobo on claim {claim.document_number or claim.pk}.",
-        journal_id=entry.pk, amount=pay, payment_status=claim.payment_status,
+    record(  # Audit the successful reimbursement.
+        entity=claim.entity, action=FinanceAuditAction.EXPENSE_CLAIM_SETTLED,  # Audit action for settlement.
+        actor_user=actor_user, target=claim,  # Actor and target context.
+        message=f"Reimbursed {pay} kobo on claim {claim.document_number or claim.pk}.",  # Human-readable audit message.
+        journal_id=entry.pk, amount=pay, payment_status=claim.payment_status,  # Structured audit metadata.
     )
-    return claim
+    return claim  # Return the settled claim.
+
+
+@transaction.atomic
+# Reverse a posted unreimbursed expense claim.
+def void_expense_claim(claim, *, actor_user=None):
+    """Void a **posted, un-reimbursed** expense claim.
+
+    Reverses the posting journal (an audit-correct mirror entry that backs out the
+    expense and the accrued-reimbursement liability) and marks the claim CANCELLED -
+    the "undo" for a claim posted in error, without hand-reversing the journal.
+
+    Refuses once any reimbursement has been paid: the cash has already left the bank,
+    so that must be handled first (reverse the reimbursement) before the claim can be
+    voided. ``reject`` remains the path for a claim still in DRAFT.
+    """
+    from .posting import reverse_journal
+
+    if claim.status != DocumentStatus.POSTED:  # Only posted claims have a journal to reverse.
+        raise ExpenseClaimError(
+            f"Only a posted claim can be voided (this is '{claim.status}'); "
+            f"a draft is rejected, not voided.",
+        )
+    if claim.amount_paid > 0:  # Do not void claims after cash has already been paid.
+        raise ExpenseClaimError(
+            "This claim has already been reimbursed; reverse the reimbursement "
+            "before voiding the claim.",
+        )
+    if claim.journal_id is None:  # A posted claim should always have a journal.
+        raise ExpenseClaimError("Claim has no posting journal to reverse.")
+
+    reverse_journal(claim.journal, actor_user=actor_user, document_owner=claim)  # Post the mirror reversal journal.
+    claim.status = DocumentStatus.CANCELLED  # Mark the claim voided/cancelled.
+    claim.save(update_fields=["status", "updated_at"])
+    record(  # Audit the successful void.
+        entity=claim.entity, action=FinanceAuditAction.EXPENSE_CLAIM_VOIDED,  # Audit action for void.
+        actor_user=actor_user, target=claim,  # Actor and target context.
+        message=f"Voided expense claim {claim.document_number or claim.pk} "  # Human-readable audit message.
+                f"(reversed journal {claim.journal_id}).",  # Include reversed journal id.
+        journal_id=claim.journal_id, total=claim.total,  # Structured audit metadata.
+    )
+    return claim  # Return the voided claim.

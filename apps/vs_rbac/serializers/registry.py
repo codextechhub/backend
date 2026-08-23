@@ -13,10 +13,9 @@ from ..models import (
     PermissionGroup,
     PermissionModule,
     PermissionResource,
-    PlatformRoleGroup,
-    PlatformRoleTemplate,
-    SchoolRoleGroup,
-    SchoolRoleTemplate,
+    PermissionScope,
+    TenantRoleGroup,
+    TenantRoleTemplate,
 )
 
 
@@ -24,41 +23,6 @@ from ..models import (
 # -----------------------------------------------------------------------------
 # Shared helpers
 # -----------------------------------------------------------------------------
-class SchoolField(serializers.PrimaryKeyRelatedField):
-    """School reference that accepts the surrogate id OR the slug (B23).
-
-    Clients addressed schools by slug while the slug was the primary key;
-    this keeps that contract: writes take either form, reads render the slug
-    so the wire format is unchanged.
-    """
-
-    def get_queryset(self):
-        from vs_schools.models import School
-
-        return School.objects.all()
-
-    def to_internal_value(self, data):
-        from vs_schools.models import School
-
-        if isinstance(data, School):
-            return data
-        qs = self.get_queryset()
-        try:
-            if str(data).isdigit():
-                return qs.get(pk=data)
-            return qs.get(slug=data)
-        except School.DoesNotExist:
-            self.fail("does_not_exist", pk_value=data)
-
-    def to_representation(self, value):
-        from vs_schools.models import School
-
-        if isinstance(value, School):
-            return value.slug
-        # PKOnlyObject fast path — fetch the slug.
-        return School.objects.filter(pk=value.pk).values_list("slug", flat=True).first()
-
-
 class PermissionKeyListValidationMixin:
     """
     Reusable helper for serializers that accept a list of permission keys.
@@ -102,7 +66,7 @@ class PermissionKeyListValidationMixin:
 
 
 # -----------------------------------------------------------------------------
-# 1) Permission vocabulary — Module / Resource / Action
+# 1) Permission vocabulary - Module / Resource / Action
 # -----------------------------------------------------------------------------
 
 class PermissionModuleSerializer(serializers.ModelSerializer):
@@ -235,7 +199,7 @@ class PermissionSerializer(serializers.ModelSerializer):
                 "resource": f"Resource '{resource.name}' does not belong to module '{module.name}'."
             })
 
-        # Duplicate key guard — checks the composed key before hitting the DB unique constraint
+        # Duplicate key guard - checks the composed key before hitting the DB unique constraint
         if module and isinstance(resource, PermissionResource) and action:
             composed_key = f"{module.pk}.{resource.name}.{action.pk}"
             qs = Permission.objects.filter(key=composed_key)
@@ -316,7 +280,7 @@ class PermissionDetailSerializer(PermissionSerializer):
 
 
 # -----------------------------------------------------------------------------
-# 1b) Permission Groups — reusable permission bundles shared across school and
+# 1b) Permission Groups - reusable permission bundles shared across school and
 #     platform role templates.
 # -----------------------------------------------------------------------------
 class PermissionGroupListSerializer(serializers.ModelSerializer):
@@ -398,6 +362,17 @@ class PermissionGroupDetailSerializer(
     @transaction.atomic
     def create(self, validated_data):
         permission_keys = validated_data.pop("permission_keys", [])
+        # ``scope`` is not on this serializer, and the field has no model
+        # default, so without this every group built through the API was
+        # created unclassified - and ``TenantRoleGroup`` refuses to attach an
+        # unclassified bundle to a role inside a tenant. The bundle was
+        # therefore unusable by the only people who can build one.
+        #
+        # TENANT is the only honest default here: ``GroupPermission`` already
+        # refuses to put a PLATFORM-scoped key in a group that is not declared
+        # PLATFORM, so this endpoint could never have produced a platform
+        # bundle anyway. Platform bundles are seeded, not posted.
+        validated_data.setdefault("scope", PermissionScope.TENANT)
         group = PermissionGroup.objects.create(**validated_data)
 
         if permission_keys:
@@ -423,23 +398,14 @@ class PermissionGroupDetailSerializer(
                 [GroupPermission(group=instance, permission=perm) for perm in perms]
             )
 
-            # Any role (school or platform) attached to this group now has a
-            # changed effective permission set, so bump their versions to
-            # invalidate caches downstream.
-            attached_role_ids = SchoolRoleGroup.objects.filter(
+            # Any tenant role attached to this group now has a changed effective
+            # permission set, so bump their versions to invalidate caches
+            # downstream.
+            attached_role_ids = TenantRoleGroup.objects.filter(
                 group=instance
             ).values_list("role_id", flat=True)
-            for role in SchoolRoleTemplate.objects.filter(id__in=list(attached_role_ids)):
-                role.bump_version()
-                role.save(update_fields=["version", "updated_at"])
-
-            attached_platform_role_ids = PlatformRoleGroup.objects.filter(
-                group=instance
-            ).values_list("role_id", flat=True)
-            for role in PlatformRoleTemplate.objects.filter(
-                id__in=list(attached_platform_role_ids)
-            ):
-                role.bump_version()
+            for role in TenantRoleTemplate.objects.filter(id__in=list(attached_role_ids)):
+                role.version = (role.version or 1) + 1
                 role.save(update_fields=["version", "updated_at"])
 
         return instance

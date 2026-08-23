@@ -10,19 +10,42 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
+    # Public vendor quotation portal. The invitation token plus verified 24-hour
+    # session is the access gate, so these routes never accept entity parameters.
+    path("public/rfqs/<str:token>/", views.PublicRfqPreviewView.as_view(), name="public-rfq-preview"),
+    path("public/rfqs/<str:token>/logo/", views.PublicRfqLogoView.as_view(), name="public-rfq-logo"),
+    path("public/rfqs/<str:token>/request-code/", views.PublicRfqRequestCodeView.as_view(), name="public-rfq-request-code"),
+    path("public/rfqs/<str:token>/verify-code/", views.PublicRfqVerifyCodeView.as_view(), name="public-rfq-verify-code"),
+    path("public/rfqs/<str:token>/form/", views.PublicRfqFormView.as_view(), name="public-rfq-form"),
+    path("public/rfqs/<str:token>/submit/", views.PublicRfqSubmitView.as_view(), name="public-rfq-submit"),
+    path("public/rfqs/<str:token>/revise/", views.PublicRfqReviseView.as_view(), name="public-rfq-revise"),
+    path("public/rfqs/<str:token>/acknowledge/", views.PublicRfqAcknowledgeView.as_view(), name="public-rfq-acknowledge"),
+    path("public/rfqs/<str:token>/decline/", views.PublicRfqDeclineView.as_view(), name="public-rfq-decline"),
+    path("public/rfqs/<str:token>/attachments/", views.PublicRfqAttachmentView.as_view(), name="public-rfq-attachment"),
+    path("public/rfqs/<str:token>/attachments/<int:attachment_id>/", views.PublicRfqAttachmentDownloadView.as_view(), name="public-rfq-attachment-download"),
+    path("settings/", views.ProcurementSettingsView.as_view(), name="proc-settings"),
+
     # Master data
     path("categories/", views.VendorCategoryListCreateView.as_view(), name="proc-categories"),
+    path("categories/insights/", views.VendorCategoryInsightsView.as_view(), name="proc-category-insights"),
+    path("categories/<int:pk>/", views.VendorCategoryDetailView.as_view(), name="proc-category-detail"),
     path("vendors/", views.VendorListCreateView.as_view(), name="proc-vendors"),
+    path("vendors/summary/", views.VendorSummaryView.as_view(), name="proc-vendor-summary"),
+    path("vendors/<int:pk>/insights/", views.VendorInsightsView.as_view(), name="proc-vendor-insights"),
     path("vendors/<int:pk>/", views.VendorDetailView.as_view(), name="proc-vendor-detail"),
 
     # Item catalog
     path("catalog-items/", views.CatalogItemListCreateView.as_view(), name="proc-catalog-items"),
+    path("catalog-items/<int:pk>/insights/", views.CatalogItemInsightsView.as_view(), name="proc-catalog-item-insights"),
     path("catalog-items/<int:pk>/", views.CatalogItemDetailView.as_view(), name="proc-catalog-item-detail"),
 
     # Vendor contracts
     path("contracts/", views.ContractListCreateView.as_view(), name="proc-contracts"),
+    path("contracts/summary/", views.ContractSummaryView.as_view(), name="proc-contract-summary"),
     path("contracts/renewals/", views.ContractRenewalsView.as_view(), name="proc-contract-renewals"),
     path("contracts/<int:pk>/", views.ContractDetailView.as_view(), name="proc-contract-detail"),
+    path("contracts/<int:pk>/linked-pos/", views.ContractLinkedPurchaseOrdersView.as_view(),
+         name="proc-contract-linked-pos"),
     path("contracts/<int:pk>/activate/", views.ContractActivateView.as_view(), name="proc-contract-activate"),
     path("contracts/<int:pk>/renew/", views.ContractRenewView.as_view(), name="proc-contract-renew"),
     path("contracts/<int:pk>/terminate/", views.ContractTerminateView.as_view(), name="proc-contract-terminate"),
@@ -31,14 +54,21 @@ urlpatterns = [
 
     # Purchase requisitions
     path("requisitions/", views.RequisitionListCreateView.as_view(), name="proc-requisitions"),
+    path("requisitions/summary/", views.RequisitionSummaryView.as_view(), name="proc-requisition-summary"),
+    path("requisitions/budget-availability/", views.RequisitionBudgetAvailabilityView.as_view(), name="proc-requisition-budget"),
     path("requisitions/<int:pk>/", views.RequisitionDetailView.as_view(), name="proc-requisition-detail"),
     path("requisitions/<int:pk>/submit/", views.RequisitionSubmitView.as_view(), name="proc-requisition-submit"),
 
     # Requests for quotation (sourcing)
     path("rfqs/", views.RfqListCreateView.as_view(), name="proc-rfqs"),
+    path("rfqs/summary/", views.RfqSummaryView.as_view(), name="proc-rfq-summary"),
     path("rfqs/<int:pk>/", views.RfqDetailView.as_view(), name="proc-rfq-detail"),
     path("rfqs/<int:pk>/issue/", views.RfqIssueView.as_view(), name="proc-rfq-issue"),
+    path("rfqs/<int:pk>/close/", views.RfqCloseView.as_view(), name="proc-rfq-close"),
     path("rfqs/<int:pk>/cancel/", views.RfqCancelView.as_view(), name="proc-rfq-cancel"),
+    path("rfqs/<int:pk>/amendments/", views.RfqAmendmentCreateView.as_view(), name="proc-rfq-amendment"),
+    path("rfqs/<int:pk>/invitations/<int:invitation_id>/resend/", views.RfqInvitationResendView.as_view(), name="proc-rfq-invitation-resend"),
+    path("rfqs/<int:pk>/invitations/<int:invitation_id>/extend/", views.RfqInvitationExtendView.as_view(), name="proc-rfq-invitation-extend"),
 
     # Vendor quotations (sourcing)
     path("quotations/", views.QuotationListCreateView.as_view(), name="proc-quotations"),
@@ -48,9 +78,16 @@ urlpatterns = [
 
     # Purchase orders
     path("purchase-orders/", views.PurchaseOrderListCreateView.as_view(), name="proc-purchase-orders"),
+    path("purchase-orders/summary/", views.PurchaseOrderSummaryView.as_view(), name="proc-purchase-order-summary"),
     path("purchase-orders/<int:pk>/", views.PurchaseOrderDetailView.as_view(), name="proc-purchase-order-detail"),
     path("purchase-orders/<int:pk>/submit/", views.PurchaseOrderSubmitApprovalView.as_view(),
          name="proc-purchase-order-submit"),
+    path("purchase-orders/<int:pk>/email-preview/", views.PurchaseOrderEmailPreviewView.as_view(),
+         name="proc-purchase-order-email-preview"),
+    path("purchase-orders/<int:pk>/email/", views.PurchaseOrderEmailView.as_view(),
+         name="proc-purchase-order-email"),
+    path("purchase-orders/<int:pk>/email-deliveries/<int:delivery_id>/retry/",
+         views.PurchaseOrderEmailRetryView.as_view(), name="proc-purchase-order-email-retry"),
 
     # Goods received notes
     path("goods-receipts/", views.GoodsReceiptListCreateView.as_view(), name="proc-goods-receipts"),
@@ -59,37 +96,80 @@ urlpatterns = [
 
     # Vendor invoices (bills)
     path("vendor-invoices/", views.VendorInvoiceListCreateView.as_view(), name="proc-vendor-invoices"),
+    path("vendor-invoices/reference-check/", views.VendorInvoiceReferenceCheckView.as_view(),
+         name="proc-vendor-invoice-reference-check"),
+    path("vendor-invoices/summary/", views.VendorInvoiceSummaryView.as_view(), name="proc-vendor-invoice-summary"),
     path("vendor-invoices/<int:pk>/", views.VendorInvoiceDetailView.as_view(), name="proc-vendor-invoice-detail"),
     path("vendor-invoices/<int:pk>/match/", views.VendorInvoiceMatchView.as_view(), name="proc-vendor-invoice-match"),
     path("vendor-invoices/<int:pk>/submit/", views.VendorInvoiceSubmitApprovalView.as_view(),
          name="proc-vendor-invoice-submit"),
     path("vendor-invoices/<int:pk>/post/", views.VendorInvoicePostView.as_view(), name="proc-vendor-invoice-post"),
+    path("vendor-invoices/<int:pk>/attachments/", views.VendorInvoiceAttachmentView.as_view(),
+         name="proc-vendor-invoice-attachments"),
+    path("vendor-invoices/<int:pk>/attachments/<int:attachment_id>/",
+         views.VendorInvoiceAttachmentView.as_view(), name="proc-vendor-invoice-attachment-detail"),
 
     # Vendor payments
     path("vendor-payments/", views.VendorPaymentListCreateView.as_view(), name="proc-vendor-payments"),
+    path("vendor-payments/eligible-invoices/", views.VendorPaymentEligibleInvoiceView.as_view(), name="proc-vendor-payment-eligible-invoices"),
     path("vendor-payments/<int:pk>/", views.VendorPaymentDetailView.as_view(), name="proc-vendor-payment-detail"),
+    path("vendor-payments/<int:pk>/submit/", views.VendorPaymentSubmitView.as_view(), name="proc-vendor-payment-submit"),
     path("vendor-payments/<int:pk>/post/", views.VendorPaymentPostView.as_view(), name="proc-vendor-payment-post"),
+    path("vendor-payments/<int:pk>/allocate/", views.VendorPaymentAllocateAdvanceView.as_view(),
+         name="proc-vendor-payment-allocate"),
+    path("vendor-payments/<int:pk>/cancel/", views.VendorPaymentCancelView.as_view(), name="proc-vendor-payment-cancel"),
+    path("vendor-payments/<int:pk>/reverse/", views.VendorPaymentReverseView.as_view(), name="proc-vendor-payment-reverse"),
+    path("vendor-payments/<int:pk>/attachments/", views.VendorPaymentAttachmentView.as_view(),
+         name="proc-vendor-payment-attachments"),
+    path("vendor-payments/<int:pk>/attachments/<int:attachment_id>/",
+         views.VendorPaymentAttachmentView.as_view(), name="proc-vendor-payment-attachment-detail"),
 
     # Spend approvals (vs_workflow)
     path("approvals/default-templates/", views.ApprovalTemplateSetupView.as_view(),
          name="proc-approval-default-templates"),
+    path("approvals/coverage/", views.ProcurementApprovalCoverageView.as_view(),
+         name="proc-approval-coverage"),
+    path("approvals/", views.ProcurementApprovalListView.as_view(),
+         name="proc-approvals"),
+    path("approvals/<str:workflow_id>/", views.ProcurementApprovalDetailView.as_view(),
+         name="proc-approval-detail"),
+    path("approvals/<str:workflow_id>/actions/", views.ProcurementApprovalActionView.as_view(),
+         name="proc-approval-action"),
+    path("approvals/<str:workflow_id>/override/", views.ProcurementApprovalOverrideView.as_view(),
+         name="proc-approval-override"),
 
     # Inventory / stock ledger
+    path("stock-locations/", views.StockLocationListCreateView.as_view(),
+         name="proc-stock-locations"),
+    path("stock-locations/<int:pk>/", views.StockLocationDetailView.as_view(),
+         name="proc-stock-location-detail"),
+    path("stock-balances/", views.StockBalanceListView.as_view(),
+         name="proc-stock-balances"),
     path("stock-items/", views.StockItemListCreateView.as_view(), name="proc-stock-items"),
+    # "summary" is registered before "<pk>" so the literal is not captured as an id.
+    path("stock-items/summary/", views.StockItemSummaryView.as_view(), name="proc-stock-item-summary"),
     path("stock-items/<int:pk>/", views.StockItemDetailView.as_view(), name="proc-stock-item-detail"),
     path("stock-items/<int:pk>/issue/", views.StockIssueView.as_view(), name="proc-stock-issue"),
     path("stock-items/<int:pk>/adjust/", views.StockAdjustView.as_view(), name="proc-stock-adjust"),
     path("stock-movements/", views.StockMovementListView.as_view(), name="proc-stock-movements"),
 
+    # Vendor assessments (list rides report.view; create needs vendor_assessment.create)
+    path("vendor-assessments/", views.VendorAssessmentListCreateView.as_view(), name="proc-vendor-assessments"),
+
     # AP reports
+    path("reports/dashboard/", views.ProcurementDashboardView.as_view(), name="proc-dashboard"),
+    # "ap-aging/vendor" is registered before "ap-aging" (both literal; order harmless here).
+    path("reports/ap-aging/vendor/", views.APAgingVendorDetailView.as_view(), name="proc-ap-aging-vendor"),
     path("reports/ap-aging/", views.APAgingView.as_view(), name="proc-ap-aging"),
     path("reports/ap-reconciliation/", views.APReconciliationView.as_view(), name="proc-ap-reconciliation"),
     path("reports/grir/", views.GRIRBalanceView.as_view(), name="proc-grir"),
     path("reports/ap-cash-requirements/", views.APCashRequirementsView.as_view(), name="proc-ap-cash-requirements"),
+    path("reports/grir-aging/grn/", views.GRIRGrnDetailView.as_view(), name="proc-grir-aging-grn"),
     path("reports/grir-aging/", views.GRIRAgingView.as_view(), name="proc-grir-aging"),
+    # GR/IR at the PO-line grain (detail literal before list; both literal, order harmless).
+    path("reports/grir-lines/detail/", views.GRIRPoLineDetailView.as_view(), name="proc-grir-lines-detail"),
+    path("reports/grir-lines/", views.GRIRPoLinesView.as_view(), name="proc-grir-lines"),
     path("reports/spend-analysis/", views.SpendAnalysisView.as_view(), name="proc-spend-analysis"),
     path("reports/vendor-performance/", views.VendorPerformanceView.as_view(), name="proc-vendor-performance"),
     path("reports/cycle-time/", views.ProcurementCycleTimeView.as_view(), name="proc-cycle-time"),
-    path("reports/stock-reorder/", views.StockReorderReportView.as_view(), name="proc-stock-reorder"),
-    path("reports/stock-valuation/", views.StockValuationReportView.as_view(), name="proc-stock-valuation"),
 ]

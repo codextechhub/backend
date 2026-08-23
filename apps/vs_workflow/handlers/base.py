@@ -1,13 +1,16 @@
-"""BaseWorkflowHandler — subclass this in workflow_handlers.py of your app."""
+"""BaseWorkflowHandler - subclass this in workflow_handlers.py of your app."""
 from typing import Any, Dict, Optional, Type
 
+# Contract each app implements to connect documents to the workflow engine.
 class BaseWorkflowHandler:
     document_type: str = ""
     document_model: Optional[Type] = None
 
+    # Choose the template code when the submitter does not provide one.
     def resolve_default_template_code(self, document: Any) -> str:
         raise NotImplementedError("Subclasses must implement resolve_default_template_code().")
 
+    # Enforce document-specific submit guards before a workflow instance is created.
     def validate_document(self, document: Any, requested_by) -> None:
         return None
 
@@ -27,10 +30,11 @@ class BaseWorkflowHandler:
               "link": str,   # optional deep link to the source record
             }
 
-        Default is empty — override to surface details.
+        Default is empty - override to surface details.
         """
         return {}
 
+    # Lifecycle callbacks let the source app mirror workflow outcomes on its document.
     def on_submitted(self, instance, context: Dict) -> None: ...
     def on_approved(self, instance, context: Dict) -> None: ...
     def on_rejected(self, instance, context: Dict) -> None: ...

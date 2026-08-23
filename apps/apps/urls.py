@@ -15,13 +15,13 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.conf import settings
-from django.contrib import admin
 from django.urls import path, include
 
 from core.views import MediaView
 
 urlpatterns = [
-    path("v1/i/", include("vs_schools.urls")),
+    path("v1/i/", include("schools.vs_schools.urls")),
+    path("v1/onboarding/", include("schools.vs_onboarding.urls")),
     path("v1/admin/", include("vs_admin_console.urls")),
     path("v1/user/", include("vs_user.urls")),
     path("v1/rbac/", include("vs_rbac.urls")),
@@ -33,9 +33,11 @@ urlpatterns = [
     path("v1/finance/", include("vs_finance.urls")),
     path("v1/procurement/", include("vs_procurement.urls")),
     path("v1/payments/", include("vs_payments.urls")),
+    path("v1/exports/", include("vs_exports.urls")),
     path("v1/todo/", include("vs_todo.urls")),
+    path("v1/support/", include("vs_tickets.urls")),
     path("v1/health/", include("vs_health.urls")),
-    # path("admin/", admin.site.urls),
+    path("v1/tenants/", include("vs_tenants.urls")),
 ]
 
 # Media is database-backed (core.storage.DatabaseStorage) and served with
@@ -44,7 +46,7 @@ urlpatterns += [
     path("media/<path:name>", MediaView.as_view(), name="stored-media"),
 ]
 
-# API docs — generated from code (drf-spectacular). Enabled in DEBUG by
+# API docs - generated from code (drf-spectacular). Enabled in DEBUG by
 # default; set API_DOCS_ENABLED=true to expose temporarily on a deployed tier.
 _docs_enabled = settings.API_DOCS_ENABLED
 if _docs_enabled is None:

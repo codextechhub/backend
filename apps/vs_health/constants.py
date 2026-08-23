@@ -1,4 +1,4 @@
-"""Shared enums and tuning constants for the vs_health (VIGIL) app.
+"""Shared enums and tuning constants for the Health module.
 
 Kept separate from ``models`` so non-model code (middleware, collectors,
 services, tasks) can import status labels and the latency-histogram layout
@@ -10,10 +10,11 @@ from django.db import models
 
 
 # ---------------------------------------------------------------------------
-# Status vocabulary — semantic, paired with shape/icon in the UI (never colour
+# Status vocabulary - semantic, paired with shape/icon in the UI (never colour
 # alone). Mirrors the design's --status-* tokens.
 # ---------------------------------------------------------------------------
 
+# Health state vocabulary shared by probes, rollups, and UI summaries.
 class HealthStatus(models.TextChoices):
     HEALTHY = "healthy", "Healthy"
     WARNING = "warning", "Warning"
@@ -22,6 +23,7 @@ class HealthStatus(models.TextChoices):
 
 
 # Severity ordering used to roll several statuses up into one (worst wins).
+# Numeric severity ranking used when several checks roll up into one status.
 STATUS_RANK = {
     HealthStatus.UNKNOWN: 0,
     HealthStatus.HEALTHY: 1,
@@ -30,11 +32,13 @@ STATUS_RANK = {
 }
 
 
+# Collapse several check statuses into the single worst visible service state.
 def worst_status(statuses) -> str:
     """Return the most severe status from an iterable (warning/critical win)."""
     worst = HealthStatus.UNKNOWN
     seen = False
     for s in statuses:
+        # UNKNOWN only wins when no stronger signal appears.
         seen = True
         if STATUS_RANK.get(s, 0) > STATUS_RANK.get(worst, 0):
             worst = s
@@ -49,21 +53,49 @@ def worst_status(statuses) -> str:
 # many rows are merged. ``LATENCY_BUCKETS_MS`` are upper bounds; one extra
 # overflow bucket (>last bound) is implied, so a histogram is a list of
 # ``len(LATENCY_BUCKETS_MS) + 1`` integer counts.
+# Fixed bucket boundaries for compact request latency histograms.
 LATENCY_BUCKETS_MS = [
     5, 10, 25, 50, 75, 100, 150, 200, 300, 500,
     750, 1000, 1500, 2000, 3000, 5000, 10000,
 ]
 HISTOGRAM_SIZE = len(LATENCY_BUCKETS_MS) + 1
 
+# ---------------------------------------------------------------------------
+# Small-sample floor for ratio/percentile signals
+# ---------------------------------------------------------------------------
+# Production traffic on this platform is roughly 1-2 requests/minute, so a 15
+# minute window routinely holds only a couple of dozen requests. A p95 (or a
+# 5xx error rate) computed from that few samples is noise, not signal: ONE slow
+# report request flips p95 past any latency threshold and opens a SEV2, and one
+# 500 makes a 20% error rate. Below this floor we have no statistically usable
+# signal, so percentile/ratio-driven statuses report UNKNOWN and alert rules
+# skip evaluation entirely - never a claimed green, never a noisy red.
+# 30 is the conventional smallest sample at which a tail estimate is worth
+# quoting at all (at n=30 the p95 still rests on the top ~2 observations, so
+# treat it as a floor, not a guarantee).
+MIN_P95_SAMPLE = 30
+
 # Bucket width, in seconds, that request metrics are aggregated into.
+# Request metrics are folded into minute buckets before persistence.
 METRIC_BUCKET_SECONDS = 60
 
 # The Celery queues the platform runs (mirrors apps/celery.py + the design).
+# Queue names expected from Celery routing and health snapshots.
 KNOWN_QUEUES = ["imports", "exports", "notifications", "provisioning", "reports", "celery"]
+
+# Module "services" are route groups of the Django monolith, not separate
+# processes - their status is DERIVED from real request metrics on these
+# route prefixes (tasks.refresh_module_service_statuses), never probed.
+ROUTE_PREFIX_SERVICES = {
+    "schools": ("/v1/i/",),
+    "billing": ("/v1/finance/", "/v1/payments/"),
+    "reports": ("/v1/finance/reports/",),
+}
 
 
 # ---------------------------------------------------------------------------
 # RBAC permission keys (registered as module.resource.action rows by seed)
 # ---------------------------------------------------------------------------
+# RBAC keys protecting observability reads and health-management writes.
 PERM_VIEW = "platform.health.view"
 PERM_MANAGE = "platform.health.manage"

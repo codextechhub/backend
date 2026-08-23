@@ -1,4 +1,4 @@
-"""Tests for vs_todo — the ToDo org-accountability tool.
+"""Tests for vs_todo - the ToDo org-accountability tool.
 
 Covers the two things the design is really about: the organogram-derived
 hierarchy (roll-up + assign-down rules) and task status/stats. The org tree is
@@ -27,9 +27,16 @@ from .services.stats import area_tasks_qs, stats_for
 
 
 def _staff(email, first, last, **extra):
+    from vs_tenants.models import Tenant
+
+    # vs_todo is a platform surface, and being platform staff IS being on the
+    # platform tenant. Named here rather than derived from an absent persona.
+    extra.setdefault(
+        "tenant", Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM),
+    )
     return User.objects.create_user(
         email=email, first_name=first, last_name=last,
-        user_type=User.UserType.CX_STAFF, status=User.Status.ACTIVE, **extra,
+        status=User.Status.ACTIVE, **extra,
     )
 
 
@@ -173,6 +180,68 @@ class TaskServiceTests(OrganogramFixtureMixin, TestCase):
         self.assertIsNone(task.completed_at)
 
 
+class ReviewRequestDispatchTests(OrganogramFixtureMixin, TestCase):
+    """send_completion_review_request now dispatches through the notification
+    engine (todo.task_completed) instead of hand-building Notification rows."""
+
+    def setUp(self):
+        self.build_org()
+        self.today = timezone.localdate()
+        from vs_notifications.services.seed import (
+            seed_event_types, seed_notification_templates,
+        )
+        seed_event_types()
+        seed_notification_templates()
+
+    def _completed_task(self):
+        # head assigns down to member, so head is the reviewer.
+        task = tasks_svc.create_task(
+            actor=self.head, title="Ship the report", deadline=self.today,
+            assignee=self.member,
+        )
+        tasks_svc.set_done(task, done=True, actor=self.member)
+        task.refresh_from_db()
+        return task
+
+    def test_dispatch_creates_in_app_and_email_for_reviewer(self):
+        from unittest import mock
+
+        from vs_notifications.constants import ChannelChoices
+        from vs_notifications.models import Notification
+        from vs_todo.tasks import send_completion_review_request
+
+        task = self._completed_task()
+        with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
+            result = send_completion_review_request.apply(
+                kwargs={"task_id": task.pk,
+                        "completed_at": task.completed_at.isoformat()}
+            ).get()
+
+        self.assertEqual(result["reviewer"], self.head.pk)
+        notifs = Notification.objects.filter(recipient=self.head)
+        self.assertEqual(
+            notifs.filter(channel=ChannelChoices.IN_APP).count(), 1,
+        )
+        self.assertEqual(
+            notifs.filter(channel=ChannelChoices.EMAIL).count(), 1,
+        )
+        in_app = notifs.get(channel=ChannelChoices.IN_APP)
+        self.assertEqual(in_app.event_type.key, "todo.task_completed")
+        self.assertIn("Ship the report", in_app.body)
+        email = notifs.get(channel=ChannelChoices.EMAIL)
+        self.assertIn("Ship the report", email.subject)
+        self.assertIn(self.member.full_name, email.body)
+
+    def test_skips_when_completion_superseded(self):
+        from vs_todo.tasks import send_completion_review_request
+
+        task = self._completed_task()
+        result = send_completion_review_request.apply(
+            kwargs={"task_id": task.pk, "completed_at": "1999-01-01T00:00:00+00:00"}
+        ).get()
+        self.assertEqual(result, {"skipped": "superseded-by-newer-completion"})
+
+
 class DashboardTests(OrganogramFixtureMixin, TestCase):
     def setUp(self):
         self.build_org()
@@ -206,17 +275,20 @@ class DashboardTests(OrganogramFixtureMixin, TestCase):
 
 
 class PermissionSeedTests(TestCase):
-    """The seed flow must capture every permission wired into views — the
+    """The seed flow must capture every permission wired into views - the
     organogram gap (platform.* defined only in create_superuser, missing from
     seed_all_permissions) is what this guards against, plus the new todo keys."""
 
     def _platform_roles(self):
-        from vs_rbac.models import PlatformRoleTemplate
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_tenants.models import Tenant
+        codex = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
         for role_id, name in (("xvs_super_admin", "XVS Super Admin"),
                               ("xvs_platform_admin", "XVS Platform Admin")):
-            PlatformRoleTemplate.objects.get_or_create(
-                id=role_id,
-                defaults={"name": name, "is_system_role": True, "is_locked": True},
+            TenantRoleTemplate.objects.get_or_create(
+                tenant=codex, key=role_id,
+                defaults={"name": name, "status": "ACTIVE",
+                          "is_system_role": True, "is_locked": True},
             )
 
     def setUp(self):
@@ -233,26 +305,30 @@ class PermissionSeedTests(TestCase):
             self.assertTrue(Permission.objects.filter(key=key).exists(), key)
 
     def test_platform_grants_respect_transfer_boundary(self):
-        from vs_rbac.models import PlatformRolePermission
+        from vs_rbac.models import TenantRolePermission
         call_command("seed_platform_permissions", verbosity=0)
         # Super admin gets the handoff key; platform admin must not.
-        self.assertTrue(PlatformRolePermission.objects.filter(
-            role_id="xvs_super_admin", permission_id="platform.roles.transfer").exists())
-        self.assertFalse(PlatformRolePermission.objects.filter(
-            role_id="xvs_platform_admin", permission_id="platform.roles.transfer").exists())
+        self.assertTrue(TenantRolePermission.objects.filter(
+            role__key="xvs_super_admin", role__tenant__kind="PLATFORM",
+            permission_id="platform.roles.transfer").exists())
+        self.assertFalse(TenantRolePermission.objects.filter(
+            role__key="xvs_platform_admin", role__tenant__kind="PLATFORM",
+            permission_id="platform.roles.transfer").exists())
         # Organogram manage IS granted to both.
         for role_id in ("xvs_super_admin", "xvs_platform_admin"):
-            self.assertTrue(PlatformRolePermission.objects.filter(
-                role_id=role_id, permission_id="platform.organogram.manage").exists(), role_id)
+            self.assertTrue(TenantRolePermission.objects.filter(
+                role__key=role_id, role__tenant__kind="PLATFORM",
+                permission_id="platform.organogram.manage").exists(), role_id)
 
     def test_todo_seed_captures_and_grants_task_keys(self):
-        from vs_rbac.models import Permission, PlatformRolePermission
+        from vs_rbac.models import Permission, TenantRolePermission
         call_command("seed_todo_permissions", verbosity=0)
         for key in ("todo.task.view", "todo.task.manage", "todo.task.assign"):
             self.assertTrue(Permission.objects.filter(key=key).exists(), key)
             for role_id in ("xvs_super_admin", "xvs_platform_admin"):
-                self.assertTrue(PlatformRolePermission.objects.filter(
-                    role_id=role_id, permission_id=key).exists(), f"{role_id}:{key}")
+                self.assertTrue(TenantRolePermission.objects.filter(
+                    role__key=role_id, role__tenant__kind="PLATFORM",
+                    permission_id=key).exists(), f"{role_id}:{key}")
 
     def test_seed_all_permissions_runs_clean(self):
         from vs_rbac.models import Permission

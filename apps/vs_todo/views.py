@@ -1,7 +1,7 @@
 """REST views for vs_todo. See urls.py for the full routing table.
 
 The ToDo tool is gated to CX staff; visibility and assignment are then bounded
-by the organogram — a person sees their own area and can only assign downward.
+by the organogram - a person sees their own area and can only assign downward.
 Those structural rules live in services/ (hierarchy, tasks); the views stay thin.
 """
 from __future__ import annotations
@@ -199,7 +199,7 @@ class OrgView(APIView):
 
 
 class AssignableView(APIView):
-    """Who the viewer may assign a task to — everyone in their area below them.
+    """Who the viewer may assign a task to - everyone in their area below them.
 
     Powers the assignee picker in the assign modal (design: descendantsOf).
 

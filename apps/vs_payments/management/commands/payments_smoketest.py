@@ -1,10 +1,10 @@
 """Validate live payment-provider credentials end-to-end, without touching the ledger.
 
-This talks to the **real** provider API (use Paystack *test mode* keys, or OPay sandbox
-credentials) to prove your keys, base URL and network path actually work before you wire
+This talks to the **real** provider API (use Paystack *test mode* keys) to prove your
+keys, base URL and network path actually work before you wire
 the UI or go live. It deliberately does NOT create any ``CollectionIntent`` / ``Payment``
-rows — it is a pure connectivity check against the provider, so it is safe to run against
-a production database.
+rows. Initializing does advance the selected entity tenant's ``CXP`` reference counter,
+but creates no payment or ledger transaction, so it is safe to run in production.
 
 Two modes:
 
@@ -16,11 +16,11 @@ Two modes:
 
 Usage::
 
-    manage.py payments_smoketest                          # default provider, ₦100 checkout
-    manage.py payments_smoketest --provider PAYSTACK --amount 50000 --email you@test.com
+    manage.py payments_smoketest --entity 1               # default provider, ₦100 checkout
+    manage.py payments_smoketest --entity 1 --provider PAYSTACK --amount 50000 --email you@test.com
     manage.py payments_smoketest --verify CXP-ABC123...   # check a reference's status
 
-Money is in **kobo** (integer minor units) — ``--amount 10000`` == ₦100.00. Never pass a
+Money is in **kobo** (integer minor units) - ``--amount 10000`` == ₦100.00. Never pass a
 float. Keys are read from settings (``PAYSTACK_SECRET_KEY`` etc.); nothing is hard-coded.
 """
 from __future__ import annotations
@@ -39,14 +39,21 @@ from vs_payments.services import _new_reference
 class Command(BaseCommand):
     help = (
         "Validate live payment-provider credentials by creating (or verifying) a test "
-        "checkout against the real provider API. Does not touch the ledger."
+        "checkout against the real provider API. Advances the tenant CXP counter but "
+        "does not create a payment or touch the ledger."
     )
 
     def add_arguments(self, parser):
         parser.add_argument(
+            "--entity",
+            type=int,
+            default=None,
+            help="Ledger entity ID whose tenant owns a newly initialized reference.",
+        )
+        parser.add_argument(
             "--provider",
             default=None,
-            help="Provider name (PAYSTACK / OPAY). Defaults to PAYMENTS_DEFAULT_PROVIDER.",
+            help="Provider name (PAYSTACK). Defaults to PAYMENTS_DEFAULT_PROVIDER.",
         )
         parser.add_argument(
             "--amount",
@@ -99,6 +106,8 @@ class Command(BaseCommand):
         if options["verify_reference"]:
             self._verify(provider, options["verify_reference"])
         else:
+            if options["entity"] is None:
+                raise CommandError("--entity is required when initializing a checkout.")
             self._initialize(provider, options)
 
     # -- modes -------------------------------------------------------------- #
@@ -106,7 +115,13 @@ class Command(BaseCommand):
         amount = options["amount"]
         if amount <= 0:
             raise CommandError("--amount must be a positive integer (kobo).")
-        reference = _new_reference()
+        from vs_finance.models import LedgerEntity
+
+        try:
+            entity = LedgerEntity.objects.get(pk=options["entity"])
+        except LedgerEntity.DoesNotExist as exc:
+            raise CommandError(f"Ledger entity {options['entity']} does not exist.") from exc
+        reference = _new_reference(entity)
         callback_url = getattr(settings, "PAYMENTS_CALLBACK_URL", "")
 
         self.stdout.write(f"Initializing checkout for reference {reference} …")
@@ -124,7 +139,7 @@ class Command(BaseCommand):
             self._fail_provider(exc)
 
         naira = amount / 100
-        self.stdout.write(self.style.SUCCESS("Checkout created — your credentials work."))
+        self.stdout.write(self.style.SUCCESS("Checkout created - your credentials work."))
         self.stdout.write(f"  reference          : {result.reference}")
         self.stdout.write(f"  provider_reference : {result.provider_reference or '(none)'}")
         self.stdout.write(f"  amount             : {amount} kobo (₦{naira:,.2f} {options['currency']})")

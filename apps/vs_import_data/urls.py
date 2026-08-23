@@ -41,6 +41,11 @@ urlpatterns = [
         views.ImportBatchFileDownloadView.as_view(),
         name="import-batch-file-download",
     ),
+    path(
+        "batches/<int:batch_id>/cancel/",
+        views.CancelImportBatchView.as_view(),
+        name="import-batch-cancel",
+    ),
 
     # =========================================================
     # Validation

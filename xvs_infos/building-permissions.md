@@ -1,4 +1,4 @@
-# Building Permissions — Step-by-Step Guide
+# Building Permissions - Step-by-Step Guide
 
 This doc describes the exact construction order for the XVS RBAC permission registry.
 Each entity depends on the entities above it. Never create a child before its parent exists.
@@ -37,13 +37,13 @@ User                      ← must be active before role assignments
 
 ---
 
-## Step 1 — PermissionAction
+## Step 1 - PermissionAction
 
 **File:** `global-actions.md`
 **Model:** `vs_rbac.models.PermissionAction`
 **PK:** `name` (SlugField)
 
-Actions are the verbs — `view`, `create`, `approve`, etc.
+Actions are the verbs - `view`, `create`, `approve`, etc.
 They have no foreign key dependencies.
 
 ```python
@@ -63,12 +63,12 @@ PermissionAction.objects.get_or_create(
 
 ---
 
-## Step 2 — PermissionModule
+## Step 2 - PermissionModule
 
 **Model:** `vs_rbac.models.PermissionModule`
 **PK:** `name` (SlugField)
 
-Modules are the top-level namespaces — `finance`, `students`, `platform`, etc.
+Modules are the top-level namespaces - `finance`, `students`, `platform`, etc.
 They have no foreign key dependencies.
 
 ```python
@@ -82,7 +82,7 @@ PermissionModule.objects.get_or_create(
 
 **Rules:**
 - `name` is the PK and appears as the first segment of every permission key.
-- One module per domain. Do not create a module per sub-feature — use resources for that.
+- One module per domain. Do not create a module per sub-feature - use resources for that.
 - Keep names short (1-2 words, lowercase slug). Examples: `finance`, `students`, `platform`.
 - Create a module before creating any resource under it.
 
@@ -93,12 +93,12 @@ PermissionModule.objects.get_or_create(
 
 ---
 
-## Step 3 — PermissionResource
+## Step 3 - PermissionResource
 
 **Model:** `vs_rbac.models.PermissionResource`
 **PK:** auto (BigInt), unique on `(module, name)`
 
-Resources are the nouns within a module — `invoice` under `finance`, `profile` under `students`.
+Resources are the nouns within a module - `invoice` under `finance`, `profile` under `students`.
 They depend on `PermissionModule`.
 
 ```python
@@ -114,14 +114,14 @@ PermissionResource.objects.get_or_create(
 ```
 
 **Rules:**
-- `name` is unique per module — two modules can have a resource named `profile`, that is fine.
+- `name` is unique per module - two modules can have a resource named `profile`, that is fine.
 - `name` appears as the middle segment of the permission key: `module.resource.action`.
-- If a module only has one logical resource, name it the same as the module (e.g. `reports.reports.view` is awkward — prefer `reports.school_wide.view`).
+- If a module only has one logical resource, name it the same as the module (e.g. `reports.reports.view` is awkward - prefer `reports.school_wide.view`).
 - Create the resource before creating any `Permission` that references it.
 
 ---
 
-## Step 4 — Permission
+## Step 4 - Permission
 
 **Model:** `vs_rbac.models.Permission`
 **PK:** `key` (auto-built as `module.resource.action` by `save()`)
@@ -155,7 +155,7 @@ perm, created = Permission.objects.get_or_create(
 - Use `update_or_create(module=..., resource=..., action=...)` to be idempotent.
 - `sensitivity_level`: NORMAL / SENSITIVE / CRITICAL. Use CRITICAL for financial or irreversible operations.
 - `is_restricted`: True means this permission requires a formal approval workflow to grant. Use sparingly.
-- One permission per `(module, resource, action)` combination — the DB does not enforce a unique constraint
+- One permission per `(module, resource, action)` combination - the DB does not enforce a unique constraint
   on this triple, but `save()` will overwrite the `key` to the same value, making duplicates functionally identical.
 
 **Key format examples:**
@@ -169,7 +169,7 @@ platform.audit.logs.export
 
 ---
 
-## Step 5 — PermissionDependency
+## Step 5 - PermissionDependency
 
 **Model:** `vs_rbac.models.PermissionDependency`
 
@@ -192,19 +192,19 @@ PermissionDependency.objects.get_or_create(
 **Rules:**
 - Add dependencies **after** all `Permission` records are created.
 - Common pattern: every `create`, `update`, `delete`, `approve` depends on the corresponding `view`.
-- Do not create circular dependencies — there is no cycle-detection guard in the model.
+- Do not create circular dependencies - there is no cycle-detection guard in the model.
 - Dependencies are informational/validation constraints. The runtime evaluator (`get_effective_permissions`)
-  does **not** auto-inject dependency permissions — you must grant them explicitly on the role.
+  does **not** auto-inject dependency permissions - you must grant them explicitly on the role.
 
 ---
 
-## Step 6 — PermissionGroup
+## Step 6 - PermissionGroup
 
 **Model:** `vs_rbac.models.PermissionGroup`
 **PK:** UUID (auto)
 
 Named, reusable bundles of permissions that can be attached to multiple roles at once.
-No foreign key dependencies — can be created any time after `Permission` records exist.
+No foreign key dependencies - can be created any time after `Permission` records exist.
 
 ```python
 from vs_rbac.models import PermissionGroup
@@ -221,13 +221,13 @@ group, _ = PermissionGroup.objects.get_or_create(
 
 **Rules:**
 - `is_system=True` marks groups seeded by Vision. School admins cannot modify system groups.
-- Groups are reusable across school roles AND platform roles — design them to be broadly applicable.
-- Naming convention: `{Module} {Capability}` — e.g. "Finance Viewer", "Student Manager", "Attendance Marker".
+- Groups are reusable across school roles AND platform roles - design them to be broadly applicable.
+- Naming convention: `{Module} {Capability}` - e.g. "Finance Viewer", "Student Manager", "Attendance Marker".
 - A group with no `GroupPermission` members is valid but useless. Add members next (Step 7).
 
 ---
 
-## Step 7 — GroupPermission
+## Step 7 - GroupPermission
 
 **Model:** `vs_rbac.models.GroupPermission`
 
@@ -249,13 +249,13 @@ for perm in perms:
 ```
 
 **Rules:**
-- Each `(group, permission)` pair is unique — `get_or_create` is safe to re-run.
+- Each `(group, permission)` pair is unique - `get_or_create` is safe to re-run.
 - A permission can belong to multiple groups. A group can hold any number of permissions.
 - At runtime the evaluator unions all group permissions with direct role permissions, then subtracts explicit denies.
 
 ---
 
-## Step 8 — PrebuiltRoleTemplate + PrebuiltRolePermission  *(optional library)*
+## Step 8 - PrebuiltRoleTemplate + PrebuiltRolePermission  *(optional library)*
 
 **Models:** `vs_rbac.models.PrebuiltRoleTemplate`, `PrebuiltRolePermission`
 
@@ -290,12 +290,12 @@ for perm_key in ["finance.invoice.view", "finance.invoice.approve", "finance.fee
 
 ---
 
-## Step 9 — PlatformRoleTemplate  *(Vision Staff roles)*
+## Step 9 - PlatformRoleTemplate  *(Vision Staff roles)*
 
 **Model:** `vs_rbac.models.PlatformRoleTemplate`
 **PK:** SlugField `id`
 
-Roles for Vision Staff (internal CodeX team) — not school users.
+Roles for Vision Staff (internal CodeX team) - not school users.
 No foreign key dependencies.
 
 ```python
@@ -313,12 +313,12 @@ role, _ = PlatformRoleTemplate.objects.get_or_create(
 
 **Rules:**
 - Only one `vision-super-admin` can exist (enforced in `UserCreateSerializer`).
-- Platform roles are independent of schools — they apply globally.
+- Platform roles are independent of schools - they apply globally.
 - Assign permissions via `PlatformRolePermission` or groups via `PlatformRoleGroup` (Steps 10–11).
 
 ---
 
-## Step 10 — PlatformRolePermission / PlatformRoleGroup
+## Step 10 - PlatformRolePermission / PlatformRoleGroup
 
 **Models:** `vs_rbac.models.PlatformRolePermission`, `PlatformRoleGroup`
 
@@ -346,12 +346,12 @@ PlatformRoleGroup.objects.get_or_create(role=role, group=group)
 
 **Rules:**
 - `granted=True` → grant. `granted=False` → explicit deny (overrides all grants from groups).
-- Explicit denies win at evaluation time — use them sparingly and document why.
+- Explicit denies win at evaluation time - use them sparingly and document why.
 - Prefer groups over direct permission rows where multiple roles share the same permission surface.
 
 ---
 
-## Step 11 — SchoolRoleTemplate  *(per-school roles)*
+## Step 11 - SchoolRoleTemplate  *(per-school roles)*
 
 **Model:** `vs_rbac.models.SchoolRoleTemplate`
 **PK:** auto-slug from `name`
@@ -361,7 +361,7 @@ School roles can optionally trace back to a `PrebuiltRoleTemplate` via `prebuilt
 
 ```python
 from vs_rbac.models import SchoolRoleTemplate
-from vs_schools.models import School
+from schools.vs_schools.models import School
 
 school = School.objects.get(slug="demo-primary")
 
@@ -378,14 +378,14 @@ role, _ = SchoolRoleTemplate.objects.get_or_create(
 ```
 
 **Rules:**
-- `id` is auto-generated as a slug from `name` by `SchoolRoleTemplate.save()` — do not set it.
+- `id` is auto-generated as a slug from `name` by `SchoolRoleTemplate.save()` - do not set it.
 - `is_system_role=True` means Vision provisioned the role and the school cannot edit it.
 - `is_locked=True` blocks edits while a change-request workflow is in progress.
 - A school role with `branch` set is branch-scoped; without `branch` it is school-wide.
 
 ---
 
-## Step 12 — SchoolRolePermission / SchoolRoleGroup
+## Step 12 - SchoolRolePermission / SchoolRoleGroup
 
 **Models:** `vs_rbac.models.SchoolRolePermission`, `SchoolRoleGroup`
 
@@ -405,14 +405,14 @@ SchoolRolePermission.objects.get_or_create(
 ```
 
 **Rules:**
-- Same `granted` flag semantics as platform — False = explicit deny.
+- Same `granted` flag semantics as platform - False = explicit deny.
 - Use `SchoolRoleGroup` to attach a `PermissionGroup` and inherit all its permissions at runtime.
 - The evaluator at `vs_rbac/evaluator.py::get_effective_permissions()` resolves the final set:
   `(direct grants ∪ group grants) − explicit denies`
 
 ---
 
-## Step 13 — Role assignments
+## Step 13 - Role assignments
 
 **Models:** `vs_rbac.models.PlatformUserRoleAssignment`, `SchoolUserRoleAssignment`
 
@@ -434,9 +434,9 @@ SchoolUserRoleAssignment.objects.get_or_create(
 ```
 
 **Rules:**
-- A user can hold multiple roles simultaneously — the evaluator unions all of them.
+- A user can hold multiple roles simultaneously - the evaluator unions all of them.
 - `assignment_status` must be `ACTIVE` for the evaluator to include it.
-- Do not assign roles to `PENDING` or `SUSPENDED` users — wait until the account is `ACTIVE`.
+- Do not assign roles to `PENDING` or `SUSPENDED` users - wait until the account is `ACTIVE`.
 
 ---
 
@@ -469,4 +469,4 @@ SchoolUserRoleAssignment.objects.get_or_create(
 | Seeding dependencies before all permissions exist | FK violation | Run deps in a second pass after all permissions are created |
 | Assigning a role to a PENDING user | Assignment exists but evaluator ignores it | Wait for activation |
 | Using `granted=False` on a direct `SchoolRolePermission` without documentation | Silent mystery deny for future maintainers | Always add a comment or reason field |
-| Creating platform permissions (`platform.*`) as `SchoolRolePermission` | Functionally wrong — school roles cannot hold platform perms | Platform perms go on `PlatformRolePermission` only |
+| Creating platform permissions (`platform.*`) as `SchoolRolePermission` | Functionally wrong - school roles cannot hold platform perms | Platform perms go on `PlatformRolePermission` only |

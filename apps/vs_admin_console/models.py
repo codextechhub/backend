@@ -5,9 +5,6 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from vs_schools.models import School
-
-
 class ImpersonationSession(models.Model):
     """
     Simple time-boxed impersonation record.
@@ -18,6 +15,7 @@ class ImpersonationSession(models.Model):
     STATUS_CHOICES = [
         ("ACTIVE", "Active"),
         ("ENDED", "Ended"),
+        ("EXPIRED", "Expired"),
     ]
 
     staff_user = models.ForeignKey(
@@ -25,8 +23,8 @@ class ImpersonationSession(models.Model):
         on_delete=models.PROTECT,
         related_name="impersonation_sessions_started",
     )
-    school = models.ForeignKey(
-        School,
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant",
         on_delete=models.PROTECT,
         related_name="impersonation_sessions",
     )
@@ -40,14 +38,18 @@ class ImpersonationSession(models.Model):
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="ACTIVE")
 
     started_at = models.DateTimeField(default=timezone.now)
-    ends_at = models.DateTimeField()
+    ends_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
+    last_activity_at = models.DateTimeField(default=timezone.now)  # Last time a proxied request was made on this session. Updated by middleware.
+    access_log = models.JSONField(default=list, blank=True)  # For recording access patterns via middleware. Eg. [{"path": "/api/v1/foo", "count": 3, "first_at": "...", "last_at": "..."}]
 
     def clean(self):
-        if self.ends_at <= self.started_at:
+        if self.ends_at is not None and self.ends_at <= self.started_at:
             raise ValidationError("ends_at must be after started_at.")
         if not self.justification.strip():
             raise ValidationError("justification is required.")
+        if self.tenant_id and self.target_user_id and self.target_user.tenant_id != self.tenant_id:
+            raise ValidationError("Target user must belong to the impersonation tenant.")
 
     def end(self):
         """Convenience method."""

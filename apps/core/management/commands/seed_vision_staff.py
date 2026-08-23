@@ -1,6 +1,7 @@
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from vs_tenants.models import Tenant
 from vs_user.models import User
 
 
@@ -31,7 +32,7 @@ VISION_STAFF = [
     {"first_name": "Chibundo", "last_name": "Okeke",      "email": "chibundo.okeke@vision.edu"},
     {"first_name": "Shade",    "last_name": "Coker",      "email": "shade.coker@vision.edu"},
     {"first_name": "Lanre",    "last_name": "Odunbaku",   "email": "lanre.odunbaku@vision.edu"},
-    # Additional 15 — brings total to 40 to fill the 7-level organogram
+    # Additional 15 - brings total to 40 to fill the 7-level organogram
     {"first_name": "Biodun",   "last_name": "Akerele",   "email": "biodun.akerele@vision.edu"},
     {"first_name": "Chiamaka", "last_name": "Ejike",     "email": "chiamaka.ejike@vision.edu"},
     {"first_name": "Dapo",     "last_name": "Adeoye",    "email": "dapo.adeoye@vision.edu"},
@@ -55,7 +56,7 @@ DEFAULT_PASSWORD = "Vision@2025"
 class Command(BaseCommand):
     help = (
         "Seeds 40 Vision Staff user accounts. "
-        "Safe to run multiple times — uses update_or_create on email."
+        "Safe to run multiple times - uses update_or_create on email."
     )
 
     def add_arguments(self, parser):
@@ -70,6 +71,17 @@ class Command(BaseCommand):
         password = options["password"]
         self.stdout.write(self.style.MIGRATE_HEADING("Seeding Vision Staff users..."))
 
+        # Named, not derived. Being platform staff IS being on this tenant -
+        # there is no persona column standing in for it any more, so the seeder
+        # says which tenant these accounts belong to.
+        codex = Tenant.objects.filter(
+            slug="codex", kind=Tenant.Kind.PLATFORM,
+        ).first()
+        if codex is None:
+            raise CommandError(
+                "The platform (codex) tenant is not provisioned - run migrations first."
+            )
+
         created_count = 0
         updated_count = 0
 
@@ -79,11 +91,10 @@ class Command(BaseCommand):
                 defaults={
                     "first_name": data["first_name"],
                     "last_name": data["last_name"],
-                    "user_type": User.UserType.CX_STAFF,
+                    "tenant": codex,
                     "status": User.Status.ACTIVE,
                     "is_active": True,
                     "is_staff": True,
-                    "school": None,
                     "branch": None,
                 },
             )

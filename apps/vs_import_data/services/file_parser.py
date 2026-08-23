@@ -1,15 +1,25 @@
 """
 Streaming file parser for import batches.
 
-Reads CSV and Excel files row by row to avoid loading the entire file into
-memory. Caps preview rows so the JSON field stays manageable.
+Reads CSV and Excel files row by row. A batch is either parsed in full or rejected
+with a visible size error; rows must never be silently omitted because the executor
+publishes exactly the parsed rows.
 """
 from __future__ import annotations
 
 import csv
 from io import BytesIO, StringIO
 
-MAX_PREVIEW_ROWS = 5_000
+MAX_IMPORT_ROWS = 50_000
+# Backwards-compatible name for callers that imported the old constant.
+MAX_PREVIEW_ROWS = MAX_IMPORT_ROWS
+
+
+def _raise_row_limit() -> None:
+    raise ValueError(
+        f"File contains more than {MAX_IMPORT_ROWS:,} data rows. "
+        "Split it into smaller statement periods and upload each file separately."
+    )
 
 
 def _open_csv_text(raw_bytes: bytes) -> StringIO:
@@ -29,7 +39,7 @@ def parse_csv(file_obj, *, header_row_index: int = 1) -> tuple[list[str], list[d
     Parse a CSV file object and return (headers, rows).
 
     header_row_index is 1-based. Rows before it are skipped.
-    Caps at MAX_PREVIEW_ROWS data rows.
+    Rejects files above ``MAX_IMPORT_ROWS`` instead of truncating them.
     """
     raw_bytes = file_obj.read()
     text_io = _open_csv_text(raw_bytes)
@@ -50,8 +60,8 @@ def parse_csv(file_obj, *, header_row_index: int = 1) -> tuple[list[str], list[d
             continue
         row_dict = dict(zip(headers, [c.strip() for c in line]))
         rows.append(row_dict)
-        if len(rows) >= MAX_PREVIEW_ROWS:
-            break
+        if len(rows) > MAX_IMPORT_ROWS:
+            _raise_row_limit()
 
     return headers, rows
 
@@ -61,7 +71,7 @@ def parse_xlsx(file_obj, *, sheet_name: str | None = None, header_row_index: int
     Parse an Excel (.xlsx) file object and return (headers, rows).
 
     Uses openpyxl in read-only mode to avoid loading the full workbook into RAM.
-    Caps at MAX_PREVIEW_ROWS data rows.
+    Rejects files above ``MAX_IMPORT_ROWS`` instead of truncating them.
     """
     from openpyxl import load_workbook
 
@@ -90,8 +100,8 @@ def parse_xlsx(file_obj, *, sheet_name: str | None = None, header_row_index: int
                 continue
             row_dict = dict(zip(headers, values))
             rows.append(row_dict)
-            if len(rows) >= MAX_PREVIEW_ROWS:
-                break
+            if len(rows) > MAX_IMPORT_ROWS:
+                _raise_row_limit()
     finally:
         wb.close()
 

@@ -1,5 +1,5 @@
 """
-CI settings — used by the GitHub Actions workflow (.github/workflows/ci.yml).
+CI settings - used by the GitHub Actions workflow (.github/workflows/ci.yml).
 
 PostgreSQL because that is what staging runs (B17): the whole point of CI is
 to exercise the schema/engine path that production code will actually meet.
@@ -20,7 +20,7 @@ DATABASES = {
     }
 }
 
-# Fast hashing — these are throwaway test users.
+# Fast hashing - these are throwaway test users.
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 
 # Never send real email or hit a broker from CI.
@@ -28,7 +28,7 @@ EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 CELERY_TASK_ALWAYS_EAGER = True
 CELERY_TASK_EAGER_PROPAGATES = True
 
-# Throttling off — tests hammer endpoints far faster than the rates allow.
+# Throttling off - tests hammer endpoints far faster than the rates allow.
 REST_FRAMEWORK = {
     **REST_FRAMEWORK,
     "DEFAULT_THROTTLE_CLASSES": [],
@@ -39,3 +39,10 @@ REST_FRAMEWORK = {
 # would hold a DB connection open and block test-database teardown, and it
 # would race the explicit flush() the collector tests assert on.
 HEALTH_METRICS_BACKGROUND_FLUSH = False
+
+# vs_notifications.W001 (active event types with no active template) is true
+# and useless here: the test database is built by migrations, so it holds the
+# whole event-type registry from vs_notifications migration 0008 and no
+# templates at all, which the suite seeds per test. Real environments keep the
+# warning; see vs_notifications/checks.py.
+SILENCED_SYSTEM_CHECKS = [*SILENCED_SYSTEM_CHECKS, "vs_notifications.W001"]

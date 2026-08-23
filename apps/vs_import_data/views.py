@@ -6,21 +6,26 @@ import os
 from django.http import FileResponse, HttpResponse, Http404
 from django.shortcuts import get_object_or_404
 
-from rest_framework import generics, permissions, status
+from rest_framework import generics, status
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, DestroyModelMixin
 from core.response import success_response, error_response
 
-from vs_rbac.permissions import IsAuthenticatedAndActive, IsBranchAdmin, IsSchoolAdmin, IsVisionStaff, HasRBACPermission
-from vs_schools.models import School
-from vs_user.models import User
+from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+# ``include_shared=True`` spelled out at each call site. A batch with no branch
+# was uploaded for the school as a whole, which is the normal shape for a
+# tenant-wide import, and it must stay visible to a branch admin.
+from vs_rbac.scoping import branch_q
 
 from .constants import ImportPermission
+from .permissions import HasImportBatchRBACPermission
 
 from .models import (
     ImportBatch,
+    ImportBatchStatusChoices,
     ImportJob,
     ImportJobStatusChoices,
     ImportNotification,
@@ -64,6 +69,11 @@ from .services.validation_service import validate_import_batch
 # =========================================================
 # Helpers
 # =========================================================
+def _is_platform(user) -> bool:
+    """True when the user belongs to the platform (Codex) tenant."""
+    return getattr(getattr(user, "tenant", None), "kind", None) == "PLATFORM"
+
+
 def _format_validation_issues(issues: list[dict]) -> list[dict]:
     """
     Return a flat, sorted list of validation issues ready for API responses.
@@ -91,44 +101,46 @@ def _format_validation_issues(issues: list[dict]) -> list[dict]:
 # =========================================================
 class SchoolContextMixin:
     """
-    Resolves the school for the current request without requiring school_id in the URL.
+    Resolves tenant scoping for the current request without requiring an id in the URL.
 
-    - Non-CX_STAFF: school is always the user's own school.
-    - CX_STAFF: school is read from the optional ?school_id= query param (None = all schools).
+    - School-tenant users: always scoped to their own asserted tenant (request.tenant).
+    - Platform-tenant users: unscoped (see every tenant's data). ?school= inputs no
+      longer influence scoping - the asserted tenant is authoritative.
     """
 
-    def get_school(self):
-        user = self.request.user
-        if getattr(user, "user_type", None) == User.UserType.CX_STAFF:
-            school_id = self.request.query_params.get("school_id")
-            if school_id:
-                return get_object_or_404(School, id=school_id)
+    def scope_tenant(self):
+        """The tenant to filter by, or None when the caller is unscoped (platform)."""
+        if _is_platform(self.request.user):
             return None
-        return get_object_or_404(School, id=user.school_id)
-
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context["school"] = self.get_school()
-        return context
+        return getattr(self.request, "tenant", None)
 
 
 class ImportBatchContextMixin(SchoolContextMixin):
     """
-    Gets an import batch belonging to the current school.
+    Gets an import batch belonging to the current tenant.
     URL must include: batch_id
     """
     batch_lookup_url_kwarg = "batch_id"
 
     def get_import_batch(self):
         filters = {"id": self.kwargs[self.batch_lookup_url_kwarg]}
-        school = self.get_school()
-        if school is not None:
-            filters["school"] = school
+        tenant = self.scope_tenant()
+        if tenant is not None:
+            filters["tenant"] = tenant
+        # The choke point that carries the narrowing to the rest of the app.
+        # Validation issues, jobs, audit logs, notifications and rollback records
+        # are all reached by first resolving a batch here, so narrowing this one
+        # lookup narrows every one of them - and a 404 for another branch's batch
+        # matches the 404 for one that does not exist.
         return get_object_or_404(
-            ImportBatch.objects.select_related(
-                "school",
+            ImportBatch.objects.filter(
+                branch_q(self.request, include_shared=True),
+            ).select_related(
+                "tenant",
                 "uploaded_by",
                 "template",
+                "bank_statement_context__bank_account__entity",
+                "bank_statement_context__published_statement",
             ).prefetch_related(
                 "template__columns",
             ),
@@ -170,10 +182,17 @@ class ImportJobContextMixin(ImportBatchContextMixin):
 class SystemImportTemplateListView(generics.ListCreateAPIView):
     """
     GET  -> list available official system templates (all authenticated staff).
-    POST -> create a new system template with columns (CX_STAFF only).
+    POST -> create a new system template with columns (platform staff only).
 
     docstring-name: Import templates
     """
+    # FR-012. Importing initial data is a step on the school's own
+    # checklist, so it has to reach this while its tenant is still
+    # PENDING. Opened so the school can
+    # pick a template.
+    # Template authoring, batch deletion, rollbacks and the audit feed
+    # stay shut - see SCHOOL_ADMIN_IMPORT_KEYS for why each one.
+    pending_tenant_surface = True
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
     def get_permissions(self):
@@ -192,8 +211,7 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
     def get_queryset(self):
         queryset = ImportTemplate.objects.prefetch_related("columns").order_by("dataset_type", "name")
 
-        is_cx_staff = getattr(self.request.user, "user_type", None) == User.UserType.CX_STAFF
-        if self.request.method == "GET" and not is_cx_staff:
+        if self.request.method == "GET" and not _is_platform(self.request.user):
             queryset = queryset.filter(
                 status=TemplateStatusChoices.ACTIVE,
                 is_download_enabled=True,
@@ -207,8 +225,8 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
 
     def check_permissions(self, request):
         super().check_permissions(request)
-        if request.method == "POST" and getattr(request.user, "user_type", None) != User.UserType.CX_STAFF:
-            self.permission_denied(request, message="Only CX staff can create import templates.")
+        if request.method == "POST" and not _is_platform(request.user):
+            self.permission_denied(request, message="Only platform staff can create import templates.")
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -232,7 +250,7 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
 class SystemImportTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, generics.RetrieveUpdateAPIView):
     """
     GET   -> retrieve one official system template.
-    PATCH -> update template metadata and/or columns (CX_STAFF + TEMPLATE_MANAGE only).
+    PATCH -> update template metadata and/or columns (platform staff + TEMPLATE_MANAGE only).
 
     docstring-name: Import templates
     """
@@ -249,8 +267,8 @@ class SystemImportTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, gener
 
     def check_permissions(self, request):
         super().check_permissions(request)
-        if request.method in ("PATCH", "PUT") and getattr(request.user, "user_type", None) != User.UserType.CX_STAFF:
-            self.permission_denied(request, message="Only CX staff can update import templates.")
+        if request.method in ("PATCH", "PUT") and not _is_platform(request.user):
+            self.permission_denied(request, message="Only platform staff can update import templates.")
 
     def get_serializer_class(self):
         if self.request.method in ("PATCH", "PUT"):
@@ -259,8 +277,7 @@ class SystemImportTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, gener
 
     def get_queryset(self):
         qs = ImportTemplate.objects.prefetch_related("columns")
-        is_cx_staff = getattr(self.request.user, "user_type", None) == User.UserType.CX_STAFF
-        if not is_cx_staff:
+        if not _is_platform(self.request.user):
             qs = qs.filter(status=TemplateStatusChoices.ACTIVE, is_download_enabled=True)
         return qs
 
@@ -292,13 +309,19 @@ class SystemImportTemplateDownloadView(APIView):
 
     docstring-name: Download an import template
     """
+    # FR-012. Importing initial data is a step on the school's own
+    # checklist, so it has to reach this while its tenant is still
+    # PENDING. Opened so the school can
+    # download the template to fill in.
+    # Template authoring, batch deletion, rollbacks and the audit feed
+    # stay shut - see SCHOOL_ADMIN_IMPORT_KEYS for why each one.
+    pending_tenant_surface = True
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.TEMPLATE_VIEW
 
     def get(self, request, template_id):
         qs = ImportTemplate.objects.prefetch_related("columns")
-        is_cx_staff = getattr(request.user, "user_type", None) == User.UserType.CX_STAFF
-        if not is_cx_staff:
+        if not _is_platform(request.user):
             qs = qs.filter(status=TemplateStatusChoices.ACTIVE, is_download_enabled=True)
         template = get_object_or_404(qs, id=template_id)
 
@@ -325,11 +348,18 @@ class SystemImportTemplateDownloadView(APIView):
 # =========================================================
 class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.ListCreateAPIView):
     """
-    GET  -> list import batches for an school
+    GET  -> list import batches for the caller's tenant (platform users see all)
     POST -> upload a new import batch using a selected system template
 
     docstring-name: Import batches
     """
+    # FR-012. Importing initial data is a step on the school's own
+    # checklist, so it has to reach this while its tenant is still
+    # PENDING. Opened so the school can
+    # list its own batches, and upload one.
+    # Template authoring, batch deletion, rollbacks and the audit feed
+    # stay shut - see SCHOOL_ADMIN_IMPORT_KEYS for why each one.
+    pending_tenant_surface = True
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
     def get_permissions(self):
@@ -341,10 +371,14 @@ class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.L
         return super().get_permissions()
 
     def get_queryset(self):
-        school = self.get_school()
-        queryset = ImportBatch.objects.select_related("school", "uploaded_by", "template").order_by("-created_at")
-        if school is not None:
-            queryset = queryset.filter(school=school)
+        tenant = self.scope_tenant()
+        queryset = ImportBatch.objects.select_related("tenant", "uploaded_by", "template").order_by("-created_at")
+        if tenant is not None:
+            queryset = queryset.filter(tenant=tenant)
+        # Inside the tenant filter, never instead of it: an upload belongs to the
+        # branch it was made for, and a branch admin has no business reading
+        # another site's uploaded roster.
+        queryset = queryset.filter(branch_q(self.request, include_shared=True))
 
         status_param = self.request.query_params.get("status")
         if status_param:
@@ -396,7 +430,17 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
 
     docstring-name: Import batches
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    # FR-012. Importing initial data is a step on the school's own
+    # checklist, so it has to reach this while its tenant is still
+    # PENDING. Opened so the school can watch a batch it just uploaded.
+    #
+    # GET only, and that is the point: this view also serves PUT, PATCH and
+    # DELETE. `school_admin` holds neither batches.update nor
+    # batches.delete, so the key already refuses them - but a surface flag
+    # that opens a verb the key happens to close is one repair away from
+    # opening it for real.
+    pending_tenant_surface = ("get",)
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     lookup_url_kwarg = "batch_id"
 
     def get_permissions(self):
@@ -409,15 +453,21 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
         return super().get_permissions()
 
     def get_queryset(self):
-        school = self.get_school()
-        qs = ImportBatch.objects.select_related("school", "uploaded_by", "template").prefetch_related(
+        tenant = self.scope_tenant()
+        qs = ImportBatch.objects.select_related(
+            "tenant",
+            "uploaded_by",
+            "template",
+            "bank_statement_context__bank_account__entity",
+            "bank_statement_context__published_statement",
+        ).prefetch_related(
             "template__columns",
             "validation_issues",
             "notifications",
         )
-        if school is not None:
-            qs = qs.filter(school=school)
-        return qs
+        if tenant is not None:
+            qs = qs.filter(tenant=tenant)
+        return qs.filter(branch_q(self.request, include_shared=True))
 
     def get_object(self):
         self._cached_import_batch = super().get_object()
@@ -446,6 +496,17 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
         )
 
     def perform_destroy(self, instance):
+        if (
+            instance.dataset_type == "bank_statements"
+            and getattr(instance, "bank_statement_context", None)
+            and instance.bank_statement_context.published_statement_id
+        ):
+            raise ValidationError({
+                "batch": (
+                    "A published bank-statement batch cannot be deleted. "
+                    "Use rollback before any statement line is acted upon."
+                ),
+            })
         create_import_audit_log(
             school=instance.school,
             branch=instance.branch,
@@ -461,6 +522,90 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
 
 
 # =========================================================
+# Batch Cancellation
+# =========================================================
+class CancelImportBatchView(ImportBatchContextMixin, APIView):
+    """Explicitly abandon an import before any database-writing job starts."""
+    # FR-012. Importing initial data is a step on the school's own
+    # checklist, so it has to reach this while its tenant is still
+    # PENDING. Opened so the school can
+    # abandon a batch it uploaded.
+    # Template authoring, batch deletion, rollbacks and the audit feed
+    # stay shut - see SCHOOL_ADMIN_IMPORT_KEYS for why each one.
+    pending_tenant_surface = True
+
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
+    rbac_permission = [
+        ImportPermission.BATCH_CREATE,
+        ImportPermission.BATCH_UPDATE,
+        ImportPermission.BATCH_DELETE,
+    ]
+
+    cancellable_statuses = {
+        ImportBatchStatusChoices.DRAFT,
+        ImportBatchStatusChoices.UPLOADED,
+        ImportBatchStatusChoices.DETECTING,
+        ImportBatchStatusChoices.MAPPING_REQUIRED,
+        ImportBatchStatusChoices.VALIDATING,
+        ImportBatchStatusChoices.VALIDATION_FAILED,
+        ImportBatchStatusChoices.READY_TO_IMPORT,
+    }
+
+    def post(self, request, **_kwargs):
+        import_batch = self.get_import_batch()
+
+        # A creator may abandon their own work. Managing somebody else's batch
+        # remains a sensitive operation covered by update/delete permissions.
+        if import_batch.uploaded_by_id != request.user.id:
+            from vs_rbac.evaluator import has_permission
+
+            tenant = getattr(request, "tenant", None)
+            can_manage = any(
+                has_permission(
+                    request.user,
+                    key,
+                    tenant=tenant,
+                )
+                for key in (
+                    ImportPermission.BATCH_UPDATE,
+                    ImportPermission.BATCH_DELETE,
+                )
+            )
+            if not can_manage:
+                raise PermissionDenied("You can only cancel import batches you uploaded.")
+
+        if import_batch.status not in self.cancellable_statuses:
+            raise ValidationError({
+                "batch": (
+                    "This import can no longer be cancelled because execution "
+                    "has already started or finished."
+                ),
+            })
+
+        previous_status = import_batch.status
+        import_batch.status = ImportBatchStatusChoices.CANCELLED
+        import_batch.is_ready_for_import = False
+        import_batch.save(update_fields=["status", "is_ready_for_import", "updated_at"])
+
+        create_import_audit_log(
+            school=import_batch.school,
+            branch=import_batch.branch,
+            action="batch_cancelled",
+            actor=request.user,
+            import_batch=import_batch,
+            entity_type="ImportBatch",
+            entity_id=str(import_batch.id),
+            before_data={"status": previous_status},
+            after_data={"status": import_batch.status},
+            message=f"Import batch '{import_batch.original_filename}' cancelled.",
+        )
+        return success_response(
+            message="Import cancelled.",
+            data={"batch_id": str(import_batch.id), "status": import_batch.status},
+        )
+
+
+# =========================================================
 # Batch File Download
 # =========================================================
 class ImportBatchFileDownloadView(ImportBatchContextMixin, APIView):
@@ -473,14 +618,21 @@ class ImportBatchFileDownloadView(ImportBatchContextMixin, APIView):
 
     docstring-name: Download an import file
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    # FR-012. Importing initial data is a step on the school's own
+    # checklist, so it has to reach this while its tenant is still
+    # PENDING. Opened so the school can
+    # re-download the file it uploaded.
+    # Template authoring, batch deletion, rollbacks and the audit feed
+    # stay shut - see SCHOOL_ADMIN_IMPORT_KEYS for why each one.
+    pending_tenant_surface = True
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.BATCH_VIEW
 
     def get(self, request, **_kwargs):
-        school = self.get_school()
-        qs = ImportBatch.objects.only("id", "school", "file", "original_filename")
-        if school is not None:
-            qs = qs.filter(school=school)
+        tenant = self.scope_tenant()
+        qs = ImportBatch.objects.only("id", "tenant", "file", "original_filename")
+        if tenant is not None:
+            qs = qs.filter(tenant=tenant)
         batch = get_object_or_404(qs, id=_kwargs["batch_id"])
 
         if not batch.file:
@@ -511,7 +663,14 @@ class ValidateImportBatchView(ImportBatchContextMixin, APIView):
 
     docstring-name: Validate an import batch
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    # FR-012. Importing initial data is a step on the school's own
+    # checklist, so it has to reach this while its tenant is still
+    # PENDING. Opened so the school can
+    # run validation.
+    # Template authoring, batch deletion, rollbacks and the audit feed
+    # stay shut - see SCHOOL_ADMIN_IMPORT_KEYS for why each one.
+    pending_tenant_surface = True
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.BATCH_VALIDATE
 
     def post(self, request, **_kwargs):
@@ -552,7 +711,14 @@ class ImportValidationIssueListView(ImportBatchContextMixin, generics.ListAPIVie
 
     docstring-name: Validation issues
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    # FR-012. Importing initial data is a step on the school's own
+    # checklist, so it has to reach this while its tenant is still
+    # PENDING. Opened so the school can
+    # read what failed.
+    # Template authoring, batch deletion, rollbacks and the audit feed
+    # stay shut - see SCHOOL_ADMIN_IMPORT_KEYS for why each one.
+    pending_tenant_surface = True
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.VALIDATION_VIEW
     serializer_class = ImportValidationIssueListSerializer
 
@@ -582,7 +748,7 @@ class ImportValidationIssueDetailView(RetrieveModelMixin, ImportBatchContextMixi
 
     docstring-name: Validation issues
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.VALIDATION_VIEW
     serializer_class = ImportValidationIssueDetailSerializer
     lookup_url_kwarg = "issue_id"
@@ -597,7 +763,7 @@ class ResolveImportValidationIssueView(UpdateModelMixin, ImportBatchContextMixin
 
     docstring-name: Resolve a validation issue
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.VALIDATION_RESOLVE
     serializer_class = ImportValidationIssueResolveSerializer
     lookup_url_kwarg = "issue_id"
@@ -629,7 +795,14 @@ class ImportValidationIssueExportView(ImportBatchContextMixin, APIView):
 
     docstring-name: Export validation issues
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    # FR-012. Importing initial data is a step on the school's own
+    # checklist, so it has to reach this while its tenant is still
+    # PENDING. Opened so the school can
+    # export the error report.
+    # Template authoring, batch deletion, rollbacks and the audit feed
+    # stay shut - see SCHOOL_ADMIN_IMPORT_KEYS for why each one.
+    pending_tenant_surface = True
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.VALIDATION_VIEW
 
     def get(self, request, **_kwargs):
@@ -650,7 +823,14 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
 
     docstring-name: Start an import run
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    # FR-012. Importing initial data is a step on the school's own
+    # checklist, so it has to reach this while its tenant is still
+    # PENDING. Opened so the school can
+    # import a validated batch.
+    # Template authoring, batch deletion, rollbacks and the audit feed
+    # stay shut - see SCHOOL_ADMIN_IMPORT_KEYS for why each one.
+    pending_tenant_surface = True
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.BATCH_IMPORT
 
     def post(self, request, **_kwargs):
@@ -683,7 +863,7 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
                     import_batch_id=str(import_batch.id),
                     queued_by_id=str(request.user.id),
                     _job_owner_id=str(request.user.id),
-                    _job_school_id=import_batch.school_id,
+                    _job_tenant_id=str(import_batch.tenant_id),
                     _job_label=f"Import: {import_batch.original_filename or import_batch.dataset_type}",
                     _job_kind="import",
                 )
@@ -729,7 +909,14 @@ class ImportJobListView(ImportBatchContextMixin, generics.ListAPIView):
 
     docstring-name: Import jobs
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    # FR-012. Importing initial data is a step on the school's own
+    # checklist, so it has to reach this while its tenant is still
+    # PENDING. Opened so the school can
+    # follow the import it started.
+    # Template authoring, batch deletion, rollbacks and the audit feed
+    # stay shut - see SCHOOL_ADMIN_IMPORT_KEYS for why each one.
+    pending_tenant_surface = True
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.JOB_VIEW
     serializer_class = ImportJobListSerializer
 
@@ -747,7 +934,7 @@ class ImportJobDetailView(RetrieveModelMixin, ImportJobContextMixin, generics.Re
 
     docstring-name: Import jobs
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.JOB_VIEW
     serializer_class = ImportJobDetailSerializer
     lookup_url_kwarg = "job_id"
@@ -766,7 +953,7 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
 
     docstring-name: Roll back an import job
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.ROLLBACK_RUN
 
     def post(self, request, **_kwargs):
@@ -778,11 +965,14 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
         )
         serializer.is_valid(raise_exception=True)
 
-        rollback_record = rollback_import_job(
-            job=job,
-            initiated_by=request.user,
-            reason=serializer.validated_data.get("reason", ""),
-        )
+        try:
+            rollback_record = rollback_import_job(
+                job=job,
+                initiated_by=request.user,
+                reason=serializer.validated_data.get("reason", ""),
+            )
+        except ValueError as exc:
+            raise ValidationError({"rollback": str(exc)})
 
         return success_response(
             message="Rollback completed successfully.",
@@ -799,7 +989,7 @@ class ImportRollbackRecordListView(ImportJobContextMixin, generics.ListAPIView):
 
     docstring-name: Import rollback records
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.ROLLBACK_VIEW
     serializer_class = ImportRollbackRecordSerializer
 
@@ -818,7 +1008,7 @@ class ImportAuditLogListView(ImportBatchContextMixin, generics.ListAPIView):
 
     docstring-name: Import audit log
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.AUDIT_VIEW
 
     def get_serializer_class(self):
@@ -844,7 +1034,7 @@ class ImportNotificationListView(ImportBatchContextMixin, generics.ListAPIView):
 
     docstring-name: Import notifications
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.NOTIFICATION_VIEW
     serializer_class = ImportNotificationSerializer
 

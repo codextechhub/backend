@@ -152,9 +152,10 @@ class TaskRowSerializer(serializers.Serializer):
         return KIND_TO_QUEUE.get((obj.kind or "").lower(), "celery")
 
     def get_tenant(self, obj):
-        return obj.school.name if obj.school_id else None
+        return obj.tenant.name if obj.tenant_id else None
 
     def get_duration_sec(self, obj):
         if obj.started_at and obj.finished_at:
             return round((obj.finished_at - obj.started_at).total_seconds(), 1)
         return None
+

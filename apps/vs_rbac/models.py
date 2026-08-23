@@ -4,15 +4,126 @@ import uuid
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import Q
 
 from django.utils import timezone
 from django.utils.text import slugify
 
-from vs_schools.models import Branch, School
+from vs_tenants.models import Branch
 
 from .managers import TenantAwareManager
 
 User = settings.AUTH_USER_MODEL
+
+
+# -----------------------------------------------------------------------------
+# Permission scope: who is allowed to hold a key at all
+# -----------------------------------------------------------------------------
+class PermissionScope(models.TextChoices):
+    """The audience a permission key may ever be granted to.
+
+    This is the boundary the platform's security model rests on, stated as a
+    declared field rather than inferred from the key's namespace. A dotted
+    prefix is a naming convention: it is not checked anywhere, it cannot be
+    queried, and a key that is renamed or seeded under a new module silently
+    changes side. ``scope`` says the thing out loud, per key, and every grant
+    path reads the same column.
+
+    ``TENANT``
+        Any tenant's role may hold it - a school's and the platform's alike.
+        The platform tenant is a tenant too: ``xvs_consultant`` is a codex role
+        that deliberately holds ``school.*`` view keys, so "tenant-safe" must
+        not be read as "forbidden to CX".
+
+    ``PLATFORM``
+        Only a role on a ``Tenant.Kind.PLATFORM`` tenant may hold it. These are
+        the keys whose surfaces are cross-tenant by construction: impersonation
+        tiering, the global permission registry, the schools roster, CX team
+        overrides, staff payroll and organogram, the requirements library,
+        compliance rule management, and platform health's cross-tenant
+        aggregates.
+
+    The two are not the same split as the ``platform.`` / everything-else
+    namespaces, and that is the point of storing it. ``platform.team.*`` and
+    ``platform.audit.view`` / ``.export`` are ``TENANT``: the first is how a
+    school adds its own staff through a tenant-filtered viewset, and the second
+    belongs to audit officers working inside a tenant. Enforcing on the prefix
+    would have locked both out. See ``seed_platform_permissions`` for the list
+    and the evidence behind it.
+
+    There is deliberately no third value. "Tenant-only, never platform" was
+    considered and the evidence refutes it: platform roles legitimately hold
+    tenant keys today.
+
+    The field has **no default**. An unclassified key (empty scope) is not
+    tenant-safe by omission - :func:`assert_tenant_may_hold` refuses it for a
+    non-platform tenant and names it in the error, so a seeder that forgets to
+    classify a new key fails closed and loudly instead of quietly handing a
+    school something nobody decided it could have.
+    """
+
+    TENANT = "TENANT", "Tenant (any tenant may hold it)"
+    PLATFORM = "PLATFORM", "Platform (CX staff only)"
+
+
+def platform_only_keys(permission_keys) -> set:
+    """Return the subset of *permission_keys* no tenant role may hold.
+
+    Anything that is not explicitly ``TENANT`` counts, so an unclassified key
+    is refused rather than assumed safe. One query, whatever the input size.
+    """
+    keys = {key for key in permission_keys if key}
+    if not keys:
+        return set()
+    return set(
+        Permission.objects.filter(key__in=keys)
+        .exclude(scope=PermissionScope.TENANT)
+        .values_list("key", flat=True)
+    )
+
+
+def tenant_is_platform(tenant) -> bool:
+    from vs_tenants.models import Tenant
+
+    return getattr(tenant, "kind", None) == Tenant.Kind.PLATFORM
+
+
+def assert_tenant_may_hold(permission_keys, tenant, *, field="permission"):
+    """Raise unless every key in *permission_keys* may be held inside *tenant*.
+
+    A platform tenant may hold anything. Every other tenant may hold only keys
+    declared ``TENANT``. Called from the grant models themselves - not from a
+    serializer - so overrides, role permissions, group attachments, prebuilt
+    defaults and role assignments are all covered by the same rule.
+    """
+    if tenant_is_platform(tenant):
+        return
+    offending = platform_only_keys(permission_keys)
+    if not offending:
+        return
+    listed = ", ".join(sorted(offending))
+    raise ValidationError({
+        field: (
+            f"Permission(s) {listed} are platform-scoped and cannot be granted "
+            f"inside a tenant. If a key is missing a scope, classify it in the "
+            f"seeder that registers it."
+        ),
+    })
+
+
+class ScopeGuardedManager(models.Manager):
+    """Manager whose ``bulk_create`` honours the per-row scope guard.
+
+    ``bulk_create`` bypasses ``save()`` and ``clean()`` entirely, and it is how
+    the role serializers write permission sets - so without this the model
+    guard would be decorative on the exact path an attacker uses.
+    """
+
+    def bulk_create(self, objs, *args, **kwargs):
+        objs = list(objs)
+        for obj in objs:
+            obj.assert_scope_allowed()
+        return super().bulk_create(objs, *args, **kwargs)
 
 
 def _unique_slug(model_class, name, slug_field="id", exclude_pk=None):
@@ -113,6 +224,10 @@ class Permission(TimeStampedModel):
         resource: FK to PermissionResource (e.g. 'invoice' under 'finance').
         action: FK to PermissionAction (e.g. 'view').
         sensitivity_level: Flagged via ``Sensitivity`` for audit queues.
+        scope: Who may hold the key at all - see :class:`PermissionScope`.
+            Distinct from ``sensitivity_level`` and ``is_restricted``, which
+            grade how dangerous a key is *within* an audience; ``scope`` says
+            which audience exists in the first place.
         is_restricted: Marks permissions that must flow through approvals.
         is_active: Soft-delete / hide toggle.
     """
@@ -152,6 +267,17 @@ class Permission(TimeStampedModel):
         max_length=16,
         choices=Sensitivity.choices,
         default=Sensitivity.NORMAL,
+    )
+
+    # No default, deliberately: see PermissionScope. An unset scope is an
+    # unclassified key, and the grant guard refuses it for any tenant that is
+    # not the platform.
+    scope = models.CharField(
+        max_length=16,
+        choices=PermissionScope.choices,
+        blank=True,
+        db_index=True,
+        help_text="Who may hold this key: TENANT (any tenant) or PLATFORM (CX only).",
     )
 
     is_restricted = models.BooleanField(default=False)
@@ -211,18 +337,24 @@ class PermissionDependency(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
-# Permission Groups (shared — attachable to both school and platform roles)
+# Permission Groups (shared - attachable to both school and platform roles)
 # -----------------------------------------------------------------------------
 class PermissionGroup(TimeStampedModel):
     """Named, reusable bundle of permissions.
 
-    Groups are containers only — they grant nothing on their own. Role
+    Groups are containers only - they grant nothing on their own. Role
     templates (school and platform) can attach one or more groups and the
     runtime evaluator flattens group permissions into the effective set.
 
     Attributes:
         name: Human-readable group label (case-insensitive unique).
         description: Purpose and intended audience for the group.
+        scope: Who may hold the bundle - see :class:`PermissionScope`. A group
+            is a grant path in its own right (attach it to a role and every key
+            inside it lands in the effective set), so it carries the same
+            declaration a single permission does. A ``TENANT`` group may only
+            contain ``TENANT`` keys; ``GroupPermission`` enforces that, so the
+            declaration cannot drift from the contents.
         is_system: True for Vision-seeded groups; False for custom groups.
         is_active: Soft-delete / hide toggle.
         permissions: M2M to ``Permission`` via ``GroupPermission``.
@@ -231,6 +363,15 @@ class PermissionGroup(TimeStampedModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=120)
     description = models.TextField(blank=True)
+
+    # No default, for the same reason Permission.scope has none.
+    scope = models.CharField(
+        max_length=16,
+        choices=PermissionScope.choices,
+        blank=True,
+        db_index=True,
+        help_text="Who may hold this bundle: TENANT (any tenant) or PLATFORM (CX only).",
+    )
 
     is_system = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
@@ -279,6 +420,33 @@ class GroupPermission(TimeStampedModel):
             models.Index(fields=["permission"]),
         ]
 
+    objects = ScopeGuardedManager()
+
+    def assert_scope_allowed(self):
+        """Keep a group's declared scope honest about what it contains.
+
+        A ``TENANT`` group is attachable to any school role, so a platform key
+        dropped inside one would travel straight through
+        :class:`TenantRoleGroup` into a school's effective set.
+        """
+        if self.group_id and self.group.scope == PermissionScope.PLATFORM:
+            return  # A platform group may carry anything; only CX can attach it.
+        if self.permission_id and platform_only_keys([self.permission_id]):
+            raise ValidationError({
+                "permission": (
+                    f"'{self.permission_id}' is platform-scoped and cannot be placed "
+                    f"in a tenant-scoped permission group."
+                ),
+            })
+
+    def clean(self):
+        super().clean()
+        self.assert_scope_allowed()
+
+    def save(self, *args, **kwargs):
+        self.assert_scope_allowed()
+        return super().save(*args, **kwargs)
+
     def __str__(self) -> str:
         return f"{self.group_id}:{self.permission_id}"
 
@@ -291,8 +459,8 @@ class PrebuiltRoleTemplate(models.Model):
 
     These are read-only records seeded by CodeX Vision.
     No institution owns or modifies these directly.
-    When an institution selects one, a SchoolRoleTemplate is created
-    for their institution using this suggestion as the source.
+    When an institution selects one, a TenantRoleTemplate is created
+    for their tenant using this suggestion as the source.
     """
 
     key = models.CharField(max_length=100, unique=True)
@@ -332,7 +500,7 @@ class PrebuiltRolePermission(models.Model):
     """Default permissions attached to a PrebuiltRoleTemplate.
 
     When an institution selects this suggestion, these permissions
-    are copied into their SchoolRoleTemplate's SchoolRolePermission records.
+    are copied into their TenantRoleTemplate's TenantRolePermission records.
     """
     prebuilt_role = models.ForeignKey(
         PrebuiltRoleTemplate,
@@ -352,770 +520,288 @@ class PrebuiltRolePermission(models.Model):
         verbose_name = 'Prebuilt Role Permission'
         verbose_name_plural = 'Prebuilt Role Permissions'
 
+    objects = ScopeGuardedManager()
+
+    def assert_scope_allowed(self):
+        """Prebuilt roles are tenant blueprints, so their defaults are too.
+
+        Every prebuilt template that exists (``school_admin``, ``branch_admin``,
+        ``teacher``) is provisioned into a tenant's own roles, and a default
+        attached here is copied into every school that adopts it. There is no
+        platform prebuilt role, so a platform key here has no legitimate
+        reading - it would be a fleet-wide grant.
+        """
+        if self.permission_id and platform_only_keys([self.permission_id]):
+            raise ValidationError({
+                "permission": (
+                    f"'{self.permission_id}' is platform-scoped and cannot be a "
+                    f"default on a prebuilt tenant role."
+                ),
+            })
+
+    def clean(self):
+        super().clean()
+        self.assert_scope_allowed()
+
+    def save(self, *args, **kwargs):
+        self.assert_scope_allowed()
+        return super().save(*args, **kwargs)
+
     def __str__(self):
         return f'{self.prebuilt_role.key}:{self.permission_id}'
 
 
 # -----------------------------------------------------------------------------
-# Role Templates (school-scoped)
+# Unified tenant RBAC (migration target for school + platform role systems)
 # -----------------------------------------------------------------------------
-class SchoolRoleTemplate(TimeStampedModel):
-    """School-scoped role blueprint owned by a specific school school.
 
-    Attributes:
-        school: School that owns the template; acts as tenant boundary.
-        name: Human readable label surfaced in admin UIs.
-        description: Optional context for auditors and approvers.
-        status: Current lifecycle (active/inactive/archived).
-        is_system_role: Locks the record to Vision-managed roles.
-        is_locked: Prevents school edits while elevated workflows run.
-        version: Incremented when permissions change for cache busting.
-        created_by: User that created the template, if tracked.
-        permissions: Many-to-many relationship via ``SchoolRolePermission``.
-    """
+class TenantRoleTemplate(TimeStampedModel):
+    """Role blueprint owned by one tenant, optionally narrowed to a branch."""
 
     class Status(models.TextChoices):
         ACTIVE = "ACTIVE", "Active"
         INACTIVE = "INACTIVE", "Inactive"
         ARCHIVED = "ARCHIVED", "Archived"
 
-    school = models.ForeignKey(
-        School,
-        on_delete=models.PROTECT,
-        related_name="role_templates",
-        blank=True,
-        null=True,
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT, related_name="role_templates",
     )
-
     branch = models.ForeignKey(
-        Branch,
-        on_delete=models.PROTECT,
-        related_name="role_templates",
-        blank=True,
-        null=True,
+        Branch, on_delete=models.PROTECT, related_name="tenant_role_templates",
+        null=True, blank=True,
     )
-
-    prebuilt_from = models.ForeignKey(
-        'PrebuiltRoleTemplate',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='created_roles',
-    )
-
-    id = models.SlugField(max_length=120, primary_key=True, editable=False)
+    key = models.SlugField(max_length=120)
     name = models.CharField(max_length=80)
     description = models.TextField(blank=True)
-
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
-
-    # System roles are provisioned/owned by Vision; schooles might not be able to edit these.
     is_system_role = models.BooleanField(default=False)
-
-    # Locked means "read-only except elevated actors"
     is_locked = models.BooleanField(default=False)
-
-    # Incremented on each successful permission update (useful for cache keys)
     version = models.PositiveIntegerField(default=1)
-
     created_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="created_roles",
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="created_tenant_roles",
     )
-
-    # Many-to-many through SchoolRolePermission for extra metadata
-    permissions = models.ManyToManyField(
-        Permission,
-        through="SchoolRolePermission",
-        related_name="roles",
-        blank=True,
-    )
-
-    # Permission groups attached to this role (flattened at runtime)
-    groups = models.ManyToManyField(
-        "PermissionGroup",
-        through="SchoolRoleGroup",
-        related_name="roles",
-        blank=True,
-    )
-
-    # Tenant isolation: school users are automatically scoped to their school;
-    # all_objects is the unscoped escape hatch for platform code.
-    objects = TenantAwareManager()
-    all_objects = models.Manager()
 
     class Meta:
-        default_manager_name = "objects"
-        base_manager_name = "all_objects"
-        indexes = [
-            models.Index(fields=["school", "status"]),
-            models.Index(fields=["school", "is_locked"]),
-        ]
         constraints = [
-            # Role names are unique within a school. Case-insensitive on
-            # MySQL/MariaDB via the ci collation; PostgreSQL would need a
-            # functional index for the same guarantee.
+            models.UniqueConstraint(fields=["tenant", "key"], name="uq_tenant_role_key"),
+            models.UniqueConstraint(fields=["tenant", "name"], name="uq_tenant_role_name"),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "status"]),
+            models.Index(fields=["tenant", "branch", "status"]),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.branch_id and self.branch.tenant_id != self.tenant_id:
+            raise ValidationError("Role branch must belong to the role tenant.")
+
+    def __str__(self):
+        return f"{self.tenant_id}:{self.name}"
+
+
+class TenantRolePermission(TimeStampedModel):
+    role = models.ForeignKey(
+        TenantRoleTemplate, on_delete=models.CASCADE, related_name="role_permissions",
+    )
+    permission = models.ForeignKey(
+        Permission, to_field="key", db_column="permission_key",
+        on_delete=models.CASCADE, related_name="tenant_role_permissions",
+    )
+    granted = models.BooleanField(default=True)
+    granted_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="granted_tenant_role_permissions",
+    )
+    granted_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["role", "permission"], name="uq_tenant_role_permission"),
+        ]
+        indexes = [
+            models.Index(fields=["role", "granted"]),
+            models.Index(fields=["permission", "granted"]),
+        ]
+
+    objects = ScopeGuardedManager()
+
+    def assert_scope_allowed(self):
+        """A tenant's role may only carry keys that tenant is allowed to hold.
+
+        An explicit DENY (``granted=False``) is exempt: taking a key away from
+        a role is never an escalation, and refusing it would make an existing
+        deny row unsaveable.
+        """
+        if not self.granted or not self.permission_id:
+            return
+        tenant = getattr(self.role, "tenant", None) if self.role_id else None
+        assert_tenant_may_hold([self.permission_id], tenant)
+
+    def clean(self):
+        super().clean()
+        self.assert_scope_allowed()
+
+    def save(self, *args, **kwargs):
+        self.assert_scope_allowed()
+        return super().save(*args, **kwargs)
+
+
+class TenantRoleGroup(TimeStampedModel):
+    role = models.ForeignKey(
+        TenantRoleTemplate, on_delete=models.CASCADE, related_name="role_groups",
+    )
+    group = models.ForeignKey(
+        PermissionGroup, on_delete=models.CASCADE, related_name="tenant_role_attachments",
+    )
+    attached_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="attached_tenant_role_groups",
+    )
+    attached_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["role", "group"], name="uq_tenant_role_group"),
+        ]
+
+    objects = ScopeGuardedManager()
+
+    def assert_scope_allowed(self):
+        """Attaching a bundle grants everything in it, so check the contents.
+
+        The group's declared scope is checked *and* its actual members, because
+        a group seeded before this field existed could be declared TENANT while
+        holding something it should not.
+        """
+        if not self.group_id or not self.role_id:
+            return
+        tenant = getattr(self.role, "tenant", None)
+        if tenant_is_platform(tenant):
+            return
+        if self.group.scope != PermissionScope.TENANT:
+            raise ValidationError({
+                "group": (
+                    f"Permission group '{self.group}' is not tenant-scoped and cannot "
+                    f"be attached to a role inside a tenant."
+                ),
+            })
+        member_keys = GroupPermission.objects.filter(
+            group_id=self.group_id,
+        ).values_list("permission_id", flat=True)
+        assert_tenant_may_hold(member_keys, tenant, field="group")
+
+    def clean(self):
+        super().clean()
+        self.assert_scope_allowed()
+
+    def save(self, *args, **kwargs):
+        self.assert_scope_allowed()
+        return super().save(*args, **kwargs)
+
+
+class TenantUserRoleAssignment(TimeStampedModel):
+    class AssignmentStatus(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        REVOKED = "REVOKED", "Revoked"
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT, related_name="role_assignments",
+    )
+    branch = models.ForeignKey(
+        Branch, on_delete=models.PROTECT, related_name="tenant_role_assignments",
+        null=True, blank=True,
+    )
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="tenant_role_assignments",
+    )
+    role = models.ForeignKey(
+        TenantRoleTemplate, on_delete=models.PROTECT, related_name="user_assignments",
+    )
+    assignment_status = models.CharField(
+        max_length=12, choices=AssignmentStatus.choices, default=AssignmentStatus.ACTIVE,
+    )
+    assigned_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="assigned_tenant_roles",
+    )
+    assigned_at = models.DateTimeField(default=timezone.now)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="revoked_tenant_roles",
+    )
+    reason_note = models.TextField(blank=True)
+
+    class Meta:
+        constraints = [
+            # Split in two on purpose. One constraint over (tenant, user, role)
+            # made the same role at two sites unstorable, so "Storekeeper at
+            # Ikeja" *and* "Storekeeper at Lekki" - the arrangement a single
+            # ``User.branch`` cannot express, and the reason branch scope is a
+            # set of grants - could not be recorded at all. Splitting keeps both
+            # guarantees intact rather than trading one away: at most one active
+            # whole-tenant grant of a role per person, and at most one active
+            # grant of a role per person per branch.
+            #
+            # A single constraint including ``branch`` would not do: PostgreSQL
+            # treats NULLs as distinct, so it would silently permit duplicate
+            # whole-tenant grants that are refused today.
             models.UniqueConstraint(
-                fields=["school", "name"], name="uq_school_role_name"
+                fields=["tenant", "user", "role"],
+                condition=Q(assignment_status="ACTIVE", branch__isnull=True),
+                name="uq_active_tenant_user_role",
+            ),
+            models.UniqueConstraint(
+                fields=["tenant", "user", "role", "branch"],
+                condition=Q(assignment_status="ACTIVE", branch__isnull=False),
+                name="uq_active_tenant_user_role_branch",
             ),
         ]
+        indexes = [
+            models.Index(fields=["tenant", "user", "assignment_status"]),
+            models.Index(fields=["tenant", "role", "assignment_status"]),
+        ]
 
-    def __str__(self) -> str:
-        return f"{self.school_id}:{self.name}"
+    objects = ScopeGuardedManager()
 
-    def bump_version(self):
-        self.version = (self.version or 1) + 1
+    def assert_scope_allowed(self):
+        """Refuse to hand a person a role carrying keys their tenant may not hold.
+
+        ``clean()`` already pins the role to the assignment's tenant, so this
+        cannot normally fire - the role's own rows are guarded as they are
+        written. It is here for the row that predates the guard: a role that
+        already carries a platform key stops being *assignable* as well as
+        stopping being effective, so the grant cannot be revived by re-issuing
+        it to somebody new.
+        """
+        if not self.role_id or self.assignment_status != self.AssignmentStatus.ACTIVE:
+            return
+        tenant = self.tenant if self.tenant_id else None
+        if tenant_is_platform(tenant):
+            return
+        keys = TenantRolePermission.objects.filter(
+            role_id=self.role_id, granted=True,
+        ).values_list("permission_id", flat=True)
+        assert_tenant_may_hold(keys, tenant, field="role")
 
     def save(self, *args, **kwargs):
-        if not self.id:
-            self.id = _unique_slug(SchoolRoleTemplate, self.name)
-        # Case-insensitive name uniqueness per school
-        if self.name:
-            clash = (
-                type(self).all_objects.filter(school=self.school, name__iexact=self.name)
-                .exclude(pk=self.pk)
-                .exists()
-            )
-            if clash:
-                from django.db import IntegrityError
-                raise IntegrityError(
-                    "A role with this name already exists in this school."
-                )
-        super().save(*args, **kwargs)
-
-
-class SchoolRolePermission(TimeStampedModel):
-    """Join table capturing permission grants on school role templates.
-
-    Attributes:
-        role: ``SchoolRoleTemplate`` receiving the grant or deny record.
-        permission: ``Permission`` key linked through ``permission_key`` column.
-        granted: Boolean flag so future explicit denies can be represented.
-        granted_by: (Optional) actor who made the last change.
-        granted_at: Timestamp of the latest update for audit trails.
-    """
-
-    role = models.ForeignKey(SchoolRoleTemplate, on_delete=models.CASCADE, related_name="role_permissions")
-    permission = models.ForeignKey(
-        Permission,
-        to_field="key",
-        db_column="permission_key",
-        on_delete=models.CASCADE,
-        related_name="role_permissions",
-    )
-
-    granted = models.BooleanField(default=True)
-
-    granted_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="granted_role_permissions",
-    )
-    granted_at = models.DateTimeField(default=timezone.now)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(fields=["role", "permission"], name="uq_role_permission_once"),
-        ]
-        indexes = [
-            models.Index(fields=["role", "granted"]),
-            models.Index(fields=["permission", "granted"]),
-        ]
-
-    def __str__(self) -> str:
-        return f"{self.role_id}:{self.permission_id} ({'grant' if self.granted else 'deny'})"
-
-
-class SchoolRoleGroup(TimeStampedModel):
-    """Attaches a ``PermissionGroup`` to a school ``SchoolRoleTemplate``.
-
-    Permissions from attached groups are unioned with any direct
-    ``SchoolRolePermission`` grants at runtime. Explicit denies on
-    ``SchoolRolePermission`` still win over grants derived from groups.
-    """
-
-    role = models.ForeignKey(
-        SchoolRoleTemplate,
-        on_delete=models.CASCADE,
-        related_name="role_groups",
-    )
-    group = models.ForeignKey(
-        PermissionGroup,
-        on_delete=models.CASCADE,
-        related_name="role_attachments",
-    )
-    attached_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="attached_role_groups",
-    )
-    attached_at = models.DateTimeField(default=timezone.now)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=["role", "group"],
-                name="uq_role_group_once",
-            )
-        ]
-        indexes = [
-            models.Index(fields=["role"]),
-            models.Index(fields=["group"]),
-        ]
-
-    def __str__(self) -> str:
-        return f"{self.role_id}:{self.group_id}"
-
-
-# -----------------------------------------------------------------------------
-# Assign roles to users (school scoped)
-# -----------------------------------------------------------------------------
-class SchoolUserRoleAssignment(TimeStampedModel):
-    """School-scoped assignment of a ``SchoolRoleTemplate`` to a specific user.
-
-    Attributes:
-        school: School boundary that owns the assignment record.
-        user: Actor receiving the permissions.
-        role: Template being assigned; must belong to the same school.
-        assignment_status: Active vs revoked state machine.
-        assigned_by/assigned_at: Metadata on who granted the role and when.
-        revoked_by/revoked_at: Metadata on revocation events.
-        reason_note: Free-form justification captured for audits.
-
-    Methods:
-        clean: Validates school consistency between role and assignment.
-        revoke: Helper that stamps revoke metadata in one call.
-    """
-    class AssignmentStatus(models.TextChoices):
-        ACTIVE = "ACTIVE", "Active"
-        REVOKED = "REVOKED", "Revoked"
-
-
-    school = models.ForeignKey(
-        School,
-        on_delete=models.PROTECT,
-        related_name="role_assignments",
-    )
-
-    user = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name="role_assignments",
-    )
-
-    role = models.ForeignKey(
-        SchoolRoleTemplate,
-        on_delete=models.PROTECT,
-        related_name="user_assignments",
-    )
-
-    assignment_status = models.CharField(
-        max_length=12,
-        choices=AssignmentStatus.choices,
-        default=AssignmentStatus.ACTIVE,
-    )
-
-    assigned_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="assigned_roles",
-    )
-    assigned_at = models.DateTimeField(default=timezone.now)
-
-    revoked_at = models.DateTimeField(null=True, blank=True)
-    revoked_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="revoked_roles",
-    )
-
-    reason_note = models.TextField(blank=True)
-
-    objects = TenantAwareManager()
-    all_objects = models.Manager()
-
-    class Meta:
-        default_manager_name = "objects"
-        base_manager_name = "all_objects"
-        indexes = [
-            models.Index(fields=["school", "user", "assignment_status"]),
-            models.Index(fields=["school", "role", "assignment_status"]),
-        ]
-        constraints = []
-
-    def __str__(self) -> str:
-        return f"{self.school_id}:{self.user_id}->{self.role_id} ({self.assignment_status})"
-
-    def save(self, *args, **kwargs):
-        # One ACTIVE assignment per (school, user, role). A conditional unique
-        # constraint isn't portable to MariaDB, so the invariant is enforced
-        # here at the app level.
-        if self._state.adding and self.assignment_status == self.AssignmentStatus.ACTIVE:
-            duplicate = type(self).all_objects.filter(
-                school=self.school,
-                user=self.user,
-                role=self.role,
-                assignment_status=self.AssignmentStatus.ACTIVE,
-            ).exists()
-            if duplicate:
-                from django.db import IntegrityError
-                raise IntegrityError(
-                    "An active assignment for this user and role already exists."
-                )
-        super().save(*args, **kwargs)
+        self.assert_scope_allowed()
+        return super().save(*args, **kwargs)
 
     def clean(self):
-        if self.role_id and self.school_id and self.role.school_id != self.school_id:
-            raise ValidationError("Role must belong to the same school as the assignment.")
-
-    def revoke(self, by_user=None, reason: str = ""):
-        self.assignment_status = self.AssignmentStatus.REVOKED
-        self.revoked_at = timezone.now()
-        self.revoked_by = by_user
-        self.reason_note = reason or self.reason_note
-
-
-# -----------------------------------------------------------------------------
-# Approval workflow: school-internal role changes
-# -----------------------------------------------------------------------------
-class SchoolRoleChangeRequest(TimeStampedModel):
-    """Workflow record for school-internal approval of role permission edits.
-
-    Attributes:
-        school: Tenant that owns the request.
-        requested_by: School user initiating the change.
-        target_role: ``SchoolRoleTemplate`` being modified.
-        status: State machine captured via ``Status`` choices.
-        justification: Required explanation for the reviewing school admin.
-        reviewer/reviewer_notes: Outcome metadata once decided.
-        submitted_at/decided_at: Audit timestamps.
-        impact_summary: Cached diff to help the reviewer.
-
-    Helper methods:
-        mark_denied/mark_approved/mark_apply_failed: Convenience status transitions.
-    """
-    class Status(models.TextChoices):
-        PENDING = "PENDING", "Pending"
-        APPROVED = "APPROVED", "Approved"
-        DENIED = "DENIED", "Denied"
-        APPLY_FAILED = "APPLY_FAILED", "Apply Failed"
-
-
-    school = models.ForeignKey(
-        School,
-        on_delete=models.PROTECT,
-        related_name="role_change_requests",
-    )
-
-    requested_by = models.ForeignKey(
-        User,
-        on_delete=models.PROTECT,
-        related_name="role_change_requests_made",
-    )
-
-    target_role = models.ForeignKey(
-        SchoolRoleTemplate,
-        on_delete=models.PROTECT,
-        related_name="change_requests",
-    )
-
-    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
-
-    justification = models.TextField()
-
-    reviewer = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="role_change_requests_reviewed",
-    )
-    reviewer_notes = models.TextField(blank=True)
-
-    submitted_at = models.DateTimeField(default=timezone.now)
-    decided_at = models.DateTimeField(null=True, blank=True)
-
-    # Optional: store derived info so reviewers don’t have to recompute
-    impact_summary = models.JSONField(default=dict, blank=True)
-
-    objects = TenantAwareManager()
-    all_objects = models.Manager()
-
-    class Meta:
-        default_manager_name = "objects"
-        base_manager_name = "all_objects"
-        indexes = [
-            models.Index(fields=["school", "status", "submitted_at"]),
-            models.Index(fields=["status", "submitted_at"]),
-        ]
-
-    def __str__(self) -> str:
-        return f"RCR:{self.id} ({self.status})"
-
-    def clean(self):
-        # Cross-school safety: target role must belong to same school
-        if self.target_role_id and self.school_id and self.target_role.school_id != self.school_id:
-            raise ValidationError("Target role must belong to the same school as the request.")
-        if not self.justification or not self.justification.strip():
-            raise ValidationError("Justification is required.")
-
-    def mark_denied(self, reviewer, notes: str):
-        self.status = self.Status.DENIED
-        self.reviewer = reviewer
-        self.reviewer_notes = notes
-        self.decided_at = timezone.now()
-
-    def mark_approved(self, reviewer, notes: str = ""):
-        self.status = self.Status.APPROVED
-        self.reviewer = reviewer
-        self.reviewer_notes = notes
-        self.decided_at = timezone.now()
-
-    def mark_apply_failed(self, reviewer, notes: str):
-        self.status = self.Status.APPLY_FAILED
-        self.reviewer = reviewer
-        self.reviewer_notes = notes
-        self.decided_at = timezone.now()
-
-
-class SchoolRoleChangeDeltaItem(TimeStampedModel):
-    """Normalized list of atomic permission diffs attached to a request.
-
-    Attributes:
-        request: Parent ``SchoolRoleChangeRequest``.
-        permission: Permission key being added or removed.
-        operation: ``ADD`` or ``REMOVE`` to describe the action.
-    """
-
-    class Operation(models.TextChoices):
-        ADD = "ADD", "Add"
-        REMOVE = "REMOVE", "Remove"
-
-
-    request = models.ForeignKey(
-        SchoolRoleChangeRequest,
-        on_delete=models.CASCADE,
-        related_name="delta_items",
-    )
-
-    permission = models.ForeignKey(
-        Permission,
-        to_field="key",
-        db_column="permission_key",
-        on_delete=models.PROTECT,
-        related_name="delta_items",
-    )
-
-    operation = models.CharField(max_length=8, choices=Operation.choices)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=["request", "permission", "operation"],
-                name="uq_request_permission_operation",
-            )
-        ]
-
-    def __str__(self) -> str:
-        return f"{self.request_id} {self.operation} {self.permission_id}"
-
-
-# -----------------------------------------------------------------------------
-# Platform Role Template (Vision-owned / global)
-# -----------------------------------------------------------------------------
-class PlatformRoleTemplate(TimeStampedModel):
-    """Global counterpart of ``SchoolRoleTemplate`` for Vision internal teams.
-
-    Attributes:
-        id: UUID primary key to avoid collisions across regions.
-        name/description: Human context for auditors and tooling.
-        status: Lifecycle control to archive or pause templates.
-        is_system_role: Marks templates that only core platform may edit.
-        is_locked: Prevents edits outside elevated workflows.
-        version: Incremented when permissions change to invalidate caches.
-        created_by: Platform user who authored the template.
-        permissions: Many-to-many via ``PlatformRolePermission``.
-
-    Examples:
-        Vision Super Admin, Support Officer, Compliance Reviewer, etc.
-    """
-
-    class Status(models.TextChoices):
-        ACTIVE = "ACTIVE", "Active"
-        INACTIVE = "INACTIVE", "Inactive"
-        ARCHIVED = "ARCHIVED", "Archived"
-
-    id = models.SlugField(max_length=120, primary_key=True, editable=False)
-    name = models.CharField(max_length=80)
-    description = models.TextField(blank=True)
-
-    status = models.CharField(
-        max_length=16,
-        choices=Status.choices,
-        default=Status.ACTIVE,
-    )
-
-    # System-owned means only top-level platform actors should edit it
-    is_system_role = models.BooleanField(default=True)
-
-    # Locked means read-only except very elevated actors
-    is_locked = models.BooleanField(default=False)
-
-    # Version bump whenever permissions change
-    version = models.PositiveIntegerField(default=1)
-
-    created_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="created_platform_roles",
-    )
-
-    permissions = models.ManyToManyField(
-        Permission,
-        through="PlatformRolePermission",
-        related_name="platform_roles",
-        blank=True,
-    )
-
-    groups = models.ManyToManyField(
-        "PermissionGroup",
-        through="PlatformRoleGroup",
-        related_name="platform_roles",
-        blank=True,
-    )
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["status"]),
-            models.Index(fields=["is_locked"]),
-        ]
-        constraints = [
-            # Platform role names are globally unique (case-insensitive on
-            # MySQL/MariaDB via the ci collation).
-            models.UniqueConstraint(fields=["name"], name="uq_platform_role_name"),
-        ]
-
-    def __str__(self) -> str:
-        return self.name
-
-    def bump_version(self):
-        self.version = (self.version or 1) + 1
-
-    def save(self, *args, **kwargs):
-        if not self.id:
-            self.id = _unique_slug(PlatformRoleTemplate, self.name, slug_field="id")
-        # Case-insensitive global name uniqueness — app-level for the same
-        # portability reason as SchoolRoleTemplate (ci collation vs functional
-        # index support differs across MySQL/MariaDB/PostgreSQL).
-        if self.name:
-            clash = (
-                type(self).objects.filter(name__iexact=self.name)
-                .exclude(pk=self.pk)
-                .exists()
-            )
-            if clash:
-                from django.db import IntegrityError
-                raise IntegrityError("A platform role with this name already exists.")
-        super().save(*args, **kwargs)
-
-
-# -----------------------------------------------------------------------------
-# Platform Role <-> Permission mapping
-# -----------------------------------------------------------------------------
-class PlatformRolePermission(TimeStampedModel):
-    """Permission grant records attached to ``PlatformRoleTemplate`` entries.
-
-    Attributes:
-        id: UUID for immutable audit references.
-        role: Platform role receiving the grant/deny.
-        permission: Global ``Permission`` being referenced.
-        granted: Allows eventual explicit deny semantics if required.
-        granted_by/granted_at: Capture actor context for compliance teams.
-    """
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-
-    role = models.ForeignKey(
-        PlatformRoleTemplate,
-        on_delete=models.CASCADE,
-        related_name="role_permissions",
-    )
-
-    permission = models.ForeignKey(
-        Permission,
-        to_field="key",
-        db_column="permission_key",
-        on_delete=models.CASCADE,
-        related_name="platform_role_permissions",
-    )
-
-    granted = models.BooleanField(default=True)
-
-    granted_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="granted_platform_role_permissions",
-    )
-
-    granted_at = models.DateTimeField(default=timezone.now)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=["role", "permission"],
-                name="uq_platform_role_permission_once",
-            )
-        ]
-        indexes = [
-            models.Index(fields=["role", "granted"]),
-            models.Index(fields=["permission", "granted"]),
-        ]
-
-    def __str__(self) -> str:
-        return f"{self.role_id}:{self.permission_id} ({'grant' if self.granted else 'deny'})"
-
-
-class PlatformRoleGroup(TimeStampedModel):
-    """Attaches a ``PermissionGroup`` to a ``PlatformRoleTemplate``."""
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-
-    role = models.ForeignKey(
-        PlatformRoleTemplate,
-        on_delete=models.CASCADE,
-        related_name="role_groups",
-    )
-    group = models.ForeignKey(
-        PermissionGroup,
-        on_delete=models.CASCADE,
-        related_name="platform_role_attachments",
-    )
-    attached_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="attached_platform_role_groups",
-    )
-    attached_at = models.DateTimeField(default=timezone.now)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=["role", "group"],
-                name="uq_platform_role_group_once",
-            )
-        ]
-        indexes = [
-            models.Index(fields=["role"]),
-            models.Index(fields=["group"]),
-        ]
-
-    def __str__(self) -> str:
-        return f"{self.role_id}:{self.group_id}"
-
-
-# -----------------------------------------------------------------------------
-# Assign platform roles to Vision/internal users
-# -----------------------------------------------------------------------------
-class PlatformUserRoleAssignment(TimeStampedModel):
-    """Vision-internal record that maps staff to platform role templates.
-
-    Attributes:
-        user: Internal account receiving privileges.
-        role: ``PlatformRoleTemplate`` granted to the user.
-        assignment_status: Active or revoked state.
-        assigned_by/assigned_at: Audit data for the grant event.
-        revoked_by/revoked_at: Audit data for the revoke event.
-        reason_note: Optional justification for grant or revoke.
-
-    Methods:
-        revoke: Helper to flip status and stamp metadata atomically.
-    """
-    class AssignmentStatus(models.TextChoices):
-        ACTIVE = "ACTIVE", "Active"
-        REVOKED = "REVOKED", "Revoked"
-
-    user = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name="platform_role_assignments",
-    )
-
-    role = models.ForeignKey(
-        PlatformRoleTemplate,
-        on_delete=models.PROTECT,
-        related_name="user_assignments",
-    )
-
-    assignment_status = models.CharField(
-        max_length=12,
-        choices=AssignmentStatus.choices,
-        default=AssignmentStatus.ACTIVE,
-    )
-
-    assigned_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="assigned_platform_roles",
-    )
-
-    assigned_at = models.DateTimeField(default=timezone.now)
-
-    revoked_at = models.DateTimeField(null=True, blank=True)
-
-    revoked_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="revoked_platform_roles",
-    )
-
-    reason_note = models.TextField(blank=True)
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["user", "assignment_status"]),
-            models.Index(fields=["role", "assignment_status"]),
-        ]
-        constraints = []
-
-    def save(self, *args, **kwargs):
-        # One ACTIVE assignment per (user, role) — app-level guard because a
-        # conditional unique constraint isn't portable to MariaDB.
-        if self._state.adding and self.assignment_status == self.AssignmentStatus.ACTIVE:
-            duplicate = type(self).objects.filter(
-                user=self.user,
-                role=self.role,
-                assignment_status=self.AssignmentStatus.ACTIVE,
-            ).exists()
-            if duplicate:
-                from django.db import IntegrityError
-                raise IntegrityError(
-                    "An active platform assignment for this user and role already exists."
-                )
-        super().save(*args, **kwargs)
-
-    def __str__(self) -> str:
-        return f"{self.user_id}->{self.role_id} ({self.assignment_status})"
+        super().clean()
+        self.assert_scope_allowed()
+        errors = {}
+        if self.user_id and self.user.tenant_id != self.tenant_id:
+            errors["user"] = "User must belong to the assignment tenant."
+        if self.role_id and self.role.tenant_id != self.tenant_id:
+            errors["role"] = "Role must belong to the assignment tenant."
+        if self.branch_id and self.branch.tenant_id != self.tenant_id:
+            errors["branch"] = "Branch must belong to the assignment tenant."
+        if errors:
+            raise ValidationError(errors)
 
     def revoke(self, by_user=None, reason: str = ""):
         if self.assignment_status == self.AssignmentStatus.REVOKED:
@@ -1132,43 +818,177 @@ class PlatformUserRoleAssignment(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
-# Platform approval workflow for restricted permission changes
+# Per-user permission overrides (exceptions layered on top of role grants)
 # -----------------------------------------------------------------------------
-class PlatformRoleChangeRequest(TimeStampedModel):
-    """Approval workflow for restricted edits to platform role templates.
+class UserPermissionOverride(TimeStampedModel):
+    """A single permission exception pinned to one user inside one tenant.
+
+    Roles remain the way access is *designed*; this table is the escape hatch
+    for the two cases a role edit cannot express without collateral damage:
+
+    * ``DENY`` - take one key away from one person while their role keeps it
+      for everyone else.
+    * ``ALLOW`` - hand one extra key to one person without minting a role.
+
+    Evaluation order lives in :func:`vs_rbac.evaluator.get_effective_permissions`
+    and is *later wins*::
+
+        (role_granted - role_denied) | user_allows - user_denies
+
+    so a personal DENY beats everything, including a personal ALLOW. Expiry is
+    lazy: an expired row simply stops matching the evaluator's filter, so no
+    cron is required to make it stop applying.
+
+    There is deliberately **no approval workflow** (owner decision, rev 2):
+    accountability comes from the required ``reason``, the ``RBACAuditLog``
+    trail, and the fact that the ``*.overrides.manage`` key is CRITICAL and
+    restricted.
 
     Attributes:
-        requested_by: Vision staff member initiating the request.
-        target_role: ``PlatformRoleTemplate`` slated for changes.
-        status: Current lifecycle using ``Status`` choices.
-        justification: Required rationale for auditability.
-        reviewer/reviewer_notes: Outcome metadata.
-        submitted_at/decided_at: Lifecycle timestamps.
-        impact_summary: Cached diff for quick reviewer context.
+        tenant: Tenant that owns both the override and the user.
+        user: The person the exception applies to.
+        permission: Permission key (``to_field="key"`` - ``permission_id`` IS
+            the dotted key, matching every other RBAC link table).
+        mode: ``ALLOW`` or ``DENY``.
+        reason: Required justification, surfaced in the audit trail and UI.
+        created_by: Actor who wrote the override.
+        expires_at: Optional expiry; ``null`` means permanent.
     """
+
+    class Mode(models.TextChoices):
+        ALLOW = "ALLOW", "Allow (extra grant)"
+        DENY = "DENY", "Deny (exception)"
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant",
+        on_delete=models.PROTECT,
+        related_name="user_permission_overrides",
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="permission_overrides",
+    )
+    permission = models.ForeignKey(
+        Permission,
+        to_field="key",
+        db_column="permission_key",
+        on_delete=models.PROTECT,
+        related_name="user_overrides",
+    )
+    mode = models.CharField(max_length=8, choices=Mode.choices)
+    reason = models.TextField()
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_permission_overrides",
+    )
+    expires_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            # One override per key per user: a new override REPLACES the old one
+            # (delete + create, both audited) instead of stacking.
+            models.UniqueConstraint(
+                fields=["user", "permission"],
+                name="uq_user_permission_override",
+            ),
+        ]
+        indexes = [
+            # The evaluator's hot path: rows for one (tenant, user), filtered by
+            # expiry.
+            models.Index(fields=["tenant", "user", "expires_at"]),
+            models.Index(fields=["permission", "mode"]),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.user_id}:{self.mode}:{self.permission_id}"
+
+    @property
+    def is_expired(self) -> bool:
+        return self.expires_at is not None and self.expires_at <= timezone.now()
+
+    objects = ScopeGuardedManager()
+
+    def assert_scope_allowed(self):
+        """An ALLOW override is a grant, so it obeys the same scope rule.
+
+        This is the path the escalation used: the override serializer offers
+        every active key, and tenant membership was the only thing checked. A
+        DENY is exempt - removing a key from one person cannot escalate them.
+        """
+        if self.mode != self.Mode.ALLOW or not self.permission_id:
+            return
+        assert_tenant_may_hold([self.permission_id], self.tenant if self.tenant_id else None)
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.user_id and self.tenant_id and self.user.tenant_id != self.tenant_id:
+            errors["user"] = "User must belong to the override tenant."
+        if not (self.reason or "").strip():
+            errors["reason"] = "A reason is required for a permission override."
+        if errors:
+            raise ValidationError(errors)
+        self.assert_scope_allowed()
+
+    def save(self, *args, **kwargs):
+        self.assert_scope_allowed()
+        return super().save(*args, **kwargs)
+
+
+# -----------------------------------------------------------------------------
+# Unified tenant approval workflow: role permission-change requests
+# -----------------------------------------------------------------------------
+class TenantRoleChangeRequest(TimeStampedModel):
+    """Tenant-scoped approval workflow for role permission edits.
+
+    The canonical tenant-scoped role change workflow. The tenant boundary comes
+    from ``tenant`` and
+    the target role must belong to the same tenant.
+
+    Attributes:
+        tenant: Tenant that owns the request.
+        requested_by: User initiating the change.
+        target_role: ``TenantRoleTemplate`` being modified.
+        status: State machine captured via ``Status`` choices.
+        justification: Required explanation for the reviewer.
+        reviewer/reviewer_notes: Outcome metadata once decided.
+        submitted_at/decided_at: Audit timestamps.
+        impact_summary: Cached diff to help the reviewer.
+
+    Helper methods:
+        mark_denied/mark_approved/mark_apply_failed: status transitions.
+    """
+
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
         APPROVED = "APPROVED", "Approved"
         DENIED = "DENIED", "Denied"
         APPLY_FAILED = "APPLY_FAILED", "Apply Failed"
 
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant",
+        on_delete=models.PROTECT,
+        related_name="role_change_requests",
+    )
+
     requested_by = models.ForeignKey(
         User,
         on_delete=models.PROTECT,
-        related_name="platform_role_change_requests_made",
+        related_name="tenant_role_change_requests_made",
     )
 
     target_role = models.ForeignKey(
-        PlatformRoleTemplate,
+        TenantRoleTemplate,
         on_delete=models.PROTECT,
         related_name="change_requests",
     )
 
-    status = models.CharField(
-        max_length=16,
-        choices=Status.choices,
-        default=Status.PENDING,
-    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
 
     justification = models.TextField()
 
@@ -1177,9 +997,8 @@ class PlatformRoleChangeRequest(TimeStampedModel):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name="platform_role_change_requests_reviewed",
+        related_name="tenant_role_change_requests_reviewed",
     )
-
     reviewer_notes = models.TextField(blank=True)
 
     submitted_at = models.DateTimeField(default=timezone.now)
@@ -1189,13 +1008,17 @@ class PlatformRoleChangeRequest(TimeStampedModel):
 
     class Meta:
         indexes = [
+            models.Index(fields=["tenant", "status", "submitted_at"]),
             models.Index(fields=["status", "submitted_at"]),
         ]
 
     def __str__(self) -> str:
-        return f"PRCR:{self.id} ({self.status})"
+        return f"TRCR:{self.id} ({self.status})"
 
     def clean(self):
+        # Cross-tenant safety: target role must belong to same tenant.
+        if self.target_role_id and self.tenant_id and self.target_role.tenant_id != self.tenant_id:
+            raise ValidationError("Target role must belong to the same tenant as the request.")
         if not self.justification or not self.justification.strip():
             raise ValidationError("Justification is required.")
 
@@ -1218,13 +1041,13 @@ class PlatformRoleChangeRequest(TimeStampedModel):
         self.decided_at = timezone.now()
 
 
-class PlatformRoleChangeDeltaItem(TimeStampedModel):
-    """Platform analogue of ``SchoolRoleChangeDeltaItem`` tracking requested diffs.
+class TenantRoleChangeDeltaItem(TimeStampedModel):
+    """Normalized permission diff attached to a ``TenantRoleChangeRequest``.
 
     Attributes:
-        request: Parent ``PlatformRoleChangeRequest``.
+        request: Parent ``TenantRoleChangeRequest``.
         permission: Permission key being added or removed.
-        operation: ``ADD`` or ``REMOVE`` action stored via ``Operation`` choices.
+        operation: ``ADD`` or ``REMOVE`` to describe the action.
     """
 
     class Operation(models.TextChoices):
@@ -1232,7 +1055,7 @@ class PlatformRoleChangeDeltaItem(TimeStampedModel):
         REMOVE = "REMOVE", "Remove"
 
     request = models.ForeignKey(
-        PlatformRoleChangeRequest,
+        TenantRoleChangeRequest,
         on_delete=models.CASCADE,
         related_name="delta_items",
     )
@@ -1242,7 +1065,7 @@ class PlatformRoleChangeDeltaItem(TimeStampedModel):
         to_field="key",
         db_column="permission_key",
         on_delete=models.PROTECT,
-        related_name="platform_delta_items",
+        related_name="tenant_delta_items",
     )
 
     operation = models.CharField(max_length=8, choices=Operation.choices)
@@ -1251,7 +1074,7 @@ class PlatformRoleChangeDeltaItem(TimeStampedModel):
         constraints = [
             models.UniqueConstraint(
                 fields=["request", "permission", "operation"],
-                name="uq_platform_request_permission_operation",
+                name="uq_tenant_request_permission_operation",
             )
         ]
 
@@ -1260,13 +1083,13 @@ class PlatformRoleChangeDeltaItem(TimeStampedModel):
 
 
 # ---------------------------------------------------------------------------
-# RBACAuditLog — authoritative, append-only audit for RBAC actions
+# RBACAuditLog - authoritative, append-only audit for RBAC actions
 # ---------------------------------------------------------------------------
 
 class RBACAuditLog(models.Model):
     """Append-only audit log for RBAC actions (B21 hybrid-audit pattern).
 
-    The central ``vs_audit.emit_audit_event`` is best-effort by contract — it
+    The central ``vs_audit.emit_audit_event`` is best-effort by contract - it
     swallows failures so it can never break business logic. That is the wrong
     durability contract for permission/role changes, which are security
     system-of-record events. This table is written transactionally with the
@@ -1286,7 +1109,7 @@ class RBACAuditLog(models.Model):
         on_delete=models.SET_NULL,
         related_name="rbac_audit_entries",
     )
-    # Loose school reference (slug) — survives school deletion, no FK cascade.
+    # Loose school reference (slug) - survives school deletion, no FK cascade.
     school_id = models.CharField(max_length=80, blank=True, default="")
 
     entity_type = models.CharField(max_length=80)

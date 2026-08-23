@@ -1,5 +1,5 @@
 """
-Routing and stage advancement — the core state machine.
+Routing and stage advancement - the core state machine.
 
 advance_instance: moves the instance forward from its current stage.
 _terminate_approved, _terminate_rejected, _return_to_requester: terminal transitions.
@@ -12,18 +12,65 @@ from django.utils import timezone
 
 from vs_workflow.conditions import evaluate_condition
 from vs_workflow.constants import (
-    AuditEventType, StageKind, WorkflowInstanceStatus, WorkflowStageStatus,
+    NOTIF_EVENT_FINAL_APPROVED, NOTIF_EVENT_REJECTED, NOTIF_EVENT_RETURNED,
+    NOTIF_EVENT_STAGE_ACTIVATED,
+    ApproverSource, AuditEventType, StageKind, WorkflowInstanceStatus,
+    WorkflowStageStatus,
 )
 from vs_workflow.exceptions import TemplateInvalidError
 from vs_workflow.handlers import get_handler
 from vs_workflow.models import (
     WorkflowInstance, WorkflowRoutePath, WorkflowStage,
-    WorkflowStageApprover, WorkflowStageInstance,
+    WorkflowStageAction, WorkflowStageApprover, WorkflowStageInstance,
 )
 from vs_workflow.services import approvers as approvers_service
 from vs_workflow.services import audit as audit_service
 
 
+# Enqueue a lifecycle notification after the surrounding transaction commits,
+# so a rolled-back transition never notifies. Dispatch itself is best-effort
+# (vs_workflow/tasks.py) and Celery runs eagerly outside production.
+#
+# Public because the parking repair also has to tell people their queue changed:
+# when a role is finally staffed, ``services.parking`` fills the frozen approver
+# snapshot of an already-active stage, and without a notification the newly
+# eligible approver only learns of the waiting document by opening the queue on
+# spec. Every lifecycle message in this engine is built here so they cannot
+# drift apart.
+def notify(instance: WorkflowInstance, event_key: str,
+           recipient_user_ids: list, context: dict) -> None:
+    if not recipient_user_ids:
+        return
+    from vs_workflow.tasks import dispatch_notification
+    instance_id = str(instance.id)
+    # Prefer the domain snapshot captured by the handler at submission time.
+    # Internal tokens such as PLATFORM_USER_CREATION are implementation details,
+    # not useful notification copy.
+    summary = instance.document_summary if isinstance(instance.document_summary, dict) else {}
+    title = str(summary.get("title") or "").strip()
+    subtitle = str(summary.get("subtitle") or "").strip()
+    if title and subtitle:
+        document_title = f"{subtitle}: {title}"
+    else:
+        document_title = title or f"{instance.document_type} #{str(instance.document_object_id)[:8]}"
+    document_type = subtitle or instance.document_type.replace("_", " ").title()
+    document_type_title = " ".join(
+        word if word.isupper() else word.capitalize()
+        for word in document_type.split()
+    )
+    context = {
+        "document_title": document_title,
+        "document_type": document_type,
+        "document_type_title": document_type_title,
+        **context,
+    }
+    transaction.on_commit(lambda: dispatch_notification.delay(
+        instance_id=instance_id, event_key=event_key,
+        recipient_user_ids=recipient_user_ids, context=context,
+    ))
+
+
+# Choose the next stage using route paths first, then linear stage order.
 def _pick_next_stage(instance: WorkflowInstance,
                      from_stage: Optional[WorkflowStage]) -> Optional[WorkflowStage]:
     """Return the next stage or None (terminate APPROVED)."""
@@ -37,6 +84,7 @@ def _pick_next_stage(instance: WorkflowInstance,
         chosen = None
         evaluations = []
         for route in route_qs:
+            # Routes are evaluated in configured order; first match wins.
             matches, trace = evaluate_condition(route.condition, document)
             evaluations.append({
                 "route_id": str(route.id),
@@ -58,7 +106,7 @@ def _pick_next_stage(instance: WorkflowInstance,
             )
         if chosen is not None:
             return chosen.to_stage
-        # Fall through to linear logic if no routes matched (empty route_qs).
+        # Empty route sets fall back to linear progression.
 
     stages = list(template.stages.order_by("order"))
     if not stages:
@@ -72,8 +120,15 @@ def _pick_next_stage(instance: WorkflowInstance,
                                stage=from_stage.code, template=str(template.id))
 
 
-def _readonly_next_stage(template, document, from_stage, stages, has_routes):
+# Preview the next route without writing route-audit entries.
+def readonly_next_stage(template, document, from_stage, stages, has_routes):
     """Pure (no-write) sibling of _pick_next_stage for previews.
+
+    Public because it is the step function two read-only walks share: the
+    next-stage label preview below, and ``services.resolution``'s "would any
+    stage actually run" predicate, which the finance direct-post gate asks
+    before letting a document skip approval. Both have to step exactly as
+    ``advance_instance`` does or they describe a route the engine will not take.
 
     Raises TemplateInvalidError when routing is genuinely undecidable, so the
     caller can fall back to "moves forward" rather than guessing.
@@ -88,7 +143,7 @@ def _readonly_next_stage(template, document, from_stage, stages, has_routes):
                 if matches:
                     return route.to_stage
             raise TemplateInvalidError("preview: no route matched")
-        # No routes from this stage — fall through to linear order.
+        # No routes from this stage - fall through to linear order.
     if not stages:
         return None
     if from_stage is None:
@@ -99,6 +154,7 @@ def _readonly_next_stage(template, document, from_stage, stages, has_routes):
     return None
 
 
+# Preview the next approval stage label for UI copy.
 def preview_next_approval_stage(instance: WorkflowInstance):
     """Read-only, best-effort preview of the next APPROVAL stage that would run
     once the current stage completes.
@@ -122,8 +178,9 @@ def preview_next_approval_stage(instance: WorkflowInstance):
         has_routes = WorkflowRoutePath.objects.filter(template=template).exists()
         cursor = from_stage
         for _ in range(50):  # mirror advance_instance's MAX_HOPS cycle guard
-            nxt = _readonly_next_stage(template, document, cursor, stages, has_routes)
+            nxt = readonly_next_stage(template, document, cursor, stages, has_routes)
             if nxt is None:
+                # No next stage means the current approval would complete the workflow.
                 return {"label": None, "is_final": True}
             if nxt.retired_at is not None:
                 cursor = nxt
@@ -142,6 +199,7 @@ def preview_next_approval_stage(instance: WorkflowInstance):
         return {"label": None, "is_final": False}
 
 
+# Activate a stage and persist its approver snapshot.
 def _activate_stage(instance: WorkflowInstance, stage: WorkflowStage,
                     attempt: int) -> WorkflowStageInstance:
     """Activate a stage and snapshot the current eligible approver list.
@@ -162,6 +220,7 @@ def _activate_stage(instance: WorkflowInstance, stage: WorkflowStage,
         stage_instance.save(update_fields=["status", "activated_at", "resolved_at"])
 
     eligible = approvers_service.resolve_approvers(stage, instance)
+    # Freeze eligibility so later RBAC or org-chart changes do not alter this attempt.
     WorkflowStageApprover.objects.bulk_create([
         WorkflowStageApprover(stage_instance=stage_instance, user=ea.user,
                               on_behalf_of=ea.on_behalf_of, attempt=attempt)
@@ -169,14 +228,31 @@ def _activate_stage(instance: WorkflowInstance, stage: WorkflowStage,
     ])
     instance.current_stage = stage
     instance.save(update_fields=["current_stage", "updated_at"])
+    audit_context = {
+        "stage_code": stage.code, "stage_label": stage.label,
+        "attempt": attempt, "eligible_count": len(eligible),
+    }
+    if stage.approver_source == ApproverSource.DYNAMIC_ROLE:
+        # Record which rule chose the role. Without it the snapshot says who
+        # was eligible but nothing says why, and a dynamic stage is exactly
+        # where that question gets asked.
+        rule, evaluations = approvers_service.match_dynamic_rule(stage, instance.document)
+        audit_context["dynamic_role"] = {
+            "matched_rule_id": str(rule.pk) if rule else None,
+            "matched_role_key": rule.role.key if rule else None,
+            "evaluations": evaluations,
+        }
     audit_service.write(instance, AuditEventType.STAGE_ACTIVATED,
-                        stage_instance=stage_instance, context={
-                            "stage_code": stage.code, "stage_label": stage.label,
-                            "attempt": attempt, "eligible_count": len(eligible),
-                        })
+                        stage_instance=stage_instance, context=audit_context)
+    # Tell the stage's approvers their decision is awaited (bell + inbox).
+    notify(instance, NOTIF_EVENT_STAGE_ACTIVATED,
+            recipient_user_ids=list({str(ea.user.id) for ea in eligible}),
+            context={"stage_name": stage.label, "stage_label": stage.label,
+                     "submitter_name": instance.requested_by.full_name})
     return stage_instance
 
 
+# Record a skipped stage with an audit reason.
 def _skip_stage(instance: WorkflowInstance, stage: WorkflowStage, attempt: int,
                 reason_event: AuditEventType, reason_detail: str = "") -> WorkflowStageInstance:
     """Mark a stage as SKIPPED and write an audit entry explaining why.
@@ -202,6 +278,7 @@ def _skip_stage(instance: WorkflowInstance, stage: WorkflowStage, attempt: int,
     return si
 
 
+# Advance the workflow until it reaches an approval stage or terminal approval.
 def advance_instance(instance: WorkflowInstance, *, current_attempt: int = 1) -> WorkflowInstance:
     """Move the instance forward, looping through auto-skip stages."""
     if instance.is_terminal:
@@ -217,6 +294,7 @@ def advance_instance(instance: WorkflowInstance, *, current_attempt: int = 1) ->
                                        template=str(instance.template_id))
         next_stage = _pick_next_stage(instance, from_stage)
         if next_stage is None:
+            # No remaining stage means the workflow is fully approved.
             return _terminate_approved(instance)
 
         # Skip stages retired from the template (works for both linear order and
@@ -236,14 +314,14 @@ def advance_instance(instance: WorkflowInstance, *, current_attempt: int = 1) ->
                 from_stage = next_stage
                 continue
 
-        # BRANCH stages are routing-only — skip and re-evaluate.
+        # BRANCH stages are routing-only - skip and re-evaluate.
         if next_stage.kind == StageKind.BRANCH:
             _skip_stage(instance, next_stage, current_attempt,
                          AuditEventType.STAGE_SKIPPED_CONDITION, "branch_node")
             from_stage = next_stage
             continue
 
-        # APPROVAL stage — activate it.
+        # APPROVAL stage - activate it.
         _activate_stage(instance, next_stage, current_attempt)
         eligible = approvers_service.resolve_approvers(next_stage, instance)
         if not eligible:
@@ -252,7 +330,7 @@ def advance_instance(instance: WorkflowInstance, *, current_attempt: int = 1) ->
                              AuditEventType.STAGE_SKIPPED_NO_APPROVER, "zero_eligible_approvers")
                 from_stage = next_stage
                 continue
-            # Block here — admins must intervene.
+            # Block here - admins must intervene.
             audit_service.write(instance, AuditEventType.STAGE_ACTIVATED, context={
                 "warning": "stage_active_with_no_approvers", "stage": next_stage.code,
             })
@@ -263,13 +341,14 @@ def advance_instance(instance: WorkflowInstance, *, current_attempt: int = 1) ->
         return instance
 
 
+# Mark the workflow approved and run the document approval callback.
 def _terminate_approved(instance: WorkflowInstance) -> WorkflowInstance:
     """Finalise the instance as fully APPROVED and fire the handler callback.
 
     Called by advance_instance when _pick_next_stage returns None (no more
     stages). Fires on_approved so the document handler (e.g. sending an
     invitation, activating a user) runs inside the same atomic block as the
-    status write — if the handler raises, the whole transition rolls back.
+    status write - if the handler raises, the whole transition rolls back.
     """
     instance.status = WorkflowInstanceStatus.APPROVED
     instance.current_stage = None
@@ -280,9 +359,38 @@ def _terminate_approved(instance: WorkflowInstance) -> WorkflowInstance:
     audit_service.write(instance, AuditEventType.INSTANCE_APPROVED)
     handler = get_handler(instance.document_type)
     handler.on_approved(instance, {"template": instance.template.code})
+
+    # Name the vote that actually completed the workflow. Fully automatic
+    # workflows have no action row, so say "the system" instead of rendering
+    # the template variable as an empty string.
+    final_action = (
+        WorkflowStageAction.objects
+        .filter(
+            stage_instance__instance=instance,
+            action="APPROVED",
+            reversed_at__isnull=True,
+            is_reversal_of__isnull=True,
+        )
+        .select_related("actor")
+        .order_by("-acted_at")
+        .first()
+    )
+    if final_action is None:
+        final_approver_name = "the system"
+    else:
+        final_approver_name = (
+            (final_action.actor.full_name or "").strip()
+            or final_action.actor.email
+            or "an approver"
+        )
+    # Tell the requester their submission is fully approved.
+    notify(instance, NOTIF_EVENT_FINAL_APPROVED,
+            recipient_user_ids=[str(instance.requested_by_id)],
+            context={"final_approver_name": final_approver_name})
     return instance
 
 
+# Mark the workflow rejected and run the document rejection callback.
 def _terminate_rejected(instance: WorkflowInstance, actor, comment: str) -> WorkflowInstance:
     """Finalise the instance as terminally REJECTED and fire the handler callback.
 
@@ -299,9 +407,15 @@ def _terminate_rejected(instance: WorkflowInstance, actor, comment: str) -> Work
     audit_service.write(instance, AuditEventType.INSTANCE_REJECTED,
                         actor=actor, context={"comment": comment})
     get_handler(instance.document_type).on_rejected(instance, {"comment": comment})
+    # Tell the requester their submission was terminally rejected.
+    notify(instance, NOTIF_EVENT_REJECTED,
+            recipient_user_ids=[str(instance.requested_by_id)],
+            context={"rejected_by_name": getattr(actor, "full_name", ""),
+                     "rejection_reason": comment})
     return instance
 
 
+# Return the workflow to the requester while remembering the stage to resume.
 def _return_to_requester(instance: WorkflowInstance, actor, comment: str,
                           returning_stage_id) -> WorkflowInstance:
     """Move the instance to RETURNED so the requester can revise and resubmit.
@@ -317,6 +431,9 @@ def _return_to_requester(instance: WorkflowInstance, actor, comment: str,
         "comment": comment, "returning_stage_id": str(returning_stage_id),
     })
     get_handler(instance.document_type).on_returned(instance, {"comment": comment})
+    # Tell the requester their submission needs changes and resubmission.
+    notify(instance, NOTIF_EVENT_RETURNED,
+            recipient_user_ids=[str(instance.requested_by_id)],
+            context={"returned_by_name": getattr(actor, "full_name", ""),
+                     "return_comment": comment})
     return instance
-
-

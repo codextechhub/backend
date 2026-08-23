@@ -1,7 +1,7 @@
-"""REST API for vs_finance — entity-scoped reads, documents and key actions.
+"""REST API for vs_finance - entity-scoped reads, documents and key actions.
 
 Every endpoint is scoped to a :class:`~vs_finance.models.LedgerEntity` (the ledger's
-tenant — *never* a School): pass ``?entity=<id or code>``. Master-data and document
+tenant - *never* a School): pass ``?entity=<id or code>``. Master-data and document
 lists use the platform's paginated envelope (:class:`core.pagination.XVSPagination`)
 and RBAC gate (``finance.<resource>.<action>``); the financial statements are returned
 as plain JSON by dedicated report endpoints. Domain errors raised by the services are
@@ -9,15 +9,28 @@ rendered by ``core.exceptions.custom_exception_handler`` (the typed-exception pa
 the views stay thin.
 """
 from __future__ import annotations
+import datetime
+from shutil import which
 
 from django.http import HttpResponse
 from rest_framework import generics
 from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.mixins import RetrieveModelMixin
 from core.response import success_response
-from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+from vs_rbac.permissions import (
+    HasAnyModuleAccess,
+    HasRBACPermission,
+    IsAuthenticatedAndActive,
+)
+# ``include_shared=True`` is spelled out at every call site below rather than left
+# to the default. A null branch means "shared across the school", so a row with no
+# branch stays visible to a branch-pinned caller; getting that backwards hides
+# every school-wide record from a branch admin, which looks like missing data
+# rather than a permission error and so goes unreported.
+from vs_rbac.scoping import branch_q
 
 from .models import (
     Account,
@@ -27,9 +40,11 @@ from .models import (
     LedgerEntity,
 )
 from .money import format_naira
+from .posting import posting_window
 from .serializers import (
     AccountSerializer,
     FiscalPeriodSerializer,
+    FiscalYearSerializer,
     InvoiceSerializer,
     JournalEntryDetailSerializer,
     JournalEntryListSerializer,
@@ -43,30 +58,47 @@ from .serializers import (
 # Entity scoping                                                              #
 # --------------------------------------------------------------------------- #
 
+# Handle the visible entities workflow.
+def visible_entities(request):
+    """The ledger entities the caller is entitled to, and the only source of that
+    answer.
+
+    Scoping is by asserted tenant and nothing else. Seniority does not widen it:
+    a platform (Codex) session sees Codex's own books, exactly as a school
+    session sees its school's. Reading another tenant's ledger is done by
+    proxying a user who holds the finance permission *there*, which swaps the
+    asserted tenant, so the books are always read as someone entitled to them
+    and the act is attributable.
+
+    This exists because the list endpoint and :func:`resolve_entity` each used to
+    decide this separately and drifted: the list exempted PLATFORM callers while
+    the resolver never did, so the console listed every school's books and then
+    404'd on each one. One function now answers for both.
+    """
+    tenant = getattr(request, "tenant", None)
+    if tenant is None:
+        return LedgerEntity.objects.none()
+    return LedgerEntity.objects.filter(tenant=tenant)
+
+
+# Handle the resolve entity workflow.
 def resolve_entity(request):
     """Resolve the ``?entity=`` query param (id or code) to a :class:`LedgerEntity`.
 
-    Authorization: holding a finance permission key is NOT enough — the caller
-    must also be entitled to this specific entity's books. CX staff may access
-    every entity; school-scoped users only entities sourced from their school.
-    Unknown and forbidden entities both return NotFound so an outsider can't
-    probe which entity codes exist.
+    Authorization: holding a finance permission key is NOT enough - the caller
+    must also be entitled to this specific entity's books. The entity must belong
+    to the caller's asserted tenant (request.tenant). Unknown and forbidden
+    entities both return NotFound so an outsider can't probe which entity codes
+    exist.
 
     Raises DRF :class:`ValidationError` when missing, :class:`NotFound` when
-    unknown/forbidden — both rendered into the standard error envelope by the
+    unknown/forbidden - both rendered into the standard error envelope by the
     custom exception handler.
     """
     raw = request.query_params.get("entity")
     if not raw:
         raise ValidationError({"entity": "An 'entity' query parameter (id or code) is required."})
-    qs = LedgerEntity.objects.all()
-
-    user = getattr(request, "user", None)
-    if getattr(user, "user_type", None) != "CX_STAFF":
-        school = getattr(request, "school", None) or getattr(user, "school", None)
-        if school is None:
-            raise NotFound(f"No ledger entity matches '{raw}'.")
-        qs = qs.filter(source_school=school)
+    qs = visible_entities(request)
 
     entity = (
         qs.filter(pk=int(raw)).first() if str(raw).isdigit()
@@ -77,19 +109,23 @@ def resolve_entity(request):
     return entity
 
 
+# Group behavior for Entity Scoped List Mixin.
 class EntityScopedListMixin:
     """A ListAPIView whose queryset is filtered to the resolved entity via ``entity_qs``."""
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
+    # Handle the get queryset workflow.
     def get_queryset(self):
         self.entity = resolve_entity(self.request)
         return self.entity_qs(self.entity)
 
-    def entity_qs(self, entity):  # pragma: no cover - overridden
+    # pragma: no cover - overridden
+    def entity_qs(self, entity):
         raise NotImplementedError
 
 
+# Support the resolve period workflow.
 def _resolve_period(entity, request, *, param="period"):
     """Resolve an optional ``?period=<id or period_no>`` for this entity, or ``None``."""
     raw = request.query_params.get(param)
@@ -106,14 +142,29 @@ def _resolve_period(entity, request, *, param="period"):
     return period
 
 
+# Support validated ISO date query parameters across finance reports.
+def _resolve_date_param(request, param):
+    """Return ``?param=YYYY-MM-DD`` as a date, or ``None`` when it is omitted."""
+    raw = request.query_params.get(param)
+    if not raw:
+        return None
+    try:
+        return datetime.date.fromisoformat(str(raw))
+    except ValueError as exc:
+        raise ValidationError({
+            param: "Use a valid date in YYYY-MM-DD format.",
+        }) from exc
+
+
 # --------------------------------------------------------------------------- #
 # Master data + documents                                                     #
 # --------------------------------------------------------------------------- #
 
+# Group endpoint behavior for Entity List Create View.
 class EntityListCreateView(generics.ListCreateAPIView):
-    """GET /finance/entities/ — the ledger entities (sets of books) on the platform.
+    """GET /finance/entities/ - the ledger entities (sets of books) on the platform.
 
-    POST /finance/entities/ — provision a **new** set of books. Entity creation is a
+    POST /finance/entities/ - provision a **new** set of books. Entity creation is a
     structural, platform-level operation (a new entity becomes the tenant of its own
     documents and numbering), so it is gated on the dedicated ``finance.entity.create``
     key, which is granted only to the platform admin roles.
@@ -124,17 +175,22 @@ class EntityListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
     @property
+    # Handle the rbac permission workflow.
     def rbac_permission(self):
         return ("finance.entity.create" if self.request.method == "POST"
                 else "finance.entity.view")
 
+    # Handle the get serializer class workflow.
     def get_serializer_class(self):
         if self.request.method == "POST":
             return LedgerEntityCreateSerializer
         return LedgerEntitySerializer
 
+    # Handle the get queryset workflow.
     def get_queryset(self):
-        qs = LedgerEntity.objects.all().order_by("code")
+        # Same authority as resolve_entity, so the list can never offer a set of
+        # books that opening it would refuse.
+        qs = visible_entities(self.request).order_by("code")
         if (kind := self.request.query_params.get("kind")):
             qs = qs.filter(kind=kind)
         if (active := self.request.query_params.get("is_active")) is not None:
@@ -142,6 +198,7 @@ class EntityListCreateView(generics.ListCreateAPIView):
                 qs = qs.filter(is_active=active.lower() == "true")
         return qs
 
+    # Handle the create workflow.
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -152,11 +209,12 @@ class EntityListCreateView(generics.ListCreateAPIView):
         )
 
 
-class AccountListView(EntityScopedListMixin, generics.ListAPIView):
-    """GET /finance/accounts/?entity= — the entity's chart of accounts.
+# Group endpoint behavior for Account List Create View.
+class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
+    """GET /finance/accounts/?entity= - the entity's chart of accounts.
 
     ``?with_balance=true`` returns the **whole tree** (un-paginated) with each
-    account's net GL ``balance`` and sub-ledger ``tag`` (CONTROL / CASH) — for the
+    account's net GL ``balance`` and sub-ledger ``tag`` (CONTROL / CASH) - for the
     Chart-of-Accounts screen. Without it, the plain paginated list is served (used
     by the account pickers).
 
@@ -166,15 +224,18 @@ class AccountListView(EntityScopedListMixin, generics.ListAPIView):
     serializer_class = AccountSerializer
 
     @property
+    # Handle the rbac permission workflow.
     def rbac_permission(self):
         return "finance.account.create" if self.request.method == "POST" else "finance.account.view"
 
+    # Support the with balance workflow.
     def _with_balance(self):
-        return self.request.query_params.get("with_balance") == "true"
+        return self.request.query_params.get("with_balance") == "true" 
 
+    # POST added manually (not using CreateAPIView or ListCreateAPIView)
     def post(self, request):
         """Create a new chart-of-accounts node for the entity."""
-        from .constants import AccountType
+        from .constants import ACCOUNT_CODE_LENGTH, account_type_from_code
         from .models import Account
 
         entity = resolve_entity(request)
@@ -182,19 +243,32 @@ class AccountListView(EntityScopedListMixin, generics.ListAPIView):
         code = str(body.get("code", "")).strip()
         if not code:
             raise ValidationError({"code": "An account code is required."})
+        if not code.isdigit():
+            raise ValidationError({"code": "Account codes can contain numbers only."})
+        atype = account_type_from_code(code)
+        if atype is None:
+            raise ValidationError({"code": "Account codes must start with 1, 2, 3, 4, or 5."})
+        if len(code) != ACCOUNT_CODE_LENGTH:
+            raise ValidationError({"code": f"Account codes must contain exactly {ACCOUNT_CODE_LENGTH} digits."})
         if Account.objects.filter(entity=entity, code=code).exists():
             raise ValidationError({"code": f"Account '{code}' already exists in this entity."})
         name = str(body.get("name", "")).strip()
         if not name:
             raise ValidationError({"name": "An account name is required."})
-        atype = body.get("account_type")
-        if atype not in AccountType.values:
-            raise ValidationError({"account_type": "Choose a valid account type."})
         parent = None
-        if body.get("parent"):
-            parent = Account.objects.filter(entity=entity, pk=body.get("parent")).first()
+        if (parent_ref := body.get("parent")) not in (None, ""):
+            # Resolve by code first, then numeric pk (mirrors _resolve_cost_center),
+            # scoped to the entity.
+            pqs = Account.objects.filter(entity=entity)
+            parent = pqs.filter(code=str(parent_ref)).first()
+            if parent is None and str(parent_ref).isdigit():
+                parent = pqs.filter(pk=int(parent_ref)).first()
             if parent is None:
                 raise ValidationError({"parent": "No such parent account in this entity."})
+            if parent.account_type != atype or account_type_from_code(parent.code) != atype:
+                raise ValidationError({
+                    "parent": "The parent account must be in the same account line as the new code.",
+                })
         # normal_balance is derived from type/contra by Account.save() when left blank.
         account = Account.objects.create(
             entity=entity, code=code, name=name, account_type=atype, parent=parent,
@@ -216,9 +290,11 @@ class AccountListView(EntityScopedListMixin, generics.ListAPIView):
             qs = qs.annotate(
                 _bal_dr=Coalesce(Sum(F("balances__opening_debit") + F("balances__debit_total")), 0),
                 _bal_cr=Coalesce(Sum(F("balances__opening_credit") + F("balances__credit_total")), 0),
-            )
+            )  # Annotate the GL net for each account (used by the chart's Balance column).
         if (atype := params.get("account_type")):
-            qs = qs.filter(account_type=atype)
+            # accepts a single type or a comma list (e.g. INCOME,EXPENSE for budgets)
+            types = [t.strip() for t in atype.split(",") if t.strip()]
+            qs = qs.filter(account_type__in=types) if len(types) > 1 else qs.filter(account_type=types[0])
         if (postable := params.get("is_postable")) is not None:
             if postable.lower() in ("true", "false"):
                 qs = qs.filter(is_postable=postable.lower() == "true")
@@ -228,26 +304,32 @@ class AccountListView(EntityScopedListMixin, generics.ListAPIView):
         ctx = super().get_serializer_context()
         if self._with_balance():
             entity = getattr(self, "entity", None) or resolve_entity(self.request)
-            from .constants import CASH_BANK_CODE
+            from .account_mappings import resolve_mapped_account
+            from .constants import AccountMappingKey
+            from .exceptions import MissingAccountError
             from .models import Customer
             control = set(
                 Customer.objects.filter(entity=entity).exclude(receivable_account=None)
                 .values_list("receivable_account_id", flat=True)
-            )
-            try:
+            )  # Control accounts for customers (AR) and vendors (AP) are tagged in the chart.
+            try:  # Start protected finance operation.
                 from vs_procurement.models import Vendor
                 control |= set(
                     Vendor.objects.filter(entity=entity).exclude(payable_account=None)
                     .values_list("payable_account_id", flat=True)
                 )
-            except Exception:  # pragma: no cover - procurement optional
+            except Exception:
                 pass
             ctx["control_ids"] = control
-            ctx["cash_ids"] = set(
-                Account.objects.filter(entity=entity, code=CASH_BANK_CODE).values_list("id", flat=True)
-            )
+            try:
+                ctx["cash_ids"] = {
+                    resolve_mapped_account(entity, AccountMappingKey.CASH_BANK).id,
+                }
+            except MissingAccountError:
+                ctx["cash_ids"] = set()
         return ctx
 
+    # Handle the list workflow.
     def list(self, request, *args, **kwargs):
         # Chart mode returns the full tree in one envelope (the tree needs every
         # node); the picker mode keeps the standard paginated response.
@@ -258,12 +340,13 @@ class AccountListView(EntityScopedListMixin, generics.ListAPIView):
         return super().list(request, *args, **kwargs)
 
 
+# Group endpoint behavior for Account Detail View.
 class AccountDetailView(APIView):
     """GET an account's detail + ledger activity; PATCH to edit it.
 
     GET returns the account, a balance summary (current, fiscal-year opening,
     line/journal counts) and its posted journal-line activity (newest first, with
-    a running balance) — feeds the Chart-of-Accounts detail drawer.
+    a running balance) - feeds the Chart-of-Accounts detail drawer.
 
     docstring-name: Account detail & ledger
     """
@@ -283,62 +366,86 @@ class AccountDetailView(APIView):
 
     def get(self, request, pk):
         import datetime
+        from django.db.models import Sum
         from .constants import DocumentStatus, NormalBalance, AccountType
         from .models import FiscalYear, JournalLine
-        from .reports import _account_gl_net
+        from .accounts import account_subtree_ids
+        from .reports import _accounts_gl_net
 
         entity = resolve_entity(request)
         acc = self._get(entity, pk)
         sign = 1 if acc.normal_balance == NormalBalance.DEBIT else -1
+        account_ids = {acc.id} if acc.is_postable else account_subtree_ids(acc)
 
-        # Posted lines hitting this account, oldest-first to accumulate a running balance.
-        lines = list(
-            JournalLine.objects.filter(account=acc, entry__status=DocumentStatus.POSTED)
-            .select_related("entry", "cost_center").order_by("entry__date", "entry__id", "line_no")
+        # Header summaries roll up the full descendant subtree. Activity remains a
+        # leaf-only view because journals cannot post directly to header accounts.
+        summary_lines = JournalLine.objects.filter(
+            account_id__in=account_ids,
+            entry__status__in=[DocumentStatus.POSTED, DocumentStatus.REVERSED],
         )
         # Fiscal-year opening = net of everything posted before the current FY starts.
         today = datetime.date.today()
         fy = (
-            FiscalYear.objects.filter(entity=entity, start_date__lte=today, end_date__gte=today).first()
+            FiscalYear.objects.filter(
+                entity=entity, start_date__lte=today, end_date__gte=today,
+            ).first()
             or FiscalYear.objects.filter(entity=entity).order_by("-year").first()
         )
         fy_start = fy.start_date if fy else None
 
-        opening = 0
+        opening_lines = (
+            summary_lines.filter(entry__date__lt=fy_start)
+            if fy_start else summary_lines.none()
+        )
+        opening_totals = opening_lines.aggregate(debit=Sum("debit"), credit=Sum("credit"))
+        opening = sign * (
+            int(opening_totals["debit"] or 0) - int(opening_totals["credit"] or 0)
+        )
+        ytd_lines = (
+            summary_lines.filter(entry__date__gte=fy_start, entry__date__lte=today)
+            if fy_start else summary_lines
+        )
+        line_count = ytd_lines.count()
+        journal_count = ytd_lines.values("entry_id").distinct().count()
+
         running = 0
         activity = []
-        journals = set()
+        lines = (
+            summary_lines.select_related("entry", "cost_center")
+            .order_by("entry__date", "entry__id", "line_no")
+            if acc.is_postable else []
+        )
         for ln in lines:
             net = sign * (ln.debit - ln.credit)
-            if fy_start and ln.entry.date < fy_start:
-                opening += net
             running += net
-            journals.add(ln.entry_id)
             activity.append({
                 "date": ln.entry.date.isoformat(),
                 "journal_no": ln.entry.document_number,
                 "source": getattr(ln.entry, "source", "") or "Manual",
+                "status": ln.entry.status,
                 "description": ln.description or ln.entry.narration or "",
                 "cost_center": ln.cost_center.code if ln.cost_center_id else "",
+                "dimensions": ln.dimensions or {},
                 "debit": _money(ln.debit),
                 "credit": _money(ln.credit),
                 "running_balance": _money(running),
             })
-        activity.reverse()  # newest first for display
+        activity.reverse()  # Newer first for the activity list (oldest first was used to accumulate the running balance).
 
-        # Headline balance uses the canonical denormalised GL net (same source as
-        # the chart's Balance column) so the two always agree; the activity list's
-        # running balance reflects the actual posted lines.
+        # The saved GL balance also feeds the chart, while leaf activity derives
+        # its running balance from the individual posted transaction lines.
         return success_response(
             "Account detail retrieved.",
             data={
                 "account": AccountSerializer(acc).data,
                 "type_label": AccountType(acc.account_type).label if acc.account_type else "",
                 "summary": {
-                    "current_balance": _money(_account_gl_net(acc)),
+                    "current_balance": _money(_accounts_gl_net(account_ids, acc.normal_balance)),
                     "opening_balance": _money(opening),
-                    "line_count": len(lines),
-                    "journal_count": len(journals),
+                    "line_count": line_count,
+                    "journal_count": journal_count,
+                    "fiscal_year_start": fy_start.isoformat() if fy_start else None,
+                    "as_of": today.isoformat(),
                 },
                 "activity": activity,
             },
@@ -366,8 +473,86 @@ class AccountDetailView(APIView):
         return success_response(f"Account {acc.code} updated.", data=AccountSerializer(acc).data)
 
 
+class AccountActivityView(APIView):
+    """Paginated posted activity for an account or non-postable account group."""
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.account.view"
+
+    def get(self, request, pk):
+        from django.db.models import Sum
+        from core.pagination import XVSPagination
+        from .accounts import account_subtree_ids
+        from .constants import DocumentStatus, NormalBalance
+        from .models import Account, JournalLine
+
+        entity = resolve_entity(request)
+        account = Account.objects.filter(entity=entity, pk=pk).first()
+        if account is None:
+            raise NotFound("No such account in this entity.")
+
+        account_ids = {account.id} if account.is_postable else account_subtree_ids(account)
+        lines = (
+            JournalLine.objects.filter(
+                account_id__in=account_ids,
+                entry__status__in=[DocumentStatus.POSTED, DocumentStatus.REVERSED],
+            )
+            .select_related("account", "entry", "cost_center")
+        )
+
+        date_from = _resolve_date_param(request, "date_from")
+        date_to = _resolve_date_param(request, "date_to")
+        if date_from and date_to and date_from > date_to:
+            raise ValidationError({"date_to": "The end date must be on or after the start date."})
+        if date_from:
+            lines = lines.filter(entry__date__gte=date_from)
+        if date_to:
+            lines = lines.filter(entry__date__lte=date_to)
+
+        if raw_account := request.query_params.get("account"):
+            if not str(raw_account).isdigit() or int(raw_account) not in account_ids:
+                raise ValidationError({"account": "Choose an account within this account group."})
+            lines = lines.filter(account_id=int(raw_account))
+
+        totals = lines.aggregate(debit=Sum("debit"), credit=Sum("credit"))
+        debit = int(totals["debit"] or 0)
+        credit = int(totals["credit"] or 0)
+        sign = 1 if account.normal_balance == NormalBalance.DEBIT else -1
+
+        paginator = XVSPagination()
+        paginator.page_size = 25
+        page = paginator.paginate_queryset(
+            lines.order_by("-entry__date", "-entry__id", "-line_no", "-id"),
+            request,
+            view=self,
+        )
+        data = [
+            {
+                "id": line.id,
+                "date": line.entry.date.isoformat(),
+                "account_id": line.account_id,
+                "account_code": line.account.code,
+                "account_name": line.account.name,
+                "journal_no": line.entry.document_number,
+                "source": getattr(line.entry, "source", "") or "Manual",
+                "description": line.description or line.entry.narration or "",
+                "cost_center": line.cost_center.code if line.cost_center_id else "",
+                "debit": _money(line.debit),
+                "credit": _money(line.credit),
+            }
+            for line in page
+        ]
+        response = paginator.get_paginated_response(data)
+        response.data["totals"] = {
+            "debit": _money(debit),
+            "credit": _money(credit),
+            "net_movement": _money(sign * (debit - credit)),
+        }
+        return response
+
+
 class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
-    """GET /finance/periods/?entity= — the entity's fiscal periods.
+    """GET /finance/periods/?entity= - the entity's fiscal periods.
 
     docstring-name: Fiscal periods
     """
@@ -375,17 +560,184 @@ class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
     serializer_class = FiscalPeriodSerializer
     rbac_permission = "finance.period.view"
 
+    def list(self, request, *args, **kwargs):
+        """Return one complete year when ``?all=true&year=``; paginate otherwise."""
+        if request.query_params.get("all", "").lower() != "true":
+            return super().list(request, *args, **kwargs)
+        if not request.query_params.get("year"):
+            raise ValidationError({
+                "year": "The year filter is required when requesting a complete calendar.",
+            })
+        entity = resolve_entity(request)
+        rows = self.entity_qs(entity)
+        # Do not use success_response here: its historical ``data or {}`` fallback
+        # turns an empty list into {}, which breaks every period picker.
+        return Response({
+            "success": True,
+            "message": "Fiscal periods retrieved.",
+            "data": FiscalPeriodSerializer(rows, many=True).data,
+        })
+
+    # Handle the entity qs workflow.
     def entity_qs(self, entity):
         qs = FiscalPeriod.objects.filter(entity=entity).select_related("fiscal_year")
         if (status_val := self.request.query_params.get("status")):
             qs = qs.filter(status=status_val)
         if (year := self.request.query_params.get("year")):
             qs = qs.filter(fiscal_year__year=year)
+        if self.request.query_params.get("recent", "").lower() == "true":
+            return qs.order_by("-fiscal_year__year", "-period_no")
         return qs.order_by("fiscal_year__year", "period_no")
 
 
+# Expose the dates an ordinary posting may currently use.
+class PostingWindowView(APIView):
+    """GET /finance/posting-window/?entity= - which dates accept a posting today.
+
+    Feeds every date picker that carries a document date, in this console and in
+    procurement (GRNs, vendor invoices and payments post through the same guard).
+    It reads :func:`~vs_finance.posting.posting_window`, the same status rules the
+    posting guard applies, so a date the picker offers is a date the guard accepts.
+
+    Gated on module membership rather than ``finance.period.view``: a procurement
+    officer raising a GRN needs this window but has no business on the period-close
+    screens. The payload is period names, dates and statuses for an entity the
+    caller is already entitled to - no amounts, no balances.
+
+    Unpaginated by design. ``/finance/periods/`` paginates at 25 ordered oldest
+    first, so the current periods fall off page one once an entity has three years
+    of history - a paginated window would silently be the wrong window.
+
+    docstring-name: Posting window
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasAnyModuleAccess]
+    rbac_modules = ["finance", "procurement"]
+
+    # Handle the get workflow.
+    def get(self, request):
+        """Return open ranges, blocked periods and the default date for new documents."""
+        entity = resolve_entity(request)  # Tenant-scoped; unknown/forbidden both 404.
+        window = posting_window(entity)
+        message = (
+            "Posting window retrieved."
+            if window["default_date"]
+            else "This entity has no open fiscal period."
+        )
+        return success_response(message, data=window)
+
+
+# Group endpoint behavior for Fiscal Year List View.
+class FiscalYearListView(EntityScopedListMixin, generics.ListAPIView):
+    """List fiscal years or open the next fiscal calendar for an entity.
+
+    ``?status=OPEN`` narrows to open years (the ones a new budget can target).
+    ``POST`` accepts ``year``, ``start_month``, ``fiscal_start_day`` and
+    ``frequency`` (MONTHLY/QUARTERLY), then provisions the complete set of periods.
+
+    docstring-name: Fiscal years
+    """
+
+    serializer_class = FiscalYearSerializer
+
+    @property
+    def rbac_permission(self):
+        return "finance.period.create" if self.request.method == "POST" else "finance.period.view"
+
+    # Handle the entity qs workflow.
+    def entity_qs(self, entity):
+        from .models import FiscalYear
+
+        qs = FiscalYear.objects.filter(entity=entity)
+        if (status_val := self.request.query_params.get("status")):
+            qs = qs.filter(status=status_val)
+        return qs.order_by("-year")
+
+    def post(self, request):
+        """Start a fiscal year and provision all of its posting periods."""
+        from django.db import transaction
+        from django.utils import timezone
+
+        from .models import FiscalYear
+        from .seed import seed_fiscal_year
+
+        entity = resolve_entity(request)  # Tenant-scoped; unknown/forbidden both return 404.
+        body = request.data or {}
+        latest = FiscalYear.objects.filter(entity=entity).order_by("-year").first()
+
+        def integer(name, default, minimum, maximum):
+            raw = body.get(name, default)
+            try:
+                value = int(raw)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError({name: "Enter a whole number."}) from exc
+            if not minimum <= value <= maximum:
+                raise ValidationError({name: f"Enter a value from {minimum} to {maximum}."})
+            return value
+
+        year = integer("year", (latest.year + 1) if latest else timezone.localdate().year, 1900, 2200)
+        start_month = integer(
+            "start_month", latest.start_date.month if latest else 1, 1, 12,
+        )
+        start_day = integer(
+            "fiscal_start_day", latest.start_date.day if latest else 1, 1, 31,
+        )
+        inferred_frequency = (
+            "QUARTERLY" if latest and latest.periods.filter(period_no__lte=12).count() == 4
+            else "MONTHLY"
+        )
+        frequency = str(body.get("frequency", inferred_frequency)).strip().upper()
+        if frequency not in {"MONTHLY", "QUARTERLY"}:
+            raise ValidationError({"frequency": "Choose MONTHLY or QUARTERLY."})
+        try:
+            with transaction.atomic():
+                # Serialize calendar creation per entity so two clicks cannot both
+                # pass the duplicate check and report that they opened the same year.
+                LedgerEntity.objects.select_for_update().get(pk=entity.pk)
+                if FiscalYear.objects.filter(entity=entity, year=year).exists():
+                    raise ValidationError({
+                        "year": f"Fiscal year {year} already exists for this entity.",
+                    })
+                fiscal_year, periods = seed_fiscal_year(
+                    entity,
+                    year=year,
+                    start_month=start_month,
+                    fiscal_period_frequency=frequency,
+                    fiscal_start_day=start_day,
+                )
+                overlap = (
+                    FiscalYear.objects.filter(
+                        entity=entity,
+                        start_date__lte=fiscal_year.end_date,
+                        end_date__gte=fiscal_year.start_date,
+                    )
+                    .exclude(pk=fiscal_year.pk)
+                    .order_by("start_date")
+                    .first()
+                )
+                if overlap is not None:
+                    raise ValidationError({
+                        "fiscal_calendar": (
+                            f"FY{year} overlaps FY{overlap.year} "
+                            f"({overlap.start_date} to {overlap.end_date})."
+                        ),
+                    })
+        except ValueError as exc:
+            raise ValidationError({"fiscal_calendar": str(exc)}) from exc
+
+        return success_response(
+            f"Fiscal year {year} opened with {len(periods)} {frequency.lower()} periods.",
+            data={
+                "fiscal_year": FiscalYearSerializer(fiscal_year).data,
+                "periods": FiscalPeriodSerializer(periods, many=True).data,
+            },
+            status=201,
+        )
+
+
+# Group endpoint behavior for Journal Entry List View.
 class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
-    """GET /finance/journals/?entity= — posted/draft journal entries for the entity.
+    """GET /finance/journals/?entity= - posted/draft journal entries for the entity.
 
     docstring-name: Journal entries
     """
@@ -393,12 +745,15 @@ class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
     serializer_class = JournalEntryListSerializer
     rbac_permission = "finance.journal.view"
 
+    # Handle the entity qs workflow.
     def entity_qs(self, entity):
         from django.db.models import Q, Sum
         from django.db.models.functions import Coalesce
 
         qs = (
-            JournalEntry.objects.filter(entity=entity)
+            JournalEntry.objects.filter(
+                branch_q(self.request, include_shared=True), entity=entity,
+            )
             .select_related("period", "created_by")
             .annotate(_total_debit=Coalesce(Sum("lines__debit"), 0))
         )
@@ -420,8 +775,9 @@ class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
         return qs.order_by("-date", "-id")
 
 
+# Group endpoint behavior for Journal Summary View.
 class JournalSummaryView(APIView):
-    """GET /finance/journals/summary/?entity= — status counts + posted total.
+    """Status counts + posted total.
 
     Powers the Journal Entries status tabs and footer (one cheap aggregate, honours
     the same source/date/search filters as the list).
@@ -432,13 +788,16 @@ class JournalSummaryView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.journal.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         from django.db.models import Count, Q, Sum
         from django.db.models.functions import Coalesce
         from .constants import DocumentStatus
 
         entity = resolve_entity(request)
-        qs = JournalEntry.objects.filter(entity=entity)
+        qs = JournalEntry.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        )
         params = request.query_params
         if (source := params.get("source")):
             qs = qs.filter(source=source)
@@ -457,18 +816,24 @@ class JournalSummaryView(APIView):
             qs.filter(status=DocumentStatus.POSTED)
             .aggregate(t=Coalesce(Sum("lines__debit"), 0))["t"]
         )
+        reversed_total = (
+            qs.filter(status=DocumentStatus.REVERSED)
+            .aggregate(t=Coalesce(Sum("lines__debit"), 0))["t"]
+        )
         return success_response(
             "Journal summary retrieved.",
             data={
                 "total": sum(by_status.values()),
                 "by_status": by_status,
                 "posted_total": _money(posted_total),
+                "reversed_total": _money(reversed_total),
             },
         )
 
 
+# Group endpoint behavior for Journal Entry Detail View.
 class JournalEntryDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
-    """GET /finance/journals/<id>/?entity= — one journal entry with its lines.
+    """GET /finance/journals/<id>/?entity= - one journal entry with its lines.
 
     docstring-name: Journal entries
     """
@@ -478,18 +843,21 @@ class JournalEntryDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     rbac_permission = "finance.journal.view"
     lookup_field = "id"
 
+    # Handle the get queryset workflow.
     def get_queryset(self):
         entity = resolve_entity(self.request)
         return (
-            JournalEntry.objects.filter(entity=entity)
+            JournalEntry.objects.filter(
+                branch_q(self.request, include_shared=True), entity=entity,
+            )
             .select_related("period")
             .prefetch_related("lines__account")
         )
 
 
-class InvoiceListView(EntityScopedListMixin, generics.ListAPIView):
-    """GET /finance/invoices/?entity= — sales invoices for the entity.
-    POST /finance/invoices/?entity= — raise a manual invoice (and post it).
+# Group endpoint behavior for Invoice List Create View.
+class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
+    """Sales invoices for the entity. Also, raise a manual invoice (and post it).
 
     docstring-name: Customer invoices
     """
@@ -497,10 +865,12 @@ class InvoiceListView(EntityScopedListMixin, generics.ListAPIView):
     serializer_class = InvoiceSerializer
 
     @property
+    # Handle the rbac permission workflow.
     def rbac_permission(self):
         return "finance.invoice.create" if self.request.method == "POST" \
             else "finance.invoice.view"
 
+    # Handle POST requests for this endpoint.
     def post(self, request, *args, **kwargs):
         """Create a manual invoice from ``{customer, invoice_date, lines:[...]}``.
 
@@ -513,27 +883,43 @@ class InvoiceListView(EntityScopedListMixin, generics.ListAPIView):
         from .receivables import post_invoice, price_invoice
         from .views_ar import _resolve_customer
         from .views_ops import (
-            _date, _dec, _money, _require_lines, _resolve_account,
-            _resolve_cost_center, _resolve_currency, _resolve_tax,
+            _date, _dec, _inherited_branch_id, _money, _require_lines,
+            _resolve_account, _resolve_cost_center, _resolve_currency, _resolve_tax,
         )
 
         entity = resolve_entity(request)
         body = request.data or {}
         lines = _require_lines(body)
-        should_post = body.get("post", True)
+        from .document_settings import resolve_finance_document_settings
+        policy = resolve_finance_document_settings(entity)
+        should_post = body.get("post", policy.auto_post_manual_invoices)
         if isinstance(should_post, str):
             should_post = should_post.lower() not in ("false", "0", "no")
+        invoice_date = _date(body.get("invoice_date"), "invoice_date", required=True)
+        due_date = _date(body.get("due_date"), "due_date")
+        if due_date is None:
+            due_date = invoice_date + datetime.timedelta(
+                days=policy.default_invoice_due_days,
+            )
 
+        customer = _resolve_customer(entity, body.get("customer"))
         with transaction.atomic():
             invoice = Invoice.objects.create(
                 entity=entity,
-                customer=_resolve_customer(entity, body.get("customer")),
-                invoice_date=_date(body.get("invoice_date"), "invoice_date", required=True),
-                due_date=_date(body.get("due_date"), "due_date"),
+                customer=customer,
+                # An invoice continues the customer's chain: the debt is owed by a
+                # family that attends one site, so the receivable belongs there and
+                # no request body may retarget it. A school-wide customer keeps a
+                # school-wide invoice, which is what keeps their ledger consistent.
+                # This is also the check that stops a Lekki bursar billing an Ikeja
+                # family whose id she guessed, which _resolve_customer does not narrow.
+                branch_id=_inherited_branch_id(request, customer),
+                invoice_date=invoice_date,
+                due_date=due_date,
                 currency=_resolve_currency(body.get("currency")),
                 source="MANUAL",
                 reference=body.get("reference", ""),
-                narration=body.get("narration", ""),
+                narration=body.get("narration") or policy.default_invoice_narration,
                 created_by=request.user,
             )
             for i, ln in enumerate(lines, start=1):
@@ -545,7 +931,10 @@ class InvoiceListView(EntityScopedListMixin, generics.ListAPIView):
                         f"lines[{i}].revenue_account", required=True),
                     quantity=_dec(ln.get("quantity", 1), f"lines[{i}].quantity"),
                     unit_price=_money(ln.get("unit_price", 0), f"lines[{i}].unit_price"),
-                    tax_code=_resolve_tax(entity, ln.get("tax_code"), f"lines[{i}].tax_code"),
+                    tax_code=_resolve_tax(
+                        entity, ln.get("tax_code"), f"lines[{i}].tax_code",
+                        usage="sales",
+                    ),
                     cost_center=_resolve_cost_center(
                         entity, ln.get("cost_center"), f"lines[{i}].cost_center"),
                 )
@@ -560,10 +949,13 @@ class InvoiceListView(EntityScopedListMixin, generics.ListAPIView):
             data=InvoiceSerializer(invoice).data, status=201,
         )
 
+    # Handle the entity qs workflow.
     def entity_qs(self, entity):
         from django.db.models import Q
 
-        qs = Invoice.objects.filter(entity=entity).select_related("customer")
+        qs = Invoice.objects.filter(
+            branch_q(self.request, include_shared=True), entity=entity,
+        ).select_related("customer")
         params = self.request.query_params
         if (status_val := params.get("status")):
             qs = qs.filter(status=status_val)
@@ -584,6 +976,7 @@ class InvoiceListView(EntityScopedListMixin, generics.ListAPIView):
         return qs.order_by("-invoice_date", "-id")
 
 
+# Support the invoice bucket workflow.
 def _invoice_bucket(qs, bucket):
     """Filter invoices to a derived status bucket (the design's status tabs)."""
     import datetime
@@ -606,8 +999,9 @@ def _invoice_bucket(qs, bucket):
     return qs
 
 
+# Group endpoint behavior for Invoice Summary View.
 class InvoiceSummaryView(APIView):
-    """GET /finance/invoices/summary/?entity= — AR KPIs, status counts, totals.
+    """AR KPIs, status counts, totals.
 
     Powers the Student-Invoices KPI cards (total invoiced/collected, collection
     rate, overdue balance + a 12-month series for the sparklines), the status tabs
@@ -619,6 +1013,7 @@ class InvoiceSummaryView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.invoice.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         import datetime
         from django.db.models import F, Q, Sum
@@ -628,7 +1023,9 @@ class InvoiceSummaryView(APIView):
 
         entity = resolve_entity(request)
         today = datetime.date.today()
-        base = Invoice.objects.filter(entity=entity)
+        base = Invoice.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        )
         if (search := request.query_params.get("search")):
             base = base.filter(
                 Q(document_number__icontains=search)
@@ -640,8 +1037,10 @@ class InvoiceSummaryView(APIView):
         bal = F("total") - F("amount_paid") - F("amount_credited")
 
         invoiced = posted.aggregate(t=Coalesce(Sum("total"), 0))["t"]
-        collected = Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED).aggregate(
-            t=Coalesce(Sum("amount"), 0))["t"]
+        collected = Payment.objects.filter(
+            branch_q(request, include_shared=True),
+            entity=entity, status=DocumentStatus.POSTED,
+        ).aggregate(t=Coalesce(Sum("amount"), 0))["t"]
         overdue_balance = unpaid_posted.filter(due_date__lt=today).aggregate(t=Coalesce(Sum(bal), 0))["t"]
         outstanding = unpaid_posted.aggregate(t=Coalesce(Sum(bal), 0))["t"]
         total_all = base.aggregate(t=Coalesce(Sum("total"), 0))["t"]
@@ -655,14 +1054,15 @@ class InvoiceSummaryView(APIView):
 
         first = today.replace(day=1)
         y, mo = first.year, first.month - 11
-        while mo <= 0:
+        while mo <= 0:  # Loop while this finance condition holds.
             mo += 12
             y -= 1
         start = datetime.date(y, mo, 1)
         inv_m = {r["m"]: int(r["s"] or 0) for r in posted.filter(invoice_date__gte=start)
                  .annotate(m=TruncMonth("invoice_date")).values("m").annotate(s=Sum("total"))}
         col_m = {r["m"]: int(r["s"] or 0) for r in Payment.objects
-                 .filter(entity=entity, status=DocumentStatus.POSTED, payment_date__gte=start)
+                 .filter(branch_q(request, include_shared=True), entity=entity,
+                         status=DocumentStatus.POSTED, payment_date__gte=start)
                  .annotate(m=TruncMonth("payment_date")).values("m").annotate(s=Sum("amount"))}
         monthly, cur = [], start
         for _ in range(12):
@@ -686,8 +1086,9 @@ class InvoiceSummaryView(APIView):
         )
 
 
+# Group endpoint behavior for Invoice Detail View.
 class InvoiceDetailView(APIView):
-    """GET /finance/invoices/<id>/ — the full invoice for the detail drawer:
+    """GET /finance/invoices/<id>/ - the full invoice for the detail drawer:
     lines, allocated payments, GL postings (from its journal), reminders, and a
     derived activity timeline.
 
@@ -697,25 +1098,52 @@ class InvoiceDetailView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.invoice.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request, pk):
-        from .models import Invoice
+        from .constants import FinanceAuditAction, FinanceAuditStatus
+        from .models import FinanceAuditLog, Invoice, JournalEntry
 
         entity = resolve_entity(request)
         inv = (
-            Invoice.objects.filter(entity=entity, pk=pk)
+            Invoice.objects.filter(
+                branch_q(request, include_shared=True), entity=entity, pk=pk,
+            )
             .select_related("customer", "journal")
             .prefetch_related(
                 "lines__revenue_account", "lines__tax_code",
-                "allocations__payment", "dunning_notices", "journal__lines__account",
+                "allocations__payment__journal__lines__account",
+                "credit_allocations__note__journal__lines__account",
+                "concessions__journal__lines__account",
+                "dunning_notices", "journal__lines__account",
             )
             .first()
         )
         if inv is None:
             raise NotFound("No such invoice in this entity.")
 
+        # Write-offs leave no allocation row and their journal has no invoice FK - the
+        # only structured link back to the invoice is the audit trail. Pull the
+        # successful write-off events, then fetch their journals for the GL history.
+        writeoff_logs = list(
+            FinanceAuditLog.objects.filter(
+                entity=entity, target_type="Invoice", target_id=str(inv.pk),
+                action=FinanceAuditAction.INVOICE_WRITTEN_OFF,
+                status=FinanceAuditStatus.SUCCESS,
+            ).order_by("created_at")
+        )
+        writeoff_journal_ids = [
+            int(log.metadata["journal_id"])
+            for log in writeoff_logs if log.metadata.get("journal_id")
+        ]
+        writeoff_journals = {
+            j.id: j for j in JournalEntry.objects
+            .filter(id__in=writeoff_journal_ids)
+            .prefetch_related("lines__account")
+        }
+
         lines = [
             {
-                "description": ln.description or "—",
+                "description": ln.description or "-",
                 "account_code": ln.revenue_account.code,
                 "account_name": ln.revenue_account.name,
                 "quantity": str(ln.quantity),
@@ -726,6 +1154,9 @@ class InvoiceDetailView(APIView):
             }
             for ln in inv.lines.all()
         ]
+
+        # Cash receipts allocated to this invoice - kept as `payments` for existing
+        # consumers; also fed into the unified `settlements` list below.
         payments = [
             {
                 "date": a.payment.payment_date.isoformat(),
@@ -735,6 +1166,43 @@ class InvoiceDetailView(APIView):
             }
             for a in inv.allocations.all()
         ]
+
+        # Posted concessions (discounts/waivers/scholarships) on this invoice.
+        concessions = [c for c in inv.concessions.all() if c.status == "POSTED"]
+
+        # Every way this invoice was settled down: cash, credit notes, concessions,
+        # write-offs.
+        settlements = [dict(row, type="PAYMENT") for row in payments]
+        for a in inv.credit_allocations.all():
+            settlements.append({
+                "type": "CREDIT_NOTE",
+                "date": a.note.note_date.isoformat(),
+                "reference": a.note.document_number,
+                "method": None,
+                "amount": _money(a.amount),
+            })
+        for c in concessions:
+            settlements.append({
+                "type": "CONCESSION",
+                "date": c.concession_date.isoformat(),
+                "reference": c.document_number,
+                "method": None,
+                "amount": _money(c.amount),
+            })
+        for log in writeoff_logs:
+            j = writeoff_journals.get(int(log.metadata.get("journal_id") or 0))
+            settlements.append({
+                "type": "WRITE_OFF",
+                "date": (j.date.isoformat() if j else log.created_at.date().isoformat()),
+                "reference": inv.document_number,
+                "method": None,
+                "amount": _money(int(log.metadata.get("amount") or 0)),
+            })
+        settlements.sort(key=lambda x: x["date"])
+
+        # Flat lines of the invoice's own AR journal - kept as `gl_postings` for
+        # existing consumers. `gl_journals` is the full GL history: the invoice posting
+        # plus every settlement's journal, grouped per source document.
         gl_postings = []
         if inv.journal_id:
             for gl in inv.journal.lines.all():
@@ -742,6 +1210,45 @@ class InvoiceDetailView(APIView):
                     "account_code": gl.account.code, "account_name": gl.account.name,
                     "debit": _money(gl.debit), "credit": _money(gl.credit),
                 })
+
+        gl_journals = []
+        _seen_journals: set[int] = set()
+
+        # Support the add journal workflow.
+        def _add_journal(j, doc_type, reference, date):
+            if j is None or j.id in _seen_journals:
+                return  # Return control to caller.
+            _seen_journals.add(j.id)
+            gl_journals.append({
+                "document_type": doc_type,
+                "reference": reference,
+                "date": date,
+                "source": j.source,
+                "lines": [
+                    {
+                        "account_code": gl.account.code, "account_name": gl.account.name,
+                        "debit": _money(gl.debit), "credit": _money(gl.credit),
+                    }
+                    for gl in j.lines.all()
+                ],
+            })
+
+        _add_journal(inv.journal, "INVOICE", inv.document_number, inv.invoice_date.isoformat())
+        for a in inv.allocations.all():
+            _add_journal(a.payment.journal, "PAYMENT", a.payment.document_number,
+                         a.payment.payment_date.isoformat())
+        for a in inv.credit_allocations.all():
+            _add_journal(a.note.journal, "CREDIT_NOTE", a.note.document_number,
+                         a.note.note_date.isoformat())
+        for c in concessions:
+            _add_journal(c.journal, "CONCESSION", c.document_number,
+                         c.concession_date.isoformat())
+        for log in writeoff_logs:
+            j = writeoff_journals.get(int(log.metadata.get("journal_id") or 0))
+            if j is not None:
+                _add_journal(j, "WRITE_OFF", inv.document_number, j.date.isoformat())
+        gl_journals.sort(key=lambda x: x["date"])
+
         reminders = [
             {
                 "date": (d.notice_date or d.created_at.date()).isoformat(),
@@ -758,8 +1265,25 @@ class InvoiceDetailView(APIView):
                 "date": a.payment.payment_date.isoformat(),
                 "label": f"Payment {a.payment.document_number} ({format_naira(a.amount)})",
             })
+        for a in inv.credit_allocations.all():
+            activity.append({
+                "date": a.note.note_date.isoformat(),
+                "label": f"Credit note {a.note.document_number} ({format_naira(a.amount)})",
+            })
+        for c in concessions:
+            activity.append({
+                "date": c.concession_date.isoformat(),
+                "label": f"{c.get_kind_display()} {c.document_number} ({format_naira(c.amount)})",
+            })
+        for log in writeoff_logs:
+            j = writeoff_journals.get(int(log.metadata.get("journal_id") or 0))
+            amount = int(log.metadata.get("amount") or 0)
+            activity.append({
+                "date": (j.date.isoformat() if j else log.created_at.date().isoformat()),
+                "label": f"Write-off ({format_naira(amount)})",
+            })
         for r in reminders:
-            activity.append({"date": r["date"], "label": f"Reminder level {r['level']} — {r['status']}"})
+            activity.append({"date": r["date"], "label": f"Reminder level {r['level']} - {r['status']}"})
         activity.sort(key=lambda x: x["date"])
 
         return success_response(
@@ -768,25 +1292,107 @@ class InvoiceDetailView(APIView):
                 "invoice": InvoiceSerializer(inv).data,
                 "summary": {
                     "subtotal": _money(inv.subtotal), "tax": _money(inv.tax_total),
-                    "total": _money(inv.total), "paid": _money(inv.amount_paid),
+                    "total": _money(inv.total),
+                    "paid": _money(inv.amount_paid),
+                    "credited": _money(inv.amount_credited),
+                    "settled": _money(inv.settled_amount),
                     "balance": _money(inv.balance_due),
                     "due_date": inv.due_date.isoformat() if inv.due_date else None,
                 },
                 "lines": lines,
                 "payments": payments,
+                "settlements": settlements,
                 "gl_postings": gl_postings,
+                "gl_journals": gl_journals,
                 "reminders": reminders,
                 "activity": activity,
             },
         )
 
 
+# Group endpoint behavior for Invoice Document View.
+class InvoiceDocumentView(APIView):
+    """GET /finance/invoices/<id>/document/ - printable HTML invoice."""
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.invoice.view"
+
+    # Support the invoice workflow.
+    def _invoice(self, request, pk):
+        entity = resolve_entity(request)
+        inv = (
+            Invoice.objects.filter(
+                branch_q(request, include_shared=True), entity=entity, pk=pk,
+            )
+            .select_related("entity__tenant__school_profile", "branch", "customer")
+            .prefetch_related("lines__revenue_account", "lines__tax_code", "lines__cost_center")
+            .first()
+        )
+        if inv is None:
+            raise NotFound("No such invoice in this entity.")
+        return inv
+
+    # Handle GET requests for this endpoint.
+    def get(self, request, pk):
+        from .documents import render_invoice_document_html
+
+        html = render_invoice_document_html(self._invoice(request, pk), request=request)
+        return HttpResponse(html, content_type="text/html; charset=utf-8")
+
+
 # --------------------------------------------------------------------------- #
 # Actions                                                                     #
 # --------------------------------------------------------------------------- #
 
+# Group endpoint behavior for Journal Submit View.
+class JournalSubmitView(APIView):
+    """POST /finance/journals/<id>/submit/?entity= - submit a draft journal for approval.
+
+    Hands the journal to the ``vs_workflow`` engine via
+    :func:`vs_workflow.services.submission.submit_for_approval`. The handler's
+    ``validate_document`` runs the posting preflight now (so a doomed journal is
+    refused before it enters the queue) and moves the journal to
+    ``PENDING_APPROVAL``; the GL is not touched until final approval fires the
+    handler's ``on_approved`` posting. Only meaningful when a template exists for
+    ``finance.journal`` at this journal's scope (see :func:`approvals.approval_required`).
+
+    docstring-name: Submit a journal for approval
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.journal.submit"
+
+    # Handle POST requests for this endpoint.
+    def post(self, request, id):
+        from vs_workflow.services.submission import submit_for_approval
+
+        entity = resolve_entity(request)
+        entry = JournalEntry.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, id=id,
+        ).first()
+        if entry is None:
+            raise NotFound("Journal entry not found for this entity.")
+        from vs_workflow.services import release as release_svc
+
+        instance = submit_for_approval(entry, requested_by=request.user)
+        entry.refresh_from_db()
+        return success_response(
+            message=f"Journal {entry.document_number} submitted for approval.",
+            data=JournalEntryDetailSerializer(entry).data
+            # Same contract as procurement and payouts: the client learns here that
+            # nobody can approve this, and can offer to continue without approval.
+            | {"approval": release_svc.approval_block(instance)},
+        )
+
+
+# Group endpoint behavior for Journal Post View.
 class JournalPostView(APIView):
-    """POST /finance/journals/<id>/post/?entity= — post a draft journal.
+    """POST /finance/journals/<id>/post/?entity= - post a draft journal.
+
+    When a workflow template is published for this journal's ``finance.journal``
+    document type (opt-in gate), direct posting is refused: the journal must go
+    through ``/submit/`` and posts only on approval. With no template, this behaves
+    exactly as it always has - a direct draft → POSTED post.
 
     docstring-name: Post a journal entry
     """
@@ -794,13 +1400,22 @@ class JournalPostView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.journal.post"
 
+    # Handle POST requests for this endpoint.
     def post(self, request, id):
+        from .approvals import approval_required
         from .posting import post_journal
 
         entity = resolve_entity(request)
-        entry = JournalEntry.objects.filter(entity=entity, id=id).first()
+        entry = JournalEntry.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, id=id,
+        ).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
+        if approval_required(entry):
+            raise ValidationError({
+                "detail": "This journal is approval-gated; submit it for approval "
+                          "instead of posting directly.",
+            })
         post_journal(entry, actor_user=request.user)
         entry.refresh_from_db()
         return success_response(
@@ -809,8 +1424,9 @@ class JournalPostView(APIView):
         )
 
 
+# Group endpoint behavior for Journal Reverse View.
 class JournalReverseView(APIView):
-    """POST /finance/journals/<id>/reverse/?entity= — reverse a posted journal.
+    """POST /finance/journals/<id>/reverse/?entity= - reverse a posted journal.
 
     docstring-name: Reverse a journal entry
     """
@@ -818,14 +1434,28 @@ class JournalReverseView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.journal.reverse"
 
+    # Handle POST requests for this endpoint.
     def post(self, request, id):
+        import datetime
         from .posting import reverse_journal
 
         entity = resolve_entity(request)
-        entry = JournalEntry.objects.filter(entity=entity, id=id).first()
+        entry = JournalEntry.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, id=id,
+        ).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
-        reversal = reverse_journal(entry, actor_user=request.user)
+        # Optional reversal date; when omitted the service reverses into the original
+        # period, or into the current open period if that period has since closed.
+        body = request.data or {}
+        raw_date = body.get("date") or body.get("reversal_date")
+        rdate = None
+        if raw_date:
+            try:  # Start protected finance operation.
+                rdate = datetime.date.fromisoformat(str(raw_date))
+            except ValueError:  # Handle finance operation failure.
+                raise ValidationError({"date": "Expected an ISO date (YYYY-MM-DD)."})
+        reversal = reverse_journal(entry, actor_user=request.user, date=rdate)
         return success_response(
             message=f"Journal {entry.document_number} reversed.",
             data=JournalEntryDetailSerializer(reversal).data,
@@ -833,12 +1463,13 @@ class JournalReverseView(APIView):
         )
 
 
+# Group endpoint behavior for Direct Entry Create View.
 class DirectEntryCreateView(APIView):
-    """POST /finance/direct-entries/?entity= — post a direct journal entry.
+    """POST /finance/direct-entries/?entity= - post a direct journal entry.
 
     Body: ``{"date"?, "narration"?, "reference"?, "lines": [{"account", "debit"|"credit"}]}``
     with amounts in kobo. The one sanctioned way to book money/balances that have no sub-ledger
-    document behind them — capital injections, equity contributions, loan drawdowns, grants,
+    document behind them - capital injections, equity contributions, loan drawdowns, grants,
     opening balances and manual adjustments. Every other journal is a side-effect of an action.
 
     docstring-name: Post a direct entry
@@ -847,16 +1478,28 @@ class DirectEntryCreateView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.directentry.post"
 
+    # Handle POST requests for this endpoint.
     def post(self, request):
         from .posting import post_direct_entry
+        from .views_ops import _resolve_cost_center, _resolve_dimensions
 
         entity = resolve_entity(request)
         serializer = DirectEntryCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        # Resolve each line's optional cost centre + analytical dimensions against this
+        # entity (raises a ValidationError on an unknown code/value) and carry both
+        # through to the GL line.
+        lines = [
+            (
+                ln["account"], ln["debit"], ln["credit"],
+                _resolve_cost_center(entity, ln.get("cost_center"), "lines.cost_center"),
+                _resolve_dimensions(entity, ln.get("dimensions"), "lines.dimensions"),
+            )
+            for ln in data["lines"]
+        ]
         entry = post_direct_entry(
-            entity,
-            lines=[(ln["account"], ln["debit"], ln["credit"]) for ln in data["lines"]],
+            entity, lines=lines,
             date=data.get("date"), narration=data.get("narration", ""),
             reference=data.get("reference", ""), actor_user=request.user,
         )
@@ -866,8 +1509,9 @@ class DirectEntryCreateView(APIView):
         )
 
 
+# Group endpoint behavior for Period Close View.
 class PeriodCloseView(APIView):
-    """POST /finance/periods/<id>/close/?entity= — run the checklist and close a period.
+    """POST /finance/periods/<id>/close/?entity= - run the checklist and close a period.
 
     Body (all optional): ``{"soft": bool, "force": bool, "run_depreciation": bool}``.
 
@@ -877,9 +1521,11 @@ class PeriodCloseView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
     @property
+    # Handle the rbac permission workflow.
     def rbac_permission(self):
         return "finance.period.close" if self.request.method == "POST" else "finance.period.view"
 
+    # Support the period workflow.
     def _period(self, request, id):
         entity = resolve_entity(request)
         period = FiscalPeriod.objects.filter(entity=entity, id=id).first()
@@ -887,6 +1533,7 @@ class PeriodCloseView(APIView):
             raise NotFound("Fiscal period not found for this entity.")
         return entity, period
 
+    # Handle GET requests for this endpoint.
     def get(self, request, id):
         """Preview the close checklist for a period (no side effects)."""
         from .close import close_checklist
@@ -905,6 +1552,7 @@ class PeriodCloseView(APIView):
             },
         )
 
+    # Handle POST requests for this endpoint.
     def post(self, request, id):
         from .close import close_period
 
@@ -925,14 +1573,132 @@ class PeriodCloseView(APIView):
         )
 
 
+# Group endpoint behavior for Period Reopen View.
+class PeriodReopenView(APIView):
+    """POST /finance/periods/<id>/reopen/?entity= - re-open a CLOSED/SOFT_CLOSED period.
+
+    A LOCKED period cannot be re-opened; an already-OPEN period is refused.
+
+    docstring-name: Re-open a fiscal period
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.period.reopen"
+
+    # Support the period workflow.
+    def _period(self, request, id):
+        entity = resolve_entity(request)
+        period = FiscalPeriod.objects.filter(entity=entity, id=id).first()
+        if period is None:
+            raise NotFound("Fiscal period not found for this entity.")
+        return entity, period
+
+    # Handle POST requests for this endpoint.
+    def post(self, request, id):
+        from .close import reopen_period
+
+        entity, period = self._period(request, id)
+        period = reopen_period(entity, period, actor_user=request.user)
+        return success_response(
+            message=f"Period '{period}' re-opened to {period.status}.",
+            data=FiscalPeriodSerializer(period).data,
+        )
+
+
+# Group endpoint behavior for Period Lock View.
+class PeriodLockView(APIView):
+    """POST /finance/periods/<id>/lock/?entity= - permanently seal a CLOSED period.
+
+    Only a CLOSED period can be locked; the lock is irreversible.
+
+    docstring-name: Lock a fiscal period
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.period.lock"
+
+    # Support the period workflow.
+    def _period(self, request, id):
+        entity = resolve_entity(request)
+        period = FiscalPeriod.objects.filter(entity=entity, id=id).first()
+        if period is None:
+            raise NotFound("Fiscal period not found for this entity.")
+        return entity, period
+
+    # Handle POST requests for this endpoint.
+    def post(self, request, id):
+        from .close import lock_period
+
+        entity, period = self._period(request, id)
+        period = lock_period(entity, period, actor_user=request.user)
+        return success_response(
+            message=f"Period '{period}' locked to {period.status}.",
+            data=FiscalPeriodSerializer(period).data,
+        )
+
+
+# Group endpoint behavior for Fiscal Year Close View.
+class FiscalYearCloseView(APIView):
+    """POST /finance/fiscal-years/<id>/close/?entity= - post the year-end closing entry.
+
+    Zeroes every income/expense account for the year and rolls the net profit or loss
+    into Retained Earnings (3200), then marks the fiscal year CLOSED. Body (optional):
+    ``{"closing_date": ISO, "force": bool}`` - ``force`` closes the year even while some
+    periods are still OPEN. The formal entry may use an OPEN, SOFT_CLOSED or CLOSED
+    final period, but never a permanently LOCKED one.
+
+    docstring-name: Close a fiscal year
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Tenant-authenticated access.
+    rbac_permission = "finance.period.close"  # Same right that closes periods seals the year.
+
+    # Handle POST requests for this endpoint.
+    def post(self, request, id):
+        import datetime
+
+        from .close import close_fiscal_year
+        from .models import FiscalYear
+
+        entity = resolve_entity(request)  # Resolve the tenant entity.
+        fy = FiscalYear.objects.filter(entity=entity, id=id).first()  # Load the year.
+        if fy is None:  # 404 when the year is not in this entity.
+            raise NotFound("Fiscal year not found for this entity.")
+        body = request.data or {}  # Optional close options.
+        raw_date = body.get("closing_date")  # Optional explicit closing date.
+        closing_date = None
+        if raw_date:  # Parse the ISO date when supplied.
+            try:
+                closing_date = datetime.date.fromisoformat(str(raw_date))
+            except ValueError:
+                raise ValidationError({"closing_date": "Expected an ISO date (YYYY-MM-DD)."})
+        entry, net_income = close_fiscal_year(  # Post the closing entry + seal the year.
+            entity, fy, actor_user=request.user, closing_date=closing_date,
+            require_periods_closed=not bool(body.get("force", False)),
+        )
+        fy.refresh_from_db()  # Pick up the CLOSED status.
+        return success_response(
+            message=f"Fiscal year {fy.year} closed.",
+            data={
+                "fiscal_year": FiscalYearSerializer(fy).data,  # The sealed year.
+                "closing_journal": (  # The closing journal (None when no P&L activity).
+                    JournalEntryDetailSerializer(entry).data if entry is not None else None
+                ),
+                "net_income": _money(net_income),  # Net result rolled to equity.
+            },
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Reports / financial statements                                              #
 # --------------------------------------------------------------------------- #
 
+# Support the money workflow.
 def _money(amount):
     return {"kobo": amount, "naira": format_naira(amount)}
 
 
+# Support the serialize checklist workflow.
 def _serialize_checklist(checklist):
     return {
         "passed": checklist.passed,
@@ -943,6 +1709,7 @@ def _serialize_checklist(checklist):
     }
 
 
+# Support the line workflow.
 def _line(row):
     return {
         "account_id": row.account_id, "code": row.code, "name": row.name,
@@ -950,6 +1717,7 @@ def _line(row):
     }
 
 
+# Support the maybe export workflow.
 def _maybe_export(request, table, *, filename):
     """If ``?export=csv|xlsx|pdf`` is set, render ``table`` to a file download.
 
@@ -965,20 +1733,22 @@ def _maybe_export(request, table, *, filename):
         return None
     from .exports import render
 
-    try:
+    try:  # Start protected finance operation.
         body, content_type, ext = render(table, fmt)
-    except ValueError as exc:
+    except ValueError as exc:  # Handle finance operation failure.
         raise ValidationError({"export": str(exc)})
     resp = HttpResponse(body, content_type=content_type)
     resp["Content-Disposition"] = f'attachment; filename="{filename}.{ext}"'
     return resp
 
 
+# Group endpoint behavior for Trial Balance View.
 class TrialBalanceView(APIView):
     """docstring-name: Trial balance"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         from .reports import trial_balance
 
@@ -1018,31 +1788,79 @@ class TrialBalanceView(APIView):
         )
 
 
+# Group endpoint behavior for Income Statement View.
 class IncomeStatementView(APIView):
     """docstring-name: Income statement"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
-        from .reports import income_statement
+        from .reports import income_statement_compare
 
         from .exports import ReportTable
 
         entity = resolve_entity(request)
         period = _resolve_period(entity, request)
-        pnl = income_statement(entity, period=period)
+        rep = income_statement_compare(entity, period=period)
 
-        rows = [["Income", r.code, r.name, r.amount_naira] for r in pnl.income_rows]
-        rows += [["Expense", r.code, r.name, r.amount_naira] for r in pnl.expense_rows]
+        # Support the mon workflow.
+        def _mon(v):
+            return _money(v) if v is not None else None
+
+        # Support the isline workflow.
+        def _isline(line):
+            return {
+                "account_id": line.account_id, "code": line.code, "name": line.name,
+                "account_type": line.account_type, "amount": _money(line.amount),
+                "budget": _mon(line.budget), "variance": _mon(line.variance),
+                "prior_year": _mon(line.prior_year),
+            }
+
+        # Support the istot workflow.
+        def _istot(t):
+            return {
+                "amount": _money(t.amount), "budget": _mon(t.budget),
+                "variance": _mon(t.variance), "prior_year": _mon(t.prior_year),
+            }
+
+        # Export columns mirror the comparison the data supports.
+        cols = ["Section", "Code", "Account", "This period"]
+        if rep.has_budget:
+            cols += ["Budget", "Variance"]
+        if rep.has_prior_year:
+            cols += ["Prior year"]
+
+        # Support the xrow workflow.
+        def _xrow(section, line):
+            row = [section, line.code, line.name, format_naira(line.amount)]
+            if rep.has_budget:
+                row += [format_naira(line.budget or 0), format_naira(line.variance or 0)]
+            if rep.has_prior_year:
+                row += [format_naira(line.prior_year or 0)]
+            return row
+
+        # Support the xtot workflow.
+        def _xtot(label, t):
+            row = ["", "", label, format_naira(t.amount)]
+            if rep.has_budget:
+                row += [format_naira(t.budget or 0), format_naira(t.variance or 0)]
+            if rep.has_prior_year:
+                row += [format_naira(t.prior_year or 0)]
+            return row
+
+        rows = [_xrow("Revenue", r) for r in rep.income_rows]
+        rows += [_xrow("Expense", r) for r in rep.expense_rows]
+        scope = rep.period_name or (f"FY{rep.fiscal_year}" if rep.fiscal_year else "Year to date")
         export = _maybe_export(request, ReportTable(
             title="Income Statement",
-            subtitle=f"{entity.code} · {getattr(period, 'name', None) or 'Year to date'}",
-            columns=["Section", "Code", "Account", "Amount"],
+            subtitle=f"{entity.code} · {scope}",
+            columns=cols,
             rows=rows,
             summary_rows=[
-                ["", "", "Total income", format_naira(pnl.total_income)],
-                ["", "", "Total expense", format_naira(pnl.total_expense)],
-                ["", "", "Net income", format_naira(pnl.net_income)],
+                _xtot("Total revenue", rep.income_totals),
+                _xtot("Total expenses", rep.expense_totals),
+                _xtot("Net income", rep.net_totals),
             ],
         ), filename=f"income_statement_{entity.code}")
         if export is not None:
@@ -1052,43 +1870,69 @@ class IncomeStatementView(APIView):
             message="Income statement retrieved.",
             data={
                 "entity": entity.code,
-                "period": getattr(period, "name", None),
-                "income": [_line(r) for r in pnl.income_rows],
-                "expense": [_line(r) for r in pnl.expense_rows],
-                "total_income": _money(pnl.total_income),
-                "total_expense": _money(pnl.total_expense),
-                "net_income": _money(pnl.net_income),
+                "period": rep.period_name,
+                "fiscal_year": rep.fiscal_year,
+                "prior_fiscal_year": rep.prior_fiscal_year,
+                "has_budget": rep.has_budget,
+                "has_prior_year": rep.has_prior_year,
+                "income": [_isline(r) for r in rep.income_rows],
+                "expense": [_isline(r) for r in rep.expense_rows],
+                "totals": {
+                    "income": _istot(rep.income_totals),
+                    "expense": _istot(rep.expense_totals),
+                    "net": _istot(rep.net_totals),
+                },
             },
         )
 
 
+# Group endpoint behavior for Balance Sheet View.
 class BalanceSheetView(APIView):
     """docstring-name: Balance sheet"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
-        from .reports import balance_sheet
+        from .reports import balance_sheet_sections
 
         from .exports import ReportTable
 
         entity = resolve_entity(request)
-        as_of = request.query_params.get("as_of") or None
-        bs = balance_sheet(entity, as_of=as_of)
+        as_of = _resolve_date_param(request, "as_of")
+        bs = balance_sheet_sections(entity, as_of=as_of)
 
-        rows = [["Asset", r.code, r.name, r.amount_naira] for r in bs.asset_rows]
-        rows += [["Liability", r.code, r.name, r.amount_naira] for r in bs.liability_rows]
-        rows += [["Equity", r.code, r.name, r.amount_naira] for r in bs.equity_rows]
-        rows += [["Equity", "", "Retained earnings (unclosed)", format_naira(bs.retained_earnings)]]
+        # Support the group workflow.
+        def _group(g):
+            return {
+                "line": g.line, "label": g.label, "amount": _money(g.amount),
+                "accounts": [
+                    {"account_id": a["account_id"], "code": a["code"],
+                     "name": a["name"], "amount": _money(a["amount"])}
+                    for a in g.accounts
+                ],
+            }
+
+        # Support the section workflow.
+        def _section(s):
+            return {
+                "key": s.key, "label": s.label, "total": _money(s.total),
+                "groups": [_group(g) for g in s.groups],
+            }
+
+        rows = []
+        for s in bs.sections:
+            for g in s.groups:
+                rows.append([s.label, g.label, format_naira(g.amount)])
         export = _maybe_export(request, ReportTable(
             title="Balance Sheet",
             subtitle=f"{entity.code} · as at {bs.as_of}",
-            columns=["Section", "Code", "Account", "Amount"],
+            columns=["Section", "Line", "Amount"],
             rows=rows,
             summary_rows=[
-                ["", "", "Total assets", format_naira(bs.total_assets)],
-                ["", "", "Total liabilities", format_naira(bs.total_liabilities)],
-                ["", "", "Total equity", format_naira(bs.total_equity)],
+                ["", "Total assets", format_naira(bs.total_assets)],
+                ["", "Total liabilities", format_naira(bs.total_liabilities)],
+                ["", "Total equity", format_naira(bs.total_equity)],
             ],
         ), filename=f"balance_sheet_{entity.code}")
         if export is not None:
@@ -1099,23 +1943,24 @@ class BalanceSheetView(APIView):
             data={
                 "entity": entity.code,
                 "as_of": str(bs.as_of),
-                "assets": [_line(r) for r in bs.asset_rows],
-                "liabilities": [_line(r) for r in bs.liability_rows],
-                "equity": [_line(r) for r in bs.equity_rows],
+                "sections": [_section(s) for s in bs.sections],
                 "total_assets": _money(bs.total_assets),
                 "total_liabilities": _money(bs.total_liabilities),
-                "retained_earnings": _money(bs.retained_earnings),
                 "total_equity": _money(bs.total_equity),
+                "retained_earnings": _money(bs.current_year_earnings),
                 "is_balanced": bs.is_balanced,
+                "difference": _money(bs.difference),
             },
         )
 
 
+# Group endpoint behavior for Cash Flow View.
 class CashFlowView(APIView):
     """docstring-name: Cash flow statement"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         from .reports import cash_flow_statement
 
@@ -1125,23 +1970,35 @@ class CashFlowView(APIView):
         period = _resolve_period(entity, request)
         cf = cash_flow_statement(entity, period=period)
 
+        _ACT_LABEL = {
+            "operating": "Operating activities",
+            "investing": "Investing activities",
+            "financing": "Financing activities",
+        }
+        rows = []
+        for act in ("operating", "investing", "financing"):
+            for ln in cf.activity_lines[act]:
+                rows.append([_ACT_LABEL[act], ln.name, format_naira(ln.amount)])
+            rows.append([_ACT_LABEL[act], f"Net cash from {act}",
+                         format_naira(cf.by_activity[act])])
         export = _maybe_export(request, ReportTable(
             title="Cash Flow Statement",
             subtitle=f"{entity.code} · {getattr(period, 'name', None) or 'Year to date'}",
-            columns=["Activity", "Amount"],
-            rows=[
-                ["Operating activities", format_naira(cf.by_activity["operating"])],
-                ["Investing activities", format_naira(cf.by_activity["investing"])],
-                ["Financing activities", format_naira(cf.by_activity["financing"])],
-            ],
+            columns=["Activity", "Line", "Amount"],
+            rows=rows,
             summary_rows=[
-                ["Net change in cash", format_naira(cf.net_change)],
-                ["Opening cash", format_naira(cf.opening_cash)],
-                ["Closing cash", format_naira(cf.closing_cash)],
+                ["", "Net change in cash", format_naira(cf.net_change)],
+                ["", "Cash at start of period", format_naira(cf.opening_cash)],
+                ["", "Cash at end of period", format_naira(cf.closing_cash)],
             ],
         ), filename=f"cash_flow_{entity.code}")
         if export is not None:
             return export
+
+        # Support the cfline workflow.
+        def _cfline(ln):
+            return {"account_id": ln.account_id, "code": ln.code,
+                    "name": ln.name, "amount": _money(ln.amount)}
 
         return success_response(
             message="Cash flow statement retrieved.",
@@ -1151,17 +2008,88 @@ class CashFlowView(APIView):
                 "opening_cash": _money(cf.opening_cash),
                 "closing_cash": _money(cf.closing_cash),
                 "by_activity": {k: _money(v) for k, v in cf.by_activity.items()},
+                "activity_lines": {
+                    k: [_cfline(ln) for ln in v] for k, v in cf.activity_lines.items()
+                },
                 "net_change": _money(cf.net_change),
                 "is_reconciled": cf.is_reconciled,
             },
         )
 
 
+# Group endpoint behavior for Analytics Slice View.
+class AnalyticsSliceView(APIView):
+    """GET /finance/reports/analytics-slice/?entity=&axis= - net activity per account,
+    bucketed by one analytical axis (a cost centre or a dimension).
+
+    ``axis`` is required: either ``cost_center`` or a registered Dimension code (e.g.
+    ``FUND``). Optional ``period`` and ``account_type`` narrow the slice.
+
+    docstring-name: Analytics slice
+    """
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.report.view"
+
+    # Handle GET requests for this endpoint.
+    def get(self, request):
+        from .models import Dimension
+        from .reports import analytics_slice
+
+        from .exports import ReportTable
+
+        entity = resolve_entity(request)
+        axis = (request.query_params.get("axis") or "").strip()
+        if not axis:
+            raise ValidationError({"axis": "An 'axis' query parameter is required "
+                                           "('cost_center' or a dimension code)."})
+        if axis != "cost_center" and not Dimension.objects.filter(
+            entity=entity, code=axis, is_active=True
+        ).exists():
+            raise ValidationError(
+                {"axis": f"'{axis}' is not 'cost_center' or an active dimension in this entity."})
+
+        period = _resolve_period(entity, request)
+        account_type = request.query_params.get("account_type") or None
+        sl = analytics_slice(entity, axis=axis, period=period, account_type=account_type)
+
+        export = _maybe_export(request, ReportTable(
+            title=f"Analytics Slice · {axis}",
+            subtitle=f"{entity.code} · {getattr(period, 'name', None) or 'All periods'}",
+            columns=["Bucket", "Code", "Account", "Type", "Net"],
+            rows=[[r.bucket, r.code, r.name, r.account_type, r.net_naira] for r in sl.rows],
+            summary_rows=[["", "", "TOTAL", "", format_naira(sl.total_net)]],
+        ), filename=f"analytics_slice_{axis}_{entity.code}")
+        if export is not None:
+            return export
+
+        return success_response(
+            message="Analytics slice retrieved.",
+            data={
+                "entity": entity.code,
+                "period": getattr(period, "name", None),
+                "axis": sl.axis,
+                "rows": [
+                    {
+                        "bucket": r.bucket, "account_id": r.account_id,
+                        "code": r.code, "name": r.name, "account_type": r.account_type,
+                        "debit": _money(r.debit), "credit": _money(r.credit),
+                        "net": _money(r.net),
+                    }
+                    for r in sl.rows
+                ],
+                "bucket_totals": {k: _money(v) for k, v in sl.bucket_totals.items()},
+                "total_net": _money(sl.total_net),
+            },
+        )
+
+
+# Group endpoint behavior for Changes In Equity View.
 class ChangesInEquityView(APIView):
     """docstring-name: Statement of changes in equity"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         from .reports import statement_of_changes_in_equity
 
@@ -1213,18 +2141,20 @@ class ChangesInEquityView(APIView):
         )
 
 
+# Group endpoint behavior for Statutory Pack View.
 class StatutoryPackView(APIView):
     """docstring-name: Statutory reporting pack"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         from .reports import statutory_pack
 
         from .exports import ReportTable
 
         entity = resolve_entity(request)
-        as_of = request.query_params.get("as_of") or None
+        as_of = _resolve_date_param(request, "as_of")
         period = _resolve_period(entity, request)
         pack = statutory_pack(entity, as_of=as_of, period=period)
 
@@ -1254,6 +2184,7 @@ class StatutoryPackView(APIView):
         if export is not None:
             return export
 
+        # Support the group workflow.
         def _group(g):
             return {
                 "line": g.line, "label": g.label, "amount": _money(g.amount),
@@ -1316,8 +2247,9 @@ class StatutoryPackView(APIView):
         )
 
 
+# Group endpoint behavior for Finance Dashboard View.
 class FinanceDashboardView(APIView):
-    """Aggregated **Finance overview** — every dashboard block in one payload.
+    """Aggregated **Finance overview** - every dashboard block in one payload.
 
     Computed live from the GL and entity-scoped. Optional ``?period=<period_no>``
     pins the "as of" period; otherwise the latest open period is used.
@@ -1328,6 +2260,7 @@ class FinanceDashboardView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         from .dashboard import finance_dashboard
 
@@ -1339,11 +2272,13 @@ class FinanceDashboardView(APIView):
         )
 
 
+# Group endpoint behavior for A R Aging View.
 class ARAgingView(APIView):
     """docstring-name: AR aging report"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         from .reports import ar_aging
 
@@ -1351,7 +2286,7 @@ class ARAgingView(APIView):
         from .exports import ReportTable
 
         entity = resolve_entity(request)
-        as_of = request.query_params.get("as_of") or None
+        as_of = _resolve_date_param(request, "as_of")
         report = ar_aging(entity, as_of=as_of)
 
         columns = ["Code", "Customer"] + list(AGING_BUCKETS) + ["Net"]
@@ -1393,16 +2328,18 @@ class ARAgingView(APIView):
         )
 
 
+# Group endpoint behavior for A R Reconciliation View.
 class ARReconciliationView(APIView):
     """docstring-name: AR reconciliation report"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         from .reports import reconcile_ar
 
         entity = resolve_entity(request)
-        as_of = request.query_params.get("as_of") or None
+        as_of = _resolve_date_param(request, "as_of")
         rec = reconcile_ar(entity, as_of=as_of)
         return success_response(
             message="AR reconciliation retrieved.",

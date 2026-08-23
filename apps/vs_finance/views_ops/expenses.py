@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from django.db import transaction
 from rest_framework.exceptions import NotFound
+from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 
 from core.response import success_response
 
@@ -22,6 +23,7 @@ from .base import (
     _FinanceBase,
     _date,
     _dec,
+    _raised_branch,
     _money,
     _require_lines,
     _resolve_account,
@@ -35,6 +37,7 @@ from .base import (
 # Expense claims                                                              #
 # --------------------------------------------------------------------------- #
 
+# Group endpoint behavior for Expense Claim List Create View.
 class ExpenseClaimListCreateView(_FinanceBase):
     """GET (list) / POST (create draft) expense claims for an entity.
 
@@ -42,23 +45,48 @@ class ExpenseClaimListCreateView(_FinanceBase):
     """
 
     @property
+    # Handle the rbac permission workflow.
     def rbac_permission(self):
         return "finance.expenseclaim.create" if self.request.method == "POST" \
             else "finance.expenseclaim.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
+        from ..constants import DocumentStatus, InvoicePaymentStatus
+
         entity = resolve_entity(request)
-        qs = ExpenseClaim.objects.filter(entity=entity).prefetch_related("lines")
+        qs = ExpenseClaim.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).prefetch_related("lines")
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
         if (pay := request.query_params.get("payment_status")):
             qs = qs.filter(payment_status=pay)
-        return success_response(
-            "Expense claims retrieved.",
-            data=ExpenseClaimSerializer(qs.order_by("-claim_date", "-id")[:200], many=True).data,
-        )
+        # The UI collapses (status × payment_status) into display states; translate
+        # them to the underlying filters so the list stays filtered server-side.
+        disp = request.query_params.get("display_status")
+        if disp == "DRAFT":
+            qs = qs.filter(status=DocumentStatus.DRAFT)
+        elif disp == "REJECTED":
+            qs = qs.filter(status=DocumentStatus.CANCELLED)
+        elif disp == "PAID":
+            qs = qs.filter(status=DocumentStatus.POSTED,
+                           payment_status=InvoicePaymentStatus.PAID)
+        elif disp == "APPROVED":  # posted but not yet fully reimbursed
+            qs = qs.filter(status=DocumentStatus.POSTED).exclude(
+                payment_status=InvoicePaymentStatus.PAID)
+        if (search := request.query_params.get("q")):
+            from django.db.models import Q
+            qs = qs.filter(
+                Q(claimant_name__icontains=search)
+                | Q(title__icontains=search)
+                | Q(document_number__icontains=search)
+            )
+        return self.paginate(
+            request, qs.order_by("-claim_date", "-id"), ExpenseClaimSerializer)
 
     @transaction.atomic
+    # Handle POST requests for this endpoint.
     def post(self, request):
         from ..expenses import price_expense_claim
 
@@ -67,6 +95,10 @@ class ExpenseClaimListCreateView(_FinanceBase):
         lines = _require_lines(body)
         claim = ExpenseClaim.objects.create(
             entity=entity,
+            # A claim is money one person spent doing their job at one place, so
+            # the strict reading applies: a claims officer covering two branches
+            # is asked which this one is rather than having it filed school-wide.
+            branch=_raised_branch(request, entity, body),
             claimant_name=body.get("claimant_name", ""),
             claim_date=_date(body.get("claim_date"), "claim_date", required=True),
             title=body.get("title", ""),
@@ -83,7 +115,10 @@ class ExpenseClaimListCreateView(_FinanceBase):
                     f"lines[{i}].expense_account", required=True),
                 quantity=_dec(ln.get("quantity", 1), f"lines[{i}].quantity"),
                 unit_price=_money(ln.get("unit_price", 0), f"lines[{i}].unit_price"),
-                tax_code=_resolve_tax(entity, ln.get("tax_code"), f"lines[{i}].tax_code"),
+                tax_code=_resolve_tax(
+                    entity, ln.get("tax_code"), f"lines[{i}].tax_code",
+                    usage="purchase",
+                ),
                 cost_center=_resolve_cost_center(
                     entity, ln.get("cost_center"), f"lines[{i}].cost_center"),
             )
@@ -95,30 +130,39 @@ class ExpenseClaimListCreateView(_FinanceBase):
         )
 
 
+# Define Expense Claim Action Base values.
 class _ExpenseClaimActionBase(_FinanceBase):
+    # Support the claim workflow.
     def _claim(self, request, pk):
         entity = resolve_entity(request)
-        claim = ExpenseClaim.objects.filter(entity=entity, pk=pk).first()
+        claim = ExpenseClaim.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk,
+        ).first()
         if claim is None:
             raise NotFound("Expense claim not found for this entity.")
         return entity, claim
 
 
+# Group endpoint behavior for Expense Claim Detail View.
 class ExpenseClaimDetailView(_ExpenseClaimActionBase):
     """docstring-name: Expense claims"""
     rbac_permission = "finance.expenseclaim.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request, pk):
         _, claim = self._claim(request, pk)
         return success_response(
-            "Expense claim retrieved.", data=ExpenseClaimSerializer(claim).data,
+            "Expense claim retrieved.",
+            data=ExpenseClaimSerializer(claim, context={"request": request}).data,
         )
 
 
+# Group endpoint behavior for Expense Claim Post View.
 class ExpenseClaimPostView(_ExpenseClaimActionBase):
     """docstring-name: Post an expense claim"""
     rbac_permission = "finance.expenseclaim.post"
 
+    # Handle POST requests for this endpoint.
     def post(self, request, pk):
         from ..expenses import post_expense_claim
 
@@ -127,14 +171,89 @@ class ExpenseClaimPostView(_ExpenseClaimActionBase):
         claim.refresh_from_db()
         return success_response(
             f"Expense claim {claim.document_number} posted.",
-            data=ExpenseClaimSerializer(claim).data,
+            data=ExpenseClaimSerializer(claim, context={"request": request}).data,
         )
 
 
+# Group endpoint behavior for Expense Claim Reject View.
+class ExpenseClaimRejectView(_ExpenseClaimActionBase):
+    """POST - reject (cancel) a draft expense claim. docstring-name: Reject an expense claim"""
+    rbac_permission = "finance.expenseclaim.post"  # the approver decides approve OR reject
+
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk):
+        from ..constants import DocumentStatus
+        from rest_framework.exceptions import ValidationError
+
+        _, claim = self._claim(request, pk)
+        if claim.status != DocumentStatus.DRAFT:
+            raise ValidationError(
+                {"status": f"Only a draft claim can be rejected (this is '{claim.status}')."})
+        claim.status = DocumentStatus.CANCELLED
+        claim.save(update_fields=["status", "updated_at"])
+        return success_response(
+            f"Expense claim {claim.document_number} rejected.",
+            data=ExpenseClaimSerializer(claim, context={"request": request}).data,
+        )
+
+
+# Group endpoint behavior for Expense Claim Receipt View.
+class ExpenseClaimReceiptView(_ExpenseClaimActionBase):
+    """POST (multipart ``file``) attach / DELETE a receipt on a claim line.
+
+    docstring-name: Expense line receipt
+    """
+
+    rbac_permission = "finance.expenseclaim.create"
+
+    # Support the line workflow.
+    def _line(self, request, pk, line_id):
+        _, claim = self._claim(request, pk)
+        line = claim.lines.filter(pk=line_id).first()
+        if line is None:
+            raise NotFound("Line not found on this claim.")
+        return claim, line
+
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk, line_id):
+        from rest_framework.exceptions import ValidationError
+
+        from core.uploads import validate_upload
+
+        claim, line = self._line(request, pk, line_id)
+        upload = request.FILES.get("file")
+        if upload is None:
+            raise ValidationError({"file": "A receipt file is required."})
+        # Validate before saving. DatabaseStorage re-checks type and size, but it raises
+        # from inside _save, which surfaces as a 500 rather than a 400, and it never
+        # inspects content - so a corrupt or mislabelled receipt was stored and only
+        # discovered when somebody tried to read it.
+        validate_upload(upload)
+        line.receipt.save(upload.name, upload, save=True)
+        claim.refresh_from_db()
+        return success_response(
+            "Receipt attached.",
+            data=ExpenseClaimSerializer(claim, context={"request": request}).data, status=201,
+        )
+
+    # Handle DELETE requests for this endpoint.
+    def delete(self, request, pk, line_id):
+        claim, line = self._line(request, pk, line_id)
+        if line.receipt:
+            line.receipt.delete(save=True)
+        claim.refresh_from_db()
+        return success_response(
+            "Receipt removed.",
+            data=ExpenseClaimSerializer(claim, context={"request": request}).data,
+        )
+
+
+# Group endpoint behavior for Expense Claim Settle View.
 class ExpenseClaimSettleView(_ExpenseClaimActionBase):
     """docstring-name: Settle an expense claim"""
     rbac_permission = "finance.expenseclaim.settle"
 
+    # Handle POST requests for this endpoint.
     def post(self, request, pk):
         from ..expenses import settle_expense_claim
 
@@ -150,7 +269,73 @@ class ExpenseClaimSettleView(_ExpenseClaimActionBase):
         claim.refresh_from_db()
         return success_response(
             f"Expense claim {claim.document_number} reimbursed.",
-            data=ExpenseClaimSerializer(claim).data,
+            data=ExpenseClaimSerializer(claim, context={"request": request}).data,
         )
 
+
+# Group endpoint behavior for Expense Claim Void View.
+class ExpenseClaimVoidView(_ExpenseClaimActionBase):
+    """POST - void a posted, un-reimbursed claim (reverses its journal, marks CANCELLED).
+
+    docstring-name: Void an expense claim
+    """
+    rbac_permission = "finance.expenseclaim.post"  # the approver undoes their approval
+
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk):
+        from ..expenses import void_expense_claim
+
+        _, claim = self._claim(request, pk)
+        void_expense_claim(claim, actor_user=request.user)
+        claim.refresh_from_db()
+        return success_response(
+            f"Expense claim {claim.document_number} voided.",
+            data=ExpenseClaimSerializer(claim, context={"request": request}).data,
+        )
+
+
+# Group endpoint behavior for Expense Claim Summary View.
+class ExpenseClaimSummaryView(_FinanceBase):
+    """GET - header KPIs over **all** expense claims (accurate under pagination).
+
+    docstring-name: Expense claims
+    """
+
+    rbac_permission = "finance.expenseclaim.view"
+
+    # Handle GET requests for this endpoint.
+    def get(self, request):
+        from django.db.models import Count, Q, Sum
+        from django.db.models.functions import Coalesce
+        from django.utils import timezone
+
+        from ..constants import DocumentStatus, InvoicePaymentStatus
+
+        entity = resolve_entity(request)
+        today = timezone.now().date()
+        live = ~Q(status=DocumentStatus.CANCELLED)
+        awaiting_q = Q(status=DocumentStatus.POSTED) & ~Q(
+            payment_status=InvoicePaymentStatus.PAID)
+
+        agg = ExpenseClaim.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).aggregate(
+            open=Count("id", filter=Q(status=DocumentStatus.DRAFT) | awaiting_q),
+            month_total=Coalesce(Sum("total", filter=live & Q(
+                claim_date__year=today.year, claim_date__month=today.month)), 0),
+            live_total=Coalesce(Sum("total", filter=live), 0),
+            live_count=Count("id", filter=live),
+            awaiting_total=Coalesce(Sum("total", filter=awaiting_q), 0),
+            awaiting_paid=Coalesce(Sum("amount_paid", filter=awaiting_q), 0),
+        )
+        avg = agg["live_total"] // agg["live_count"] if agg["live_count"] else 0
+        return success_response(
+            "Expense claim summary retrieved.",
+            data={
+                "open": agg["open"],
+                "month_total": agg["month_total"],
+                "avg": avg,
+                "awaiting": agg["awaiting_total"] - agg["awaiting_paid"],
+            },
+        )
 

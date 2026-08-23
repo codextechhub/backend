@@ -1,4 +1,4 @@
-"""API views for VIGIL (vs_health).
+"""API views for the Health module (vs_health).
 
 Two flavours:
   * **Analytics endpoints** (APIView) return pre-computed dicts from
@@ -45,12 +45,14 @@ from .serializers import (
 PERMS = [IsAuthenticatedAndActive & HasRBACPermission]
 
 
+# Base permission mixin for read-only platform health analytics.
 class HealthViewMixin:
     """Read-only health view: requires platform.health.view."""
     permission_classes = PERMS
     rbac_permission = PERM_VIEW
 
 
+# Method-aware permission mixin for health configuration and incident writes.
 class HealthWriteMixin:
     """Read with view perm, write with manage perm (method-aware)."""
     permission_classes = PERMS
@@ -61,12 +63,14 @@ class HealthWriteMixin:
         return PERM_VIEW if method in SAFE_METHODS else PERM_MANAGE
 
 
+# Parse range query parameters once for health analytics endpoints.
 def _range(request):
-    return services.parse_range(request.query_params.get("range"))
+    return services.parse_range(request.query_params.get("range"), request.query_params.get("start"), request.query_params.get("end"))
 
 
-def _school_id(request):
-    raw = request.query_params.get("school")
+# Optional tenant filter; invalid values intentionally fall back to global scope.
+def _tenant_id(request):
+    raw = request.query_params.get("tenant")
     if raw in (None, "", "all"):
         return None
     try:
@@ -79,16 +83,18 @@ def _school_id(request):
 # Command Center
 # ---------------------------------------------------------------------------
 
+# Command Center payload combining posture, KPIs, queues, deployments, and incidents.
 class OverviewView(HealthViewMixin, APIView):
-    """GET /health/overview/ — the single-pane-of-glass Command Center payload.
+    """GET /health/overview/ - the single-pane-of-glass Command Center payload.
 
     docstring-name: Command Center overview
     """
 
     def get(self, request):
         tr = _range(request)
-        school_id = _school_id(request)
+        tenant_id = _tenant_id(request)
         deployments = list(
+            # Deployments are sliced to the selected range so charts and annotations align.
             Deployment.objects.filter(deployed_at__gte=tr.start, deployed_at__lt=tr.end)
             .values("id", "version", "kind", "actor", "text", "deployed_at")
         )
@@ -104,9 +110,9 @@ class OverviewView(HealthViewMixin, APIView):
             "range": tr.key,
             "posture": services.overall_posture(),
             "global_uptime": services.global_uptime(),
-            "kpis": services.golden_signals(tr, school_id),
+            "kpis": services.golden_signals(tr, tenant_id),
             "services": services.service_grid(),
-            "request_series": services.request_series(tr, school_id),
+            "request_series": services.request_series(tr, tenant_id),
             "deployments": deployments,
             "queues": services.queue_overview(),
             "active_incidents": active_incidents,
@@ -118,21 +124,24 @@ class OverviewView(HealthViewMixin, APIView):
 # Services
 # ---------------------------------------------------------------------------
 
+# Return service cards sorted by operational severity.
 class ServiceListView(HealthViewMixin, APIView):
-    """GET /health/services/ — worst-first service grid."""
+    """GET /health/services/ - worst-first service grid."""
 
     def get(self, request):
         return success_response("Services retrieved successfully.",
                                 {"services": services.service_grid()})
 
 
+# Return a single monitored service with recent alerts and uptime summary.
 class ServiceDetailView(HealthViewMixin, APIView):
-    """GET /health/services/{key}/ — drill-down for one service."""
+    """GET /health/services/{key}/ - drill-down for one service."""
 
     def get(self, request, key):
         svc = MonitoredService.objects.filter(key=key).first()
         if not svc:
             return error_response("Service not found.", status=404)
+        # Uptime monitor data is keyed once so the service detail stays cheap to assemble.
         monitors = {m["key"]: m for m in services.uptime_monitors()}
         recent_alerts = AlertSerializer(
             Alert.objects.filter(service=svc).order_by("-fired_at")[:10], many=True).data
@@ -149,16 +158,18 @@ class ServiceDetailView(HealthViewMixin, APIView):
 # Uptime & Availability
 # ---------------------------------------------------------------------------
 
+# Return the full uptime monitor grid.
 class UptimeMonitorsView(HealthViewMixin, APIView):
-    """GET /health/uptime/monitors/ — uptime bars, response charts, SSL, table."""
+    """GET /health/uptime/monitors/ - uptime bars, response charts, SSL, table."""
 
     def get(self, request):
         return success_response("Uptime monitors retrieved successfully.",
                                 {"monitors": services.uptime_monitors()})
 
 
+# Return one uptime monitor by service key.
 class UptimeMonitorDetailView(HealthViewMixin, APIView):
-    """GET /health/uptime/monitors/{key}/ — one monitor."""
+    """GET /health/uptime/monitors/{key}/ - one monitor."""
 
     def get(self, request, key):
         monitor = next((m for m in services.uptime_monitors() if m["key"] == key), None)
@@ -171,12 +182,14 @@ class UptimeMonitorDetailView(HealthViewMixin, APIView):
 # API & Endpoint Health
 # ---------------------------------------------------------------------------
 
+# Return endpoint health rows and top offenders for the selected range.
 class ApiEndpointsView(HealthViewMixin, APIView):
-    """GET /health/api-endpoints/ — endpoint table + top-5 cards + code series."""
+    """GET /health/api-endpoints/ - endpoint table + top-5 cards + code series."""
 
     def get(self, request):
         tr = _range(request)
-        rows = services.endpoint_stats(tr, _school_id(request))
+        rows = services.endpoint_stats(tr, _tenant_id(request))
+        # Top cards are derived from the same rows as the table to keep numbers consistent.
         slowest = sorted(rows, key=lambda r: r["p95"], reverse=True)[:5]
         errored = sorted(rows, key=lambda r: r["error_rate"], reverse=True)[:5]
         data = {
@@ -184,13 +197,14 @@ class ApiEndpointsView(HealthViewMixin, APIView):
             "endpoints": rows,
             "top_slowest": slowest,
             "top_errors": errored,
-            "status_code_series": services.request_series(tr, _school_id(request)),
+            "status_code_series": services.request_series(tr, _tenant_id(request)),
         }
         return success_response("Endpoints retrieved successfully.", data)
 
 
+# Return histogram and tenant breakdown for one route.
 class ApiEndpointDetailView(HealthViewMixin, APIView):
-    """GET /health/api-endpoints/detail/?route=... — endpoint drill-down drawer."""
+    """GET /health/api-endpoints/detail/?route=... - endpoint drill-down drawer."""
 
     def get(self, request):
         route = request.query_params.get("route")
@@ -205,17 +219,19 @@ class ApiEndpointDetailView(HealthViewMixin, APIView):
 # Background Jobs & Queues
 # ---------------------------------------------------------------------------
 
+# Return queue depth, throughput, failures, and worker availability.
 class QueuesView(HealthViewMixin, APIView):
-    """GET /health/queues/ — queue cards, depth trend, worker pool."""
+    """GET /health/queues/ - queue cards, depth trend, worker pool."""
 
     def get(self, request):
         return success_response("Queues retrieved successfully.", services.queue_overview())
 
 
+# List tracked background jobs through the health console filters.
 class TaskListView(HealthViewMixin, generics.ListAPIView):
-    """GET /health/tasks/ — the task table (reads core.BackgroundJob).
+    """GET /health/tasks/ - the task table (reads core.BackgroundJob).
 
-    Filters: ?status=, ?queue=, ?school=, ?kind=.
+    Filters: ?status=, ?queue=, ?tenant=, ?kind=.
     """
     serializer_class = TaskRowSerializer
 
@@ -223,19 +239,20 @@ class TaskListView(HealthViewMixin, generics.ListAPIView):
         from core.models import BackgroundJob
         from .tasks import KIND_TO_QUEUE
 
-        qs = BackgroundJob.objects.select_related("school").all()
+        qs = BackgroundJob.objects.select_related("tenant").all()
         params = self.request.query_params
         status = params.get("status")
         if status:
             qs = qs.filter(status=status.upper())
-        school = params.get("school")
-        if school and school != "all":
-            qs = qs.filter(school_id=school)
+        tenant = params.get("tenant")
+        if tenant and tenant != "all":
+            qs = qs.filter(tenant_id=tenant)
         kind = params.get("kind")
         if kind:
             qs = qs.filter(kind=kind)
         queue = params.get("queue")
         if queue:
+            # Queue filters map design queue names back to tracked BackgroundJob kinds.
             kinds = [k for k, v in KIND_TO_QUEUE.items() if v == queue]
             qs = qs.filter(kind__in=kinds) if kinds else qs.filter(kind="__none__")
         return qs.order_by("-created_at")
@@ -245,6 +262,7 @@ class TaskListView(HealthViewMixin, generics.ListAPIView):
 # Incidents & Alerts
 # ---------------------------------------------------------------------------
 
+# List incidents or open a new incident through the health console.
 class IncidentListCreateView(CreateModelMixin, HealthWriteMixin, generics.ListCreateAPIView):
     """GET (list) / POST (open) incidents."""
 
@@ -252,6 +270,7 @@ class IncidentListCreateView(CreateModelMixin, HealthWriteMixin, generics.ListCr
         qs = Incident.objects.prefetch_related("services").all()
         status = self.request.query_params.get("status")
         if status == "active":
+            # Active is a convenience filter over all non-resolved incident states.
             from django.db.models import Q
             qs = qs.filter(~Q(status=Incident.Status.RESOLVED))
         elif status:
@@ -265,6 +284,7 @@ class IncidentListCreateView(CreateModelMixin, HealthWriteMixin, generics.ListCr
         return IncidentCreateUpdateSerializer if self.request.method == "POST" else IncidentListSerializer
 
 
+# Retrieve or update a single incident war-room record.
 class IncidentDetailView(RetrieveModelMixin, UpdateModelMixin, HealthWriteMixin,
                          generics.RetrieveUpdateAPIView):
     """GET / PATCH a single incident (war-room view)."""
@@ -276,8 +296,9 @@ class IncidentDetailView(RetrieveModelMixin, UpdateModelMixin, HealthWriteMixin,
             else IncidentDetailSerializer
 
 
+# Append timeline entries to an existing incident.
 class IncidentEventCreateView(HealthWriteMixin, APIView):
-    """POST /health/incidents/{id}/events/ — append a timeline update."""
+    """POST /health/incidents/{id}/events/ - append a timeline update."""
 
     def post(self, request, id):
         incident = Incident.objects.filter(id=id).first()
@@ -290,16 +311,18 @@ class IncidentEventCreateView(HealthWriteMixin, APIView):
         return success_response("Timeline updated.", IncidentEventSerializer(event).data, status=201)
 
 
+# Return MTTA, MTTR, and incident counts for reliability reporting.
 class ReliabilityView(HealthViewMixin, APIView):
-    """GET /health/incidents/reliability/ — MTTA/MTTR/counts."""
+    """GET /health/incidents/reliability/ - MTTA/MTTR/counts."""
 
     def get(self, request):
         return success_response("Reliability stats retrieved successfully.",
                                 services.reliability_stats())
 
 
+# List firing alerts by default, with resolved history available by filter.
 class AlertListView(HealthViewMixin, generics.ListAPIView):
-    """GET /health/alerts/ — firing alerts (?status=resolved for history)."""
+    """GET /health/alerts/ - firing alerts (?status=resolved for history)."""
     serializer_class = AlertSerializer
 
     def get_queryset(self):
@@ -310,12 +333,14 @@ class AlertListView(HealthViewMixin, generics.ListAPIView):
         return qs.order_by("-fired_at")
 
 
+# List or create alert rules evaluated by scheduled tasks.
 class AlertRuleListCreateView(CreateModelMixin, HealthWriteMixin, generics.ListCreateAPIView):
     """GET (list) / POST (create) alert rules."""
     serializer_class = AlertRuleSerializer
     queryset = AlertRule.objects.select_related("target_service").all()
 
 
+# Retrieve or update one alert rule, including enable/disable state.
 class AlertRuleDetailView(RetrieveModelMixin, UpdateModelMixin, HealthWriteMixin,
                           generics.RetrieveUpdateAPIView):
     """GET / PATCH a rule (toggle is_enabled)."""
@@ -328,8 +353,9 @@ class AlertRuleDetailView(RetrieveModelMixin, UpdateModelMixin, HealthWriteMixin
 # Tenant Health
 # ---------------------------------------------------------------------------
 
+# Return tenant-level health and noisy-neighbour indicators.
 class TenantListView(HealthViewMixin, APIView):
-    """GET /health/tenants/ — per-institution health grid + noisy-neighbour."""
+    """GET /health/tenants/ - per-institution health grid + noisy-neighbour."""
 
     def get(self, request):
         tr = _range(request)
@@ -337,21 +363,22 @@ class TenantListView(HealthViewMixin, APIView):
                                 {"range": tr.key, "tenants": services.tenant_stats(tr)})
 
 
+# Return golden signals, series, and endpoints scoped to one tenant.
 class TenantDetailView(HealthViewMixin, APIView):
-    """GET /health/tenants/{school_id}/ — golden signals scoped to one tenant."""
+    """GET /health/tenants/{tenant_id}/ - golden signals scoped to one tenant."""
 
-    def get(self, request, school_id):
+    def get(self, request, tenant_id):
         tr = _range(request)
         try:
-            sid = int(school_id)
+            tid = int(tenant_id)
         except (TypeError, ValueError):
-            return error_response("Invalid school id.", status=400)
+            return error_response("Invalid tenant id.", status=400)
         data = {
             "range": tr.key,
-            "school_id": sid,
-            "kpis": services.golden_signals(tr, sid),
-            "series": services.request_series(tr, sid),
-            "endpoints": services.endpoint_stats(tr, sid),
+            "tenant_id": tid,
+            "kpis": services.golden_signals(tr, tid),
+            "series": services.request_series(tr, tid),
+            "endpoints": services.endpoint_stats(tr, tid),
         }
         return success_response("Tenant health retrieved successfully.", data)
 
@@ -360,14 +387,16 @@ class TenantDetailView(HealthViewMixin, APIView):
 # Deployments & SLOs
 # ---------------------------------------------------------------------------
 
+# List or annotate deployments shown on the health timeline.
 class DeploymentListCreateView(CreateModelMixin, HealthWriteMixin, generics.ListCreateAPIView):
     """GET (list) / POST (annotate) deployments."""
     serializer_class = DeploymentSerializer
     queryset = Deployment.objects.all()
 
 
+# Return SLO attainment and remaining error budget.
 class SLOView(HealthViewMixin, APIView):
-    """GET /health/slos/ — SLO attainment + error budgets."""
+    """GET /health/slos/ - SLO attainment + error budgets."""
 
     def get(self, request):
         return success_response("SLOs retrieved successfully.", {"slos": services.slo_status()})

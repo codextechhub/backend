@@ -1,6 +1,6 @@
 """Gateway-layer models for vs_payments.
 
-This app sits *in front of* the ledger. Nothing here is itself an accounting entry —
+This app sits *in front of* the ledger. Nothing here is itself an accounting entry -
 the authoritative money movement is always a ``vs_finance`` journal (a customer receipt
 for collections, a vendor payment for payouts). These models track the **external PSP
 side**: what we asked a provider to do, what it told us, and the raw webhook events that
@@ -74,6 +74,11 @@ class VirtualAccount(TimeStampedModel):
                 fields=["provider", "account_number"],
                 name="uniq_payments_va_provider_account",
             ),
+            models.UniqueConstraint(
+                fields=["entity", "provider", "customer"],
+                condition=models.Q(status="ACTIVE", customer__isnull=False),
+                name="uniq_payments_va_active_customer_provider",
+            ),
         ]
         indexes = [
             models.Index(fields=["entity", "provider"]),
@@ -104,8 +109,8 @@ class CollectionIntent(TimeStampedModel):
     reference = models.CharField(
         max_length=64, unique=True,
         help_text="Our merchant reference / idempotency key for this collection.",
-    )
-    provider_reference = models.CharField(max_length=128, blank=True, default="")
+    )  # Reference is unique so we can idempotently retry the same collection without double-charging.
+    provider_reference = models.CharField(max_length=128, blank=True, default="")  # The provider's transaction id for this collection (e.g. Paystack transaction reference).
     amount = MoneyField(help_text="Amount to collect, in kobo.")
     currency = models.ForeignKey(
         "vs_finance.Currency", on_delete=models.PROTECT,
@@ -128,20 +133,20 @@ class CollectionIntent(TimeStampedModel):
     virtual_account = models.ForeignKey(
         VirtualAccount, on_delete=models.PROTECT,
         related_name="collection_intents", null=True, blank=True,
-    )
+    )  # The virtual account this collection was paid into (if any, for self-reconciling collections).
     status = models.CharField(
         max_length=12, choices=CollectionStatus.choices, default=CollectionStatus.PENDING,
     )
     payer_email = models.EmailField(blank=True, default="")
     payer_name = models.CharField(max_length=200, blank=True, default="")
     narration = models.CharField(max_length=255, blank=True, default="")
-    checkout_url = models.URLField(blank=True, default="", max_length=600)
-    authorization_code = models.CharField(max_length=128, blank=True, default="")
+    checkout_url = models.URLField(blank=True, default="", max_length=600)  # The provider's hosted checkout URL for this collection (if any, for redirect flows).
+    authorization_code = models.CharField(max_length=128, blank=True, default="")  # The provider's authorization code for this collection (e.g. Paystack authorization_code).
     payment = models.ForeignKey(
         "vs_finance.Payment", on_delete=models.PROTECT,
         related_name="collection_intents", null=True, blank=True,
         help_text="The customer receipt booked when this collection settled.",
-    )
+    )  # The FK to the booked receipt (if any, when the collection is confirmed).
     metadata = models.JSONField(default=dict, blank=True)
     raw_response = models.JSONField(default=dict, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
@@ -163,6 +168,7 @@ class CollectionIntent(TimeStampedModel):
 
     @property
     def is_terminal(self) -> bool:
+        """Whether the collection is in a terminal state (no further updates expected)."""
         from .constants import COLLECTION_TERMINAL
         return self.status in COLLECTION_TERMINAL
 
@@ -171,12 +177,22 @@ class PayoutBatch(TimeStampedModel):
     """A bulk disbursement: one envelope grouping many :class:`PayoutInstruction` rows.
 
     The batch is the unit operators work with for payroll runs, vendor settlement runs,
-    etc. — they assemble many beneficiaries, then submit once. Submission loops the
+    etc. - they assemble many beneficiaries, then submit once. Submission loops the
     existing per-instruction provider transfer (there is no proprietary bank-file export);
     the batch tracks the aggregate so a partially-settled run is visible at a glance.
     ``total_amount``/``item_count`` are denormalised sums of the child instructions, kept
     in sync by the services layer.
     """
+
+    # vs_workflow document-type token. When a WorkflowTemplate exists for it at this
+    # batch's (school, branch) scope, submitting the batch to the provider is gated
+    # behind approval (opt-in by template); otherwise direct submit is unchanged.
+    workflow_document_type = "payments.payout_batch"
+
+    # Field the engine reads for a threshold-gated stage's inclusion condition. The
+    # denormalised batch total is the right bar: what escalates a batch is the money
+    # leaving in one run, not the size of any single beneficiary line.
+    workflow_amount_field = "total_amount"
 
     entity = models.ForeignKey(
         "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="payout_batches",
@@ -218,6 +234,21 @@ class PayoutBatch(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.reference} · {self.item_count} items · {self.total_amount} kobo · {self.status}"
+
+    @property
+    def school(self):  # Bridges the entity-scoped batch to the school-scoped workflow engine.
+        """School owning this batch's ledger entity (None for platform/product books).
+
+        The vs_workflow approval engine is school-scoped (it reads ``document.school`` /
+        ``document.branch`` to resolve approvers); a payout batch is entity-scoped, so
+        this maps the entity back to its originating school. ``None`` for platform books,
+        which the engine handles as platform-level scoping.
+        """
+        return getattr(self.entity.tenant, "school_profile", None)  # Originating school, or None.
+
+    @property
+    def branch(self):  # The engine also reads document.branch; batches have none.
+        return None  # Payout batches are not branch-scoped.
 
     @property
     def is_terminal(self) -> bool:
@@ -299,7 +330,7 @@ class PayoutInstruction(TimeStampedModel):
 
 
 class WebhookEvent(TimeStampedModel):
-    """A raw inbound provider webhook — stored verbatim, deduplicated, then dispatched.
+    """A raw inbound provider webhook - stored verbatim, deduplicated, then dispatched.
 
     The store is the idempotency backbone: ``dedupe_key`` is unique, so a provider
     retrying the same event can never drive a second receipt/payout. We persist the raw

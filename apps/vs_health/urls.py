@@ -54,7 +54,7 @@ urlpatterns = [
 
     # Tenant Health
     path("tenants/", TenantListView.as_view(), name="health-tenant-list"),
-    path("tenants/<int:school_id>/", TenantDetailView.as_view(), name="health-tenant-detail"),
+    path("tenants/<int:tenant_id>/", TenantDetailView.as_view(), name="health-tenant-detail"),
 
     # Deployments & SLOs
     path("deployments/", DeploymentListCreateView.as_view(), name="health-deployment-list"),

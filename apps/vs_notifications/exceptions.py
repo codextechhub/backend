@@ -9,6 +9,7 @@
 from .constants import NotificationErrorCode
 
 
+# Carry a machine-readable code alongside every notification domain failure.
 class NotificationBaseException(Exception):
     """Base class for all vs_notifications exceptions."""
     error_code = "NOTIFICATION_ERROR"
@@ -20,6 +21,7 @@ class NotificationBaseException(Exception):
         super().__init__(self.message)
 
 
+# Fail dispatch when a caller references an inactive or unseeded event.
 class UnknownEventTypeError(NotificationBaseException):
     """
     Raised when NotificationService.send() receives an event_key that does
@@ -29,6 +31,7 @@ class UnknownEventTypeError(NotificationBaseException):
     default_message = "The specified notification event type is unknown or inactive."
 
 
+# Prevent accidental duplicate templates for the same event/channel pair.
 class DuplicateTemplateError(NotificationBaseException):
     """
     Raised when attempting to create a NotificationTemplate for an
@@ -41,6 +44,7 @@ class DuplicateTemplateError(NotificationBaseException):
     )
 
 
+# Surface template syntax failures before a broken template is saved.
 class InvalidTemplateSyntaxError(NotificationBaseException):
     """
     Raised when a NotificationTemplate body or subject contains invalid
@@ -51,10 +55,11 @@ class InvalidTemplateSyntaxError(NotificationBaseException):
 
     def __init__(self, message=None, field=None, **kwargs):
         super().__init__(message, **kwargs)
-        # The field (body or subject) that caused the error
+        # Store the editable field so the API can point admins to the bad template part.
         self.field = field
 
 
+# Reject read-state operations on channels that never create in-app feed rows.
 class ReadStateNotSupportedError(NotificationBaseException):
     """
     Raised when a mark-read request targets a notification on the EMAIL
@@ -67,6 +72,7 @@ class ReadStateNotSupportedError(NotificationBaseException):
     )
 
 
+# Enforce product policy that in-app notifications are always available.
 class InAppAlwaysEnabledError(NotificationBaseException):
     """
     Raised when a School Admin attempts to disable the IN_APP channel
@@ -79,6 +85,7 @@ class InAppAlwaysEnabledError(NotificationBaseException):
     )
 
 
+# Protect the global history log from unbounded Vision staff queries.
 class FilterRequiredError(NotificationBaseException):
     """
     Raised when a Vision Staff user queries the notification history log
@@ -91,6 +98,7 @@ class FilterRequiredError(NotificationBaseException):
     )
 
 
+# Hide cross-recipient or cross-school notification records.
 class NotificationAccessDeniedError(NotificationBaseException):
     """
     Raised when a user attempts to access a notification record belonging
@@ -100,6 +108,7 @@ class NotificationAccessDeniedError(NotificationBaseException):
     default_message = "You do not have permission to access this notification."
 
 
+# Represent dispatch-time rendering failures without treating the template as unsaved syntax.
 class TemplateRenderError(NotificationBaseException):
     """
     Raised by the render service when template rendering fails at dispatch

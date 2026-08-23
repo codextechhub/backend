@@ -90,7 +90,7 @@ class StatsSerializer(serializers.Serializer):
 
 
 class ReportCardSerializer(serializers.Serializer):
-    """One direct report's headline on a manager's team dashboard — the person
+    """One direct report's headline on a manager's team dashboard - the person
     plus their *area* roll-up (themselves + everyone beneath them)."""
     person      = PersonSerializer()
     is_manager  = serializers.BooleanField()
@@ -109,7 +109,7 @@ class NodeDashboardSerializer(serializers.Serializer):
 
 
 class OrgRollupNodeSerializer(serializers.Serializer):
-    """A node in the organogram roll-up tree — recurses into direct_reports."""
+    """A node in the organogram roll-up tree - recurses into direct_reports."""
     person         = PersonSerializer()
     is_manager     = serializers.BooleanField()
     own_stats      = StatsSerializer()

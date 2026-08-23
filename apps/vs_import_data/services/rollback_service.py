@@ -16,14 +16,26 @@ def reverse_target_record(row_result):
     Reverse one imported row. For schools: delete the School record that was created.
     The cascade takes care of branches, admins, and package setup.
     """
-    from vs_schools.models import School
+    from schools.vs_schools.models import School
 
     pk = row_result.target_object_pk
     if not pk:
         return True
 
     try:
-        School.objects.filter(slug=pk).delete()
+        # ``target_object_pk`` is whatever ``School.pk`` was when the row ran.
+        # B23 moved that from the slug to a surrogate integer id, so a numeric
+        # value is an id and anything else is a slug recorded before the
+        # cutover. Matching on slug alone (as this did) silently deleted
+        # nothing for every school imported since, while still reporting the
+        # rollback as successful.
+        ref = str(pk).strip()
+        qs = (
+            School.objects.filter(pk=int(ref))
+            if ref.isdigit() and int(ref) <= 9_223_372_036_854_775_807
+            else School.objects.filter(slug=ref)
+        )
+        qs.delete()
         return True
     except Exception:
         return False
@@ -34,6 +46,18 @@ def rollback_import_job(job, initiated_by=None, reason: str = ""):
     """
     Roll back imported rows for a job.
     """
+    if (
+        job.import_batch.template
+        and job.import_batch.template.dataset_type == "bank_statements"
+    ):
+        from vs_finance.statement_imports import rollback_bank_statement_import_job
+
+        return rollback_bank_statement_import_job(
+            job,
+            initiated_by=initiated_by,
+            reason=reason,
+        )
+
     job.rollback_started_at = timezone.now()
     job.save(update_fields=["rollback_started_at", "updated_at"])
 

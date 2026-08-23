@@ -1,7 +1,7 @@
 """Enumerations and well-known account codes for the procurement engine (Phase 3).
 
 Procurement depends on finance, never the reverse, so procurement-specific vocabulary
-lives here — not in :mod:`vs_finance.constants`. The few *audit* actions are the
+lives here - not in :mod:`vs_finance.constants`. The few *audit* actions are the
 exception: they belong to finance's authoritative log and are named in
 ``vs_finance.constants.FinanceAuditAction`` (string constants only; no import cycle).
 
@@ -39,6 +39,12 @@ class PaymentTerms(models.TextChoices):
     NET_90 = "NET_90", "Net 90 days"
 
 
+class VendorPurchaseKycRequirement(models.TextChoices):
+    """Minimum KYC state allowed for new sourcing and purchasing commitments."""
+    PENDING_OR_VERIFIED = "PENDING_OR_VERIFIED", "Pending or verified"
+    VERIFIED_ONLY = "VERIFIED_ONLY", "Verified only"
+
+
 #: Days implied by each :class:`PaymentTerms` value (for due-date arithmetic).
 PAYMENT_TERM_DAYS = {
     PaymentTerms.IMMEDIATE: 0,
@@ -51,7 +57,7 @@ PAYMENT_TERM_DAYS = {
 
 
 class RfqStatus(models.TextChoices):
-    """Lifecycle of a request for quotation (a sourcing overlay — no GL effect).
+    """Lifecycle of a request for quotation (a sourcing overlay - no GL effect).
 
     DRAFT     -> being prepared; lines editable.
     ISSUED    -> sent to vendors; quotations may be submitted against it.
@@ -82,8 +88,44 @@ class QuotationStatus(models.TextChoices):
     EXPIRED = "EXPIRED", "Expired"
 
 
+class RfqInvitationStatus(models.TextChoices):
+    """Externally visible lifecycle of one vendor invitation."""
+    PENDING = "PENDING", "Pending"
+    SENT = "SENT", "Sent"
+    OPENED = "OPENED", "Opened"
+    DRAFTING = "DRAFTING", "Drafting"
+    SUBMITTED = "SUBMITTED", "Submitted"
+    DECLINED = "DECLINED", "Declined"
+    EXPIRED = "EXPIRED", "Expired"
+    BOUNCED = "BOUNCED", "Bounced"
+    REVOKED = "REVOKED", "Revoked"
+
+
+class PurchaseOrderVendorDeliveryStatus(models.TextChoices):
+    """Lifecycle of one durable purchase-order email request."""
+    AWAITING_APPROVAL = "AWAITING_APPROVAL", "Awaiting approval"
+    PENDING = "PENDING", "Pending"
+    SENT = "SENT", "Sent"
+    FAILED = "FAILED", "Failed"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
+class PurchaseOrderVendorDeliverySource(models.TextChoices):
+    """How a purchase-order vendor email was requested."""
+    AUTOMATIC = "AUTOMATIC", "Automatic after approval"
+    MANUAL = "MANUAL", "Manual"
+    RETRY = "RETRY", "Retry"
+
+
+class QuotationLineResponse(models.TextChoices):
+    """How a vendor answered one requested RFQ line."""
+    QUOTED = "QUOTED", "Quoted"
+    ALTERNATIVE = "ALTERNATIVE", "Alternative offered"
+    NO_BID = "NO_BID", "Not available or no-bid"
+
+
 class ContractStatus(models.TextChoices):
-    """Lifecycle of a vendor contract (a master-data overlay — no GL effect).
+    """Lifecycle of a vendor contract (a master-data overlay - no GL effect).
 
     DRAFT      -> being prepared; not yet in force.
     ACTIVE     -> in force between start_date and end_date.
@@ -96,6 +138,14 @@ class ContractStatus(models.TextChoices):
     EXPIRED = "EXPIRED", "Expired"
     TERMINATED = "TERMINATED", "Terminated"
     RENEWED = "RENEWED", "Renewed"
+
+
+#: Document-number token for auto-generated vendor-contract references. Contracts are
+#: plain master data (not a :class:`~vs_finance.models.FinanceDocument`), so they are not
+#: in :class:`~vs_finance.constants.DocType`; this literal token is fed straight to the
+#: shared :func:`~vs_finance.numbering.next_document_number` allocator, yielding an
+#: tenant-scoped, collision-safe reference like ``CT-12607221``.
+CONTRACT_DOC_TYPE = "CT"
 
 
 class MilestoneStatus(models.TextChoices):
@@ -132,17 +182,44 @@ class ProcApprovalState(models.TextChoices):
 WF_DOCTYPE_REQUISITION = "procurement.requisition"
 WF_DOCTYPE_PURCHASE_ORDER = "procurement.purchase_order"
 WF_DOCTYPE_VENDOR_INVOICE = "procurement.vendor_invoice"
+WF_DOCTYPE_VENDOR_PAYMENT = "procurement.vendor_payment"
+
+# One canonical boundary for every shared-workflow record owned by Procurement.
+# Keep queue/report adapters on this allow-list so adding a new approvable document
+# cannot silently expose unrelated workflows or disappear from one Procurement view.
+PROCUREMENT_APPROVAL_TYPES = (
+    WF_DOCTYPE_REQUISITION,
+    WF_DOCTYPE_PURCHASE_ORDER,
+    WF_DOCTYPE_VENDOR_INVOICE,
+    WF_DOCTYPE_VENDOR_PAYMENT,
+)
 
 #: Template code the default-template provisioner publishes and submission resolves to.
 WF_DEFAULT_TEMPLATE_CODE = "standard"
 
 #: Default amount (kobo) at/above which the second (senior) approval stage is included.
-#: ₦500,000.00 — overridable per call to ``ensure_default_approval_templates``.
+#: ₦500,000.00 - overridable per call to ``ensure_default_approval_templates``.
 WF_DEFAULT_SENIOR_THRESHOLD = 50_000_000
 
 #: Default RBAC permission keys the seeded approval stages resolve approvers against.
-WF_DEFAULT_MANAGER_PERMISSION = "procurement.approval.approve"
-WF_DEFAULT_SENIOR_PERMISSION = "procurement.approval.approve_senior"
+# Role keys the central approval ladder names. Resolution happens inside
+# whichever tenant raised the document, so every tenant needs a role with
+# these keys - seed_procurement_permissions creates them, and
+# check_workflow_role_coverage reports tenants that are missing one.
+WF_DEFAULT_MANAGER_ROLE = "procurement-approver"
+WF_DEFAULT_SENIOR_ROLE = "procurement-senior-approver"
+
+#: Permission key that may release a *parked* approval without a vote. Seeded by
+#: ``seed_procurement_permissions`` but deliberately granted to **no** role: it is a
+#: break-glass control an administrator must assign on purpose. See
+#: :mod:`vs_procurement.approval_override`.
+WF_APPROVAL_OVERRIDE_PERMISSION = "procurement.approval.override"
+
+#: ``WorkflowStageInstance.skip_reason`` written on a stage released by an override.
+#: Procurement stages never auto-skip (``skip_if_no_approvers=False``), so inside
+#: :data:`PROCUREMENT_APPROVAL_TYPES` this token is the *only* reason a stage can end
+#: SKIPPED without a condition, which makes "the stage nobody ran" queryable.
+WF_OVERRIDE_SKIP_REASON = "released_by_approval_override"
 
 
 class MatchStatus(models.TextChoices):
@@ -150,19 +227,24 @@ class MatchStatus(models.TextChoices):
 
     NOT_MATCHED    -> not yet run.
     AUTO_MATCHED   -> quantities and prices agree within tolerance; safe to post.
-    UNDER_RECEIVED -> billed for more than has been received (GRN short) — blocked.
-    OVER_BILLED    -> billed beyond the PO quantity/price — blocked.
-    PRICE_VARIANCE -> received OK but unit price differs from the PO — flag/approve.
+    UNDER_RECEIVED -> billed for more than has been received (GRN short) - blocked.
+    OVER_BILLED    -> billed beyond the PO quantity/price - blocked.
+    PRICE_VARIANCE -> received OK but unit price differs from the PO - flag/approve.
     """
     NOT_MATCHED = "NOT_MATCHED", "Not matched"
     AUTO_MATCHED = "AUTO_MATCHED", "Auto-matched"
     UNDER_RECEIVED = "UNDER_RECEIVED", "Under received"
     OVER_BILLED = "OVER_BILLED", "Over billed"
     PRICE_VARIANCE = "PRICE_VARIANCE", "Price variance"
+    NON_PO_BLOCKED = "NON_PO_BLOCKED", "Non-PO invoice blocked"
 
 
 #: Match outcomes that must NOT post without an explicit variance override.
-MATCH_BLOCKING = frozenset({MatchStatus.UNDER_RECEIVED, MatchStatus.OVER_BILLED})
+MATCH_BLOCKING = frozenset({
+    MatchStatus.UNDER_RECEIVED,
+    MatchStatus.OVER_BILLED,
+    MatchStatus.NON_PO_BLOCKED,
+})
 
 class StockMovementType(models.TextChoices):
     """Direction/reason of a stock-ledger entry (perpetual inventory).
@@ -182,5 +264,7 @@ class StockMovementType(models.TextChoices):
 #: Well-known Chart-of-Accounts codes the P2P journals resolve against (per entity).
 GRIR_CLEARING_CODE = "2150"   # Goods-Received / Invoice-Received clearing (liability)
 WHT_PAYABLE_CODE = "2300"     # Withholding-tax payable (liability)
+VENDOR_ADVANCE_CODE = "1240"  # Money paid to a vendor before their bill exists (asset)
 INVENTORY_ASSET_CODE = "1400"        # Inventory / stock on hand (asset)
 INVENTORY_ADJUSTMENT_CODE = "5150"   # Inventory adjustments / shrinkage (expense)
+PURCHASE_PRICE_VARIANCE_CODE = "5160"  # Invoice-vs-receipt price variance (expense)

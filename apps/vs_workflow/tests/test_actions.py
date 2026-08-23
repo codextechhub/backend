@@ -1,4 +1,4 @@
-"""Tests for services/actions.py — record_action, withdraw, cancel, resubmit, reverse_action."""
+"""Tests for services/actions.py - record_action, withdraw, cancel, resubmit, reverse_action."""
 import logging
 from unittest.mock import patch
 
@@ -24,11 +24,23 @@ from vs_workflow.models import (
 from vs_workflow.services import actions as svc
 
 
-def _make_user(email="u@test.com", user_type="CX_STAFF"):
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
+def _make_user(email="u@test.com", tenant=None):
     from django.contrib.auth import get_user_model
     User = get_user_model()
     return User.objects.create_user(
-        email=email, user_type=user_type,
+        email=email, tenant=tenant or _platform_tenant(),
         first_name="Test", last_name="User",
     )
 
@@ -54,6 +66,7 @@ def _make_instance(template, requester, stage=None,
                    status=WorkflowInstanceStatus.IN_PROGRESS):
     ct = ContentType.objects.get_for_model(WorkflowTemplate)
     return WorkflowInstance.objects.create(
+        tenant=requester.tenant,
         template=template,
         document_content_type=ct,
         document_object_id="fake-doc-id",
@@ -134,7 +147,7 @@ class RecordActionTests(_Base):
 
     def test_duplicate_vote_raises(self):
         # Use UNANIMOUS + a second approver so the first vote doesn't resolve
-        # the stage — otherwise the stage moves to APPROVED and the second call
+        # the stage - otherwise the stage moves to APPROVED and the second call
         # raises StageNotActiveError instead of DuplicateApproverActionError.
         self.stage.advance_rule = StageAdvanceRule.UNANIMOUS
         self.stage.save(update_fields=["advance_rule"])

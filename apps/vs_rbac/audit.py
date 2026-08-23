@@ -1,9 +1,9 @@
 """
-Durable RBAC audit (B21) — hybrid pattern borrowed from vs_finance.
+Durable RBAC audit (B21) - hybrid pattern borrowed from vs_finance.
 
 ``record_rbac_audit`` writes the authoritative, append-only
 :class:`~vs_rbac.models.RBACAuditLog` row FIRST (a failure raises and rolls
-back the surrounding action — never silently dropped), then mirrors the event
+back the surrounding action - never silently dropped), then mirrors the event
 best-effort to the central ``vs_audit`` trail for the platform-wide activity
 view.
 
@@ -16,6 +16,7 @@ from __future__ import annotations
 from .models import RBACAuditLog
 
 
+# Record RBAC changes durably before the central activity mirror runs.
 def record_rbac_audit(
     *,
     action_type: str,
@@ -34,10 +35,15 @@ def record_rbac_audit(
     """Write the durable RBAC audit row, then mirror to central audit.
 
     Returns the created :class:`RBACAuditLog`. Raises on failure of the
-    durable write (by design — the caller's transaction must roll back with
+    durable write (by design - the caller's transaction must roll back with
     it). The central mirror never raises.
     """
-    school_id = str((metadata or {}).get("school_id", "") or "")
+    from vs_tenants.context import add_proxy_audit_metadata, resolve_audit_identity
+
+    actor_user, effective_user, proxy_session = resolve_audit_identity(actor_user)
+    metadata = add_proxy_audit_metadata(metadata, effective_user, proxy_session)
+    # Preserve tenant context even when the target row changes.
+    school_id = str(metadata.get("school_id", "") or "")
 
     log = RBACAuditLog.objects.create(
         action_type=str(action_type),
@@ -55,7 +61,7 @@ def record_rbac_audit(
     )
 
     # Best-effort mirror. emit_audit_event swallows its own failures, but the
-    # durable row is already committed-with-the-action — nothing the mirror
+    # durable row is already committed-with-the-action - nothing the mirror
     # does may break the caller, so guard the boundary here too.
     try:
         from vs_audit.services import emit_audit_event
@@ -74,7 +80,7 @@ def record_rbac_audit(
             diff_data=diff_data,
             metadata=metadata,
         )
-    except Exception:  # pragma: no cover - defensive
+    except Exception:
         import logging
 
         logging.getLogger("vs_rbac.audit").warning(

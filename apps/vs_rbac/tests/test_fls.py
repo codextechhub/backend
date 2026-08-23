@@ -7,7 +7,7 @@ Two concerns are covered:
     request context or the caller is the Vision super admin.
 2.  The finance / procurement / payments serialisers that carry PII (bank
     account numbers, beneficiary details, salaries) declare the expected
-    ``read_permissions`` wiring — so a refactor that drops the mixin or renames
+    ``read_permissions`` wiring - so a refactor that drops the mixin or renames
     a key fails loudly here instead of silently leaking data.
 """
 from __future__ import annotations
@@ -20,6 +20,18 @@ from django.test import TestCase
 from rest_framework import serializers
 
 from vs_rbac.fls import FieldSecurityMixin
+
+
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
 
 
 class _DemoSerializer(FieldSecurityMixin, serializers.Serializer):
@@ -43,12 +55,11 @@ class FieldSecurityMixinBehaviourTest(TestCase):
     def setUpTestData(cls):
         from vs_user.models import User
 
-        # A plain Vision staff user with no platform assignment — authenticated
+        # A plain Vision staff user with no platform assignment - authenticated
         # but NOT the super admin, so FLS applies to them.
-        cls.user = User.objects.create_user(
+        cls.user = User.objects.create_user(tenant=_platform_tenant(), 
             email="fls-probe@test.com",
             password="testpass123",
-            user_type="CX_STAFF",
             status="ACTIVE",
             first_name="Fls",
             last_name="Probe",
@@ -120,6 +131,11 @@ class SensitiveSerializerWiringTest(TestCase):
         self.assertEqual(
             VendorSerializer.read_permissions,
             {
+                "email": "procurement.vendor.view_sensitive",
+                "phone": "procurement.vendor.view_sensitive",
+                "contacts": "procurement.vendor.view_sensitive",
+                "address": "procurement.vendor.view_sensitive",
+                "tax_id": "procurement.vendor.view_sensitive",
                 "bank_name": "procurement.vendor.view_sensitive",
                 "bank_account_number": "procurement.vendor.view_sensitive",
                 "bank_account_name": "procurement.vendor.view_sensitive",
@@ -143,5 +159,6 @@ class SensitiveSerializerWiringTest(TestCase):
                 "paye_amount": "finance.payrollrun.view_sensitive",
                 "pension_amount": "finance.payrollrun.view_sensitive",
                 "net_amount": "finance.payrollrun.view_sensitive",
+                "components": "finance.payrollrun.view_sensitive",
             },
         )

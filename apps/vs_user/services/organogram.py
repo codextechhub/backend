@@ -47,16 +47,16 @@ class OrganogramService:
 
         If `is_primary`, any existing current primary assignment for the user is
         closed first (end_date = today) so the "one current primary" invariant
-        holds — MariaDB cannot express this as a conditional unique constraint.
+        holds - MariaDB cannot express this as a conditional unique constraint.
 
         On a primary assignment the user's PlatformStaffProfile.position is
         synced to this position, so department, line manager, and the whole
         reporting chain settle immediately off that one seat.
         """
-        if user.user_type != User.UserType.CX_STAFF:
+        if not user.is_platform_user:
             raise ValueError({
-                'error_code': 'NOT_CX_STAFF',
-                'message': 'Only CX Staff can be assigned to a position.',
+                'error_code': 'NOT_PLATFORM_STAFF',
+                'message': 'Only platform staff can be assigned to a position.',
             })
 
         start = start_date or timezone.localdate()
@@ -104,9 +104,16 @@ class OrganogramService:
         if profile is None:
             return
         new_position_id = position.pk if position else None
+        new_job_title = position.title if position else ''
+        update_fields = []
         if profile.position_id != new_position_id:
             profile.position_id = new_position_id
-            profile.save(update_fields=['position', 'updated_at'])
+            update_fields.append('position')
+        if profile.job_title != new_job_title:
+            profile.job_title = new_job_title
+            update_fields.append('job_title')
+        if update_fields:
+            profile.save(update_fields=[*update_fields, 'updated_at'])
 
     # ── Manager-chain resolution ───────────────────────────────────────────────
 
@@ -154,10 +161,15 @@ class OrganogramService:
             .select_related('org_node')
             .prefetch_related('assignments__user')
         )
+        active_ids = {pos.id for pos in positions}
         children_by_parent: dict = {}
         roots: list = []
         for pos in positions:
-            children_by_parent.setdefault(pos.reports_to_id, []).append(pos)
+            # A position is a root when it has no manager seat OR its manager
+            # seat is inactive/removed. Without the second case an inactive
+            # parent would silently drop its whole subtree from the chart.
+            parent_id = pos.reports_to_id if pos.reports_to_id in active_ids else None
+            children_by_parent.setdefault(parent_id, []).append(pos)
 
         def node_for(pos: Position) -> dict:
             return {
@@ -196,7 +208,7 @@ class OrganogramService:
 
     @staticmethod
     def resolve_direct_manager(user: User) -> List[User]:
-        """Climb mode: DIRECT_MANAGER — holder of the parent (reports_to) seat."""
+        """Climb mode: DIRECT_MANAGER - holder of the parent (reports_to) seat."""
         position = OrganogramService.primary_position_for(user)
         if position is None or position.reports_to_id is None:
             return []
@@ -205,7 +217,7 @@ class OrganogramService:
 
     @staticmethod
     def resolve_n_levels_up(user: User, levels: int) -> List[User]:
-        """Climb mode: N_LEVELS_UP — holder(s) of the seat `levels` up the chain."""
+        """Climb mode: N_LEVELS_UP - holder(s) of the seat `levels` up the chain."""
         levels = max(int(levels or 1), 1)
         chain = OrganogramService.manager_chain(user)
         if not chain:
@@ -217,7 +229,7 @@ class OrganogramService:
     @staticmethod
     def resolve_department_head(user: User) -> List[User]:
         """
-        Climb mode: DEPARTMENT_HEAD — holder of the head_position of the org node
+        Climb mode: DEPARTMENT_HEAD - holder of the head_position of the org node
         the user sits in, walking UP the org tree (Team → Department → Division)
         until a node with a filled head seat is found.
         """
@@ -236,7 +248,7 @@ class OrganogramService:
 
     @staticmethod
     def resolve_specific_position(position: Position, exclude_user: User = None) -> List[User]:
-        """Climb mode: SPECIFIC_POSITION — current holders of an explicit seat."""
+        """Climb mode: SPECIFIC_POSITION - current holders of an explicit seat."""
         if position is None:
             return []
         holders = position.current_holders

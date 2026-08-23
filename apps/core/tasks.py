@@ -11,7 +11,7 @@ from django.utils import timezone
 def prune_background_jobs_task(days: int = 90) -> dict:
     """Delete finished BackgroundJob rows older than *days*.
 
-    Keeps the queue table bounded. Only terminal rows are pruned — anything
+    Keeps the queue table bounded. Only terminal rows are pruned - anything
     QUEUED/RUNNING stays regardless of age (a stuck row is a signal, not noise).
     """
     from core.models import BackgroundJob

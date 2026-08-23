@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 from django.conf import settings
+from django.core.validators import MaxValueValidator
 from django.db import models
 
 from ..constants import (
+    AssetCategory,
     AssetStatus,
     BankLineStatus,
+    BankMatchSource,
+    BankReconStatus,
+    BankStatementStatus,
     BudgetStatus,
     DepreciationMethod,
     DocType,
     InvoicePaymentStatus,
     PayrollRunStatus,
+    SalaryCalcMethod,
+    SalaryComponentKind,
+    StatutoryType,
     TaxFilingFrequency,
     TaxFilingStatus,
     TaxObligationType,
@@ -22,7 +30,7 @@ from .core import TimeStampedModel, LedgerEntity, FinanceDocument
 from .gl import Account, CostCenter, Currency, FiscalYear, TaxCode
 
 # ---------------------------------------------------------------------------
-# Phase 4 — banking, expenses, payroll, budget, fixed assets, period close
+# Phase 4 - banking, expenses, payroll, budget, fixed assets, period close
 # ---------------------------------------------------------------------------
 #
 # All of these are entity-scoped finance-core concepts that post through the same
@@ -38,14 +46,14 @@ class BankAccount(TimeStampedModel):
     The ledger already tracks cash in a GL account (e.g. ``1100 Cash & Bank`` or a
     child of it); this model adds the banking-side metadata (bank name, number) and is
     the anchor for statement import and reconciliation. Money still only ever moves via
-    journals against ``gl_account`` — this is not a second source of truth for balance.
+    journals against ``gl_account`` - this is not a second source of truth for balance.
     """
 
     entity = models.ForeignKey(
         LedgerEntity, on_delete=models.PROTECT, related_name="bank_accounts",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="finance_bank_accounts", null=True, blank=True,
     )
     gl_account = models.OneToOneField(
@@ -60,11 +68,23 @@ class BankAccount(TimeStampedModel):
         null=True, blank=True, help_text="Defaults to the entity base currency.",
     )
     is_active = models.BooleanField(default=True)
+    is_primary = models.BooleanField(
+        default=False, help_text="The entity's main operating account (at most one).")
+    is_primary_collection = models.BooleanField(
+        default=False,
+        help_text="The entity's primary fee-collection account - the one printed as "
+                  "'pay to' on customer invoices/receipts. At most one per entity.",
+    )
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
                 fields=["entity", "name"], name="uniq_finance_bank_entity_name",
+            ),
+            # At most one primary collection account per entity (partial unique).
+            models.UniqueConstraint(
+                fields=["entity"], condition=models.Q(is_primary_collection=True),
+                name="uniq_finance_primary_collection_per_entity",
             ),
         ]
         indexes = [models.Index(fields=["entity", "is_active"])]
@@ -72,6 +92,59 @@ class BankAccount(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.name} ({self.account_number or self.gl_account_id})"
+
+
+class FinanceDocumentSettings(TimeStampedModel):
+    """Entity defaults that shape customer documents and manual billing."""
+
+    entity = models.OneToOneField(
+        LedgerEntity, on_delete=models.CASCADE, related_name="finance_document_settings",
+    )
+    default_invoice_due_days = models.PositiveSmallIntegerField(
+        default=30, validators=[MaxValueValidator(365)],
+    )
+    default_invoice_narration = models.CharField(max_length=255, blank=True, default="")
+    auto_post_manual_invoices = models.BooleanField(default=True)
+    allow_customer_opening_balances = models.BooleanField(default=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_document_settings_updates", null=True, blank=True,
+    )
+
+    def __str__(self) -> str:
+        return f"Finance document settings for {self.entity_id}"
+
+
+class FinanceBankingSettings(TimeStampedModel):
+    """Entity defaults for reconciliation and receipt allocation."""
+
+    class ReceiptAllocationStrategy(models.TextChoices):
+        OLDEST = "oldest", "Oldest due first"
+        LARGEST = "largest", "Largest balance first"
+
+    entity = models.OneToOneField(
+        LedgerEntity, on_delete=models.CASCADE, related_name="finance_banking_settings",
+    )
+    default_bank_reconciliation_tolerance_days = models.PositiveSmallIntegerField(
+        default=4, validators=[MaxValueValidator(30)],
+        help_text="Default date distance allowed by automatic bank reconciliation.",
+    )
+    default_group_reconciliation_matches = models.BooleanField(default=True)
+    default_receipt_allocation_strategy = models.CharField(
+        max_length=8, choices=ReceiptAllocationStrategy.choices,
+        default=ReceiptAllocationStrategy.OLDEST,
+    )
+    petty_cash_low_balance_threshold_bps = models.PositiveSmallIntegerField(
+        default=2500, validators=[MaxValueValidator(10000)],
+        help_text="Petty-cash balance percentage that triggers a replenishment alert.",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_banking_settings_updates", null=True, blank=True,
+    )
+
+    def __str__(self) -> str:
+        return f"Finance banking settings for {self.entity_id}"
 
 
 class BankStatementLine(TimeStampedModel):
@@ -87,6 +160,11 @@ class BankStatementLine(TimeStampedModel):
     bank_account = models.ForeignKey(
         BankAccount, on_delete=models.CASCADE, related_name="statement_lines",
     )
+    statement = models.ForeignKey(
+        "BankStatement", on_delete=models.SET_NULL, related_name="lines",
+        null=True, blank=True,
+        help_text="The imported statement batch this line belongs to.",
+    )
     txn_date = models.DateField(help_text="Value/transaction date on the statement.")
     description = models.CharField(max_length=255, blank=True, default="")
     reference = models.CharField(max_length=64, blank=True, default="")
@@ -98,6 +176,10 @@ class BankStatementLine(TimeStampedModel):
         "JournalLine", on_delete=models.SET_NULL, related_name="bank_statement_lines",
         null=True, blank=True,
         help_text="The cash-account journal line this statement line reconciles to.",
+    )
+    match_source = models.CharField(
+        max_length=12, choices=BankMatchSource.choices, blank=True, default="",
+        help_text="How it was matched: auto, manual, or via an adjusting entry.",
     )
     adjusting_journal = models.ForeignKey(
         "JournalEntry", on_delete=models.SET_NULL, related_name="bank_adjustments",
@@ -128,10 +210,162 @@ class BankStatementLine(TimeStampedModel):
         return f"{self.txn_date} {self.amount} [{self.status}]"
 
 
-class ExpenseClaim(FinanceDocument):
-    """A staff expense claim — staff acts as a one-off 'vendor' to be reimbursed.
+class BankLineMatch(TimeStampedModel):
+    """Links a statement line to a GL cash journal line in a **group** (many-to-one) match.
 
-    Posting raises ``Dr expense(s) (+ Dr input VAT), Cr accrued reimbursement`` — the
+    The 1:1 case uses :attr:`BankStatementLine.matched_line`. A group match - one bank
+    line that settles several ledger movements (e.g. a PSP settlement covering many
+    receipts) - records each paired cash :class:`JournalLine` here instead; their signed
+    amounts sum to the statement line's amount. Unmatching deletes these rows.
+    """
+
+    statement_line = models.ForeignKey(
+        BankStatementLine, on_delete=models.CASCADE, related_name="line_matches",
+    )
+    journal_line = models.ForeignKey(
+        "JournalLine", on_delete=models.PROTECT, related_name="bank_line_matches",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["statement_line", "journal_line"],
+                name="uniq_finance_bank_line_match",
+            ),
+        ]
+        indexes = [models.Index(fields=["journal_line"])]
+
+    def __str__(self) -> str:
+        return f"{self.statement_line_id}↔{self.journal_line_id}"
+
+
+class BankStatement(TimeStampedModel):
+    """An imported bank statement - a batch of lines for a period, with opening/closing.
+
+    Grouping imported :class:`BankStatementLine`\\s under a statement gives the banking
+    screen a per-period view (opening → closing) and a reconciliation target. The book
+    side of truth is still the GL; this records what the *bank* reported.
+    """
+
+    bank_account = models.ForeignKey(
+        BankAccount, on_delete=models.CASCADE, related_name="statements",
+    )
+    statement_date = models.DateField(help_text="Closing date of the statement period.")
+    period_label = models.CharField(
+        max_length=120, blank=True, default="",
+        help_text="Human label for the period, e.g. 'Apr 2026' or 'May 1–15'.")
+    opening_balance = MoneyField(default=0, help_text="Bank-reported opening balance, kobo.")
+    closing_balance = MoneyField(default=0, help_text="Bank-reported closing balance, kobo.")
+    status = models.CharField(
+        max_length=12, choices=BankStatementStatus.choices,
+        default=BankStatementStatus.UPLOADED,
+    )
+    imported_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="bank_statements_imported", null=True, blank=True,
+    )
+
+    class Meta:
+        indexes = [models.Index(fields=["bank_account", "statement_date"])]
+        ordering = ["-statement_date", "-id"]
+
+    def __str__(self) -> str:
+        return f"{self.bank_account.name} statement {self.statement_date}"
+
+    @property
+    def line_count(self) -> int:
+        return self.lines.count()
+
+
+class BankStatementImportContext(TimeStampedModel):
+    """Finance-owned context attached to a generic import-wizard batch.
+
+    The import app owns file upload, validation state, issue reporting and job
+    progress. Finance owns the selected ledger entity/bank account and the
+    opening-to-closing statement invariant. Keeping that typed context here avoids
+    storing trusted account ids or money values in an unvalidated JSON blob.
+    """
+
+    import_batch = models.OneToOneField(
+        "vs_import_data.ImportBatch",
+        on_delete=models.CASCADE,
+        related_name="bank_statement_context",
+    )
+    bank_account = models.ForeignKey(
+        BankAccount,
+        on_delete=models.PROTECT,
+        related_name="statement_import_contexts",
+    )
+    statement_date = models.DateField(
+        help_text="Closing date reported by the bank statement.",
+    )
+    period_label = models.CharField(max_length=120, blank=True, default="")
+    opening_balance = MoneyField(
+        help_text="Bank-reported opening balance in minor units.",
+    )
+    closing_balance = MoneyField(
+        help_text="Bank-reported closing balance in minor units.",
+    )
+    source_file_hash = models.CharField(
+        max_length=64,
+        help_text="SHA-256 of the uploaded file, used to block accidental re-publish.",
+    )
+    published_statement = models.OneToOneField(
+        BankStatement,
+        on_delete=models.SET_NULL,
+        related_name="import_context",
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["bank_account", "source_file_hash"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.bank_account} import batch {self.import_batch_id}"
+
+
+class BankReconciliation(TimeStampedModel):
+    """A reconciliation run snapshot - the book vs statement balances at a point in time.
+
+    Recorded each time auto/assisted reconciliation runs, so the screen can show a
+    history (and an out-of-balance trail) without recomputing the past.
+    """
+
+    bank_account = models.ForeignKey(
+        BankAccount, on_delete=models.CASCADE, related_name="reconciliations",
+    )
+    statement = models.ForeignKey(
+        BankStatement, on_delete=models.SET_NULL, related_name="reconciliations",
+        null=True, blank=True,
+    )
+    as_of_date = models.DateField()
+    book_balance = MoneyField(default=0, help_text="GL cash-account balance, kobo.")
+    statement_balance = MoneyField(default=0, help_text="Bank-reported balance, kobo.")
+    difference = MoneyField(default=0, help_text="book − statement (signed kobo).")
+    matched_count = models.PositiveIntegerField(default=0)
+    status = models.CharField(
+        max_length=16, choices=BankReconStatus.choices, default=BankReconStatus.BALANCED,
+    )
+    performed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="bank_reconciliations", null=True, blank=True,
+    )
+
+    class Meta:
+        indexes = [models.Index(fields=["bank_account", "created_at"])]
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"{self.bank_account.name} recon {self.as_of_date} [{self.status}]"
+
+
+class ExpenseClaim(FinanceDocument):
+    """A staff expense claim - staff acts as a one-off 'vendor' to be reimbursed.
+
+    Posting raises ``Dr expense(s) (+ Dr input VAT), Cr accrued reimbursement`` - the
     liability owed to the employee. Settling it later (:func:`vs_finance.expenses.
     settle_expense_claim`) pays the employee: ``Dr accrued reimbursement, Cr bank``.
     Reuses :class:`InvoicePaymentStatus` for how much has been reimbursed.
@@ -229,6 +463,10 @@ class ExpenseClaimLine(TimeStampedModel):
         CostCenter, on_delete=models.PROTECT, related_name="expense_claim_lines",
         null=True, blank=True,
     )
+    receipt = models.FileField(
+        upload_to="expense-receipts/", null=True, blank=True,
+        help_text="Supporting receipt (DB-backed storage). PDF or image.",
+    )
     line_no = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
@@ -246,21 +484,22 @@ class ExpenseClaimLine(TimeStampedModel):
 class PettyCashFund(TimeStampedModel):
     """A physical petty-cash float, mapped 1:1 to its own petty-cash GL account.
 
-    Master data (like :class:`BankAccount`) — money only ever moves via journals against
+    Master data (like :class:`BankAccount`) - money only ever moves via journals against
     :attr:`gl_account`; this row adds the operational metadata (custodian, the fixed
     ``float_amount`` the imprest is restored to) and a live ``current_balance`` mirror of
     the cash physically on hand. The fund runs **perpetually**: each
     :class:`PettyCashVoucher` posts ``Dr expense, Cr petty cash`` as it is spent, and
     :func:`vs_finance.petty_cash.replenish_fund` tops the float back up
-    (``Dr petty cash, Cr bank``). ``current_balance`` always equals the GL balance of
-    ``gl_account``.
+    (``Dr petty cash, Cr bank``). ``current_balance`` is a denormalised mirror **re-synced
+    from the GL balance of ``gl_account`` after every operation** (the GL is the source of
+    truth; the overdraw guard reads it live), so the two never silently drift.
     """
 
     entity = models.ForeignKey(
         LedgerEntity, on_delete=models.PROTECT, related_name="petty_cash_funds",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="finance_petty_cash_funds", null=True, blank=True,
     )
     gl_account = models.OneToOneField(
@@ -313,7 +552,7 @@ class PettyCashVoucher(FinanceDocument):
 
     Posting (perpetual) raises ``Dr expense(s) (+ Dr input VAT), Cr petty cash`` and lowers
     the fund's ``current_balance`` by the gross total. A voucher whose total exceeds the
-    cash on hand is rejected (:class:`~vs_finance.exceptions.PettyCashOverdrawError`) — you
+    cash on hand is rejected (:class:`~vs_finance.exceptions.PettyCashOverdrawError`) - you
     cannot pay out more than is in the tin.
     """
 
@@ -468,7 +707,7 @@ class TaxFiling(FinanceDocument):
 
     * **Prepare** (:func:`vs_finance.tax_filing.prepare_filing`): derive the amount owed
       from the GL movement of the obligation's ``liability_account`` over the period (for
-      VAT, less the recoverable input movement). No posting — a draft worksheet.
+      VAT, less the recoverable input movement). No posting - a draft worksheet.
     * **File** (:func:`vs_finance.tax_filing.file_filing`): freeze the figures and submit.
       Posts a netting/penalty journal only if there is recoverable input to clear or a
       penalty/interest adjustment, so the liability account is left holding exactly
@@ -551,15 +790,15 @@ class TaxFiling(FinanceDocument):
 
 
 class PayrollRun(FinanceDocument):
-    """A batch payroll run — gross/PAYE/pension/net for many employees at once.
+    """A batch payroll run - gross/PAYE/pension/net for many employees at once.
 
     Two postings (the classic payroll pair):
 
     * **Accrual** (:func:`vs_finance.payroll.post_payroll`):
       ``Dr salary expense (gross), Cr PAYE payable, Cr pension payable, Cr net wages
-      payable`` — recognises the cost and parks each statutory/ net liability.
+      payable`` - recognises the cost and parks each statutory/ net liability.
     * **Disbursement** (:func:`vs_finance.payroll.pay_payroll`):
-      ``Dr net wages payable, Cr bank`` — clears the net-pay liability when employees
+      ``Dr net wages payable, Cr bank`` - clears the net-pay liability when employees
       are actually paid.
     """
 
@@ -647,6 +886,11 @@ class PayrollLine(TimeStampedModel):
     paye_amount = MoneyField(help_text="PAYE (employee income tax) withheld, in kobo.")
     pension_amount = MoneyField(help_text="Employee pension contribution withheld, in kobo.")
     net_amount = MoneyField(help_text="Take-home: gross - paye - pension, in kobo.")
+    components = models.JSONField(
+        default=list, blank=True,
+        help_text="Payslip breakdown snapshot copied from the salary structure at "
+                  "generation: [{name, kind, statutory_type, amount}]. Empty in flat mode.",
+    )
     cost_center = models.ForeignKey(
         CostCenter, on_delete=models.PROTECT, related_name="payroll_lines",
         null=True, blank=True,
@@ -661,6 +905,147 @@ class PayrollLine(TimeStampedModel):
         return f"{self.employee_name or self.employee_id}: net {self.net_amount}"
 
 
+class SalaryStructure(TimeStampedModel):
+    """A reusable named pay template - the earning/deduction components that define how
+    an employee's gross is split into tranches and what's withheld.
+
+    Assigning a structure to an :class:`EmployeeSalary` *derives* that employee's PAYE,
+    pension and net from their gross, instead of typing each figure by hand. A structure
+    never posts; it only shapes the numbers a :class:`PayrollRun` copies into its lines.
+    """
+
+    entity = models.ForeignKey(
+        LedgerEntity, on_delete=models.PROTECT, related_name="salary_structures",
+    )
+    name = models.CharField(max_length=120, help_text="e.g. 'Senior staff'.")
+    description = models.CharField(max_length=255, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["entity", "name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "name"],
+                name="uniq_salary_structure_name_per_entity",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class SalaryComponent(TimeStampedModel):
+    """One line of a :class:`SalaryStructure`: an earning tranche or a deduction, plus the
+    rule (fixed kobo, % of gross, or % of basic) that derives its amount.
+
+    Earnings are an informational split of the gross (Basic/Housing/…); deductions tagged
+    PAYE or pension are what actually reduce gross to net and route the GL credit.
+    """
+
+    structure = models.ForeignKey(
+        SalaryStructure, on_delete=models.CASCADE, related_name="components",
+    )
+    name = models.CharField(max_length=80, help_text="e.g. 'Basic', 'Housing', 'PAYE'.")
+    kind = models.CharField(
+        max_length=10, choices=SalaryComponentKind.choices,
+        default=SalaryComponentKind.EARNING,
+    )
+    calc_method = models.CharField(
+        max_length=20, choices=SalaryCalcMethod.choices,
+        default=SalaryCalcMethod.PERCENT_OF_GROSS,
+    )
+    rate_bps = models.PositiveIntegerField(
+        default=0, help_text="Rate in basis points for the percent methods (4000 = 40%).",
+    )
+    amount = MoneyField(default=0, help_text="Fixed amount in kobo, for the FIXED method.")
+    is_basic = models.BooleanField(
+        default=False,
+        help_text="Earnings flagged basic form the base for '% of basic' components.",
+    )
+    statutory_type = models.CharField(
+        max_length=10, choices=StatutoryType.choices, default=StatutoryType.NONE,
+        help_text="For deductions: routes the amount to PAYE/pension payable + the return.",
+    )
+    sequence = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["structure", "sequence", "id"]
+        indexes = [models.Index(fields=["structure"])]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.kind})"
+
+
+class EmployeeSalary(TimeStampedModel):
+    """An employee's standard monthly pay - the roster a payroll run is generated from.
+
+    Holds the recurring gross/PAYE/pension for each employee so a run can be raised
+    for the whole active roster in one click, instead of typing every line. It never
+    posts on its own; :func:`vs_finance.payroll.generate_run_from_roster` copies the
+    active rows into a draft :class:`PayrollRun`.
+
+    ``branch`` is what lets a school run payroll **per branch** instead of centrally.
+    It is the roster row, not the run, that decides who a branch run covers, and a
+    branch run reads it **exclusively** - the one place in finance that does. See
+    :func:`vs_finance.payroll.roster_for` for the argument.
+
+    Null does **not** mean "shared across the school" here, unlike everywhere else
+    in this codebase. Head office is a branch in this product, so there is no such
+    person as an employee who belongs to no site: a null branch is an *unassigned*
+    row, a data gap rather than a meaning. It stays null for every school running
+    payroll centrally, which is all of them until one deliberately opts in, and
+    opting in is refused while any active row is still unassigned.
+    """
+
+    entity = models.ForeignKey(
+        LedgerEntity, on_delete=models.PROTECT, related_name="employee_salaries",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        related_name="finance_employee_salaries", null=True, blank=True,
+        help_text="The branch this person is on the payroll of. Empty means not yet "
+                  "assigned; per-branch payroll cannot be switched on while any "
+                  "active employee is unassigned.",
+    )
+    employee = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_employee_salaries", null=True, blank=True,
+    )
+    name = models.CharField(max_length=160, help_text="Employee name.")
+    structure = models.ForeignKey(
+        SalaryStructure, on_delete=models.PROTECT, related_name="employee_salaries",
+        null=True, blank=True,
+        help_text="If set, PAYE/pension/net are derived from the structure applied to gross; "
+                  "the manual paye/pension fields below are then ignored.",
+    )
+    gross_amount = MoneyField(help_text="Standard monthly gross pay, in kobo.")
+    paye_amount = MoneyField(default=0, help_text="Manual PAYE withheld (flat mode, no structure), in kobo.")
+    pension_amount = MoneyField(default=0, help_text="Manual pension withheld (flat mode, no structure), in kobo.")
+    cost_center = models.ForeignKey(
+        CostCenter, on_delete=models.PROTECT, related_name="employee_salaries",
+        null=True, blank=True,
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["entity", "is_active"]),
+            # The branch run's own filter: entity + branch + is_active. Without it
+            # a school running per-branch payroll scans the whole roster once per
+            # branch to build each run, and the unassigned-row check that gates the
+            # switch scans it again.
+            models.Index(fields=["entity", "branch", "is_active"]),
+        ]
+        ordering = ["entity", "name"]
+
+    @property
+    def net_amount(self) -> int:
+        return self.gross_amount - self.paye_amount - self.pension_amount
+
+    def __str__(self) -> str:
+        return f"{self.name}: gross {self.gross_amount}"
+
+
 class Budget(TimeStampedModel):
     """An entity's plan of GL amounts for a fiscal year, by account/cost-centre/period.
 
@@ -672,6 +1057,10 @@ class Budget(TimeStampedModel):
 
     entity = models.ForeignKey(
         LedgerEntity, on_delete=models.PROTECT, related_name="budgets",
+    )
+    code = models.CharField(
+        max_length=48, blank=True, db_index=True,
+        help_text="Auto-allocated reference, e.g. CFX-CODEX-BDG-2026-00001.",
     )
     fiscal_year = models.ForeignKey(
         FiscalYear, on_delete=models.PROTECT, related_name="budgets",
@@ -701,7 +1090,7 @@ class Budget(TimeStampedModel):
 
     @property
     def is_locked(self) -> bool:
-        return self.status in (BudgetStatus.APPROVED, BudgetStatus.LOCKED)
+        return self.status == BudgetStatus.APPROVED
 
 
 class BudgetLine(TimeStampedModel):
@@ -747,6 +1136,10 @@ class FixedAsset(FinanceDocument):
 
     name = models.CharField(max_length=200)
     asset_code = models.CharField(max_length=40, blank=True, default="", help_text="Optional tag/serial.")
+    category = models.CharField(
+        max_length=20, choices=AssetCategory.choices, default=AssetCategory.OTHER,
+        help_text="Register category (Vehicles, Buildings, IT equipment…).",
+    )
     asset_account = models.ForeignKey(
         Account, on_delete=models.PROTECT, related_name="fixed_assets",
         null=True, blank=True, help_text="Capitalised cost account. Defaults to 1500 PP&E.",
@@ -764,7 +1157,7 @@ class FixedAsset(FinanceDocument):
     salvage_value = MoneyField(help_text="Residual value at end of life, in kobo.")
     useful_life_months = models.PositiveIntegerField(help_text="Depreciable life in months.")
     method = models.CharField(
-        max_length=16, choices=DepreciationMethod.choices,
+        max_length=20, choices=DepreciationMethod.choices,
         default=DepreciationMethod.STRAIGHT_LINE,
     )
     asset_status = models.CharField(
@@ -773,6 +1166,11 @@ class FixedAsset(FinanceDocument):
     accumulated_depreciation = MoneyField(help_text="Total depreciation booked to date, in kobo.")
     acquisition_journal = models.ForeignKey(
         "JournalEntry", on_delete=models.PROTECT, related_name="asset_acquisitions",
+        null=True, blank=True,
+    )
+    disposal_date = models.DateField(null=True, blank=True)
+    disposal_journal = models.ForeignKey(
+        "JournalEntry", on_delete=models.PROTECT, related_name="asset_disposals",
         null=True, blank=True,
     )
 
@@ -784,7 +1182,7 @@ class FixedAsset(FinanceDocument):
 
     @property
     def depreciable_base(self) -> int:
-        """Cost less salvage — the total to be spread over the asset's life (kobo)."""
+        """Cost less salvage - the total to be spread over the asset's life (kobo)."""
         return max(self.cost - self.salvage_value, 0)
 
     @property
@@ -822,4 +1220,3 @@ class DepreciationSchedule(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.asset_id} #{self.seq} {self.amount} {'✓' if self.is_posted else ''}".strip()
-

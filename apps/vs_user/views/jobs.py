@@ -1,5 +1,5 @@
 """
-"My queues" — the owner-facing window onto background tasks.
+"My queues" - the owner-facing window onto background tasks.
 
 Backs the frontend's Export → View Queues page:
 
@@ -27,14 +27,15 @@ from vs_rbac.permissions import IsAuthenticatedAndActive
 
 
 def can_view_all_jobs(user) -> bool:
-    """Admin-queue visibility: CX staff holding a platform admin role."""
-    if getattr(user, "user_type", None) != "CX_STAFF":
+    """Admin-queue visibility: platform-tenant staff holding a platform admin role."""
+    if getattr(getattr(user, "tenant", None), "kind", None) != "PLATFORM":
         return False
-    from vs_rbac.models import PlatformUserRoleAssignment
+    from vs_rbac.models import TenantUserRoleAssignment
 
-    return PlatformUserRoleAssignment.objects.filter(
+    return TenantUserRoleAssignment.objects.filter(
         user=user,
-        role_id__in=("xvs_super_admin", "xvs_platform_admin"),
+        role__key__in=("xvs_super_admin", "xvs_platform_admin"),
+        role__tenant__kind="PLATFORM",
         assignment_status="ACTIVE",
     ).exists()
 
@@ -47,7 +48,7 @@ class BackgroundJobSerializer(serializers.ModelSerializer):
         model = BackgroundJob
         fields = [
             "id", "kind", "label", "task_name", "status", "progress",
-            "owner", "owner_name", "school",
+            "owner", "owner_name", "tenant",
             "created_at", "started_at", "finished_at", "runtime_seconds",
             "result", "error",
         ]
@@ -102,7 +103,13 @@ class MyTasksSummaryView(APIView):
 
     def get(self, request):
         qs = _scoped_queryset(request)
-        by_status = dict(qs.values_list("status").annotate(n=Count("id")))
+        # `.order_by()` clears the "-created_at" ordering _scoped_queryset applies
+        # for the LIST. Without it Django adds every ORDER BY column to the GROUP
+        # BY - "GROUP BY status, created_at" - which buckets one row per
+        # timestamp instead of one per status, and dict() then keeps only the
+        # last of each duplicated key. The cards read 1 where the table showed 56.
+        # An aggregate must never inherit a presentation ordering.
+        by_status = dict(qs.order_by().values_list("status").annotate(n=Count("id")))
         return success_response(
             message="Queue summary retrieved.",
             data={

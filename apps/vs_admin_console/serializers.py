@@ -6,6 +6,7 @@ from rest_framework import serializers
 from .models import (
     ImpersonationSession,
 )
+from vs_user.models import User
 
 
 # -----------------------------------------------------------------------------
@@ -15,6 +16,55 @@ from .models import (
 class ImpersonationSessionSerializer(serializers.ModelSerializer):
     staff_email = serializers.EmailField(source="staff_user.email", read_only=True)
     target_email = serializers.EmailField(source="target_user.email", read_only=True)
+    staff_type_label = serializers.SerializerMethodField()
+    target_type_label = serializers.SerializerMethodField()
+    tenant_name = serializers.CharField(source="tenant.name", read_only=True)
+    tenant_slug = serializers.CharField(source="tenant.slug", read_only=True)
+
+    @staticmethod
+    def _staff_type_label(user):
+        """Who an operator is looking at, in the words they would use.
+
+        There is no persona left to fall back on, and there never should have
+        been one: a proxy log reading "CX Staff proxied Staff" could not tell a
+        reviewer whether a CS lead stepped into Corona's principal or into a
+        Year 4 teacher. The role separates those two people, so the role is
+        what the label names.
+
+        Only one distinction survives without a role to read, and it is a real
+        one: an account on the PLATFORM tenant works for the platform, not for
+        a school. That is read off the tenant, which cannot be wrong about
+        itself, rather than off a column that merely agreed with it.
+
+        This is a caption, not a gate: nothing here decides what anyone may do.
+
+        Reads the ``_active_proxy_roles`` prefetch when the list view supplied
+        one, so this costs no extra query per row.
+        """
+        assignments = getattr(user, "_active_proxy_roles", None)
+        if assignments is None:
+            assignments = user.tenant_role_assignments.select_related("role").filter(
+                assignment_status="ACTIVE",
+            )
+        assignments = list(assignments)
+        if any(assignment.role.key.startswith("xvs_") for assignment in assignments):
+            return "XVS Staff"
+        if user.is_platform_user:
+            return "CX Staff"
+        names = sorted({a.role.name for a in assignments if a.role.name})
+        if names:
+            return ", ".join(names)
+        # A tenant account holding no active role. ``User.role`` is the
+        # denormalised display name written at creation, so it usually still
+        # says what the person was hired as; the last resort names the boundary
+        # the account sits on and claims nothing more.
+        return user.role or "Tenant user"
+
+    def get_staff_type_label(self, obj):
+        return self._staff_type_label(obj.staff_user)
+
+    def get_target_type_label(self, obj):
+        return self._staff_type_label(obj.target_user)
 
     class Meta:
         model = ImpersonationSession
@@ -22,31 +72,69 @@ class ImpersonationSessionSerializer(serializers.ModelSerializer):
             "id",
             "staff_user",
             "staff_email",
-            "school",
+            "staff_type_label",
+            "tenant",
+            "tenant_name",
+            "tenant_slug",
             "target_user",
             "target_email",
+            "target_type_label",
             "justification",
             "status",
             "started_at",
             "ends_at",
             "ended_at",
+            "last_activity_at",
+            "access_log",
         ]
-        read_only_fields = ["id", "staff_email", "target_email", "ended_at"]
+        read_only_fields = [
+            "id", "staff_email", "staff_type_label", "tenant_name", "tenant_slug",
+            "target_email", "target_type_label", "ended_at",
+            "last_activity_at", "access_log",
+        ]
+
+
+class ImpersonationTargetSerializer(serializers.ModelSerializer):
+    """Minimal identity payload for the proxy-user picker."""
+
+    full_name = serializers.CharField(read_only=True)
+    tenant_slug = serializers.CharField(source="tenant.slug", read_only=True)
+    tenant_name = serializers.CharField(source="tenant.name", read_only=True)
+    tenant_kind = serializers.CharField(source="tenant.kind", read_only=True)
+    school_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "email",
+            "full_name",
+            # Was ``user_type``. The picker lists people a platform operator
+            # may step into, and the only account-level distinction left is
+            # which side of the platform boundary they are on.
+            "tenant_kind",
+            "role",
+            "tenant_slug",
+            "tenant_name",
+            "school_name",
+        ]
+        read_only_fields = fields
+
+    def get_school_name(self, obj):
+        school = getattr(obj.tenant, "school_profile", None)
+        return getattr(school, "name", None)
         
 class ImpersonationStartSerializer(serializers.Serializer):
     """
     Simple payload for starting impersonation.
     In your view/service, you'll create an ImpersonationSession object.
     """
-    school = serializers.IntegerField()
     target_user = serializers.IntegerField()
-    justification = serializers.CharField()
-    duration_minutes = serializers.IntegerField(min_value=5, max_value=240, default=30) # 5 min to 4 hours
+    justification = serializers.CharField(required=False, allow_blank=True)
+    duration_minutes = serializers.IntegerField(min_value=5, max_value=240, required=False)
     
-    def validation_justification(self, value):
-        if not value.strip():
-            raise serializers.ValidationError("justification is required.")
-        return value
+    def validate_justification(self, value):
+        return value.strip()
     
 class ImpersonationEndSerializer(serializers.Serializer):
     """

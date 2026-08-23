@@ -14,7 +14,13 @@ from django.db.models import Count, Sum, Avg, Q, F
 from django.db.models.functions import Trunc
 from django.utils import timezone
 
-from .constants import LATENCY_BUCKETS_MS, HISTOGRAM_SIZE, HealthStatus, worst_status
+from .constants import (
+    LATENCY_BUCKETS_MS,
+    HISTOGRAM_SIZE,
+    MIN_P95_SAMPLE,
+    HealthStatus,
+    worst_status,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -22,6 +28,7 @@ from .constants import LATENCY_BUCKETS_MS, HISTOGRAM_SIZE, HealthStatus, worst_s
 # ---------------------------------------------------------------------------
 
 @dataclass
+# Concrete analytics window used by charts, deltas, and rollups.
 class TimeRange:
     key: str
     start: object
@@ -43,8 +50,17 @@ _RANGES = {
 }
 
 
-def parse_range(key: str | None) -> TimeRange:
+# Resolve API range parameters into current and previous comparison windows.
+def parse_range(key: str | None, start_raw: str | None = None, end_raw: str | None = None) -> TimeRange:
     """Resolve a ?range= query value into concrete window boundaries."""
+    if start_raw and end_raw:
+        # Custom windows are capped so ad hoc requests cannot scan unbounded telemetry.
+        from django.utils.dateparse import parse_datetime
+        start, end = parse_datetime(start_raw), parse_datetime(end_raw)
+        if start and end and start < end and end - start <= timedelta(days=90):
+            duration = end - start
+            return TimeRange(key="custom", start=start, end=end, prev_start=start-duration,
+                             trunc="hour" if duration <= timedelta(days=7) else "day", points=48)
     key = (key or "1h").lower()
     duration, trunc, points = _RANGES.get(key, _RANGES["1h"])
     end = timezone.now()
@@ -53,6 +69,7 @@ def parse_range(key: str | None) -> TimeRange:
                      trunc=trunc, points=points)
 
 
+# Convert a time range to minutes while avoiding divide-by-zero in live windows.
 def _minutes(tr: TimeRange) -> float:
     return max((tr.end - tr.start).total_seconds() / 60.0, 1.0)
 
@@ -61,6 +78,7 @@ def _minutes(tr: TimeRange) -> float:
 # Histogram percentiles
 # ---------------------------------------------------------------------------
 
+# Merge persisted latency histograms before percentile estimation.
 def merge_hist(hists) -> list:
     """Element-wise sum of several latency histograms."""
     out = [0] * HISTOGRAM_SIZE
@@ -72,6 +90,7 @@ def merge_hist(hists) -> list:
     return out
 
 
+# Estimate a percentile from compact latency buckets.
 def percentile_from_hist(hist, p: float) -> float:
     """Estimate the p-th percentile (ms) from a bucketed histogram.
 
@@ -88,6 +107,7 @@ def percentile_from_hist(hist, p: float) -> float:
         cumulative += count
         if cumulative >= target and count:
             if i >= len(LATENCY_BUCKETS_MS):
+                # Overflow samples only prove latency exceeded the last bound.
                 return float(LATENCY_BUCKETS_MS[-1])
             lower = 0.0 if i == 0 else float(LATENCY_BUCKETS_MS[i - 1])
             upper = float(LATENCY_BUCKETS_MS[i])
@@ -100,16 +120,18 @@ def percentile_from_hist(hist, p: float) -> float:
 # Core request aggregation
 # ---------------------------------------------------------------------------
 
-def _base_qs(start, end, school_id=None, route=None):
+# Base RequestMetric queryset shared by aggregate and drill-down views.
+def _base_qs(start, end, tenant_id=None, route=None):
     from .models import RequestMetric
     qs = RequestMetric.objects.filter(bucket_start__gte=start, bucket_start__lt=end)
-    if school_id is not None:
-        qs = qs.filter(school_id=school_id)
+    if tenant_id is not None:
+        qs = qs.filter(tenant_id=tenant_id)
     if route is not None:
         qs = qs.filter(route=route)
     return qs
 
 
+# Aggregate request counts, status families, and average latency from rollup rows.
 def _totals(qs) -> dict:
     agg = qs.aggregate(
         reqs=Sum("request_count"),
@@ -130,6 +152,7 @@ def _totals(qs) -> dict:
     }
 
 
+# Pull all latency histograms from a queryset and merge them.
 def _merged_hist(qs) -> list:
     return merge_hist(qs.values_list("latency_hist", flat=True))
 
@@ -141,10 +164,12 @@ def _delta(curr: float, prev: float) -> float:
     return round((curr - prev) / prev * 100.0, 1)
 
 
-def golden_signals(tr: TimeRange, school_id=None) -> dict:
+# Build the command-center KPI cards for latency, traffic, errors, and saturation.
+def golden_signals(tr: TimeRange, tenant_id=None) -> dict:
     """The four KPI tiles + their sparklines and vs-previous deltas."""
-    qs = _base_qs(tr.start, tr.end, school_id)
-    prev_qs = _base_qs(tr.prev_start, tr.start, school_id)
+    qs = _base_qs(tr.start, tr.end, tenant_id)
+    # Previous window powers deltas without changing the current data slice.
+    prev_qs = _base_qs(tr.prev_start, tr.start, tenant_id)
 
     totals = _totals(qs)
     prev_totals = _totals(prev_qs)
@@ -155,17 +180,24 @@ def golden_signals(tr: TimeRange, school_id=None) -> dict:
     rpm = round(totals["requests"] / minutes, 1)
     prev_rpm = round(prev_totals["requests"] / _minutes(tr), 1)
 
-    series = request_series(tr, school_id)
+    series = request_series(tr, tenant_id)
     spark_traffic = [pt["requests"] for pt in series]
     spark_errors = [pt["error_rate"] for pt in series]
     spark_latency = [pt["p95"] for pt in series]
 
+    # Saturation currently comes from datastore probes rather than request rows.
     saturation = _saturation(tr)
+
+    # Short windows on a low-traffic instance hold a handful of requests; the
+    # p95/error-rate numbers are still shown, but their status badges are only
+    # claimed once the window carries enough samples to support them.
+    enough_samples = totals["requests"] >= MIN_P95_SAMPLE
 
     return {
         "latency": {
             "value": p95, "unit": "ms", "delta": _delta(p95, prev_p95),
-            "status": _status_for_latency(p95), "spark": spark_latency,
+            "status": _status_for_latency(p95) if enough_samples else HealthStatus.UNKNOWN,
+            "spark": spark_latency,
         },
         "traffic": {
             "value": rpm, "unit": "/min", "delta": _delta(rpm, prev_rpm),
@@ -174,7 +206,9 @@ def golden_signals(tr: TimeRange, school_id=None) -> dict:
         "errors": {
             "value": totals["error_rate"], "unit": "%",
             "delta": _delta(totals["error_rate"], prev_totals["error_rate"]),
-            "status": _status_for_error_rate(totals["error_rate"]), "spark": spark_errors,
+            "status": (_status_for_error_rate(totals["error_rate"])
+                       if enough_samples else HealthStatus.UNKNOWN),
+            "spark": spark_errors,
         },
         "saturation": {
             "value": saturation["value"], "unit": "%", "delta": 0.0,
@@ -183,13 +217,14 @@ def golden_signals(tr: TimeRange, school_id=None) -> dict:
     }
 
 
-def request_series(tr: TimeRange, school_id=None, route=None) -> list:
+# Build chart-ready request series at the range-specific granularity.
+def request_series(tr: TimeRange, tenant_id=None, route=None) -> list:
     """Time-bucketed traffic/error/latency series for charts.
 
     Resampled at ``tr.trunc`` granularity. p95 per bucket is computed from the
     merged histogram of that bucket's rows.
     """
-    qs = _base_qs(tr.start, tr.end, school_id, route)
+    qs = _base_qs(tr.start, tr.end, tenant_id, route)
     rows = (
         qs.annotate(t=Trunc("bucket_start", tr.trunc))
         .values("t")
@@ -202,6 +237,7 @@ def request_series(tr: TimeRange, school_id=None, route=None) -> list:
     )
     # p95 per bucket needs the histograms, fetched in one pass keyed by bucket.
     hist_map: dict = {}
+    # Percentiles need merged histograms per chart bucket, not simple averages.
     for t, hist in qs.annotate(tb=Trunc("bucket_start", tr.trunc)).values_list("tb", "latency_hist"):
         hist_map.setdefault(t, []).append(hist)
 
@@ -220,6 +256,7 @@ def request_series(tr: TimeRange, school_id=None, route=None) -> list:
     return out
 
 
+# Derive saturation from datastore probe metadata captured inside uptime checks.
 def _saturation(tr: TimeRange) -> dict:
     """Worst datastore resource utilisation in-window (from uptime check meta)."""
     from .models import UptimeCheckResult
@@ -238,14 +275,20 @@ def _saturation(tr: TimeRange) -> dict:
     }
 
 
+# Convert p95 latency into the shared health status vocabulary.
 def _status_for_latency(p95: float) -> str:
-    if p95 >= 600:
+    # Tuned for the deployment we actually run on (Render starter, 0.5 CPU),
+    # where heavy billing/report aggregates legitimately take several hundred
+    # ms. 400/600 were instance-sized for a bigger box and flagged normal work
+    # as degraded.
+    if p95 >= 1500:
         return HealthStatus.CRITICAL
-    if p95 >= 400:
+    if p95 >= 800:
         return HealthStatus.WARNING
     return HealthStatus.HEALTHY
 
 
+# Convert 5xx error rate into the shared health status vocabulary.
 def _status_for_error_rate(rate: float) -> str:
     if rate >= 5:
         return HealthStatus.CRITICAL
@@ -254,13 +297,29 @@ def _status_for_error_rate(rate: float) -> str:
     return HealthStatus.HEALTHY
 
 
+# Single choke point for "what status does this traffic window deserve?".
+def window_status(requests: int, error_rate: float, p95: float) -> str:
+    """Status for one traffic window, or UNKNOWN when the sample is too small.
+
+    Both inputs are ratio/percentile estimates: below ``MIN_P95_SAMPLE``
+    requests they are dominated by individual requests, so the honest answer is
+    "no signal" rather than a green we cannot back or a red one slow report
+    caused. Every place a windowed p95/error-rate drives a *status* routes
+    through here.
+    """
+    if not requests or requests < MIN_P95_SAMPLE:
+        return HealthStatus.UNKNOWN
+    return worst_status([_status_for_error_rate(error_rate), _status_for_latency(p95)])
+
+
 # ---------------------------------------------------------------------------
 # Per-endpoint stats (API & Endpoint Health)
 # ---------------------------------------------------------------------------
 
-def endpoint_stats(tr: TimeRange, school_id=None) -> list:
+# Aggregate per-route health for the endpoint table.
+def endpoint_stats(tr: TimeRange, tenant_id=None) -> list:
     """One entry per (route, method) with percentiles, rpm, error & throttle."""
-    qs = _base_qs(tr.start, tr.end, school_id)
+    qs = _base_qs(tr.start, tr.end, tenant_id)
     grouped = (
         qs.values("route", "method")
         .annotate(reqs=Sum("request_count"), s5=Sum("status_5xx"),
@@ -270,6 +329,7 @@ def endpoint_stats(tr: TimeRange, school_id=None) -> list:
     )
     # Histograms per (route, method) for percentiles.
     hist_map: dict = {}
+    # Keep histograms keyed by route/method so percentiles match each row.
     for route, method, hist in qs.values_list("route", "method", "latency_hist"):
         hist_map.setdefault((route, method), []).append(hist)
 
@@ -295,26 +355,28 @@ def endpoint_stats(tr: TimeRange, school_id=None) -> list:
                 "x2": g["s2"] or 0, "x3": g["s3"] or 0,
                 "x4": g["s4"] or 0, "x5": s5,
             },
-            "status": (_status_for_error_rate(err) if err
-                       else _status_for_latency(percentile_from_hist(merged, 95))),
+            # Percentiles above stay visible as raw numbers; the *status* badge
+            # is withheld until the route has enough requests to mean anything.
+            "status": window_status(reqs, err, percentile_from_hist(merged, 95)),
         })
     return out
 
 
+# Build one endpoint drill-down with histogram and top affected tenants.
 def endpoint_detail(tr: TimeRange, route: str) -> dict:
     """Histogram + per-tenant breakdown for one route (drill-down drawer)."""
     qs = _base_qs(tr.start, tr.end, route=route)
     merged = _merged_hist(qs)
     totals = _totals(qs)
     by_tenant = (
-        qs.exclude(school__isnull=True)
-        .values("school_id", "school__name")
+        qs.exclude(tenant__isnull=True)
+        .values("tenant_id", "tenant__name")
         .annotate(reqs=Sum("request_count"), s5=Sum("status_5xx"))
         .order_by("-reqs")[:10]
     )
     tenants = [{
-        "school_id": t["school_id"],
-        "name": t["school__name"],
+        "tenant_id": t["tenant_id"],
+        "name": t["tenant__name"],
         "requests": t["reqs"] or 0,
         "error_rate": round((t["s5"] or 0) / t["reqs"] * 100, 3) if t["reqs"] else 0.0,
     } for t in by_tenant]
@@ -334,11 +396,12 @@ def endpoint_detail(tr: TimeRange, route: str) -> dict:
 # Tenant Health
 # ---------------------------------------------------------------------------
 
+# Aggregate health by tenant and flag unusually heavy request volume.
 def tenant_stats(tr: TimeRange) -> list:
     """Per-institution golden signals + noisy-neighbour flag."""
-    qs = _base_qs(tr.start, tr.end).exclude(school__isnull=True)
+    qs = _base_qs(tr.start, tr.end).exclude(tenant__isnull=True)
     grouped = (
-        qs.values("school_id", "school__name")
+        qs.values("tenant_id", "tenant__name")
         .annotate(reqs=Sum("request_count"), s5=Sum("status_5xx"))
         .order_by("-reqs")
     )
@@ -347,11 +410,12 @@ def tenant_stats(tr: TimeRange) -> list:
         return []
 
     hist_map: dict = {}
-    for sid, hist in qs.values_list("school_id", "latency_hist"):
-        hist_map.setdefault(sid, []).append(hist)
+    for tid, hist in qs.values_list("tenant_id", "latency_hist"):
+        hist_map.setdefault(tid, []).append(hist)
 
     minutes = _minutes(tr)
     total_reqs = sum(r["reqs"] or 0 for r in rows)
+    # Average request load is used only as a relative noisy-neighbour baseline.
     avg_reqs = total_reqs / len(rows) if rows else 0
 
     out = []
@@ -359,19 +423,18 @@ def tenant_stats(tr: TimeRange) -> list:
         reqs = r["reqs"] or 0
         s5 = r["s5"] or 0
         err = round(s5 / reqs * 100, 3) if reqs else 0.0
-        p95 = percentile_from_hist(merge_hist(hist_map.get(r["school_id"], [])), 95)
+        p95 = percentile_from_hist(merge_hist(hist_map.get(r["tenant_id"], [])), 95)
         # Noisy neighbour: consuming >3x the mean request volume.
         noisy = bool(avg_reqs and reqs > avg_reqs * 3)
         out.append({
-            "school_id": r["school_id"],
-            "name": r["school__name"],
+            "tenant_id": r["tenant_id"],
+            "name": r["tenant__name"],
             "requests": reqs,
             "rpm": round(reqs / minutes, 1),
             "error_rate": err,
             "p95": p95,
             "noisy": noisy,
-            "status": (_status_for_error_rate(err) if err
-                       else _status_for_latency(p95)),
+            "status": window_status(reqs, err, p95),
         })
     return out
 
@@ -380,6 +443,7 @@ def tenant_stats(tr: TimeRange) -> list:
 # Service grid / overall posture
 # ---------------------------------------------------------------------------
 
+# Return active monitored services sorted by most severe current status.
 def service_grid() -> list:
     from .models import MonitoredService
     services = MonitoredService.objects.filter(is_active=True)
@@ -395,6 +459,7 @@ def service_grid() -> list:
     return out
 
 
+# Collapse all service states into the top-level status banner.
 def overall_posture() -> dict:
     from .models import MonitoredService, Incident
     statuses = list(
@@ -408,23 +473,29 @@ def overall_posture() -> dict:
         overall, label = "warning", f"{warn} service{'s' if warn > 1 else ''} degraded"
     else:
         overall, label = "operational", "All systems operational"
+    # Active incident count is shown beside service-derived posture.
     active = Incident.objects.filter(~Q(status=Incident.Status.RESOLVED)).count()
     return {"overall": overall, "label": label, "critical": crit,
             "warning": warn, "active_incidents": active}
 
 
-def global_uptime(days: int = 30) -> float:
-    """Mean uptime across services over the last *days* (from daily rollups)."""
+def global_uptime(days: int = 30) -> float | None:
+    """Mean uptime across services over the last *days* (from daily rollups).
+
+    None when no rollups exist yet - an uptime figure must never be claimed
+    without a single real check behind it.
+    """
     from .models import UptimeDailyRollup
     since = (timezone.now() - timedelta(days=days)).date()
     agg = UptimeDailyRollup.objects.filter(day__gte=since).aggregate(v=Avg("uptime_pct"))
-    return round(float(agg["v"]), 3) if agg["v"] is not None else 100.0
+    return round(float(agg["v"]), 3) if agg["v"] is not None else None
 
 
 # ---------------------------------------------------------------------------
 # Queues (Background Jobs)
 # ---------------------------------------------------------------------------
 
+# Return the latest queue snapshots and worker availability summary.
 def queue_overview() -> dict:
     """Latest snapshot per queue + a short depth trend, plus worker totals."""
     from .models import QueueSnapshot
@@ -435,6 +506,7 @@ def queue_overview() -> dict:
     for name in KNOWN_QUEUES:
         latest = QueueSnapshot.objects.filter(queue_name=name).order_by("-captured_at").first()
         if not latest:
+            # Queues without snapshots stay absent rather than pretending to be healthy.
             continue
         trend = list(
             QueueSnapshot.objects.filter(queue_name=name)
@@ -461,6 +533,7 @@ def queue_overview() -> dict:
 # Uptime monitors
 # ---------------------------------------------------------------------------
 
+# Build uptime monitor cards from daily rollups and recent raw checks.
 def uptime_monitors(window_days: int = 90) -> list:
     """Per service: uptime % windows, 90-segment bar, response series, SSL."""
     from .models import MonitoredService, UptimeDailyRollup, UptimeCheckResult, CheckType
@@ -477,6 +550,7 @@ def uptime_monitors(window_days: int = 90) -> list:
                        for r in reversed(list(recent)) if r.response_ms is not None]
 
         def _window(d):
+            # Empty windows report 100% until real checks arrive for that service.
             ds = (timezone.now() - timedelta(days=d)).date()
             vals = [float(x.uptime_pct) for x in daily if x.day >= ds]
             return round(sum(vals) / len(vals), 4) if vals else 100.0
@@ -504,6 +578,7 @@ def uptime_monitors(window_days: int = 90) -> list:
 # SLOs & error budgets
 # ---------------------------------------------------------------------------
 
+# Compute SLO attainment and remaining error budget for active objectives.
 def slo_status() -> list:
     from .models import SLO, UptimeDailyRollup
     out = []
@@ -517,6 +592,7 @@ def slo_status() -> list:
         target = float(slo.target_pct)
         # Error budget remaining as a % of the allowed downtime budget.
         allowed = 100.0 - target
+        # Downtime consumed beyond the target eats into the allowed error budget.
         used = max(0.0, 100.0 - current)
         budget_remaining = round(max(0.0, (allowed - used) / allowed * 100), 1) if allowed else 100.0
         out.append({
@@ -533,12 +609,14 @@ def slo_status() -> list:
 # Reliability stats (MTTA / MTTR / counts)
 # ---------------------------------------------------------------------------
 
+# Compute incident response and recovery statistics for the selected window.
 def reliability_stats(days: int = 30) -> dict:
     from .models import Incident
     since = timezone.now() - timedelta(days=days)
     incidents = Incident.objects.filter(started_at__gte=since)
 
     acks, resolves = [], []
+    # MTTA and MTTR only include incidents with the relevant timestamp present.
     for inc in incidents:
         if inc.acknowledged_at:
             acks.append((inc.acknowledged_at - inc.started_at).total_seconds() / 60.0)

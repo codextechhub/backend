@@ -4,7 +4,7 @@ Registering a handler per document type is what lets the generic ``vs_workflow``
 drive a requisition / purchase order / vendor invoice through approval without knowing
 anything about procurement. The engine calls :meth:`resolve_default_template_code` to
 pick the template, :meth:`get_document_summary` to snapshot the approval screen, and the
-``on_*`` lifecycle callbacks on terminal decisions — which delegate to
+``on_*`` lifecycle callbacks on terminal decisions - which delegate to
 :mod:`vs_procurement.approvals` to flip ``approval_state`` and apply the document-type
 effect.
 
@@ -21,14 +21,15 @@ from .constants import (
     WF_DOCTYPE_PURCHASE_ORDER,
     WF_DOCTYPE_REQUISITION,
     WF_DOCTYPE_VENDOR_INVOICE,
+    WF_DOCTYPE_VENDOR_PAYMENT,
 )
 
 
 class _ProcApprovalHandler(BaseWorkflowHandler):
-    """Shared behaviour for the three procurement approval handlers.
+    """Shared behaviour for the procurement approval handlers.
 
-    Subclasses only declare their ``document_model``; everything else — template
-    resolution, the approval-screen summary, and the terminal callbacks — is uniform
+    Subclasses only declare their ``document_model``; everything else - template
+    resolution, the approval-screen summary, and the terminal callbacks - is uniform
     because each document exposes ``workflow_amount_field`` and ``approval_state``.
     """
 
@@ -95,3 +96,13 @@ class VendorInvoiceApprovalHandler(_ProcApprovalHandler):
     def document_model(self):
         from .models import VendorInvoice
         return VendorInvoice
+
+
+@register_handler(WF_DOCTYPE_VENDOR_PAYMENT)
+class VendorPaymentApprovalHandler(_ProcApprovalHandler):
+    noun = "Vendor payment"
+
+    @property
+    def document_model(self):
+        from .models import VendorPayment
+        return VendorPayment

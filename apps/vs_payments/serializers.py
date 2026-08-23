@@ -12,12 +12,16 @@ from .models import (
     PayoutBatch,
     PayoutInstruction,
     VirtualAccount,
+    WebhookEvent,
 )
 
 
 class CollectionIntentSerializer(serializers.ModelSerializer):
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     customer_code = serializers.CharField(source="customer.code", read_only=True, default=None)
+    customer_name = serializers.CharField(source="customer.name", read_only=True, default=None)
+    deposit_account_code = serializers.CharField(source="deposit_account.code", read_only=True, default=None)
+    deposit_account_name = serializers.CharField(source="deposit_account.name", read_only=True, default=None)
     amount_naira = serializers.SerializerMethodField()
     payment_id = serializers.IntegerField(read_only=True)
 
@@ -25,7 +29,8 @@ class CollectionIntentSerializer(serializers.ModelSerializer):
         model = CollectionIntent
         fields = [
             "id", "entity_code", "provider", "channel", "reference", "provider_reference",
-            "amount", "amount_naira", "status", "customer_code", "invoice_id",
+            "amount", "amount_naira", "status", "customer_code", "customer_name", "invoice_id",
+            "deposit_account_code", "deposit_account_name",
             "payer_email", "payer_name", "narration", "checkout_url", "payment_id",
             "confirmed_at", "created_at",
         ]
@@ -37,6 +42,10 @@ class CollectionIntentSerializer(serializers.ModelSerializer):
 class VirtualAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     customer_code = serializers.CharField(source="customer.code", read_only=True, default=None)
+    customer_name = serializers.CharField(source="customer.name", read_only=True, default=None)
+    deposit_account_code = serializers.CharField(source="deposit_account.code", read_only=True, default=None)
+    deposit_account_name = serializers.CharField(source="deposit_account.name", read_only=True, default=None)
+    currency_code = serializers.CharField(source="currency.code", read_only=True, default=None)
 
     # FLS: the funding account number/name are only exposed to holders of the
     # sensitive grant; everyone else sees the record with these fields stripped.
@@ -48,16 +57,25 @@ class VirtualAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     class Meta:
         model = VirtualAccount
         fields = [
-            "id", "entity_code", "provider", "customer_code", "account_number",
-            "bank_name", "account_name", "provider_reference", "status", "created_at",
+            "id", "entity_code", "provider", "customer_code", "customer_name",
+            "account_number", "bank_name", "account_name", "provider_reference",
+            "deposit_account_code", "deposit_account_name", "currency_code",
+            "status", "created_at",
         ]
 
 
 class PayoutInstructionSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     amount_naira = serializers.SerializerMethodField()
+    # WHT withheld on this line (carried on metadata) - net = amount − wht, and the
+    # settlement journal credits a WHT payable for it.
+    wht_amount = serializers.SerializerMethodField()
+    # The bank/cash GL the booked payout credits - lets the console recap the
+    # real settlement journal (Dr Accounts payable / Cr this account).
+    source_account_code = serializers.CharField(source="source_account.code", read_only=True, default=None)
+    source_account_name = serializers.CharField(source="source_account.name", read_only=True, default=None)
 
-    # FLS: beneficiary bank details are PII — only holders of the sensitive grant
+    # FLS: beneficiary bank details are PII - only holders of the sensitive grant
     # see them.
     read_permissions = {
         "beneficiary_name": "payments.payout.view_sensitive",
@@ -70,11 +88,15 @@ class PayoutInstructionSerializer(FieldSecurityMixin, serializers.ModelSerialize
             "id", "entity_code", "batch_id", "provider", "reference", "provider_reference",
             "amount", "amount_naira", "status", "beneficiary_name",
             "beneficiary_account_number", "beneficiary_bank_code", "narration",
+            "source_account_code", "source_account_name", "wht_amount",
             "vendor_payment_id", "failure_reason", "confirmed_at", "created_at",
         ]
 
     def get_amount_naira(self, obj):
         return format_naira(obj.amount)
+
+    def get_wht_amount(self, obj):
+        return int((obj.metadata or {}).get("wht_amount", 0))
 
 
 class PayoutBatchSerializer(serializers.ModelSerializer):
@@ -110,7 +132,7 @@ class PaymentEventSerializer(serializers.ModelSerializer):
 
 
 class PayoutBatchSummarySerializer(serializers.ModelSerializer):
-    """List view — omits the (potentially large) child instruction array."""
+    """List view - omits the (potentially large) child instruction array."""
 
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     total_amount_naira = serializers.SerializerMethodField()
@@ -125,3 +147,54 @@ class PayoutBatchSummarySerializer(serializers.ModelSerializer):
 
     def get_total_amount_naira(self, obj):
         return format_naira(obj.total_amount)
+
+
+class WebhookEventSerializer(serializers.ModelSerializer):
+    """Read serializer for an inbound provider webhook that needs an operator's eye.
+
+    Deliberately omits ``payload``, ``raw_body``, ``headers`` and ``signature``. Those
+    are stored verbatim for audit and replay and are the provider's own record: they
+    carry signature material and whatever personal data the PSP chose to include, none
+    of which a console list needs. What an operator needs is which event it was, what
+    it was for, and why it did not go through.
+    """
+
+    amount = serializers.SerializerMethodField()
+    amount_naira = serializers.SerializerMethodField()
+    customer_name = serializers.SerializerMethodField()
+    target_reference = serializers.SerializerMethodField()
+    target_kind = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WebhookEvent
+        fields = [
+            "id", "provider", "event_type", "provider_reference", "status", "verified",
+            "error", "created_at", "processed_at",
+            "collection_id", "payout_id", "target_kind", "target_reference",
+            "amount", "amount_naira", "customer_name",
+        ]
+
+    def _target(self, obj):
+        return obj.collection or obj.payout
+
+    def get_target_kind(self, obj) -> str | None:
+        if obj.collection_id:
+            return "COLLECTION"
+        return "PAYOUT" if obj.payout_id else None
+
+    def get_target_reference(self, obj) -> str | None:
+        target = self._target(obj)
+        return target.reference if target else None
+
+    def get_amount(self, obj) -> int | None:
+        target = self._target(obj)
+        return int(target.amount) if target else None
+
+    def get_amount_naira(self, obj) -> str | None:
+        target = self._target(obj)
+        return format_naira(target.amount) if target else None
+
+    def get_customer_name(self, obj) -> str | None:
+        """Who the money came from, when the event is a collection we could match."""
+        customer = getattr(obj.collection, "customer", None) if obj.collection_id else None
+        return customer.name if customer else None

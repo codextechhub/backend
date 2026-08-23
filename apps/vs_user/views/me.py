@@ -22,6 +22,7 @@ from ..models import (
 )
 from ..serializers import (
     UserReadSerializer,
+    school_public_info,
 )
 
 from django.utils.dateparse import parse_date as _parse_date
@@ -38,16 +39,30 @@ class CurrentUserView(APIView):
     docstring-name: Current user profile
     """
     permission_classes = [IsAuthenticatedAndActive]
+    # Operates purely on request.user - home tenant is derived from the token,
+    # so ?tenant= is not required. request.tenant is still bound by auth.
+    tenant_param_required = False
+    # Part of the pending-tenant surface (FR-012): the first School Admin of a
+    # school that has not gone live must be able to sign in and see themselves.
+    pending_tenant_surface = True
 
     def get(self, request):
         from vs_rbac.evaluator import get_effective_permissions
+        from vs_tenants.context import tenant_context_block
+        # request.tenant is bound by TenantJWTAuthentication; fall back to the
+        # user's home tenant for auth paths that bypass it (e.g. force_authenticate).
+        tenant = getattr(request, "tenant", None) or request.user.tenant
         permissions = sorted(
-            get_effective_permissions(request.user, school=getattr(request.user, "school", None))
+            get_effective_permissions(request.user, tenant=tenant)
         )
         return success_response(
             message="Current user retrieved successfully.",
             data={
                 "user": UserReadSerializer(request.user).data,
+                # Same builder as the login response: the console skips its
+                # /me sync straight after a login, so the two must not drift.
+                "tenant": tenant_context_block(tenant),
+                "school": school_public_info(getattr(tenant, "school_profile", None), request),
                 "permissions": permissions,
             },
         )
@@ -56,12 +71,14 @@ class CurrentUserView(APIView):
 class MySecurityStatsView(APIView):
     """
     GET /user/auth/me/stats/
-    Returns security stats scoped to the requesting user — accessible by any
+    Returns security stats scoped to the requesting user - accessible by any
     authenticated user without staff permissions.
 
     docstring-name: My security stats
     """
     permission_classes = [IsAuthenticatedAndActive]
+    tenant_param_required = False
+    pending_tenant_surface = True  # Self-scoped: see FR-012.
 
     def get(self, request):
         seven_days_ago = timezone.now() - timedelta(days=7)
@@ -86,6 +103,8 @@ class MyPasswordResetsView(APIView):
     docstring-name: My password reset history
     """
     permission_classes = [IsAuthenticatedAndActive]
+    tenant_param_required = False
+    pending_tenant_surface = True  # Self-scoped: see FR-012.
 
     def get(self, request):
         from ..serializers import MyPasswordResetSerializer
@@ -110,5 +129,4 @@ def _get_date_param(params, key):
     if parsed is None:
         raise ValidationError({key: f'"{raw}" is not a valid date. Use YYYY-MM-DD format.'})
     return parsed
-
 

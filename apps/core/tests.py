@@ -11,6 +11,18 @@ from core.models import StoredFile
 from core.storage import DatabaseStorage
 
 
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
 class DatabaseStorageTests(TestCase):
     def setUp(self):
         self.storage = DatabaseStorage()
@@ -51,6 +63,17 @@ class DatabaseStorageTests(TestCase):
         with self.assertRaises(SuspiciousOperation):
             self.storage.save("../../etc/passwd.csv", ContentFile(b"x"))
 
+    def test_stored_name_is_unguessable(self):
+        # The stored name keeps a readable prefix but carries a high-entropy token,
+        # so a caller can't fetch a file by guessing a predictable path.
+        name = self.storage.save("expense-receipts/receipt.pdf", ContentFile(b"%PDF fake"))
+        self.assertNotEqual(name, "expense-receipts/receipt.pdf")
+        self.assertTrue(name.startswith("expense-receipts/receipt-"))
+        self.assertTrue(name.endswith(".pdf"))
+        # Two uploads of the same filename get distinct, unguessable names.
+        other = self.storage.save("expense-receipts/receipt.pdf", ContentFile(b"%PDF two"))
+        self.assertNotEqual(name, other)
+
 
 class MediaViewTests(TestCase):
     def setUp(self):
@@ -60,9 +83,9 @@ class MediaViewTests(TestCase):
     def _user(self):
         from vs_user.models import User
 
-        return User.objects.create_user(
+        return User.objects.create_user(tenant=_platform_tenant(), 
             email="media@test.com", password="testpass123",
-            user_type="CX_STAFF", status="ACTIVE",
+            status="ACTIVE",
             first_name="Media", last_name="Tester",
         )
 

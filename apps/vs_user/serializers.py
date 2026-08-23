@@ -15,9 +15,12 @@ from rest_framework_simplejwt.serializers import (
     TokenRefreshSerializer as JWTTokenRefreshSerializer,
 )
 
-from vs_rbac.models import SchoolRoleTemplate, PlatformRoleTemplate
+from vs_rbac.models import TenantRoleTemplate
 from vs_rbac.fls import FieldSecurityMixin
-from vs_schools.models import School, Branch
+from vs_tenants.references import resolve_branch_reference
+from vs_tenants.models import Tenant
+from .email_normalization import normalize_email
+from .services.email_availability import email_refusal
 from .models import (
     User,
     UserInvitation,
@@ -34,14 +37,47 @@ from .models import (
 )
 
 
+def school_public_info(school, request=None) -> dict | None:
+    """Return a school's public branding identity for auth payloads.
+
+    Shape: ``{"id", "name", "slug", "logo"}`` where ``logo`` is an absolute URL
+    (built from ``request`` when available) or ``None``. Returns ``None`` when
+    there is no school (e.g. a platform user, or a user without a school FK).
+
+    Null-safe at every level: a missing ``branding`` row, a missing logo upload,
+    or an unreadable file URL all resolve to ``logo: None`` rather than raising.
+    """
+    if school is None:
+        return None
+
+    logo_url = None
+    branding = getattr(school, "branding", None)
+    logo = getattr(branding, "logo", None) if branding is not None else None
+    if logo:
+        try:
+            url = logo.url
+        except Exception:
+            url = None
+        if url:
+            logo_url = request.build_absolute_uri(url) if request is not None else url
+
+    return {
+        "id": school.id,
+        "name": school.name,
+        "slug": school.slug,
+        "logo": logo_url,
+    }
+
+
 # =============================================================================
 # Helpers -- UNCHANGED FROM ORIGINAL
 # =============================================================================
 
-class SchoolSlimSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = School
-        fields = ('id', 'name', 'slug')
+class TenantSlimSerializer(serializers.Serializer):
+    """Minimal tenant identity for session/security-log payloads."""
+    id   = serializers.IntegerField(read_only=True)
+    slug = serializers.CharField(read_only=True)
+    name = serializers.CharField(read_only=True)
 
 
 class UserInlineSerializer(serializers.ModelSerializer):
@@ -66,9 +102,12 @@ def _raise_password_error(exc: DjangoValidationError):
 
 class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     full_name        = serializers.SerializerMethodField()
-    school_name = serializers.CharField(source='school.name', read_only=True, default=None)
+    tenant_slug = serializers.CharField(source='tenant.slug', read_only=True)
+    tenant_name = serializers.CharField(source='tenant.name', read_only=True)
     branch_name      = serializers.CharField(source='branch.name', read_only=True, default=None)
     invited_by_name  = serializers.SerializerMethodField()
+    position_id      = serializers.SerializerMethodField()
+    position_title   = serializers.SerializerMethodField()
 
     # Security-sensitive fields: only platform staff with team-management
     # access should see account security metadata for other users.
@@ -90,13 +129,14 @@ class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
             'full_name',
             'gender',
             'phone',
-            'user_type',
             'role',
             'status',
-            'school_id',
-            'school_name',
+            'tenant_slug',
+            'tenant_name',
             'branch_id',
             'branch_name',
+            'position_id',
+            'position_title',
             'invited_by_id',
             'invited_by_name',
             'password_changed_at',
@@ -114,10 +154,29 @@ class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
             return obj.invited_by.full_name
         return None
 
+    def get_position_id(self, obj):
+        profile = getattr(obj, 'platform_staff_profile', None)
+        return profile.position_id if profile else None
+
+    def get_position_title(self, obj) -> str | None:
+        profile = getattr(obj, 'platform_staff_profile', None)
+        return profile.position.title if profile and profile.position_id else None
+
 
 class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     full_name    = serializers.SerializerMethodField()
+    role          = serializers.SerializerMethodField()
+    # Derived from the user's tenant school profile (None for platform users).
+    # Keys kept stable (`school_id`/`school_name`) for the frontend.
+    school_id    = serializers.SerializerMethodField()
+    school_name  = serializers.SerializerMethodField()
     branch_name  = serializers.CharField(source='branch.name', read_only=True, default=None)
+    # Replaces the ``user_type`` column this list used to carry. The console's
+    # two tabs are CX and School, and that split has always been the tenant's
+    # kind - ``scope=school`` on the list endpoint already filters on exactly
+    # this. What the tab could not say per row, this says per row. The human
+    # answer to "who is this person here" is ``role``, which is beside it.
+    tenant_kind  = serializers.CharField(source='tenant.kind', read_only=True)
     invited_by_name         = serializers.SerializerMethodField()
     invitation_email_status = serializers.SerializerMethodField()
     invitation_expires_at   = serializers.SerializerMethodField()
@@ -131,14 +190,31 @@ class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     class Meta:
         model  = User
         fields = (
-            'id', 'uid', 'email', 'full_name', 'gender', 'user_type', 'role',
-            'status', 'branch_id', 'branch_name', 'invited_by_name', 'created_at',
+            'id', 'uid', 'email', 'full_name', 'gender', 'tenant_kind', 'role',
+            'status', 'school_id', 'school_name', 'branch_id', 'branch_name',
+            'invited_by_name', 'created_at',
             'invitation_email_status', 'invitation_expires_at',
         )
         read_only_fields = fields
 
     def get_full_name(self, obj) -> str:
         return obj.full_name
+
+    def get_school_id(self, obj):
+        school = getattr(obj.tenant, 'school_profile', None)
+        return school.id if school else None
+
+    def get_school_name(self, obj) -> str | None:
+        school = getattr(obj.tenant, 'school_profile', None)
+        return school.name if school else None
+
+    def get_role(self, obj) -> str:
+        assignments = getattr(obj, 'active_school_role_assignments', None)
+        if assignments is not None:
+            names = [assignment.role.name for assignment in assignments]
+            if names:
+                return ', '.join(names)
+        return obj.role or ''
 
     def get_invited_by_name(self, obj) -> str | None:
         if obj.invited_by:
@@ -159,35 +235,38 @@ class UserCreateSerializer(serializers.Serializer):
     last_name   = serializers.CharField(max_length=100)
     email       = serializers.EmailField()
     gender      = serializers.ChoiceField(choices=User.Gender.choices, required=False, allow_blank=True, default='')
-    user_type   = serializers.ChoiceField(choices=User.UserType.choices, required=False, default=None, allow_null=True)
+    # There is no ``user_type`` input. Which side of the platform boundary a
+    # new account lands on was never the client's to assert: it follows from
+    # the tenant the account is created in, and validate() below settles that
+    # from the actor and the asserted tenant, exactly as the old default did.
     phone       = serializers.CharField(
         max_length=32, required=False, allow_blank=True, default='',
         validators=[RegexValidator(r'^\+?[0-9 ()\-]{7,22}$', message='Enter a valid phone number.')],
     )
-    # school and branch passed as UUIDs; resolved to objects in validate()
-    school      = serializers.UUIDField(required=False, allow_null=True, default=None)
-    branch      = serializers.UUIDField(required=False, allow_null=True, default=None)
-    role        = serializers.CharField(
-        max_length=120,
-        required=True,
-        error_messages={
-            'required': 'A role must be assigned to the user.',
-            'blank':    'A role must be assigned to the user.',
-            'null':     'A role must be assigned to the user.',
-        },
+    # branch passed as its integer id; resolved against the target tenant in
+    # validate(). The target tenant is derived from request context, not a
+    # school input. Declared as a CharField so "3" and 3 are both accepted and
+    # the id is range-checked by the resolver rather than by the database.
+    branch      = serializers.CharField(
+        required=False, allow_null=True, allow_blank=True, default=None,
     )
-    # Optional organogram seat to slot a CX hire into. Accepts a Position PK or
-    # code. Resolved here and materialised into a real (effective-dated) primary
-    # PositionAssignment by UserCreationService.create_pending.
+    # Required for a real create; optional when saving a draft (context['draft']),
+    # where the role can be filled in before the draft is submitted.
+    role        = serializers.CharField(
+        max_length=120, required=False, allow_blank=True, allow_null=True, default='',
+    )
+    # Organogram seat for a CX hire. Drafts may omit it while incomplete, but a
+    # real CX create requires it. Accepts a Position PK or code and is
+    # materialised into an effective-dated primary PositionAssignment.
     position    = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None)
-    job_title       = serializers.CharField(max_length=120, required=False, allow_blank=True, default='')
+    job_title       = serializers.CharField(max_length=150, required=False, allow_blank=True, default='')
     employee_id     = serializers.CharField(max_length=32, required=False, allow_blank=True, allow_null=True, default=None)
     employment_type = serializers.ChoiceField(
         choices=PlatformStaffProfile.EmploymentType.choices,
         required=False, allow_blank=True, default='',
     )
     date_joined     = serializers.DateField(required=False, allow_null=True, default=None)
-    # Personal details (CX staff only) — prefilled onto the PlatformStaffProfile.
+    # Personal details (CX staff only) - prefilled onto the PlatformStaffProfile.
     date_of_birth   = serializers.DateField(required=False, allow_null=True, default=None)
     marital_status  = serializers.ChoiceField(
         choices=PlatformStaffProfile.MaritalStatus.choices,
@@ -197,106 +276,129 @@ class UserCreateSerializer(serializers.Serializer):
     state_of_origin = serializers.CharField(max_length=80, required=False, allow_blank=True, default='')
 
     def validate_email(self, value):
-        # Enforce email uniqueness here to provide a clear error message, rather than relying on DB constraint which raises IntegrityError.
-        if User.objects.filter(email__iexact=value.lower().strip()).exists():
-            raise serializers.ValidationError({'email': 'A user with this email already exists.'})
-
-        return value.lower().strip()
+        # Normalise only. The uniqueness question cannot be answered here:
+        # ``User.email`` is unique PER TENANT, and the target tenant is not
+        # resolved until validate() below (it comes from the ?tenant=
+        # assertion, or is forced to the platform tenant for CX staff). A
+        # field-level validator runs before validate(), so an existence check
+        # written here has no choice but to ask about the whole platform - and
+        # would refuse Greenfield an account for ada@gmail.com because Bright
+        # Star already has one. See validate() for the scoped check.
+        return normalize_email(value)
 
     def validate(self, attrs):
-        user_type = attrs.get('user_type')
+        actor = self.context['request'].user
 
-        if not user_type:
-            if self.context['request'].user.user_type == User.UserType.CX_STAFF:
-                user_type = User.UserType.CX_STAFF
-            else:                
-                user_type = User.UserType.SCHOOL_ADMIN
-                
-        attrs['user_type'] = user_type
+        # The target tenant that will own the created user comes from the actor
+        # and the request context (the ?tenant= assertion), never from a client
+        # input. A platform-tenant actor provisions internal staff, so the
+        # target is the platform (codex) tenant; everybody else provisions
+        # inside the tenant they are working in. This is the same rule the old
+        # ``user_type`` default already ran on - the persona was derived from
+        # the actor's tenant kind and then used to pick the tenant, so it was
+        # only ever the answer travelling in a circle. A legacy ``school``
+        # input is accepted and ignored so old clients do not 400.
+        attrs.pop('school', None)
+        branch_ref = attrs.pop('branch', None)
 
-        # Resolve school UUID to instance
-        school_id = attrs.pop('school', None)
-        branch_id      = attrs.pop('branch', None)
-
-        if school_id:
-            # Accept the surrogate id (B23) or the slug — clients sent slugs
-            # while the slug was the primary key.
-            lookup = {'id': school_id} if str(school_id).isdigit() else {'slug': school_id}
-            try:
-                attrs['school'] = School.objects.get(**lookup)
-            except School.DoesNotExist:
-                raise serializers.ValidationError({'school': 'School not found.'})
+        # The target tenant has to be known BEFORE the branch is resolved: the
+        # branch is looked up *inside* that tenant, which is what makes another
+        # tenant's branch indistinguishable from one that does not exist.
+        creating_platform_staff = (
+            getattr(actor.tenant, 'kind', None) == Tenant.Kind.PLATFORM
+        )
+        if creating_platform_staff:
+            target_tenant = Tenant.objects.filter(
+                slug='codex', kind=Tenant.Kind.PLATFORM,
+            ).first()
+            if target_tenant is None:
+                raise serializers.ValidationError(
+                    {'role': 'The platform (codex) tenant is not provisioned.'}
+                )
         else:
-            attrs['school'] = None
+            target_tenant = getattr(self.context['request'], 'tenant', None) or actor.tenant
 
-        if branch_id:
-            try:
-                attrs['branch'] = Branch.objects.get(id=branch_id)
-            except Branch.DoesNotExist:
-                raise serializers.ValidationError({'branch': 'Branch not found.'})
-        else:
+        # A caller may name the platform tenant as the target without being on
+        # it - the CX-user import handler does exactly that. Ask the resolved
+        # tenant, not the actor, from here on.
+        creating_platform_staff = (
+            getattr(target_tenant, 'kind', None) == Tenant.Kind.PLATFORM
+        )
+
+        # The branch rule, asked of the model so there is one statement of it -
+        # see User.branch_assignment_error. Judged on the raw reference, not a
+        # resolved row: the platform tenant owns no branches, so resolving
+        # first would answer "no such branch" and hide the real reason.
+        if creating_platform_staff:
+            error = User.branch_assignment_error(
+                target_tenant, branch_ref not in (None, ''),
+            )
+            if error:
+                # Reported on 'branch' now. It used to be reported on
+                # 'user_type', which was never the field the caller got wrong.
+                raise serializers.ValidationError({'branch': error})
             attrs['branch'] = None
-
-        # Vision Staff must not have school or branch
-        if user_type == User.UserType.CX_STAFF:
-            if attrs['school'] or attrs['branch']:
-                raise serializers.ValidationError(
-                    {'user_type': 'Vision Staff accounts cannot be assigned to a school or branch.'}
-                )
         else:
-            # All other user types must have a school
-            if not attrs['school']:
-                raise serializers.ValidationError(
-                    {'school': 'This user type must be assigned to a school.'}
-                )
-            # Branch-level users must have a branch
-            if user_type not in (User.UserType.SCHOOL_ADMIN,) and not attrs['branch']:
-                raise serializers.ValidationError(
-                    {'branch': f'User type {user_type} must be assigned to a branch.'}
-                )
+            # Raises a validation error - never a model-level exception or a
+            # database error - for an unknown, foreign or malformed reference.
+            # A tenant user may leave it out: a null branch means the person
+            # works across the whole tenant, which is a real posting and not a
+            # missing one.
+            attrs['branch'] = resolve_branch_reference(target_tenant, branch_ref)
 
-        # Branch must belong to the school
-        if attrs.get('branch') and attrs.get('school'):
-            if attrs['branch'].school_id != attrs['school'].id:
+        attrs['tenant'] = target_tenant
+
+        # Now that the owning tenant is known, ask whether the address is free
+        # IN IT. Reported on the 'email' key so the error shape is unchanged
+        # for clients, even though the check moved out of validate_email.
+        refusal = email_refusal(attrs.get('email'), tenant=target_tenant)
+        if refusal:
+            raise serializers.ValidationError({'email': refusal})
+
+        # Role input is a TenantRoleTemplate KEY, resolved within the target
+        # tenant natively. The backfill in vs_rbac.0004 set each migrated
+        # tenant-role key to str(legacy_pk), so legacy role slugs keep resolving.
+        # In draft mode the role is optional and left unresolved until submit.
+        draft = self.context.get('draft', False)
+        role_key = (attrs.get('role') or '').strip()
+        if not role_key:
+            if not draft:
                 raise serializers.ValidationError(
-                    {'branch': 'The selected branch does not belong to the selected school.'}
+                    {'role': 'A role must be assigned to the user.'}
                 )
-            
-        role_id = attrs['role']
-        if user_type == User.UserType.CX_STAFF:
+            attrs['role'] = ''
+            attrs['role_instance'] = None
+        else:
             try:
-                role = PlatformRoleTemplate.objects.get(id=role_id)
-            except PlatformRoleTemplate.DoesNotExist:
+                role = TenantRoleTemplate.objects.get(tenant=target_tenant, key=role_key)
+            except TenantRoleTemplate.DoesNotExist:
                 raise serializers.ValidationError(
-                    {'role': f'Platform role with id "{role_id}" not found.'}
+                    {'role': f'Role with key "{role_key}" not found in the target tenant.'}
                 )
-            if role_id == 'xvs_super_admin':
-                from vs_rbac.models import PlatformUserRoleAssignment
-                if PlatformUserRoleAssignment.objects.filter(role_id='xvs_super_admin').exists():
+            if creating_platform_staff and role_key == 'xvs_super_admin':
+                from vs_rbac.models import TenantUserRoleAssignment
+                if TenantUserRoleAssignment.objects.filter(
+                    role__key='xvs_super_admin',
+                    role__tenant__kind='PLATFORM',
+                    assignment_status='ACTIVE',
+                ).exists():
                     raise serializers.ValidationError(
                         {'role': 'A Vision Super Admin already exists. Only one is allowed.'}
                     )
-        else:
-            school = attrs.get('school')
-            if not school:
-                raise serializers.ValidationError(
-                    {'role': 'Role can only be assigned if a school is specified.'}
-                )
-            try:
-                role = SchoolRoleTemplate.objects.get(id=role_id, school=school)
-            except SchoolRoleTemplate.DoesNotExist:
-                raise serializers.ValidationError(
-                    {'role': f'Role with id "{role_id}" not found in the specified school.'}
-                )
 
-        attrs['role'] = role.name
-        attrs['role_instance'] = role
+            attrs['role'] = role.name
+            attrs['role_instance'] = role
 
-        # Resolve the optional organogram seat (PK or code). CX staff only.
+        # Resolve the organogram seat (PK or code). It is mandatory for a real
+        # CX hire; only an incomplete draft may omit it.
         position_ref = attrs.pop('position', None)
         position_instance = None
+        if creating_platform_staff and not draft and not position_ref:
+            raise serializers.ValidationError(
+                {'position': 'A position must be assigned to platform staff.'}
+            )
         if position_ref:
-            if user_type != User.UserType.CX_STAFF:
+            if not creating_platform_staff:
                 raise serializers.ValidationError(
                     {'position': 'Only platform (CX) staff can be assigned an organogram position.'}
                 )
@@ -323,7 +425,12 @@ class UserCreateSerializer(serializers.Serializer):
         state_of_origin = (attrs.pop('state_of_origin', '') or '').strip()
 
         profile_prefill = {}
-        if job_title:
+        # A seat is the source of truth for job title. Ignore a conflicting
+        # client/import value; OrganogramService also enforces this on every
+        # later primary-position change.
+        if position_instance is not None:
+            profile_prefill['job_title'] = position_instance.title
+        elif job_title:
             profile_prefill['job_title'] = job_title
         if employee_id:
             profile_prefill['employee_id'] = employee_id
@@ -341,7 +448,7 @@ class UserCreateSerializer(serializers.Serializer):
             profile_prefill['state_of_origin'] = state_of_origin
 
         if profile_prefill:
-            if user_type != User.UserType.CX_STAFF:
+            if not creating_platform_staff:
                 raise serializers.ValidationError(
                     {'job_title': 'Staff profile fields can only be set for platform (CX) staff.'}
                 )
@@ -358,8 +465,8 @@ class UserUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model  = User
         fields = ('first_name', 'last_name', 'phone', 'gender')
-        # role and user_type are intentionally excluded — changes go through
-        # SchoolRoleChangeRequest / PlatformRoleChangeRequest workflows only.
+        # role is intentionally excluded - changes go through the
+        # TenantRoleChangeRequest workflow only.
         # Email changes go through the separate /email/change/ endpoint.
 
 
@@ -367,7 +474,9 @@ class EmailChangeSerializer(serializers.Serializer):
     email = serializers.EmailField()
 
     def validate_email(self, value):
-        return value.lower().strip()
+        # One spelling of the fold, shared with the model and every other
+        # creation path, rather than a second hand-rolled .lower().strip().
+        return normalize_email(value)
 
 
 # =============================================================================
@@ -406,12 +515,27 @@ class ActivationPreviewSerializer(serializers.ModelSerializer):
 class LoginRequestSerializer(serializers.Serializer):
     email            = serializers.EmailField()
     password         = serializers.CharField(write_only=True, trim_whitespace=False)
+    # The slug of the tenant the caller is signing in to, which the frontend
+    # reads off the subdomain it is served from: a school's page at
+    # bright-star.xvs.codexng.com sends "bright-star". A BODY key, not the
+    # ``?tenant=`` query assertion the authenticated endpoints take - there is
+    # no token yet to check one against.
+    #
+    # Optional HERE on purpose, even though both frontends now send it and the
+    # switch is on. Whether an absent tenant is acceptable is decided in one
+    # place, the service (services.sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN),
+    # not here: a field error would answer a tenantless sign-in differently
+    # from a wrong one, and the refusal must look identical either way.
+    # An unknown slug is not rejected as a field error either: that would tell
+    # an anonymous caller which tenants exist. It is refused as bad credentials.
+    tenant           = serializers.CharField(required=False, allow_blank=True, default='')
 
     def validate(self, attrs):
-        email = attrs.get('email', '').strip()
+        email = normalize_email(attrs.get('email'))
         if not email:
             raise serializers.ValidationError({'email': 'Email is required.'})
-        attrs['email'] = email.lower()
+        attrs['email'] = email
+        attrs['tenant'] = (attrs.get('tenant') or '').strip().lower()
         return attrs
 
 
@@ -460,9 +584,14 @@ class PasswordChangeSerializer(serializers.Serializer):
 
 class PasswordResetRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
+    # Same optional tenant slug as LoginRequestSerializer, for the same reasons.
+    tenant = serializers.CharField(required=False, allow_blank=True, default='')
 
     def validate_email(self, value):
         return value.lower().strip()
+
+    def validate_tenant(self, value):
+        return (value or '').strip().lower()
 
 
 class PasswordResetPreviewSerializer(serializers.Serializer):
@@ -508,20 +637,66 @@ class UserInvitationReadSerializer(serializers.ModelSerializer):
 
 class LoginSessionReadSerializer(serializers.ModelSerializer):
     user   = UserInlineSerializer(read_only=True)
-    school = SchoolSlimSerializer(read_only=True)
+    tenant = TenantSlimSerializer(read_only=True)
 
     class Meta:
         model  = LoginSession
         fields = (
-            'id', 'user', 'school', 'ip_address', 'user_agent',
+            'id', 'user', 'tenant', 'ip_address', 'user_agent',
             'device_label', 'last_seen_at', 'is_active', 'ended_at',
             'end_reason', 'created_at',
         )
         read_only_fields = fields
 
 
+class EndOtherSessionsSerializer(serializers.Serializer):
+    current_session_id = serializers.IntegerField(min_value=1)
+
+
+class AdministrableUserField(serializers.PrimaryKeyRelatedField):
+    """A target account named by id, resolved inside the caller's own scope.
+
+    ``queryset=User.objects.all()`` on a ``PrimaryKeyRelatedField`` is the same
+    hole as ``User.objects.get(id=...)`` in a view, wearing different clothes:
+    the manager is plain, the key is a sequential integer, and the RBAC key that
+    gates the endpoint says nothing about *whose* account 41 is. See
+    :mod:`vs_user.account_scope`.
+
+    An id outside the caller's scope answers ``NotFound``, exactly as an id
+    belonging to nobody does, so the refusal carries no information about which
+    of the two it was. That is deliberately *not* the field's usual
+    ``does_not_exist`` 400: these two endpoints are the only pair in the family
+    that name their target in the body rather than the path, and a caller should
+    not be able to tell them apart from the four that name it in the path.
+
+    Requires ``context['request']`` - a serializer built without it is a
+    programming error, and failing loudly beats silently unscoping.
+    """
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("queryset", User.objects.none())
+        super().__init__(**kwargs)
+
+    def get_queryset(self):
+        from .account_scope import administrable_users
+
+        return administrable_users(self.context["request"])
+
+    def to_internal_value(self, data):
+        from rest_framework.exceptions import NotFound
+
+        try:
+            pk = int(data)
+        except (TypeError, ValueError):
+            self.fail("incorrect_type", data_type=type(data).__name__)
+        user = self.get_queryset().filter(pk=pk).first()
+        if user is None:
+            raise NotFound("User not found.")
+        return user
+
+
 class ForceLogoutSerializer(serializers.Serializer):
-    user_id    = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False, default=None)
+    user_id    = AdministrableUserField(required=False, default=None)
     session_id = serializers.PrimaryKeyRelatedField(queryset=LoginSession.objects.all(), required=False, default=None)
     reason     = serializers.CharField()
 
@@ -533,12 +708,12 @@ class ForceLogoutSerializer(serializers.Serializer):
 
 class AuthAttemptReadSerializer(serializers.ModelSerializer):
     user   = UserInlineSerializer(read_only=True)
-    school = SchoolSlimSerializer(read_only=True)
+    tenant = TenantSlimSerializer(read_only=True)
 
     class Meta:
         model  = AuthAttempt
         fields = (
-            'id', 'email_entered', 'user', 'school',
+            'id', 'email_entered', 'user', 'tenant',
             'ip_address', 'user_agent', 'result', 'failure_code', 'metadata', 'created_at',
         )
         read_only_fields = fields
@@ -562,7 +737,7 @@ class AccountLockoutReadSerializer(serializers.ModelSerializer):
 
 
 class UnlockAccountSerializer(serializers.Serializer):
-    user_id              = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), source='user')
+    user_id              = AdministrableUserField(source='user')
     reason               = serializers.CharField(required=False, allow_blank=True)
     force_password_reset = serializers.BooleanField(default=False)
 
@@ -571,26 +746,41 @@ class AuthEventLogReadSerializer(serializers.ModelSerializer):
     class Meta:
         model  = AuthEventLog
         fields = (
-            'id', 'actor', 'subject', 'school', 'event',
+            'id', 'actor', 'subject', 'tenant', 'event',
             'ip_address', 'user_agent', 'metadata', 'created_at',
         )
         read_only_fields = fields
 
 
 class PasswordResetAdminSerializer(serializers.ModelSerializer):
-    user = UserInlineSerializer(read_only=True)
+    """One pending reset, as the Password Activity screen shows it.
+
+    The tenant fields are here because this list crosses tenants: a CX
+    operator looking at ``ada.okeye@gmail.com`` cannot otherwise tell whether
+    that is Corona's principal or a parent at Bright Star, and the decision in
+    front of them is whether to kill her reset link. They sit on the row rather
+    than on ``UserInlineSerializer`` because that serializer is shared with
+    sessions and lockouts, which are already scoped to one tenant and would
+    only be repeating themselves.
+    """
+
+    user        = UserInlineSerializer(read_only=True)
+    tenant_id   = serializers.IntegerField(source='user.tenant_id', read_only=True)
+    tenant_slug = serializers.CharField(source='user.tenant.slug', read_only=True)
+    tenant_name = serializers.CharField(source='user.tenant.name', read_only=True)
 
     class Meta:
         model  = PasswordResetRequest
         fields = (
-            'id', 'user', 'requested_by', 'requested_ip',
+            'id', 'user', 'tenant_id', 'tenant_slug', 'tenant_name',
+            'requested_by', 'requested_ip',
             'expires_at', 'used_at', 'created_at',
         )
         read_only_fields = fields
 
 
 class MyPasswordResetSerializer(serializers.ModelSerializer):
-    """Self-service view — omits the user field since it is always the requester."""
+    """Self-service view - omits the user field since it is always the requester."""
 
     class Meta:
         model  = PasswordResetRequest
@@ -628,7 +818,7 @@ class PositionInlineSerializer(serializers.ModelSerializer):
 
 
 class PlatformStaffProfileListSerializer(serializers.ModelSerializer):
-    """Slim representation for list endpoints — no sensitive payroll data."""
+    """Slim representation for list endpoints - no sensitive payroll data."""
 
     user = UserInlineSerializer(read_only=True)
     position = PositionInlineSerializer(read_only=True)
@@ -645,6 +835,37 @@ class PlatformStaffProfileListSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at',
         )
         read_only_fields = fields
+
+
+class PlatformStaffProfileBriefSerializer(serializers.ModelSerializer):
+    """Work-only profile shown to colleagues without HR-profile access.
+
+    This is deliberately a separate allowlist, not a full serializer whose
+    private fields are removed in the frontend. Personal, next-of-kin, payroll,
+    employment-date and account-management data never leave the backend.
+    """
+
+    profile_view = serializers.SerializerMethodField()
+    user = UserInlineSerializer(read_only=True)
+    position = PositionInlineSerializer(read_only=True)
+    org_node = OrgNodeInlineSerializer(read_only=True)
+    department = OrgNodeInlineSerializer(read_only=True)
+    division = OrgNodeInlineSerializer(read_only=True)
+    current_line_manager = UserInlineSerializer(read_only=True)
+    is_active_employee = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = PlatformStaffProfile
+        fields = (
+            'profile_view', 'id', 'user', 'profile_photo', 'employee_id',
+            'job_title', 'position', 'org_node', 'department', 'division',
+            'current_line_manager', 'employment_type', 'employment_status',
+            'is_active_employee',
+        )
+        read_only_fields = fields
+
+    def get_profile_view(self, _obj) -> str:
+        return 'brief'
 
 
 class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerializer):
@@ -686,7 +907,7 @@ class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerial
     user            = UserInlineSerializer(read_only=True)
     user_id         = serializers.PrimaryKeyRelatedField(
         source='user', write_only=True, required=False,
-        queryset=User.objects.filter(user_type=User.UserType.CX_STAFF),
+        queryset=User.objects.filter(tenant__kind=Tenant.Kind.PLATFORM),
     )
     # The primary seat is the single source everything settles off. Assign it
     # via position_id (or, preferably, through OrganogramService so the
@@ -696,20 +917,21 @@ class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerial
         source='position', write_only=True, required=False, allow_null=True,
         queryset=Position.objects.all(),
     )
-    # org_node (the exact seat's node — could be a Team), department (the
+    # org_node (the exact seat's node - could be a Team), department (the
     # DEPARTMENT-tier ancestor), division (the
     # DIVISION-tier ancestor), and line manager are all DERIVED from the
-    # primary position — read only.
+    # primary position - read only.
     org_node             = OrgNodeInlineSerializer(read_only=True)
     department           = OrgNodeInlineSerializer(read_only=True)
     division             = OrgNodeInlineSerializer(read_only=True)
     current_line_manager = UserInlineSerializer(read_only=True)
     is_active_employee   = serializers.BooleanField(read_only=True)
+    profile_view         = serializers.SerializerMethodField()
 
     class Meta:
         model = PlatformStaffProfile
         fields = (
-            'id', 'user', 'user_id',
+            'profile_view', 'id', 'user', 'user_id',
             'date_of_birth', 'marital_status', 'nationality', 'state_of_origin',
             'profile_photo', 'bio',
             'personal_email', 'alternate_phone', 'residential_address',
@@ -722,6 +944,9 @@ class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerial
             'is_active_employee', 'created_at', 'updated_at',
         )
         read_only_fields = ('id', 'created_at', 'updated_at')
+
+    def get_profile_view(self, _obj) -> str:
+        return 'full'
 
     def validate(self, attrs):
         # On create the target user must be supplied; on update it is fixed.
@@ -742,7 +967,7 @@ class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerial
 
 
 # =============================================================================
-# Organogram — OrgNode / Position / PositionAssignment / MatrixReport
+# Organogram - OrgNode / Position / PositionAssignment / MatrixReport
 # =============================================================================
 
 class OrgNodeSerializer(serializers.ModelSerializer):
@@ -758,7 +983,7 @@ class OrgNodeSerializer(serializers.ModelSerializer):
         source='head_position', write_only=True, required=False, allow_null=True,
         queryset=Position.objects.all(),
     )
-    head    = UserInlineSerializer(read_only=True)
+    head    = serializers.SerializerMethodField()
     children_count = serializers.SerializerMethodField()
 
     class Meta:
@@ -771,9 +996,31 @@ class OrgNodeSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at',
         )
         read_only_fields = ('id', 'created_at', 'updated_at')
+        # DRF misrepresents these conditional constraints in two ways: the
+        # top-level name constraint becomes an unconditional field validator,
+        # and the sibling constraint makes optional parent_id required. Let
+        # OrgNode.clean() below perform the intended parent-scoped validation;
+        # the database constraints remain the concurrency-safe guard.
+        extra_kwargs = {'name': {'validators': []}}
+        validators = []
 
+    # Both fields prefer the annotation / prefetch set by OrgNodeViewSet so the
+    # list costs no per-row queries; each falls back to the live property for the
+    # detail view (single object, no prefetch).
     def get_children_count(self, obj) -> int:
-        return obj.children.count()
+        ann = getattr(obj, '_children_count', None)
+        return ann if ann is not None else obj.children.count()
+
+    def get_head(self, obj):
+        hp = obj.head_position
+        if hp is None:
+            return None
+        pre = getattr(hp, '_current_assignments', None)
+        if pre is not None:
+            user = pre[0].user if pre else None  # primary first (ordered)
+        else:
+            user = obj.head
+        return UserInlineSerializer(user).data if user else None
 
     def validate(self, attrs):
         target = copy.copy(self.instance) if self.instance is not None else OrgNode()
@@ -803,11 +1050,11 @@ class PositionSerializer(serializers.ModelSerializer):
     )
     default_role    = serializers.PrimaryKeyRelatedField(
         required=False, allow_null=True,
-        queryset=PlatformRoleTemplate.objects.all(),
+        queryset=TenantRoleTemplate.objects.all(),
     )
-    current_holders = UserInlineSerializer(many=True, read_only=True)
-    is_vacant       = serializers.BooleanField(read_only=True)
-    open_seats      = serializers.IntegerField(read_only=True)
+    current_holders = serializers.SerializerMethodField()
+    is_vacant       = serializers.SerializerMethodField()
+    open_seats      = serializers.SerializerMethodField()
 
     class Meta:
         model = Position
@@ -820,6 +1067,23 @@ class PositionSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at',
         )
         read_only_fields = ('id', 'created_at', 'updated_at')
+
+    # Occupancy from a single prefetched set of current assignments
+    # (PositionViewSet.get_queryset) - a 100-row list costs one query, not three
+    # per row. Falls back to the model's live query for the detail view.
+    def _current_users(self, obj):
+        pre = getattr(obj, '_current_assignments', None)
+        assignments = pre if pre is not None else list(obj.current_assignments)
+        return [a.user for a in assignments]
+
+    def get_current_holders(self, obj):
+        return UserInlineSerializer(self._current_users(obj), many=True).data
+
+    def get_is_vacant(self, obj) -> bool:
+        return len(self._current_users(obj)) == 0
+
+    def get_open_seats(self, obj) -> int:
+        return max(obj.headcount - len(self._current_users(obj)), 0)
 
     def validate(self, attrs):
         target = copy.copy(self.instance) if self.instance is not None else Position()
@@ -844,7 +1108,7 @@ class PositionAssignmentSerializer(serializers.ModelSerializer):
     user        = UserInlineSerializer(read_only=True)
     user_id     = serializers.PrimaryKeyRelatedField(
         source='user', write_only=True,
-        queryset=User.objects.filter(user_type=User.UserType.CX_STAFF),
+        queryset=User.objects.filter(tenant__kind=Tenant.Kind.PLATFORM),
     )
     position    = PositionInlineSerializer(read_only=True)
     position_id = serializers.PrimaryKeyRelatedField(
@@ -861,6 +1125,14 @@ class PositionAssignmentSerializer(serializers.ModelSerializer):
             'is_current', 'created_at', 'updated_at',
         )
         read_only_fields = ('id', 'created_at', 'updated_at')
+
+
+class OrganogramCurrentAssignmentSerializer(serializers.Serializer):
+    """Minimal current-seat data needed by the public organogram cards."""
+
+    user = UserInlineSerializer(read_only=True)
+    position = PositionInlineSerializer(read_only=True)
+    is_acting = serializers.BooleanField(read_only=True)
 
 
 class MatrixReportSerializer(serializers.ModelSerializer):
@@ -917,5 +1189,3 @@ class OrgTreeNodeSerializer(serializers.Serializer):
     def get_direct_reports(self, obj):
         children = obj.get('direct_reports', [])
         return OrgTreeNodeSerializer(children, many=True, context=self.context).data
-
-

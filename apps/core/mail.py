@@ -1,4 +1,4 @@
-from email.utils import formataddr, parseaddr
+from email.utils import formataddr
 
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
@@ -19,7 +19,11 @@ def build_from_email(display_name: str | None = None) -> str:
         build_from_email()
         → "CodeX System <system@codexng.com>"
     """
-    default_name, address = parseaddr(settings.DEFAULT_FROM_EMAIL)
+    from vs_config.runtime_settings import get_integration_settings
+
+    integration_settings = get_integration_settings()
+    default_name = integration_settings["email_sender_name"]
+    address = integration_settings["email_sender_address"]
     return formataddr((display_name or default_name or 'CodeX System', address))
 
 
@@ -27,27 +31,41 @@ def send_email(
     *,
     subject: str,
     plain_message: str,
-    html_message: str,
+    html_message: str | None = None,
     recipient_list: list[str],
     from_email: str | None = None,
-    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    attachments: list[tuple[str, bytes, str]] | None = None,
 ) -> None:
     """
     Central email sender for the platform.
 
-    Automatically attaches any addresses listed in settings.EMAIL_CC so
-    every outgoing email gets the same CC list (useful for monitoring /
-    testing). Clear EMAIL_CC in the environment to disable.
+    Automatically blind-copies any addresses listed in settings.EMAIL_BCC so
+    every outgoing email reaches the same monitoring mailbox. Clear EMAIL_BCC in
+    the environment to disable.
+
+    BCC rather than CC on purpose: these addresses are ours, not the recipient's.
+    A visible copy showed internal addresses to customers and vendors, told each
+    recipient their mail is monitored, and gave reply-all a route into an internal
+    inbox. Pass an explicit list to narrow it, or ``[]`` to send no copy at all.
+
+    ``html_message`` is optional: when provided the message is sent multipart
+    (plain body + HTML alternative); when omitted (or empty) a plain-text-only
+    email is sent. Existing keyword callers that always pass html_message keep
+    working unchanged.
     """
     from_email = from_email or build_from_email()
-    cc = cc or getattr(settings, 'EMAIL_CC', [])
+    bcc = bcc if bcc is not None else getattr(settings, 'EMAIL_BCC', [])
 
     msg = EmailMultiAlternatives(
         subject=subject,
         body=plain_message,
         from_email=from_email,
         to=recipient_list,
-        cc=cc,
+        bcc=bcc,
     )
-    msg.attach_alternative(html_message, 'text/html')
+    if html_message:
+        msg.attach_alternative(html_message, 'text/html')
+    for filename, content, mimetype in attachments or []:
+        msg.attach(filename, content, mimetype)
     msg.send()

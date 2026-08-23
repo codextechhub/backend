@@ -12,19 +12,21 @@ backend/
 │   ├── apps/              # project package: settings/, urls.py, celery.py
 │   ├── core/              # response envelope, exception handler, pagination,
 │   │                      # mail, thread-locals, management commands
-│   ├── vs_schools/        # Module 1  — schools, branches, packages, provisioning
-│   ├── vs_admin_console/  # Module 2  — internal backoffice (partial)
-│   ├── vs_user/           # Module 3  — identity, JWT auth, sessions, organogram
-│   ├── vs_rbac/           # Module 4  — two-layer RBAC + tenant context/managers
-│   ├── vs_audit/          # Module 5  — central audit engine
-│   ├── vs_config/         # Module 6  — configuration + feature flags
-│   ├── vs_workflow/       # Module 7  — approval engine (see its guide.md)
-│   ├── vs_notifications/  # Module 8  — in-app + email notifications
-│   ├── vs_import_data/    # Module 10 — CSV/XLSX import pipeline
-│   ├── vs_finance/        # Module 19 — double-entry GL, AR, banking, payroll,
+│   ├── schools/           # XVS, the schools product - every school app lives
+│   │   └── vs_schools/    # Module 1  - schools, packages, provisioning
+│   │                      #   (label still "vs_schools"; only the path moved)
+│   ├── vs_admin_console/  # Module 2  - internal backoffice (partial)
+│   ├── vs_user/           # Module 3  - identity, JWT auth, sessions, organogram
+│   ├── vs_rbac/           # Module 4  - two-layer RBAC + tenant context/managers
+│   ├── vs_audit/          # Module 5  - central audit engine
+│   ├── vs_config/         # Module 6  - configuration + feature flags
+│   ├── vs_workflow/       # Module 7  - approval engine (see its guide.md)
+│   ├── vs_notifications/  # Module 8  - in-app + email notifications
+│   ├── vs_import_data/    # Module 10 - CSV/XLSX import pipeline
+│   ├── vs_finance/        # Module 19 - double-entry GL, AR, banking, payroll,
 │   │                      #             budgets, fixed assets, statements, exports
-│   ├── vs_procurement/    # Modules 21–23 — vendors, requisitions, POs, GRNs, AP
-│   └── vs_payments/       # Module 18 — gateway layer (Paystack/OPay), webhooks
+│   ├── vs_procurement/    # Modules 21–23 - vendors, requisitions, POs, GRNs, AP
+│   └── vs_payments/       # Module 18 - gateway layer (Paystack/OPay), webhooks
 ├── cx/                    # project virtualenv (python 3.11)
 ├── requirements.txt       # pinned dependencies
 └── todo.md                # running task list (undone / done)
@@ -41,7 +43,7 @@ normalised by `core.exceptions.custom_exception_handler`.
 | `apps.settings.local`    | PostgreSQL | day-to-day development (DB `cx_db`, Homebrew postgresql@16) |
 | `apps.settings.ci`       | PostgreSQL | GitHub Actions (service container)      |
 | `apps.settings.staging`  | PostgreSQL | deployed staging (env-var driven)       |
-| `apps.settings.test`     | SQLite     | lightweight tests only — the full migration chain does NOT run on SQLite (vendor-specific raw-SQL migrations); use `local` for full suites |
+| `apps.settings.test`     | PostgreSQL | the test suite. Celery runs eager, so no broker is needed. Set `DB_NAME=<something-unique>` to run two suites on one machine at once (SQLite was retired here 2026-08-15: threading, row locks and the finance audit trigger all behaved differently, so a green run proved nothing) |
 
 PostgreSQL is the only supported engine (MariaDB retired 2026-06-12; the old
 local data lives in `~/cx_db_mariadb_final_backup.sql.gz`). Rebuild the local
@@ -55,7 +57,7 @@ Required environment variables (server refuses to start without them):
 ## Getting started
 
 ```bash
-# The project venv lives at ./cx (its pip shebang is broken — use python -m pip)
+# The project venv lives at ./cx (its pip shebang is broken - use python -m pip)
 ./cx/bin/python -m pip install -r requirements.txt
 
 cd apps
@@ -81,7 +83,7 @@ cd apps
 ```
 
 Note: parts of `vs_rbac/tests/test_views.py`, `test_models.py` and
-`test_validators.py` predate several model refactors and are being repaired —
+`test_validators.py` predate several model refactors and are being repaired -
 see `todo.md`.
 
 ## Tenancy model
@@ -111,11 +113,11 @@ linked to a School via `source_school`). Finance/procurement endpoints take
 
 ## Conventions
 
-- Money is integer **kobo** (`MoneyField`) — never float.
+- Money is integer **kobo** (`MoneyField`) - never float.
 - Posted journals are immutable; corrections are mirror-image reversals.
 - Finance writes its own transactional audit (`FinanceAuditLog`) and mirrors
   best-effort to the central `vs_audit`.
 - Async work goes through Celery (`REDIS_URL`); local dev and the current
-  staging tier run tasks eagerly (no broker) — see `todo.md` for the worker
+  staging tier run tasks eagerly (no broker) - see `todo.md` for the worker
   upgrade plan.
 - New apps should follow the `vs_user/services/` + thin-views pattern.

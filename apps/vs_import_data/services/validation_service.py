@@ -145,8 +145,8 @@ def _validate_template_rules(import_batch) -> list[dict]:
     Apply dataset-level rules from template.validation_rules JSON.
 
     Supported keys:
-      min_rows (int)  — file must contain at least this many data rows.
-      max_rows (int)  — file must contain no more than this many data rows.
+      min_rows (int)  - file must contain at least this many data rows.
+      max_rows (int)  - file must contain no more than this many data rows.
     """
     issues = []
 
@@ -217,14 +217,22 @@ def _validate_dataset_specific_rules(import_batch) -> list[dict]:
         return _validate_schools_rules(import_batch)
     if dataset_type == "branches":
         return _validate_branches_rules(import_batch)
+    if dataset_type == "bank_statements":
+        from vs_finance.statement_imports import validate_bank_statement_import_batch
+
+        result = validate_bank_statement_import_batch(import_batch)
+        import_batch._dataset_validation_summary = result["summary"]
+        return result["issues"]
     return []
 
 
 def _validate_schools_rules(import_batch) -> list[dict]:
     from datetime import date as date_type
     from django.utils.text import slugify
-    from vs_schools.models import RESERVED_TENANT_SLUGS, PackagePlan, School, XVSModules
-    from vs_user.models import User
+    from vs_config.models import Capability
+    from schools.vs_schools.models import RESERVED_TENANT_SLUGS, PackagePlan, School
+    from vs_user.email_normalization import normalize_email
+    from vs_user.services.email_availability import email_refusal
 
     issues = []
     rows = import_batch.preview_rows or []
@@ -234,7 +242,9 @@ def _validate_schools_rules(import_batch) -> list[dict]:
     # Prefetch valid plans (with limits) and module keys once to avoid per-row DB hits
     active_plans = {p.code: p for p in PackagePlan.objects.filter(is_active=True)}
     valid_plan_codes = set(active_plans.keys())
-    valid_module_keys = set(XVSModules.objects.filter(is_active=True).values_list("key", flat=True))
+    valid_module_keys = set(Capability.objects.filter(
+        is_active=True, kind=Capability.Kind.MODULE
+    ).values_list("key", flat=True))
     existing_slugs = set(School.objects.values_list("slug", flat=True))
     today = timezone.now().date()
 
@@ -426,14 +436,27 @@ def _validate_schools_rules(import_batch) -> list[dict]:
 
         # --- admin emails: must not already exist as users, must not repeat across rows ---
         for email_target in ("school_admin_email", "branch_admin_email"):
-            email = _s(email_target).lower()
+            # normalize_email, not .lower(): the same fold the model applies
+            # on write, so an exact match here sees every stored account. The
+            # bare .lower() this replaces missed a stored 'Ada@gmail.com'
+            # entirely and passed the row as importable.
+            email = normalize_email(_s(email_target))
             if not email:
                 continue
-            if User.objects.filter(email=email).exists():
+            # Every row in a schools import creates a NEW school (the slug rule
+            # above refuses one that already exists), so there is no tenant yet
+            # for the address to be taken in and ``tenant=None`` is the honest
+            # argument. What remains is the transitional cross-tenant refusal,
+            # which lifts itself when sign-in starts naming its tenant: an
+            # import that brings Greenfield onto the platform will then be
+            # accepted with ada.okoye@example.test even though Bright Star,
+            # imported last term, already uses it.
+            refusal = email_refusal(email, tenant=None)
+            if refusal:
                 issues.append({
                     "severity": "error",
                     "code": "duplicate_record",
-                    "message": f"A user with email '{email}' already exists.",
+                    "message": refusal,
                     "row_number": row_number,
                     "column_name": _col(email_target),
                     "raw_value": email,
@@ -457,8 +480,9 @@ def _validate_schools_rules(import_batch) -> list[dict]:
 
 
 def _validate_branches_rules(import_batch) -> list[dict]:
-    from vs_schools.models import School
-    from vs_user.models import User
+    from schools.vs_schools.models import School
+    from vs_user.email_normalization import normalize_email
+    from vs_user.services.email_availability import email_refusal
 
     issues = []
     rows = import_batch.preview_rows or []
@@ -471,6 +495,23 @@ def _validate_branches_rules(import_batch) -> list[dict]:
     for row_number, row in enumerate(rows, start=1):
         def _s(target_field: str) -> str:
             return (row.get(_col(target_field)) or "").strip()
+
+        def _row_school():
+            """The School this row targets, or None when it names none.
+
+            Hoisted out of the is_main rule below, which was the only place
+            that resolved it, so the admin-email rule can scope to the same
+            school instead of asking about the whole platform.
+            """
+            if import_batch.school is not None:
+                return import_batch.school
+            slug_val = _s("school_slug")
+            code_val = _s("school_code")
+            if slug_val:
+                return School.objects.filter(slug=slug_val).first()
+            if code_val:
+                return School.objects.filter(code=code_val).first()
+            return None
 
         # --- school resolution: required when batch is not school-scoped ---
         if import_batch.school is None:
@@ -524,19 +565,12 @@ def _validate_branches_rules(import_batch) -> list[dict]:
                 })
             else:
                 seen_main_branch[school_key] = row_number
-                # Also check the DB — school may already have a main branch
-                if import_batch.school is not None:
-                    check_school = import_batch.school
-                else:
-                    slug_val = _s("school_slug")
-                    code_val = _s("school_code")
-                    check_school = (
-                        School.objects.filter(slug=slug_val).first() if slug_val
-                        else School.objects.filter(code=code_val).first() if code_val
-                        else None
-                    )
-                from vs_schools.models import Branch as BranchModel
-                if check_school and BranchModel.objects.filter(school=check_school, is_main=True).exists():
+                # Also check the DB - school may already have a main branch
+                check_school = _row_school()
+                from vs_tenants.models import Branch as BranchModel
+                if check_school and BranchModel.all_objects.filter(
+                    tenant=check_school.tenant, is_main=True,
+                ).exists():
                     issues.append({
                         "severity": "error",
                         "code": "business_rule",
@@ -558,13 +592,23 @@ def _validate_branches_rules(import_batch) -> list[dict]:
             })
 
         # --- branch_admin_email: must not already exist, must be unique across rows ---
-        email = _s("branch_admin_email").lower()
+        email = normalize_email(_s("branch_admin_email"))
         if email:
-            if User.objects.filter(email=email).exists():
+            # A branches import adds branches to a school that already exists,
+            # so unlike the schools import there IS a tenant to scope to: the
+            # one that owns the school this row names. Resolved with the same
+            # slug/code precedence the is_main rule above uses. It can come out
+            # None when the row names no resolvable school, and the row already
+            # carries a cross_reference_missing error in that case; None then
+            # leaves only the transitional cross-tenant check, which is the
+            # safe side.
+            target_tenant = getattr(_row_school(), "tenant", None)
+            refusal = email_refusal(email, tenant=target_tenant)
+            if refusal:
                 issues.append({
                     "severity": "error",
                     "code": "duplicate_record",
-                    "message": f"A user with email '{email}' already exists.",
+                    "message": refusal,
                     "row_number": row_number,
                     "column_name": _col("branch_admin_email"),
                     "raw_value": email,
@@ -661,18 +705,19 @@ def _update_batch_validation_state(import_batch, summary: dict) -> None:
     Update validation result fields on the batch.
     """
     error_count = summary["error_count"]
-    error_rows = summary.get("error_rows", error_count)
-    valid_rows = import_batch.total_rows - error_rows
-
     import_batch.validation_summary = summary
     import_batch.validation_completed_at = timezone.now()
     import_batch.has_critical_errors = error_count > 0
-    import_batch.is_ready_for_import = valid_rows > 0
+    # Validation errors are a publish gate, not a request to import the other rows.
+    # Dataset-wide errors (for example an unbalanced statement) have no row number,
+    # so deriving readiness from "some rows are valid" could incorrectly publish a
+    # structurally invalid batch.
+    import_batch.is_ready_for_import = error_count == 0 and import_batch.total_rows > 0
     import_batch.structure_matches_template = error_count == 0
 
     import_batch.status = (
         ImportBatchStatusChoices.READY_TO_IMPORT
-        if valid_rows > 0
+        if import_batch.is_ready_for_import
         else ImportBatchStatusChoices.VALIDATION_FAILED
     )
 
@@ -732,6 +777,9 @@ def validate_import_batch(import_batch) -> dict:
     issues.extend(_validate_dataset_specific_rules(import_batch))
 
     summary = summarize_issues(issues)
+    dataset_summary = getattr(import_batch, "_dataset_validation_summary", None)
+    if dataset_summary is not None:
+        summary["dataset"] = dataset_summary
 
     _save_validation_issues(import_batch, issues)
     _update_batch_validation_state(import_batch, summary)

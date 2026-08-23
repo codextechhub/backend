@@ -5,23 +5,20 @@ Wipes all permission registry data and role data seeded into the RBAC
 tables, in the correct dependency order so no PROTECT constraint fires.
 
 Preserved (not touched):
-  PrebuiltRoleTemplate  — Vision-owned role library
+  PrebuiltRoleTemplate  - Vision-owned role library
 
 Cleared (in dependency order):
-  1.  SchoolRoleChangeRequest   → cascades SchoolRoleChangeDeltaItem
-  2.  PlatformRoleChangeRequest → cascades PlatformRoleChangeDeltaItem
-  3.  SchoolUserRoleAssignment
-  4.  PlatformUserRoleAssignment
-  5.  SchoolRoleTemplate        → cascades SchoolRolePermission, SchoolRoleGroup
-  6.  PlatformRoleTemplate      → cascades PlatformRolePermission, PlatformRoleGroup
-  7.  PrebuiltRolePermission
-  8.  GroupPermission
-  9.  PermissionDependency
-  10. Permission
-  11. PermissionGroup
-  12. PermissionResource
-  13. PermissionModule
-  14. PermissionAction
+  1.  TenantRoleChangeRequest   → cascades TenantRoleChangeDeltaItem
+  2.  TenantUserRoleAssignment
+  3.  TenantRoleTemplate        → cascades TenantRolePermission, TenantRoleGroup
+  4.  PrebuiltRolePermission
+  5.  GroupPermission
+  6.  PermissionDependency
+  7.  Permission
+  8.  PermissionGroup
+  9.  PermissionResource
+  10. PermissionModule
+  11. PermissionAction
 
 Usage
 -----
@@ -50,12 +47,9 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         from vs_rbac.models import (
-            SchoolRoleChangeRequest,
-            PlatformRoleChangeRequest,
-            SchoolUserRoleAssignment,
-            PlatformUserRoleAssignment,
-            SchoolRoleTemplate,
-            PlatformRoleTemplate,
+            TenantRoleChangeRequest,
+            TenantUserRoleAssignment,
+            TenantRoleTemplate,
             PrebuiltRolePermission,
             GroupPermission,
             PermissionDependency,
@@ -68,31 +62,27 @@ class Command(BaseCommand):
 
         # ── deletion plan ────────────────────────────────────────────────────────
         # Each tuple: (label, queryset)
-        # Order matters — children before parents where PROTECT is used.
+        # Order matters - children before parents where PROTECT is used.
         steps = [
-            # Step 1-2: change-request workflows
-            # Deleting SchoolRoleChangeRequest cascades SchoolRoleChangeDeltaItem.
-            # Deleting PlatformRoleChangeRequest cascades PlatformRoleChangeDeltaItem.
+            # Step 1: change-request workflow
+            # Deleting TenantRoleChangeRequest cascades TenantRoleChangeDeltaItem.
             # This clears the PROTECT references those delta items hold on Permission.
-            ("SchoolRoleChangeRequest",   SchoolRoleChangeRequest.objects.all()),
-            ("PlatformRoleChangeRequest", PlatformRoleChangeRequest.objects.all()),
+            ("TenantRoleChangeRequest",   TenantRoleChangeRequest.objects.all()),
 
-            # Step 3-4: user→role assignments (PROTECT blocks role template deletion)
-            ("SchoolUserRoleAssignment",   SchoolUserRoleAssignment.objects.all()),
-            ("PlatformUserRoleAssignment", PlatformUserRoleAssignment.objects.all()),
+            # Step 2: user→role assignments (PROTECT blocks role template deletion)
+            ("TenantUserRoleAssignment",   TenantUserRoleAssignment.objects.all()),
 
-            # Step 5-6: role templates
-            # Cascades: SchoolRolePermission, SchoolRoleGroup, PlatformRolePermission, PlatformRoleGroup
-            ("SchoolRoleTemplate",   SchoolRoleTemplate.objects.all()),
-            ("PlatformRoleTemplate", PlatformRoleTemplate.objects.all()),
+            # Step 3: role templates
+            # Cascades: TenantRolePermission, TenantRoleGroup
+            ("TenantRoleTemplate",   TenantRoleTemplate.objects.all()),
 
-            # Step 7-9: remaining permission links (explicit; cascades above may have
+            # Step 4-6: remaining permission links (explicit; cascades above may have
             # already cleared some of these, but get_or_create is idempotent)
             ("PrebuiltRolePermission", PrebuiltRolePermission.objects.all()),
             ("GroupPermission",        GroupPermission.objects.all()),
             ("PermissionDependency",   PermissionDependency.objects.all()),
 
-            # Step 10: core registry — Permission is a PROTECT target for delta items,
+            # Step 10: core registry - Permission is a PROTECT target for delta items,
             # which are now gone, so this is safe.
             ("Permission", Permission.objects.all()),
 
@@ -122,7 +112,7 @@ class Command(BaseCommand):
             return
 
         if total == 0:
-            self.stdout.write(self.style.SUCCESS("\nNothing to delete — tables already empty.\n"))
+            self.stdout.write(self.style.SUCCESS("\nNothing to delete - tables already empty.\n"))
             return
 
         if not options["yes"]:

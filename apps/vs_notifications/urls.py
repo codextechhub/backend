@@ -5,20 +5,22 @@
 # All routes are prefixed with /api/v1/notifications/ by the root urls.py.
 #
 # Route summary:
-#   /notifications/                         — feed list (GET)
-#   /notifications/<uuid>/                  — feed detail (GET)
-#   /notifications/unread-count/            — unread count (GET)
-#   /notifications/mark-read/               — mark list as read (POST)
-#   /notifications/mark-all-read/           — mark all as read (POST)
-#   /notifications/history/                 — admin history list (GET)
-#   /notifications/history/<uuid>/          — admin history detail (GET)
-#   /notifications/settings/               — school settings list (GET)
-#   /notifications/settings/update/        — school settings bulk update (PATCH)
-#   /notifications/templates/               — template list (GET) / create (POST)
-#   /notifications/templates/<uuid>/        — template retrieve (GET) / update (PATCH)
-#   /notifications/templates/<uuid>/preview/— template preview (POST)
-#   /notifications/event-types/             — event type list (GET)
-#   /notifications/event-types/<uuid>/      — event type retrieve (GET)
+#   /notifications/                         - feed list (GET)
+#   /notifications/<uuid>/                  - feed detail (GET)
+#   /notifications/unread-count/            - unread count (GET)
+#   /notifications/mark-read/               - mark list as read (POST)
+#   /notifications/mark-all-read/           - mark all as read (POST)
+#   /notifications/acknowledge-route/       - mark viewed destination events (POST)
+#   /notifications/history/                 - admin history list (GET)
+#   /notifications/history/<uuid>/          - admin history detail (GET)
+#   /notifications/settings/               - effective settings matrix (GET)
+#   /notifications/settings/update/        - settings override upsert (PATCH)
+#   /notifications/templates/               - template list (GET) / create (POST)
+#   /notifications/templates/available-events/ - (event, channel) pairs with no template
+#   /notifications/templates/<uuid>/        - template retrieve (GET) / update (PATCH)
+#   /notifications/templates/<uuid>/preview/- template preview (GET sample / POST context)
+#   /notifications/event-types/             - event type list (GET)
+#   /notifications/event-types/<uuid>/      - event type retrieve (GET)
 # =============================================================================
 
 from django.urls import path
@@ -26,9 +28,9 @@ from django.urls import path
 from .views import (
     NotificationEventTypeViewSet,
     NotificationHistoryViewSet,
+    NotificationSettingViewSet,
     NotificationTemplateViewSet,
     NotificationViewSet,
-    SchoolNotificationSettingViewSet,
 )
 
 # ── Feed endpoints (user-facing) ─────────────────────────────────────────────
@@ -39,9 +41,12 @@ feed_detail = NotificationViewSet.as_view({"get": "retrieve"})
 history_list   = NotificationHistoryViewSet.as_view({"get": "list"})
 history_detail = NotificationHistoryViewSet.as_view({"get": "retrieve"})
 
-# ── Settings endpoints (school admin) ─────────────────────────────────────────
-settings_list   = SchoolNotificationSettingViewSet.as_view({"get": "list"})
-settings_update = SchoolNotificationSettingViewSet.as_view({"patch": "partial_update"})
+# ── Settings endpoints (school admin + CX staff) ──────────────────────────────
+# GET returns the EFFECTIVE matrix for the caller's scope; PATCH upserts overrides
+# by (event_type_key, channel). The scope is the asserted tenant; a PLATFORM-kind
+# tenant resolves to the tenant-NULL default layer. There is no ?school= param.
+settings_list   = NotificationSettingViewSet.as_view({"get": "list"})
+settings_update = NotificationSettingViewSet.as_view({"patch": "partial_update"})
 
 # ── Template endpoints (Vision Staff) ─────────────────────────────────────────
 template_list   = NotificationTemplateViewSet.as_view({"get": "list", "post": "create"})
@@ -71,6 +76,11 @@ urlpatterns = [
         NotificationViewSet.as_view({"post": "mark_all_read"}),
         name="notification-mark-all-read",
     ),
+    path(
+        "acknowledge-route/",
+        NotificationViewSet.as_view({"post": "acknowledge_route"}),
+        name="notification-acknowledge-route",
+    ),
 
     # History
     path("history/",           history_list,   name="notification-history-list"),
@@ -82,10 +92,15 @@ urlpatterns = [
 
     # Templates
     path("templates/",           template_list,   name="notification-template-list"),
+    path(
+        "templates/available-events/",
+        NotificationTemplateViewSet.as_view({"get": "available_events"}),
+        name="notification-template-available-events",
+    ),
     path("templates/<uuid:pk>/", template_detail, name="notification-template-detail"),
     path(
         "templates/<uuid:pk>/preview/",
-        NotificationTemplateViewSet.as_view({"post": "preview"}),
+        NotificationTemplateViewSet.as_view({"get": "preview", "post": "preview"}),
         name="notification-template-preview",
     ),
 

@@ -61,7 +61,7 @@ def validate_import_batch_task(self, import_batch_id: str) -> dict:
     Run validation for a template-driven import batch in the background.
     """
     import_batch = ImportBatch.objects.select_related(
-        "school",
+        "tenant",
         "uploaded_by",
         "template",
     ).prefetch_related(
@@ -154,7 +154,7 @@ def execute_import_batch_task(self, import_batch_id: str, queued_by_id: str | No
     Uses the template-driven, serializer-based import executor.
     """
     import_batch = ImportBatch.objects.select_related(
-        "school",
+        "tenant",
         "uploaded_by",
         "template",
     ).prefetch_related(

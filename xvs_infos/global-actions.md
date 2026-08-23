@@ -1,7 +1,7 @@
 # Global Permission Actions
 
 These are the canonical action verbs used as the **suffix** of every permission key (`module.resource.<action>`).
-Seed `PermissionAction` records in this exact order — actions have no dependencies on anything else,
+Seed `PermissionAction` records in this exact order - actions have no dependencies on anything else,
 so they are always the **first thing you create** in a fresh build.
 
 Each `name` becomes the `PermissionAction.name` primary key and appears verbatim in permission keys.
@@ -16,7 +16,7 @@ Each `name` becomes the `PermissionAction.name` primary key and appears verbatim
 | `create`  | Create a new record.                                                        |
 | `update`  | Modify an existing record's fields.                                         |
 | `delete`  | Permanently remove a record (hard-delete or irreversible soft-delete).      |
-| `manage`  | Full control over a resource — implies view + create + update + delete.     |
+| `manage`  | Full control over a resource - implies view + create + update + delete.     |
 
 ---
 
@@ -63,7 +63,7 @@ Each `name` becomes the `PermissionAction.name` primary key and appears verbatim
 
 | name    | description                                                                   |
 |---------|-------------------------------------------------------------------------------|
-| `send`  | Dispatch a message — SMS, email, or push notification.                        |
+| `send`  | Dispatch a message - SMS, email, or push notification.                        |
 | `post`  | Publish an announcement or bulletin to a board or feed.                       |
 
 ---
@@ -108,7 +108,7 @@ Each `name` becomes the `PermissionAction.name` primary key and appears verbatim
 ## Seed order note
 
 When running `PermissionAction.objects.get_or_create(name=...)`, the `name` field is the PK.
-Seed all actions before touching `Permission`, `PermissionModule`, or `PermissionResource` —
+Seed all actions before touching `Permission`, `PermissionModule`, or `PermissionResource` -
 nothing depends on actions, but `Permission` cannot be created without them.
 
 **Minimum set required to create any permission:**

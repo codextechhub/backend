@@ -10,12 +10,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from django.db.models import Q, Sum
 from django.utils import timezone
 
+from .constants import DocumentStatus
 from .money import format_naira
 
 
 @dataclass
+# Group behavior for Trial Balance Row.
 class TrialBalanceRow:
     """One account's debit/credit position on the trial balance (kobo)."""
 
@@ -27,15 +30,18 @@ class TrialBalanceRow:
     credit: int
 
     @property
+    # Handle the debit naira workflow.
     def debit_naira(self) -> str:
         return format_naira(self.debit)
 
     @property
+    # Handle the credit naira workflow.
     def credit_naira(self) -> str:
         return format_naira(self.credit)
 
 
 @dataclass
+# Group behavior for Trial Balance.
 class TrialBalance:
     """A trial balance for an entity (optionally a single period).
 
@@ -49,19 +55,22 @@ class TrialBalance:
     total_credit: int = 0
 
     @property
+    # Handle the is balanced workflow.
     def is_balanced(self) -> bool:
         return self.total_debit == self.total_credit
 
     @property
+    # Handle the difference workflow.
     def difference(self) -> int:
         return self.total_debit - self.total_credit
 
 
+# Handle the trial balance workflow.
 def trial_balance(entity, *, period=None) -> TrialBalance:
     """Build a trial balance for ``entity``, optionally scoped to one ``period``.
 
     Each account's net position is reduced to a single side: if accumulated debits
-    exceed credits the remainder sits in the debit column, else the credit column —
+    exceed credits the remainder sits in the debit column, else the credit column -
     the conventional trial-balance presentation. Because every posted journal
     balanced, the column totals are equal.
     """
@@ -69,9 +78,15 @@ def trial_balance(entity, *, period=None) -> TrialBalance:
 
     qs = AccountBalance.objects.filter(account__entity=entity).select_related("account")
     if period is not None:
-        qs = qs.filter(period=period)
+        # Cumulative balance AS OF the selected period - every movement up to and
+        # including it. A trial balance is a point-in-time statement of balances,
+        # not one period's activity, so "Jun 2026" means the running balance through
+        # June, not June's movement alone. (Openings aren't rolled forward in this
+        # ledger - each row carries only its period's movement - so a straight sum
+        # of movements through the period is the running balance.)
+        qs = qs.filter(period__start_date__lte=period.start_date)
 
-    # Aggregate across periods (when not period-scoped) per account.
+    # Sum each account's movement across the in-scope periods.
     by_account: dict[int, dict] = {}
     for bal in qs:
         acc = bal.account
@@ -114,6 +129,127 @@ def trial_balance(entity, *, period=None) -> TrialBalance:
 
 
 # --------------------------------------------------------------------------- #
+# Analytical slice - net activity per account, bucketed by an axis            #
+# --------------------------------------------------------------------------- #
+
+@dataclass
+# Group behavior for Analytics Slice Row.
+class AnalyticsSliceRow:
+    """One account's net movement within a single analytical bucket (kobo)."""
+
+    bucket: str
+    account_id: int
+    code: str
+    name: str
+    account_type: str
+    debit: int
+    credit: int
+
+    @property
+    # Handle the net workflow.
+    def net(self) -> int:
+        return self.debit - self.credit
+
+    @property
+    # Handle the net naira workflow.
+    def net_naira(self) -> str:
+        return format_naira(self.net)
+
+
+@dataclass
+# Group behavior for Analytics Slice.
+class AnalyticsSlice:
+    """Posted activity for an entity sliced by one axis (a cost centre or a dimension).
+
+    Unlike the trial balance this reads posted :class:`~vs_finance.models.JournalLine`
+    rows directly - the denormalised ``AccountBalance`` carries neither the cost centre
+    nor the dimensions map, so it cannot answer "per bucket" questions.
+    """
+
+    entity_id: int
+    period_id: int | None
+    axis: str
+    rows: list[AnalyticsSliceRow] = field(default_factory=list)
+    bucket_totals: dict[str, int] = field(default_factory=dict)
+    total_net: int = 0
+
+
+# Handle the analytics slice workflow.
+def analytics_slice(entity, *, axis, period=None, account_type=None) -> AnalyticsSlice:
+    """Net movement per account, bucketed by ``axis``, over posted journals.
+
+    ``axis`` is either the literal ``"cost_center"`` or a :class:`~vs_finance.models.Dimension`
+    code (e.g. ``"FUND"``). **Only lines actually tagged on the axis are included** - a
+    line with no cost centre (or no value for the dimension) is not part of that axis's
+    analysis and is skipped, so the report shows genuinely-allocated activity rather
+    than a catch-all bucket. Optionally scope to one ``period`` and/or one
+    ``account_type``. Net is ``debit - credit`` (kobo) so it reads naturally for both
+    sides of the books.
+    """
+    from .constants import DocumentStatus
+    from .models import JournalLine
+
+    qs = (
+        JournalLine.objects
+        .filter(entry__entity=entity, entry__status=DocumentStatus.POSTED)
+        .select_related("account", "cost_center")
+    )
+    if axis == "cost_center":
+        qs = qs.filter(cost_center__isnull=False)
+    if period is not None:
+        qs = qs.filter(entry__period=period)
+    if account_type:
+        qs = qs.filter(account__account_type=account_type)
+
+    by_key: dict[tuple, dict] = {}
+    bucket_totals: dict[str, int] = {}
+    total_net = 0
+    for line in qs:
+        if axis == "cost_center":
+            bucket = line.cost_center.code
+        else:
+            bucket = (line.dimensions or {}).get(axis)
+            if not bucket:
+                continue  # untagged on this dimension → not part of the analysis
+        acc = line.account
+        slot = by_key.setdefault(
+            (bucket, acc.id),
+            {
+                "bucket": bucket, "code": acc.code, "name": acc.name,
+                "account_type": acc.account_type, "debit": 0, "credit": 0,
+            },
+        )
+        slot["debit"] += line.debit
+        slot["credit"] += line.credit
+
+    rows: list[AnalyticsSliceRow] = []
+    for (bucket, account_id), slot in sorted(
+        by_key.items(), key=lambda kv: (kv[0][0], kv[1]["code"])
+    ):
+        net = slot["debit"] - slot["credit"]
+        if net == 0:
+            continue  # net-zero account/bucket pairs don't clutter the slice
+        rows.append(
+            AnalyticsSliceRow(
+                bucket=bucket, account_id=account_id,
+                code=slot["code"], name=slot["name"], account_type=slot["account_type"],
+                debit=slot["debit"], credit=slot["credit"],
+            )
+        )
+        bucket_totals[bucket] = bucket_totals.get(bucket, 0) + net
+        total_net += net
+
+    return AnalyticsSlice(
+        entity_id=entity.id,
+        period_id=getattr(period, "id", None),
+        axis=axis,
+        rows=rows,
+        bucket_totals=bucket_totals,
+        total_net=total_net,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Accounts-Receivable aging + control reconciliation                          #
 # --------------------------------------------------------------------------- #
 
@@ -121,6 +257,7 @@ def trial_balance(entity, *, period=None) -> TrialBalance:
 AGING_BUCKETS = ("current", "1-30", "31-60", "61-90", "90+")
 
 
+# Support the bucket for workflow.
 def _bucket_for(days_overdue: int) -> str:
     if days_overdue <= 0:
         return "current"
@@ -134,6 +271,7 @@ def _bucket_for(days_overdue: int) -> str:
 
 
 @dataclass
+# Group behavior for Aging Row.
 class AgingRow:
     """One customer's outstanding AR, split into aging buckets (kobo)."""
 
@@ -147,6 +285,7 @@ class AgingRow:
 
 
 @dataclass
+# Group behavior for Aging Report.
 class AgingReport:
     entity_id: int
     as_of: object
@@ -157,20 +296,250 @@ class AgingReport:
     total_net: int = 0
 
 
+# Restrict a document queryset to what was effective on an accounting date.
+def _effective_on(queryset, as_of):
+    """Documents whose journal had landed by ``as_of`` and was not yet reversed.
+
+    Effectiveness is keyed on the **journal**, not the document's own date field or
+    its current status, for two reasons. The journal date is what actually moved the
+    ledger, so a sub-ledger reconstruction built on it can agree with the GL. And a
+    document voided later must still appear in a report dated before the void - its
+    current status says REVERSED, but on that earlier date it was live. Filtering on
+    status alone silently rewrites history the moment anything is voided.
+
+    Mirrors :func:`vs_procurement.reports._ap_snapshot`, which solved this first.
+    """
+    return queryset.filter(
+        journal__status__in=(DocumentStatus.POSTED, DocumentStatus.REVERSED),
+        journal__date__lte=as_of,
+    ).filter(
+        Q(journal__reversed_by__isnull=True)
+        | Q(journal__reversed_by__date__gt=as_of)
+    )
+
+
+# Sum allocation rows that had taken effect by a cutoff.
+def _allocated_by(queryset, target_field, *, as_of):
+    """``{target_id: kobo}`` for allocation rows effective on or before ``as_of``.
+
+    Rows with no ``effective_date`` are excluded rather than assumed: a null means
+    the date is genuinely unknown (a row written before the column existed and not
+    reachable by the backfill), and guessing would put a settlement on the timeline
+    at a date nobody can defend.
+    """
+    rows = queryset.filter(effective_date__isnull=False, effective_date__lte=as_of)
+    return {
+        row[target_field]: int(row["amount"] or 0)
+        for row in rows.values(target_field).annotate(amount=Sum("amount"))
+    }
+
+
+# Reconstruct AR as it stood on an accounting date.
+def _ar_snapshot(entity, *, as_of=None, customer=None):
+    """Effective AR documents, settlement applied by the cutoff, and unspent credit.
+
+    With no cutoff this returns the stored current-state figures unchanged, so the
+    default call path behaves exactly as it always has. With ``as_of`` every figure is
+    rebuilt from dated evidence: which documents had posted, which settlements had
+    taken effect, and how much credit was still unspent on that day.
+
+    Returns ``(invoices, debit_notes, settled_by_invoice, settled_by_note,
+    credit_by_customer)``. ``settled_*`` maps a document id to the kobo cleared
+    against it by the cutoff, from all four AR settlement sources: cash allocations,
+    credit-note allocations, concessions and bad-debt write-offs.
+    """
+    from .constants import CreditNoteKind
+    from .models import (
+        Concession,
+        CreditNote,
+        CreditNoteAllocation,
+        DebitNoteAllocation,
+        Invoice,
+        Payment,
+        PaymentAllocation,
+        Refund,
+        RefundAllocation,
+        WriteOffRequest,
+    )
+
+    invoices = Invoice.objects.filter(entity=entity)
+    debit_notes = CreditNote.objects.filter(entity=entity, kind=CreditNoteKind.DEBIT)
+    credit_notes = CreditNote.objects.filter(entity=entity, kind=CreditNoteKind.CREDIT)
+    payments = Payment.objects.filter(entity=entity)
+    if customer is not None:
+        invoices = invoices.filter(customer=customer)
+        debit_notes = debit_notes.filter(customer=customer)
+        credit_notes = credit_notes.filter(customer=customer)
+        payments = payments.filter(customer=customer)
+
+    if as_of is None:  # Current-state contract: read the stored, maintained totals.
+        invoices = list(
+            invoices.filter(status=DocumentStatus.POSTED).select_related("customer"))
+        debit_notes = list(
+            debit_notes.filter(status=DocumentStatus.POSTED).select_related("customer"))
+        settled_by_invoice = {inv.pk: inv.settled_amount for inv in invoices}
+        settled_by_note = {note.pk: note.amount_paid for note in debit_notes}
+        credit_by_customer: dict[int, int] = {}
+        for source in (
+            payments.filter(status=DocumentStatus.POSTED).select_related("customer"),
+            credit_notes.filter(status=DocumentStatus.POSTED).select_related("customer"),
+        ):
+            for document in source:
+                remaining = document.credit_remaining
+                if remaining > 0:
+                    credit_by_customer[document.customer_id] = (
+                        credit_by_customer.get(document.customer_id, 0) + remaining)
+        return invoices, debit_notes, settled_by_invoice, settled_by_note, credit_by_customer
+
+    invoices = list(_effective_on(invoices, as_of).select_related("customer"))
+    debit_notes = list(_effective_on(debit_notes, as_of).select_related("customer"))
+    credit_notes = list(_effective_on(credit_notes, as_of).select_related("customer"))
+    payments = list(_effective_on(payments, as_of).select_related("customer"))
+
+    invoice_ids = [inv.pk for inv in invoices]
+    note_ids = [note.pk for note in debit_notes]
+    credit_note_ids = [note.pk for note in credit_notes]
+    payment_ids = [pay.pk for pay in payments]
+
+    # --- what had been settled against each receivable by the cutoff --------- #
+    settled_by_invoice = _allocated_by(
+        PaymentAllocation.objects.filter(
+            invoice_id__in=invoice_ids, payment_id__in=payment_ids),
+        "invoice_id", as_of=as_of,
+    )
+    for invoice_id, amount in _allocated_by(
+        CreditNoteAllocation.objects.filter(
+            invoice_id__in=invoice_ids, note_id__in=credit_note_ids),
+        "invoice_id", as_of=as_of,
+    ).items():
+        settled_by_invoice[invoice_id] = settled_by_invoice.get(invoice_id, 0) + amount
+
+    # Concessions and write-offs clear an invoice directly rather than through an
+    # allocation row, so they are dated by their own effective journal.
+    for row in _effective_on(
+        Concession.objects.filter(invoice_id__in=invoice_ids), as_of,
+    ).values("invoice_id").annotate(amount=Sum("amount")):
+        settled_by_invoice[row["invoice_id"]] = (
+            settled_by_invoice.get(row["invoice_id"], 0) + int(row["amount"] or 0))
+    for invoice_id, amount in _written_off_by_invoice(
+        WriteOffRequest.objects.filter(invoice_id__in=invoice_ids), as_of,
+    ).items():
+        settled_by_invoice[invoice_id] = settled_by_invoice.get(invoice_id, 0) + amount
+
+    settled_by_note = _allocated_by(
+        DebitNoteAllocation.objects.filter(
+            note_id__in=note_ids, payment_id__in=payment_ids),
+        "note_id", as_of=as_of,
+    )
+
+    # --- credit that was still unspent on the cutoff date -------------------- #
+    applied_by_payment = _allocated_by(
+        PaymentAllocation.objects.filter(payment_id__in=payment_ids),
+        "payment_id", as_of=as_of,
+    )
+    for payment_id, amount in _allocated_by(
+        DebitNoteAllocation.objects.filter(payment_id__in=payment_ids),
+        "payment_id", as_of=as_of,
+    ).items():
+        applied_by_payment[payment_id] = applied_by_payment.get(payment_id, 0) + amount
+    applied_by_note = _allocated_by(
+        CreditNoteAllocation.objects.filter(note_id__in=credit_note_ids),
+        "note_id", as_of=as_of,
+    )
+
+    # A refund only consumed credit once its own journal had landed.
+    effective_refund_ids = list(
+        _effective_on(Refund.objects.filter(entity=entity), as_of)
+        .values_list("pk", flat=True))
+    refunded_by_payment = {
+        row["payment_id"]: int(row["amount"] or 0)
+        for row in RefundAllocation.objects
+        .filter(refund_id__in=effective_refund_ids, payment_id__in=payment_ids)
+        .values("payment_id").annotate(amount=Sum("amount"))
+    }
+    refunded_by_note = {
+        row["note_id"]: int(row["amount"] or 0)
+        for row in RefundAllocation.objects
+        .filter(refund_id__in=effective_refund_ids, note_id__in=credit_note_ids)
+        .values("note_id").annotate(amount=Sum("amount"))
+    }
+
+    credit_by_customer = {}
+    for pay in payments:
+        remaining = (int(pay.amount)
+                     - applied_by_payment.get(pay.pk, 0)
+                     - refunded_by_payment.get(pay.pk, 0))
+        if remaining > 0:
+            credit_by_customer[pay.customer_id] = (
+                credit_by_customer.get(pay.customer_id, 0) + remaining)
+    for note in credit_notes:
+        remaining = (int(note.total)
+                     - applied_by_note.get(note.pk, 0)
+                     - refunded_by_note.get(note.pk, 0))
+        if remaining > 0:
+            credit_by_customer[note.customer_id] = (
+                credit_by_customer.get(note.customer_id, 0) + remaining)
+
+    return invoices, debit_notes, settled_by_invoice, settled_by_note, credit_by_customer
+
+
+# Sum what each invoice's write-offs actually credited to AR by a cutoff.
+def _written_off_by_invoice(queryset, as_of) -> dict[int, int]:
+    """``{invoice_id: kobo}`` written off by ``as_of``, read from the GL.
+
+    A :class:`WriteOffRequest` may carry a blank ``amount`` meaning "the whole
+    outstanding balance", which is only resolved at posting time - so the request row
+    is not a reliable source for how much was cleared. The journal it raised is: its
+    credit to the customer's receivable control is exactly what left AR.
+    """
+    from .models import JournalLine
+
+    requests = list(
+        _effective_on(queryset, as_of)
+        .select_related("invoice__customer")
+        .values("invoice_id", "journal_id", "invoice__customer__receivable_account_id")
+    )
+    if not requests:
+        return {}
+    credit_by_journal: dict[int, int] = {}
+    for row in (
+        JournalLine.objects
+        .filter(entry_id__in=[r["journal_id"] for r in requests])
+        .values("entry_id", "account_id").annotate(amount=Sum("credit"))
+    ):
+        credit_by_journal[(row["entry_id"], row["account_id"])] = int(row["amount"] or 0)
+    written: dict[int, int] = {}
+    for row in requests:
+        amount = credit_by_journal.get(
+            (row["journal_id"], row["invoice__customer__receivable_account_id"]), 0)
+        if amount:
+            written[row["invoice_id"]] = written.get(row["invoice_id"], 0) + amount
+    return written
+
+
+# Handle the ar aging workflow.
 def ar_aging(entity, *, as_of=None) -> AgingReport:
     """Age each customer's open invoices into current/1-30/31-60/61-90/90+ buckets.
 
-    An invoice ages off its ``due_date`` (falling back to ``invoice_date``). Only
-    POSTED, not-fully-paid invoices contribute, by their ``balance_due``. Each
-    customer's unallocated payment credit is reported and netted, so ``total_net``
-    equals the AR control account's GL balance (see :func:`reconcile_ar`).
-    """
-    from .models import Invoice, Payment
+    An invoice ages off its ``due_date`` (falling back to ``invoice_date``). Each
+    customer's unallocated payment credit is reported and netted for the customer's
+    overall position.  That credit lives in the separate 2140 liability, so
+    :func:`reconcile_ar` compares ``total_outstanding`` (plus open debit notes), not
+    ``total_net``, with the AR control account.
 
+    ``as_of`` is both the aging clock **and** the accounting-effectiveness cutoff, so
+    the report reads as a statement about that date rather than about today. It used
+    to be only the clock: balances came from the live documents, so an invoice raised
+    after the cutoff still appeared, one settled after it had already vanished, and
+    the same June report gave a different answer every month. Passing no cutoff keeps
+    the current-state contract exactly as before.
+    """
+    cutoff = as_of  # None means "current state"; a date means "rebuild at that date".
     as_of = as_of or timezone.now().date()
     report = AgingReport(entity_id=entity.id, as_of=as_of)
     rows: dict[int, AgingRow] = {}
 
+    # Handle the row for workflow.
     def row_for(customer):
         r = rows.get(customer.id)
         if r is None:
@@ -181,14 +550,12 @@ def ar_aging(entity, *, as_of=None) -> AgingReport:
             rows[customer.id] = r
         return r
 
-    posted_invoices = (
-        Invoice.objects
-        .filter(entity=entity, status="POSTED")
-        .exclude(payment_status="PAID")
-        .select_related("customer")
+    invoices, debit_notes, settled_by_invoice, settled_by_note, credit_by_customer = (
+        _ar_snapshot(entity, as_of=cutoff)
     )
-    for inv in posted_invoices:
-        due = inv.balance_due
+
+    for inv in invoices:
+        due = int(inv.total) - settled_by_invoice.get(inv.pk, 0)
         if due <= 0:
             continue
         ref_date = inv.due_date or inv.invoice_date
@@ -198,16 +565,28 @@ def ar_aging(entity, *, as_of=None) -> AgingReport:
         r.buckets[bucket] += due
         r.outstanding += due
 
-    # Unallocated payment credit reduces a customer's net balance.
-    posted_payments = (
-        Payment.objects.filter(entity=entity, status="POSTED").select_related("customer")
-    )
-    for pay in posted_payments:
-        credit = pay.unallocated_amount
-        if credit <= 0:
+    # An open DEBIT note is a supplementary AR charge and ages exactly like an
+    # invoice; leaving it out understated both the buckets and the reconciliation.
+    for note in debit_notes:
+        due = int(note.total) - settled_by_note.get(note.pk, 0)
+        if due <= 0:
             continue
-        r = row_for(pay.customer)
-        r.unallocated_credit += credit
+        days_overdue = (as_of - note.note_date).days
+        r = row_for(note.customer)
+        r.buckets[_bucket_for(days_overdue)] += due
+        r.outstanding += due
+
+    # Unspent customer credit nets down the customer's overall position. Only the part
+    # still there counts: cash already refunded back out has left 2140.
+    customers_by_id = {
+        inv.customer_id: inv.customer for inv in invoices
+    } | {note.customer_id: note.customer for note in debit_notes}
+    missing = [cid for cid in credit_by_customer if cid not in customers_by_id]
+    if missing:  # In credit with nothing outstanding - fetch them in one query, not N.
+        from .models import Customer
+        customers_by_id |= {c.pk: c for c in Customer.objects.filter(pk__in=missing)}
+    for customer_id, credit in credit_by_customer.items():
+        row_for(customers_by_id[customer_id]).unallocated_credit += credit
 
     for r in rows.values():
         r.net = r.outstanding - r.unallocated_credit
@@ -221,19 +600,52 @@ def ar_aging(entity, *, as_of=None) -> AgingReport:
     return report
 
 
+# Support the account gl net workflow.
 def _account_gl_net(account) -> int:
     """Net GL movement for an account across all its periods, signed to normal balance."""
-    from .constants import NormalBalance
+    return _accounts_gl_net([account.id], account.normal_balance)
 
-    total = 0
-    for bal in account.balances.all():
-        dr = bal.opening_debit + bal.debit_total
-        cr = bal.opening_credit + bal.credit_total
-        total += (dr - cr) if account.normal_balance == NormalBalance.DEBIT else (cr - dr)
-    return total
+
+def _accounts_gl_net(account_ids, normal_balance) -> int:
+    """Net GL movement for an account set, signed to one roll-up balance."""
+    from django.db.models import F, Sum
+    from django.db.models.functions import Coalesce
+    from .constants import NormalBalance
+    from .models import AccountBalance
+
+    totals = AccountBalance.objects.filter(account_id__in=account_ids).aggregate(
+        debit=Coalesce(Sum(F("opening_debit") + F("debit_total")), 0),
+        credit=Coalesce(Sum(F("opening_credit") + F("credit_total")), 0),
+    )
+    net = int(totals["debit"] or 0) - int(totals["credit"] or 0)
+    return net if normal_balance == NormalBalance.DEBIT else -net
+
+
+# Support the dated account gl net workflow.
+def _account_gl_net_as_of(account, as_of) -> int:
+    """Posted journal-line movement through ``as_of``, signed to normal balance.
+
+    Reads the lines rather than the per-period :class:`AccountBalance` aggregates,
+    because a cutoff falls inside a period as often as on its boundary and the
+    aggregates cannot be split. The twin of
+    :func:`vs_procurement.reports._account_gl_net_as_of`; REVERSED entries are
+    included because their own reversal is a separate dated entry that nets them off
+    only from the reversal date onwards.
+    """
+    from .constants import NormalBalance
+    from .models import JournalLine
+
+    totals = JournalLine.objects.filter(
+        account=account,
+        entry__status__in=(DocumentStatus.POSTED, DocumentStatus.REVERSED),
+        entry__date__lte=as_of,
+    ).aggregate(debit=Sum("debit"), credit=Sum("credit"))
+    net = int(totals["debit"] or 0) - int(totals["credit"] or 0)
+    return net if account.normal_balance == NormalBalance.DEBIT else -net
 
 
 @dataclass
+# Group behavior for A R Reconciliation.
 class ARReconciliation:
     entity_id: int
     subledger_total: int     # from the AR aging (customer balances)
@@ -241,28 +653,43 @@ class ARReconciliation:
     difference: int
 
     @property
+    # Handle the is reconciled workflow.
     def is_reconciled(self) -> bool:
         return self.difference == 0
 
 
+# Handle the reconcile ar workflow.
 def reconcile_ar(entity, *, as_of=None) -> ARReconciliation:
     """Assert the AR **sub-ledger** (customer balances) equals the AR **control** GL.
 
     The cardinal AR control: the sum of what every customer owes must equal the
     balance of the receivable control account(s) in the ledger. Any drift means a
     posting bypassed the sub-ledger (or vice-versa) and must be investigated.
+
+    ``as_of`` applies to **both** sides. That is the whole point of the argument: a
+    cutoff on the sub-ledger alone made the control disagree with itself the moment a
+    future-dated document existed, and a control report that cries wolf is one people
+    learn to ignore.
     """
     from .models import Customer
 
     aging = ar_aging(entity, as_of=as_of)
-    subledger_total = aging.total_net
+    # Customer credit is booked to the dedicated 2140 liability, not the AR control
+    # account.  It belongs on the aging screen's customer *net* position, but not in
+    # this control-account reconciliation.  Open debit notes are already inside
+    # ``total_outstanding`` - they debit AR exactly like invoices and the aging ages
+    # them alongside; adding them again here would double-count.
+    subledger_total = aging.total_outstanding
 
     control_accounts = {
         c.receivable_account
         for c in Customer.objects.filter(entity=entity).select_related("receivable_account")
         if c.receivable_account_id is not None
     }
-    control_total = sum(_account_gl_net(acc) for acc in control_accounts)
+    control_total = sum(
+        (_account_gl_net_as_of(acc, as_of) if as_of is not None else _account_gl_net(acc))
+        for acc in control_accounts
+    )
 
     return ARReconciliation(
         entity_id=entity.id,
@@ -278,8 +705,9 @@ def reconcile_ar(entity, *, as_of=None) -> ARReconciliation:
 
 
 @dataclass
+# Group behavior for Statement Entry.
 class StatementEntry:
-    """One movement on a customer's account — a debit *raises* what they owe.
+    """One movement on a customer's account - a debit *raises* what they owe.
 
     Invoices, debit notes and refunds debit (increase the receivable); receipts,
     credit notes and concessions credit (reduce it). ``balance`` is the running
@@ -297,10 +725,11 @@ class StatementEntry:
 
 
 @dataclass
+# Group behavior for Customer Statement.
 class CustomerStatement:
     """A dated ledger of a customer's account with a running balance (all kobo).
 
-    Built from the customer's *posted* AR documents — invoices, receipts,
+    Built from the customer's *posted* AR documents - invoices, receipts,
     credit/debit notes, refunds and concessions. ``opening_balance`` is the net of
     everything dated before ``start_date``; ``entries`` are the movements within
     ``[start_date, end_date]``; ``closing_balance`` is where the account stands at
@@ -323,6 +752,117 @@ class CustomerStatement:
     aging: dict = field(default_factory=lambda: {b: 0 for b in AGING_BUCKETS})
 
 
+#: Movement type used for the offsetting row a voided document contributes, and the
+#: order that sorts it after every ordinary movement sharing its date.
+VOID_MOVEMENT_TYPE = "Void"
+VOID_TYPE_ORDER = 9
+
+
+# Find which of these journals have been reversed, and when.
+def _reversal_dates(journal_ids) -> dict[int, object]:
+    """``{original journal id: reversal date}`` in one query.
+
+    Resolved in bulk rather than by touching ``journal.reversed_by`` per document:
+    that is a reverse one-to-one, so it raises when absent and costs a query per row
+    when present - an N+1 down the length of a customer's whole history.
+    """
+    from .models import JournalEntry
+
+    ids = {journal_id for journal_id in journal_ids if journal_id}
+    if not ids:
+        return {}
+    return dict(
+        JournalEntry.objects.filter(reverses_id__in=ids)
+        .values_list("reverses_id", "date")
+    )
+
+
+def customer_account_movements(
+    customer, *, invoices=None, credit_notes=None, refunds=None, payments=None,
+    concessions=None,
+):
+    """Return every movement that changes a customer's account balance.
+
+    The customer detail drawer and the exportable statement both consume this source
+    so account history cannot silently omit an adjustment that the balance includes.
+    Callers that already loaded documents may pass them to avoid duplicate queries.
+    Each row is ``(date, type_order, type, number, description, debit, credit)``.
+
+    **Voided documents stay in the history.** A document that has been voided really
+    did move the account on its own date, and was undone on the reversal's date, so it
+    contributes two rows: the original, and an offsetting :data:`VOID_MOVEMENT_TYPE`
+    row dated when the reversal posted. Dropping it instead (which is what filtering on
+    ``status=POSTED`` did once the void services started writing REVERSED) rewrote
+    every running balance printed for a date before the void.
+    """
+    from .constants import CreditNoteKind
+    from .models import Concession, CreditNote, Invoice, Payment, Refund
+
+    live = (DocumentStatus.POSTED, DocumentStatus.REVERSED)
+    if invoices is None:
+        invoices = Invoice.objects.filter(customer=customer, status__in=live)
+    if credit_notes is None:
+        credit_notes = CreditNote.objects.filter(customer=customer, status__in=live)
+    if refunds is None:
+        refunds = Refund.objects.filter(customer=customer, status__in=live)
+    if payments is None:
+        payments = Payment.objects.filter(customer=customer, status__in=live)
+    if concessions is None:
+        concessions = Concession.objects.filter(customer=customer, status__in=live)
+
+    # (date, type_order, doc_type, number, description, debit, credit, journal_id).
+    rows: list = []
+    for inv in invoices:
+        rows.append((
+            inv.invoice_date, 0, "Invoice", inv.document_number,
+            inv.narration or "Invoice", inv.total, 0, inv.journal_id,
+        ))
+    for note in credit_notes:
+        if note.kind == CreditNoteKind.DEBIT:
+            rows.append((
+                note.note_date, 1, "Debit note", note.document_number,
+                note.reason or "Debit note", note.total, 0, note.journal_id,
+            ))
+        else:
+            rows.append((
+                note.note_date, 3, "Credit note", note.document_number,
+                note.reason or "Credit note", 0, note.total, note.journal_id,
+            ))
+    for refund in refunds:
+        rows.append((
+            refund.refund_date, 2, "Refund", refund.document_number,
+            refund.narration or "Refund", refund.amount, 0, refund.journal_id,
+        ))
+    for pay in payments:
+        rows.append((
+            pay.payment_date, 4, "Receipt", pay.document_number,
+            pay.narration or "Receipt", 0, pay.amount, pay.journal_id,
+        ))
+    for con in concessions:
+        rows.append((
+            con.concession_date, 5, con.get_kind_display(), con.document_number,
+            con.reason or con.get_kind_display(), 0, con.amount, con.journal_id,
+        ))
+
+    reversed_on = _reversal_dates(row[7] for row in rows)
+
+    # Each movement: (date, type_order, doc_type, number, description, debit, credit).
+    movements: list = []
+    for date_, order, doc_type, number, description, debit, credit, journal_id in rows:
+        movements.append((date_, order, doc_type, number, description, debit, credit))
+        void_date = reversed_on.get(journal_id)
+        if void_date is not None:  # The document was voided; show the undo, dated.
+            movements.append((
+                void_date, VOID_TYPE_ORDER, VOID_MOVEMENT_TYPE, number,
+                f"Void of {doc_type.lower()} {number}",
+                credit, debit,  # Sides swapped: the reversal undoes the original.
+            ))
+
+    movements.sort(key=lambda m: (m[0], m[1], m[3]))
+    return movements
+
+
+# Handle the customer statement workflow.
 def customer_statement(customer, *, start_date=None, end_date=None) -> CustomerStatement:
     """Build a :class:`CustomerStatement` for ``customer`` over ``[start_date, end_date]``.
 
@@ -331,48 +871,12 @@ def customer_statement(customer, *, start_date=None, end_date=None) -> CustomerS
     document-type ordering so same-day documents read sensibly (invoice before its
     receipt).
     """
-    from .constants import CreditNoteKind, DocumentStatus
-    from .models import Concession, CreditNote, Invoice, Payment, Refund
+    from .constants import DocumentStatus
+    from .models import Invoice
 
     entity = customer.entity
     end_date = end_date or timezone.now().date()
-
-    # Each movement: (date, type_order, doc_type, number, description, debit, credit).
-    movements: list = []
-
-    for inv in Invoice.objects.filter(customer=customer, status=DocumentStatus.POSTED):
-        movements.append((
-            inv.invoice_date, 0, "Invoice", inv.document_number,
-            inv.narration or "Invoice", inv.total, 0,
-        ))
-    for note in CreditNote.objects.filter(customer=customer, status=DocumentStatus.POSTED):
-        if note.kind == CreditNoteKind.DEBIT:
-            movements.append((
-                note.note_date, 1, "Debit note", note.document_number,
-                note.reason or "Debit note", note.total, 0,
-            ))
-        else:
-            movements.append((
-                note.note_date, 3, "Credit note", note.document_number,
-                note.reason or "Credit note", 0, note.total,
-            ))
-    for refund in Refund.objects.filter(customer=customer, status=DocumentStatus.POSTED):
-        movements.append((
-            refund.refund_date, 2, "Refund", refund.document_number,
-            refund.narration or "Refund", refund.amount, 0,
-        ))
-    for pay in Payment.objects.filter(customer=customer, status=DocumentStatus.POSTED):
-        movements.append((
-            pay.payment_date, 4, "Receipt", pay.document_number,
-            pay.narration or "Receipt", 0, pay.amount,
-        ))
-    for con in Concession.objects.filter(customer=customer, status=DocumentStatus.POSTED):
-        movements.append((
-            con.concession_date, 5, con.get_kind_display(), con.document_number,
-            con.reason or con.get_kind_display(), 0, con.amount,
-        ))
-
-    movements.sort(key=lambda m: (m[0], m[1], m[3]))
+    movements = customer_account_movements(customer)
 
     statement = CustomerStatement(
         entity_id=entity.id, customer_id=customer.id,
@@ -397,19 +901,31 @@ def customer_statement(customer, *, start_date=None, end_date=None) -> CustomerS
         statement.total_debits += debit
         statement.total_credits += credit
 
-    statement.closing_balance = statement.opening_balance + \
-        statement.total_debits - statement.total_credits
+    statement.closing_balance = (  # Store the computed statement closing balance.
+        statement.opening_balance  # Start from the opening balance.
+        + statement.total_debits  # Add period debit movement.
+        - statement.total_credits  # Subtract period credit movement.
+    )
 
-    # Aging of the customer's still-open invoices as at end_date.
-    for inv in (
-        Invoice.objects.filter(customer=customer, status=DocumentStatus.POSTED)
-        .exclude(payment_status="PAID")
-    ):
-        due = inv.balance_due
-        if due <= 0 or inv.invoice_date > end_date:
+    # Aging of the customer's open receivables as at end_date, rebuilt from dated
+    # evidence rather than today's balances. It used to skip anything currently marked
+    # PAID and age off the live balance, so a statement for a closed month changed
+    # every time a later payment landed - and disagreed with the running balance
+    # printed directly above it, which was correctly dated all along.
+    invoices, debit_notes, settled_by_invoice, settled_by_note, _credit = _ar_snapshot(
+        customer.entity, as_of=end_date, customer=customer,
+    )
+    for inv in invoices:
+        due = int(inv.total) - settled_by_invoice.get(inv.pk, 0)
+        if due <= 0:
             continue
         ref_date = inv.due_date or inv.invoice_date
         statement.aging[_bucket_for((end_date - ref_date).days)] += due
+    for note in debit_notes:
+        due = int(note.total) - settled_by_note.get(note.pk, 0)
+        if due <= 0:
+            continue
+        statement.aging[_bucket_for((end_date - note.note_date).days)] += due
 
     return statement
 
@@ -420,6 +936,7 @@ def customer_statement(customer, *, start_date=None, end_date=None) -> CustomerS
 
 
 @dataclass
+# Group behavior for Budget Variance Row.
 class BudgetVarianceRow:
     """Budget vs actual for one account (kobo), signed to the account's normal balance.
 
@@ -436,10 +953,12 @@ class BudgetVarianceRow:
     actual: int
 
     @property
+    # Handle the variance workflow.
     def variance(self) -> int:
         return self.actual - self.budget
 
     @property
+    # Handle the variance pct workflow.
     def variance_pct(self) -> float | None:
         """Variance as a percentage of budget, or ``None`` when nothing was budgeted."""
         if self.budget == 0:
@@ -448,6 +967,7 @@ class BudgetVarianceRow:
 
 
 @dataclass
+# Group behavior for Budget Variance Report.
 class BudgetVarianceReport:
     budget_id: int
     fiscal_year_id: int
@@ -457,19 +977,21 @@ class BudgetVarianceReport:
     total_actual: int = 0
 
     @property
+    # Handle the total variance workflow.
     def total_variance(self) -> int:
         return self.total_actual - self.total_budget
 
 
+# Handle the budget vs actual workflow.
 def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
     """Compare a budget's planned figures to ledger actuals, per account.
 
     Budgeted amounts come from the (frozen) :class:`~vs_finance.models.BudgetLine`
     cells; actuals come from the denormalised :class:`AccountBalance` *movement* in
-    the matching fiscal periods (period movement only — opening balances are
+    the matching fiscal periods (period movement only - opening balances are
     excluded), signed to each account's normal balance so an expense budget of
-    ``100`` lines up with ``100`` of actual expense. Pass ``period_no`` (1–12) to
-    scope both sides to a single period; otherwise the whole fiscal year is summed.
+    ``100`` lines up with ``100`` of actual expense. Pass a configured ``period_no``
+    to scope both sides to a single period; otherwise the whole fiscal year is summed.
     """
     from .constants import AccountType, NormalBalance
     from .models import AccountBalance, BudgetLine
@@ -480,6 +1002,9 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
     _PL_TYPES = {AccountType.INCOME, AccountType.EXPENSE}
 
     fiscal_year = budget.fiscal_year
+    if period_no is not None:
+        from .budgets import ensure_budget_period
+        period_no = ensure_budget_period(budget, period_no)
 
     # Budgeted amounts per account (summed across cost centres / periods).
     budget_lines = BudgetLine.objects.filter(budget=budget).select_related("account")
@@ -488,6 +1013,7 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
 
     slots: dict[int, dict] = {}
 
+    # Handle the slot for workflow.
     def slot_for(account):
         s = slots.get(account.id)
         if s is None:
@@ -515,14 +1041,14 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
     for bal in balances:
         acc = bal.account
         # An unbudgeted, non-P&L account (e.g. the cash contra side) is not part of a
-        # budget variance — only surface budgeted accounts and unbudgeted P&L activity.
+        # budget variance - only surface budgeted accounts and unbudgeted P&L activity.
         if acc.id not in slots and acc.account_type not in _PL_TYPES:
             continue
         movement = bal.debit_total - bal.credit_total
         if acc.normal_balance != NormalBalance.DEBIT:
             movement = -movement
         if movement == 0 and acc.id not in slots:
-            continue  # untouched, unbudgeted account — skip the noise
+            continue  # untouched, unbudgeted account - skip the noise
         slot_for(acc)["actual"] += movement
 
     rows: list[BudgetVarianceRow] = []
@@ -551,15 +1077,129 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
     )
 
 
+@dataclass
+# Group behavior for Budget Matrix Row.
+class BudgetMatrixRow:
+    """One account's budget-vs-actual across the configured periods.
+
+    ``cells`` has one entry per regular fiscal period, signed to the account's normal
+    balance like :func:`budget_vs_actual`.
+    """
+
+    account_id: int
+    code: str
+    name: str
+    account_type: str
+    cells: list  # [{period_no, budget, actual}] per configured regular period
+    budget_total: int = 0
+    actual_total: int = 0
+
+
+@dataclass
+# Group behavior for Budget Matrix.
+class BudgetMatrix:
+    budget_id: int
+    fiscal_year_id: int
+    periods: list = field(default_factory=list)  # [{period_no, label}]
+    rows: list = field(default_factory=list)
+    total_budget: int = 0
+    total_actual: int = 0
+
+
+# Handle the budget period matrix workflow.
+def budget_monthly_matrix(budget) -> BudgetMatrix:
+    """Per-account, per-period budget vs actual for a budget - the variance heatmap.
+
+    One row per account (budgeted accounts + unbudgeted P&L activity), with one cell
+    per configured regular period. Built in two passes (budget lines, then period
+    balances) - no per-cell query - so the whole grid is one cheap read.
+    """
+    from .constants import AccountType, NormalBalance
+    from .models import AccountBalance, BudgetLine, FiscalPeriod
+
+    _PL_TYPES = {AccountType.INCOME, AccountType.EXPENSE}
+    fiscal_year = budget.fiscal_year
+
+    periods = list(
+        FiscalPeriod.objects.filter(fiscal_year=fiscal_year, period_no__lte=12)
+        .order_by("period_no")
+    )
+    period_nos = [p.period_no for p in periods]
+
+    slots: dict[int, dict] = {}
+
+    # Handle the slot for workflow.
+    def slot_for(account):
+        s = slots.get(account.id)
+        if s is None:
+            s = {
+                "code": account.code, "name": account.name,
+                "account_type": account.account_type,
+                "normal_balance": account.normal_balance,
+                "budget": {n: 0 for n in period_nos},
+                "actual": {n: 0 for n in period_nos},
+            }
+            slots[account.id] = s
+        return s
+
+    for line in BudgetLine.objects.filter(budget=budget).select_related("account"):
+        if line.period_no in period_nos:
+            slot_for(line.account)["budget"][line.period_no] += line.amount
+
+    balances = (
+        AccountBalance.objects
+        .filter(period__fiscal_year=fiscal_year, period__period_no__lte=12)
+        .select_related("account", "period")
+    )
+    for bal in balances:
+        acc = bal.account
+        if acc.id not in slots and acc.account_type not in _PL_TYPES:
+            continue
+        movement = bal.debit_total - bal.credit_total
+        if acc.normal_balance != NormalBalance.DEBIT:
+            movement = -movement
+        if movement == 0 and acc.id not in slots:
+            continue
+        slot_for(acc)["actual"][bal.period.period_no] += movement
+
+    rows: list[BudgetMatrixRow] = []
+    grand_budget = grand_actual = 0
+    for account_id, slot in sorted(slots.items(), key=lambda kv: kv[1]["code"]):
+        cells = [
+            {"period_no": n, "budget": slot["budget"][n], "actual": slot["actual"][n]}
+            for n in period_nos
+        ]
+        b_total = sum(slot["budget"].values())
+        a_total = sum(slot["actual"].values())
+        if b_total == 0 and a_total == 0:
+            continue
+        grand_budget += b_total
+        grand_actual += a_total
+        rows.append(BudgetMatrixRow(
+            account_id=account_id, code=slot["code"], name=slot["name"],
+            account_type=slot["account_type"], cells=cells,
+            budget_total=b_total, actual_total=a_total,
+        ))
+
+    return BudgetMatrix(
+        budget_id=budget.id,
+        fiscal_year_id=fiscal_year.id,
+        periods=[{"period_no": p.period_no, "label": p.name} for p in periods],
+        rows=rows,
+        total_budget=grand_budget,
+        total_actual=grand_actual,
+    )
+
+
 # --------------------------------------------------------------------------- #
-# Financial statements — Income Statement, Balance Sheet, Cash Flow            #
+# Financial statements - Income Statement, Balance Sheet, Cash Flow            #
 # --------------------------------------------------------------------------- #
 #
 # The three primary statements, all read from the same denormalised
 # ``AccountBalance`` aggregates (the cash-flow statement additionally scans posted
 # journal lines to classify cash movements). The cardinal links they demonstrate:
 #
-#   * Income Statement net income, for the open year, is *unclosed* — it has not yet
+#   * Income Statement net income, for the open year, is *unclosed* - it has not yet
 #     been journalled into Retained Earnings. The Balance Sheet therefore folds that
 #     same net income into equity, which is exactly why ``assets == liabilities +
 #     equity`` holds before the year is closed.
@@ -569,6 +1209,7 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
 
 
 @dataclass
+# Define Statement Line values.
 class StatementLine:
     """One account's contribution to a statement (kobo), signed to its normal balance."""
 
@@ -579,18 +1220,28 @@ class StatementLine:
     amount: int
 
     @property
+    # Handle the amount naira workflow.
     def amount_naira(self) -> str:
         return format_naira(self.amount)
 
 
+# Support the net by account workflow.
 def _net_by_account(balances, *, account_types=None) -> dict:
     """Aggregate ``AccountBalance`` rows into ``{account_id: (account, net_kobo)}``.
 
-    ``net`` is the closing position (opening + movement) signed to each account's
-    normal balance — positive means the account grew in its natural direction. Pass
-    ``account_types`` (a set of :class:`AccountType`) to restrict which accounts count.
+    ``net`` is the closing position (opening + movement) signed to the account **type's**
+    natural side (ASSET/EXPENSE → debit-positive; LIABILITY/EQUITY/INCOME →
+    credit-positive) - *not* the account's own ``normal_balance``. That distinction
+    matters for **contra** accounts: accumulated depreciation (a contra-asset) carries a
+    credit balance, so signing it as an asset (dr − cr) makes it *reduce* PP&E on the
+    statements, and a contra-income (sales returns) reduces revenue. Signing by the
+    account's own (flipped) normal balance would instead *add* these, overstating the
+    line and breaking the balance-sheet equation. Pass ``account_types`` (a set of
+    :class:`AccountType`) to restrict which accounts count.
     """
-    from .constants import NormalBalance
+    from .constants import AccountType
+
+    debit_natural = {AccountType.ASSET, AccountType.EXPENSE}
 
     out: dict[int, list] = {}
     for bal in balances:
@@ -599,7 +1250,7 @@ def _net_by_account(balances, *, account_types=None) -> dict:
             continue
         dr = bal.opening_debit + bal.debit_total
         cr = bal.opening_credit + bal.credit_total
-        net = (dr - cr) if acc.normal_balance == NormalBalance.DEBIT else (cr - dr)
+        net = (dr - cr) if acc.account_type in debit_natural else (cr - dr)
         slot = out.get(acc.id)
         if slot is None:
             out[acc.id] = [acc, net]
@@ -608,6 +1259,7 @@ def _net_by_account(balances, *, account_types=None) -> dict:
     return out
 
 
+# Support the statement rows workflow.
 def _statement_rows(net_map) -> tuple[list, int]:
     """Turn a ``{account_id: (account, net)}`` map into sorted rows + their total."""
     rows: list[StatementLine] = []
@@ -624,6 +1276,7 @@ def _statement_rows(net_map) -> tuple[list, int]:
 
 
 @dataclass
+# Group behavior for Income Statement.
 class IncomeStatement:
     """Revenue less expenses for a window → net income (kobo).
 
@@ -640,10 +1293,12 @@ class IncomeStatement:
     total_expense: int = 0
 
     @property
+    # Handle the net income workflow.
     def net_income(self) -> int:
         return self.total_income - self.total_expense
 
 
+# Handle the income statement workflow.
 def income_statement(entity, *, period=None) -> IncomeStatement:
     """Build the income statement (P&L) for ``entity``, optionally one ``period``.
 
@@ -675,6 +1330,173 @@ def income_statement(entity, *, period=None) -> IncomeStatement:
 
 
 @dataclass
+# Define I S Compare Line values.
+class ISCompareLine:
+    """One P&L account row with its comparison figures (all kobo; None = not available)."""
+    account_id: int
+    code: str
+    name: str
+    account_type: str
+    amount: int = 0
+    budget: int | None = None
+    variance: int | None = None
+    prior_year: int | None = None
+
+
+@dataclass
+# Group behavior for I S Compare Totals.
+class ISCompareTotals:
+    amount: int = 0
+    budget: int | None = None
+    variance: int | None = None
+    prior_year: int | None = None
+
+
+@dataclass
+# Group behavior for Income Statement Compare.
+class IncomeStatementCompare:
+    """The income statement with optional Budget and Prior-year columns.
+
+    Unlike :func:`income_statement` (which sums income/expense across *all* periods),
+    this is **fiscal-year scoped**: "this period" is the current fiscal year (or one
+    period of it), so the Prior-year column - the same scope in the previous fiscal
+    year - is a like-for-like comparison. Budget comes from the entity's budget for the
+    current fiscal year. Variance is signed *favourable* (revenue: actual − budget;
+    expense: budget − actual; net income: actual − budget).
+    """
+    entity_id: int
+    period_id: int | None
+    period_name: str | None
+    fiscal_year: int | None
+    prior_fiscal_year: int | None
+    has_budget: bool
+    has_prior_year: bool
+    income_rows: list = field(default_factory=list)
+    expense_rows: list = field(default_factory=list)
+    income_totals: ISCompareTotals = field(default_factory=ISCompareTotals)
+    expense_totals: ISCompareTotals = field(default_factory=ISCompareTotals)
+    net_totals: ISCompareTotals = field(default_factory=ISCompareTotals)
+
+
+# Handle the income statement compare workflow.
+def income_statement_compare(entity, *, period=None) -> IncomeStatementCompare:
+    """Build the income statement with Budget + Prior-year comparison columns.
+
+    Scope is a **fiscal year**: ``period`` (a :class:`FiscalPeriod`) narrows both this
+    year and the prior year to that single period number; otherwise the whole current
+    fiscal year (the latest) is used. See :class:`IncomeStatementCompare`.
+    """
+    from .constants import AccountType, BudgetStatus
+    from .models import AccountBalance, Budget, BudgetLine, FiscalYear
+
+    fy = period.fiscal_year if period is not None else (
+        FiscalYear.objects.filter(entity=entity).order_by("-year").first())
+    if fy is None:
+        return IncomeStatementCompare(
+            entity_id=entity.id, period_id=None, period_name=None,
+            fiscal_year=None, prior_fiscal_year=None,
+            has_budget=False, has_prior_year=False)
+
+    period_no = period.period_no if period is not None else None
+
+    # Support the actuals workflow.
+    def _actuals(fiscal_year):
+        qs = AccountBalance.objects.filter(
+            account__entity=entity, period__fiscal_year=fiscal_year,
+        ).select_related("account")
+        if period_no is not None:
+            qs = qs.filter(period__period_no=period_no)
+        return (_net_by_account(qs, account_types={AccountType.INCOME}),
+                _net_by_account(qs, account_types={AccountType.EXPENSE}))
+
+    cur_inc, cur_exp = _actuals(fy)
+
+    prior_fy = FiscalYear.objects.filter(entity=entity, year=fy.year - 1).first()
+    has_prior = prior_fy is not None
+    pri_inc, pri_exp = _actuals(prior_fy) if has_prior else ({}, {})
+
+    # Budget for the current fiscal year - prefer an approved (locked) plan over a draft.
+    budget = (
+        Budget.objects.filter(
+            entity=entity, fiscal_year=fy,
+            status=BudgetStatus.APPROVED).order_by("-id").first()
+        or Budget.objects.filter(entity=entity, fiscal_year=fy).order_by("-id").first())
+    has_budget = budget is not None
+    budget_by_acc: dict[int, list] = {}
+    if has_budget:
+        blines = BudgetLine.objects.filter(budget=budget).select_related("account")
+        if period_no is not None:
+            blines = blines.filter(period_no=period_no)
+        for ln in blines:
+            slot = budget_by_acc.get(ln.account_id)
+            if slot is None:
+                budget_by_acc[ln.account_id] = [ln.account, ln.amount]
+            else:
+                slot[1] += ln.amount
+
+    # Support the build workflow.
+    def _build(cur_map, pri_map, atype, *, revenue):
+        accounts: dict[int, object] = {}
+        for aid, (acc, _net) in cur_map.items():
+            accounts[aid] = acc
+        for aid, (acc, _net) in pri_map.items():
+            accounts.setdefault(aid, acc)
+        for aid, (acc, _amt) in budget_by_acc.items():
+            if acc.account_type == atype:
+                accounts.setdefault(aid, acc)
+
+        rows, tot_amt, tot_bud, tot_pri = [], 0, 0, 0
+        for aid, acc in sorted(accounts.items(), key=lambda kv: kv[1].code):
+            amount = cur_map.get(aid, [None, 0])[1]
+            prior = pri_map.get(aid, [None, 0])[1] if has_prior else None
+            bud = budget_by_acc.get(aid, [None, 0])[1] if has_budget else None
+            if amount == 0 and not bud and not prior:
+                continue
+            var = None
+            if has_budget:
+                var = (amount - bud) if revenue else (bud - amount)
+                tot_bud += bud
+            if has_prior:
+                tot_pri += prior or 0
+            tot_amt += amount
+            rows.append(ISCompareLine(
+                account_id=aid, code=acc.code, name=acc.name,
+                account_type=acc.account_type, amount=amount,
+                budget=bud, variance=var, prior_year=prior))
+        totals = ISCompareTotals(
+            amount=tot_amt,
+            budget=tot_bud if has_budget else None,
+            prior_year=tot_pri if has_prior else None,
+        )
+        return rows, totals
+
+    income_rows, inc_tot = _build(cur_inc, pri_inc, AccountType.INCOME, revenue=True)
+    expense_rows, exp_tot = _build(cur_exp, pri_exp, AccountType.EXPENSE, revenue=False)
+    if has_budget:
+        inc_tot.variance = inc_tot.amount - inc_tot.budget
+        exp_tot.variance = exp_tot.budget - exp_tot.amount
+
+    net = ISCompareTotals(
+        amount=inc_tot.amount - exp_tot.amount,
+        budget=(inc_tot.budget - exp_tot.budget) if has_budget else None,
+        prior_year=((inc_tot.prior_year or 0) - (exp_tot.prior_year or 0)) if has_prior else None,
+    )
+    if has_budget:
+        net.variance = net.amount - net.budget
+
+    return IncomeStatementCompare(
+        entity_id=entity.id,
+        period_id=getattr(period, "id", None),
+        period_name=getattr(period, "name", None),
+        fiscal_year=fy.year,
+        prior_fiscal_year=prior_fy.year if prior_fy else None,
+        has_budget=has_budget, has_prior_year=has_prior,
+        income_rows=income_rows, expense_rows=expense_rows,
+        income_totals=inc_tot, expense_totals=exp_tot, net_totals=net)
+
+
+@dataclass
+# Group behavior for Balance Sheet.
 class BalanceSheet:
     """Assets, liabilities and equity at a point in time (kobo).
 
@@ -694,24 +1516,28 @@ class BalanceSheet:
     retained_earnings: int = 0
 
     @property
+    # Handle the total equity workflow.
     def total_equity(self) -> int:
         """Booked equity accounts plus the unclosed net income for the window."""
         return self.total_equity_accounts + self.retained_earnings
 
     @property
+    # Handle the is balanced workflow.
     def is_balanced(self) -> bool:
         return self.total_assets == self.total_liabilities + self.total_equity
 
     @property
+    # Handle the difference workflow.
     def difference(self) -> int:
         return self.total_assets - (self.total_liabilities + self.total_equity)
 
 
+# Handle the balance sheet workflow.
 def balance_sheet(entity, *, as_of=None) -> BalanceSheet:
     """Build the balance sheet for ``entity`` as at ``as_of`` (default: today).
 
     Aggregates ASSET / LIABILITY / EQUITY balances across every period that has begun
-    on or before ``as_of`` (period granularity — partial-period cut-offs are not
+    on or before ``as_of`` (period granularity - partial-period cut-offs are not
     interpolated). The same window's net income (income − expense) is reported as
     ``retained_earnings`` and folded into equity, which is what makes ``assets ==
     liabilities + equity`` hold while the year is still open.
@@ -759,6 +1585,7 @@ def balance_sheet(entity, *, as_of=None) -> BalanceSheet:
 CASH_FLOW_ACTIVITIES = ("operating", "investing", "financing")
 
 
+# Support the classify cash flow workflow.
 def _classify_cash_flow(account) -> str:
     """Bucket a non-cash journal leg into operating / investing / financing.
 
@@ -767,7 +1594,7 @@ def _classify_cash_flow(account) -> str:
     bucket each leg lands in, the three buckets *always* foot to net change in cash.
 
     * INCOME / EXPENSE and working-capital accounts (current AR / AP) → **operating**
-    * non-current ASSET — property, plant & equipment and its accumulated
+    * non-current ASSET - property, plant & equipment and its accumulated
       depreciation contra → **investing**
     * EQUITY (capital, drawings) → **financing**
     * other LIABILITY (assumed borrowings) → **financing**
@@ -796,12 +1623,29 @@ def _classify_cash_flow(account) -> str:
 
 
 @dataclass
+# Define Cash Flow Line values.
+class CashFlowLine:
+    """One counter-account's net cash contribution within an activity (kobo).
+
+    ``amount`` is credit − debit on the non-cash leg: positive = cash in, negative =
+    cash out (e.g. paying a payable or buying PP&E).
+    """
+
+    account_id: int
+    code: str
+    name: str
+    amount: int = 0
+
+
+@dataclass
+# Group behavior for Cash Flow Statement.
 class CashFlowStatement:
     """Cash movement for a window, classified by activity (kobo).
 
     ``opening_cash + net_change == closing_cash`` is the reconciliation the statement
     exists to prove. ``by_activity`` holds the operating / investing / financing
-    subtotals, which sum to ``net_change``.
+    subtotals, which sum to ``net_change``. ``activity_lines`` breaks each activity into
+    its counter-account line items (direct method).
     """
 
     entity_id: int
@@ -809,16 +1653,21 @@ class CashFlowStatement:
     opening_cash: int = 0
     closing_cash: int = 0
     by_activity: dict = field(default_factory=lambda: {a: 0 for a in CASH_FLOW_ACTIVITIES})
+    activity_lines: dict = field(
+        default_factory=lambda: {a: [] for a in CASH_FLOW_ACTIVITIES})
 
     @property
+    # Handle the net change workflow.
     def net_change(self) -> int:
         return sum(self.by_activity.values())
 
     @property
+    # Handle the is reconciled workflow.
     def is_reconciled(self) -> bool:
         return self.opening_cash + self.net_change == self.closing_cash
 
 
+# Handle the cash flow statement workflow.
 def cash_flow_statement(entity, *, period=None) -> CashFlowStatement:
     """Build the cash-flow statement for ``entity``, optionally one ``period``.
 
@@ -828,15 +1677,12 @@ def cash_flow_statement(entity, *, period=None) -> CashFlowStatement:
     financing (see :func:`_classify_cash_flow`), and reconciles opening + net change to
     closing cash. Scoped to ``period`` when given, else the whole ledger to date.
     """
-    from .constants import CASH_BANK_CODE, DocumentStatus, NormalBalance
-    from .models import Account, AccountBalance, BankAccount, JournalLine
+    from .account_mappings import resolve_mapped_account
+    from .constants import AccountMappingKey, DocumentStatus, NormalBalance
+    from .models import AccountBalance, BankAccount, JournalLine
 
     # 1. Identify the entity's cash accounts (1100 + any mapped bank GL account).
-    cash_ids = set(
-        Account.objects
-        .filter(entity=entity, code=CASH_BANK_CODE)
-        .values_list("id", flat=True)
-    )
+    cash_ids = {resolve_mapped_account(entity, AccountMappingKey.CASH_BANK).id}
     cash_ids |= set(
         BankAccount.objects.filter(entity=entity).values_list("gl_account_id", flat=True)
     )
@@ -880,10 +1726,27 @@ def cash_flow_statement(entity, *, period=None) -> CashFlowStatement:
         .exclude(account_id__in=cash_ids)
         .select_related("account")
     )
+    line_acc: dict[tuple, list] = {}
     for leg in legs:
         # A credit to a non-cash account is a source of cash (+), a debit a use (−).
         contribution = leg.credit - leg.debit
-        stmt.by_activity[_classify_cash_flow(leg.account)] += contribution
+        activity = _classify_cash_flow(leg.account)
+        stmt.by_activity[activity] += contribution
+        slot = line_acc.get((activity, leg.account_id))
+        if slot is None:
+            line_acc[(activity, leg.account_id)] = [leg.account, contribution]
+        else:
+            slot[1] += contribution
+
+    # Break each activity into its counter-account line items (direct method), sorted
+    # by account code; net-zero counter-accounts are dropped.
+    for (activity, account_id), (acc, amount) in sorted(
+        line_acc.items(), key=lambda kv: (kv[0][0], kv[1][0].code)
+    ):
+        if amount == 0:
+            continue
+        stmt.activity_lines[activity].append(CashFlowLine(
+            account_id=account_id, code=acc.code, name=acc.name, amount=amount))
 
     return stmt
 
@@ -897,12 +1760,12 @@ def cash_flow_statement(entity, *, period=None) -> CashFlowStatement:
 # movement into *profit for the period* and *owner contributions / distributions*.
 #
 # In this ledger the year is never closed into Retained Earnings (P&L sits unclosed
-# and the Balance Sheet folds it into equity — see ``balance_sheet``). The SOCE
+# and the Balance Sheet folds it into equity - see ``balance_sheet``). The SOCE
 # mirrors that exactly: each booked EQUITY account becomes a column whose movement in
 # the window is a contribution/distribution, and a synthetic *Retained earnings*
 # column carries the unclosed net income (opening = cumulative P&L before the window,
 # profit = P&L during the window). Closing therefore equals
-# ``balance_sheet(as_of=window end).total_equity`` — the invariant ``is_reconciled``
+# ``balance_sheet(as_of=window end).total_equity`` - the invariant ``is_reconciled``
 # proves.
 
 
@@ -911,6 +1774,7 @@ RETAINED_EARNINGS_COLUMN = "retained_earnings"
 
 
 @dataclass
+# Group behavior for Equity Movement.
 class EquityMovement:
     """One equity component's opening → closing walk over a window (kobo).
 
@@ -928,27 +1792,33 @@ class EquityMovement:
     contributions: int = 0
 
     @property
+    # Handle the closing workflow.
     def closing(self) -> int:
         return self.opening + self.profit + self.contributions
 
     @property
+    # Handle the opening naira workflow.
     def opening_naira(self) -> str:
         return format_naira(self.opening)
 
     @property
+    # Handle the profit naira workflow.
     def profit_naira(self) -> str:
         return format_naira(self.profit)
 
     @property
+    # Handle the contributions naira workflow.
     def contributions_naira(self) -> str:
         return format_naira(self.contributions)
 
     @property
+    # Handle the closing naira workflow.
     def closing_naira(self) -> str:
         return format_naira(self.closing)
 
 
 @dataclass
+# Group behavior for Statement Of Changes In Equity.
 class StatementOfChangesInEquity:
     """Equity reconciliation by component for a window (kobo).
 
@@ -965,26 +1835,32 @@ class StatementOfChangesInEquity:
     balance_sheet_equity: int = 0
 
     @property
+    # Handle the total opening workflow.
     def total_opening(self) -> int:
         return sum(c.opening for c in self.columns)
 
     @property
+    # Handle the total profit workflow.
     def total_profit(self) -> int:
         return sum(c.profit for c in self.columns)
 
     @property
+    # Handle the total contributions workflow.
     def total_contributions(self) -> int:
         return sum(c.contributions for c in self.columns)
 
     @property
+    # Handle the total closing workflow.
     def total_closing(self) -> int:
         return sum(c.closing for c in self.columns)
 
     @property
+    # Handle the is reconciled workflow.
     def is_reconciled(self) -> bool:
         return self.total_closing == self.balance_sheet_equity
 
 
+# Support the net income workflow.
 def _net_income(qs) -> int:
     """Net income (income − expense), signed positive for a profit, over ``qs``."""
     from .constants import AccountType
@@ -994,6 +1870,7 @@ def _net_income(qs) -> int:
     return total_income - total_expense
 
 
+# Handle the statement of changes in equity workflow.
 def statement_of_changes_in_equity(entity, *, period=None) -> StatementOfChangesInEquity:
     """Build the statement of changes in equity for ``entity``.
 
@@ -1013,9 +1890,14 @@ def statement_of_changes_in_equity(entity, *, period=None) -> StatementOfChanges
         window_qs = base.filter(period=period)
         as_of = period.end_date
     else:
-        prior_qs = base.none()
-        window_qs = base
         as_of = timezone.now().date()
+        prior_qs = base.none()
+        # Keep the movement window on the same point-in-time basis as the
+        # reconciliation target below.  Entities may have open future periods
+        # (for example a Sep-Aug school year provisioned in July); including those
+        # balances here while balance_sheet() correctly excludes them produces a
+        # false closing-equity mismatch.
+        window_qs = base.filter(period__start_date__lte=as_of)
 
     opening_map = _net_by_account(prior_qs, account_types={AccountType.EQUITY})
     window_map = _net_by_account(window_qs, account_types={AccountType.EQUITY})
@@ -1066,7 +1948,7 @@ def statement_of_changes_in_equity(entity, *, period=None) -> StatementOfChanges
 # is regrouped onto IFRS-for-SMEs presentation *lines* (see
 # :class:`~vs_finance.constants.IFRSLine`) rather than listed account-by-account.
 #
-# The pack never re-derives the numbers — it *regroups* the rows the existing
+# The pack never re-derives the numbers - it *regroups* the rows the existing
 # ``balance_sheet`` and ``income_statement`` already produce, so its section totals
 # foot to those statements by construction (``total_assets`` == the balance sheet's
 # total assets, etc.) and the accounting equation it asserts is exactly the one the
@@ -1075,7 +1957,8 @@ def statement_of_changes_in_equity(entity, *, period=None) -> StatementOfChanges
 
 
 #: Statement-of-Financial-Position sections, each an ordered list of its IFRS lines.
-#: (key, label, [IFRSLine, …]) — drives both presentation order and section subtotals.
+#: (key, label, [IFRSLine, …]) - drives both presentation order and section subtotals.
+# Support the ifrs sofp sections workflow.
 def _ifrs_sofp_sections():
     from .constants import IFRSLine
     return [
@@ -1095,6 +1978,7 @@ def _ifrs_sofp_sections():
 
 
 #: Income-statement lines in presentation order.
+# Support the ifrs income lines workflow.
 def _ifrs_income_lines():
     from .constants import IFRSLine
     return [
@@ -1104,12 +1988,14 @@ def _ifrs_income_lines():
     ]
 
 
+# Support the resolve ifrs line workflow.
 def _resolve_ifrs_line(account) -> str:
     """The IFRS-for-SMEs line an account presents on (explicit, else type default)."""
     from .constants import DEFAULT_IFRS_LINE_BY_TYPE
     return account.ifrs_line or DEFAULT_IFRS_LINE_BY_TYPE[account.account_type]
 
 
+# Support the ifrs line map workflow.
 def _ifrs_line_map(entity) -> dict:
     """``{account_id: resolved_ifrs_line}`` for every account in ``entity``."""
     from .models import Account
@@ -1122,6 +2008,7 @@ def _ifrs_line_map(entity) -> dict:
 
 
 @dataclass
+# Define I F R S Line Group values.
 class IFRSLineGroup:
     """One IFRS-for-SMEs presentation line: its accounts rolled into a single total."""
 
@@ -1131,11 +2018,13 @@ class IFRSLineGroup:
     accounts: list = field(default_factory=list)
 
     @property
+    # Handle the amount naira workflow.
     def amount_naira(self) -> str:
         return format_naira(self.amount)
 
 
 @dataclass
+# Group behavior for I F R S Section.
 class IFRSSection:
     """A statement section (e.g. *Current assets*) and its line subtotals."""
 
@@ -1145,11 +2034,13 @@ class IFRSSection:
     total: int = 0
 
     @property
+    # Handle the total naira workflow.
     def total_naira(self) -> str:
         return format_naira(self.total)
 
 
 @dataclass
+# Group behavior for Statutory Pack.
 class StatutoryPack:
     """An IFRS-for-SMEs statutory pack bundling the primary statements.
 
@@ -1177,14 +2068,17 @@ class StatutoryPack:
     trial_balance: object = None
 
     @property
+    # Handle the is balanced workflow.
     def is_balanced(self) -> bool:
         return self.total_assets == self.total_equity + self.total_liabilities
 
     @property
+    # Handle the difference workflow.
     def difference(self) -> int:
         return self.total_assets - (self.total_equity + self.total_liabilities)
 
 
+# Support the group rows by ifrs line workflow.
 def _group_rows_by_ifrs_line(rows, line_map, *, ordered_lines, extra=None) -> tuple[list, int]:
     """Roll statement ``rows`` into ordered :class:`IFRSLineGroup` buckets.
 
@@ -1199,6 +2093,7 @@ def _group_rows_by_ifrs_line(rows, line_map, *, ordered_lines, extra=None) -> tu
     buckets: dict[str, IFRSLineGroup] = {}
     labels = dict(IFRSLine.choices)
 
+    # Handle the bucket workflow.
     def bucket(line):
         g = buckets.get(line)
         if g is None:
@@ -1232,6 +2127,7 @@ def _group_rows_by_ifrs_line(rows, line_map, *, ordered_lines, extra=None) -> tu
     return groups, total
 
 
+# Handle the statutory pack workflow.
 def statutory_pack(entity, *, as_of=None, period=None) -> StatutoryPack:
     """Assemble the IFRS-for-SMEs statutory pack for ``entity``.
 
@@ -1293,4 +2189,78 @@ def statutory_pack(entity, *, as_of=None, period=None) -> StatutoryPack:
         cash_flow=cash_flow_statement(entity, period=period),
         changes_in_equity=statement_of_changes_in_equity(entity, period=period),
         trial_balance=trial_balance(entity, period=period),
+    )
+
+
+#: Synthetic equity line for the unclosed net income (no backing GL account).
+CURRENT_YEAR_EARNINGS_LINE = "CURRENT_YEAR_EARNINGS"
+
+
+@dataclass
+# Group behavior for Balance Sheet Sections.
+class BalanceSheetSections:
+    """The balance sheet grouped into IFRS Statement-of-Financial-Position sections.
+
+    ``sections`` are :class:`IFRSSection` (non-current assets, current assets, equity,
+    non-current liabilities, current liabilities). Equity keeps the unclosed net income
+    as its own *Current year earnings* line rather than folding it into Retained
+    earnings, so it reads like the balance-sheet screen. Totals reconcile to
+    :func:`balance_sheet`.
+    """
+
+    entity_id: int
+    as_of: object
+    sections: list = field(default_factory=list)
+    total_assets: int = 0
+    total_liabilities: int = 0
+    total_equity: int = 0
+    current_year_earnings: int = 0
+
+    @property
+    # Handle the is balanced workflow.
+    def is_balanced(self) -> bool:
+        return self.total_assets == self.total_liabilities + self.total_equity
+
+    @property
+    # Handle the difference workflow.
+    def difference(self) -> int:
+        return self.total_assets - (self.total_liabilities + self.total_equity)
+
+
+# Handle the balance sheet sections workflow.
+def balance_sheet_sections(entity, *, as_of=None) -> BalanceSheetSections:
+    """Regroup the balance sheet onto IFRS SOFP sections for statutory presentation.
+
+    Reuses the same section/line machinery as :func:`statutory_pack`, but surfaces the
+    unclosed net income as a distinct *Current year earnings* equity line.
+    """
+    as_of = as_of or timezone.now().date()
+    bs = balance_sheet(entity, as_of=as_of)
+    line_map = _ifrs_line_map(entity)
+
+    section_rows = {
+        "non_current_assets": bs.asset_rows, "current_assets": bs.asset_rows,
+        "equity": bs.equity_rows,
+        "non_current_liabilities": bs.liability_rows,
+        "current_liabilities": bs.liability_rows,
+    }
+    sections: list[IFRSSection] = []
+    for key, label, lines in _ifrs_sofp_sections():
+        groups, total = _group_rows_by_ifrs_line(
+            section_rows[key], line_map, ordered_lines=lines)
+        if key == "equity" and bs.retained_earnings:
+            groups.append(IFRSLineGroup(
+                line=CURRENT_YEAR_EARNINGS_LINE, label="Current year earnings",
+                amount=bs.retained_earnings))
+            total += bs.retained_earnings
+        sections.append(IFRSSection(key=key, label=label, groups=groups, total=total))
+
+    section_total = {s.key: s.total for s in sections}
+    return BalanceSheetSections(
+        entity_id=entity.id, as_of=as_of, sections=sections,
+        total_assets=section_total["non_current_assets"] + section_total["current_assets"],
+        total_liabilities=(
+            section_total["non_current_liabilities"] + section_total["current_liabilities"]),
+        total_equity=section_total["equity"],
+        current_year_earnings=bs.retained_earnings,
     )

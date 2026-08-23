@@ -19,7 +19,7 @@ DATABASES = {
     }
 }
 
-# WhiteNoise — insert after SecurityMiddleware
+# WhiteNoise - insert after SecurityMiddleware
 MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
 
 STORAGES = {
@@ -39,7 +39,7 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 
 # Celery :eager (synchronous, in the web process) until the worker
 # service is live. Once the Render worker + Key Value (Redis) instance exist,
-# set CELERY_EAGER=false and REDIS_URL on BOTH services — env change only,
+# set CELERY_EAGER=false and REDIS_URL on BOTH services - env change only,
 # no code redeploy needed. Flip CELERY_EAGER back to true to bypass a broken
 # broker in an emergency.
 CELERY_TASK_ALWAYS_EAGER     = config("CELERY_EAGER", default=True, cast=bool)

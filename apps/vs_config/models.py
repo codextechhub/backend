@@ -1,239 +1,734 @@
-# vs_config/models.py
-#
-# Four models covering the full System Configuration & Feature Flags module:
-#
-#   ConfigurationKey       — global platform-wide key/value settings
-#   BranchFeatureFlag      — per-branch on/off module flags
-#   BranchConfigOverride   — per-branch overrides of permitted keys
-#   ConfigurationChangeLog — append-only audit history for all changes
-#
-# Scoping rules enforced here:
-#   - ConfigurationKey has NO branch FK. It is platform-wide.
-#   - BranchFeatureFlag is scoped to vs_schools.Branch. Querysets MUST always
-#     be filtered by branch in views — never returned unscoped.
-#   - BranchConfigOverride is scoped to vs_schools.Branch. Querysets MUST
-#     always be filtered by branch in views — never returned unscoped.
-#   - ConfigurationChangeLog is append-only. Views must never update or delete
-#     its rows. All writes go through ConfigurationService or FlagService.
+"""Typed configuration, capability, entitlement, override, and audit models.
+
+The app is built from two parallel systems that share one scoping contract:
+
+Configuration (settings with values)
+    ConfigurationDefinition declares WHAT a setting is (its key, type,
+    validation rules, and where it may be set). ConfigurationValue stores
+    one concrete value per definition per scope. Reads resolve through the
+    precedence chain: branch value -> tenant value -> platform value ->
+    definition default.
+
+Capabilities (features that are on or off)
+    Capability declares a switchable unit of product functionality (a
+    module or a feature). CapabilityEntitlement records whether a tenant
+    is ALLOWED to have it (the commercial grant). CapabilityOverride
+    records whether it is actually TURNED ON at runtime (platform, tenant,
+    or branch scope). CapabilityDependency links capabilities that require
+    other capabilities. An override can never switch on something that is
+    not entitled.
+
+Both systems write every mutation to ConfigurationAuditEvent, an immutable
+append-only log enforced in Python and by database triggers.
+
+Scoping: models that support platform/tenant/branch placement inherit
+ScopedModel, which normalizes the scope into a single ``scope_key`` string
+("platform", "tenant:<id>", or "branch:<id>") used in unique constraints
+and precedence lookups.
+"""
 
 import uuid
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.conf import settings
 
-from .constants import ChangeType
 from vs_rbac.managers import TenantAwareManager
 
 
-# ---------------------------------------------------------------------------
-# 1. ConfigurationKey
-#    Global platform-wide settings. No institution FK.
-#    Only Vision Super Admins may create, update, or soft-delete these.
-# ---------------------------------------------------------------------------
-class ConfigurationKey(models.Model):
-    id = models.UUIDField(
-        primary_key=True,
-        default=uuid.uuid4,
-        editable=False,
-    )
-    # Dot-notation key name. Immutable after creation.
-    # Format enforced by ConfigKeyValidator. Example: auth.session_timeout_minutes
-    key = models.CharField(
-        max_length=200,
-        unique=True,
-        db_index=True,
-    )
-    value = models.TextField()
-    description = models.TextField(
-        help_text="Human-readable explanation of what this key controls. Required.",
-    )
-    # Soft-delete flag. Inactive keys are excluded from system lookups
-    # but retained for audit history.
-    is_active = models.BooleanField(default=True, db_index=True)
+class ConfigurationDefinition(models.Model):
+    """Declare one typed setting: its key, type, rules, and where it may be set.
 
+    This is the SCHEMA half of the configuration system. A definition does
+    not hold any live value itself (other than the fallback default) - it
+    describes a setting so that ConfigurationValue rows can be validated
+    against it and application code can read it through
+    ``vs_config.conf.get_config(key)``.
+
+    Only platform-tenant users may create, update, or archive
+    definitions; school users can at most read them and write values where
+    ``allowed_scopes`` permits.
+
+    Fields:
+        id: Stable UUID primary key.
+        key: Immutable dotted machine key, e.g. ``security.retry_limit``.
+            Lowercase dot notation enforced by the serializer; immutable
+            after creation because application code and stored values
+            reference it. Unique across the platform.
+        label: Human-readable name shown in admin UIs.
+        description: Explanation of the behavior the setting controls.
+        value_type: One of STRING, INTEGER, DECIMAL, BOOLEAN, JSON, CHOICE,
+            or SECRET_REFERENCE. Drives ``validate_value()`` type checks for
+            both the default and every scoped value.
+        default_value: Fallback JSON value returned by resolution when no
+            platform/school/branch value exists. May be null.
+        validation_rules: Type-specific constraints as JSON - ``choices``
+            (list) for CHOICE, ``min``/``max`` bounds for numeric types.
+        allowed_scopes: List of scope names ("platform", "school",
+            "branch") where a value may be written. ``set_value()`` rejects
+            writes at any scope not in this list.
+        sensitivity: PUBLIC or INTERNAL values are shown as stored;
+            SECRET_REFERENCE marks the setting as pointing at a secret
+            (e.g. ``env://PAYMENTS_SECRET``) and every serializer, effective
+            read, and audit snapshot redacts it to "[REDACTED]".
+        is_active: Soft-archive flag. Inactive definitions are hidden from
+            default listings and never resolve - ``get_config`` returns the
+            caller's default instead. Archive is the DELETE verb; rows are
+            never hard-deleted because values and audit history point here.
+        created_by: User who created the definition (nullable history;
+            SET_NULL on user deletion).
+        created_at: Creation timestamp.
+        updated_at: Timestamp of the most recent definition change.
+    """
+
+    class ValueType(models.TextChoices):
+        STRING = "STRING", "String"
+        INTEGER = "INTEGER", "Integer"
+        DECIMAL = "DECIMAL", "Decimal"
+        BOOLEAN = "BOOLEAN", "Boolean"
+        JSON = "JSON", "JSON"
+        CHOICE = "CHOICE", "Choice"
+        SECRET_REFERENCE = "SECRET_REFERENCE", "Secret reference"
+
+    class Sensitivity(models.TextChoices):
+        PUBLIC = "PUBLIC", "Public"
+        INTERNAL = "INTERNAL", "Internal"
+        SECRET_REFERENCE = "SECRET_REFERENCE", "Secret reference"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    key = models.CharField(max_length=200, unique=True, db_index=True)
+    label = models.CharField(max_length=160)
+    description = models.TextField()
+    value_type = models.CharField(max_length=24, choices=ValueType.choices)
+    default_value = models.JSONField(null=True, blank=True)
+    validation_rules = models.JSONField(default=dict, blank=True)
+    allowed_scopes = models.JSONField(default=list)
+    sensitivity = models.CharField(
+        max_length=24, choices=Sensitivity.choices, default=Sensitivity.INTERNAL
+    )
+    is_active = models.BooleanField(default=True, db_index=True)
     created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="config_keys_created",
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="configuration_definitions_created",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["key"]
-        verbose_name = "Configuration Key"
-        verbose_name_plural = "Configuration Keys"
 
     def __str__(self):
-        status = "active" if self.is_active else "archived"
-        return f"{self.key} ({status})"
+        return self.key
 
 
-# ---------------------------------------------------------------------------
-# 2. BranchFeatureFlag
-#    Records the on/off state of a named flag for a specific branch.
-#    Flags not explicitly set default to disabled (is_enabled=False).
-#    Valid flag_key values are defined in constants.FLAG_REGISTRY — not here.
-# ---------------------------------------------------------------------------
-class BranchFeatureFlag(models.Model):
-    id = models.UUIDField(
-        primary_key=True,
-        default=uuid.uuid4,
-        editable=False,
+class ScopedModel(models.Model):
+    """Abstract base providing the shared platform/tenant/branch scope contract.
+
+    Any model that can be placed at one of the three scopes inherits this
+    (ConfigurationValue, CapabilityOverride, ConfigurationAuditEvent).
+    The scope of a row is defined by its two nullable FKs:
+
+        tenant NULL, branch NULL  -> platform scope (applies everywhere; this
+                                     is a scope marker, NOT tenant ownership)
+        tenant set,  branch NULL  -> tenant scope
+        branch set                -> branch scope (tenant auto-filled from the
+                                     branch's owning school)
+
+    ``scope_key`` is a denormalized string form of that placement -
+    "platform", "tenant:<id>", or "branch:<id>" - computed on every save. It
+    exists so that:
+
+    * unique constraints can express "one row per definition per scope"
+      without tripping over NULLs (SQL treats NULL != NULL, so a plain
+      unique on (definition, tenant, branch) would allow duplicate
+      platform rows), and
+    * precedence lookups can fetch all candidate rows for a scope chain
+      in one query (``scope_key__in=["branch:x", "tenant:y", "platform"]``).
+
+    Fields:
+        tenant: Optional tenant boundary. Null together with branch means
+            platform scope. A branch's tenant is read straight off
+            ``branch.tenant`` and must agree when both are supplied.
+        branch: Optional branch boundary. When set it must belong to
+            ``tenant``; if tenant is omitted the branch's own tenant is
+            filled in automatically (enforced in ``clean()``).
+        scope_key: Normalized scope string described above. Not editable;
+            recomputed by ``save()``.
+
+    Behavior:
+        ``save()`` always runs ``clean()`` (tenant/branch consistency) and
+        ``set_scope_key()`` first, so rows can never be persisted with a
+        scope_key that disagrees with their FKs. Abstract - creates no
+        table of its own.
+    """
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT, null=True, blank=True,
+        related_name="+",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch",
-        on_delete=models.CASCADE,
-        related_name="feature_flags",
+        "vs_tenants.Branch", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="+",
     )
-    # Must be a key present in constants.FLAG_REGISTRY.
-    # Validated at service level — not a FK so new flags need no migration.
-    flag_key = models.CharField(max_length=200, db_index=True)
-
-    is_enabled = models.BooleanField(default=False)
-
-    set_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="feature_flags_set",
-    )
-    # auto_now=True so every toggle automatically refreshes the timestamp.
-    set_at = models.DateTimeField(auto_now=True)
+    scope_key = models.CharField(max_length=80, editable=False, db_index=True)
 
     class Meta:
-        unique_together = [["branch", "flag_key"]]
-        indexes = [
-            models.Index(fields=["branch", "is_enabled"]),
-            models.Index(fields=["branch", "flag_key"]),
-        ]
-        verbose_name = "Branch Feature Flag"
-        verbose_name_plural = "Branch Feature Flags"
+        abstract = True
 
-    def __str__(self):
-        state = "ON" if self.is_enabled else "OFF"
-        return f"{self.branch_id} | {self.flag_key} [{state}]"
+    def clean(self):
+        super().clean()
+        if self.branch_id:
+            # The branch states its own tenant; no detour through the school.
+            branch_tenant_id = self.branch.tenant_id
+            if self.tenant_id is None:
+                self.tenant_id = branch_tenant_id
+            elif self.tenant_id != branch_tenant_id:
+                raise ValidationError({"branch": "Branch must belong to the selected tenant."})
+
+    def set_scope_key(self):
+        if self.branch_id:
+            self.scope_key = f"branch:{self.branch_id}"
+        elif self.tenant_id:
+            self.scope_key = f"tenant:{self.tenant_id}"
+        else:
+            self.scope_key = "platform"
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        self.set_scope_key()
+        return super().save(*args, **kwargs)
 
 
-# ---------------------------------------------------------------------------
-# 3. BranchConfigOverride
-#    Branch-specific overrides for a controlled subset of global keys.
-#    Branch Admins may only write keys listed in PERMITTED_SELF_SERVICE_KEYS.
-#    Resolution order: override → global key → caller default.
-# ---------------------------------------------------------------------------
-class BranchConfigOverride(models.Model):
-    id = models.UUIDField(
-        primary_key=True,
-        default=uuid.uuid4,
-        editable=False,
+class ConfigurationValue(ScopedModel):
+    """Store one concrete value for a definition at exactly one scope.
+
+    This is the DATA half of the configuration system. At most one row may
+    exist per (definition, scope) - enforced by the ``uniq_config_value_scope``
+    constraint on (definition, scope_key) - so writes are upserts
+    (``services.resolution.set_value``) and reads walk the precedence chain
+    (``services.resolution.resolve_value``):
+
+        branch row -> tenant row -> platform row -> definition.default_value
+
+    Values are never written directly through the ORM by views; they go
+    through ``set_value()``, which checks the definition's allowed_scopes,
+    validates the value against its type and rules, and records an audit
+    event in the same transaction.
+
+    Fields:
+        id: Stable UUID primary key.
+        definition: The ConfigurationDefinition this value belongs to.
+            CASCADE - values die with their definition.
+        value: The JSON-native payload. Its shape is guaranteed by
+            ``validate_value()`` to match ``definition.value_type`` and
+            ``definition.validation_rules`` at write time.
+        tenant / branch / scope_key: Scope placement inherited from
+            :class:`ScopedModel`.
+        updated_by: User who most recently set the value (nullable,
+            SET_NULL on user deletion).
+        created_at: Creation timestamp.
+        updated_at: Timestamp of the most recent value change.
+
+    Managers:
+        ``objects`` is tenant-aware (``include_global=True``): tenant-scoped
+        requests see their own rows plus platform rows automatically.
+        ``all_objects`` is the unscoped escape hatch used by the resolution
+        service and by views that have already authorized an explicit scope.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    definition = models.ForeignKey(
+        ConfigurationDefinition, on_delete=models.CASCADE, related_name="values"
     )
-    branch = models.ForeignKey(
-        "vs_schools.Branch",
-        on_delete=models.CASCADE,
-        related_name="config_overrides",
-    )
-    # Must be in constants.PERMITTED_SELF_SERVICE_KEYS. Validated at service level.
-    key = models.CharField(max_length=200)
-    value = models.TextField()
-
+    value = models.JSONField()
     updated_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="config_overrides_updated",
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="configuration_values_updated",
     )
+    created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    class Meta:
-        unique_together = [["branch", "key"]]
-        indexes = [
-            models.Index(fields=["branch", "key"]),
-        ]
-        verbose_name = "Branch Config Override"
-        verbose_name_plural = "Branch Config Overrides"
-
-    def __str__(self):
-        return f"{self.branch_id} | {self.key} = {self.value[:40]}"
-
-
-# ---------------------------------------------------------------------------
-# 4. ConfigurationChangeLog
-#    Append-only audit log for all configuration and flag changes.
-#    Never updated or deleted — each row is one immutable change event.
-#    All writes must go through ConfigurationService or FlagService,
-#    never directly from views.
-# ---------------------------------------------------------------------------
-class ConfigurationChangeLog(models.Model):
-    id = models.UUIDField(
-        primary_key=True,
-        default=uuid.uuid4,
-        editable=False,
-    )
-    change_type = models.CharField(
-        max_length=20,
-        choices=ChangeType.CHOICES,
-        db_index=True,
-    )
-    # The config key name or flag_key that was changed.
-    target_key = models.CharField(max_length=200, db_index=True)
-
-    # Null for global config changes (no institution scope remains).
-    institution = models.ForeignKey(
-        "vs_schools.School",
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name="config_change_logs",
-    )
-    # Set for branch-scoped flag changes and branch config overrides; null for global changes.
-    branch = models.ForeignKey(
-        "vs_schools.Branch",
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name="config_change_logs",
-    )
-    # Empty string on new key creation (no prior value).
-    previous_value = models.TextField(blank=True, default="")
-    new_value = models.TextField()
-
-    changed_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="config_changes_made",
-    )
-    # auto_now_add makes this immutable — cannot be altered post-creation.
-    changed_at = models.DateTimeField(auto_now_add=True, db_index=True)
-
-    # Optional reason. Required when a Vision staff member disables a flag
-    # on a Live institution (enforced at service level, not DB level).
-    reason = models.TextField(blank=True, default="")
-
-    objects = TenantAwareManager(tenant_field="institution", include_global=True)
+    objects = TenantAwareManager(include_global=True)
     all_objects = models.Manager()
 
     class Meta:
         default_manager_name = "objects"
         base_manager_name = "all_objects"
-        ordering = ["-changed_at"]
-        indexes = [
-            models.Index(fields=["institution", "change_type", "-changed_at"]),
-            models.Index(fields=["target_key", "-changed_at"]),
-            models.Index(fields=["changed_by", "-changed_at"]),
+        constraints = [
+            models.UniqueConstraint(
+                fields=["definition", "scope_key"], name="uniq_config_value_scope"
+            )
         ]
-        verbose_name = "Configuration Change Log"
-        verbose_name_plural = "Configuration Change Logs"
+        indexes = [models.Index(fields=["tenant", "branch"])]
+
+
+class Capability(models.Model):
+    """One switchable unit of product functionality in the unified catalogue.
+
+    Replaces the legacy XVSModules + BranchFeatureFlag split: a capability
+    is either a whole product MODULE (finance, attendance, student_portal)
+    or a smaller FEATURE (bulk_import, email_alerts) - the ``kind`` field
+    is the only distinction. Whether a capability is ON for a given
+    school/branch is never stored here; it is computed by
+    ``services.capabilities.effective_capability`` from three inputs:
+
+        1. entitlement - is the school allowed to have it?
+           (CapabilityEntitlement; skipped when ``requires_entitlement``
+           is False)
+        2. dependencies - are all prerequisite capabilities effective?
+           (CapabilityDependency)
+        3. override - has an operator toggled it at branch, school, or
+           platform scope? (CapabilityOverride; most specific scope wins,
+           falling back to ``default_enabled``)
+
+    Application code asks ``vs_config.conf.is_capability_enabled(key, ...)``;
+    the frontend reads GET /v1/config/effective-capabilities/.
+
+    Fields:
+        id: Stable UUID primary key.
+        key: Immutable unique slug (e.g. ``finance``). Referenced by
+            package setups, runtime checks, and URLs, so it never changes
+            after creation.
+        label: Human-readable name shown to administrators.
+        description: Functional description of what the capability unlocks.
+        kind: MODULE (sellable product area) or FEATURE (smaller toggle).
+        requires_entitlement: When True (typical for modules), the school
+            must hold a GRANTED entitlement before the capability can ever
+            be effective. When False (typical for features), only
+            dependencies and overrides apply.
+        default_enabled: The runtime state used when no override exists at
+            any scope in the chain.
+        is_active: Catalogue lifecycle flag. Inactive capabilities never
+            resolve as enabled and are hidden from default listings;
+            archiving is the DELETE verb (no hard deletes - entitlements,
+            overrides, and audit history reference this row).
+        metadata: Free-form, non-authoritative JSON for display or
+            integration hints (icons, ordering, docs links). Never used in
+            enablement decisions.
+        created_at: Creation timestamp.
+        updated_at: Timestamp of the most recent catalogue change.
+    """
+
+    class Kind(models.TextChoices):
+        MODULE = "MODULE", "Module"
+        FEATURE = "FEATURE", "Feature"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    key = models.SlugField(max_length=100, unique=True)
+    label = models.CharField(max_length=160)
+    description = models.TextField(blank=True)
+    kind = models.CharField(max_length=12, choices=Kind.choices, default=Kind.MODULE)
+    requires_entitlement = models.BooleanField(default=True)
+    default_enabled = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True, db_index=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["kind", "label"]
 
     def __str__(self):
-        if self.branch_id:
-            scope = f" | branch:{self.branch_id}"
-        elif self.institution_id:
-            scope = f" | inst:{self.institution_id}"
-        else:
-            scope = ""
-        return f"[{self.change_type}] {self.target_key}{scope} @ {self.changed_at}"
+        return self.label
+
+
+class CapabilityDependency(models.Model):
+    """A prerequisite edge: ``capability`` cannot be ON unless ``requires`` is ON.
+
+    Forms a directed acyclic graph over the catalogue. During evaluation,
+    ``effective_capability`` recursively checks every ``requires`` edge in
+    the SAME scope as the capability being evaluated - so enabling
+    ``procurement`` at a branch demands that ``finance`` also resolves as
+    effective for that branch (entitlement, overrides and all), not merely
+    that it exists.
+
+    Example (seeded): procurement -> finance, parent_portal -> student_portal.
+
+    Fields:
+        capability: The dependent capability being evaluated (CASCADE).
+        requires: The prerequisite that must itself resolve as enabled
+            (CASCADE).
+
+    Integrity:
+        Three layers keep the graph sane - a unique constraint rejects
+        duplicate edges, a DB check constraint rejects self-references, and
+        ``clean()`` (always run via ``save()``) walks the existing graph to
+        reject any edge that would create a cycle, since a cycle would make
+        evaluation non-terminating.
+    """
+
+    capability = models.ForeignKey(
+        Capability, on_delete=models.CASCADE, related_name="dependency_links"
+    )
+    requires = models.ForeignKey(
+        Capability, on_delete=models.CASCADE, related_name="dependent_links"
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["capability", "requires"], name="uniq_capability_dependency"
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(capability=models.F("requires")),
+                name="capability_cannot_require_itself",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if not self.capability_id or not self.requires_id:
+            return
+        if self.capability_id == self.requires_id:
+            raise ValidationError("A capability cannot depend on itself.")
+        pending = [self.requires_id]
+        seen = set()
+        while pending:
+            current = pending.pop()
+            if current == self.capability_id:
+                raise ValidationError("Capability dependency would create a cycle.")
+            if current in seen:
+                continue
+            seen.add(current)
+            pending.extend(
+                CapabilityDependency.objects.filter(capability_id=current)
+                .values_list("requires_id", flat=True)
+            )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class CapabilityEntitlement(models.Model):
+    """The commercial/administrative grant: is a tenant ALLOWED this capability?
+
+    Answers "did they buy it / were they given it", never "is it switched
+    on". Runtime state lives in CapabilityOverride; the two are kept apart
+    so a tenant can temporarily disable a module it pays for without losing
+    the grant, and so no branch toggle can ever enable something that was
+    never granted (``set_override`` refuses ENABLED without an active
+    entitlement here).
+
+    Scoping is deliberately narrower than ScopedModel: entitlements exist
+    only at tenant or platform level (a NULL tenant means "every tenant"),
+    because branches don't buy modules - tenants do. Hence this model
+    carries its own tenant FK + scope_key rather than inheriting the
+    three-level contract. A tenant-specific row always beats the platform
+    row during evaluation, which lets a platform-wide grant carry
+    tenant-level DENIED exceptions.
+
+    Rows are written by school package setup (source=PACKAGE), platform
+    admins (MANUAL/PLATFORM), or data migration (IMPORT), always through
+    ``services.capabilities.set_entitlement`` so every change is audited.
+
+    Fields:
+        id: Stable UUID primary key.
+        capability: The capability being granted or denied (CASCADE).
+        tenant: The tenant the decision applies to; NULL = platform-wide.
+        scope_key: "tenant:<id>" or "platform", computed on save; unique
+            together with capability, so there is exactly one decision per
+            capability per scope and writes are upserts.
+        state: GRANTED or DENIED. An explicit DENIED row at tenant level
+            overrides a platform-wide GRANTED.
+        source: Where the decision came from - PACKAGE (school package
+            setup), PLATFORM, MANUAL, or IMPORT (legacy migration).
+        starts_at: Optional activation time; the grant is inert before it.
+        ends_at: Optional exclusive expiry (subscription end); the grant is
+            inert from this moment on, flipping the capability off without
+            any data change.
+        updated_by: User who most recently changed the entitlement
+            (nullable, SET_NULL).
+        created_at: Creation timestamp.
+        updated_at: Timestamp of the most recent entitlement change.
+
+    Managers:
+        ``objects`` is tenant-aware (tenants see their own rows plus
+        platform-wide ones); ``all_objects`` is the unscoped escape hatch
+        used by the evaluation service.
+    """
+
+    class State(models.TextChoices):
+        GRANTED = "GRANTED", "Granted"
+        DENIED = "DENIED", "Denied"
+
+    class Source(models.TextChoices):
+        PACKAGE = "PACKAGE", "Package"
+        PLATFORM = "PLATFORM", "Platform"
+        MANUAL = "MANUAL", "Manual"
+        IMPORT = "IMPORT", "Import"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    capability = models.ForeignKey(
+        Capability, on_delete=models.CASCADE, related_name="entitlements"
+    )
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT, null=True, blank=True,
+        related_name="capability_entitlements",
+    )
+    scope_key = models.CharField(max_length=80, editable=False, db_index=True)
+    state = models.CharField(max_length=12, choices=State.choices)
+    source = models.CharField(max_length=12, choices=Source.choices)
+    starts_at = models.DateTimeField(null=True, blank=True)
+    ends_at = models.DateTimeField(null=True, blank=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="capability_entitlements_updated",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = TenantAwareManager(include_global=True)
+    all_objects = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["capability", "scope_key"], name="uniq_capability_entitlement_scope",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["state", "ends_at"], name="config_ent_state_end_idx"),
+            models.Index(fields=["state", "starts_at"], name="config_ent_state_start_idx"),
+        ]
+
+    def save(self, *args, **kwargs):
+        self.scope_key = f"tenant:{self.tenant_id}" if self.tenant_id else "platform"
+        return super().save(*args, **kwargs)
+
+
+class CapabilityOverride(ScopedModel):
+    """The runtime toggle: is an entitled capability actually switched ON here?
+
+    The operational half of the entitlement/override pair - this is what
+    replaced the legacy BranchFeatureFlag. Overrides may sit at any of the
+    three scopes, and evaluation reads the MOST SPECIFIC non-INHERIT row:
+
+        branch override -> tenant override -> platform override
+        -> capability.default_enabled
+
+    A DISABLED override anywhere in that chain switches the capability off
+    for that scope even though the tenant remains fully entitled (e.g. a
+    school pausing its parent portal during exams). The reverse is blocked:
+    ``set_override`` raises CapabilityNotEntitled when asked to write
+    ENABLED for a capability the scope's tenant is not entitled to, so
+    runtime toggles can never widen commercial access.
+
+    At most one override exists per (capability, scope) - the
+    ``uniq_capability_override_scope`` constraint - so writes are upserts
+    through ``services.capabilities.set_override``, which audits every
+    change.
+
+    Fields:
+        id: Stable UUID primary key.
+        capability: The capability whose runtime state is overridden
+            (CASCADE).
+        tenant / branch / scope_key: Scope placement inherited from
+            :class:`ScopedModel`.
+        state: ENABLED, DISABLED, or INHERIT. INHERIT rows exist to
+            explicitly hand the decision back up the chain (equivalent to
+            no row at this scope) while preserving who set it and why.
+        reason: Operator explanation, stored on the row and in the audit
+            event.
+        updated_by: User who most recently changed the override (nullable,
+            SET_NULL).
+        created_at: Creation timestamp.
+        updated_at: Timestamp of the most recent override change.
+
+    Managers:
+        ``objects`` is tenant-aware (schools see their own rows plus
+        platform rows); ``all_objects`` is the unscoped escape hatch used
+        by the evaluation service.
+    """
+
+    class State(models.TextChoices):
+        INHERIT = "INHERIT", "Inherit"
+        ENABLED = "ENABLED", "Enabled"
+        DISABLED = "DISABLED", "Disabled"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    capability = models.ForeignKey(
+        Capability, on_delete=models.CASCADE, related_name="overrides"
+    )
+    state = models.CharField(max_length=12, choices=State.choices)
+    reason = models.TextField(blank=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="capability_overrides_updated",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = TenantAwareManager(include_global=True)
+    all_objects = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["capability", "scope_key"], name="uniq_capability_override_scope"
+            )
+        ]
+
+
+class ConfigurationAuditEvent(ScopedModel):
+    """Append-only record of every configuration and capability mutation.
+
+    Every write in this app - definition changes, value writes, capability
+    catalogue edits, entitlement and override changes - creates exactly one
+    of these rows inside the same transaction, via
+    ``services.audit.record_configuration_event`` (which also mirrors the
+    event to the platform-wide vs_audit trail; THIS table is the
+    authoritative local history).
+
+    Immutability is enforced twice: ``save()`` refuses to update an
+    existing row and ``delete()`` always raises (Python guard, covers
+    SQLite tests), and migration 0006 installs BEFORE UPDATE / BEFORE
+    DELETE triggers that reject the same operations at the database level
+    on PostgreSQL and MySQL, so even raw SQL and bulk querysets cannot
+    rewrite history.
+
+    Snapshots are redacted BEFORE they are stored: secret-reference values
+    arrive here as "[REDACTED]", so the audit trail can be exposed to
+    config.audit.view holders without leaking secrets.
+
+    Fields:
+        id: Stable UUID primary key.
+        action: Stable dotted action key, e.g. ``config.value.updated``,
+            ``config.capability.archived``; ``legacy.*`` actions come from
+            the 0004 data migration. Indexed for filtering.
+        target_type: Class name of the mutated record (e.g.
+            "ConfigurationValue"). A loose string, not a content-type FK,
+            so history survives model renames and deletions.
+        target_id: String primary key of the mutated record. Indexed.
+        actor: User responsible; NULL for system/migration work
+            (SET_NULL so history outlives user accounts).
+        tenant / branch / scope_key: Scope the mutation applied to,
+            inherited from :class:`ScopedModel`. Tenant-scoped audit
+            listings filter on these; platform events (both NULL) are
+            visible only to platform staff.
+        before_data: Redacted JSON snapshot of the state before the change
+            (empty dict for creations).
+        after_data: Redacted JSON snapshot of the state after the change.
+        reason: Operator-provided justification, when given.
+        metadata: Extra non-secret context (request info, legacy change
+            ids from migration).
+        created_at: Event timestamp; indexed, and the default ordering is
+            newest first.
+
+    Managers:
+        ``objects`` is tenant-aware (tenants see their own events plus
+        global ones); ``all_objects`` is the unscoped escape hatch used by
+        the immutability guard and platform views.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    action = models.CharField(max_length=80, db_index=True)
+    target_type = models.CharField(max_length=80)
+    target_id = models.CharField(max_length=200, db_index=True)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="configuration_audit_events",
+    )
+    before_data = models.JSONField(default=dict, blank=True)
+    after_data = models.JSONField(default=dict, blank=True)
+    reason = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    objects = TenantAwareManager(include_global=True)
+    all_objects = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["tenant", "branch", "-created_at"])]
+
+    def save(self, *args, **kwargs):
+        if self.pk and ConfigurationAuditEvent.all_objects.filter(pk=self.pk).exists():
+            raise ValueError("ConfigurationAuditEvent rows are immutable.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("ConfigurationAuditEvent rows are immutable.")
+
+
+class ConfigurationAuditSavedView(ScopedModel):
+    """A personal, reusable set of configuration-audit filters."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="configuration_audit_saved_views",
+    )
+    name = models.CharField(max_length=80)
+    filters = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name", "created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["owner", "name"],
+                name="uniq_config_audit_saved_view_owner_name",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["owner", "updated_at"], name="config_saved_owner_time_idx",
+            )
+        ]
+
+
+class ConfigurationAuditExportJob(ScopedModel):
+    """Queued configuration-audit export with temporary stored output."""
+
+    class Status(models.TextChoices):
+        QUEUED = "QUEUED", "Queued"
+        RUNNING = "RUNNING", "Running"
+        COMPLETED = "COMPLETED", "Completed"
+        FAILED = "FAILED", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="configuration_audit_export_jobs",
+    )
+    filters = models.JSONField(default=dict, blank=True)
+    client_key = models.CharField(max_length=64, blank=True, default="")
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.QUEUED,
+        db_index=True,
+    )
+    file_name = models.CharField(max_length=255, blank=True)
+    storage_name = models.CharField(max_length=500, blank=True)
+    row_count = models.PositiveIntegerField(default=0)
+    failure_message = models.CharField(max_length=500, blank=True)
+    requested_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    available_until = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-requested_at"]
+        indexes = [
+            models.Index(
+                fields=["requested_by", "-requested_at"],
+                name="config_job_request_time_idx",
+            ),
+            models.Index(
+                fields=["scope_key", "-requested_at"],
+                name="config_job_scope_time_idx",
+            ),
+            models.Index(fields=["client_key"], name="config_job_client_idx"),
+        ]

@@ -1,22 +1,22 @@
 """
-seed_dev_data — one command that fills a fresh dev database with a connected
+seed_dev_data - one command that fills a fresh dev database with a connected
 world covering every module EXCEPT finance/procurement/payments.
 
-FOCUS: CX (Codex) staff are the main subjects — the platform currently runs
+FOCUS: CX (Codex) staff are the main subjects - the platform currently runs
 as the Codex staff intranet. The seeder builds a complete 40-seat company
 (7-level classic corporate hierarchy: MD → C-Suite → Directors → Managers →
 Team Leads → Seniors → ICs; rich HR profiles, platform roles, todo board,
 login/security history, impersonation sessions). The schools exist as the
 CUSTOMER BASE those staff manage, not as the protagonists.
 
-What it creates (idempotent — safe to re-run):
+What it creates (idempotent - safe to re-run):
   1. Codex organogram: Division → Departments → Team, positions with
      reports_to, the 25 seeded vision staff in seats, staff profiles.
      (Powers the organogram APIs and vs_todo's assign-down rules.)
   2. Three ACTIVE schools with branches, contact info, branding rows,
      package setup (PackagePlan from seed_package), primary admins.
   3. School users per school: school admin, branch admins, teachers,
-     students, parents — all ACTIVE with login passwords.
+     students, parents - all ACTIVE with login passwords.
   4. RBAC: per-school role templates (Administrator / Branch Administrator /
      Teacher) with real permission grants, assigned to the users.
   5. One PENDING role-change request per school (fills approval queues).
@@ -25,10 +25,10 @@ What it creates (idempotent — safe to re-run):
   8. A few central audit events so the audit UI has data.
 
 Prerequisites (run first, in this order):
-  seed_actions, seed_all_permissions, seed_import_permissions,
-  seed_workflow_permissions, seed_xvs_modules, seed_package,
+  seed_actions, seed_all_permissions (includes canonical import templates),
+  seed_workflow_permissions, seed_config_catalogue, seed_package,
   seed_prebuilt_role_templates, create_superuser --force,
-  seed_vision_staff, seed_import, seed_notification_event_types,
+  seed_vision_staff, seed_notification_event_types,
   seed_notification_templates.
 Afterwards run: seed_notification_settings --all
 
@@ -41,11 +41,10 @@ How to run:
 dropdb cx_db && createdb cx_db
 cd apps && ../cx/bin/python manage.py migrate --settings=apps.settings.local
 # then the seed chain (order matters):
-for c in seed_all_permissions seed_xvs_modules seed_package; do
+for c in seed_all_permissions seed_config_catalogue seed_package; do
 ../cx/bin/python manage.py $c --settings=apps.settings.local; done
 ../cx/bin/python manage.py create_superuser --force --settings=apps.settings.local
 ../cx/bin/python manage.py seed_vision_staff --settings=apps.settings.local
-../cx/bin/python manage.py seed_import --settings=apps.settings.local
 ../cx/bin/python manage.py seed_notification_event_types --settings=apps.settings.local
 ../cx/bin/python manage.py seed_notification_templates --settings=apps.settings.local
 ../cx/bin/python manage.py seed_dev_data --settings=apps.settings.local       # ← the new command
@@ -66,19 +65,19 @@ SCHOOLS = [
         "name": "Greenfield Academy",
         "slug": "greenfield-academy",
         "code": "GFA",
-        "branches": [("Main Campus", "GFA-MAIN", True), ("Lekki Annex", "GFA-LEKKI", False)],
+        "branches": [("Main Branch", "GFA-MAIN", True), ("Lekki Annex", "GFA-LEKKI", False)],
     },
     {
         "name": "Royal Crest College",
         "slug": "royal-crest-college",
         "code": "RCC",
-        "branches": [("Main Campus", "RCC-MAIN", True), ("Ikeja Campus", "RCC-IKEJA", False)],
+        "branches": [("Main Branch", "RCC-MAIN", True), ("Ikeja Branch", "RCC-IKEJA", False)],
     },
     {
         "name": "Unity Heights School",
         "slug": "unity-heights-school",
         "code": "UHS",
-        "branches": [("Main Campus", "UHS-MAIN", True)],
+        "branches": [("Main Branch", "UHS-MAIN", True)],
     },
 ]
 
@@ -120,11 +119,11 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.MIGRATE_HEADING("Organogram (Codex internal, 40 seats / 7 levels)..."))
         staff = list(
-            User.objects.filter(user_type="CX_STAFF", email__endswith="@vision.edu")
+            User.objects.filter(tenant__kind="PLATFORM", email__endswith="@vision.edu")
             .order_by("email")
         )
         if not staff:
-            self.stdout.write(self.style.ERROR("  No vision staff — run seed_vision_staff first."))
+            self.stdout.write(self.style.ERROR("  No vision staff - run seed_vision_staff first."))
             return
 
         def node(code, name, kind, parent=None):
@@ -157,32 +156,32 @@ class Command(BaseCommand):
         # L1
         md = seat("CX-MD", "Managing Director", exec_office)
 
-        # L2 — C-Suite (report to MD)
+        # L2 - C-Suite (report to MD)
         cto = seat("CX-CTO", "Chief Technology Officer",   exec_office, md)
         coo = seat("CX-COO", "Chief Operating Officer",    exec_office, md)
         cfo = seat("CX-CFO", "Chief Financial Officer",    exec_office, md)
         cpo = seat("CX-CPO", "Chief Partnerships Officer", exec_office, md)
 
-        # L3 — Directors (report to respective C-Suite)
+        # L3 - Directors (report to respective C-Suite)
         dir_eng    = seat("CX-DIR-ENG",    "Director of Engineering",      technology,  cto)
         dir_cs     = seat("CX-DIR-CS",     "Director of Customer Success", cs_dept,     coo)
         dir_growth = seat("CX-DIR-GROWTH", "Director of Growth",           growth_dept, cpo)
         dir_people = seat("CX-DIR-PEOPLE", "Director of People",           people_dept, cfo)
 
-        # L4 — Managers (report to respective Directors)
+        # L4 - Managers (report to respective Directors)
         mgr_eng    = seat("CX-MGR-ENG",    "Engineering Manager",      technology,  dir_eng)
         mgr_cs     = seat("CX-MGR-CS",     "CS Manager",               cs_dept,     dir_cs)
         mgr_growth = seat("CX-MGR-GROWTH", "Growth Manager",           growth_dept, dir_growth)
         mgr_people = seat("CX-MGR-PEOPLE", "People Manager",           people_dept, dir_people)
 
-        # L5 — Team Leads (report to respective Managers)
+        # L5 - Team Leads (report to respective Managers)
         lead_plat   = seat("CX-LEAD-PLAT",   "Platform Team Lead",   platform_team,   mgr_eng)
         lead_prod   = seat("CX-LEAD-PROD",   "Product Team Lead",    product_team,    mgr_eng)
         lead_onb    = seat("CX-LEAD-ONB",    "Onboarding Team Lead", onboarding_team, mgr_cs)
         lead_sup    = seat("CX-LEAD-SUP",    "Support Team Lead",    support_team,    mgr_cs)
         lead_growth = seat("CX-LEAD-GROWTH", "Growth Team Lead",     growth_team,     mgr_growth)
 
-        # L6 — Seniors (report to respective Team Leads or People Manager)
+        # L6 - Seniors (report to respective Team Leads or People Manager)
         sr_plat1   = seat("CX-SR-PLAT-1",   "Senior Platform Engineer I",      platform_team,   lead_plat)
         sr_plat2   = seat("CX-SR-PLAT-2",   "Senior Platform Engineer II",     platform_team,   lead_plat)
         sr_prod1   = seat("CX-SR-PROD-1",   "Senior Product Designer",         product_team,    lead_prod)
@@ -194,7 +193,7 @@ class Command(BaseCommand):
         sr_hr1     = seat("CX-SR-HR-1",     "Senior HR Officer",               people_dept,     mgr_people)
         sr_ops1    = seat("CX-SR-OPS-1",    "Senior Operations Officer",       people_dept,     mgr_people)
 
-        # L7 — Individual Contributors (report to their respective Senior)
+        # L7 - Individual Contributors (report to their respective Senior)
         plat1   = seat("CX-PLAT-1",   "Platform Engineer I",      platform_team,   sr_plat1)
         plat2   = seat("CX-PLAT-2",   "Platform Engineer II",     platform_team,   sr_plat1)
         plat3   = seat("CX-PLAT-3",   "Platform Engineer III",    platform_team,   sr_plat2)
@@ -281,18 +280,26 @@ class Command(BaseCommand):
         )
 
     def _platform_roles(self, staff, seats):
-        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
 
-        role = PlatformRoleTemplate.objects.filter(id="xvs_platform_admin").first()
-        if role is None:
+        codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
+        if codex is None:
             return
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=codex, key="xvs_platform_admin",
+            defaults=dict(
+                name="XVS Platform Admin", status="ACTIVE",
+                is_system_role=True, is_locked=True,
+            ),
+        )
         # Grant platform-admin access to the MD and all C-Suite (L1–L2).
         lead_codes = {"CX-MD", "CX-CTO", "CX-COO", "CX-CFO", "CX-CPO"}
         granted = 0
         for user, pos in zip(staff, seats):
             if pos.code in lead_codes:
-                _, created = PlatformUserRoleAssignment.objects.get_or_create(
-                    user=user, role=role,
+                _, created = TenantUserRoleAssignment.objects.get_or_create(
+                    tenant=codex, user=user, role=role,
                     defaults=dict(assignment_status="ACTIVE"),
                 )
                 granted += int(created)
@@ -302,10 +309,11 @@ class Command(BaseCommand):
     # 2. Schools, branches, package, primary admins                      #
     # ------------------------------------------------------------------ #
     def _schools(self):
-        from vs_schools.models import (
-            Branch, ContactInfo, PackagePlan, School, SchoolBranding,
+        from schools.vs_schools.models import (
+            ContactInfo, PackagePlan, School, SchoolBranding,
             SchoolPackageSetup, SchoolPrimaryAdmin, SchoolStatus,
         )
+        from vs_tenants.models import Branch
 
         self.stdout.write(self.style.MIGRATE_HEADING("Schools and branches..."))
         plan = PackagePlan.objects.order_by("-max_students").first()
@@ -324,10 +332,10 @@ class Command(BaseCommand):
                 ),
             )
             for bname, btag, is_main in spec["branches"]:
-                # Branch.code is an auto-allocated integer (per school) — key
+                # Branch.code is an auto-allocated integer (per tenant) - key
                 # on the name and let save() assign the code.
                 Branch.all_objects.get_or_create(
-                    school=school, name=bname,
+                    tenant=school.tenant, name=bname,
                     defaults=dict(
                         is_main=is_main, status="ACTIVE",
                         country="Nigeria", state="Lagos",
@@ -347,11 +355,22 @@ class Command(BaseCommand):
                     ),
                 )
                 # Enable every module except the finance stack (user scope).
-                from vs_schools.models import XVSModules
-                modules = XVSModules.objects.exclude(
+                from vs_config.models import Capability, CapabilityEntitlement
+                from vs_config.services.capabilities import set_entitlement
+                modules = Capability.objects.filter(kind=Capability.Kind.MODULE).exclude(
                     key__in=["finance", "procurement", "payments", "vendors"]
                 )
-                setup.enabled_modules.set(modules)
+                for capability in modules:
+                    # Entitlements are tenant-scoped and belong to vs_config's
+                    # service, which owns the scope key and the audit trail.
+                    set_entitlement(
+                        capability=capability,
+                        tenant=school.tenant,
+                        state=CapabilityEntitlement.State.GRANTED,
+                        source=CapabilityEntitlement.Source.PACKAGE,
+                        actor=None,
+                        reason="Development seed data",
+                    )
             contact, _ = ContactInfo.objects.get_or_create(
                 email=f"admin@{spec['slug']}.example.com",
                 defaults=dict(full_name=f"{spec['name']} Administrator", phone="+2348000000000"),
@@ -365,7 +384,7 @@ class Command(BaseCommand):
     # 3. School users                                                    #
     # ------------------------------------------------------------------ #
     def _school_users(self, schools):
-        from vs_schools.models import Branch
+        from vs_tenants.models import Branch
         from vs_user.models import User
 
         self.stdout.write(self.style.MIGRATE_HEADING("School users..."))
@@ -374,40 +393,56 @@ class Command(BaseCommand):
         result = {}
         total = 0
         for school in schools:
-            branches = list(Branch.all_objects.filter(school=school).order_by("-is_main"))
+            branches = list(Branch.all_objects.filter(tenant=school.tenant).order_by("-is_main"))
             main = branches[0]
             domain = f"{school.slug}.example.com"
 
-            def mk(email, first, last, user_type, branch):
-                user = User.objects.filter(email=email).first()
+            def mk(email, first, last, branch):
+                email = normalize_email(email)
+                # Scoped to the school being seeded. The addresses this seeder
+                # mints are already per-school (they carry the slug in their
+                # domain), so the unscoped form found the same rows - but it
+                # was the wrong question, and it would silently reuse another
+                # school's account the moment a shared address is seeded.
+                user = User.objects.filter(email=email, tenant=school.tenant).first()
                 if user is None:
                     user = User.objects.create_user(
                         email=email, password=SCHOOL_USER_PASSWORD,
                         first_name=first, last_name=last,
-                        user_type=user_type, status="ACTIVE",
-                        school=school, branch=branch,
+                        status="ACTIVE",
+                        tenant=school.tenant, branch=branch,
                     )
                 return user
 
             users = {"admins": [], "branch_admins": [], "staff": [], "students": [], "parents": []}
-            users["admins"].append(mk(f"admin@{domain}", "Amaka", school.code.title(), "SCHOOL_ADMIN", main))
+            # The school administrator is posted school-wide: branch=None is a
+            # real posting meaning "every branch", not a missing one. What
+            # separates this person from a teacher is the role assigned in
+            # _rbac below - which is now the only thing that ever did.
+            #
+            # The buckets below still say "students" and "parents" because the
+            # seeder builds a school-shaped cast to look at. They are ordinary
+            # tenant users; nothing marks them, and nothing reads a mark. A
+            # pupil becomes a pupil when the schools app gives him a student
+            # record, and a parent when a guardian record names her.
+            users["admins"].append(mk(f"admin@{domain}", "Amaka", school.code.title(), None))
             for i, br in enumerate(branches):
                 users["branch_admins"].append(
-                    mk(f"branch{i + 1}.admin@{domain}", first_names[i], "Balogun", "BRANCH_ADMIN", br)
+                    mk(f"branch{i + 1}.admin@{domain}", first_names[i], "Balogun", br)
                 )
             for i in range(3):
                 users["staff"].append(
-                    mk(f"teacher{i + 1}@{domain}", first_names[i + 2], "Teacher", "STAFF",
+                    mk(f"teacher{i + 1}@{domain}", first_names[i + 2], "Teacher",
                        branches[i % len(branches)])
                 )
             for i in range(4):
                 users["students"].append(
-                    mk(f"student{i + 1}@{domain}", first_names[i + 5], "Student", "STUDENT",
+                    mk(f"student{i + 1}@{domain}", first_names[i + 5], "Student",
                        branches[i % len(branches)])
                 )
             for i in range(2):
                 users["parents"].append(
-                    mk(f"parent{i + 1}@{domain}", first_names[i + 9], "Parent", "PARENT", main)
+                    mk(f"parent{i + 1}@{domain}", first_names[i + 9], "Parent", main)
                 )
             result[school.pk] = users
             total += sum(len(v) for v in users.values())
@@ -418,9 +453,11 @@ class Command(BaseCommand):
     # 4. RBAC roles + assignments + a pending change request             #
     # ------------------------------------------------------------------ #
     def _rbac(self, schools, users_by_school):
+        from django.utils.text import slugify
+
         from vs_rbac.models import (
-            Permission, SchoolRoleChangeRequest, SchoolRolePermission,
-            SchoolRoleTemplate, SchoolUserRoleAssignment,
+            Permission, TenantRoleChangeRequest, TenantRolePermission,
+            TenantRoleTemplate, TenantUserRoleAssignment,
         )
 
         self.stdout.write(self.style.MIGRATE_HEADING("RBAC roles and assignments..."))
@@ -441,27 +478,32 @@ class Command(BaseCommand):
         assignments = 0
         for school in schools:
             users = users_by_school[school.pk]
+            tenant = school.tenant
             for role_name, prefixes, bucket in role_specs:
-                role = SchoolRoleTemplate.all_objects.filter(
-                    school=school, name__iexact=role_name
+                role = TenantRoleTemplate.objects.filter(
+                    tenant=tenant, name__iexact=role_name
                 ).first()
                 if role is None:
-                    role = SchoolRoleTemplate.objects.create(school=school, name=role_name)
+                    role = TenantRoleTemplate.objects.create(
+                        tenant=tenant, key=slugify(role_name), name=role_name,
+                    )
                     for key in grants(prefixes):
-                        SchoolRolePermission.objects.get_or_create(
+                        TenantRolePermission.objects.get_or_create(
                             role=role, permission_id=key, defaults=dict(granted=True),
                         )
                 for user in users[bucket]:
-                    exists = SchoolUserRoleAssignment.all_objects.filter(
-                        school=school, user=user, role=role, assignment_status="ACTIVE",
+                    exists = TenantUserRoleAssignment.objects.filter(
+                        tenant=tenant, user=user, role=role, assignment_status="ACTIVE",
                     ).exists()
                     if not exists:
-                        SchoolUserRoleAssignment.objects.create(school=school, user=user, role=role)
+                        TenantUserRoleAssignment.objects.create(
+                            tenant=tenant, user=user, role=role,
+                        )
                         assignments += 1
 
-            teacher_role = SchoolRoleTemplate.all_objects.get(school=school, name="Teacher")
-            SchoolRoleChangeRequest.objects.get_or_create(
-                school=school, target_role=teacher_role,
+            teacher_role = TenantRoleTemplate.objects.get(tenant=tenant, name="Teacher")
+            TenantRoleChangeRequest.objects.get_or_create(
+                tenant=tenant, target_role=teacher_role,
                 requested_by=users["admins"][0],
                 status="PENDING",
                 defaults=dict(
@@ -483,7 +525,7 @@ class Command(BaseCommand):
             or NotificationEventType.objects.first()
         )
         if event is None:
-            self.stdout.write(self.style.WARNING("  No event types — run seed_notification_event_types."))
+            self.stdout.write(self.style.WARNING("  No event types - run seed_notification_event_types."))
             return
         channel_field = Notification._meta.get_field("channel")
         in_app = next(
@@ -517,7 +559,7 @@ class Command(BaseCommand):
         from vs_todo.models import Task
         from vs_user.models import PositionAssignment
 
-        self.stdout.write(self.style.MIGRATE_HEADING("ToDo board (CX staff — all 7 levels)..."))
+        self.stdout.write(self.style.MIGRATE_HEADING("ToDo board (CX staff - all 7 levels)..."))
         seats = {
             pa.position.code: (pa.user, pa.position)
             for pa in PositionAssignment.objects.select_related("user", "position__org_node")
@@ -533,7 +575,7 @@ class Command(BaseCommand):
 
         D = timedelta
         # (assigner_code, assignee_code, title, priority, deadline-offset-days, done)
-        # Spans all 7 levels — every manager assigns at least one task to each direct report.
+        # Spans all 7 levels - every manager assigns at least one task to each direct report.
         specs = [
             # L1 → L2 (MD assigns to C-Suite)
             ("CX-MD",  "CX-CTO", "Finalise the Q3 product and engineering roadmap",   "HIGH",   21, False),
@@ -611,7 +653,7 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.MIGRATE_HEADING("CX security history..."))
         staff = list(
-            User.objects.filter(user_type="CX_STAFF", email__endswith="@vision.edu")
+            User.objects.filter(tenant__kind="PLATFORM", email__endswith="@vision.edu")
             .order_by("email")[:6]
         )
         devices = [
@@ -624,24 +666,24 @@ class Command(BaseCommand):
             ip, ua, label = devices[i % len(devices)]
             if not LoginSession.objects.filter(user=user).exists():
                 LoginSession.objects.create(
-                    user=user, school=None, ip_address=ip, user_agent=ua,
+                    user=user, tenant=user.tenant, ip_address=ip, user_agent=ua,
                     device_label=label, refresh_jti=str(_uuid.uuid4()),
                     last_seen_at=self.now, is_active=True,
                 )
                 sessions += 1
             if not AuthAttempt.objects.filter(user=user).exists():
                 AuthAttempt.objects.create(
-                    email_entered=user.email, user=user, school=None,
+                    email_entered=user.email, user=user, tenant=user.tenant,
                     result="SUCCESS", failure_code="", ip_address=ip, user_agent=ua,
                 )
                 if i % 2 == 0:
                     AuthAttempt.objects.create(
-                        email_entered=user.email, user=user, school=None,
+                        email_entered=user.email, user=user, tenant=user.tenant,
                         result="FAIL", failure_code="INVALID_CREDENTIALS",
                         ip_address=ip, user_agent=ua,
                     )
                 AuthEventLog.objects.create(
-                    actor=user, subject=user, school=None,
+                    actor=user, subject=user, tenant=user.tenant,
                     event="LOGIN_SUCCESS", ip_address=ip, user_agent=ua,
                 )
                 attempts += 1
@@ -651,14 +693,25 @@ class Command(BaseCommand):
         cs_lead = staff[2] if len(staff) > 2 else staff[0]
         target_school = schools[0] if schools else None
         if target_school is not None:
-            target_user = User.objects.filter(
-                school=target_school, user_type="SCHOOL_ADMIN"
-            ).first()
+            # Whom a CS lead would proxy is a question about authority, and
+            # authority is the role. Asking a persona column used to answer it
+            # only because SCHOOL_ADMIN happened to exist; STAFF said nothing,
+            # and would have picked a random teacher.
+            target_user = (
+                User.objects.filter(
+                    tenant=target_school.tenant,
+                    tenant_role_assignments__tenant=target_school.tenant,
+                    tenant_role_assignments__role__name__iexact="School Administrator",
+                    tenant_role_assignments__assignment_status="ACTIVE",
+                )
+                .order_by("email")
+                .first()
+            )
             if target_user and not ImpersonationSession.objects.filter(
-                staff_user=cs_lead, school=target_school
+                staff_user=cs_lead, tenant=target_school.tenant
             ).exists():
                 ImpersonationSession.objects.create(
-                    staff_user=cs_lead, school=target_school, target_user=target_user,
+                    staff_user=cs_lead, tenant=target_school.tenant, target_user=target_user,
                     justification="Investigating reported import failure (seeded).",
                     started_at=self.now - timedelta(hours=2),
                     ends_at=self.now + timedelta(hours=1),
@@ -683,7 +736,7 @@ class Command(BaseCommand):
                 entity_label=school.name,
                 summary=f"Seeded school {school.name}.",
             )
-            # emit_audit_event is best-effort and returns None on failure —
+            # emit_audit_event is best-effort and returns None on failure -
             # count real successes so this line can't overstate.
             emitted += int(event is not None)
         self.stdout.write(f"  {emitted}/{len(schools)} events emitted.")

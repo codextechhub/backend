@@ -10,7 +10,7 @@ Run order::
     python manage.py create_superuser
     python manage.py seed_payments_permissions
 
-Safe to re-run — all operations are idempotent.
+Safe to re-run - all operations are idempotent.
 """
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -18,6 +18,7 @@ from django.db import transaction
 MODULE_NAME = "payments"
 MODULE_DESCRIPTION = "Payment gateway collections, payouts and settlement reconciliation."
 PLATFORM_ROLE_IDS = ["xvs_super_admin", "xvs_platform_admin"]
+_PLATFORM_ROLE_NAMES = {"xvs_super_admin": "XVS Super Admin", "xvs_platform_admin": "XVS Platform Admin"}
 
 # sensitivity → whether the permission must flow through approvals / audit
 _RESTRICTED = {"SENSITIVE", "CRITICAL"}
@@ -28,7 +29,22 @@ PAYMENTS_RESOURCES = [
     ("payout",          "gateway payouts",     [("view", "NORMAL"), ("create", "CRITICAL"),
                                                ("view_sensitive", "SENSITIVE")]),
     ("report",          "settlement reports",  [("view", "NORMAL")]),
-    ("virtual_account", "virtual accounts",    [("create", "SENSITIVE"), ("view_sensitive", "SENSITIVE")]),
+    # Inbound provider webhooks that could not be booked. Viewing exposes provider
+    # references and error detail, so it is SENSITIVE; replaying re-runs the confirm
+    # services and can book real money, so it is CRITICAL.
+    ("webhook",         "provider webhooks",   [("view", "SENSITIVE"), ("replay", "CRITICAL")]),
+    # The platform-scope half of the same problem. An event that matched nothing has no
+    # entity, so the entity-scoped keys above cannot govern it: those are a tenant's
+    # licence over its own books, and this list spans every tenant. Separate keys keep
+    # that reach a deliberate grant rather than a side effect of holding the tenant one.
+    # The views additionally require the caller to be CX (platform-tenant) staff.
+    ("unattributed_webhook", "unattributed provider webhooks",
+     [("view", "SENSITIVE"), ("replay", "CRITICAL")]),
+    ("virtual_account", "virtual accounts",    [("view", "NORMAL"), ("create", "SENSITIVE"),
+                                                ("manage", "SENSITIVE"), ("view_sensitive", "SENSITIVE")]),
+    # Bulk-payout-batch approval (maker-checker over the highest-risk cash-out path).
+    ("payout_batch",    "bulk payout batches", [("submit", "SENSITIVE"), ("approve", "CRITICAL"),
+                                                ("approve_high_value", "CRITICAL")]),
 ]
 
 
@@ -42,9 +58,11 @@ class Command(BaseCommand):
             PermissionAction,
             PermissionModule,
             PermissionResource,
-            PlatformRolePermission,
-            PlatformRoleTemplate,
+            TenantRolePermission,
+            TenantRoleTemplate,
+            PermissionScope,
         )
+        from vs_tenants.models import Tenant
 
         self.stdout.write(self.style.MIGRATE_HEADING(f"\n  Seeding {MODULE_NAME} permissions...\n"))
 
@@ -63,7 +81,7 @@ class Command(BaseCommand):
             )
             if created:
                 self.stdout.write(
-                    f"  + action '{name}' (auto-registered — run seed_actions for full description)"
+                    f"  + action '{name}' (auto-registered - run seed_actions for full description)"
                 )
 
         # ── Module bucket ─────────────────────────────────────────────────────
@@ -100,35 +118,44 @@ class Command(BaseCommand):
                         sensitivity_level=sensitivity,
                         is_restricted=sensitivity in _RESTRICTED,
                         is_active=True,
+                        scope=PermissionScope.TENANT,
                     )
                     perm.save()
                     created_perms += 1
                     self.stdout.write(f"  + {perm.key}  [{sensitivity}]")
                 all_perms.append(perm)
 
-        # ── Grant every key to the platform admin roles ───────────────────────
-        for role_id in PLATFORM_ROLE_IDS:
-            try:
-                role = PlatformRoleTemplate.objects.get(id=role_id)
-            except PlatformRoleTemplate.DoesNotExist:
-                self.stdout.write(self.style.WARNING(
-                    f"  ⚠  role '{role_id}' not found — run create_superuser first; grants skipped."
-                ))
-                continue
-
-            granted = 0
-            for perm in all_perms:
-                _, link_created = PlatformRolePermission.objects.get_or_create(
-                    role=role,
-                    permission=perm,
-                    defaults={"granted": True, "granted_by": None},
+        # ── Grant every key to the platform admin roles (codex tenant) ────────
+        codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
+        if codex is None:
+            self.stdout.write(self.style.WARNING(
+                "  ⚠  Codex platform tenant not found - run migrations first; grants skipped."
+            ))
+        else:
+            for role_id in PLATFORM_ROLE_IDS:
+                role, _ = TenantRoleTemplate.objects.get_or_create(
+                    tenant=codex,
+                    key=role_id,
+                    defaults={
+                        "name": _PLATFORM_ROLE_NAMES.get(role_id, role_id),
+                        "status": "ACTIVE",
+                        "is_system_role": True,
+                        "is_locked": True,
+                    },
                 )
-                if link_created:
-                    granted += 1
-            self.stdout.write(
-                f"  {role_id}: granted {granted} new key(s)." if granted
-                else f"  {role_id}: all keys already assigned."
-            )
+                granted = 0
+                for perm in all_perms:
+                    _, link_created = TenantRolePermission.objects.get_or_create(
+                        role=role,
+                        permission=perm,
+                        defaults={"granted": True, "granted_by": None},
+                    )
+                    if link_created:
+                        granted += 1
+                self.stdout.write(
+                    f"  {role_id}: granted {granted} new key(s)." if granted
+                    else f"  {role_id}: all keys already assigned."
+                )
 
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_perms} new permission(s), {len(all_perms)} total "

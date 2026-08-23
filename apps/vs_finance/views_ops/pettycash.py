@@ -5,12 +5,15 @@ from __future__ import annotations
 
 from django.db import transaction
 from rest_framework.exceptions import NotFound, ValidationError
+from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 
 from core.response import success_response
 
+from ..constants import DocumentStatus
 from ..money import format_naira
 from ..views import resolve_entity
 from ..models import (
+    JournalLine,
     PettyCashFund,
     PettyCashVoucher,
     PettyCashVoucherLine,
@@ -26,8 +29,10 @@ from .base import (
     _bool,
     _date,
     _dec,
+    _inherited_branch_id,
     _int,
     _money,
+    _raised_branch,
     _require_lines,
     _resolve_account,
     _resolve_bank_account,
@@ -40,6 +45,7 @@ from .base import (
 # Petty cash                                                                  #
 # --------------------------------------------------------------------------- #
 
+# Support the resolve user workflow.
 def _resolve_user(ref, field):
     """Resolve a platform user by id (or return None for a blank ref)."""
     if ref in (None, ""):
@@ -52,6 +58,7 @@ def _resolve_user(ref, field):
     return user
 
 
+# Group endpoint behavior for Petty Cash Fund List Create View.
 class PettyCashFundListCreateView(_FinanceBase):
     """GET (list) / POST (create) petty-cash funds for an entity.
 
@@ -59,13 +66,17 @@ class PettyCashFundListCreateView(_FinanceBase):
     """
 
     @property
+    # Handle the rbac permission workflow.
     def rbac_permission(self):
-        return "finance.pettycash.manage" if self.request.method == "POST" \
+        return "finance.pettycash.create" if self.request.method == "POST" \
             else "finance.pettycash.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = PettyCashFund.objects.filter(entity=entity).select_related("gl_account")
+        qs = PettyCashFund.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).select_related("gl_account")
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         return success_response(
@@ -73,6 +84,7 @@ class PettyCashFundListCreateView(_FinanceBase):
             data=PettyCashFundSerializer(qs.order_by("name"), many=True).data,
         )
 
+    # Handle POST requests for this endpoint.
     def post(self, request):
         entity = resolve_entity(request)
         body = request.data or {}
@@ -80,6 +92,10 @@ class PettyCashFundListCreateView(_FinanceBase):
             raise ValidationError({"name": "A fund name is required."})
         fund = PettyCashFund.objects.create(
             entity=entity, name=body["name"],
+            # A float is a physical cash tin with a custodian standing next to
+            # it, so the strict reading applies: "the front-desk float" is a
+            # different tin at Ikeja and at Lekki and the two must not merge.
+            branch=_raised_branch(request, entity, body),
             gl_account=_resolve_account(entity, body.get("gl_account"), "gl_account", required=True),
             custodian=_resolve_user(body.get("custodian"), "custodian"),
             custodian_name=body.get("custodian_name", ""),
@@ -93,28 +109,77 @@ class PettyCashFundListCreateView(_FinanceBase):
         )
 
 
+# Define Petty Cash Fund Action Base values.
 class _PettyCashFundActionBase(_FinanceBase):
+    # Support the fund workflow.
     def _fund(self, request, pk):
         entity = resolve_entity(request)
-        fund = PettyCashFund.objects.filter(entity=entity, pk=pk).first()
+        fund = PettyCashFund.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk,
+        ).first()
         if fund is None:
             raise NotFound("Petty cash fund not found for this entity.")
         return entity, fund
 
 
+# Group endpoint behavior for Petty Cash Fund Detail View.
 class PettyCashFundDetailView(_PettyCashFundActionBase):
     """docstring-name: Petty cash funds"""
     @property
+    # Handle the rbac permission workflow.
     def rbac_permission(self):
-        return "finance.pettycash.manage" if self.request.method == "PATCH" \
+        return "finance.pettycash.update" if self.request.method == "PATCH" \
             else "finance.pettycash.view"
 
-    def get(self, request, pk):
-        _, fund = self._fund(request, pk)
-        return success_response(
-            "Petty cash fund retrieved.", data=PettyCashFundSerializer(fund).data,
-        )
+    # Support the register workflow.
+    def _register(self, fund, *, limit=80):
+        """The fund's GL ledger as a movement register, newest first, running balance.
 
+        ``in``/``out`` are the petty-cash debit/credit. ``category`` is derived from
+        the journal's counter line: 'Top-up' for cash coming in, else the expense
+        account's name for a spend.
+        """
+        lines = list(
+            JournalLine.objects
+            .filter(account=fund.gl_account, entry__status=DocumentStatus.POSTED)
+            .select_related("entry")
+            .prefetch_related("entry__lines__account")
+            .order_by("-entry__date", "-id")[:limit]
+        )
+        running = fund.current_balance
+        out = []
+        for ln in lines:
+            inflow, outflow = int(ln.debit or 0), int(ln.credit or 0)
+            if inflow:
+                category = "Top-up"
+            else:
+                counter = next((l for l in ln.entry.lines.all()
+                                if l.account_id != fund.gl_account_id and (l.debit or 0)), None)
+                category = counter.account.name if counter else "-"
+            out.append({
+                "id": ln.id, "date": ln.entry.date,
+                "description": ln.description or ln.entry.narration or "-",
+                "category": category, "in": inflow, "out": outflow,
+                "balance": int(running),
+            })
+            running -= (inflow - outflow)
+        return out
+
+    # Handle GET requests for this endpoint.
+    def get(self, request, pk):
+        import datetime
+
+        _, fund = self._fund(request, pk)
+        week_ago = datetime.date.today() - datetime.timedelta(days=7)
+        spent_week = sum(
+            v.total for v in PettyCashVoucher.objects.filter(
+                fund=fund, status=DocumentStatus.POSTED, voucher_date__gte=week_ago))
+        data = PettyCashFundSerializer(fund).data
+        data["spent_this_week"] = int(spent_week)
+        data["register"] = self._register(fund)
+        return success_response("Petty cash fund retrieved.", data=data)
+
+    # Handle PATCH requests for this endpoint.
     def patch(self, request, pk):
         entity, fund = self._fund(request, pk)
         body = request.data or {}
@@ -134,14 +199,16 @@ class PettyCashFundDetailView(_PettyCashFundActionBase):
         )
 
 
+# Group endpoint behavior for Petty Cash Fund Establish View.
 class PettyCashFundEstablishView(_PettyCashFundActionBase):
-    """POST — move cash from a bank account into the tin (Dr petty cash, Cr bank).
+    """POST - move cash from a bank account into the tin (Dr petty cash, Cr bank).
 
     docstring-name: Establish a petty cash fund
     """
 
-    rbac_permission = "finance.pettycash.replenish"
+    rbac_permission = "finance.pettycash.establish"
 
+    # Handle POST requests for this endpoint.
     def post(self, request, pk):
         from ..petty_cash import establish_fund
 
@@ -161,14 +228,16 @@ class PettyCashFundEstablishView(_PettyCashFundActionBase):
         )
 
 
+# Group endpoint behavior for Petty Cash Fund Replenish View.
 class PettyCashFundReplenishView(_PettyCashFundActionBase):
-    """POST — top the tin back up to its float (Dr petty cash, Cr bank).
+    """POST - top the tin back up to its float (Dr petty cash, Cr bank).
 
     docstring-name: Replenish a petty cash fund
     """
 
     rbac_permission = "finance.pettycash.replenish"
 
+    # Handle POST requests for this endpoint.
     def post(self, request, pk):
         from ..petty_cash import replenish_fund
 
@@ -188,20 +257,28 @@ class PettyCashFundReplenishView(_PettyCashFundActionBase):
         )
 
 
+# Group endpoint behavior for Petty Cash Status View.
 class PettyCashStatusView(_FinanceBase):
-    """GET — per-fund cash position + low-balance flags (replenishment alerts).
+    """GET - per-fund cash position + low-balance flags (replenishment alerts).
 
     docstring-name: Petty cash status
     """
 
     rbac_permission = "finance.pettycash.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         from ..petty_cash import fund_status
 
         entity = resolve_entity(request)
+        from ..banking_settings import resolve_finance_banking_settings
+
+        policy = resolve_finance_banking_settings(entity)
         threshold = _int(
-            request.query_params.get("threshold_bps", 2500), "threshold_bps", minimum=0,
+            request.query_params.get(
+                "threshold_bps", policy.petty_cash_low_balance_threshold_bps,
+            ),
+            "threshold_bps", minimum=0, maximum=10000,
         )
         rows = fund_status(entity, threshold_bps=threshold)
         return success_response(
@@ -222,6 +299,7 @@ class PettyCashStatusView(_FinanceBase):
         )
 
 
+# Group endpoint behavior for Petty Cash Voucher List Create View.
 class PettyCashVoucherListCreateView(_FinanceBase):
     """GET (list) / POST (create draft + lines) petty-cash vouchers.
 
@@ -229,24 +307,26 @@ class PettyCashVoucherListCreateView(_FinanceBase):
     """
 
     @property
+    # Handle the rbac permission workflow.
     def rbac_permission(self):
-        return "finance.pettycash.create" if self.request.method == "POST" \
-            else "finance.pettycash.view"
+        return "finance.pettycashvoucher.create" if self.request.method == "POST" \
+            else "finance.pettycashvoucher.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = PettyCashVoucher.objects.filter(entity=entity).prefetch_related("lines")
+        qs = PettyCashVoucher.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).prefetch_related("lines__expense_account")
         if (fund := request.query_params.get("fund")):
             qs = qs.filter(fund_id=fund)
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
-        return success_response(
-            "Petty cash vouchers retrieved.",
-            data=PettyCashVoucherSerializer(
-                qs.order_by("-voucher_date", "-id")[:200], many=True).data,
-        )
+        return self.paginate(
+            request, qs.order_by("-voucher_date", "-id"), PettyCashVoucherSerializer)
 
     @transaction.atomic
+    # Handle POST requests for this endpoint.
     def post(self, request):
         from ..petty_cash import price_voucher
 
@@ -261,6 +341,11 @@ class PettyCashVoucherListCreateView(_FinanceBase):
             raise ValidationError({"fund": f"No petty cash fund '{fund_ref}' in this entity."})
         voucher = PettyCashVoucher.objects.create(
             entity=entity, fund=fund,
+            # A voucher continues the fund's chain: the cash came out of that tin,
+            # so the tin's branch is the answer and the request cannot override it.
+            # This is also the check that stops a Lekki custodian spending Ikeja's
+            # float by naming its id, which the fund lookup above does not narrow.
+            branch_id=_inherited_branch_id(request, fund),
             voucher_date=_date(body.get("voucher_date"), "voucher_date", required=True),
             payee=body.get("payee", ""),
             spent_by=_resolve_user(body.get("spent_by"), "spent_by"),
@@ -278,7 +363,10 @@ class PettyCashVoucherListCreateView(_FinanceBase):
                     f"lines[{i}].expense_account", required=True),
                 quantity=_dec(ln.get("quantity", 1), f"lines[{i}].quantity"),
                 unit_price=_money(ln.get("unit_price", 0), f"lines[{i}].unit_price"),
-                tax_code=_resolve_tax(entity, ln.get("tax_code"), f"lines[{i}].tax_code"),
+                tax_code=_resolve_tax(
+                    entity, ln.get("tax_code"), f"lines[{i}].tax_code",
+                    usage="purchase",
+                ),
                 cost_center=_resolve_cost_center(
                     entity, ln.get("cost_center"), f"lines[{i}].cost_center"),
             )
@@ -290,19 +378,25 @@ class PettyCashVoucherListCreateView(_FinanceBase):
         )
 
 
+# Define Petty Cash Voucher Action Base values.
 class _PettyCashVoucherActionBase(_FinanceBase):
+    # Support the voucher workflow.
     def _voucher(self, request, pk):
         entity = resolve_entity(request)
-        voucher = PettyCashVoucher.objects.filter(entity=entity, pk=pk).first()
+        voucher = PettyCashVoucher.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk,
+        ).first()
         if voucher is None:
             raise NotFound("Petty cash voucher not found for this entity.")
         return entity, voucher
 
 
+# Group endpoint behavior for Petty Cash Voucher Detail View.
 class PettyCashVoucherDetailView(_PettyCashVoucherActionBase):
     """docstring-name: Petty cash vouchers"""
-    rbac_permission = "finance.pettycash.view"
+    rbac_permission = "finance.pettycashvoucher.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request, pk):
         _, voucher = self._voucher(request, pk)
         return success_response(
@@ -311,10 +405,12 @@ class PettyCashVoucherDetailView(_PettyCashVoucherActionBase):
         )
 
 
+# Group endpoint behavior for Petty Cash Voucher Post View.
 class PettyCashVoucherPostView(_PettyCashVoucherActionBase):
     """docstring-name: Post a petty cash voucher"""
-    rbac_permission = "finance.pettycash.post"
+    rbac_permission = "finance.pettycashvoucher.post"
 
+    # Handle POST requests for this endpoint.
     def post(self, request, pk):
         from ..petty_cash import post_voucher
 
@@ -327,3 +423,22 @@ class PettyCashVoucherPostView(_PettyCashVoucherActionBase):
         )
 
 
+# Group endpoint behavior for Petty Cash Voucher Void View.
+class PettyCashVoucherVoidView(_PettyCashVoucherActionBase):
+    """POST - void a posted voucher (reverses its journal, returns the cash to the tin).
+
+    docstring-name: Void a petty cash voucher
+    """
+    rbac_permission = "finance.pettycashvoucher.post"
+
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk):
+        from ..petty_cash import void_voucher
+
+        _, voucher = self._voucher(request, pk)
+        void_voucher(voucher, actor_user=request.user)
+        voucher.refresh_from_db()
+        return success_response(
+            f"Petty cash voucher {voucher.document_number} voided.",
+            data=PettyCashVoucherSerializer(voucher).data,
+        )

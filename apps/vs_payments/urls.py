@@ -5,13 +5,36 @@ from . import views
 
 urlpatterns = [
     path("collections/", views.CollectionListCreateView.as_view(), name="payments-collections"),
+    path("collections/summary/", views.CollectionSummaryView.as_view(), name="payments-collections-summary"),
     path("collections/<int:pk>/", views.CollectionDetailView.as_view(), name="payments-collection-detail"),
-    path("virtual-accounts/", views.VirtualAccountCreateView.as_view(), name="payments-virtual-accounts"),
+    path("virtual-accounts/", views.VirtualAccountListCreateView.as_view(), name="payments-virtual-accounts"),
+    path("virtual-accounts/<int:pk>/", views.VirtualAccountDetailView.as_view(), name="payments-virtual-account-detail"),
     path("payouts/", views.PayoutListCreateView.as_view(), name="payments-payouts"),
+    path("payouts/summary/", views.PayoutSummaryView.as_view(), name="payments-payouts-summary"),
     path("payout-batches/", views.PayoutBatchListCreateView.as_view(), name="payments-payout-batches"),
+    path("payout-batches/summary/", views.PayoutBatchSummaryView.as_view(), name="payments-payout-batches-summary"),
     path("payout-batches/<int:pk>/", views.PayoutBatchDetailView.as_view(), name="payments-payout-batch-detail"),
+    path("payout-batches/<int:pk>/submit-for-approval/", views.PayoutBatchSubmitForApprovalView.as_view(),
+         name="payments-payout-batch-submit-for-approval"),
     path("reports/settlement-reconciliation/", views.SettlementReconciliationView.as_view(),
          name="payments-settlement-reconciliation"),
     path("transactions/", views.TransactionsLogView.as_view(), name="payments-transactions"),
+    path("movements/", views.MovementsView.as_view(), name="payments-movements"),
+    path("movements/summary/", views.MovementsSummaryView.as_view(), name="payments-movements-summary"),
+    # Operator-facing webhook views come before the public receiver: the receiver's
+    # <str:provider> would otherwise swallow "summary" as a provider name.
+    path("webhooks/", views.WebhookEventListView.as_view(), name="payments-webhooks"),
+    path("webhooks/summary/", views.WebhookEventSummaryView.as_view(),
+         name="payments-webhooks-summary"),
+    path("webhooks/<int:pk>/replay/", views.WebhookEventReplayView.as_view(),
+         name="payments-webhook-replay"),
+    # Platform-scope (CX staff only): events that matched neither a collection nor a
+    # payout, and so have no entity to be listed under. Declared above the receiver for
+    # the same reason "summary" is - "unattributed" is not a provider name.
+    path("webhooks/unattributed/", views.UnattributedWebhookListView.as_view(),
+         name="payments-webhooks-unattributed"),
+    path("webhooks/unattributed/<int:pk>/replay/",
+         views.UnattributedWebhookReplayView.as_view(),
+         name="payments-webhook-unattributed-replay"),
     path("webhooks/<str:provider>/", views.WebhookView.as_view(), name="payments-webhook"),
 ]

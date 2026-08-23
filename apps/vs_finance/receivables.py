@@ -1,4 +1,4 @@
-"""Accounts-Receivable services — the revenue cycle.
+"""Accounts-Receivable services - the revenue cycle.
 
 Domain-neutral on purpose: these functions move generic invoices and payments into
 the General Ledger and never mention students, parents or fees. A billing *source*
@@ -8,7 +8,7 @@ the General Ledger and never mention students, parents or fees. A billing *sourc
 The two postings this layer raises:
 
 * **Invoice** → ``Dr receivable control, Cr revenue (per line), Cr output tax``.
-* **Payment** → ``Dr bank/cash, Cr receivable control`` — then the cash is *allocated*
+* **Payment** → ``Dr bank/cash, Cr receivable control`` - then the cash is *allocated*
   across invoices (a sub-ledger act with no further GL effect).
 
 All amounts are integer kobo; tax is computed from basis points with the same
@@ -21,8 +21,10 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
 
+from .account_mappings import resolve_mapped_account
 from .audit import record, record_rejection
 from .constants import (
+    AccountMappingKey,
     DocumentStatus,
     FinanceAuditAction,
     InvoicePaymentStatus,
@@ -36,23 +38,26 @@ from .posting import post_journal, resolve_period
 # Money helpers (integer kobo)                                                 #
 # --------------------------------------------------------------------------- #
 
+# Handle the compute line net workflow.
 def compute_line_net(quantity, unit_price_kobo: int) -> int:
     """``quantity × unit_price`` in kobo, rounded half-up to a whole kobo."""
     amount = Decimal(quantity) * Decimal(int(unit_price_kobo))
     return int(amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
+# Handle the compute tax workflow.
 def compute_tax(net_kobo: int, rate_bps: int) -> int:
     """Tax on ``net_kobo`` at ``rate_bps`` basis points (750 = 7.5%), half-up to kobo.
 
     Integer-exact: a tax line is never carried as a float.
     """
-    if not rate_bps:
+    if not rate_bps:  # Zero rate means no tax.
         return 0
     amount = Decimal(int(net_kobo)) * Decimal(int(rate_bps)) / Decimal(10000)
     return int(amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
+# Handle the price invoice workflow.
 def price_invoice(invoice) -> None:
     """Compute each line's ``net_amount``/``tax_amount`` and roll up the invoice totals.
 
@@ -60,58 +65,66 @@ def price_invoice(invoice) -> None:
     """
     from .models import InvoiceLine
 
-    for line in invoice.lines.all():
-        net = compute_line_net(line.quantity, line.unit_price)
-        rate = line.tax_code.rate_bps if line.tax_code_id else 0
-        tax = compute_tax(net, rate)
-        if line.net_amount != net or line.tax_amount != tax:
+    for line in invoice.lines.all():  # Reprice each line from the current quantity and unit price.
+        net = compute_line_net(line.quantity, line.unit_price)  # Calculate the net line amount.
+        rate = line.tax_code.rate_bps if line.tax_code_id else 0  # Use the line's tax rate when available.
+        tax = compute_tax(net, rate)  # Derive the tax amount for the line.
+        if line.net_amount != net or line.tax_amount != tax:  # Only write when the computed values changed.
             InvoiceLine.objects.filter(pk=line.pk).update(net_amount=net, tax_amount=tax)
-    invoice.recompute_totals(save=True)
+    invoice.recompute_totals(save=True)  # Roll the repriced lines up into invoice totals.
 
 
 # --------------------------------------------------------------------------- #
 # Invoice posting                                                             #
 # --------------------------------------------------------------------------- #
 
+# Handle the post invoice workflow.
 def post_invoice(invoice, *, actor_user=None):
     """Price, validate and post an :class:`Invoice`, raising its AR journal.
 
     Wrapper that records a durable rejection audit on any :class:`FinanceError`, then
-    re-raises — mirroring the journal posting contract.
+    re-raises - mirroring the journal posting contract.
     """
-    try:
-        return _post_invoice_atomic(invoice, actor_user=actor_user)
-    except FinanceError as exc:
-        record_rejection(
+    try:  # The atomic worker owns the ledger write; this wrapper owns the rejection audit.
+        result = _post_invoice_atomic(invoice, actor_user=actor_user)  # Post the invoice into AR and the GL.
+    except FinanceError as exc:  # Convert any posting failure into a durable rejection record.
+        record_rejection(  # Write a committed rejection audit event.
             entity=invoice.entity,
             action=FinanceAuditAction.INVOICE_POSTED,
             exc=exc, actor_user=actor_user, target=invoice,
         )
         raise
+    # Best-effort customer notification (never rolls back the post; skips openings).  # Notify after success only.
+    from .notifications import notify_invoice_issued
+    notify_invoice_issued(invoice, actor_user=actor_user)  # Send a receipt/notice if configured.
+    return result  # Return the posted invoice.
 
 
 @transaction.atomic
+# Support the post invoice atomic workflow.
 def _post_invoice_atomic(invoice, *, actor_user=None):
     from .models import JournalEntry, JournalLine
 
-    if invoice.status != DocumentStatus.DRAFT:
+    if invoice.status != DocumentStatus.DRAFT:  # Only drafts can be posted.
         raise PostingError(
             f"Invoice {invoice.document_number or invoice.pk} is '{invoice.status}', "
             f"only a draft invoice can be posted.",
         )
 
-    customer = invoice.customer
-    ar_account = customer.receivable_account
-    if ar_account is None:
+    customer = invoice.customer  # The customer drives the AR control account.
+    ar_account = customer.receivable_account  # Resolve the customer's AR control account.
+    if ar_account is None:  # Posting cannot continue without AR control.
         raise PostingError(
-            f"Customer {customer.code} has no receivable (AR control) account set.",
+            f"Customer {customer.code} has no receivable account configured. "
+            "Open Receivables > Customers, edit this customer, and select an active, "
+            "postable Accounts Receivable account before posting an invoice.",
         )
 
-    price_invoice(invoice)
-    if invoice.total <= 0:
+    price_invoice(invoice)  # Ensure all lines and totals are up to date before posting.
+    if invoice.total <= 0:  # Reject zero or negative invoices.
         raise PostingError("An invoice must have a positive total to post.")
 
-    period = resolve_period(invoice.entity, invoice.invoice_date)
+    period = resolve_period(invoice.entity, invoice.invoice_date)  # Find the open accounting period.
 
     entry = JournalEntry.objects.create(
         entity=invoice.entity, branch=invoice.branch,
@@ -121,107 +134,472 @@ def _post_invoice_atomic(invoice, *, actor_user=None):
         reference=invoice.reference, created_by=actor_user,
     )
 
-    line_no = 0
-    # Dr the receivable control for the gross total.
-    line_no += 1
+    line_no = 0  # Keep line numbers deterministic within the journal.
+    # Dr the receivable control for the gross total.  # First line debits AR for the full invoice.
+    line_no += 1  # Increment the journal line counter.
     JournalLine.objects.create(
         entry=entry, account=ar_account, debit=invoice.total, credit=0,
         description=f"AR: {customer.code}", line_no=line_no,
     )
-    # Cr revenue, grouped by account so the journal is tidy.
-    revenue_by_account: dict[int, int] = defaultdict(int)
-    revenue_objs: dict[int, object] = {}
-    tax_by_account: dict[int, int] = defaultdict(int)
-    tax_objs: dict[int, object] = {}
-    for line in invoice.lines.select_related("revenue_account", "tax_code__collected_account"):
-        revenue_by_account[line.revenue_account_id] += line.net_amount
-        revenue_objs[line.revenue_account_id] = line.revenue_account
-        if line.tax_amount:
-            tax_acc = line.tax_code.collected_account if line.tax_code_id else None
-            if tax_acc is None:
+    # Cr revenue, grouped by (account, cost centre) so the journal stays tidy while the
+    # cost-centre split survives into the GL. Revenue is P&L, so it carries the analytics;
+    # the AR control (above) and the output-tax liability (below) do not.
+    revenue_by_key: dict[tuple[int, int | None], int] = defaultdict(int)  # Aggregate revenue by account/cost center.
+    revenue_objs: dict[tuple[int, int | None], tuple] = {}  # Keep the account/cost-center objects for each key.
+    tax_by_account: dict[int, int] = defaultdict(int)  # Aggregate output tax by tax account.
+    tax_objs: dict[int, object] = {}  # Keep the tax account objects for each key.
+    for line in invoice.lines.select_related(
+        "revenue_account", "tax_code__collected_account", "cost_center",
+    ):
+        key = (line.revenue_account_id, line.cost_center_id)  # Group revenue by account and cost center.
+        revenue_by_key[key] += line.net_amount  # Accumulate the net line amount into the group.
+        revenue_objs[key] = (line.revenue_account, line.cost_center)  # Keep the objects needed when creating journal lines.
+        if line.tax_amount:  # Only tax-bearing lines contribute to output tax.
+            tax_acc = line.tax_code.collected_account if line.tax_code_id else None  # Resolve the output tax account.
+            if tax_acc is None:  # A taxable line must have a collected account.
                 raise PostingError(
                     f"Tax code '{line.tax_code.code}' has no collected (output) account set."
                     if line.tax_code_id else "Tax amount present without a tax code.",
                 )
-            tax_by_account[tax_acc.id] += line.tax_amount
-            tax_objs[tax_acc.id] = tax_acc
+            tax_by_account[tax_acc.id] += line.tax_amount  # Accumulate tax by output-tax account.
+            tax_objs[tax_acc.id] = tax_acc  # Keep the account object for line creation.
 
-    for acc_id, amount in revenue_by_account.items():
-        if amount == 0:
+    for (acc_id, cc_id), amount in revenue_by_key.items():  # Emit one revenue line per grouped key.
+        if amount == 0:  # Skip zero-value revenue groups.
             continue
-        line_no += 1
+        line_no += 1  # Advance the journal line number.
+        revenue_account, cost_center = revenue_objs[(acc_id, cc_id)]  # Retrieve the grouped objects.
         JournalLine.objects.create(
-            entry=entry, account=revenue_objs[acc_id], debit=0, credit=amount,
-            description="Revenue", line_no=line_no,
+            entry=entry, account=revenue_account, debit=0, credit=amount,
+            description="Revenue", cost_center=cost_center, line_no=line_no,
         )
-    for acc_id, amount in tax_by_account.items():
-        line_no += 1
+    for acc_id, amount in tax_by_account.items():  # Emit one output-tax line per tax account.
+        line_no += 1  # Advance the journal line number.
         JournalLine.objects.create(
             entry=entry, account=tax_objs[acc_id], debit=0, credit=amount,
             description="Output tax", line_no=line_no,
         )
 
-    post_journal(entry, actor_user=actor_user)
+    post_journal(entry, actor_user=actor_user)  # Validate and mark the journal as posted.
 
-    invoice.journal = entry
-    invoice.status = DocumentStatus.POSTED
-    invoice.refresh_payment_status(save=False)
+    invoice.journal = entry  # Link the invoice to the posted journal.
+    invoice.status = DocumentStatus.POSTED  # Mark the invoice as posted.
+    invoice.refresh_payment_status(save=False)  # Recompute payment status from allocations.
     invoice.save(update_fields=["journal", "status", "payment_status", "updated_at"])
 
-    record(
+    record(  # Record the successful invoice posting in the finance audit log.
         entity=invoice.entity, action=FinanceAuditAction.INVOICE_POSTED,
         actor_user=actor_user, target=invoice,
         message=f"Posted invoice for {customer.code} ({invoice.total} kobo).",
         journal_id=entry.pk, total=invoice.total, tax=invoice.tax_total,
     )
-    return invoice
+    return invoice  # Return the posted invoice.
+
+
+# Handle the post opening balance workflow.
+def post_opening_balance(customer, *, actor_user=None, date=None):
+    """Seat a customer's ``opening_balance`` as a posted opening invoice.
+
+    Raises an :class:`~vs_finance.models.Invoice` (``source=OPENING``) that posts
+    ``Dr AR control · Cr Retained Earnings`` - the opening figure is prior-period
+    value, so it credits **equity**, never current-period revenue (crediting
+    revenue would overstate the income statement every time a customer is migrated
+    in with a balance). It still shows in the customer's outstanding (which is
+    invoice-derived) *and* in the GL. No-op unless the opening balance is positive.
+    Returns the invoice or ``None``. Runs the normal :func:`post_invoice` guards
+    (open period, etc.).
+    """
+    import datetime
+
+    from .constants import InvoiceSource
+    from .models import Invoice, InvoiceLine
+
+    amount = int(customer.opening_balance or 0)  # Normalize the starting balance to integer kobo.
+    if amount <= 0:  # Skip zero or negative opening balances.
+        return None
+
+    # Opening balances are prior-period value: credit equity (Retained Earnings),
+    # not revenue - otherwise onboarding/migrating a customer inflates this year's P&L.
+    opening_equity = resolve_mapped_account(  # Book the offset to retained earnings.
+        customer.entity, AccountMappingKey.RETAINED_EARNINGS, label="opening balance equity",
+    )
+    invoice = Invoice.objects.create(
+        entity=customer.entity, customer=customer,
+        branch=customer.branch,  # Opening balance belongs where the customer does.
+        invoice_date=date or datetime.date.today(),
+        source=InvoiceSource.OPENING,
+        narration=f"Opening balance for {customer.code}",
+        created_by=actor_user,
+    )
+    InvoiceLine.objects.create(
+        invoice=invoice, revenue_account=opening_equity,
+        quantity=1, unit_price=amount, line_no=1,
+    )
+    post_invoice(invoice, actor_user=actor_user)  # Post the synthetic invoice into the GL.
+    return invoice  # Return the posted opening-balance invoice.
 
 
 # --------------------------------------------------------------------------- #
 # Payment posting + allocation                                                #
 # --------------------------------------------------------------------------- #
 
-def post_payment(payment, *, actor_user=None, auto_allocate=True, allocations=None):
+# Handle the post payment workflow.
+def post_payment(payment, *, actor_user=None, auto_allocate=True, allocations=None,
+                 strategy="oldest"):
     """Post a customer :class:`Payment` (Dr bank, Cr AR) and allocate it to invoices.
 
     ``allocations`` (a list of ``(invoice, amount_kobo)``) applies an explicit split;
-    otherwise ``auto_allocate`` settles the customer's oldest open invoices first.
+    otherwise ``auto_allocate`` settles open invoices in ``strategy`` order
+    (``"oldest"`` by due date, or ``"largest"`` balance first).
     """
-    try:
-        return _post_payment_atomic(
+    try:  # The atomic worker owns the ledger write and allocation updates.
+        result = _post_payment_atomic(  # Post the receipt and optionally allocate it.
             payment, actor_user=actor_user,
-            auto_allocate=auto_allocate, allocations=allocations,
+            auto_allocate=auto_allocate, allocations=allocations, strategy=strategy,
         )
-    except FinanceError as exc:
-        record_rejection(
+    except FinanceError as exc:  # Convert posting failures into durable rejection audit.
+        record_rejection(  # Write a committed rejection event.
             entity=payment.entity,
             action=FinanceAuditAction.PAYMENT_POSTED,
             exc=exc, actor_user=actor_user, target=payment,
         )
         raise
+    # Queue the receipt confirmation only after the ledger transaction commits.  Email
+    # setup/template rendering must not hold the payment API response open, and a rolled
+    # back payment must never leave behind a customer notification.
+    from django.db import transaction
+    from .tasks import queue_payment_received_notification
+
+    actor_user_id = getattr(actor_user, "pk", None)
+    transaction.on_commit(
+        lambda: queue_payment_received_notification(payment.pk, actor_user_id=actor_user_id),
+    )
+    return result  # Return the posted payment.
+
+
+# Handle customer credit balances in bulk so list screens and posting guards share
+# one definition without introducing a query per customer.
+def customer_credit_balances(entity, customer_ids=None, *, as_of=None) -> dict[int, int]:
+    """Return customer-credit (2140) balances keyed by customer id.
+
+    Credit is the sum of the customer's :class:`~vs_finance.chronology.CreditLot`
+    parcels - unapplied receipts and unapplied CREDIT notes, each already net of what
+    has been refunded back out of it. Open invoices do not consume stored credit
+    automatically; only an explicit allocation moves value out of 2140.
+
+    ``as_of`` restricts the sum to credit that **existed on that accounting date**:
+    a receipt dated later has not happened yet as far as that date is concerned and
+    cannot fund anything. Without it, the answer is "right now", which is exactly the
+    assumption that let backdated refunds spend credit from the future.
+
+    Note the deliberate asymmetry: lots are filtered by date, but the deductions
+    inside a lot (allocations, prior refunds) are not. That is the safe direction -
+    value that has since been spent stays spent, so an as-of figure can only ever be
+    conservative and never authorises paying the same kobo out twice.
+    """
+    from .chronology import credit_lots
+
+    lots = credit_lots(entity, customer_ids, as_of=as_of)
+    return {
+        customer_id: sum(lot.remaining for lot in customer_lots)
+        for customer_id, customer_lots in lots.items()
+    }
+
+
+# Handle the customer credit balance workflow.
+def customer_credit_balance(customer, *, as_of=None) -> int:
+    """A customer's stored credit in kobo, optionally as at an accounting date."""
+    return customer_credit_balances(
+        customer.entity, [customer.pk], as_of=as_of).get(customer.pk, 0)
+
+
+def customer_refund_available_balances(
+    entity, customer_ids=None, *, exclude_refund_id=None, as_of=None,
+) -> dict[int, int]:
+    """Return credit still available for a new refund request.
+
+    Three deductions sit between stored credit and refundable credit:
+
+    * **Unsettled DEBIT notes** - the customer still owes these, so their value is
+      not handed back as cash. (Open *invoices* deliberately do not reduce it; only
+      an explicit allocation settles those.)
+    * **Pending approvals** reserve their amount, so two requests cannot promise the
+      same credit. Drafts deliberately do not reserve; they are revalidated on submit
+      and again on post.
+    * **``as_of``** - credit that does not yet exist on the refund's own accounting
+      date cannot fund it. Callers must pass the refund date, not today.
+    """
+    from django.db.models import F, Sum
+    from django.db.models.functions import Coalesce
+
+    from .constants import CreditNoteKind
+    from .models import CreditNote, Refund
+
+    balances = customer_credit_balances(entity, customer_ids, as_of=as_of)
+
+    debit_notes = CreditNote.objects.filter(
+        entity=entity, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT)
+    pending = Refund.objects.filter(
+        entity=entity, status=DocumentStatus.PENDING_APPROVAL)
+    if customer_ids is not None:
+        customer_ids = list(customer_ids)
+        debit_notes = debit_notes.filter(customer_id__in=customer_ids)
+        pending = pending.filter(customer_id__in=customer_ids)
+    if exclude_refund_id is not None:
+        pending = pending.exclude(pk=exclude_refund_id)
+
+    owed = {
+        row["customer_id"]: int(row["amount"] or 0)
+        for row in debit_notes.values("customer_id").annotate(
+            amount=Coalesce(Sum(F("total") - F("amount_paid")), 0))
+    }
+    reserved = {
+        row["customer_id"]: int(row["amount"] or 0)
+        for row in pending.values("customer_id").annotate(amount=Coalesce(Sum("amount"), 0))
+    }
+    customer_keys = set(balances) | set(owed) | set(reserved)
+    return {
+        customer_id: max(
+            0,
+            balances.get(customer_id, 0)
+            - owed.get(customer_id, 0)
+            - reserved.get(customer_id, 0),
+        )
+        for customer_id in customer_keys
+    }
+
+
+def customer_refund_available_balance(customer, *, exclude_refund_id=None, as_of=None) -> int:
+    """Credit available to one refund on its own date, after pending reservations."""
+    return customer_refund_available_balances(
+        customer.entity, [customer.pk],
+        exclude_refund_id=exclude_refund_id, as_of=as_of,
+    ).get(customer.pk, 0)
+
+
+#: Supported auto-allocation strategies for settling a receipt's cash.  # Keep strategy names explicit and small.
+ALLOCATION_STRATEGIES = ("oldest", "largest")
+
+
+def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_debit_notes=False,
+                        as_of=None, settlement="This settlement"):
+    """An explicit ``[(target, amount)]`` plan, or open AR items in ``strategy`` order.
+
+    A *target* is an :class:`Invoice` or - when ``include_debit_notes`` is set - a posted
+    DEBIT :class:`CreditNote`, which debits AR just like an invoice and is settled the
+    same way by receipts. Both expose ``balance_due``. ``strategy`` (when ``allocations``
+    is not given): ``"oldest"`` settles by document date first (the default), ``"largest"``
+    settles the biggest outstanding balance first. Debit-note settlement is opt-in because
+    the credit-note sub-ledger can only point at invoices; payment paths pass it True.
+
+    ``as_of`` is the settling document's own accounting date, and it is the choke point
+    for causal ordering on the settlement side: a receipt dated 1 Sep cannot clear a bill
+    raised on 9 Sep, because on 1 Sep the receivable does not exist and crediting AR would
+    drive the control account negative for the gap.
+
+    The two modes handle that differently, on purpose:
+
+    * **Auto-allocation** silently *skips* not-yet-raised targets. This is not a
+      failure - it is a prepayment, and the cash correctly falls through to the
+      customer-credit liability to be applied when the bill arrives.
+    * **An explicit plan** names a target the user chose, so silently dropping it
+      would post something other than what was asked for. It raises instead, and
+      says which date to use.
+    """
+    from django.db.models import F
+
+    from .chronology import accounting_date, describe, ensure_on_or_after
+    from .constants import CreditNoteKind
+    from .models import CreditNote, Invoice
+
+    if allocations is not None:  # Explicit allocations always win over auto-allocation.
+        plan = list(allocations)  # Normalize to a list so the caller can iterate safely.
+        if as_of is not None:  # An explicitly named target must already exist on that date.
+            for target, _amount in plan:
+                target_date = accounting_date(target)
+                ensure_on_or_after(
+                    subject=settlement, subject_date=as_of,
+                    source=describe(target, "the document being settled"),
+                    source_date=target_date,
+                    remedy=(
+                        f"Either date it {target_date} or later, or leave the money "
+                        f"unallocated as customer credit and apply it once that "
+                        f"document exists."
+                    ),
+                )
+        return plan  # Explicit plan passed its date checks.
+
+    open_invoices = list(  # Load all open posted invoices for the customer.
+        Invoice.objects
+        .filter(customer=customer, status=DocumentStatus.POSTED)
+        .exclude(payment_status=InvoicePaymentStatus.PAID)
+    )
+    if as_of is not None:  # Auto-allocation only settles what already exists.
+        open_invoices = [inv for inv in open_invoices if inv.invoice_date <= as_of]
+    # (target, balance_due, sort_date) - sort_date drives oldest-first across both types.
+    items = [(inv, inv.balance_due, inv.due_date or inv.invoice_date) for inv in open_invoices]  # Invoice settlement candidates.
+    if include_debit_notes:  # Optionally include posted debit notes in the settlement plan.
+        open_notes = list(  # Load open debit notes for the customer.
+            CreditNote.objects
+            .filter(customer=customer, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT)
+            .exclude(settlement_status=InvoicePaymentStatus.PAID)
+        )
+        if as_of is not None:  # Same rule: a charge not yet raised cannot be settled.
+            open_notes = [dn for dn in open_notes if dn.note_date <= as_of]
+        items += [(dn, dn.balance_due, dn.note_date) for dn in open_notes]  # Add debit notes to the same plan.
+
+    if strategy == "largest":  # Largest-balance-first strategy.
+        items.sort(key=lambda t: (-t[1], t[2], t[0].pk))  # Sort by balance descending, then date, then pk.
+    else:  # Default is oldest-first.
+        items.sort(key=lambda t: (t[2], t[0].pk))  # Sort by document date, then pk.
+    return [(target, balance) for target, balance, _date in items]  # Strip the sort date before returning.
+
+
+# Support the apply payment subledger workflow.
+def _apply_payment_subledger(payment, plan, *, remaining):
+    """Settle the plan's AR targets from a payment, capped at each target's balance and
+    ``remaining``. A target is an :class:`Invoice` (→ PaymentAllocation, bump
+    ``amount_paid``) or a DEBIT :class:`CreditNote` (→ DebitNoteAllocation, bump its
+    ``amount_paid``). GL-agnostic - the caller posts the journal (the applied total
+    credits AR either way).
+
+    Returns ``(applied_total, created_rows, latest_target_date)``. The last value is the
+    newest accounting date actually settled, which is what the caller needs to date its
+    reclassification journal so AR is never credited before the receivable exists."""
+    from .chronology import accounting_date
+    from .models import CreditNote, DebitNoteAllocation, PaymentAllocation
+
+    applied, created = 0, []  # Track total applied cash and created allocation rows.
+    latest = None  # Newest accounting date this run actually settled.
+    for target, requested in plan:  # Walk the settlement plan in order.
+        if remaining <= 0:  # Stop once all cash has been consumed.
+            break  # Exit the current loop.
+        apply_amount = min(int(requested), target.balance_due, remaining)  # Cap each allocation at all constraints.
+        if apply_amount <= 0:  # Skip zero-value allocations.
+            continue
+
+        # One row per settlement event, never a running total. The caller stamps each
+        # row with the date of the journal that credited AR for it, and a second
+        # tranche against the same target credits AR on a different date - merging
+        # them would leave one row that cannot honestly carry either date.
+        if isinstance(target, CreditNote):  # Debit notes settle through their own allocation table.
+            alloc = DebitNoteAllocation.objects.create(
+                payment=payment, note=target, amount=apply_amount,
+            )
+
+            target.amount_paid += apply_amount  # Increase the debit note's paid amount.
+            target.refresh_settlement_status(save=False)  # Recompute the debit note settlement state.
+            target.save(update_fields=["amount_paid", "settlement_status", "updated_at"])
+        else:  # Invoices use the normal payment allocation table.
+            alloc = PaymentAllocation.objects.create(
+                payment=payment, invoice=target, amount=apply_amount,
+            )
+
+            target.amount_paid += apply_amount  # Increase the invoice's paid amount.
+            target.refresh_payment_status(save=False)  # Recompute the invoice payment status.
+            target.save(update_fields=["amount_paid", "payment_status", "updated_at"])
+            # Keep any installment plan on this invoice in step with the new settlement.  # Sync installment state.
+            from .installments import refresh_plans_for_invoice
+            refresh_plans_for_invoice(target)  # Refresh linked installment plans.
+
+        remaining -= apply_amount  # Reduce the remaining unapplied cash.
+        applied += apply_amount  # Track the total applied amount.
+        created.append(alloc)  # Collect the allocation rows created by this run.
+        target_date = accounting_date(target)  # Date of the document just settled.
+        if target_date is not None and (latest is None or target_date > latest):
+            latest = target_date  # Track the newest settled document date.
+    return applied, created, latest  # Settled amount, allocation rows, newest settled date.
+
+
+# Stamp a run's allocation rows with the date its journal credited AR.
+def stamp_allocation_effective_date(rows, effective):
+    """Record ``effective`` on every allocation row a settlement run just wrote.
+
+    The sub-ledger and the GL have to agree at every point on the timeline, so an
+    allocation's effective date is not "when someone clicked" and not the crediting
+    document's own date - it is the date of the journal that actually credited AR for
+    it. One run raises one journal, so every row it wrote shares that date, and an
+    "as at" reconstruction that sums rows effective on or before a cutoff lands on
+    exactly the figure the ledger shows.
+    """
+    if effective is None or not rows:  # Nothing to stamp.
+        return
+    for row in rows:
+        row.effective_date = effective
+    # One statement for the whole run: a large receipt can settle many invoices, and
+    # a save per row would put that many round-trips inside the posting transaction.
+    type(rows[0]).objects.bulk_update(rows, ["effective_date"], batch_size=500)
 
 
 @transaction.atomic
-def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, allocations=None):
+# Support the post payment atomic workflow.
+def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, allocations=None,
+                         strategy="oldest"):
+    """Post a draft receipt: settle invoices, book the cash, and cut the GL journal.
+
+    Runs in one transaction so the subledger (PaymentAllocation rows + invoice
+    ``amount_paid``) and the general ledger (JournalEntry/JournalLine) can never
+    drift apart - either everything commits or nothing does.
+
+    Steps:
+      1. **Guard.** Only a DRAFT payment with a positive amount can post, and the
+         customer must have an AR control account and the payment a deposit
+         (bank/cash) account - otherwise there's nowhere to book the two sides.
+      2. **Plan.** ``_build_invoice_plan`` turns ``allocations`` (an explicit
+         ``[(invoice, amount)]`` list) or ``auto_allocate`` (open invoices in
+         ``strategy`` order - ``"oldest"`` by due date, ``"largest"`` by balance)
+         into what to settle. Empty plan if neither is supplied.
+      3. **Apply to subledger.** ``_apply_payment_subledger`` writes/extends the
+         PaymentAllocation rows and bumps each invoice's ``amount_paid`` (capped at
+         its balance and the cash left), returning ``applied`` - the total actually
+         settled. It touches no GL accounts; this function owns the journal.
+      4. **Split the cash.** ``excess = amount - applied`` is unapplied cash. We
+         *split at source*: settled cash clears AR, but any excess is booked as a
+         customer-credit liability so the AR control account never carries a credit
+         balance. (That stored credit is later drained by ``allocate_payment``.)
+      5. **Journal.** Balanced entry - Dr deposit account (cash in) for the full
+         amount; Cr AR for ``applied``; Cr customer-credit (2140) for ``excess``.
+         ``post_journal`` validates it balances and marks it posted.
+      6. **Finalise.** Link the journal, flip status to POSTED, store
+         ``allocated_amount``, and write a PAYMENT_POSTED audit record.
+
+    Returns the updated ``payment``. Raises ``PostingError`` on any guard failure.
+    """
     from .models import JournalEntry, JournalLine
 
-    if payment.status != DocumentStatus.DRAFT:
+    if payment.status != DocumentStatus.DRAFT:  # Only draft receipts can be posted.
         raise PostingError(
             f"Payment {payment.document_number or payment.pk} is '{payment.status}', "
             f"only a draft payment can be posted.",
         )
-    if payment.amount <= 0:
+    if payment.amount <= 0:  # Reject zero or negative receipts.
         raise PostingError("A payment must have a positive amount to post.")
 
-    customer = payment.customer
-    ar_account = customer.receivable_account
-    if ar_account is None:
+    customer = payment.customer  # The customer determines the AR control account.
+    ar_account = customer.receivable_account  # Resolve the AR control account once.
+    if ar_account is None:  # Posting requires an AR control account.
         raise PostingError(f"Customer {customer.code} has no receivable (AR control) account set.")
-    if payment.deposit_account_id is None:
+    if payment.deposit_account_id is None:  # Cash must post into a bank/cash account.
         raise PostingError("Payment has no deposit (bank/cash) account set.")
 
-    period = resolve_period(payment.entity, payment.payment_date)
+    # Split at source: settle open AR items (invoices + debit notes) against AR, and
+    # book any unapplied cash as a customer-credit liability (so AR never carries a
+    # credit balance).
+    # ``as_of`` the receipt's own date: cash received today cannot clear a bill raised
+    # next week. Auto-allocation skips those, and the money falls through to 2140 as a
+    # prepayment - which is what it is.
+    plan = (_build_invoice_plan(customer, allocations, strategy=strategy,  # Build the settlement plan from invoices.
+                                include_debit_notes=True, as_of=payment.payment_date,
+                                settlement=f"Receipt {payment.document_number or payment.pk}")
+            if (allocations is not None or auto_allocate) else [])  # Skip the plan when no allocation is requested.
+    applied, created_rows, _latest = _apply_payment_subledger(payment, plan, remaining=payment.amount)  # Apply the plan to AR.
+    excess = payment.amount - applied  # Any leftover cash becomes customer credit.
+    # The receipt's own journal (raised below, dated payment_date) is what credits AR
+    # for everything this run settled, so that is these rows' effective date. The plan
+    # was filtered to targets already raised by then, so no target post-dates it.
+    stamp_allocation_effective_date(created_rows, payment.payment_date)
 
+    period = resolve_period(payment.entity, payment.payment_date)  # Find the open accounting period.
     entry = JournalEntry.objects.create(
         entity=payment.entity, branch=payment.branch,
         date=payment.payment_date, period=period,
@@ -229,92 +607,110 @@ def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, alloca
         narration=payment.narration or f"Receipt {payment.document_number or ''}".strip(),
         reference=payment.reference, created_by=actor_user,
     )
+    line_no = 0  # Track journal line ordering.
+    line_no += 1  # First line is the cash/deposit debit.
     JournalLine.objects.create(
         entry=entry, account=payment.deposit_account, debit=payment.amount, credit=0,
-        description=f"Receipt: {customer.code}", line_no=1,
+        description=f"Receipt: {customer.code}", line_no=line_no,
     )
-    JournalLine.objects.create(
-        entry=entry, account=ar_account, debit=0, credit=payment.amount,
-        description=f"AR: {customer.code}", line_no=2,
-    )
+    if applied > 0:  # Only book AR if the payment settled at least one document.
+        line_no += 1  # Advance to the AR credit line.
+        JournalLine.objects.create(
+            entry=entry, account=ar_account, debit=0, credit=applied,
+            description=f"AR: {customer.code}", line_no=line_no,
+        )
+    if excess > 0:  # Unapplied cash becomes customer credit liability.
+        line_no += 1  # Advance to the customer-credit line.
+        JournalLine.objects.create(
+            entry=entry, account=resolve_mapped_account(payment.entity, AccountMappingKey.CUSTOMER_CREDIT, label="customer credit"),
+            debit=0, credit=excess, description=f"Customer credit: {customer.code}", line_no=line_no,
+        )
 
-    post_journal(entry, actor_user=actor_user)
+    post_journal(entry, actor_user=actor_user)  # Validate and mark the journal posted.
 
-    payment.journal = entry
-    payment.status = DocumentStatus.POSTED
-    payment.save(update_fields=["journal", "status", "updated_at"])
+    payment.journal = entry  # Link the payment to the posted journal.
+    payment.status = DocumentStatus.POSTED  # Mark the receipt as posted.
+    payment.allocated_amount = applied  # Store the amount actually applied to documents.
+    payment.save(update_fields=["journal", "status", "allocated_amount", "updated_at"])
 
-    record(
+    record(  # Log the successful payment posting in the audit trail.
         entity=payment.entity, action=FinanceAuditAction.PAYMENT_POSTED,
         actor_user=actor_user, target=payment,
         message=f"Posted receipt from {customer.code} ({payment.amount} kobo).",
         journal_id=entry.pk, amount=payment.amount,
+        allocated=applied, unallocated=excess,
     )
-
-    if allocations:
-        allocate_payment(payment, allocations=allocations, actor_user=actor_user)
-    elif auto_allocate:
-        allocate_payment(payment, actor_user=actor_user)
-    return payment
+    return payment  # Return the posted payment.
 
 
 @transaction.atomic
-def allocate_payment(payment, *, allocations=None, actor_user=None):
-    """Apply a posted payment's unallocated cash to invoices.
+def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="oldest"):
+    """Apply a posted payment's **stored customer credit** to invoices.
 
-    ``allocations`` is an optional list of ``(invoice, amount_kobo)``; without it the
-    customer's open posted invoices are settled oldest-first (by due date, then
-    invoice date). Never allocates past an invoice's balance due or the payment's
-    remaining cash. Returns the list of created allocation rows.
+    After posting, any unapplied cash sits in the customer-credit liability (2140).
+    Applying it to invoices reclassifies it back to AR (``Dr customer-credit · Cr AR``)
+    and settles the invoices - no cash moves. ``allocations`` is an optional explicit
+    ``[(invoice, amount)]`` plan; without it, open invoices are settled in ``strategy``
+    order (``"oldest"`` by due date, or ``"largest"`` balance first).
+
+    Applying an older receipt to a newer invoice is ordinary and allowed - that is a
+    prepayment finding its bill. What is *not* allowed is dating the reclassification
+    on the receipt's date when the invoice is newer, which would credit AR before the
+    receivable existed; the journal is dated at the later of the two instead.
     """
-    from .models import Invoice, PaymentAllocation
+    from .chronology import effective_allocation_date
+    from .models import Customer, CustomerCreditAllocationJournal, JournalEntry, JournalLine
 
-    if payment.status != DocumentStatus.POSTED:
+    payment = type(payment).objects.select_for_update().get(pk=payment.pk)
+    customer = Customer.objects.select_for_update().get(pk=payment.customer_id)
+
+    if payment.status != DocumentStatus.POSTED:  # Only posted receipts can be allocated later.
         raise PostingError("Only a posted payment can be allocated.")
 
-    remaining = payment.unallocated_amount
-    created = []
+    # Credit *remaining*, not merely unallocated: cash already refunded back out has
+    # left 2140 and cannot be reclassified to AR a second time.
+    remaining = payment.credit_remaining  # Stored customer credit still available on this receipt.
+    if remaining <= 0:  # Nothing left to allocate.
+        return []
 
-    if allocations is None:
-        open_invoices = (
-            Invoice.objects
-            .filter(
-                customer=payment.customer, status=DocumentStatus.POSTED,
-            )
-            .exclude(payment_status=InvoicePaymentStatus.PAID)
-            .order_by("due_date", "invoice_date", "id")
-        )
-        plan = [(inv, inv.balance_due) for inv in open_invoices]
-    else:
-        plan = list(allocations)
+    plan = _build_invoice_plan(payment.customer, allocations, strategy=strategy,  # Reuse the same allocation planner.
+                               include_debit_notes=True)
+    applied, created, latest = _apply_payment_subledger(payment, plan, remaining=remaining)  # Apply stored credit to documents.
+    if applied <= 0:  # No documents were eligible for allocation.
+        return []
 
-    for invoice, requested in plan:
-        if remaining <= 0:
-            break
-        apply_amount = min(int(requested), invoice.balance_due, remaining)
-        if apply_amount <= 0:
-            continue
-        alloc, was_created = PaymentAllocation.objects.get_or_create(
-            payment=payment, invoice=invoice, defaults={"amount": 0},
-        )
-        alloc.amount += apply_amount
-        alloc.save(update_fields=["amount", "updated_at"])
+    effective = effective_allocation_date(payment.payment_date, [latest])  # Later of receipt and settled docs.
+    stamp_allocation_effective_date(created, effective)  # Rows carry the date this run credits AR.
+    period = resolve_period(payment.entity, effective)  # Find the open accounting period.
+    entry = JournalEntry.objects.create(
+        entity=payment.entity, branch=payment.branch,
+        date=effective, period=period,
+        source=JournalSource.SALES, currency=payment.currency,
+        narration=f"Apply customer credit: {customer.code}",
+        reference=payment.reference, created_by=actor_user,
+    )
+    JournalLine.objects.create(
+        entry=entry, account=resolve_mapped_account(payment.entity, AccountMappingKey.CUSTOMER_CREDIT, label="customer credit"),
+        debit=applied, credit=0, description=f"Customer credit applied: {customer.code}", line_no=1,
+    )
+    JournalLine.objects.create(
+        entry=entry, account=customer.receivable_account, debit=0, credit=applied,
+        description=f"AR: {customer.code}", line_no=2,
+    )
+    post_journal(entry, actor_user=actor_user)  # Validate and post the reclassification journal.
 
-        invoice.amount_paid += apply_amount
-        invoice.refresh_payment_status(save=False)
-        invoice.save(update_fields=["amount_paid", "payment_status", "updated_at"])
+    CustomerCreditAllocationJournal.objects.create(
+        payment=payment, journal=entry, amount=applied,
+    )
 
-        remaining -= apply_amount
-        created.append(alloc)
-
-    payment.allocated_amount = payment.amount - remaining
+    payment.allocated_amount += applied  # Increase the receipt's applied total.
     payment.save(update_fields=["allocated_amount", "updated_at"])
 
-    if created:
-        record(
-            entity=payment.entity, action=FinanceAuditAction.PAYMENT_ALLOCATED,
-            actor_user=actor_user, target=payment,
-            message=f"Allocated {payment.allocated_amount} kobo across {len(created)} invoice(s).",
-            allocated=payment.allocated_amount, unallocated=payment.unallocated_amount,
-        )
-    return created
+    record(  # Log the allocation in the finance audit trail.
+        entity=payment.entity, action=FinanceAuditAction.PAYMENT_ALLOCATED,
+        actor_user=actor_user, target=payment,
+        message=f"Applied {applied} kobo customer credit across {len(created)} invoice(s).",
+        journal_id=entry.pk, allocated=payment.allocated_amount,
+        unallocated=payment.credit_remaining, effective_date=str(effective),
+    )
+    return created  # Return the allocation rows that were created or extended.

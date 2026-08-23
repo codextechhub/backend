@@ -22,6 +22,7 @@ from django.db import connection
 from .constants import HealthStatus
 
 
+# Normalize probe outcomes into the shape persisted by uptime tasks.
 def _result(status, response_ms=None, status_code=None, error="", meta=None):
     return {
         "status": status,
@@ -32,14 +33,16 @@ def _result(status, response_ms=None, status_code=None, error="", meta=None):
     }
 
 
+# Probe an HTTP endpoint and classify both failures and slow responses.
 def run_http(target: str, expected: dict) -> dict:
     """HTTP GET probe. healthy on expected status; warning if slow; critical otherwise."""
     try:
         import requests
-    except ImportError:  # pragma: no cover
+    except ImportError:
         return _result(HealthStatus.UNKNOWN, error="requests not installed")
 
     want = expected.get("status", 200)
+    # Per-check thresholds allow external services to be slower than internal APIs.
     warn_ms = expected.get("warn_ms", 800)
     timeout = expected.get("timeout", 10)
     start = time.perf_counter()
@@ -48,6 +51,7 @@ def run_http(target: str, expected: dict) -> dict:
         elapsed = (time.perf_counter() - start) * 1000.0
         code = resp.status_code
         if code >= 500:
+            # Server errors mean the dependency is unhealthy regardless of latency.
             return _result(HealthStatus.CRITICAL, elapsed, code, error=f"HTTP {code}")
         if code != want and code >= 400:
             return _result(HealthStatus.WARNING, elapsed, code, error=f"HTTP {code}")
@@ -58,6 +62,7 @@ def run_http(target: str, expected: dict) -> dict:
         return _result(HealthStatus.CRITICAL, elapsed, error=str(exc)[:500])
 
 
+# Probe a raw TCP endpoint such as SMTP reachability.
 def run_tcp(target: str, expected: dict) -> dict:
     """TCP connect probe against host:port."""
     host, _, port = target.partition(":")
@@ -73,14 +78,16 @@ def run_tcp(target: str, expected: dict) -> dict:
         return _result(HealthStatus.CRITICAL, elapsed, error=str(exc)[:500])
 
 
+# Probe Redis broker availability and memory saturation.
 def run_redis(expected: dict) -> dict:
     """PING the broker Redis. Uses CELERY_BROKER_URL."""
     url = getattr(settings, "CELERY_BROKER_URL", "redis://localhost:6379/0")
     if not url.startswith("redis"):
+        # Non-Redis brokers provide no Redis-specific signal, so do not claim failure.
         return _result(HealthStatus.UNKNOWN, error="broker is not redis")
     try:
         import redis
-    except ImportError:  # pragma: no cover
+    except ImportError:
         return _result(HealthStatus.UNKNOWN, error="redis not installed")
     warn_ms = expected.get("warn_ms", 50)
     start = time.perf_counter()
@@ -94,6 +101,7 @@ def run_redis(expected: dict) -> dict:
             maxmem = info.get("maxmemory", 0) or 0
             meta = {"used_memory": used, "maxmemory": maxmem}
             if maxmem:
+                # Memory pressure is a saturation signal even when PING is fast.
                 pct = used / maxmem * 100
                 meta["mem_pct"] = round(pct, 1)
                 if pct >= expected.get("mem_critical_pct", 95):
@@ -101,6 +109,7 @@ def run_redis(expected: dict) -> dict:
                 if pct >= expected.get("mem_warn_pct", 85):
                     return _result(HealthStatus.WARNING, elapsed, meta=meta)
         except Exception:
+            # INFO failure should not turn a successful PING into a hard outage.
             meta = {}
         status = HealthStatus.WARNING if elapsed > warn_ms else HealthStatus.HEALTHY
         return _result(status, elapsed, meta=meta)
@@ -109,6 +118,7 @@ def run_redis(expected: dict) -> dict:
         return _result(HealthStatus.CRITICAL, elapsed, error=str(exc)[:500])
 
 
+# Probe default database connectivity with a minimal query.
 def run_postgres(expected: dict) -> dict:
     """Run SELECT 1 on the default DB connection."""
     warn_ms = expected.get("warn_ms", 100)
@@ -125,6 +135,7 @@ def run_postgres(expected: dict) -> dict:
         return _result(HealthStatus.CRITICAL, elapsed, error=str(exc)[:500])
 
 
+# Probe TLS certificate expiry for public endpoints.
 def run_ssl(target: str, expected: dict) -> dict:
     """Inspect the TLS certificate of a domain and report days to expiry."""
     parsed = urlparse(target if "//" in target else f"https://{target}")
@@ -142,6 +153,7 @@ def run_ssl(target: str, expected: dict) -> dict:
         not_after = cert.get("notAfter")
         expires = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=dt_timezone.utc)
         days_left = (expires - datetime.now(dt_timezone.utc)).days
+        # Store certificate metadata so SLO views and alert rules can reuse the probe result.
         meta = {"ssl_days_left": days_left, "domain": host, "expires_at": expires.isoformat()}
         if days_left <= critical_days:
             return _result(HealthStatus.CRITICAL, elapsed, meta=meta, error=f"cert expires in {days_left}d")
@@ -153,11 +165,13 @@ def run_ssl(target: str, expected: dict) -> dict:
         return _result(HealthStatus.CRITICAL, elapsed, error=str(exc)[:500])
 
 
+# Dispatch a configured uptime check to its concrete probe implementation.
 def execute(check) -> dict:
     """Dispatch a UptimeCheck to the right probe based on its type."""
     from .models import CheckType
 
     expected = check.expected or {}
+    # Expected payloads are per-check tuning knobs, not trusted control flow.
     ct = check.check_type
     if ct == CheckType.HTTP:
         return run_http(check.target, expected)

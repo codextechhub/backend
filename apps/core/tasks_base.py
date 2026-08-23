@@ -1,25 +1,34 @@
 """
-TrackedTask — the platform-wide Celery base class (wired via
+TrackedTask - the platform-wide Celery base class (wired via
 ``Celery(task_cls="core.tasks_base:TrackedTask")``), so EVERY task is
 automatically tracked in :class:`core.models.BackgroundJob`.
 
 Attribution: callers attach the owner by passing reserved kwargs to
-``.delay()`` / ``.apply_async()`` — they are stripped before the task runs,
+``.delay()`` / ``.apply_async()`` - they are stripped before the task runs,
 so task signatures stay untouched::
 
     execute_import_batch_task.delay(
         import_batch_id=str(batch.id),
         _job_owner_id=str(request.user.id),
-        _job_school_id=request.user.school_id,
+        _job_tenant_id=request.user.tenant_id,
         _job_label=f"Import: {batch.file_name}",
         _job_kind="import",
     )
 
+``_job_owner_id`` is the ACTOR who triggered the work - never the subject the
+work is *about*. An invitation email to Jane, queued by admin Ada, is owned by
+Ada: she triggered it, she sees it in View Queues, she is the one told when it
+lands. Passing the subject there hands a stranger someone else's queue row and
+completion notification. Omit ``_job_tenant_id`` unless it must differ from the
+owner's tenant - it is derived from the owner otherwise.
+
 Tasks queued without these kwargs (beat schedules, internal fan-out) are
 recorded as system rows (owner=None) when they start.
 
-On completion the owner gets an in-app notification (best-effort — a
-notification failure never fails the task).
+On completion the owner gets an in-app notification (best-effort - a
+notification failure never fails the task). Pass ``_job_notify=False`` for
+per-recipient fan-out (one email job per imported row) so the actor gets the
+queue rows without one bell notification per row.
 
 Tracking is best-effort by design: any database problem while writing the
 job row is logged and swallowed so the underlying task is never blocked.
@@ -33,7 +42,21 @@ from celery import Task
 
 logger = logging.getLogger(__name__)
 
-_JOB_KWARGS = ("_job_owner_id", "_job_school_id", "_job_label", "_job_kind")
+_JOB_KWARGS = (
+    "_job_owner_id", "_job_tenant_id", "_job_label",
+    "_job_kind", "_job_notify",
+)
+
+
+def _resolve_job_tenant_id(meta=None):
+    meta = meta or {}
+    if meta.get("_job_tenant_id"):
+        return meta["_job_tenant_id"]
+    if meta.get("_job_owner_id"):
+        from vs_user.models import User
+        return User.objects.only("tenant_id").get(pk=meta["_job_owner_id"]).tenant_id
+    from vs_tenants.models import Tenant
+    return Tenant.objects.only("id").get(slug="codex").pk
 
 
 def _short_kind(task_name: str) -> str:
@@ -67,11 +90,13 @@ class TrackedTask(Task):
                 celery_task_id=task_id,
                 defaults=dict(
                     owner_id=meta["_job_owner_id"] or None,
-                    school_id=meta["_job_school_id"] or None,
+                    tenant_id=_resolve_job_tenant_id(meta),
                     label=meta["_job_label"] or "",
                     kind=meta["_job_kind"] or _short_kind(self.name or ""),
                     task_name=self.name or "",
                     status=BackgroundJob.Status.QUEUED,
+                    # Absent kwarg means "notify" - only an explicit False opts out.
+                    notify_owner=meta["_job_notify"] is not False,
                 ),
             )
         except Exception:  # pragma: no cover - tracking must never block queuing
@@ -89,6 +114,7 @@ class TrackedTask(Task):
             job, _ = BackgroundJob.objects.get_or_create(
                 celery_task_id=task_id,
                 defaults=dict(
+                    tenant_id=_resolve_job_tenant_id(),
                     task_name=self.name or "",
                     kind=_short_kind(self.name or ""),
                 ),
@@ -162,32 +188,22 @@ class TrackedTask(Task):
     # Completion notification (in-app, best-effort)                      #
     # ------------------------------------------------------------------ #
     def _notify_owner(self, job, succeeded):
-        if not job.owner_id or not job.label:
+        if not job.owner_id or not job.label or not job.notify_owner:
             return
         try:
-            from vs_notifications.constants import ChannelChoices, NotificationStatus
-            from vs_notifications.models import Notification, NotificationEventType
+            from vs_notifications.notify import send_notification
 
             key = "task.completed" if succeeded else "task.failed"
-            event, _ = NotificationEventType.objects.get_or_create(
-                key=key,
-                defaults=dict(
-                    label="Background task completed" if succeeded else "Background task failed",
-                    source_module="core",
-                ),
-            )
-            outcome = "finished successfully" if succeeded else "FAILED"
-            Notification.objects.create(
-                school=job.school,
-                recipient_id=job.owner_id,
-                event_type=event,
-                channel=ChannelChoices.IN_APP,
-                subject=f"{job.label} — {outcome}",
-                body=(
-                    f"Your background task '{job.label}' {outcome}."
-                    + ("" if succeeded else f" Error: {job.error[:300]}")
-                ),
-                status=NotificationStatus.SENT,
+            send_notification(
+                event_key=key,
+                context={
+                    "label": job.label,
+                    "error": "" if succeeded else job.error[:300],
+                },
+                recipients=[job.owner],
+                tenant=job.tenant,
             )
         except Exception:  # pragma: no cover
+            # Best-effort: any failure (including UnknownEventTypeError when the
+            # event registry is unseeded) is swallowed so it never fails the job.
             logger.warning("BackgroundJob notification failed for job %s", job.pk, exc_info=True)

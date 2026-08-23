@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from django.conf import settings
-from django.db import models
+from django.db import models, transaction
 
 from ..constants import (
     DocType,
+    FeeAppliesTo,
     InvoicePaymentStatus,
     InvoiceSource,
     PaymentMethod,
@@ -16,12 +17,12 @@ from .core import TimeStampedModel, LedgerEntity, FinanceDocument
 from .gl import Account, CostCenter, Currency, TaxCode
 
 # ---------------------------------------------------------------------------
-# Phase 2 — Accounts Receivable (the revenue cycle)
+# Phase 2 - Accounts Receivable (the revenue cycle)
 # ---------------------------------------------------------------------------
 #
 # A deliberately **domain-neutral** AR core: a generic Customer is billed with a
 # generic Invoice and settles with a generic Payment. Nothing here knows about
-# students, parents, fees or terms — a school billing run is just one *source* that
+# students, parents, fees or terms - a school billing run is just one *source* that
 # emits these same generic invoices (the adapter, behind a module flag, comes later).
 # The link back to a domain record is a loose, nullable string reference so the ledger
 # never imports the students app.
@@ -33,18 +34,23 @@ class Customer(TimeStampedModel):
     Generic on purpose: a customer may be a parent/student in a school tenant, a
     client in another, or an internal counterparty in Codex's own books. The optional
     ``source_type``/``source_id`` pair is a *loose* reference to the originating
-    domain record (e.g. ``"vs_schools.Student"`` + the student's pk) — stored as plain
-    strings, never an FK, so the ledger stays decoupled from any product app.
+    domain record (e.g. ``"<product_app>.<Model>"`` + that record's pk) - stored as
+    plain strings, never an FK, so the ledger stays decoupled from any product app.
+    The example is deliberately unnamed: this app must not know which products
+    exist, and naming one in a docstring is how that knowledge creeps back in.
 
     ``receivable_account`` is the AR control account this customer's balance rolls up
     into; the customer itself is the sub-ledger detail behind that control.
+
+    ``code`` is allocated from the tenant's concurrency-safe customer sequence when
+    a caller omits it. Explicit values remain supported for trusted imports.
     """
 
     entity = models.ForeignKey(
         LedgerEntity, on_delete=models.PROTECT, related_name="customers",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="finance_customers", null=True, blank=True,
     )
     code = models.CharField(max_length=32, help_text="Customer code, unique within the entity.")
@@ -60,7 +66,7 @@ class Customer(TimeStampedModel):
     opening_balance = MoneyField(help_text="Opening AR balance in kobo (informational; not auto-posted).")
     source_type = models.CharField(
         max_length=64, blank=True, default="",
-        help_text="Loose reference to the originating domain record's model, e.g. 'vs_schools.Student'.",
+        help_text="Loose reference to the originating domain record's model, as 'app_label.Model'.",
     )
     source_id = models.CharField(max_length=64, blank=True, default="")
     is_active = models.BooleanField(default=True)
@@ -76,6 +82,29 @@ class Customer(TimeStampedModel):
             models.Index(fields=["source_type", "source_id"]),
         ]
         ordering = ["entity", "code"]
+
+    def assign_code(self) -> str:
+        """Allocate the stable customer reference when callers do not supply one."""
+        if self.code:
+            return self.code
+        if self.entity_id is None:
+            raise ValueError("A customer needs an entity before its code can be allocated.")
+
+        from ..numbering import next_document_number
+
+        self.code = next_document_number(entity=self.entity, doc_type="CU")
+        return self.code
+
+    def save(self, *args, **kwargs):
+        # Keep allocation and insertion in one transaction so a failed create does
+        # not consume a customer reference.
+        if not self.code and self.entity_id:
+            with transaction.atomic():
+                self.assign_code()
+                if kwargs.get("update_fields") is not None:
+                    kwargs["update_fields"] = set(kwargs["update_fields"]) | {"code"}
+                return super().save(*args, **kwargs)
+        return super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"{self.code} · {self.name}"
@@ -108,8 +137,8 @@ class Invoice(FinanceDocument):
     source = models.CharField(
         max_length=16, choices=InvoiceSource.choices, default=InvoiceSource.MANUAL,
     )
-    reference = models.CharField(max_length=64, blank=True, default="")
-    narration = models.CharField(max_length=255, blank=True, default="")
+    reference = models.CharField(max_length=64, blank=True, default="")  # e.g. a fee structure code, a payment plan code, or an external reference
+    narration = models.CharField(max_length=255, blank=True, default="")  # e.g. "Tuition for Term 1, 2024"
 
     subtotal = MoneyField(help_text="Net of tax, in kobo.")
     tax_total = MoneyField(help_text="Total tax, in kobo.")
@@ -216,7 +245,7 @@ class InvoiceLine(TimeStampedModel):
 
 
 class Payment(FinanceDocument):
-    """A customer receipt — money in, settling one or more invoices.
+    """A customer receipt - money in, settling one or more invoices.
 
     Extends :class:`FinanceDocument` (DOC_TYPE RECEIPT → ``CFX-…-RCP-…``). Posting
     (:func:`vs_finance.receivables.post_payment`) raises Dr bank/cash, Cr AR control,
@@ -239,6 +268,10 @@ class Payment(FinanceDocument):
     )
     amount = MoneyField(help_text="Total received, in kobo.")
     allocated_amount = MoneyField(help_text="Portion allocated to invoices, in kobo.")
+    refunded_amount = MoneyField(
+        help_text="Portion of this receipt's unapplied cash already paid back out as a "
+                  "customer refund, in kobo. Maintained by RefundAllocation.",
+    )
     deposit_account = models.ForeignKey(
         Account, on_delete=models.PROTECT, related_name="customer_payments",
         null=True, blank=True,
@@ -260,16 +293,40 @@ class Payment(FinanceDocument):
 
     @property
     def unallocated_amount(self) -> int:
-        """Cash not yet applied to any invoice — an open credit on the customer."""
+        """Cash not yet applied to any invoice - a pure sub-ledger fact.
+
+        Deliberately blind to refunds: it answers "how much of this receipt never
+        settled a bill?", which is what the allocation sub-ledger is for. It is *not*
+        the money still available - a refund can have paid that cash back out without
+        touching a single allocation row. Use :attr:`credit_remaining` whenever the
+        question is "is there still credit here to spend?".
+        """
         return self.amount - self.allocated_amount
+
+    @property
+    def credit_remaining(self) -> int:
+        """Cash from this receipt still sitting in the customer-credit liability (2140).
+
+        The spendable figure: unapplied cash less whatever has since been refunded
+        out of it. This is what may be allocated to an invoice or refunded again, and
+        what screens must show as available credit.
+        """
+        return self.amount - self.allocated_amount - self.refunded_amount
 
 
 class PaymentAllocation(TimeStampedModel):
-    """Links a slice of a :class:`Payment` to a specific :class:`Invoice`.
+    """One act of applying a slice of a :class:`Payment` to a specific :class:`Invoice`.
 
     The GL already moved when the payment posted (Dr bank, Cr AR); allocation is the
     *sub-ledger* act of saying which invoices that AR credit settles. This keeps
     partial payments and unallocated credit first-class without further GL postings.
+
+    A row is an immutable **event**, not a running total. A receipt applied to the
+    same invoice in two goes writes two rows, because the two tranches credited AR on
+    two different dates and an "as at" report has to be able to tell them apart. The
+    row used to be unique per (payment, invoice) and accumulate, which meant its
+    single ``effective_date`` could only describe one of the tranches - and whichever
+    it described, the reconstruction disagreed with the ledger for the days between.
     """
 
     payment = models.ForeignKey(
@@ -279,17 +336,24 @@ class PaymentAllocation(TimeStampedModel):
         Invoice, on_delete=models.PROTECT, related_name="allocations",
     )
     amount = MoneyField(help_text="Amount of the payment applied to this invoice, in kobo.")
+    effective_date = models.DateField(
+        null=True, blank=True,
+        help_text="Accounting date this settlement took effect - the date of the "
+                  "journal that credited AR for it. Null only on rows predating the "
+                  "column, where it is reconstructed as max(receipt date, invoice date).",
+    )
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(
-                fields=["payment", "invoice"], name="uniq_finance_alloc_payment_invoice",
-            ),
             models.CheckConstraint(
                 check=models.Q(amount__gte=0), name="ck_finance_alloc_non_negative",
             ),
         ]
-        indexes = [models.Index(fields=["invoice"]), models.Index(fields=["payment"])]
+        indexes = [
+            models.Index(fields=["invoice"]),
+            models.Index(fields=["payment"]),
+            models.Index(fields=["effective_date"]),
+        ]
         ordering = ["payment", "id"]
 
     def __str__(self) -> str:
@@ -299,26 +363,29 @@ class PaymentAllocation(TimeStampedModel):
 
 
 class FeeStructure(TimeStampedModel):
-    """A named, reusable billing template for an entity (e.g. 'JSS1 — Term 1 2026').
+    """A named, reusable billing template for an entity.
 
     A fee structure is a catalogue of charges; it holds no money itself. Calling
     :func:`vs_finance.fees.generate_invoices` materialises one posted :class:`Invoice`
-    per selected customer from this structure's :class:`FeeItem` lines — the only place
-    billing turns a template into real AR. ``term`` / ``branch`` are free applicability
-    tags (which session/term and which campus the structure is meant for).
+    per selected customer from this structure's :class:`FeeItem` lines - the only place
+    billing turns a template into real AR. ``applies_to`` classifies the counterparty
+    type the template charges (customer / vendor / staff / general); this is a generic
+    platform, so a structure is not tied to any entity type.
     """
 
     entity = models.ForeignKey(
         LedgerEntity, on_delete=models.PROTECT, related_name="fee_structures",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="finance_fee_structures", null=True, blank=True,
     )
     code = models.CharField(max_length=32, help_text="Unique within the entity.")
     name = models.CharField(max_length=200)
-    term = models.CharField(max_length=64, blank=True, default="",
-                            help_text="Applicability tag, e.g. '2026/T1'.")
+    applies_to = models.CharField(
+        max_length=16, choices=FeeAppliesTo.choices, default=FeeAppliesTo.CUSTOMER,
+        help_text="Counterparty type this template bills (customer / vendor / staff / general).",
+    )
     description = models.TextField(blank=True, default="")
     is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(
@@ -343,6 +410,19 @@ class FeeStructure(TimeStampedModel):
         """Sum of the item amounts in kobo (net of tax; tax is added at generation)."""
         return self.items.aggregate(t=models.Sum("amount"))["t"] or 0
 
+    @property
+    def tax_total(self) -> int:
+        """Tax that would be added at generation, in kobo (per line: net × rate_bps)."""
+        return sum(
+            (it.amount * it.tax_code.rate_bps) // 10000
+            for it in self.items.all() if it.tax_code_id
+        )
+
+    @property
+    def total_with_tax(self) -> int:
+        """Gross total per customer in kobo (net subtotal + tax)."""
+        return self.total + self.tax_total
+
 
 class FeeItem(TimeStampedModel):
     """One charge line of a :class:`FeeStructure` → a GL revenue account (+ optional tax)."""
@@ -350,6 +430,9 @@ class FeeItem(TimeStampedModel):
     structure = models.ForeignKey(
         FeeStructure, on_delete=models.CASCADE, related_name="items",
     )
+    code = models.CharField(
+        max_length=32, blank=True, default="",
+        help_text="Optional short fee code/category, e.g. 'TUITION', 'BOARDING'.")
     description = models.CharField(max_length=255)
     revenue_account = models.ForeignKey(
         Account, on_delete=models.PROTECT, related_name="fee_items",
@@ -360,6 +443,10 @@ class FeeItem(TimeStampedModel):
         TaxCode, on_delete=models.PROTECT, related_name="fee_items",
         null=True, blank=True,
     )
+    is_optional = models.BooleanField(
+        default=False,
+        help_text="An opt-in charge (vs a required line). Informational for now - "
+                  "generation bills every line.")
     line_no = models.PositiveSmallIntegerField(default=0)
 
     class Meta:

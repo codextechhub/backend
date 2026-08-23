@@ -1,7 +1,7 @@
 """
 Management command: seed_actions
 ==================================
-Seeds the canonical PermissionAction vocabulary — the global list of action
+Seeds the canonical PermissionAction vocabulary - the global list of action
 verbs used as the suffix of every permission key (module.resource.<action>).
 
 This is always the FIRST thing you run when building permissions from scratch.
@@ -30,7 +30,7 @@ ACTIONS: list[tuple[str, str]] = [
     ("create",     "Create a new record."),
     ("update",     "Modify an existing record's fields."),
     ("delete",     "Permanently remove a record (hard-delete or irreversible soft-delete)."),
-    ("manage",     "Full control over a resource — implies view, create, update, and delete."),
+    ("manage",     "Full control over a resource - implies view, create, update, and delete."),
 
     # ── Approval & lifecycle ──────────────────────────────────────────────────
     ("approve",    "Ratify or authorise a submitted record (scores, invoices, leave requests, etc.)."),
@@ -41,6 +41,7 @@ ACTIONS: list[tuple[str, str]] = [
     ("archive",    "Move a record to an archived / read-only state without hard deletion."),
     ("suspend",    "Temporarily deactivate an account or entity."),
     ("reactivate", "Restore a previously suspended or deactivated entity."),
+    ("replay",     "Re-run a stored inbound event that failed to process the first time."),
 
     # ── Data transfer & movement ──────────────────────────────────────────────
     ("export",     "Download data to CSV, XLSX, or PDF."),
@@ -59,7 +60,8 @@ ACTIONS: list[tuple[str, str]] = [
     ("generate",   "Produce a document or report on demand (ID cards, report cards)."),
 
     # ── Communication ─────────────────────────────────────────────────────────
-    ("send",       "Dispatch a message — SMS, email, or push notification."),
+    ("send",       "Dispatch a message - SMS, email, or push notification."),
+    ("email_vendor", "Email an approved commercial document to its vendor."),
     ("post",       "Publish an announcement or bulletin to a board or feed."),
 
     # ── Tracking & observation ────────────────────────────────────────────────
@@ -80,6 +82,9 @@ ACTIONS: list[tuple[str, str]] = [
     ("activate",   "Activate a draft record into its live, operative state."),
     ("pay",        "Disburse funds to settle a payable, payroll, or tax liability."),
     ("close",      "Close an accounting period, locking it against further postings."),
+    ("reopen",     "Re-open a closed accounting period back to open (audited)."),
+    ("lock",       "Permanently seal a closed accounting period against any re-open."),
+    ("establish",  "Fund a petty-cash float from a bank account (open or increase it)."),
     ("replenish",  "Replenish a petty-cash float back to its imprest level."),
     ("file",       "File a statutory return (VAT, WHT, PAYE) with the authority."),
     ("approve_senior", "Provide senior-tier approval for high-value records above threshold."),
@@ -90,13 +95,21 @@ ACTIONS: list[tuple[str, str]] = [
     ("award",      "Award a quotation or tender to the winning vendor."),
     ("issue",      "Issue a document to its counterparty (RFQ, stock issue)."),
     ("match",      "Perform a multi-way match (PO ↔ GRN ↔ invoice)."),
+    ("override_variance", "Override a blocking vendor-invoice match variance for an audited post."),
+    ("override",   "Override a policy control through a dedicated, audited exception."),
     ("adjust",     "Record a manual adjustment (stock revaluation, corrections)."),
+    ("attach",     "Attach or remove supporting evidence files on a record (supplier invoices, receipts)."),
 
     # ── Library-specific ──────────────────────────────────────────────────────
     ("return",     "Record the return of a borrowed item."),
 
     # ── Platform / DevOps ────────────────────────────────────────────────────
     ("impersonate","Act as another user for audited support diagnostics (platform staff only)."),
+    ("end",          "End or terminate an active session (impersonation, etc.)."),
+    ("start",        "Start an audited session (school-scoped impersonation proxy, etc.)."),
+    ("start_all",    "Start impersonating any user across the platform, including CX staff."),
+    ("start_cx",     "Start impersonating platform (CX) staff only."),
+    ("start_school", "Start impersonating school users only."),
     ("trigger",    "Initiate a deployment, job, or pipeline run."),
     ("run",        "Execute a migration, script, or background task."),
     ("escalate",   "Escalate a support ticket or incident to a higher tier."),

@@ -2,29 +2,32 @@
 
 Import through ``vs_finance.views_ops`` exactly as before.
 """
-from .base import *        # noqa: F401,F403
-from .base import (  # noqa: F401  — underscore helpers used by views_ar.py
+from .base import *
+from .base import (
     _FinanceBase,
     _bool,
     _date,
     _dec,
+    _inherited_branch_id,
     _int,
     _money,
+    _raised_branch,
     _require_lines,
     _resolve_account,
     _resolve_bank_account,
     _resolve_cost_center,
     _resolve_currency,
+    _resolve_dimensions,
     _resolve_fiscal_year,
     _resolve_tax,
     _signed_money,
 )
-from .masterdata import *  # noqa: F401,F403
-from .banking import *     # noqa: F401,F403
-from .expenses import *    # noqa: F401,F403
-from .pettycash import *   # noqa: F401,F403
-from .tax import *         # noqa: F401,F403
-from .payroll import *     # noqa: F401,F403
-from .budgets import *     # noqa: F401,F403
-from .assets import *      # noqa: F401,F403
-from .audit import *       # noqa: F401,F403
+from .masterdata import *
+from .banking import *
+from .expenses import *
+from .pettycash import *
+from .tax import *
+from .payroll import *
+from .budgets import *
+from .assets import *
+from .audit import *

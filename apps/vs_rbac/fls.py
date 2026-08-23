@@ -3,7 +3,7 @@ Field Level Security (FLS) mixin for DRF serializers.
 
 Protects individual fields behind permission keys so the backend
 strips unreadable fields from responses and rejects unauthorized
-writes — regardless of what the frontend renders.
+writes - regardless of what the frontend renders.
 
 Usage
 -----
@@ -25,7 +25,7 @@ Usage
 
 Behaviour
 ---------
-* Fields absent from both dicts are always exposed — FLS is opt-in per field.
+* Fields absent from both dicts are always exposed - FLS is opt-in per field.
 * When the serializer is called without a request context (management commands,
   login payload construction, tests that bypass auth) all fields pass through
   unchanged, so nothing silently disappears.
@@ -41,6 +41,7 @@ from typing import Any
 from rest_framework import serializers
 
 
+# Enforce opt-in field grants for serializers carrying sensitive RBAC-protected data.
 class FieldSecurityMixin:
     """
     Mixin for ``serializers.Serializer`` / ``serializers.ModelSerializer``.
@@ -59,6 +60,7 @@ class FieldSecurityMixin:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    # Resolve the permission snapshot used for all protected fields on this request.
     def _resolve_user_permissions(self) -> set[str] | None:
         """
         Return the user's effective permission set for this request.
@@ -66,7 +68,7 @@ class FieldSecurityMixin:
         Returns ``None`` when there is no usable request context, which signals
         callers to skip FLS entirely (allow all fields).
         """
-        request = self.context.get("request")  # type: ignore[attr-defined]
+        request = self.context.get("request")
         if not request:
             return None
 
@@ -74,7 +76,7 @@ class FieldSecurityMixin:
         if not user or not getattr(user, "is_authenticated", False):
             return set()
 
-        # Vision super admins bypass FLS entirely — they get all fields regardless of grants.
+        # Vision super admins bypass FLS entirely - they get all fields regardless of grants.
         from vs_rbac.permissions import is_vision_super_admin
         if is_vision_super_admin(user):
             return None
@@ -83,15 +85,17 @@ class FieldSecurityMixin:
         # records does not fire 1 000 separate evaluator queries.
         if not hasattr(request, "_fls_permissions"):
             from vs_rbac.evaluator import get_effective_permissions
-            school = getattr(user, "school", None)
-            request._fls_permissions = get_effective_permissions(user, school=school)
+            tenant = getattr(request, "tenant", None) or getattr(user, "tenant", None)
+            request._fls_permissions = get_effective_permissions(user, tenant=tenant)
 
-        return request._fls_permissions  # type: ignore[return-value]
+        return request._fls_permissions
 
+    # Check whether a response field should be exposed.
     def _can_read(self, field: str, user_perms: set[str]) -> bool:
         perm = self.read_permissions.get(field)
         return perm is None or perm in user_perms
 
+    # Check whether an incoming field may be changed.
     def _can_write(self, field: str, user_perms: set[str]) -> bool:
         perm = self.write_permissions.get(field)
         return perm is None or perm in user_perms
@@ -100,15 +104,16 @@ class FieldSecurityMixin:
     # DRF hooks
     # ------------------------------------------------------------------
 
+    # Strip unreadable fields before the serializer response leaves the API.
     def to_representation(self, instance: Any) -> dict:
-        data = super().to_representation(instance)  # type: ignore[misc]
+        data = super().to_representation(instance)
 
         if not self.read_permissions:
             return data
 
         user_perms = self._resolve_user_permissions()
         if user_perms is None:
-            return data  # no request context — skip FLS
+            return data  # no request context - skip FLS
 
         stripped: list[str] = []
         for field in list(data.keys()):
@@ -117,10 +122,11 @@ class FieldSecurityMixin:
                 stripped.append(field)
 
         if stripped:
-            data["_stripped_fields"] = stripped
+            data["_stripped_fields"] = stripped  # Tell clients which sensitive fields were withheld.
 
         return data
 
+    # Reject unauthorized writes with per-field errors.
     def to_internal_value(self, data: Any) -> dict:
         if self.write_permissions:
             user_perms = self._resolve_user_permissions()
@@ -133,4 +139,4 @@ class FieldSecurityMixin:
                 if errors:
                     raise serializers.ValidationError(errors)
 
-        return super().to_internal_value(data)  # type: ignore[misc]
+        return super().to_internal_value(data)

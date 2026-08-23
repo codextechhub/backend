@@ -1,16 +1,16 @@
-# vs_users/token.py
+# vs_user/tokens.py
 # ---------------------------------------------------------------------------
 # Custom JWT token configuration for CodeX Vision.
 #
-# Extends SimpleJWT's default token to embed school_id, branch_id,
-# user_type, and account_status directly into every access token payload.
+# Extends SimpleJWT's default token to embed tenant_id, tenant_slug, branch_id,
+# account_status, and full_name directly into every access token payload.
 #
 # This means the frontend and any middleware can read the user's workspace
 # context directly from the token without hitting the database on every request.
 #
 # Wired into settings/base.py via:
 #   SIMPLE_JWT = {
-#       'TOKEN_OBTAIN_SERIALIZER': 'vs_users.token.CustomTokenObtainPairSerializer',
+#       'TOKEN_OBTAIN_SERIALIZER': 'vs_user.tokens.CustomTokenObtainPairSerializer',
 #   }
 # ---------------------------------------------------------------------------
 
@@ -22,7 +22,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 # ---------------------------------------------------------------------------
 # Custom RefreshToken
 # Adds platform-specific claims to the JWT payload at token generation time.
-# Used by LoginService and ActivationService when issuing tokens.
+# Used by LoginService when issuing tokens.
 # ---------------------------------------------------------------------------
 class CodeXRefreshToken(RefreshToken):
 
@@ -33,9 +33,10 @@ class CodeXRefreshToken(RefreshToken):
         both the access token and the refresh token payload.
 
         Custom claims added:
-          - user_type      : The user's role category (VISION_STAFF, SCHOOL_ADMIN, etc.)
-          - school_id : UUID of the user's school (null for Vision Staff)
-          - branch_id      : UUID of the user's branch (null for Admins and Vision Staff)
+          - tenant_id      : Primary key of the user's home tenant, as a string
+          - tenant_slug    : Slug of that tenant (the stable public identifier)
+          - branch_id      : Primary key of the user's branch, as a string
+                             (null when the user has no branch)
           - account_status : Current account status (ACTIVE, LOCKED, etc.)
           - full_name      : User's display name for immediate frontend use
 
@@ -44,10 +45,9 @@ class CodeXRefreshToken(RefreshToken):
         """
         token = super().for_user(user)
 
-        # Embed school and branch context
-        token['user_type']      = user.user_type
-        token['school_id'] = str(user.school_id) if user.school_id else None
-        token['school_slug'] = user.school.slug if user.school_id else None
+        # Embed the canonical tenant assertion.
+        token['tenant_id'] = str(user.tenant_id)
+        token['tenant_slug'] = user.tenant.slug
         token['branch_id']      = str(user.branch_id) if user.branch_id else None
         token['account_status'] = user.status
         token['full_name']      = user.full_name
@@ -80,6 +80,13 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         Runs the standard SimpleJWT validation (credential check, token issue)
         and adds the user object to the response data so the frontend gets
         the user profile alongside the tokens in a single response.
+
+        The response body carries id, email, full_name, tenant_kind,
+        account_status, tenant_slug and branch_id. ``tenant_kind`` replaces the
+        old ``user_type`` key and answers the only question it was ever asked
+        here - which side of the platform boundary this account is on. Like its
+        predecessor it is a response-body field only, never a token claim:
+        authorization runs through tenant RBAC, not through either of them.
         """
         data = super().validate(attrs)
 
@@ -88,10 +95,9 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             'id':             str(self.user.id),
             'email':          self.user.email,
             'full_name':      self.user.full_name,
-            'user_type':      self.user.user_type,
+            'tenant_kind':    self.user.tenant.kind,
             'account_status': self.user.status,
-            'school_id': str(self.user.school_id) if self.user.school_id else None,
-            'school_slug': self.user.school.slug if self.user.school_id else None,
+            'tenant_slug':    self.user.tenant.slug,
             'branch_id':      str(self.user.branch_id) if self.user.branch_id else None,
         }
 
@@ -100,9 +106,9 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 # ---------------------------------------------------------------------------
 # Custom TokenObtainPairView
-# Optional — only needed if you expose the standard SimpleJWT /token/ endpoint.
-# The vs_users LoginView handles authentication directly via LoginService,
-# so this view is registered but not the primary login path.
+# Optional - only needed if you expose the standard SimpleJWT /token/ endpoint.
+# The vs_user LoginView handles authentication directly via LoginService,
+# so this view is defined here but not currently routed in any urls.py.
 # ---------------------------------------------------------------------------
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer

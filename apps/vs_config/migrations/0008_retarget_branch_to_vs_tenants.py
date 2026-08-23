@@ -1,0 +1,90 @@
+"""Point this app's branch foreign keys at vs_tenants.Branch. State only.
+
+Phase D of docs/architecture/school-decoupling-scope.md.
+
+``Branch`` kept its class name, its integer primary key and its table
+(``vs_schools_branch``), so the 5 ``branch_id`` columns here already
+reference exactly the right rows. Only Django's idea of which model owns
+them changes, and ``sqlmigrate`` on this migration prints nothing but
+BEGIN/COMMIT.
+
+The table name is what makes that true, not the wrapper. Django's
+``BaseDatabaseSchemaEditor._field_should_be_altered`` ignores a changed
+foreign key target when the old and new models share a ``db_table``, so these
+would emit no SQL even unwrapped. ``SeparateDatabaseAndState`` is here to say
+so out loud and to keep the whole phase one shape: it is *not* optional in
+``vs_tenants.0004`` and ``vs_schools.0005``, where the same rename would
+otherwise ``CREATE TABLE`` and ``DROP TABLE vs_schools_branch``.
+"""
+
+import django.db.models.deletion
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+    dependencies = [
+        ("vs_config", "0007_audit_views_exports_and_entitlement_indexes"),
+        ("vs_tenants", "0004_move_branch_from_vs_schools"),
+    ]
+
+    operations = [
+        migrations.SeparateDatabaseAndState(
+            state_operations=[
+                migrations.AlterField(
+                    model_name="capabilityoverride",
+                    name="branch",
+                    field=models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="+",
+                        to="vs_tenants.branch",
+                    ),
+                ),
+                migrations.AlterField(
+                    model_name="configurationauditevent",
+                    name="branch",
+                    field=models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="+",
+                        to="vs_tenants.branch",
+                    ),
+                ),
+                migrations.AlterField(
+                    model_name="configurationauditexportjob",
+                    name="branch",
+                    field=models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="+",
+                        to="vs_tenants.branch",
+                    ),
+                ),
+                migrations.AlterField(
+                    model_name="configurationauditsavedview",
+                    name="branch",
+                    field=models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="+",
+                        to="vs_tenants.branch",
+                    ),
+                ),
+                migrations.AlterField(
+                    model_name="configurationvalue",
+                    name="branch",
+                    field=models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="+",
+                        to="vs_tenants.branch",
+                    ),
+                ),
+            ],
+        ),
+    ]

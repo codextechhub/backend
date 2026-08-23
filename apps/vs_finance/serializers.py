@@ -17,6 +17,8 @@ from vs_rbac.fls import FieldSecurityMixin
 from .models import (
     Account,
     BankAccount,
+    BankReconciliation,
+    BankStatement,
     BankStatementLine,
     Budget,
     BudgetLine,
@@ -36,8 +38,10 @@ from .models import (
     FeeItem,
     FeeStructure,
     FinanceAuditLog,
+    FinanceDocumentDelivery,
     FixedAsset,
     FiscalPeriod,
+    FiscalYear,
     FxRate,
     Invoice,
     JournalEntry,
@@ -46,8 +50,11 @@ from .models import (
     Payment,
     PaymentPlan,
     PaymentPlanInstallment,
+    EmployeeSalary,
     PayrollLine,
     PayrollRun,
+    SalaryComponent,
+    SalaryStructure,
     PettyCashFund,
     PettyCashVoucher,
     PettyCashVoucherLine,
@@ -55,19 +62,27 @@ from .models import (
     TaxCode,
     TaxFiling,
     TaxObligation,
+    WriteOffRequest,
 )
 from .money import format_naira
 
 
 class LedgerEntitySerializer(serializers.ModelSerializer):
     base_currency = serializers.CharField(source="base_currency_id", read_only=True)
+    # Originating school id derived from the tenant's school profile (None for
+    # platform/product entities). Key kept stable for the frontend.
+    source_school_id = serializers.SerializerMethodField()
 
     class Meta:
         model = LedgerEntity
         fields = [
-            "id", "code", "name", "kind", "base_currency",
+            "id", "code", "number_code", "name", "kind", "base_currency",
             "is_active", "source_school_id",
         ]
+
+    def get_source_school_id(self, obj):
+        school = getattr(obj.tenant, "school_profile", None)
+        return school.id if school else None
 
 
 class LedgerEntityCreateSerializer(serializers.ModelSerializer):
@@ -82,19 +97,29 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
     )
     # Optional: which fiscal year to open. Defaults to the current calendar year.
     fiscal_year = serializers.IntegerField(required=False, write_only=True, min_value=2000)
-    # Optional opening month (1–12). 1 = calendar Jan–Dec; 9 = a Sept–Aug school year
-    # whose twelve periods roll into the next calendar year.
+    # Optional opening month (1–12). 1 = calendar Jan–Dec; 9 = a Sept–Aug school year.
     fiscal_start_month = serializers.IntegerField(
         required=False, write_only=True, min_value=1, max_value=12,
+    )
+    fiscal_period_frequency = serializers.ChoiceField(
+        choices=(("MONTHLY", "Monthly"), ("QUARTERLY", "Quarterly")),
+        required=False,
+        write_only=True,
+        default="MONTHLY",
+    )
+    fiscal_start_day = serializers.IntegerField(
+        required=False, write_only=True, min_value=1, max_value=31, default=1,
     )
 
     class Meta:
         model = LedgerEntity
-        fields = ["id", "code", "name", "kind", "base_currency", "source_school",
-                  "fiscal_year", "fiscal_start_month"]
+        fields = ["id", "code", "number_code", "name", "kind", "base_currency",
+                  "fiscal_year", "fiscal_start_month", "fiscal_period_frequency",
+                  "fiscal_start_day"]
         extra_kwargs = {
             "kind": {"required": False},
-            "source_school": {"required": False, "allow_null": True},
+            # Optional: leave blank and the model auto-derives a unique short code.
+            "number_code": {"required": False},
         }
 
     def validate_code(self, value):
@@ -105,28 +130,44 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(f"A ledger entity with code '{code}' already exists.")
         return code
 
-    def create(self, validated_data):
-        from django.db import transaction
-        from django.utils import timezone
+    def validate_number_code(self, value):
+        code = (value or "").strip().upper()
+        if not code:
+            return ""  # blank → model save() auto-derives a unique code
+        if len(code) > 3:
+            raise serializers.ValidationError("Number code must be at most 3 characters.")
+        if LedgerEntity.objects.filter(number_code=code).exists():
+            raise serializers.ValidationError(f"Number code '{code}' is already in use.")
+        return code
 
-        from .seed import seed_chart_of_accounts, seed_currencies, seed_fiscal_year
+    def create(self, validated_data):
+        from .provisioning import provision_books
 
         fiscal_year = validated_data.pop("fiscal_year", None)
         start_month = validated_data.pop("fiscal_start_month", 1)
-        validated_data.setdefault("kind", LedgerEntity.Kind.TENANT)
+        period_frequency = validated_data.pop("fiscal_period_frequency", "MONTHLY")
+        start_day = validated_data.pop("fiscal_start_day", 1)
 
-        # Provision a fully usable set of books in one call: the entity, the default
-        # currencies, a starter chart of accounts, and twelve open monthly periods.
-        # This keeps the bootstrap API-driven (no CLI seed_finance step required).
-        # fiscal_start_month lets a school open e.g. a Sept–Aug year.
-        with transaction.atomic():
-            entity = LedgerEntity.objects.create(
-                is_active=True, activated_at=timezone.now(), **validated_data,
-            )
-            seed_currencies()
-            seed_chart_of_accounts(entity)
-            seed_fiscal_year(entity, year=fiscal_year, start_month=start_month)
-        return entity
+        # The owning tenant comes from the asserted request context; the entity
+        # save() falls back to the codex platform tenant when none is present.
+        request = self.context.get("request")
+        request_tenant = getattr(request, "tenant", None) if request else None
+        tenant = validated_data.get("tenant") or request_tenant
+
+        # Everything that makes a set of books usable now lives in one service,
+        # so this endpoint is a caller of it rather than the only door to it.
+        return provision_books(
+            tenant=tenant,
+            name=validated_data.get("name"),
+            code=validated_data.get("code"),
+            base_currency=validated_data.get("base_currency"),
+            kind=validated_data.get("kind") or LedgerEntity.Kind.TENANT,
+            number_code=validated_data.get("number_code", ""),
+            fiscal_year=fiscal_year,
+            fiscal_start_month=start_month,
+            fiscal_period_frequency=period_frequency,
+            fiscal_start_day=start_day,
+        )
 
     def to_representation(self, instance):
         # Echo back the canonical read shape so the caller sees base_currency code.
@@ -135,7 +176,7 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
 
 class AccountSerializer(serializers.ModelSerializer):
     parent_code = serializers.CharField(source="parent.code", read_only=True, default=None)
-    # Net GL balance signed to the account's normal balance — populated from the
+    # Net GL balance signed to the account's normal balance - populated from the
     # ``_bal_dr``/``_bal_cr`` annotations the chart-of-accounts view adds.
     balance = serializers.SerializerMethodField()
     # Sub-ledger role: AR/AP control account, or the cash & bank account.
@@ -155,7 +196,7 @@ class AccountSerializer(serializers.ModelSerializer):
         dr = getattr(obj, "_bal_dr", None)
         cr = getattr(obj, "_bal_cr", None)
         if dr is None and cr is None:
-            return None  # not annotated (e.g. picker queries) — omit
+            return None  # not annotated (e.g. picker queries) - omit
         net = (dr or 0) - (cr or 0)
         if obj.normal_balance != NormalBalance.DEBIT:
             net = -net
@@ -180,6 +221,12 @@ class FiscalPeriodSerializer(serializers.ModelSerializer):
         ]
 
 
+class FiscalYearSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FiscalYear
+        fields = ["id", "year", "start_date", "end_date", "status"]
+
+
 class JournalLineSerializer(serializers.ModelSerializer):
     account_code = serializers.CharField(source="account.code", read_only=True)
     account_name = serializers.CharField(source="account.name", read_only=True)
@@ -191,7 +238,8 @@ class JournalLineSerializer(serializers.ModelSerializer):
         model = JournalLine
         fields = [
             "id", "line_no", "account_id", "account_code", "account_name",
-            "cost_center", "debit", "credit", "debit_naira", "credit_naira", "description",
+            "cost_center", "dimensions", "debit", "credit", "debit_naira", "credit_naira",
+            "description",
         ]
 
     def get_debit_naira(self, obj) -> str:
@@ -231,10 +279,11 @@ class JournalEntryListSerializer(serializers.ModelSerializer):
 class JournalEntryDetailSerializer(JournalEntryListSerializer):
     lines = JournalLineSerializer(many=True, read_only=True)
     total_credit = serializers.SerializerMethodField()
+    reversal_action = serializers.SerializerMethodField()
 
     class Meta(JournalEntryListSerializer.Meta):
         fields = JournalEntryListSerializer.Meta.fields + [
-            "lines", "total_credit", "reverses_id",
+            "lines", "total_credit", "reverses_id", "reversal_action",
         ]
 
     def _totals(self, obj):
@@ -247,6 +296,11 @@ class JournalEntryDetailSerializer(JournalEntryListSerializer):
     def get_total_credit(self, obj) -> int:
         return self._totals(obj)[1]
 
+    def get_reversal_action(self, obj) -> dict:
+        from .posting import journal_reversal_action
+
+        return journal_reversal_action(obj)
+
 
 class DirectEntryLineSerializer(serializers.Serializer):
     """One line of a direct entry: an account and a one-sided amount (kobo)."""
@@ -254,6 +308,16 @@ class DirectEntryLineSerializer(serializers.Serializer):
     account = serializers.CharField(help_text="Account code within the entity, e.g. '1100'.")
     debit = serializers.IntegerField(required=False, default=0, min_value=0)
     credit = serializers.IntegerField(required=False, default=0, min_value=0)
+    cost_center = serializers.CharField(
+        required=False, allow_blank=True, default="",
+        help_text="Optional cost-centre code (or id) to slice this line by; resolved "
+                  "within the entity. Carried onto the GL line.",
+    )
+    dimensions = serializers.DictField(
+        child=serializers.CharField(), required=False, default=dict,
+        help_text="Optional analytical values keyed by Dimension.code, e.g. "
+                  "{'FUND': 'GRANT-A'}. Each value must be an allowed value of that axis.",
+    )
 
     def validate(self, attrs):
         if attrs.get("debit") and attrs.get("credit"):
@@ -315,8 +379,8 @@ class FeeItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = FeeItem
         fields = [
-            "id", "line_no", "description", "revenue_account_code",
-            "amount", "amount_naira", "tax_code_value",
+            "id", "line_no", "code", "description", "revenue_account_code",
+            "amount", "amount_naira", "tax_code_value", "is_optional",
         ]
 
     def get_amount_naira(self, obj) -> str:
@@ -327,21 +391,59 @@ class FeeStructureSerializer(serializers.ModelSerializer):
     items = FeeItemSerializer(many=True, read_only=True)
     total = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
+    tax_total = serializers.IntegerField(read_only=True)
+    tax_total_naira = serializers.SerializerMethodField()
+    total_with_tax = serializers.IntegerField(read_only=True)
+    total_with_tax_naira = serializers.SerializerMethodField()
+    applies_to_display = serializers.CharField(
+        source="get_applies_to_display", read_only=True)
+    # Usage/activity - only computed for the detail view (context with_usage=True),
+    # so the list endpoint stays a single query per page.
+    created_by_name = serializers.SerializerMethodField()
+    usage = serializers.SerializerMethodField()
 
     class Meta:
         model = FeeStructure
         fields = [
-            "id", "code", "name", "term", "description", "is_active",
-            "items", "total", "total_naira",
+            "id", "code", "name", "applies_to", "applies_to_display",
+            "description", "is_active", "items",
+            "total", "total_naira", "tax_total", "tax_total_naira",
+            "total_with_tax", "total_with_tax_naira",
+            "created_at", "created_by_name", "usage",
         ]
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total)
 
+    def get_tax_total_naira(self, obj) -> str:
+        return format_naira(obj.tax_total)
+
+    def get_total_with_tax_naira(self, obj) -> str:
+        return format_naira(obj.total_with_tax)
+
+    def get_created_by_name(self, obj):
+        u = obj.created_by
+        if not u:
+            return None
+        name = " ".join(filter(None, [
+            getattr(u, "first_name", ""), getattr(u, "last_name", "")])).strip()
+        return name or getattr(u, "email", None)
+
+    def get_usage(self, obj):
+        """Invoices raised from this structure (reference 'FEE:<code>'). Detail only."""
+        if not self.context.get("with_usage"):
+            return None
+        from .models import Invoice
+        qs = Invoice.objects.filter(
+            entity_id=obj.entity_id, reference=f"FEE:{obj.code}", status="POSTED")
+        last = qs.order_by("-created_at").values_list("created_at", flat=True).first()
+        return {"invoices_generated": qs.count(), "last_generated_at": last}
+
 
 class InvoiceSerializer(serializers.ModelSerializer):
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
+    settled_amount = serializers.IntegerField(read_only=True)
     balance_due = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
 
@@ -351,7 +453,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "id", "document_number", "customer_id", "customer_code", "customer_name",
             "invoice_date", "due_date", "status", "payment_status",
             "subtotal", "tax_total", "total", "total_naira",
-            "amount_paid", "balance_due", "reference", "narration",
+            "amount_paid", "amount_credited", "settled_amount", "balance_due",
+            "reference", "narration",
         ]
 
     def get_total_naira(self, obj) -> str:
@@ -361,19 +464,53 @@ class InvoiceSerializer(serializers.ModelSerializer):
 class CreditNoteLineSerializer(serializers.ModelSerializer):
     revenue_account = serializers.CharField(source="revenue_account.code", read_only=True)
     tax_code = serializers.CharField(source="tax_code.code", read_only=True, default=None)
+    cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
 
     class Meta:
         model = CreditNoteLine
         fields = [
             "id", "line_no", "description", "revenue_account",
             "quantity", "unit_price", "tax_code", "net_amount", "tax_amount",
+            "cost_center",
         ]
 
 
-class CreditNoteSerializer(serializers.ModelSerializer):
+class ApprovalGatedMixin(serializers.Serializer):
+    """Adds a read-only ``approval_required`` to an adjustment document read.
+
+    Without it a client cannot tell whether to offer **Post** or **Submit for
+    approval** except by refetching the workflow templates and reimplementing the
+    branch → tenant → platform cascade itself, which is a second copy of the gate
+    that drifts the first time the cascade changes. Same
+    :class:`~vs_finance.approvals.ApprovalGate` the post views consult, so the
+    button a client renders and the answer it gets back always agree.
+
+    The gate is cached on the serializer instance rather than rebuilt per row:
+    ``many=True`` reuses one child serializer for the whole list, so a page of
+    refunds costs one template lookup for their shared scope, not one each.
+    """
+
+    approval_required = serializers.SerializerMethodField()
+
+    # Report whether this document must go through approval before it posts.
+    def get_approval_required(self, obj) -> bool:
+        from .approvals import ApprovalGate
+
+        gate = self.context.get("approval_gate")  # A view batching several reads may pass its own.
+        if gate is None:
+            gate = getattr(self, "_approval_gate", None)
+            if gate is None:
+                gate = ApprovalGate()
+                self._approval_gate = gate
+        return gate.required(obj)
+
+
+class CreditNoteSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
+    invoice_number = serializers.CharField(source="invoice.document_number", read_only=True, default=None)
     unallocated_amount = serializers.IntegerField(read_only=True)
+    credit_remaining = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
     lines = CreditNoteLineSerializer(many=True, read_only=True)
 
@@ -381,16 +518,18 @@ class CreditNoteSerializer(serializers.ModelSerializer):
         model = CreditNote
         fields = [
             "id", "document_number", "kind", "customer_id", "customer_code",
-            "customer_name", "invoice_id", "note_date", "status",
+            "customer_name", "invoice_id", "invoice_number", "note_date", "status",
             "subtotal", "tax_total", "total", "total_naira",
-            "allocated_amount", "unallocated_amount", "reason", "reference", "lines",
+            "allocated_amount", "unallocated_amount", "refunded_amount",
+            "credit_remaining", "reason", "reference", "lines",
+            "approval_required",
         ]
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total)
 
 
-class RefundSerializer(serializers.ModelSerializer):
+class RefundSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     amount_naira = serializers.SerializerMethodField()
@@ -400,7 +539,26 @@ class RefundSerializer(serializers.ModelSerializer):
         fields = [
             "id", "document_number", "customer_id", "customer_code", "customer_name",
             "refund_date", "method", "status", "amount", "amount_naira",
-            "bank_account_id", "reference", "narration",
+            "bank_account_id", "reference", "narration", "approval_required",
+        ]
+
+    def get_amount_naira(self, obj) -> str:
+        return format_naira(obj.amount)
+
+
+class WriteOffRequestSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
+    invoice_number = serializers.CharField(source="invoice.document_number", read_only=True)
+    customer_code = serializers.CharField(source="invoice.customer.code", read_only=True)
+    customer_name = serializers.CharField(source="invoice.customer.name", read_only=True)
+    amount_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WriteOffRequest
+        fields = [
+            "id", "document_number", "status", "invoice_id", "invoice_number",
+            "customer_code", "customer_name", "amount", "amount_naira",
+            "write_off_account_id", "write_off_date", "narration", "reason",
+            "journal_id", "approval_required",
         ]
 
     def get_amount_naira(self, obj) -> str:
@@ -416,6 +574,7 @@ class PaymentSerializer(serializers.ModelSerializer):
     deposit_account_name = serializers.CharField(source="deposit_account.name", read_only=True, default=None)
     amount_naira = serializers.SerializerMethodField()
     unallocated_amount = serializers.IntegerField(read_only=True)
+    credit_remaining = serializers.IntegerField(read_only=True)
     allocation_status = serializers.SerializerMethodField()
 
     class Meta:
@@ -423,7 +582,8 @@ class PaymentSerializer(serializers.ModelSerializer):
         fields = [
             "id", "document_number", "customer_id", "customer_code", "customer_name",
             "payment_date", "method", "amount", "amount_naira", "allocated_amount",
-            "unallocated_amount", "allocation_status", "deposit_account_code",
+            "unallocated_amount", "refunded_amount", "credit_remaining",
+            "allocation_status", "deposit_account_code",
             "deposit_account_name", "reference", "narration", "journal_id", "status",
         ]
 
@@ -431,14 +591,23 @@ class PaymentSerializer(serializers.ModelSerializer):
         return format_naira(obj.amount)
 
     def get_allocation_status(self, obj) -> str:
+        """Where this receipt's cash ended up - settled, refunded, or still sitting.
+
+        REFUNDED is its own state rather than a flavour of UNALLOCATED: the cash never
+        settled a bill, but it is also gone, and calling that "unallocated" is precisely
+        what made a refunded receipt keep advertising money that had already been paid
+        back out.
+        """
         if obj.unallocated_amount <= 0:
             return "ALLOCATED"
+        if obj.credit_remaining <= 0:
+            return "REFUNDED"
         if obj.allocated_amount <= 0:
             return "UNALLOCATED"
         return "PARTIAL"
 
 
-class ConcessionSerializer(serializers.ModelSerializer):
+class ConcessionSerializer(ApprovalGatedMixin, serializers.ModelSerializer):
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     invoice_number = serializers.CharField(source="invoice.document_number", read_only=True)
@@ -453,7 +622,7 @@ class ConcessionSerializer(serializers.ModelSerializer):
             "id", "document_number", "kind", "customer_id", "customer_code",
             "customer_name", "invoice_id", "invoice_number", "concession_date",
             "status", "amount", "amount_naira", "allowance_account",
-            "reason", "reference",
+            "reason", "reference", "approval_required",
         ]
 
     def get_amount_naira(self, obj) -> str:
@@ -489,7 +658,7 @@ class PaymentPlanSerializer(serializers.ModelSerializer):
             "id", "document_number", "customer_id", "customer_code", "customer_name",
             "invoice_id", "invoice_number", "plan_status", "start_date", "frequency",
             "installment_count", "total_amount", "total_naira",
-            "scheduled_total", "settled_total", "outstanding_total",
+            "baseline_settled", "scheduled_total", "settled_total", "outstanding_total",
             "notes", "installments",
         ]
 
@@ -577,7 +746,7 @@ class CostCenterSerializer(serializers.ModelSerializer):
 class DimensionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Dimension
-        fields = ["id", "code", "name", "is_active"]
+        fields = ["id", "code", "name", "allowed_values", "is_active"]
 
 
 # --------------------------------------------------------------------------- #
@@ -586,9 +755,14 @@ class DimensionSerializer(serializers.ModelSerializer):
 
 class BankAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     gl_account = serializers.CharField(source="gl_account.code", read_only=True)
+    gl_account_name = serializers.CharField(source="gl_account.name", read_only=True)
     currency = serializers.CharField(source="currency_id", read_only=True, default=None)
+    book_balance = serializers.SerializerMethodField()
+    book_balance_naira = serializers.SerializerMethodField()
+    unreconciled_count = serializers.SerializerMethodField()
+    last_reconciled_at = serializers.SerializerMethodField()
 
-    # FLS: the funding account number is sensitive — only holders of the
+    # FLS: the funding account number is sensitive - only holders of the
     # sensitive grant see it; everyone else gets the record with it stripped.
     read_permissions = {
         "account_number": "finance.bankaccount.view_sensitive",
@@ -598,23 +772,147 @@ class BankAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         model = BankAccount
         fields = [
             "id", "name", "bank_name", "account_number",
-            "gl_account", "gl_account_id", "currency", "is_active",
+            "gl_account", "gl_account_name", "gl_account_id", "currency",
+            "is_active", "is_primary", "is_primary_collection",
+            "book_balance", "book_balance_naira", "unreconciled_count",
+            "last_reconciled_at",
         ]
+
+    def get_book_balance(self, obj):
+        from .banking import gl_account_balance
+        return gl_account_balance(obj.gl_account)
+
+    def get_book_balance_naira(self, obj):
+        from .banking import gl_account_balance
+        return format_naira(gl_account_balance(obj.gl_account))
+
+    def get_unreconciled_count(self, obj):
+        from .constants import BankLineStatus
+        return obj.statement_lines.filter(status=BankLineStatus.UNMATCHED).count()
+
+    def get_last_reconciled_at(self, obj):
+        last = obj.reconciliations.order_by("-created_at").values_list(
+            "created_at", flat=True).first()
+        return last
 
 
 class BankStatementLineSerializer(serializers.ModelSerializer):
     amount_naira = serializers.SerializerMethodField()
+    match_source_display = serializers.CharField(source="get_match_source_display", read_only=True)
+    matched_reference = serializers.SerializerMethodField()
+    # Journal lines paired to this statement line via a group (many-to-one) match;
+    # empty for a plain 1:1 match (which uses matched_line_id).
+    group_line_ids = serializers.SerializerMethodField()
+    can_delete = serializers.SerializerMethodField()
+    delete_block_reason = serializers.SerializerMethodField()
 
     class Meta:
         model = BankStatementLine
         fields = [
-            "id", "bank_account_id", "txn_date", "description", "reference",
-            "amount", "amount_naira", "status", "matched_line_id",
-            "adjusting_journal_id", "external_id", "reconciled_at",
+            "id", "bank_account_id", "statement_id", "txn_date", "description",
+            "reference", "amount", "amount_naira", "status", "matched_line_id",
+            "group_line_ids", "adjusting_journal_id", "match_source",
+            "match_source_display", "matched_reference", "external_id", "reconciled_at",
+            "can_delete", "delete_block_reason",
         ]
 
     def get_amount_naira(self, obj) -> str:
         return format_naira(obj.amount)
+
+    def get_group_line_ids(self, obj) -> list:
+        return list(obj.line_matches.values_list("journal_line_id", flat=True))
+
+    def get_matched_reference(self, obj):
+        """The document number of the matched journal entry (or adjusting entry)."""
+        if obj.adjusting_journal_id:
+            return obj.adjusting_journal.document_number
+        if obj.matched_line_id and obj.matched_line.entry_id:
+            return obj.matched_line.entry.document_number
+        return None
+
+    def get_can_delete(self, obj) -> bool:
+        from .banking import statement_line_delete_block_reason
+
+        return statement_line_delete_block_reason(obj) is None
+
+    def get_delete_block_reason(self, obj) -> str | None:
+        from .banking import statement_line_delete_block_reason
+
+        return statement_line_delete_block_reason(obj)
+
+
+class BankStatementSerializer(serializers.ModelSerializer):
+    line_count = serializers.IntegerField(read_only=True)
+    opening_balance_naira = serializers.SerializerMethodField()
+    closing_balance_naira = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    can_edit = serializers.SerializerMethodField()
+    edit_block_reason = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BankStatement
+        fields = [
+            "id", "statement_date", "period_label", "opening_balance",
+            "opening_balance_naira", "closing_balance", "closing_balance_naira",
+            "line_count", "status", "status_display", "can_edit", "edit_block_reason",
+        ]
+
+    def get_opening_balance_naira(self, obj) -> str:
+        return format_naira(obj.opening_balance)
+
+    def get_closing_balance_naira(self, obj) -> str:
+        return format_naira(obj.closing_balance)
+
+    def get_can_edit(self, obj) -> bool:
+        from .banking import statement_edit_block_reason
+
+        return statement_edit_block_reason(obj) is None
+
+    def get_edit_block_reason(self, obj) -> str | None:
+        from .banking import statement_edit_block_reason
+
+        return statement_edit_block_reason(obj)
+
+
+class BankStatementDetailSerializer(BankStatementSerializer):
+    lines = BankStatementLineSerializer(many=True, read_only=True)
+
+    class Meta(BankStatementSerializer.Meta):
+        fields = [*BankStatementSerializer.Meta.fields, "lines"]
+
+
+class BankReconciliationSerializer(serializers.ModelSerializer):
+    book_balance_naira = serializers.SerializerMethodField()
+    statement_balance_naira = serializers.SerializerMethodField()
+    difference_naira = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    performed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BankReconciliation
+        fields = [
+            "id", "as_of_date", "book_balance", "book_balance_naira",
+            "statement_balance", "statement_balance_naira", "difference",
+            "difference_naira", "matched_count", "status", "status_display",
+            "performed_by_name", "created_at",
+        ]
+
+    def get_book_balance_naira(self, obj) -> str:
+        return format_naira(obj.book_balance)
+
+    def get_statement_balance_naira(self, obj) -> str:
+        return format_naira(obj.statement_balance)
+
+    def get_difference_naira(self, obj) -> str:
+        return format_naira(obj.difference)
+
+    def get_performed_by_name(self, obj):
+        u = obj.performed_by
+        if not u:
+            return None
+        name = " ".join(filter(None, [
+            getattr(u, "first_name", ""), getattr(u, "last_name", "")])).strip()
+        return name or getattr(u, "email", None)
 
 
 # --------------------------------------------------------------------------- #
@@ -626,14 +924,28 @@ class ExpenseClaimLineSerializer(serializers.ModelSerializer):
     tax_code = serializers.CharField(source="tax_code.code", read_only=True, default=None)
     cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
     line_total = serializers.IntegerField(read_only=True)
+    receipt_name = serializers.SerializerMethodField()
+    receipt_url = serializers.SerializerMethodField()
 
     class Meta:
         model = ExpenseClaimLine
         fields = [
             "id", "line_no", "description", "expense_account", "quantity",
             "unit_price", "tax_code", "net_amount", "tax_amount", "line_total",
-            "cost_center",
+            "cost_center", "receipt_name", "receipt_url",
         ]
+
+    def get_receipt_name(self, obj):
+        if not obj.receipt:
+            return None
+        return obj.receipt.name.rsplit("/", 1)[-1]
+
+    def get_receipt_url(self, obj):
+        if not obj.receipt:
+            return None
+        request = self.context.get("request")
+        url = obj.receipt.url
+        return request.build_absolute_uri(url) if request else url
 
 
 class ExpenseClaimSerializer(serializers.ModelSerializer):
@@ -706,6 +1018,7 @@ class PettyCashVoucherLineSerializer(serializers.ModelSerializer):
 class PettyCashVoucherSerializer(serializers.ModelSerializer):
     lines = PettyCashVoucherLineSerializer(many=True, read_only=True)
     total_naira = serializers.SerializerMethodField()
+    expense_account = serializers.SerializerMethodField()
 
     class Meta:
         model = PettyCashVoucher
@@ -713,11 +1026,20 @@ class PettyCashVoucherSerializer(serializers.ModelSerializer):
             "id", "document_number", "fund_id", "voucher_date", "payee",
             "spent_by_id", "narration", "reference", "status",
             "subtotal", "tax_total", "total", "total_naira",
-            "journal_id", "lines",
+            "journal_id", "lines", "expense_account",
         ]
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total)
+
+    def get_expense_account(self, obj):
+        """The voucher's expense category - the first line's account (code · name)."""
+        lines = list(obj.lines.all()[:2])
+        if not lines:
+            return None
+        acc = lines[0].expense_account
+        label = f"{acc.code} · {acc.name}"
+        return f"{label} +{len(lines) - 1}" if len(lines) > 1 else label
 
 
 # --------------------------------------------------------------------------- #
@@ -744,6 +1066,8 @@ class TaxFilingSerializer(serializers.ModelSerializer):
     obligation_code = serializers.CharField(source="obligation.code", read_only=True)
     obligation_type = serializers.CharField(source="obligation.obligation_type", read_only=True)
     authority_name = serializers.CharField(source="obligation.authority_name", read_only=True)
+    liability_account = serializers.CharField(source="obligation.liability_account.code", read_only=True, default=None)
+    liability_account_name = serializers.CharField(source="obligation.liability_account.name", read_only=True, default=None)
     balance_due = serializers.IntegerField(read_only=True)
     amount_due_naira = serializers.SerializerMethodField()
 
@@ -751,7 +1075,7 @@ class TaxFilingSerializer(serializers.ModelSerializer):
         model = TaxFiling
         fields = [
             "id", "document_number", "obligation_id", "obligation_code",
-            "obligation_type", "authority_name",
+            "obligation_type", "authority_name", "liability_account", "liability_account_name",
             "period_start", "period_end", "due_date",
             "filing_status", "status",
             "gross_liability", "recoverable_amount", "adjustment_amount",
@@ -772,7 +1096,7 @@ class TaxFilingSerializer(serializers.ModelSerializer):
 class PayrollLineSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
 
-    # FLS: per-employee names and pay figures are sensitive — only holders of
+    # FLS: per-employee names and pay figures are sensitive - only holders of
     # the payroll sensitive grant see them; everyone else gets the line with
     # these fields stripped.
     read_permissions = {
@@ -781,6 +1105,7 @@ class PayrollLineSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         "paye_amount": "finance.payrollrun.view_sensitive",
         "pension_amount": "finance.payrollrun.view_sensitive",
         "net_amount": "finance.payrollrun.view_sensitive",
+        "components": "finance.payrollrun.view_sensitive",
     }
 
     class Meta:
@@ -788,13 +1113,24 @@ class PayrollLineSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         fields = [
             "id", "line_no", "employee_id", "employee_name",
             "gross_amount", "paye_amount", "pension_amount", "net_amount",
-            "cost_center",
+            "components", "cost_center",
         ]
 
 
 class PayrollRunSerializer(serializers.ModelSerializer):
     lines = PayrollLineSerializer(many=True, read_only=True)
     net_total_naira = serializers.SerializerMethodField()
+    # Which site the run covers. Under PER_BRANCH a school raises one run per
+    # branch per pay date, so without this the list shows several rows with the
+    # same date, the same period label and nothing to tell them apart. Null
+    # means a central run over the whole entity, which is what every run was
+    # before per-branch payroll existed. Not FLS-stripped: a site is not a pay
+    # figure, and the officer who has to pick the right run needs to read it.
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+    # Statutory liability accounts the run credited (set on post) - let the FE match the
+    # real outstanding balance (trial balance) to show remittance status honestly.
+    paye_payable_account = serializers.CharField(source="paye_payable_account.code", read_only=True, default=None)
+    pension_payable_account = serializers.CharField(source="pension_payable_account.code", read_only=True, default=None)
 
     class Meta:
         model = PayrollRun
@@ -802,11 +1138,105 @@ class PayrollRunSerializer(serializers.ModelSerializer):
             "id", "document_number", "pay_date", "period_label", "narration",
             "run_status", "status", "gross_total", "paye_total", "pension_total",
             "net_total", "net_total_naira", "bank_account_id",
+            "branch_id", "branch_name",
+            "paye_payable_account", "paye_payable_account_id",
+            "pension_payable_account", "pension_payable_account_id",
             "journal_id", "disbursement_journal_id", "lines",
         ]
 
     def get_net_total_naira(self, obj) -> str:
         return format_naira(obj.net_total)
+
+
+class SalaryComponentSerializer(serializers.ModelSerializer):
+    """A structure line. Not FLS-stripped - a structure is configuration (e.g. 'Basic =
+    40% of gross'), not any one person's pay."""
+
+    class Meta:
+        model = SalaryComponent
+        fields = [
+            "id", "name", "kind", "calc_method", "rate_bps", "amount",
+            "is_basic", "statutory_type", "sequence",
+        ]
+
+
+class SalaryStructureSerializer(serializers.ModelSerializer):
+    components = SalaryComponentSerializer(many=True, read_only=True)
+    employee_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SalaryStructure
+        fields = [
+            "id", "name", "description", "is_active", "components", "employee_count",
+        ]
+
+    def get_employee_count(self, obj) -> int:
+        # annotated by the list view; fall back to a count for the detail view.
+        cached = getattr(obj, "employee_count_annot", None)
+        return cached if cached is not None else obj.employee_salaries.count()
+
+
+class EmployeeSalarySerializer(FieldSecurityMixin, serializers.ModelSerializer):
+    cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
+    structure_name = serializers.CharField(source="structure.name", read_only=True, default=None)
+    # Not FLS-stripped: which site somebody works at is not a pay figure, and it has
+    # to be readable by whoever is assigning branches before a school can switch to
+    # per-branch payroll. ``branch_name`` is null for an unassigned row, which is
+    # the state the frontend filters on to find who is still blocking the switch.
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+    # PAYE/pension/net/components are derived when a structure is assigned, else the stored
+    # flat figures. Computed once per row (memoised) to avoid re-walking the components.
+    paye_amount = serializers.SerializerMethodField()
+    pension_amount = serializers.SerializerMethodField()
+    net_amount = serializers.SerializerMethodField()
+    components = serializers.SerializerMethodField()
+
+    # FLS: the pay figures are sensitive - names stay visible (the roster), but the
+    # amounts are stripped unless the caller holds the sensitive grant.
+    # Note: field-level "see individual pay figures" stays keyed on the single
+    # finance.payrollrun.view_sensitive grant (NOT finance.salary.*, which gates the
+    # roster/structure endpoints themselves), so one key governs pay-figure visibility.
+    read_permissions = {
+        "gross_amount": "finance.payrollrun.view_sensitive",
+        "paye_amount": "finance.payrollrun.view_sensitive",
+        "pension_amount": "finance.payrollrun.view_sensitive",
+        "net_amount": "finance.payrollrun.view_sensitive",
+        "components": "finance.payrollrun.view_sensitive",
+    }
+
+    class Meta:
+        model = EmployeeSalary
+        fields = [
+            "id", "name", "branch_id", "branch_name", "structure_id", "structure_name",
+            "gross_amount", "paye_amount", "pension_amount", "net_amount", "components",
+            "cost_center", "is_active",
+        ]
+
+    def _derived(self, obj) -> dict:
+        cache = getattr(obj, "_derived_cache", None)
+        if cache is None:
+            from .payroll import apply_structure
+            if obj.structure_id:
+                cache = apply_structure(obj.gross_amount, obj.structure)
+            else:
+                cache = {
+                    "paye": obj.paye_amount, "pension": obj.pension_amount,
+                    "net": obj.net_amount, "components": [],
+                }
+            obj._derived_cache = cache
+        return cache
+
+    def get_paye_amount(self, obj) -> int:
+        return self._derived(obj)["paye"]
+
+    def get_pension_amount(self, obj) -> int:
+        return self._derived(obj)["pension"]
+
+    def get_net_amount(self, obj) -> int:
+        return self._derived(obj)["net"]
+
+    def get_components(self, obj) -> list:
+        return self._derived(obj)["components"]
 
 
 # --------------------------------------------------------------------------- #
@@ -830,7 +1260,7 @@ class BudgetSerializer(serializers.ModelSerializer):
     class Meta:
         model = Budget
         fields = [
-            "id", "name", "fiscal_year", "fiscal_year_id", "status",
+            "id", "code", "name", "fiscal_year", "fiscal_year_id", "status",
             "is_locked", "approved_at", "lines",
         ]
 
@@ -851,14 +1281,17 @@ class FixedAssetSerializer(serializers.ModelSerializer):
     net_book_value = serializers.IntegerField(read_only=True)
     depreciable_base = serializers.IntegerField(read_only=True)
     cost_naira = serializers.SerializerMethodField()
+    category_display = serializers.CharField(source="get_category_display", read_only=True)
+    method_display = serializers.CharField(source="get_method_display", read_only=True)
 
     class Meta:
         model = FixedAsset
         fields = [
-            "id", "document_number", "name", "asset_code", "acquisition_date",
-            "cost", "cost_naira", "salvage_value", "useful_life_months", "method",
-            "asset_status", "status", "accumulated_depreciation", "net_book_value",
-            "depreciable_base", "acquisition_journal_id", "schedule",
+            "id", "document_number", "name", "asset_code", "category", "category_display",
+            "acquisition_date", "cost", "cost_naira", "salvage_value", "useful_life_months",
+            "method", "method_display", "asset_status", "status", "accumulated_depreciation", "net_book_value",
+            "depreciable_base", "acquisition_journal_id", "disposal_date",
+            "disposal_journal_id", "schedule",
         ]
 
     def get_cost_naira(self, obj) -> str:
@@ -871,10 +1304,63 @@ class FixedAssetSerializer(serializers.ModelSerializer):
 
 class FinanceAuditLogSerializer(serializers.ModelSerializer):
     actor = serializers.CharField(source="actor.email", read_only=True, default=None)
+    action_display = serializers.CharField(source="get_action_display", read_only=True)
 
     class Meta:
         model = FinanceAuditLog
+        # `before`/`after` are the human-meaningful field-level snapshot the UI
+        # summarises ("N fields changed"); `metadata` is an internal bag (ids,
+        # request context) with no reader value - deliberately NOT exposed.
         fields = [
-            "id", "action", "status", "actor", "target_type", "target_id",
-            "document_number", "message", "metadata", "created_at",
+            "id", "action", "action_display", "status", "actor", "target_type",
+            "target_id", "document_number", "message", "before", "after", "created_at",
         ]
+
+
+# --------------------------------------------------------------------------- #
+# Customer document email deliveries                                          #
+# --------------------------------------------------------------------------- #
+
+class FinanceDocumentDeliverySerializer(serializers.ModelSerializer):
+    """One attempt to email a customer document.
+
+    ``recipients`` and ``bcc`` are the addresses the send actually used, which is the
+    point of the history: a user asking "did this reach them" needs the address, not
+    just a status. They are the customer's own billing address and the finance CC, so
+    nothing here discloses a third party. ``notification_ids`` stays internal - it is a
+    correlation handle for support, with no reader value.
+    """
+
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    customer_code = serializers.CharField(source="customer.code", read_only=True)
+    document_type_display = serializers.CharField(source="get_document_type_display", read_only=True)
+    source_display = serializers.CharField(source="get_source_display", read_only=True)
+    requested_by_name = serializers.SerializerMethodField()
+    recipient_count = serializers.SerializerMethodField()
+    can_retry = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FinanceDocumentDelivery
+        fields = [
+            "id", "customer_id", "customer_code", "customer_name",
+            "document_type", "document_type_display", "document_id", "document_number",
+            "period_start", "period_end", "source", "source_display", "status",
+            "requested_by_name", "recipients", "recipient_count", "bcc", "note",
+            "queued_at", "sent_at", "failure_reason", "can_retry", "created_at",
+        ]
+
+    def get_requested_by_name(self, obj) -> str:
+        user = obj.requested_by
+        if user is None:
+            # Automatic sends have no actor. Saying so beats an empty cell that
+            # reads as missing data.
+            return "System"
+        return (getattr(user, "full_name", "") or getattr(user, "email", "")).strip()
+
+    def get_recipient_count(self, obj) -> int:
+        return len(obj.recipients or [])
+
+    def get_can_retry(self, obj) -> bool:
+        from .constants import FinanceDeliveryStatus
+
+        return obj.status == FinanceDeliveryStatus.FAILED

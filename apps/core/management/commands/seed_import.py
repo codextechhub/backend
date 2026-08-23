@@ -8,7 +8,7 @@ Purpose
 Creates or updates the canonical ImportTemplate records and their
 ImportTemplateColumn children for every supported dataset type.
 
-This command is idempotent — running it multiple times is safe.
+This command is idempotent - running it multiple times is safe.
 Existing templates are matched by `code` and updated in place.
 Existing columns are matched by (template, column_name) and updated
 in place. Nothing is deleted automatically; retired templates must be
@@ -81,7 +81,7 @@ TEMPLATES: list[dict] = [
             ),
             "instructions": (
                 "Fill one school per row. School Slug must be lowercase letters and "
-                "hyphens only — no spaces or special characters. Example: greenfield-academy. "
+                "hyphens only - no spaces or special characters. Example: greenfield-academy. "
                 "Slugs cannot match reserved system words (admin, api, www, etc.). "
                 "Ownership Type must be one of: PUBLIC, PRIVATE, FAITH_BASED, NGO. "
                 "Term Structure must be one of: 3_TERMS, 2_SEMESTERS. "
@@ -105,7 +105,7 @@ TEMPLATES: list[dict] = [
                 "School Admin Email":    "admin@greenfieldacademy.edu.ng",
                 "School Admin Phone":    "08051234567",
                 "School Admin Role":     "IT Head",
-                "Branch Name":           "Greenfield Academy — Main Campus",
+                "Branch Name":           "Greenfield Academy - Main Branch",
                 "Branch Type":           "Combined",
                 "Branch Address":        "14 Admiralty Way, Lekki Phase 1, Lagos",
                 "Branch Email":          "main@greenfieldacademy.edu.ng",
@@ -314,12 +314,12 @@ TEMPLATES: list[dict] = [
                 "column_name":   "Branch Name",
                 "target_field":  "branch_name",
                 "display_name":  "Branch Name",
-                "help_text":     "Name of the school's initial main branch. Defaults to '<School Name> — Main Campus' if blank.",
+                "help_text":     "Name of the school's initial main branch. Defaults to '<School Name> - Main Branch' if blank.",
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   False,
                 "is_unique":     False,
                 "max_length":    255,
-                "sample_value":  "Greenfield Academy — Main Campus",
+                "sample_value":  "Greenfield Academy - Main Branch",
                 "column_order":  15,
             },
             {
@@ -424,7 +424,7 @@ TEMPLATES: list[dict] = [
                 "column_name":   "Branch Admin Role",
                 "target_field":  "branch_admin_role",
                 "display_name":  "Branch Admin Role",
-                "help_text":     "Job title of the branch admin. Example: Head Teacher, Campus Director. Defaults to Head Teacher.",
+                "help_text":     "Job title of the branch admin. Example: Head Teacher, Branch Director. Defaults to Head Teacher.",
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   False,
                 "is_unique":     False,
@@ -510,7 +510,7 @@ TEMPLATES: list[dict] = [
         # Branches
         # -----------------------------------------------------------------------
         # Covers: identity, type, contact, location, status, and branch admin.
-        # School Slug cross-references an existing School row —
+        # School Slug cross-references an existing School row -
         # so the Schools template must be imported first.
         #
         # Branch codes are auto-allocated by Branch.save(), so no Code column
@@ -523,21 +523,21 @@ TEMPLATES: list[dict] = [
             "status": TemplateStatusChoices.ACTIVE,
             "default_file_format": FileFormatChoices.CSV,
             "description": (
-                "Template for bulk-creating Branch (campus) records for existing schools. "
+                "Template for bulk-creating Branch records for existing schools. "
                 "Each row defines one branch. The School Slug column must match a slug "
                 "that already exists in the system. Import the Schools template first."
             ),
             "instructions": (
                 "Fill one branch per row. School Slug must exactly match an existing "
-                "school slug — check spelling carefully. "
+                "school slug - check spelling carefully. "
                 "Only one branch per school may have Is Main Branch set to TRUE. "
-                "Branch codes are assigned automatically — do not add a code column. "
+                "Branch codes are assigned automatically - do not add a code column. "
                 "Date columns must follow YYYY-MM-DD format."
             ),
             "allow_sample_row": True,
             "sample_row_data": {
                 "School Slug":     "greenfield-academy",
-                "Branch Name":          "Lekki Campus",
+                "Branch Name":          "Lekki Branch",
                 "Branch Type":          "Secondary",
                 "Is Main Branch":       "TRUE",
                 "Address":              "14 Admiralty Way, Lekki Phase 1, Lagos",
@@ -582,12 +582,12 @@ TEMPLATES: list[dict] = [
                 "column_name":   "Branch Name",
                 "target_field":  "name",
                 "display_name":  "Branch Name",
-                "help_text":     "Display name of the branch. Example: Lekki Campus, Ajah Campus.",
+                "help_text":     "Display name of the branch. Example: Lekki Branch, Ajah Branch.",
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   True,
                 "is_unique":     False,
                 "max_length":    255,
-                "sample_value":  "Lekki Campus",
+                "sample_value":  "Lekki Branch",
                 "column_order":  2,
             },
             {
@@ -610,7 +610,7 @@ TEMPLATES: list[dict] = [
                 "target_field":  "is_main",
                 "display_name":  "Is Main Branch",
                 "help_text": (
-                    "Set to TRUE for the primary campus. Only one branch per school "
+                    "Set to TRUE for the main branch. Only one branch per school "
                     "may be TRUE. All others must be FALSE."
                 ),
                 "data_type":     TemplateColumnDataTypeChoices.BOOLEAN,
@@ -627,7 +627,7 @@ TEMPLATES: list[dict] = [
                 "column_name":   "Address",
                 "target_field":  "address",
                 "display_name":  "Branch Address",
-                "help_text":     "Physical address of this campus.",
+                "help_text":     "Physical address of this branch.",
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   False,
                 "is_unique":     False,
@@ -730,8 +730,8 @@ TEMPLATES: list[dict] = [
                 "target_field":  "branch_admin_role",
                 "display_name":  "Branch Admin Role Title",
                 "help_text": (
-                    "Job title of the branch admin within this campus. "
-                    "Example: Head Teacher, Campus Director, Principal."
+                    "Job title of the branch admin at this branch. "
+                    "Example: Head Teacher, Branch Director, Principal."
                 ),
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   False,
@@ -742,7 +742,251 @@ TEMPLATES: list[dict] = [
                 "column_order":  13,
             },
         ],
-    }
+    },
+
+    {
+        # -----------------------------------------------------------------------
+        # CX Users (CodeX platform staff)
+        # -----------------------------------------------------------------------
+        # One row = one CodeX platform staff member. Each is created through the
+        # normal flow (submitted for approval, invited on approval) by
+        # import_cx_users_row - never a draft. Platform-scoped: no school column.
+        # -----------------------------------------------------------------------
+        "template": {
+            "code": "cx_users_master_v1",
+            "name": "CX Users Master Import",
+            "dataset_type": DatasetTypeChoices.CX_USERS,
+            "status": TemplateStatusChoices.ACTIVE,
+            "default_file_format": FileFormatChoices.CSV,
+            "description": (
+                "Template for bulk-adding CodeX platform staff. Each row is created "
+                "and submitted for approval, then appears under CX Users."
+            ),
+            "instructions": (
+                "Fill one staff member per row. First Name, Last Name, Email, "
+                "Role Key and Position are required; the rest are optional. Role Key is the "
+                "role template key (e.g. xvs_platform_admin). Gender is MALE or "
+                "FEMALE. Employment Type is one of FULL_TIME, PART_TIME, CONTRACT, "
+                "INTERN. Position is an active organogram seat id or code; its title "
+                "and organisation hierarchy populate the employment profile. Date "
+                "Joined is YYYY-MM-DD."
+            ),
+            "allow_sample_row": True,
+            "sample_row_data": {
+                "First Name":       "Ada",
+                "Last Name":        "Obi",
+                "Email":            "ada.obi@codexng.com",
+                "Role Key":         "xvs_platform_admin",
+                "Phone":            "+2348012345678",
+                "Gender":           "FEMALE",
+                "Employment Type":  "FULL_TIME",
+                "Position":         "ENG-MGR",
+                "Date Joined":      "2026-07-20",
+            },
+            "validation_rules": {"allow_duplicate_emails": False},
+            "is_download_enabled": True,
+        },
+        "columns": [
+            {
+                "column_name":  "First Name", "target_field": "first_name",
+                "display_name": "First Name", "help_text": "The hire's first name.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True, "max_length": 100,
+                "sample_value": "Ada", "column_order": 1,
+            },
+            {
+                "column_name":  "Last Name", "target_field": "last_name",
+                "display_name": "Last Name", "help_text": "The hire's last name.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True, "max_length": 100,
+                "sample_value": "Obi", "column_order": 2,
+            },
+            {
+                "column_name":  "Email", "target_field": "email",
+                "display_name": "Email", "help_text": "Work email - must be unique across the platform.",
+                "data_type": TemplateColumnDataTypeChoices.EMAIL,
+                "is_required": True, "is_unique": True,
+                "sample_value": "ada.obi@codexng.com", "column_order": 3,
+            },
+            {
+                "column_name":  "Role Key", "target_field": "role",
+                "display_name": "Role Key",
+                "help_text": "Role template key to assign, e.g. xvs_platform_admin.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True, "max_length": 120,
+                "sample_value": "xvs_platform_admin", "column_order": 4,
+            },
+            {
+                "column_name":  "Phone", "target_field": "phone",
+                "display_name": "Phone", "help_text": "Optional phone number.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False, "max_length": 32,
+                "sample_value": "+2348012345678", "column_order": 5,
+            },
+            {
+                "column_name":  "Gender", "target_field": "gender",
+                "display_name": "Gender", "help_text": "MALE or FEMALE.",
+                "data_type": TemplateColumnDataTypeChoices.CHOICE,
+                "is_required": False, "allowed_values": ["MALE", "FEMALE"],
+                "sample_value": "FEMALE", "column_order": 6,
+            },
+            {
+                "column_name":  "Employment Type", "target_field": "employment_type",
+                "display_name": "Employment Type",
+                "help_text": "One of FULL_TIME, PART_TIME, CONTRACT, INTERN.",
+                "data_type": TemplateColumnDataTypeChoices.CHOICE,
+                "is_required": False,
+                "allowed_values": ["FULL_TIME", "PART_TIME", "CONTRACT", "INTERN"],
+                "sample_value": "FULL_TIME", "column_order": 7,
+            },
+            {
+                "column_name":  "Position", "target_field": "position",
+                "display_name": "Position",
+                "help_text": (
+                    "Required active organogram seat id or code. Its title becomes "
+                    "the job title; division, department, team and reporting lines "
+                    "are derived from its organisation node."
+                ),
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True, "max_length": 80,
+                "sample_value": "ENG-MGR", "column_order": 8,
+            },
+            {
+                "column_name":  "Date Joined", "target_field": "date_joined",
+                "display_name": "Date Joined", "help_text": "Optional YYYY-MM-DD.",
+                "data_type": TemplateColumnDataTypeChoices.DATE,
+                "is_required": False,
+                "sample_value": "2026-07-20", "column_order": 9,
+            },
+        ],
+    },
+
+    {
+        # -----------------------------------------------------------------------
+        # Bank statements
+        # -----------------------------------------------------------------------
+        # One file = one statement period for the bank account selected before the
+        # wizard opens. Account and opening/closing balances remain typed finance
+        # context, never repeated or trusted from each spreadsheet row.
+        # -----------------------------------------------------------------------
+        "template": {
+            "code": "bank_statements_v1",
+            "name": "Bank Statement Import",
+            "dataset_type": DatasetTypeChoices.BANK_STATEMENTS,
+            "status": TemplateStatusChoices.ACTIVE,
+            "default_file_format": FileFormatChoices.XLSX,
+            "description": (
+                "Template for importing one chronological bank-statement period "
+                "into the finance reconciliation workbench."
+            ),
+            "instructions": (
+                "Keep the rows oldest to newest. Enter a positive value in exactly "
+                "one of Money In or Money Out on every row. Amounts are entered in "
+                "major currency units (for example 1250.50, not kobo). Transaction "
+                "ID should be the bank's stable unique reference when available. "
+                "Balance is optional, but if used it must be filled on every row. "
+                "The wizard verifies duplicate transactions, every running balance, "
+                "and opening balance plus net movement equals closing balance before publish. "
+                "The included sample assumes an opening balance of 10000.00 and a "
+                "closing balance of 11250.00; replace it with the bank's actual rows."
+            ),
+            "allow_sample_row": True,
+            "sample_row_data": {
+                "Transaction Date": "2026-07-01",
+                "Description": "Customer payment",
+                "Reference": "BANK-REF-0001",
+                "Money In": "1250.00",
+                "Money Out": "",
+                "Transaction ID": "TXN-000001",
+                "Balance": "11250.00",
+            },
+            "validation_rules": {
+                "min_rows": 1,
+                "max_rows": 50_000,
+                "allowed_file_formats": ["csv", "xlsx"],
+            },
+            "is_download_enabled": True,
+        },
+        "columns": [
+            {
+                "column_name": "Transaction Date",
+                "target_field": "txn_date",
+                "display_name": "Transaction Date",
+                "help_text": "Bank transaction/value date. Rows must be oldest to newest.",
+                "data_type": TemplateColumnDataTypeChoices.DATE,
+                "is_required": True,
+                "sample_value": "2026-07-01",
+                "column_order": 1,
+            },
+            {
+                "column_name": "Description",
+                "target_field": "description",
+                "display_name": "Description",
+                "help_text": "Narration shown on the bank statement.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "max_length": 255,
+                "sample_value": "POS settlement",
+                "column_order": 2,
+            },
+            {
+                "column_name": "Reference",
+                "target_field": "reference",
+                "display_name": "Reference",
+                "help_text": "Human-readable bank or payment reference.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "max_length": 64,
+                "sample_value": "GTB-000123",
+                "column_order": 3,
+            },
+            {
+                "column_name": "Money In",
+                "target_field": "money_in",
+                "display_name": "Money In",
+                "help_text": "Positive inflow in major currency units; leave blank for outflows.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "max_length": 32,
+                "sample_value": "150000.00",
+                "column_order": 4,
+            },
+            {
+                "column_name": "Money Out",
+                "target_field": "money_out",
+                "display_name": "Money Out",
+                "help_text": "Positive outflow in major currency units; leave blank for inflows.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "max_length": 32,
+                "sample_value": "2500.00",
+                "column_order": 5,
+            },
+            {
+                "column_name": "Transaction ID",
+                "target_field": "external_id",
+                "display_name": "Transaction ID",
+                "help_text": "Stable unique id supplied by the bank, when available.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "is_unique": True,
+                "max_length": 128,
+                "sample_value": "918273645",
+                "column_order": 6,
+            },
+            {
+                "column_name": "Balance",
+                "target_field": "balance",
+                "display_name": "Balance",
+                "help_text": "Optional running balance after this transaction.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "max_length": 32,
+                "sample_value": "2500000.00",
+                "column_order": 7,
+            },
+        ],
+    },
 ]
 
 
@@ -781,7 +1025,7 @@ class Command(BaseCommand):
         dry_run: bool = options["dry_run"]
 
         if dry_run:
-            self.stdout.write(self.style.WARNING("DRY RUN — no changes will be saved.\n"))
+            self.stdout.write(self.style.WARNING("DRY RUN - no changes will be saved.\n"))
 
         # Filter down to the requested dataset type if one was given
         entries_to_process = (

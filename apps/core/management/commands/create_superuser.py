@@ -1,5 +1,5 @@
 # vs_users/management/commands/create_superuser.py
-# ENHANCED VERSION — with optional defaults for quick bootstrap
+# ENHANCED VERSION - with optional defaults for quick bootstrap
 #
 # Usage with defaults:
 #   python manage.py create_superuser
@@ -12,16 +12,71 @@
 #     --first-name Custom \
 #     --last-name Admin
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from vs_tenants.references import find_tenant
+from vs_user.email_normalization import normalize_email
 from vs_user.models import User
+from vs_user.services.email_availability import email_refusal
 from vs_user.services.audit import log_auth_event
 from vs_user.models import AuthEventLog
 from vs_rbac.models import (
-    PlatformRoleTemplate,
-    PlatformUserRoleAssignment,
+    TenantRoleTemplate,
+    TenantUserRoleAssignment,
 )
+
+
+def _codex_tenant():
+    """Return the codex platform tenant, or None if migrations have not run."""
+    from vs_tenants.models import Tenant
+    return Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
+
+
+def _resolve_tenant(ref):
+    """Turn a ``--tenant_id`` argument into a Tenant, or None when not given."""
+    if ref in (None, ""):
+        return None
+    tenant = find_tenant(ref)
+    if tenant is None:
+        raise CommandError(f"No tenant found for --tenant_id {ref!r} (id or slug).")
+    return tenant
+
+
+def _assign_super_admin(user):
+    """Grant the codex xvs_super_admin tenant role to *user* (idempotent).
+
+    Returns True on success, False if the codex tenant / role is missing.
+    """
+    codex = _codex_tenant()
+    if codex is None:
+        return False
+    role, _ = TenantRoleTemplate.objects.get_or_create(
+        tenant=codex,
+        key="xvs_super_admin",
+        defaults={
+            "name": "XVS Super Admin",
+            "status": "ACTIVE",
+            "is_system_role": True,
+            "is_locked": True,
+        },
+    )
+    assignment = TenantUserRoleAssignment.objects.filter(
+        tenant=codex, user=user, role=role,
+    ).first()
+    if assignment is None:
+        TenantUserRoleAssignment.objects.create(
+            tenant=codex, user=user, role=role,
+            assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+            assigned_by=None,
+        )
+        return True
+    if assignment.assignment_status == TenantUserRoleAssignment.AssignmentStatus.REVOKED:
+        assignment.assignment_status = TenantUserRoleAssignment.AssignmentStatus.ACTIVE
+        assignment.revoked_at = None
+        assignment.revoked_by = None
+        assignment.save(update_fields=["assignment_status", "revoked_at", "revoked_by", "updated_at"])
+    return True
 
 
 class Command(BaseCommand):
@@ -92,7 +147,17 @@ class Command(BaseCommand):
         parser.add_argument(
             '--assign-role',
             action='store_true',
-            help='Skip user creation — just assign Vision Super Admin role to an existing user (use with --email)',
+            help='Skip user creation - just assign Vision Super Admin role to an existing user (use with --email)',
+        )
+        parser.add_argument(
+            '--tenant_id',
+            metavar='TENANT',
+            help=(
+                'Tenant that owns the account to act on: its numeric id or its '
+                'slug. Only meaningful with --assign-role, and only needed when '
+                'the address exists at more than one tenant. Creation always '
+                'targets the platform (codex) tenant.'
+            ),
         )
     
     @transaction.atomic
@@ -114,18 +179,23 @@ class Command(BaseCommand):
             phone      = self._prompt('Phone (optional)', '')
             password   = self._prompt_password()
         else:
-            email      = options['email'].strip().lower()
+            email      = options['email']
             password   = options['password']
             first_name = options['first_name'].strip()
             last_name  = options['last_name'].strip()
             phone      = options['phone'].strip()
-        
+
+        # Both branches, not just the non-interactive one: the prompt used to
+        # hand its answer through unfolded, so an operator typing 'Admin@...'
+        # got past the duplicate check below and created a second account.
+        email = normalize_email(email)
+
         force = options['force']
         
         # ── Display Configuration ─────────────────────────────────────────────
         
         self.stdout.write('\n' + '═' * 60)
-        self.stdout.write(self.style.MIGRATE_HEADING('  CodeX Vision — Superuser Creation'))
+        self.stdout.write(self.style.MIGRATE_HEADING('  CodeX Vision - Superuser Creation'))
         self.stdout.write('═' * 60 + '\n')
         
         self.stdout.write(self.style.WARNING('Creating superuser with the following details:\n'))
@@ -137,12 +207,22 @@ class Command(BaseCommand):
         # ── Validation ────────────────────────────────────────────────────────
         
         existing_count, user_exist, len_pass = None, None, None
-        # Check if Vision Staff already exists (unless --force is used)
+        # Check if platform-tenant staff already exist (unless --force is used).
         if not force:
-            existing_count = User.objects.filter(user_type=User.UserType.CX_STAFF).count()
+            existing_count = User.objects.filter(tenant__kind='PLATFORM').count()
         
-        # Check for duplicate email
-        if User.objects.filter(email__iexact=email).exists():
+        # Check for duplicate email, IN THE TENANT this account will belong to.
+        # This command only ever mints CX staff on the platform (codex) tenant,
+        # so that - not the platform as a whole - is where the address has to
+        # be free. Phase 0 settled that a CX staff member may also be a parent
+        # at a school that uses the product: admin@codexng.com existing at
+        # Bright Star must not block the bootstrap superuser.
+        #
+        # A codex tenant that does not exist yet cannot hold the address, so
+        # the fall-back to None is the honest answer, not a silent skip: the
+        # transitional cross-tenant guard in User.save still refuses the pair
+        # while sign-in does not name its tenant.
+        if email_refusal(email, tenant=_codex_tenant()):
             user_exist = True
         
         # Validate password length
@@ -171,41 +251,33 @@ class Command(BaseCommand):
             first_name=first_name,
             last_name=last_name,
             phone=phone,
-            user_type=User.UserType.CX_STAFF,
+            # Named, not derived. The platform tenant used to be filled in by
+            # User._derive_tenant() off a CX_STAFF persona - which was the
+            # answer arriving back where it started. A caller minting platform
+            # staff says so by naming the platform tenant.
+            tenant=_codex_tenant(),
             status=User.Status.ACTIVE,
             is_active=True,
             is_staff=True,      # Django admin access
             is_superuser=True,  # Django admin superuser permissions
-            school=None,        # Vision Staff have no school assignment
             branch=None,        # Vision Staff have no branch assignment
             invited_by=None,    # Self-created (bootstrap account)
         )
         
-        # ── Assign XVS Super Admin role ───────────────────────────────────────
-        try:
-            super_admin_role = PlatformRoleTemplate.objects.get(id='xvs_super_admin')
-            PlatformUserRoleAssignment.objects.get_or_create(
-                user=user,
-                role=super_admin_role,
-                defaults={
-                    'assignment_status': PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
-                    'assigned_by': None,
-                },
-            )
-        except PlatformRoleTemplate.DoesNotExist:
+        # ── Assign XVS Super Admin role (codex tenant) ────────────────────────
+        if not _assign_super_admin(user):
             self.stdout.write(self.style.WARNING(
-                "  ⚠️  'xvs_super_admin' platform role not found."
+                "  ⚠️  Codex tenant / 'xvs_super_admin' role not found - run migrations first."
             ))
 
         # ── Audit Log ─────────────────────────────────────────────────────────
         log_auth_event(
             actor=None,
             subject=user,
-            school=None,
+            tenant=user.tenant,
             event=AuthEventLog.Event.USER_CREATED,
             metadata={
                 'bootstrap': True,
-                'user_type': User.UserType.CX_STAFF,
                 'is_superuser': True,
                 'created_via': 'management_command',
                 'used_defaults': not options['interactive'],
@@ -221,7 +293,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.MIGRATE_LABEL('Account Details:'))
         self.stdout.write(f'  Email:      {user.email}')
         self.stdout.write(f'  Name:       {user.full_name}')
-        self.stdout.write(f'  User Type:  {user.user_type}')
+        self.stdout.write(f'  Tenant:     {user.tenant.slug} ({user.tenant.kind})')
         self.stdout.write(f'  Status:     {user.status}')
         self.stdout.write(f'  Role:       XVS Super Admin (can create permissions on onset)')
         self.stdout.write(f'  ID:         {user.id}')
@@ -248,87 +320,67 @@ class Command(BaseCommand):
     # ── Helper Methods ────────────────────────────────────────────────────────
 
     def _bootstrap_permission_creation_capability(self):
-        """Ensure the platform roles exist and carry the full platform permission set.
+        """Ensure the codex platform roles exist and carry the full platform set.
 
-        Creates the xvs_super_admin and xvs_platform_admin role templates, then
-        delegates to ``seed_platform_permissions`` — the single source of truth
+        Delegates to ``seed_platform_permissions`` - the single source of truth
         for the platform permission keys (organogram, schools, audit, …) and
-        their grants. Keeping the keys in one place means a resource wired into
-        views can never again be missed by the seed.
+        their grants. That command idempotently get_or_creates the codex-tenant
+        ``xvs_super_admin`` / ``xvs_platform_admin`` roles (required by
+        ``transfer_super_admin``) and grants the permissions onto them.
 
-        Safe to re-run: every create uses get_or_create.
+        Safe to re-run: everything uses get_or_create.
         """
         from django.core.management import call_command
 
         try:
-            # Roles first — seed_platform_permissions grants onto them.
-            PlatformRoleTemplate.objects.get_or_create(
-                id='xvs_super_admin',
-                defaults={
-                    'name': 'XVS Super Admin',
-                    'description': 'Full platform access. There is exactly one Super Admin at any time; '
-                                   'use the Transfer Super Admin flow to reassign.',
-                    'is_system_role': True,
-                    'is_locked': True,
-                    'status': PlatformRoleTemplate.Status.ACTIVE,
-                }
-            )
-            # Required by transfer_super_admin: the outgoing Super Admin is
-            # demoted to xvs_platform_admin. Without this template the transfer
-            # endpoint raises ValueError.
-            PlatformRoleTemplate.objects.get_or_create(
-                id='xvs_platform_admin',
-                defaults={
-                    'name': 'XVS Platform Admin',
-                    'description': 'Vision platform administrator. Receives the previous Super Admin '
-                                   'after a transfer; can manage roles, team, and platform settings but '
-                                   'cannot transfer the Super Admin role.',
-                    'is_system_role': True,
-                    'is_locked': True,
-                    'status': PlatformRoleTemplate.Status.ACTIVE,
-                }
-            )
-
             call_command('seed_platform_permissions', stdout=self.stdout, stderr=self.stderr)
         except Exception as e:
             self.stdout.write(self.style.WARNING(f"⚠️  Permission bootstrap: {e}"))
 
     def _assign_role_to_existing(self, options):
-        email = options['email'].strip().lower()
+        email = normalize_email(options['email'])
 
-        try:
-            user = User.objects.get(email__iexact=email)
-        except User.DoesNotExist:
-            self.stdout.write(self.style.ERROR(f"No user found with email: {email}"))
-            return
-
-        try:
-            role = PlatformRoleTemplate.objects.get(id='xvs_super_admin')
-        except PlatformRoleTemplate.DoesNotExist:
+        # ``.get(email=...)`` used to be a question with one answer. It is not:
+        # one address can be a login at several tenants, so the unscoped form
+        # raises MultipleObjectsReturned - and the role being granted here is
+        # Vision Super Admin, the most privileged seat on the platform. Ada
+        # Okoye's parent account at Bright Star must never be the row that
+        # picks up because it happened to sort first.
+        #
+        # The role itself is a codex-tenant role, so the sensible default is to
+        # look on the codex tenant; --tenant_id overrides it for the rare case
+        # of promoting an account that lives elsewhere.
+        scope = _resolve_tenant(options.get('tenant_id')) or _codex_tenant()
+        matches = list(
+            User.objects.filter(
+                email=email, **({'tenant': scope} if scope else {}),
+            ).order_by('tenant_id')
+        )
+        if len(matches) > 1:
+            where = ', '.join(
+                f"{getattr(u.tenant, 'slug', '?')} (--tenant_id {u.tenant_id})"
+                for u in matches
+            )
             self.stdout.write(self.style.ERROR(
-                "'xvs_super_admin' platform role not found. Run seed_role_perms first."
+                f"{email} exists at more than one tenant ({where}). "
+                f"Re-run with --tenant_id to say which account you mean."
             ))
             return
+        if not matches:
+            where = f" on tenant {scope.slug}" if scope else ""
+            self.stdout.write(self.style.ERROR(f"No user found with email: {email}{where}"))
+            return
+        user = matches[0]
 
-        assignment, created = PlatformUserRoleAssignment.objects.get_or_create(
-            user=user,
-            role=role,
-            defaults={
-                'assignment_status': PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
-                'assigned_by': None,
-            },
-        )
-
-        if not created and assignment.assignment_status == PlatformUserRoleAssignment.AssignmentStatus.REVOKED:
-            assignment.assignment_status = PlatformUserRoleAssignment.AssignmentStatus.ACTIVE
-            assignment.revoked_at = None
-            assignment.revoked_by = None
-            assignment.save(update_fields=['assignment_status', 'revoked_at', 'revoked_by', 'updated_at'])
-            self.stdout.write(self.style.SUCCESS(f"  ✅ Vision Super Admin role re-activated for {user.email}"))
-        elif created:
-            self.stdout.write(self.style.SUCCESS(f"  ✅ Vision Super Admin role assigned to {user.email}"))
+        if _assign_super_admin(user):
+            self.stdout.write(self.style.SUCCESS(
+                f"  ✅ Vision Super Admin role assigned/active for {user.email}"
+            ))
         else:
-            self.stdout.write(self.style.WARNING(f"  ℹ️  {user.email} already has Vision Super Admin role (active)."))
+            self.stdout.write(self.style.ERROR(
+                "Codex tenant / 'xvs_super_admin' role not found. Run migrations "
+                "and seed_platform_permissions first."
+            ))
 
     def _prompt(self, field_name, default):
         """Prompt user for input with a default value."""
@@ -358,7 +410,7 @@ class Command(BaseCommand):
 # USAGE EXAMPLES
 # =============================================================================
 #
-# 1. Use all defaults (FASTEST — one command!):
+# 1. Use all defaults (FASTEST - one command!):
 #    python manage.py create_superuser
 #
 #    Creates:

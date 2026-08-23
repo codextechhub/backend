@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     AuditEventListView,
+    AuditEventFilterOptionsView,
     AuditEventDetailView,
     AuditDashboardSummaryView,
     EntityAuditTrailListView,
@@ -10,6 +11,7 @@ from .views import (
     MyActivitySubjectView,
     AuditExportJobListView,
     AuditExportJobDetailView,
+    AuditExportJobDownloadView,
     ComplianceRuleListCreateView,
     ComplianceRuleDetailView,
 )
@@ -24,6 +26,7 @@ urlpatterns = [
     # Audit Events
     # -------------------------------------------------------------------------
     path("events/", AuditEventListView.as_view(), name="audit-event-list"),
+    path("events/filter-options/", AuditEventFilterOptionsView.as_view(), name="audit-event-filter-options"),
     path("events/<uuid:id>/", AuditEventDetailView.as_view(), name="audit-event-detail"),
 
     # -------------------------------------------------------------------------
@@ -47,6 +50,11 @@ urlpatterns = [
     # -------------------------------------------------------------------------
     path("exports/", AuditExportJobListView.as_view(), name="audit-export-list"),
     path("exports/<uuid:id>/", AuditExportJobDetailView.as_view(), name="audit-export-detail"),
+    path(
+        "exports/<uuid:id>/download/",
+        AuditExportJobDownloadView.as_view(),
+        name="audit-export-download",
+    ),
 
     # -------------------------------------------------------------------------
     # Compliance Rules

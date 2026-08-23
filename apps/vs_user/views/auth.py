@@ -11,6 +11,8 @@
 #   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet
 
 from __future__ import annotations
+import logging
+
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
@@ -23,7 +25,10 @@ from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.utils import datetime_from_epoch
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
+from vs_tenants.models import Tenant
 from core.response import success_response, error_response
+from ..account_scope import administrable_user
+from ..email_normalization import normalize_email
 from ..models import (
     User, LoginSession, AuthEventLog,
 )
@@ -35,6 +40,8 @@ from ..services.invitation import InvitationService
 from ..services.audit      import log_auth_event
 
 
+logger = logging.getLogger('vs_user.auth')
+
 
 # =============================================================================
 # # AUTH VIEWS
@@ -44,11 +51,21 @@ class LoginView(APIView):
     """
     POST /auth/login/
     Authenticates a user and returns a JWT token pair.
-    Handles lockout checks, school context, session creation,
-    and audit logging — all via LoginService.
+    Handles lockout checks, session creation and audit logging - all via
+    LoginService.
+
+    The body may carry an optional ``tenant`` - the slug the frontend reads off
+    the subdomain the request came from (a school's page at
+    bright-star.xvs.codexng.com sends "bright-star"). When present the tenant is
+    resolved first and the account lookup is scoped to it, so an address that
+    belongs to a different tenant is refused with the same message a wrong
+    password gets. When absent the tenant is derived from the account, as it
+    always was. See LoginService.login and services.sign_in_scope.
+
+    Note this is a body key, not the ``?tenant=`` query assertion the
+    authenticated endpoints require: there is no token yet to check against.
 
     Permission: AllowAny (public endpoint).
-    RBAC: identity.school_aware_login.enforce
 
     docstring-name: Log in
     """
@@ -65,6 +82,7 @@ class LoginView(APIView):
             result = LoginService.login(
                 email=ser.validated_data['email'],
                 password=ser.validated_data['password'],
+                tenant=ser.validated_data.get('tenant', ''),
                 request=request,
             )
         except ValueError as e:
@@ -88,23 +106,39 @@ class SpecialLoginPreviewView(APIView):
     """
     GET /user/auth/special_login/preview/?email=<email>
 
-    Barcode / ID-card login flow.  The frontend encodes the user's email in the
-    QR/barcode and navigates to  /<email>/login.  Before showing the password
-    field the page calls this endpoint to:
+    Barcode / ID-card login flow, **for CX staff only**.  The CX console
+    encodes the staff member's email in the QR/barcode and navigates to
+    /<email>/login.  Before showing the password field the page calls this
+    endpoint to:
 
-      1. Confirm the email belongs to a known account.
+      1. Confirm the email belongs to a known CX staff account.
       2. Return the user's display name (shown in place of the email field).
       3. Surface a clear, status-specific message for non-active accounts so the
          page can inform the user without them having to attempt a full login.
 
+    Scoped to the PLATFORM tenant, and that scope is the whole security of this
+    endpoint. It is unauthenticated by necessity - a barcode scanner carries no
+    credentials - so without the scope it answered for every row in the user
+    table: 404 for an address nobody holds, 403 with a status-specific message
+    for one that exists, and 200 with the person's full name when the account
+    was active. That is a name-and-existence oracle over every parent, student
+    and teacher on the platform, readable by anyone who can reach the URL.
+
+    The discriminator is the TENANT KIND. It is now the only thing it could
+    be: the ``user_type`` persona that once shadowed it has been removed. The
+    same address may legitimately hold a CX staff account on the platform
+    tenant and an unrelated parent account at a school, and only the tenant
+    separates them.
+
     Responses
     ---------
-    200  Active user found → { data: { full_name } }
-    403  User exists but account is PENDING / LOCKED / SUSPENDED / DEACTIVATED
-    404  No user with that email
+    200  Active CX staff user found → { data: { full_name } }
+    403  CX staff user exists but is PENDING / LOCKED / SUSPENDED / DEACTIVATED
+    404  No CX staff user with that email (an address that exists only at a
+         school gets this too, and cannot be told from an unknown one)
     400  email query param missing
 
-    Permission: AllowAny — the barcode scanner carries no credentials.
+    Permission: AllowAny - the barcode scanner carries no credentials.
 
     docstring-name: Barcode login preview
     """
@@ -121,18 +155,42 @@ class SpecialLoginPreviewView(APIView):
     }
 
     def get(self, request):
-        email = (request.query_params.get('email') or '').strip().lower()
+        email = normalize_email(request.query_params.get('email'))
         if not email:
             return error_response(message='email query parameter is required.', status=status.HTTP_400_BAD_REQUEST)
 
-        user = User.objects.filter(email__iexact=email).first()
+        # ``.first()`` is only correct because ``uq_user_email_per_tenant``
+        # makes an address unique WITHIN a tenant and exactly one tenant has
+        # kind=PLATFORM: vs_tenants migration 0002 seeds ``codex`` and nothing
+        # creates a second one. That is an assumption, not a constraint, so it
+        # is asserted rather than left implicit - if a second platform tenant
+        # is ever seeded this endpoint would silently start choosing between
+        # two different people's accounts by insertion order, and the name it
+        # returned would be whichever came back first.
+        matches = list(User.objects.filter(
+            email=email, tenant__kind=Tenant.Kind.PLATFORM,
+        )[:2])
+        if len(matches) > 1:
+            logger.error(
+                'special_login_preview: %s matches %d accounts across platform '
+                'tenants; there must be exactly one platform tenant.',
+                email, len(matches),
+            )
+            return error_response(
+                message=f'User with {email} does not exist.',
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        user = matches[0] if matches else None
         if not user:
             return error_response(
                 message=f'User with {email} does not exist.',
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        if user.status != User.Status.ACTIVE:
+        # Reads the shared predicate rather than testing ACTIVE by hand. The
+        # two happen to agree today, and phrasing it this way is what keeps
+        # them agreeing if SIGN_IN_STATUSES ever widens.
+        if not user.may_sign_in:
             msg = self._STATUS_MESSAGES.get(
                 user.status,
                 'Account unavailable. Please contact your administrator.',
@@ -149,7 +207,7 @@ class LogoutView(APIView):
     """
     POST /auth/logout/
     Blacklists the submitted refresh token, ending the current session.
-    Idempotent — always returns 200 even if the token is already blacklisted.
+    Idempotent - always returns 200 even if the token is already blacklisted.
 
     Permission: IsAuthenticated (any logged-in user can log themselves out).
     RBAC: system.session.access.authenticate
@@ -157,6 +215,14 @@ class LogoutView(APIView):
     docstring-name: Log out
     """
     permission_classes = [IsAuthenticated]
+    # Logs the caller out of their own session - no tenant-scoped input, so
+    # ?tenant= is not required.
+    tenant_param_required = False
+    # Self-scoped, so it stays open to a tenant that has not gone live (FR-012).
+    # Declared explicitly rather than relied on: this view's bare
+    # IsAuthenticated happens to skip the surface gate today, and the intent
+    # must survive that being tightened.
+    pending_tenant_surface = True
 
     def post(self, request):
         refresh_token = request.data.get('refresh')
@@ -174,13 +240,13 @@ class LogoutView(APIView):
 
         # Scope the logout to THIS session only: blacklist the submitted
         # refresh token and end the session that carries its JTI. Other
-        # devices stay logged in — the all-device revocation lives in the
+        # devices stay logged in - the all-device revocation lives in the
         # admin force-logout / suspend flows (blacklist_all_user_tokens).
         with transaction.atomic():
             try:
                 token.blacklist()
             except TokenError:
-                pass  # already blacklisted — logout stays idempotent
+                pass  # already blacklisted - logout stays idempotent
             LoginSession.objects.filter(
                 user=request.user, refresh_jti=str(jti), is_active=True,
             ).update(
@@ -188,11 +254,13 @@ class LogoutView(APIView):
                 ended_at=timezone.now(),
                 end_reason='LOGOUT',
             )
+            from vs_admin_console.services import end_impersonations_for_user
+            end_impersonations_for_user(request.user)
 
         log_auth_event(
             actor=request.user,
             subject=request.user,
-            school=getattr(request.user, 'school', None),
+            tenant=request.user.tenant,
             event=AuthEventLog.Event.TOKEN_REVOKED,
             request=request,
         )
@@ -205,18 +273,23 @@ class TokenRefreshView(APIView):
     POST /auth/token/refresh/
     Issues a new access token using a valid refresh token.
 
-    Permission: AllowAny (public endpoint — token validity is the gate).
+    Permission: AllowAny (public endpoint - token validity is the gate).
     RBAC: identity.access_token.refresh
 
     docstring-name: Refresh access token
     """
     permission_classes = [AllowAny]
+    # Operates purely on the submitted refresh token - token validity is the
+    # gate, so ?tenant= is not required (clients send a Bearer header here,
+    # which would otherwise trip the mandatory tenant assertion).
+    tenant_param_required = False
+    pending_tenant_surface = True  # A pending school must be able to stay signed in (FR-012).
 
     def post(self, request):
         ser = TokenRefreshSerializer(data=request.data)
 
         # SimpleJWT's TokenRefreshSerializer.validate() raises TokenError /
-        # InvalidToken when the refresh token is bad — they are not DRF
+        # InvalidToken when the refresh token is bad - they are not DRF
         # ValidationErrors. Catch them here so the response is a clean 401
         # instead of bubbling up to a 500.
         try:
@@ -247,7 +320,7 @@ class TokenRefreshView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
         except ValidationError:
-            # Missing/empty 'refresh' field — treat as invalid.
+            # Missing/empty 'refresh' field - treat as invalid.
             return error_response(
                 message="Invalid token. Please log in again.",
                 error={'error_code': 'TOKEN_INVALID'},
@@ -275,7 +348,7 @@ class TokenRefreshView(APIView):
                         'expires_at': datetime_from_epoch(exp),
                     },
                 )
-                # Keep LoginSession in sync with the new JTI — only the session
+                # Keep LoginSession in sync with the new JTI - only the session
                 # that owned the OLD token; other devices keep their own JTIs.
                 old_jti = ''
                 try:
@@ -291,7 +364,7 @@ class TokenRefreshView(APIView):
                     last_seen_at=timezone.now(),
                 )
             except (TokenError, User.DoesNotExist):
-                # Bookkeeping failed but the new tokens are valid — the client
+                # Bookkeeping failed but the new tokens are valid - the client
                 # can still use them. Don't fail the whole request.
                 pass
             response_data['refresh'] = new_refresh_str
@@ -307,9 +380,9 @@ class ActivationPreviewView(APIView):
     """
     Called when the user lands on the activation page.
     Returns their name and email so the frontend can pre-fill
-    them as read-only fields — the user only needs to set a password.
+    them as read-only fields - the user only needs to set a password.
 
-    Permission: AllowAny (public — user hasn't logged in yet).
+    Permission: AllowAny (public - user hasn't logged in yet).
 
     docstring-name: Activation preview
     """
@@ -335,9 +408,9 @@ class ActivationView(APIView):
     POST /auth/activate/{user_id}/
     User submits password + confirm_password.
     On success: account is activated and JWT tokens are returned
-    so the user is logged in immediately — no separate login step.
+    so the user is logged in immediately - no separate login step.
 
-    Permission: AllowAny (public — user hasn't logged in yet).
+    Permission: AllowAny (public - user hasn't logged in yet).
     RBAC: identity.user_account.activate
 
     docstring-name: Activate account
@@ -375,8 +448,8 @@ class InvitationResendView(APIView):
     """
     POST /users/{user_id}/invite/resend/
     Resets the 7-day expiry and sends a new invitation email.
-    The URL the user receives stays the same —
-    vision.codexng.com/invite/{user_id}/ — only the expiry window refreshes.
+    The URL the user receives stays the same -
+    vision.codexng.com/invite/{user_id}/ - only the expiry window refreshes.
     Only valid for accounts with status=PENDING.
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
@@ -388,9 +461,8 @@ class InvitationResendView(APIView):
     rbac_permission = "platform.team.create"
 
     def post(self, request, user_id):
-        try:
-            user = User.objects.get(id=user_id)
-        except User.DoesNotExist:
+        user = administrable_user(request, user_id)
+        if user is None:
             return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         if user.status != User.Status.PENDING:
@@ -411,4 +483,3 @@ class InvitationResendView(APIView):
             return error_response(message=message, error=payload)
 
         return success_response(message="Invitation resent successfully.")
-

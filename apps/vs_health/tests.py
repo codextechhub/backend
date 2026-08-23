@@ -1,4 +1,4 @@
-"""Tests for vs_health (VIGIL).
+"""Tests for the Health module (vs_health).
 
 Covers the analytics math (histogram→percentile, golden signals), the alert
 evaluation fire/resolve lifecycle with auto-incidents, the daily rollup, the
@@ -7,6 +7,7 @@ collector flush, and RBAC gating on the API.
 from __future__ import annotations
 
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.urls import reverse
@@ -14,7 +15,7 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from vs_health import collectors, services
-from vs_health.constants import HISTOGRAM_SIZE, LATENCY_BUCKETS_MS
+from vs_health.constants import HISTOGRAM_SIZE, LATENCY_BUCKETS_MS, MIN_P95_SAMPLE, HealthStatus
 from vs_health.models import (
     MonitoredService,
     RequestMetric,
@@ -27,6 +28,18 @@ from vs_health.models import (
     CheckType,
     Severity,
 )
+
+
+def _platform_tenant():
+    """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
+
+    Being platform staff IS being on this tenant - there is no persona column
+    standing in for it any more - so a fixture that wants a CX account names
+    the tenant, exactly as production code does.
+    """
+    from vs_tenants.models import Tenant
+
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
 
 
 def _hist_from(latencies):
@@ -65,7 +78,7 @@ class GoldenSignalsTests(TestCase):
         for m in range(10):
             RequestMetric.objects.create(
                 bucket_start=now - timedelta(minutes=m),
-                route="/v1/i/students/", method="GET", school_id=None,
+                route="/v1/i/students/", method="GET", tenant_id=None,
                 request_count=100, status_2xx=98, status_5xx=2,
                 latency_sum_ms=9000, latency_max_ms=300,
                 latency_hist=_hist_from([90] * 100),
@@ -93,7 +106,7 @@ class GoldenSignalsTests(TestCase):
 class CollectorFlushTests(TestCase):
     def setUp(self):
         # The collector buffer is process-global and the request middleware
-        # feeds it during the whole suite — drain it so this test sees only
+        # feeds it during the whole suite - drain it so this test sees only
         # its own records.
         collectors._drain()
 
@@ -117,9 +130,9 @@ class AlertEvaluationTests(TestCase):
     def setUp(self):
         self.svc = MonitoredService.objects.create(key="api", name="API · DRF", sort_order=1)
         now = timezone.now().replace(second=0, microsecond=0)
-        # 50% error rate over the recent window — well past a 5% threshold.
+        # 50% error rate over the recent window - well past a 5% threshold.
         RequestMetric.objects.create(
-            bucket_start=now, route="/v1/i/", method="GET", school_id=None,
+            bucket_start=now, route="/v1/i/", method="GET", tenant_id=None,
             request_count=100, status_2xx=50, status_5xx=50,
             latency_sum_ms=9000, latency_max_ms=300, latency_hist=_hist_from([90] * 100),
         )
@@ -152,6 +165,180 @@ class AlertEvaluationTests(TestCase):
         self.assertEqual(alert.incident.status, Incident.Status.RESOLVED)
 
 
+class SmallSampleGuardTests(TestCase):
+    """A handful of requests must never drive a status or open an incident.
+
+    Production traffic is ~1.7 req/min, so a 15-minute window holds a couple of
+    dozen requests and one slow report used to flip p95 past the SLO.
+    """
+
+    def _metric(self, *, requests, latencies, route="/v1/finance/invoices/", errors=0):
+        # One bucket back, so the row is unambiguously inside every window under
+        # test (a bucket stamped exactly "now" can land on the exclusive end).
+        bucket = timezone.now().replace(second=0, microsecond=0) - timedelta(minutes=1)
+        return RequestMetric.objects.create(
+            bucket_start=bucket, route=route, method="GET", tenant_id=None,
+            request_count=requests, status_2xx=requests - errors, status_5xx=errors,
+            latency_sum_ms=sum(latencies), latency_max_ms=max(latencies),
+            latency_hist=_hist_from(latencies),
+        )
+
+    def test_below_floor_window_leaves_module_status_unknown(self):
+        from vs_health.tasks import refresh_module_service_statuses
+
+        # Starts CRITICAL (the state one slow request used to pin it in) so the
+        # assertion proves the guard actively demotes to UNKNOWN rather than
+        # matching the model's UNKNOWN default.
+        svc = MonitoredService.objects.create(
+            key="billing", name="Billing & Fees", sort_order=1,
+            current_status=HealthStatus.CRITICAL,
+        )
+        # 9 fast requests + 1 very slow one: p95 is 5000ms, but n=10 < 30.
+        self._metric(requests=10, latencies=[80] * 9 + [5000])
+
+        refresh_module_service_statuses()
+
+        svc.refresh_from_db()
+        self.assertEqual(svc.current_status, HealthStatus.UNKNOWN)
+
+    def test_zero_traffic_window_leaves_module_status_unknown(self):
+        """No traffic is no signal - a previously green module must not stay green."""
+        from vs_health.tasks import refresh_module_service_statuses
+
+        svc = MonitoredService.objects.create(
+            key="billing", name="Billing & Fees", sort_order=1,
+            current_status=HealthStatus.HEALTHY,
+        )
+
+        refresh_module_service_statuses()
+
+        svc.refresh_from_db()
+        self.assertEqual(svc.current_status, HealthStatus.UNKNOWN)
+
+    def test_above_floor_slow_window_still_reports_critical(self):
+        from vs_health.tasks import refresh_module_service_statuses
+
+        svc = MonitoredService.objects.create(key="billing", name="Billing & Fees", sort_order=1)
+        self._metric(requests=60, latencies=[3000] * 60)
+
+        refresh_module_service_statuses()
+
+        svc.refresh_from_db()
+        self.assertEqual(svc.current_status, HealthStatus.CRITICAL)
+
+    def test_above_floor_normal_window_is_healthy_at_retuned_thresholds(self):
+        """500ms p95 was WARNING under the old 400ms band; it is normal here."""
+        from vs_health.tasks import refresh_module_service_statuses
+
+        svc = MonitoredService.objects.create(key="billing", name="Billing & Fees", sort_order=1)
+        self._metric(requests=60, latencies=[450] * 60)
+
+        refresh_module_service_statuses()
+
+        svc.refresh_from_db()
+        self.assertEqual(svc.current_status, HealthStatus.HEALTHY)
+
+    def test_below_floor_window_does_not_breach_p95_rule(self):
+        from vs_health.tasks import evaluate_alert_rules_task
+
+        rule = AlertRule.objects.create(
+            name="p95 latency SLO", metric=AlertRule.Metric.P95_LATENCY,
+            comparator=AlertRule.Comparator.GT, threshold=800, duration_sec=600,
+            severity=Severity.SEV2,
+        )
+        self._metric(requests=10, latencies=[80] * 9 + [5000])
+
+        result = evaluate_alert_rules_task()
+
+        self.assertEqual(result["fired"], 0)
+        self.assertFalse(Alert.objects.filter(rule=rule).exists())
+        self.assertFalse(Incident.objects.exists())
+
+    def test_below_floor_window_does_not_breach_error_rate_rule(self):
+        """One 500 out of five requests is 20% - noise, not a 5% SLO breach."""
+        from vs_health.tasks import evaluate_alert_rules_task
+
+        AlertRule.objects.create(
+            name="API error rate", metric=AlertRule.Metric.ERROR_RATE,
+            comparator=AlertRule.Comparator.GT, threshold=5, duration_sec=300,
+            severity=Severity.SEV1,
+        )
+        self._metric(requests=5, latencies=[80] * 5, errors=1)
+
+        self.assertEqual(evaluate_alert_rules_task()["fired"], 0)
+
+    def test_above_floor_slow_window_breaches_at_new_threshold(self):
+        from vs_health.tasks import evaluate_alert_rules_task
+
+        rule = AlertRule.objects.create(
+            name="p95 latency SLO", metric=AlertRule.Metric.P95_LATENCY,
+            comparator=AlertRule.Comparator.GT, threshold=800, duration_sec=600,
+            severity=Severity.SEV2,
+        )
+        self._metric(requests=60, latencies=[2000] * 60)
+
+        result = evaluate_alert_rules_task()
+
+        self.assertEqual(result["fired"], 1)
+        alert = Alert.objects.get(rule=rule)
+        self.assertEqual(alert.status, Alert.Status.FIRING)
+        self.assertGreater(alert.value, 800)
+
+    def test_windowed_p95_of_440ms_no_longer_breaches(self):
+        """The exact incident that kept reopening: 440ms p95 on ample traffic."""
+        from vs_health.tasks import evaluate_alert_rules_task
+
+        AlertRule.objects.create(
+            name="p95 latency SLO", metric=AlertRule.Metric.P95_LATENCY,
+            comparator=AlertRule.Comparator.GT, threshold=800, duration_sec=600,
+            severity=Severity.SEV2,
+        )
+        self._metric(requests=60, latencies=[420] * 60)
+
+        self.assertEqual(evaluate_alert_rules_task()["fired"], 0)
+
+    def test_open_alert_resolves_once_window_falls_below_floor(self):
+        """Traffic drying up must not pin an auto-incident open forever."""
+        from vs_health.tasks import evaluate_alert_rules_task
+
+        self._metric(requests=60, latencies=[2000] * 60)
+        AlertRule.objects.create(
+            name="p95 latency SLO", metric=AlertRule.Metric.P95_LATENCY,
+            comparator=AlertRule.Comparator.GT, threshold=800, duration_sec=600,
+            severity=Severity.SEV2,
+        )
+        evaluate_alert_rules_task()
+        RequestMetric.objects.all().delete()
+
+        self.assertEqual(evaluate_alert_rules_task()["resolved"], 1)
+        incident = Incident.objects.get()
+        self.assertEqual(incident.status, Incident.Status.RESOLVED)
+
+    def test_endpoint_status_withheld_below_floor(self):
+        self._metric(requests=10, latencies=[80] * 9 + [5000])
+        tr = services.parse_range("1h")
+
+        rows = services.endpoint_stats(tr)
+
+        self.assertEqual(rows[0]["status"], HealthStatus.UNKNOWN)
+        # The percentile itself stays visible - the number is informational.
+        self.assertGreater(rows[0]["p95"], 0)
+
+    def test_window_status_boundary_is_the_shared_floor(self):
+        self.assertEqual(
+            services.window_status(MIN_P95_SAMPLE - 1, 0.0, 5000), HealthStatus.UNKNOWN)
+        self.assertEqual(
+            services.window_status(MIN_P95_SAMPLE, 0.0, 5000), HealthStatus.CRITICAL)
+        self.assertEqual(services.window_status(0, 0.0, 0.0), HealthStatus.UNKNOWN)
+
+    def test_latency_status_bands_use_retuned_thresholds(self):
+        self.assertEqual(services._status_for_latency(440), HealthStatus.HEALTHY)
+        self.assertEqual(services._status_for_latency(799), HealthStatus.HEALTHY)
+        self.assertEqual(services._status_for_latency(800), HealthStatus.WARNING)
+        self.assertEqual(services._status_for_latency(1499), HealthStatus.WARNING)
+        self.assertEqual(services._status_for_latency(1500), HealthStatus.CRITICAL)
+
+
 class DailyRollupTests(TestCase):
     def test_rollup_computes_uptime_from_results(self):
         from vs_health.tasks import rollup_uptime_daily_task
@@ -171,6 +358,69 @@ class DailyRollupTests(TestCase):
         self.assertAlmostEqual(float(roll.uptime_pct), 80.0, delta=0.01)
 
 
+class HealthSeedTests(TestCase):
+    @patch("vs_health.seed.SSL_DOMAIN", "api.codexng.com")
+    def test_seed_repairs_stale_ssl_monitor_target(self):
+        from vs_health.seed import seed_checks
+
+        svc = MonitoredService.objects.create(
+            key="dns", name="DNS / SSL", kind="external", sort_order=1
+        )
+        check = UptimeCheck.objects.create(
+            service=svc,
+            name="SSL certificate",
+            check_type=CheckType.SSL,
+            target="api.codexvision.io",
+        )
+
+        seed_checks()
+
+        check.refresh_from_db()
+        self.assertEqual(check.target, "api.codexng.com")
+        self.assertEqual(check.expected["critical_days"], 5)
+        self.assertEqual(check.interval_sec, 3600)
+
+    def test_reseed_repairs_stale_alert_rule_threshold(self):
+        """The deployed rule was created at 400ms; re-seeding must retune it."""
+        from vs_health.seed import seed_alert_rules
+
+        rule = AlertRule.objects.create(
+            name="p95 latency SLO", metric=AlertRule.Metric.P95_LATENCY,
+            comparator=AlertRule.Comparator.GT, threshold=400, duration_sec=600,
+            severity=Severity.SEV2,
+        )
+
+        seed_alert_rules()
+
+        rule.refresh_from_db()
+        self.assertEqual(rule.threshold, 800)
+        # No duplicate rule was created alongside the repaired one.
+        self.assertEqual(AlertRule.objects.filter(name="p95 latency SLO").count(), 1)
+
+    def test_reseed_preserves_operator_disabled_rules(self):
+        from vs_health.seed import seed_alert_rules
+
+        rule = AlertRule.objects.create(
+            name="p95 latency SLO", metric=AlertRule.Metric.P95_LATENCY,
+            comparator=AlertRule.Comparator.GT, threshold=400, duration_sec=600,
+            severity=Severity.SEV2, is_enabled=False,
+        )
+
+        seed_alert_rules()
+
+        rule.refresh_from_db()
+        self.assertFalse(rule.is_enabled)
+        self.assertEqual(rule.threshold, 800)
+
+    def test_seed_creates_default_rules_at_tuned_thresholds(self):
+        from vs_health.seed import seed_alert_rules
+
+        seed_alert_rules()
+
+        self.assertEqual(AlertRule.objects.get(name="p95 latency SLO").threshold, 800)
+        self.assertEqual(AlertRule.objects.get(name="API error rate").threshold, 5)
+
+
 class RBACGatingTests(APITestCase):
     def test_overview_requires_authentication(self):
         resp = self.client.get(reverse("health-overview"))
@@ -181,9 +431,9 @@ class RBACGatingTests(APITestCase):
         from django.contrib.auth import get_user_model
 
         User = get_user_model()
-        user = User.objects.create_user(
+        user = User.objects.create_user(tenant=_platform_tenant(), 
             email="sre@codexng.com", first_name="S", last_name="RE",
-            user_type=User.UserType.CX_STAFF, status=User.Status.ACTIVE,
+            status=User.Status.ACTIVE,
         )
         self.client.force_authenticate(user=user)
         # Grant the platform.health.view permission for this request.

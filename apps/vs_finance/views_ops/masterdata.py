@@ -33,23 +33,27 @@ from .base import (
     _resolve_account,
     _resolve_cost_center,
     _resolve_currency,
+    _str_list,
 )
 
 # --------------------------------------------------------------------------- #
 # Setup / reference data                                                      #
 # --------------------------------------------------------------------------- #
 
+# Group endpoint behavior for Currency List Create View.
 class CurrencyListCreateView(_FinanceBase):
-    """GET (list) / POST (create) currencies — **global** reference data (no entity).
+    """GET (list) / POST (create) currencies - **global** reference data (no entity).
 
     docstring-name: Currencies
     """
 
     @property
+    # Handle the rbac permission workflow.
     def rbac_permission(self):
         return "finance.currency.create" if self.request.method == "POST" \
             else "finance.currency.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         qs = Currency.objects.all().order_by("code")
         if (active := request.query_params.get("is_active")) in ("true", "false"):
@@ -58,6 +62,7 @@ class CurrencyListCreateView(_FinanceBase):
             "Currencies retrieved.", data=CurrencySerializer(qs, many=True).data,
         )
 
+    # Handle POST requests for this endpoint.
     def post(self, request):
         body = request.data or {}
         code = str(body.get("code", "")).upper().strip()
@@ -78,27 +83,29 @@ class CurrencyListCreateView(_FinanceBase):
         )
 
 
+# Group endpoint behavior for Fx Rate List Create View.
 class FxRateListCreateView(_FinanceBase):
-    """GET (list) / POST (create) FX rates — **global** reference data (no entity).
+    """GET (list) / POST (create) FX rates - **global** reference data (no entity).
 
     docstring-name: FX rates
     """
 
     @property
+    # Handle the rbac permission workflow.
     def rbac_permission(self):
         return "finance.fxrate.create" if self.request.method == "POST" \
             else "finance.fxrate.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         qs = FxRate.objects.select_related("base", "quote").all()
         if (base := request.query_params.get("base")):
             qs = qs.filter(base_id=base.upper())
         if (quote := request.query_params.get("quote")):
             qs = qs.filter(quote_id=quote.upper())
-        return success_response(
-            "FX rates retrieved.", data=FxRateSerializer(qs[:500], many=True).data,
-        )
+        return self.paginate(request, qs, FxRateSerializer)
 
+    # Handle POST requests for this endpoint.
     def post(self, request):
         body = request.data or {}
         base = _resolve_currency(body.get("base"), "base")
@@ -120,6 +127,7 @@ class FxRateListCreateView(_FinanceBase):
         )
 
 
+# Group endpoint behavior for Tax Code List Create View.
 class TaxCodeListCreateView(_FinanceBase):
     """GET (list) / POST (create) tax codes for an entity.
 
@@ -127,10 +135,12 @@ class TaxCodeListCreateView(_FinanceBase):
     """
 
     @property
+    # Handle the rbac permission workflow.
     def rbac_permission(self):
         return "finance.taxcode.create" if self.request.method == "POST" \
             else "finance.taxcode.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
         qs = TaxCode.objects.filter(entity=entity).select_related(
@@ -141,6 +151,7 @@ class TaxCodeListCreateView(_FinanceBase):
             "Tax codes retrieved.", data=TaxCodeSerializer(qs, many=True).data,
         )
 
+    # Handle POST requests for this endpoint.
     def post(self, request):
         entity = resolve_entity(request)
         body = request.data or {}
@@ -166,6 +177,7 @@ class TaxCodeListCreateView(_FinanceBase):
         )
 
 
+# Group endpoint behavior for Cost Center List Create View.
 class CostCenterListCreateView(_FinanceBase):
     """GET (list) / POST (create) cost centres for an entity.
 
@@ -173,10 +185,22 @@ class CostCenterListCreateView(_FinanceBase):
     """
 
     @property
+    # Handle the rbac permission workflow.
     def rbac_permission(self):
-        return "finance.costcenter.create" if self.request.method == "POST" \
-            else "finance.costcenter.view"
+        if self.request.method == "POST":
+            return "finance.costcenter.create"
+        # Cost centres are non-sensitive, entity-scoped reference data needed by
+        # requisition forms. Tenant procurement roles are administrator-owned and
+        # have no canonical requester/buyer template to backfill safely, so allow
+        # only the requisition grants that actually need this picker. Mutation
+        # remains exclusively behind the Finance create permission above.
+        return [
+            "finance.costcenter.view",
+            "procurement.requisition.create",
+            "procurement.requisition.update",
+        ]
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
         qs = CostCenter.objects.filter(entity=entity).select_related("parent")
@@ -186,10 +210,12 @@ class CostCenterListCreateView(_FinanceBase):
             "Cost centres retrieved.", data=CostCenterSerializer(qs, many=True).data,
         )
 
+    # Handle POST requests for this endpoint.
     def post(self, request):
         entity = resolve_entity(request)
         body = request.data or {}
         code = str(body.get("code", "")).strip()
+        # TODO: code should be automated when a user didn't provide it
         if not code:
             raise ValidationError({"code": "A cost centre code is required."})
         parent = None
@@ -209,6 +235,7 @@ class CostCenterListCreateView(_FinanceBase):
         )
 
 
+# Group endpoint behavior for Dimension List Create View.
 class DimensionListCreateView(_FinanceBase):
     """GET (list) / POST (create) analytical dimensions for an entity.
 
@@ -216,10 +243,12 @@ class DimensionListCreateView(_FinanceBase):
     """
 
     @property
+    # Handle the rbac permission workflow.
     def rbac_permission(self):
         return "finance.dimension.create" if self.request.method == "POST" \
             else "finance.dimension.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
         qs = Dimension.objects.filter(entity=entity)
@@ -229,16 +258,19 @@ class DimensionListCreateView(_FinanceBase):
             "Dimensions retrieved.", data=DimensionSerializer(qs, many=True).data,
         )
 
+    # Handle POST requests for this endpoint.
     def post(self, request):
         entity = resolve_entity(request)
         body = request.data or {}
         code = str(body.get("code", "")).strip()
+        # TODO: code should be automated when a user didn't provide it
         if not code:
             raise ValidationError({"code": "A dimension code is required."})
         dim, created = Dimension.objects.update_or_create(
             entity=entity, code=code,
             defaults={
                 "name": body.get("name", code),
+                "allowed_values": _str_list(body.get("allowed_values"), "allowed_values"),
                 "is_active": _bool(body.get("is_active", True), default=True),
             },
         )
@@ -246,5 +278,4 @@ class DimensionListCreateView(_FinanceBase):
             f"Dimension {code} {'created' if created else 'updated'}.",
             data=DimensionSerializer(dim).data, status=201 if created else 200,
         )
-
 

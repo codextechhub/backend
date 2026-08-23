@@ -1,12 +1,13 @@
 """
 Seed all RBAC permission keys for the vs_import_data app.
 
-Run once after initial setup (safe to re-run — uses get_or_create):
+Run once after initial setup (safe to re-run - uses get_or_create):
 
     python manage.py seed_import_permissions
 
-Also grants every import permission to the xvs_super_admin platform role
-so super-admins can exercise all import functionality immediately.
+The super-admin receives every import permission. The platform-admin receives
+only template-management permissions; other import operations must be granted
+deliberately.
 """
 from __future__ import annotations
 
@@ -16,6 +17,42 @@ from django.db import transaction
 
 S_NORMAL    = "NORMAL"
 S_SENSITIVE = "SENSITIVE"
+
+PLATFORM_ROLE_NAMES = {
+    "xvs_super_admin": "XVS Super Admin",
+    "xvs_platform_admin": "XVS Platform Admin",
+}
+
+#: What a SCHOOL administrator may do with the import engine.
+#:
+#: A school loads its own roll at onboarding - "Import your initial data" is a
+#: step on its checklist - and until this existed the school_admin prebuilt role
+#: carried none of these keys, so the step could be asked for and never done.
+#:
+#: Narrower than the platform set on purpose, and each exclusion is a decision:
+#:
+#: - ``templates.create`` / ``templates.manage`` shape what a valid file IS.
+#:   That is platform configuration; a school picks a template, it does not
+#:   write one.
+#: - ``batches.update`` / ``batches.delete`` rewrite or erase the record of an
+#:   import. A school corrects its data by uploading a corrected file, which is
+#:   a new batch and leaves the old one legible.
+#: - ``rollbacks.*`` unwind data that is already live. That is a support action
+#:   with a person on the other end of it, not a button on an onboarding screen.
+#: - ``audit.view`` / ``notifications.view`` are platform observability over
+#:   every tenant's imports.
+#: - ``validations.update`` resolves an issue in place. The school-facing flow
+#:   is fix-the-file-and-upload-again, which keeps the file and the data in
+#:   step; resolving in place lets them drift.
+SCHOOL_ADMIN_IMPORT_KEYS = {
+    "import.templates.view",
+    "import.batches.view",
+    "import.batches.create",
+    "import.batches.run",
+    "import.batches.import",
+    "import.validations.view",
+    "import.jobs.view",
+}
 
 
 # (resource_name, resource_description, [(action, description, is_restricted, sensitivity), ...])
@@ -91,9 +128,11 @@ class Command(BaseCommand):
             PermissionAction,
             PermissionModule,
             PermissionResource,
-            PlatformRolePermission,
-            PlatformRoleTemplate,
+            TenantRolePermission,
+            TenantRoleTemplate,
+            PermissionScope,
         )
+        from vs_tenants.models import Tenant
 
         self.stdout.write(self.style.MIGRATE_HEADING("\n  Seeding import data permissions...\n"))
 
@@ -118,7 +157,7 @@ class Command(BaseCommand):
                 action = PermissionAction.objects.filter(name=action_name).first()
                 if not action:
                     self.stdout.write(
-                        self.style.WARNING(f"  ⚠  Action '{action_name}' not found — run seed_actions first.")
+                        self.style.WARNING(f"  ⚠  Action '{action_name}' not found - run seed_actions first.")
                     )
                     continue
 
@@ -134,6 +173,23 @@ class Command(BaseCommand):
                         "description": description,
                         "is_restricted": is_restricted,
                         "sensitivity_level": sensitivity,
+                        # ``ImportTemplate`` is a global table - the official
+                        # CodeX templates every school picks from - so
+                        # AUTHORING one is platform-only. The views already
+                        # refuse a non-platform caller (``_is_platform`` in
+                        # vs_import_data.views); this is the same rule said in
+                        # the column the picker reads, so a school is not
+                        # offered a box that the save would refuse.
+                        # ``templates.view`` stays tenant-holdable: a school has
+                        # to see the list to choose one.
+                        "scope": (
+                            PermissionScope.PLATFORM
+                            if key in (
+                                "import.templates.create",
+                                "import.templates.manage",
+                            )
+                            else PermissionScope.TENANT
+                        ),
                         "is_active": True,
                     },
                 )
@@ -141,26 +197,65 @@ class Command(BaseCommand):
                     created_count += 1
                     self.stdout.write(f"  + {key}")
 
-        # Grant all import permissions to xvs_super_admin role
-        try:
-            super_admin_role = PlatformRoleTemplate.objects.get(id="xvs_super_admin")
-            granted = 0
-            for key in all_keys:
-                perm = Permission.objects.filter(key=key).first()
-                if perm:
-                    _, role_perm_created = PlatformRolePermission.objects.get_or_create(
-                        role=super_admin_role,
+        # The super-admin is unrestricted. The platform-admin gets only the
+        # template permissions required for the template administration UI.
+        codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
+        if codex is None:
+            self.stdout.write(self.style.WARNING(
+                "\n  ⚠  Codex platform tenant not found - run migrations first; grants skipped."
+            ))
+        else:
+            role_permission_keys = {
+                "xvs_super_admin": set(all_keys),
+                "xvs_platform_admin": {
+                    key for key in all_keys if key.startswith("import.templates.")
+                },
+            }
+            for role_key, role_name in PLATFORM_ROLE_NAMES.items():
+                role, _ = TenantRoleTemplate.objects.get_or_create(
+                    tenant=codex,
+                    key=role_key,
+                    defaults={
+                        "name": role_name,
+                        "status": "ACTIVE",
+                        "is_system_role": True,
+                        "is_locked": True,
+                    },
+                )
+                allowed_keys = role_permission_keys[role_key]
+
+                # Repair deployments that previously gave platform-admin every
+                # import permission. This role is system-managed, so its seeded
+                # import grants must match the intended least-privilege set.
+                TenantRolePermission.objects.filter(
+                    role=role,
+                    permission__key__startswith="import.",
+                    granted=True,
+                ).exclude(permission_id__in=allowed_keys).delete()
+
+                granted = 0
+                for perm in Permission.objects.filter(key__in=allowed_keys):
+                    role_perm, role_perm_created = TenantRolePermission.objects.get_or_create(
+                        role=role,
                         permission=perm,
                         defaults={"granted": True, "granted_by": None},
                     )
-                    if role_perm_created:
+                    if not role_perm_created and not role_perm.granted:
+                        role_perm.granted = True
+                        role_perm.save(update_fields=["granted", "updated_at"])
+                    if role_perm_created or role_perm.granted:
                         granted += 1
-            if granted:
-                self.stdout.write(f"\n  Granted {granted} import permissions to xvs_super_admin role.")
-        except PlatformRoleTemplate.DoesNotExist:
-            self.stdout.write(self.style.WARNING(
-                "\n  ⚠  'xvs_super_admin' role not found — run create_superuser first."
-            ))
+                self.stdout.write(
+                    f"\n  Ensured {granted} import permissions for {role_key} role."
+                )
+
+        # -- School-side defaults ----------------------------------------------
+        # Attached to the prebuilt template AND backfilled into schools that
+        # already exist, for the same reason every seeder in this repo does
+        # both: without the backfill the keys only ever reach schools created
+        # after today, and every existing school admin keeps getting a 403
+        # nobody can explain.
+        self._seed_school_admin_defaults()
 
         # -- Permission Groups -------------------------------------------------
         self._seed_permission_groups(all_keys)
@@ -169,8 +264,73 @@ class Command(BaseCommand):
             f"\n  Done. {created_count} new permission(s) created, {len(all_keys)} total import keys registered.\n"
         ))
 
+    def _seed_school_admin_defaults(self) -> None:
+        from vs_rbac.models import (
+            Permission,
+            PrebuiltRolePermission,
+            PrebuiltRoleTemplate,
+            TenantRolePermission,
+            TenantRoleTemplate,
+        )
+
+        keys = sorted(
+            Permission.objects
+            .filter(key__in=SCHOOL_ADMIN_IMPORT_KEYS)
+            .values_list("key", flat=True)
+        )
+        missing = SCHOOL_ADMIN_IMPORT_KEYS - set(keys)
+        if missing:
+            self.stdout.write(self.style.WARNING(
+                f"\n  ⚠  Not registered, so not granted: {', '.join(sorted(missing))}"
+            ))
+
+        prebuilt = PrebuiltRoleTemplate.objects.filter(key="school_admin").first()
+        if prebuilt is None:
+            self.stdout.write(self.style.WARNING(
+                "\n  ⚠  Prebuilt role 'school_admin' not found - run "
+                "seed_prebuilt_role_templates first; school grants skipped."
+            ))
+            return
+
+        attached = 0
+        for key in keys:
+            _, created = PrebuiltRolePermission.objects.get_or_create(
+                prebuilt_role=prebuilt, permission_id=key,
+            )
+            attached += int(created)
+
+        backfilled = 0
+        roles = [
+            role for role in TenantRoleTemplate.objects.filter(
+                tenant__kind="SCHOOL", is_system_role=True,
+            ).only("id", "key")
+            # The whole-tenant template only. A branch-pinned copy must not gain
+            # the keys that load the whole school's roll.
+            if role.key == "school_admin"
+        ]
+        for role in roles:
+            for key in keys:
+                # get_or_create leaves an existing row alone, so an explicit
+                # deny an administrator set is never flipped back on.
+                _, created = TenantRolePermission.objects.get_or_create(
+                    role=role, permission_id=key,
+                    defaults={"granted": True, "granted_by": None},
+                )
+                backfilled += int(created)
+
+        self.stdout.write(
+            f"\n  school_admin: {len(keys)} import key(s) - "
+            f"{attached} newly attached, {backfilled} backfilled across "
+            f"{len(roles)} existing role template(s)."
+        )
+
     def _seed_permission_groups(self, all_keys: list[str]) -> None:
-        from vs_rbac.models import GroupPermission, Permission, PermissionGroup
+        from vs_rbac.models import (
+            GroupPermission,
+            Permission,
+            PermissionGroup,
+            PermissionScope,
+        )
 
         TEMPLATE_KEYS = [k for k in all_keys if k.startswith("import.templates.")]
         BATCH_KEYS    = [k for k in all_keys if k.startswith("import.batches.")]
@@ -178,7 +338,7 @@ class Command(BaseCommand):
         groups = [
             (
                 "Data Import - all",
-                "Full access to the entire data import pipeline — templates, batches, jobs, and related resources.",
+                "Full access to the entire data import pipeline - templates, batches, jobs, and related resources.",
                 all_keys,
             ),
             (
@@ -200,6 +360,15 @@ class Command(BaseCommand):
                 name=name,
                 defaults={
                     "description": description,
+                    # ``PermissionGroup.scope`` has no default, deliberately, so
+                    # every creation path has to declare it. Migration 0007
+                    # classified the groups that already existed; a group seeded
+                    # after it without this line is created unclassified, and
+                    # ``TenantRoleGroup`` refuses to attach an unclassified
+                    # bundle to any role inside a tenant. Every import key is
+                    # TENANT-scoped (see the Permission rows above), so the
+                    # bundle is too.
+                    "scope": PermissionScope.TENANT,
                     "is_system": True,
                     "is_active": True,
                 },

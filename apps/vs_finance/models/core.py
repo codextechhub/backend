@@ -4,16 +4,16 @@ Foundational models for the finance engine (Phase 0).
 
 This module holds only the *foundations* every later model leans on:
 
-* :class:`TimeStampedModel` — shared created/updated stamps (matches the ``vs_*``
+* :class:`TimeStampedModel` - shared created/updated stamps (matches the ``vs_*``
   convention).
-* :class:`LedgerEntity` — the **accounting entity** that owns a set of books. This is
+* :class:`LedgerEntity` - the **accounting entity** that owns a set of books. This is
   the tenant of every finance/procurement document, and the key decoupling: the
   ledger belongs to an *entity*, not to a school. A customer School maps to one (or
   more) entities; Codex's own platform books are an entity with **no school**; future
   products plug in the same way.
-* :class:`DocumentSequence` — the concurrency-safe, gap-free counter behind every
+* :class:`DocumentSequence` - the concurrency-safe, gap-free counter behind every
   human-facing document number.
-* :class:`FinanceDocument` — the abstract base for numbered, entity-scoped,
+* :class:`FinanceDocument` - the abstract base for numbered, entity-scoped,
   status-bearing documents (invoices, POs, journals …).
 
 The ledger proper (Account, JournalEntry, FiscalPeriod …) arrives in Phase 1 and
@@ -22,10 +22,12 @@ builds on these.
 from __future__ import annotations
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
 from ..constants import (
+    AccountMappingKey,
     DocType,
     DocumentStatus,
     PLATFORM_ENTITY_CODE,
@@ -55,12 +57,32 @@ class LedgerEntityManager(models.Manager):
         return self.filter(code=PLATFORM_ENTITY_CODE, is_active=True).first()
 
     def for_school(self, school):
-        """All entities (sets of books) sourced from a given School tenant."""
-        return self.filter(source_school=school)
+        """All entities (sets of books) owned by a given School's tenant."""
+        return self.filter(tenant=school.tenant)
+
+
+def derive_number_code(code: str, taken) -> str:
+    """Pick a short (≤3 char) reporting code from an entity code.
+
+    Uses the first three alphanumerics of ``code`` (``CODEX`` → ``COD``); if that
+    is already ``taken`` by another entity, walks a 2-char stem + suffix until a
+    free reporting code is found. Live document numbering uses the tenant sequence.
+    """
+    import re
+
+    base = re.sub(r"[^A-Z0-9]", "", (code or "").upper())[:3] or "ENT"
+    if base not in taken:
+        return base
+    stem = base[:2]
+    for suffix in "23456789ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        candidate = (stem + suffix)[:3]
+        if candidate not in taken:
+            return candidate
+    return base  # exhausted - the DB unique constraint is the final guard
 
 
 class LedgerEntity(TimeStampedModel):
-    """A distinct set of books — the tenant of every finance/procurement document.
+    """A distinct set of books - the tenant of every finance/procurement document.
 
     The accounting `entity concept` made concrete: books are kept for an entity, and
     an entity may be a customer organisation, Codex itself, or a future product. A
@@ -70,17 +92,18 @@ class LedgerEntity(TimeStampedModel):
 
     Fields:
         name: Human-friendly name of the entity/company keeping the books.
-        code: Short, uppercase, unique identifier; appears inside document numbers
-            (e.g. ``CFX-LEKKI-INV-2026-00001``). Reserved code ``CODEX`` is the
+        code: Short, uppercase, unique identifier. Reserved code ``CODEX`` is the
             platform entity.
+        number_code: A unique 2–3 character reporting code, auto-derived from
+            ``code``. It is retained for display/reporting and does not control
+            live document numbering.
         kind: Classification (platform / tenant / product / other).
-        source_school: Optional link to the originating School tenant. **Nullable**
-            (platform and product entities have none) and **non-unique** (a tenant
-            may own multiple entities — 1:many).
+        tenant: Canonical owner. The originating school (when any) is derived from
+            the tenant's ``school_profile``; platform/product tenants have none.
         base_currency: FK to the :class:`Currency` this entity keeps its primary
             ledger in (its reporting currency). Defaults to NGN. Because
             ``Currency``'s PK is the 3-letter code, the column still stores ``"NGN"``
-            — the FK just adds referential integrity over the old free-text code.
+            - the FK just adds referential integrity over the old free-text code.
         is_active / activated_at / deleted_at: lifecycle.
     """
 
@@ -93,14 +116,19 @@ class LedgerEntity(TimeStampedModel):
     name = models.CharField(max_length=160)
     code = models.CharField(
         max_length=16, unique=True,
-        help_text="Short uppercase code used inside document numbers; e.g. LEKKI, CODEX.",
+        help_text="Short uppercase code identifying the entity; e.g. LEKKI, CODEX.",
+    )
+    number_code = models.CharField(
+        max_length=3, blank=True, default="", unique=True,
+        help_text="2–3 char code embedded in document numbers (e.g. CDX). "
+                  "Auto-derived from `code` when left blank; kept globally unique.",
     )
     kind = models.CharField(max_length=12, choices=Kind.choices, default=Kind.TENANT)
-    source_school = models.ForeignKey(
-        "vs_schools.School", on_delete=models.PROTECT,
-        related_name="ledger_entities", null=True, blank=True,
-        help_text="Originating tenant; NULL for platform/product entities. A tenant "
-                  "may own several entities (non-unique).",
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant",
+        on_delete=models.PROTECT,
+        related_name="ledger_entities",
+        help_text="Canonical owner.",
     )
     base_currency = models.ForeignKey(
         "Currency", on_delete=models.PROTECT, related_name="entities",
@@ -116,8 +144,20 @@ class LedgerEntity(TimeStampedModel):
     class Meta:
         indexes = [
             models.Index(fields=["kind", "is_active"]),
-            models.Index(fields=["source_school"]),
+            models.Index(fields=["tenant", "is_active"]),
         ]
+
+    def save(self, *args, **kwargs):
+        if not self.tenant_id:
+            from vs_tenants.models import Tenant
+            self.tenant = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+        if self.number_code:
+            self.number_code = self.number_code.strip().upper()[:3]
+        else:
+            # Auto-derive a unique short code when one wasn't supplied explicitly.
+            taken = set(LedgerEntity.objects.exclude(pk=self.pk).values_list("number_code", flat=True))
+            self.number_code = derive_number_code(self.code, taken)
+        super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"{self.code} · {self.name}"
@@ -127,8 +167,48 @@ class LedgerEntity(TimeStampedModel):
         return self.kind == self.Kind.PLATFORM
 
 
+class FinanceAccountMapping(TimeStampedModel):
+    """An entity-specific override for one well-known accounting role.
+
+    The role is stable while the selected account may change. Posting services
+    resolve the role inside the entity and fail closed when the selected account
+    is inactive, non-postable, or from another entity.
+    """
+
+    entity = models.ForeignKey(
+        LedgerEntity, on_delete=models.CASCADE, related_name="account_mappings",
+    )
+    key = models.CharField(max_length=32, choices=AccountMappingKey.choices)
+    account = models.ForeignKey(
+        "Account", on_delete=models.PROTECT, related_name="finance_mapping_roles",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_account_mapping_updates", null=True, blank=True,
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "key"], name="uniq_finance_account_mapping_role",
+            ),
+        ]
+        indexes = [models.Index(fields=["entity", "key"])]
+
+    def clean(self):
+        if self.account_id and self.entity_id and self.account.entity_id != self.entity_id:
+            raise ValidationError({"account": "The mapped account must belong to the same entity."})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"{self.entity_id}:{self.key} -> {self.account_id}"
+
+
 class DocumentSequence(models.Model):
-    """Per-scope counter that issues gap-free document numbers.
+    """Legacy per-entity/fiscal-year numbering metadata.
 
     One row exists per ``(entity, branch, doc_type, fiscal_year)`` combination and
     holds the last number handed out. Allocation locks the row with
@@ -137,8 +217,8 @@ class DocumentSequence(models.Model):
     optional sub-scope used by entities that actually have branches (school tenants);
     platform/product entities leave it null.
 
-    Intentionally tiny and central: every numbered document in finance *and*
-    procurement routes through it, so the locking logic is written and tested once.
+    New allocations use ``vs_tenants.TenantDocumentSequence``. This model is
+    retained so historical counter metadata is not destroyed by the refactor.
     """
 
     entity = models.ForeignKey(
@@ -146,7 +226,7 @@ class DocumentSequence(models.Model):
         related_name="doc_sequences",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="finance_doc_sequences", null=True, blank=True,
     )
     doc_type = models.CharField(max_length=8, choices=DocType.choices)
@@ -180,13 +260,13 @@ class FinanceDocument(TimeStampedModel):
     document number on first save.
 
     Tenancy: every document belongs to a :class:`LedgerEntity` (the accounting entity
-    that keeps the books) and optionally a ``branch`` sub-scope. The entity — not a
-    school — is the unit of ownership, so Codex's own books and future products are
+    that keeps the books) and optionally a ``branch`` sub-scope. The entity - not a
+    school - is the unit of ownership, so Codex's own books and future products are
     first-class. ``vs_rbac`` scoping (for school entities) keys off these; platform
     books are governed by platform-level access, not school boundaries.
 
-    Document numbers are unique *within an entity*, not globally: each entity keeps
-    its own clean ``…-INV-2026-00001`` series.
+    New document numbers use the owning tenant's daily, per-code series, for
+    example ``IV-12607221``.
     """
 
     #: Override in concrete subclasses, e.g. ``DOC_TYPE = DocType.INVOICE``.
@@ -197,7 +277,7 @@ class FinanceDocument(TimeStampedModel):
         related_name="%(app_label)s_%(class)s_set",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="%(app_label)s_%(class)s_set", null=True, blank=True,
     )
     document_number = models.CharField(max_length=48, blank=True, db_index=True)
@@ -218,7 +298,19 @@ class FinanceDocument(TimeStampedModel):
             ),
         ]
 
-    def assign_number(self, *, fiscal_year: int | None = None) -> str:
+    @property
+    def school(self):
+        """School owning this document's ledger entity (None for platform/product books).
+
+        The workflow engine is school-scoped (it reads ``document.school`` /
+        ``document.branch`` when resolving approvers), while finance is
+        entity-scoped. This property bridges the two by returning the entity's
+        canonical originating school; platform/product entities have none, so it
+        returns ``None`` and the engine falls back to platform-level scoping.
+        """
+        return getattr(self.entity.tenant, "school_profile", None)
+
+    def assign_number(self) -> str:
         """Allocate and store this document's number if it does not have one yet.
 
         Idempotent: returns the existing number unchanged once assigned. Must run
@@ -235,9 +327,8 @@ class FinanceDocument(TimeStampedModel):
         if self.entity_id is None:
             raise DocumentNumberingError("Document needs an entity before a number can be allocated.")
 
-        year = fiscal_year if fiscal_year is not None else timezone.now().year
         self.document_number = next_document_number(
-            entity=self.entity, branch=self.branch, doc_type=self.DOC_TYPE, fiscal_year=year,
+            entity=self.entity, doc_type=self.DOC_TYPE,
         )
         return self.document_number
 
@@ -249,5 +340,3 @@ class FinanceDocument(TimeStampedModel):
                 super().save(*args, **kwargs)
             return
         return super().save(*args, **kwargs)
-
-

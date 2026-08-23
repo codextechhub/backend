@@ -1,15 +1,17 @@
 """
-Data models for vs_workflow — 8 models.
+Data models for vs_workflow.
 
-WorkflowTemplate      — reusable blueprint.
-WorkflowStage         — one node (APPROVAL or BRANCH).
-WorkflowRoutePath     — directed edge between stages, optionally condition-guarded.
-WorkflowInstance      — one running execution against one business document.
-WorkflowStageInstance — per-instance, per-stage lifecycle record.
-WorkflowStageApprover — audit-grade snapshot of who was eligible when a stage activated.
-WorkflowStageAction   — every recorded approver vote, including reversals.
-ApprovalDelegation    — date-ranged delegation of approval authority.
-WorkflowAuditLog      — append-only structured event log.
+WorkflowApproverGroup       - named, reusable approver pool owned by a tenant.
+WorkflowApproverGroupMember - one member of that pool: a person, a role, or a position.
+WorkflowTemplate      - reusable blueprint.
+WorkflowStage         - one node (APPROVAL or BRANCH).
+WorkflowRoutePath     - directed edge between stages, optionally condition-guarded.
+WorkflowInstance      - one running execution against one business document.
+WorkflowStageInstance - per-instance, per-stage lifecycle record.
+WorkflowStageApprover - audit-grade snapshot of who was eligible when a stage activated.
+WorkflowStageAction   - every recorded approver vote, including reversals.
+ApprovalDelegation    - date-ranged delegation of approval authority.
+WorkflowAuditLog      - append-only structured event log.
 """
 
 import shortuuid
@@ -24,6 +26,7 @@ from vs_workflow.constants import (
     ApproverScope,
     ApproverSource,
     AuditEventType,
+    GroupMemberKind,
     OrganogramTarget,
     StageAdvanceRule,
     StageKind,
@@ -42,10 +45,15 @@ def _short_id():
 class WorkflowTemplate(models.Model):
     """Reusable blueprint defining the approval stages and routing for a document type.
 
-    A template is identified by the combination of (school, document_type, code).
+    A template with no tenant is the *platform* template: the shared definition
+    every tenant runs until it adjusts its own. A tenant that adjusts one gets a
+    tenant-scoped template with the same (document_type, code), which the
+    submission cascade prefers from then on.
+
+    A template is identified by the combination of (tenant, branch, document_type, code).
     Multiple templates can exist for the same document type under different codes,
     enabling different approval paths (e.g. ``standard`` vs ``high_value``).
-    Publishing the same key again updates the template in place — no versioning.
+    Publishing the same key again updates the template in place - no versioning.
 
     Attributes:
         school: Optional school scope. Null means the template applies platform-wide.
@@ -56,16 +64,23 @@ class WorkflowTemplate(models.Model):
         code: Slug identifying this template variant (e.g. ``standard``, ``high_value``).
         notification_events: Dict of event keys to booleans controlling which lifecycle
             events trigger notifications.
+        is_active: A tenant that has adjusted a shared template and later wants the
+            platform's version back switches its own off rather than deleting it.
+            Deleting is not an option: instances PROTECT the template they ran
+            under, so the copy that has actually been used is exactly the one that
+            cannot be removed. An inactive template is skipped by the submission
+            cascade, so the next request falls through to the platform template.
         created_by: The admin user who last published this template.
     """
 
     id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
-    school = models.ForeignKey(
-        "vs_schools.School", on_delete=models.PROTECT,
-        null=True, blank=True, related_name="workflow_templates",
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="workflow_templates", null=True, blank=True,
+        help_text="Null only for global templates.",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch", on_delete=models.PROTECT,
+        "vs_tenants.Branch", on_delete=models.PROTECT,
         null=True, blank=True, related_name="workflow_templates",
     )
     document_type = models.CharField(max_length=100, db_index=True)
@@ -73,6 +88,7 @@ class WorkflowTemplate(models.Model):
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True, default="")
     notification_events = models.JSONField(default=dict, blank=True)
+    is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
                                    null=True, blank=True, related_name="+")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -86,16 +102,145 @@ class WorkflowTemplate(models.Model):
         base_manager_name = "all_objects"
         constraints = [
             models.UniqueConstraint(
-                fields=["school", "branch", "document_type", "code"],
+                fields=["tenant", "branch", "document_type", "code"],
                 name="uniq_workflow_template",
             ),
         ]
         indexes = [
-            models.Index(fields=["school", "branch", "document_type"]),
+            models.Index(fields=["tenant", "branch", "document_type"]),
+            # The submission cascade filters on all four, in this order.
+            models.Index(fields=["document_type", "code", "tenant", "is_active"]),
         ]
 
     def __str__(self):
         return f"{self.code} ({self.document_type})"
+
+    @property
+    def school(self):
+        return getattr(self.tenant, "school_profile", None) if self.tenant_id else None
+
+    @property
+    def school_id(self):
+        return getattr(self.school, "pk", None)
+
+
+class WorkflowApproverGroup(models.Model):
+    """A named, reusable pool of approvers owned by one tenant.
+
+    Groups exist so a template stage can say "the Exam Board approves this"
+    instead of naming a permission key. Membership is edited in one place and
+    read live at every stage activation, so a group edit takes effect on the
+    next activation of every template that references it - no republish.
+
+    Attributes:
+        tenant: Owning tenant. Groups are never global; approval authority is
+            always tenant-local.
+        branch: Optional branch narrowing. Null means the group applies to the
+            whole tenant.
+        code: Slug identifying the group within the tenant (e.g. ``po-approvers``).
+        is_active: Deactivating a group makes it resolve to no approvers rather
+            than deleting it, so referencing stages and audit history survive.
+    """
+
+    id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="workflow_approver_groups",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        null=True, blank=True, related_name="workflow_approver_groups",
+    )
+    code = models.SlugField(max_length=100)
+    name = models.CharField(max_length=150)
+    description = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
+        constraints = [
+            models.UniqueConstraint(fields=["tenant", "code"], name="uniq_approver_group_code"),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "is_active"]),
+        ]
+        ordering = ["name"]
+
+    def __str__(self):
+        return f"{self.name} [{self.code}]"
+
+    @property
+    def school(self):
+        return getattr(self.tenant, "school_profile", None)
+
+    @property
+    def school_id(self):
+        return getattr(self.school, "pk", None)
+
+
+class WorkflowApproverGroupMember(models.Model):
+    """One membership row in a WorkflowApproverGroup.
+
+    Exactly one of user/role/position is set, matching ``kind``. USER rows are
+    static; ROLE and POSITION rows are computed at resolution time, so people
+    joining or leaving a role or seat flow through without a group edit.
+
+    Attributes:
+        kind: ``USER``, ``ROLE``, or ``POSITION`` - which target field is populated.
+        user: The person, when kind is USER.
+        role: The tenant role whose active assignees join the pool, when kind is ROLE.
+        position: The organogram seat whose current holders join the pool,
+            when kind is POSITION.
+    """
+
+    id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
+    group = models.ForeignKey(WorkflowApproverGroup, on_delete=models.CASCADE,
+                              related_name="members")
+    kind = models.CharField(max_length=20, choices=GroupMemberKind.choices)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                             null=True, blank=True, related_name="+")
+    # PROTECT on role/position: a target referenced by an approver group must not
+    # vanish silently - retire the target or remove the member row first.
+    role = models.ForeignKey("vs_rbac.TenantRoleTemplate", on_delete=models.PROTECT,
+                             null=True, blank=True, related_name="approver_group_members")
+    position = models.ForeignKey("vs_user.Position", on_delete=models.PROTECT,
+                                 null=True, blank=True, related_name="approver_group_members")
+    added_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+                                 null=True, blank=True, related_name="+")
+    added_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            # Exactly one target field, and it must match the declared kind.
+            models.CheckConstraint(
+                condition=(
+                    Q(kind="USER", user__isnull=False, role__isnull=True, position__isnull=True)
+                    | Q(kind="ROLE", role__isnull=False, user__isnull=True, position__isnull=True)
+                    | Q(kind="POSITION", position__isnull=False, user__isnull=True, role__isnull=True)
+                ),
+                name="ck_group_member_target_matches_kind",
+            ),
+            models.UniqueConstraint(fields=["group", "user"], condition=Q(kind="USER"),
+                                    name="uniq_group_member_user"),
+            models.UniqueConstraint(fields=["group", "role"], condition=Q(kind="ROLE"),
+                                    name="uniq_group_member_role"),
+            models.UniqueConstraint(fields=["group", "position"], condition=Q(kind="POSITION"),
+                                    name="uniq_group_member_position"),
+        ]
+        indexes = [models.Index(fields=["group", "kind"])]
+        ordering = ["kind", "added_at"]
+
+    def __str__(self):
+        target = self.user_id or self.role_id or self.position_id
+        return f"{self.kind}:{target}"
 
 
 class WorkflowStage(models.Model):
@@ -109,9 +254,16 @@ class WorkflowStage(models.Model):
         code: Unique slug within the template (e.g. ``line-manager``, ``finance``).
         kind: ``APPROVAL`` or ``BRANCH``. BRANCH stages are auto-skipped by the engine.
         order: Ascending integer used for linear routing when no routes are defined.
-        approver_permission_key: RBAC permission key used to resolve eligible approvers.
-        approver_scope: ``BRANCH``, ``SCHOOL``, or ``PLATFORM`` — narrows the RBAC lookup.
-        advance_rule: ``UNANIMOUS``, ``QUORUM``, or ``ANY`` — how many approvals advance the stage.
+        approver_scope: ``BRANCH``, ``SCHOOL``, or ``PLATFORM`` - narrows the role lookup.
+        approver_role_key: Key of the role whose active assignees approve this stage
+            (``ROLE`` source). Stored as a key rather than a foreign key so a
+            central template can name the same authority in every tenant.
+        approver_role: The resolved role, set only when the template belongs to a
+            tenant. It is the referential anchor (PROTECT); resolution goes
+            through the key so central templates work the same way.
+        approver_group: Named approver group whose resolved membership approves this
+            stage (only used when ``approver_source`` is ``WORKFLOW_GROUP``).
+        advance_rule: ``UNANIMOUS``, ``QUORUM``, or ``ANY`` - how many approvals advance the stage.
         quorum_count: Minimum approvals required when advance_rule is ``QUORUM``.
         on_rejection: ``TERMINAL`` ends the workflow; ``RETURN_TO_REQUESTER`` sends it back.
         skip_if_no_approvers: Auto-skip this stage if no eligible approvers are found.
@@ -126,18 +278,31 @@ class WorkflowStage(models.Model):
     kind = models.CharField(max_length=20, choices=StageKind.choices, default=StageKind.APPROVAL)
     order = models.PositiveIntegerField(default=0)
     # ── Approver resolution strategy ────────────────────────────────────────
-    # RBAC_PERMISSION (default) uses approver_permission_key + approver_scope.
-    # ORGANOGRAM is an additive, opt-in strategy that climbs the CX organogram
-    # relative to the requester (see the organogram_* fields below). The two are
-    # mutually exclusive; the existing RBAC path is unchanged when source is
-    # left at its default.
+    # ROLE (default) names a role by key and resolves its holders inside the
+    # tenant that raised the request. WORKFLOW_GROUP points at a named approver
+    # group; DYNAMIC_ROLE lets the document choose the role; ORGANOGRAM climbs
+    # the CX organogram relative to the requester. Mutually exclusive per stage.
     approver_source = models.CharField(
         max_length=20, choices=ApproverSource.choices,
-        default=ApproverSource.RBAC_PERMISSION,
+        default=ApproverSource.ROLE,
     )
-    approver_permission_key = models.CharField(max_length=150, blank=True, default="")
     approver_scope = models.CharField(max_length=20, choices=ApproverScope.choices,
                                       default=ApproverScope.SCHOOL)
+    # ── Role config (only used when approver_source == ROLE) ──────────────────
+    # The key is what resolution reads, because a central (tenant-less) template
+    # has to name the same authority in every tenant that uses it. The FK is set
+    # only for tenant-scoped templates, where it adds referential integrity:
+    # PROTECT stops a role being deleted out from under a live stage.
+    approver_role_key = models.SlugField(max_length=120, blank=True, default="")
+    approver_role = models.ForeignKey(
+        "vs_rbac.TenantRoleTemplate", on_delete=models.PROTECT,
+        null=True, blank=True, related_name="workflow_stages",
+    )
+    # ── Group config (only used when approver_source == WORKFLOW_GROUP) ───────
+    approver_group = models.ForeignKey(
+        WorkflowApproverGroup, on_delete=models.PROTECT,
+        null=True, blank=True, related_name="workflow_stages",
+    )
     # ── Organogram config (only used when approver_source == ORGANOGRAM) ──────
     organogram_target = models.CharField(
         max_length=20, choices=OrganogramTarget.choices, blank=True, default="",
@@ -155,7 +320,7 @@ class WorkflowStage(models.Model):
     on_rejection = models.CharField(max_length=30, choices=StageOnRejection.choices,
                                     default=StageOnRejection.TERMINAL)
     skip_if_no_approvers = models.BooleanField(default=True)
-    # Declarative inclusion condition — stage only runs when this evaluates True.
+    # Declarative inclusion condition - stage only runs when this evaluates True.
     # {"op": "gte", "field": "amount", "value": 100000} or {"fn": "module.fn_name"}
     inclusion_condition = models.JSONField(null=True, blank=True)
     retired_at = models.DateTimeField(null=True, blank=True)
@@ -175,6 +340,125 @@ class WorkflowStage(models.Model):
 
     def __str__(self):
         return f"{self.label} [{self.template.code}]"
+
+
+class WorkflowStageApproverOverride(models.Model):
+    """One tenant's own choice of approver for a stage it did not author.
+
+    Central templates are published once with no tenant and serve everybody, so
+    their stages name a role by key. A tenant that wants somebody else to
+    approve that step should not have to clone the whole template to say so:
+    this record repoints the approver for that one stage, for that one tenant,
+    and the engine consults it before the stage's own configuration.
+
+    Overrides only change *who approves*. Advance rule, rejection policy and
+    routing stay with the template, so the central workflow keeps its shape.
+
+    Attributes:
+        tenant: The tenant this override applies to.
+        stage: The stage being repointed, usually on a central template.
+        approver_source: ``ROLE`` or ``WORKFLOW_GROUP`` - the two a tenant can
+            choose between. Organogram and dynamic rules stay template-owned.
+        approver_role_key: Role key, when the source is ROLE.
+        approver_group: The tenant's approver group, when the source is
+            WORKFLOW_GROUP.
+    """
+
+    id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.CASCADE,
+        related_name="workflow_stage_approver_overrides",
+    )
+    stage = models.ForeignKey(WorkflowStage, on_delete=models.CASCADE,
+                              related_name="tenant_overrides")
+    approver_source = models.CharField(max_length=20, choices=ApproverSource.choices)
+    approver_role_key = models.SlugField(max_length=120, blank=True, default="")
+    approver_group = models.ForeignKey(
+        WorkflowApproverGroup, on_delete=models.CASCADE,
+        null=True, blank=True, related_name="stage_overrides",
+    )
+    note = models.TextField(blank=True, default="")
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
+        constraints = [
+            models.UniqueConstraint(fields=["tenant", "stage"],
+                                    name="uniq_stage_override_per_tenant"),
+            # Only the two tenant-choosable sources, each with its own target.
+            models.CheckConstraint(
+                condition=(
+                    Q(approver_source="ROLE", approver_group__isnull=True)
+                    & ~Q(approver_role_key="")
+                ) | (
+                    Q(approver_source="WORKFLOW_GROUP", approver_group__isnull=False,
+                      approver_role_key="")
+                ),
+                name="ck_stage_override_source_target",
+            ),
+        ]
+        indexes = [models.Index(fields=["tenant", "stage"])]
+
+    def __str__(self):
+        return f"{self.tenant_id}:{self.stage_id} -> {self.approver_role_key or self.approver_group_id}"
+
+
+class WorkflowStageDynamicRule(models.Model):
+    """One "when this, then that role" rule on a DYNAMIC_ROLE stage.
+
+    Rules are evaluated in ascending ``order`` against the business document and
+    the first match wins, mirroring how WorkflowRoutePath picks an edge. A rule
+    with a null ``condition`` always matches and is the fallback, so it must be
+    the last rule; anything after it could never fire.
+
+    Rules carry no instance-level references, so publishing replaces them
+    wholesale, exactly like routes.
+
+    Attributes:
+        stage: The DYNAMIC_ROLE stage these rules belong to.
+        order: Evaluation order. First match wins.
+        condition: JSON condition evaluated against the document. Null = fallback.
+        role_key: Key of the role that approves when this rule wins, resolved in
+            the requesting tenant so central templates work.
+        role: The resolved role, set only for tenant-scoped templates.
+    """
+
+    id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
+    stage = models.ForeignKey(WorkflowStage, on_delete=models.CASCADE,
+                              related_name="dynamic_rules")
+    order = models.PositiveIntegerField(default=0)
+    condition = models.JSONField(null=True, blank=True)
+    # Empty is never written by the publish path, which requires a key on every
+    # rule; the default exists only so the column can be added to existing rows.
+    role_key = models.SlugField(max_length=120, default="")
+    # PROTECT for the same reason as WorkflowStage.approver_role: a role a live
+    # rule routes to must not disappear underneath it. Null on central templates,
+    # where the key is resolved per requesting tenant.
+    role = models.ForeignKey("vs_rbac.TenantRoleTemplate", on_delete=models.PROTECT,
+                             null=True, blank=True,
+                             related_name="workflow_dynamic_rules")
+    label = models.CharField(max_length=150, blank=True, default="")
+
+    class Meta:
+        ordering = ["order"]
+        constraints = [
+            models.UniqueConstraint(fields=["stage", "order"], name="uniq_dynamic_rule_order"),
+        ]
+        indexes = [models.Index(fields=["stage", "order"])]
+
+    def __str__(self):
+        return f"{self.stage_id}#{self.order} -> {self.role_key}"
+
+    @property
+    def is_fallback(self) -> bool:
+        return self.condition in (None, {})
 
 
 class WorkflowRoutePath(models.Model):
@@ -220,7 +504,10 @@ class WorkflowInstanceQuerySet(models.QuerySet):
     """
 
     def for_school(self, school):
-        return self.filter(school=school)
+        return self.filter(tenant=school.tenant)
+
+    def for_tenant(self, tenant):
+        return self.filter(tenant=tenant)
 
     def for_branch(self, branch):
         return self.filter(branch=branch)
@@ -254,16 +541,18 @@ class WorkflowInstance(models.Model):
         state_version: Incremented on every status transition; useful for stale-read detection.
     """
     id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
-    school = models.ForeignKey("vs_schools.School", on_delete=models.PROTECT,
-                                    null=True, blank=True, related_name="workflow_instances")
-    branch = models.ForeignKey("vs_schools.Branch", on_delete=models.PROTECT,
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="workflow_instances",
+    )
+    branch = models.ForeignKey("vs_tenants.Branch", on_delete=models.PROTECT,
                                related_name="workflow_instances", null=True, blank=True)
     template = models.ForeignKey(WorkflowTemplate, on_delete=models.PROTECT, related_name="instances")
     # Generic FK to the business document (E1).
     document_content_type = models.ForeignKey(ContentType, on_delete=models.PROTECT)
     document_object_id = models.CharField(max_length=64, db_index=True)
     document = GenericForeignKey("document_content_type", "document_object_id")
-    # Denormalised for fast filtering — avoids a join through contenttypes.
+    # Denormalised for fast filtering - avoids a join through contenttypes.
     document_type = models.CharField(max_length=100, db_index=True)
     document_summary = models.JSONField(default=dict, blank=True)
     status = models.CharField(max_length=30, choices=WorkflowInstanceStatus.choices,
@@ -287,13 +576,21 @@ class WorkflowInstance(models.Model):
         default_manager_name = "objects"
         base_manager_name = "all_objects"
         indexes = [
-            models.Index(fields=["school", "document_type", "status"]),
+            models.Index(fields=["tenant", "document_type", "status"]),
             models.Index(fields=["document_content_type", "document_object_id"]),
             models.Index(fields=["requested_by", "status"]),
         ]
 
     def __str__(self):
         return f"{self.document_type}#{self.document_object_id} [{self.status}]"
+
+    @property
+    def school(self):
+        return getattr(self.tenant, "school_profile", None)
+
+    @property
+    def school_id(self):
+        return getattr(self.school, "pk", None)
 
     @property
     def is_terminal(self) -> bool:
@@ -362,7 +659,7 @@ class WorkflowStageApprover(models.Model):
 class WorkflowStageAction(models.Model):
     """A recorded approver vote or admin reversal. Append-only.
 
-    Every decision taken on a stage — APPROVED, REJECTED, or RETURNED — writes a
+    Every decision taken on a stage - APPROVED, REJECTED, or RETURNED - writes a
     row here. Reversals never delete or modify the original row; instead a new row
     is created with is_reversal_of pointing to the original, and the original receives
     a reversed_at timestamp.
@@ -422,13 +719,15 @@ class ApprovalDelegation(models.Model):
         starts_at: Datetime from which the delegation becomes effective.
         ends_at: Datetime after which the delegation expires.
         document_type: Limits the delegation to a specific document type. Blank means all types.
-        exclusive: If True, the delegator is removed from the eligible list for the duration —
+        exclusive: If True, the delegator is removed from the eligible list for the duration -
             only the delegate can approve, not both.
         revoked_at: Set when an admin or the delegator manually revokes the delegation early.
     """
     id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
-    school = models.ForeignKey("vs_schools.School", on_delete=models.PROTECT,
-                                    null=True, blank=True, related_name="approval_delegations")
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="approval_delegations",
+    )
     delegator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
                                    related_name="delegations_granted")
     delegate = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
@@ -445,6 +744,14 @@ class ApprovalDelegation(models.Model):
     objects = TenantAwareManager()
     all_objects = models.Manager()
 
+    @property
+    def school(self):
+        return getattr(self.tenant, "school_profile", None)
+
+    @property
+    def school_id(self):
+        return getattr(self.school, "pk", None)
+
     class Meta:
         default_manager_name = "objects"
         base_manager_name = "all_objects"
@@ -457,7 +764,7 @@ class ApprovalDelegation(models.Model):
 class WorkflowAuditLog(models.Model):
     """Append-only log of every material event in a workflow instance's lifecycle.
 
-    One row is written for each significant engine event — submission, stage activation,
+    One row is written for each significant engine event - submission, stage activation,
     vote, approval, rejection, and so on. Rows are never updated or deleted. Used for
     auditing, debugging, and driving notification dispatch.
 

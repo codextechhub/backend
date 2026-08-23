@@ -1,31 +1,31 @@
-"""Idempotent seeding for vs_health.
+"""Idempotent seeding for vs_health - CONFIGURATION ONLY.
 
-Creates the service registry, uptime checks, alert rules, SLOs, a couple of
-historical incidents, the RBAC permissions, and backfills synthetic history
-(daily uptime rollups + a recent slice of request metrics) so the dashboards
-render before real traffic and probes have accrued.
+Creates the service registry, uptime checks, alert rules, SLO targets, and
+the RBAC permissions. It never writes telemetry: every measurement on the
+health screens (request metrics, uptime rollups, queue snapshots, incidents,
+alerts) comes exclusively from the live collectors - RequestMetricsMiddleware,
+the celery-beat probe/snapshot tasks, and the alert engine. Screens are
+honestly empty until real traffic and probes have accrued.
 
 Run via ``python manage.py seed_health``. Re-running only fills gaps.
 """
 from __future__ import annotations
 
-import random
-from datetime import timedelta
-
 from django.conf import settings
-from django.utils import timezone
 
-from .constants import HISTOGRAM_SIZE, LATENCY_BUCKETS_MS, PERM_VIEW, PERM_MANAGE
+from .constants import PERM_VIEW, PERM_MANAGE
 
 
-PROBE_BASE = getattr(settings, "HEALTH_PROBE_BASE_URL", "https://api.codexvision.io")
-SSL_DOMAIN = getattr(settings, "HEALTH_SSL_DOMAIN", "api.codexvision.io")
+PROBE_BASE = getattr(settings, "HEALTH_PROBE_BASE_URL", "https://api.codexng.com")
+SSL_DOMAIN = getattr(settings, "HEALTH_SSL_DOMAIN", "api.codexng.com")
 
 SERVICES = [
     ("web", "Web Frontend", "Edge", "Tier 1", "internal", 10),
     ("api", "API · DRF", "Core", "Tier 1", "internal", 20),
     ("auth", "Auth / JWT", "Core", "Tier 1", "internal", 30),
-    ("admissions", "Admissions", "Modules", "Tier 2", "internal", 40),
+    # Module services are route groups of the monolith; status derives from
+    # live request metrics on their prefixes (constants.ROUTE_PREFIX_SERVICES).
+    ("schools", "Schools & Onboarding", "Modules", "Tier 2", "internal", 40),
     ("billing", "Billing & Fees", "Modules", "Tier 2", "internal", 50),
     ("reports", "Report Engine", "Modules", "Tier 3", "internal", 60),
     ("celery", "Celery Workers", "Async", "Tier 2", "internal", 70),
@@ -36,45 +36,47 @@ SERVICES = [
     ("dns", "DNS / SSL", "External", "Ext", "external", 120),
 ]
 
-# Representative routes for the synthetic request-metric backfill.
-SEED_ROUTES = [
-    ("/v1/i/students/", "GET"),
-    ("/v1/user/auth/login/", "POST"),
-    ("/v1/finance/invoices/", "GET"),
-    ("/v1/payments/initialize/", "POST"),
-    ("/v1/import/students/", "POST"),
-    ("/v1/finance/reports/term-sheet/", "GET"),
-]
-
-
+# Write progress only when called from a management command with stdout.
 def _log(stdout, msg):
     if stdout:
         stdout.write(msg)
 
 
+# Ensure the RBAC contract for health read/manage access exists.
 def seed_permissions(stdout=None):
-    from vs_rbac.models import PermissionModule, PermissionResource, PermissionAction, Permission
+    from vs_rbac.models import PermissionModule, PermissionResource, PermissionAction, Permission, PermissionScope
 
     module, _ = PermissionModule.objects.get_or_create(
         name="platform", defaults={"description": "Platform-wide capabilities."})
     resource, _ = PermissionResource.objects.get_or_create(
         module=module, name="health",
-        defaults={"description": "VIGIL observability."})
+        defaults={"description": "Platform health and observability."})
+    if resource.description != "Platform health and observability.":
+        resource.description = "Platform health and observability."
+        resource.save(update_fields=["description"])
     for action_name, desc in [("view", "View observability data"),
                               ("manage", "Manage incidents, alerts and deployments")]:
         PermissionAction.objects.get_or_create(name=action_name, defaults={"description": desc})
 
+    # Manage is sensitive because it can alter incidents, deployments, and alert rules.
     for key, action, sens in [(PERM_VIEW, "view", "NORMAL"), (PERM_MANAGE, "manage", "SENSITIVE")]:
-        if not Permission.objects.filter(key=key).exists():
-            Permission.objects.create(
+        permission = Permission.objects.filter(key=key).first()
+        if permission is None:
+            permission = Permission.objects.create(
                 module=module, resource=resource,
                 action=PermissionAction.objects.get(name=action),
-                description=f"VIGIL: {action}",
+                description=f"Health: {action}",
                 sensitivity_level=sens,
+                # Tenant Health reads cross-tenant aggregates: CX only.
+                scope=PermissionScope.PLATFORM,
             )
+        elif permission.description != f"Health: {action}":
+            permission.description = f"Health: {action}"
+            permission.save(update_fields=["description"])
     _log(stdout, f"  permissions: {PERM_VIEW}, {PERM_MANAGE}")
 
 
+# Seed the monitored service registry without writing any telemetry.
 def seed_services(stdout=None):
     from .models import MonitoredService
     for key, name, group, tier, kind, order in SERVICES:
@@ -83,9 +85,16 @@ def seed_services(stdout=None):
             defaults={"name": name, "group": group, "tier": tier,
                       "kind": kind, "sort_order": order},
         )
-    _log(stdout, f"  services: {MonitoredService.objects.count()}")
+    # Retire registry entries no longer in the list (e.g. the old fictional
+    # "admissions" group) so the console never shows unmonitorable services.
+    keys = {key for key, *_ in SERVICES}
+    retired = MonitoredService.objects.exclude(key__in=keys).filter(is_active=True).update(is_active=False)
+    if retired:
+        _log(stdout, f"  services retired: {retired}")
+    _log(stdout, f"  services: {MonitoredService.objects.filter(is_active=True).count()}")
 
 
+# Seed uptime checks that generate future probe results.
 def seed_checks(stdout=None):
     from .models import MonitoredService, UptimeCheck, CheckType
     svc = {s.key: s for s in MonitoredService.objects.all()}
@@ -94,7 +103,10 @@ def seed_checks(stdout=None):
         s = svc.get(service_key)
         if not s:
             return
-        UptimeCheck.objects.get_or_create(
+        # These checks are system configuration. Re-seeding must repair stale
+        # targets (notably the former api.codexvision.io SSL domain) rather
+        # than preserving them forever.
+        UptimeCheck.objects.update_or_create(
             service=s, name=name,
             defaults={"check_type": check_type, "target": target,
                       "expected": expected or {}, "interval_sec": interval},
@@ -102,15 +114,23 @@ def seed_checks(stdout=None):
 
     mk("web", "Web frontend", CheckType.HTTP, getattr(settings, "FRONTEND_BASE_URL", PROBE_BASE),
        {"status": 200, "warn_ms": 800})
-    mk("api", "API health", CheckType.HTTP, f"{PROBE_BASE}/v1/", {"status": 200, "warn_ms": 600})
-    mk("auth", "Auth endpoint", CheckType.HTTP, f"{PROBE_BASE}/v1/user/", {"warn_ms": 600})
+    # HTTP probe warn levels align with the 800ms latency warning band in
+    # services._status_for_latency: a single synthetic request on the starter
+    # instance should not be held to a stricter bar than the app-wide p95.
+    mk("api", "API health", CheckType.HTTP, f"{PROBE_BASE}/v1/", {"status": 200, "warn_ms": 800})
+    mk("auth", "Auth endpoint", CheckType.HTTP, f"{PROBE_BASE}/v1/user/", {"warn_ms": 800})
     mk("postgres", "Postgres SELECT 1", CheckType.POSTGRES, expected={"warn_ms": 100})
     mk("redis", "Redis ping", CheckType.REDIS, expected={"warn_ms": 50})
     mk("dns", "SSL certificate", CheckType.SSL, SSL_DOMAIN, {"warn_days": 14, "critical_days": 5}, 3600)
     mk("payments", "Payments gateway", CheckType.HTTP, f"{PROBE_BASE}/v1/payments/", {"warn_ms": 900})
+    # Real TCP reachability of the configured mail relay.
+    smtp_host = getattr(settings, "EMAIL_HOST", "smtp.zoho.com")
+    smtp_port = getattr(settings, "EMAIL_PORT", 587)
+    mk("smtp", "SMTP reachability", CheckType.TCP, f"{smtp_host}:{smtp_port}", {"timeout": 5})
     _log(stdout, f"  uptime checks: {UptimeCheck.objects.count()}")
 
 
+# Seed default alert rules that evaluate against live collected signals.
 def seed_alert_rules(stdout=None):
     from .models import MonitoredService, AlertRule
     svc = {s.key: s for s in MonitoredService.objects.all()}
@@ -119,22 +139,45 @@ def seed_alert_rules(stdout=None):
 
     rules = [
         ("API error rate", M.ERROR_RATE, C.GT, 5, 300, Severity.SEV1, "api", "", "PagerDuty", True),
-        ("p95 latency SLO", M.P95_LATENCY, C.GT, 400, 600, Severity.SEV2, None, "", "Slack #sre", True),
+        # 800ms matches services._status_for_latency's warning band, sized for
+        # the Render starter (0.5 CPU) this runs on; the old 400 was tuned for a
+        # bigger instance and fired on ordinary billing/report aggregates.
+        ("p95 latency SLO", M.P95_LATENCY, C.GT, 800, 600, Severity.SEV2, None, "", "Slack #sre", True),
         ("Notifications backlog", M.QUEUE_DEPTH, C.GT, 2000, 0, Severity.SEV2, None, "notifications", "Zoho Cliq", True),
         ("SSL expiry", M.SSL_DAYS_LEFT, C.LT, 14, 0, Severity.SEV3, "dns", "", "Email", True),
         ("API uptime SLO", M.UPTIME_PCT, C.LT, 99.5, 0, Severity.SEV2, "api", "", "PagerDuty", True),
     ]
+    repaired = 0
     for name, metric, comp, thresh, dur, sev, skey, queue, channel, on in rules:
-        AlertRule.objects.get_or_create(
-            name=name,
-            defaults={"metric": metric, "comparator": comp, "threshold": thresh,
-                      "duration_sec": dur, "severity": sev,
-                      "target_service": svc.get(skey) if skey else None,
-                      "target_queue": queue, "channel": channel, "is_enabled": on},
-        )
-    _log(stdout, f"  alert rules: {AlertRule.objects.count()}")
+        target = svc.get(skey) if skey else None
+        # These rules are system configuration, like the uptime checks above:
+        # re-seeding must repair stale thresholds on already-deployed rows (a
+        # plain get_or_create would leave the old 400ms p95 threshold firing
+        # forever). The operator's own is_enabled toggle is preserved.
+        rule = AlertRule.objects.filter(name=name).first()
+        if rule is None:
+            AlertRule.objects.create(
+                name=name, metric=metric, comparator=comp, threshold=thresh,
+                duration_sec=dur, severity=sev, target_service=target,
+                target_queue=queue, channel=channel, is_enabled=on,
+            )
+            continue
+        changed = []
+        for field, value in (("metric", metric), ("comparator", comp),
+                             ("threshold", thresh), ("duration_sec", dur),
+                             ("severity", sev), ("target_service", target),
+                             ("target_queue", queue), ("channel", channel)):
+            if getattr(rule, field) != value:
+                setattr(rule, field, value)
+                changed.append(field)
+        if changed:
+            rule.save(update_fields=changed)
+            repaired += 1
+            _log(stdout, f"  alert rule repaired: {name} ({', '.join(changed)})")
+    _log(stdout, f"  alert rules: {AlertRule.objects.count()} ({repaired} repaired)")
 
 
+# Seed availability SLO targets for services shown in reliability screens.
 def seed_slos(stdout=None):
     from .models import MonitoredService, SLO
     svc = {s.key: s for s in MonitoredService.objects.all()}
@@ -147,94 +190,12 @@ def seed_slos(stdout=None):
     _log(stdout, f"  slos: {SLO.objects.count()}")
 
 
-def seed_incidents(stdout=None):
-    from .models import Incident, MonitoredService
-    if Incident.objects.filter(code="INC-2036").exists():
-        return
-    t = timezone.now()
-    inc = Incident.objects.create(
-        code="INC-2036", title="Slow term-sheet report generation",
-        severity=3, status=Incident.Status.RESOLVED, source=Incident.Source.MANUAL,
-        owner_label="D. Bello", team="Reports",
-        summary="PDF compilation N+1 query. Fixed by prefetch + caching.",
-        started_at=t - timedelta(days=2),
-        resolved_at=t - timedelta(days=2) + timedelta(minutes=47),
-    )
-    reports = MonitoredService.objects.filter(key="reports").first()
-    if reports:
-        inc.services.add(reports)
-    inc.add_event(kind="opened", who="Alertmanager", text="p95 on /reports/term-sheet/ > 5s.")
-    inc.add_event(kind="resolved", who="D. Bello", text="Deployed fix in v4.18.2. p95 back to 240ms.")
-    _log(stdout, "  incidents: sample history created")
-
-
-def seed_uptime_history(stdout=None, days: int = 90):
-    from .models import MonitoredService, UptimeDailyRollup
-    from .constants import HealthStatus
-    today = timezone.now().date()
-    written = 0
-    for svc in MonitoredService.objects.all():
-        for offset in range(days):
-            day = today - timedelta(days=offset)
-            if UptimeDailyRollup.objects.filter(service=svc, day=day).exists():
-                continue
-            # Mostly healthy with occasional dips for realism.
-            roll = random.random()
-            if roll < 0.03:
-                uptime, status = round(random.uniform(97.0, 99.4), 4), HealthStatus.WARNING
-            elif roll < 0.01:
-                uptime, status = round(random.uniform(95.0, 98.5), 4), HealthStatus.CRITICAL
-            else:
-                uptime, status = round(random.uniform(99.9, 100.0), 4), HealthStatus.HEALTHY
-            UptimeDailyRollup.objects.create(
-                service=svc, day=day, uptime_pct=uptime, worst_status=status,
-                total_checks=288, failed_checks=int((100 - uptime) / 100 * 288),
-                avg_response_ms=round(random.uniform(60, 240), 1),
-            )
-            written += 1
-    _log(stdout, f"  uptime daily rollups: +{written}")
-
-
-def seed_request_metrics(stdout=None, minutes: int = 90):
-    """Backfill a recent slice of request metrics so KPIs/series have data."""
-    from .models import RequestMetric
-    now = timezone.now().replace(second=0, microsecond=0)
-    created = 0
-    for m in range(minutes):
-        bucket = now - timedelta(minutes=m)
-        for route, method in SEED_ROUTES:
-            if RequestMetric.objects.filter(bucket_start=bucket, route=route,
-                                            method=method, school_id=None).exists():
-                continue
-            count = random.randint(20, 400)
-            errors = max(0, int(count * random.uniform(0, 0.02)))
-            hist = [0] * HISTOGRAM_SIZE
-            sum_ms = 0.0
-            max_ms = 0.0
-            for _ in range(count):
-                lat = random.lognormvariate(4.6, 0.5)  # ~100ms median, long tail
-                sum_ms += lat
-                max_ms = max(max_ms, lat)
-                idx = next((i for i, u in enumerate(LATENCY_BUCKETS_MS) if lat <= u), HISTOGRAM_SIZE - 1)
-                hist[idx] += 1
-            RequestMetric.objects.create(
-                bucket_start=bucket, route=route, method=method, school_id=None,
-                request_count=count, status_2xx=count - errors, status_5xx=errors,
-                latency_sum_ms=round(sum_ms, 1), latency_max_ms=round(max_ms, 1),
-                latency_hist=hist,
-            )
-            created += 1
-    _log(stdout, f"  request metrics: +{created} rows")
-
-
+# Run all health configuration seeders in dependency order.
 def run(stdout=None):
-    _log(stdout, "Seeding vs_health (VIGIL)…")
+    _log(stdout, "Seeding vs_health (configuration only - telemetry comes from live collectors)")
     seed_permissions(stdout)
     seed_services(stdout)
     seed_checks(stdout)
     seed_alert_rules(stdout)
     seed_slos(stdout)
-    seed_incidents(stdout)
-    seed_uptime_history(stdout)
-    seed_request_metrics(stdout)
     _log(stdout, "Done.")

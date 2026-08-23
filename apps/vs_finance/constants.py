@@ -8,6 +8,7 @@ from __future__ import annotations
 from django.db import models
 
 
+# Define Period Status values.
 class PeriodStatus(models.TextChoices):
     """Lifecycle of a fiscal period.
 
@@ -35,6 +36,7 @@ PERIOD_POSTING_RESTRICTED = frozenset({
 })
 
 
+# Define Document Status values.
 class DocumentStatus(models.TextChoices):
     """Generic lifecycle for numbered finance documents.
 
@@ -49,36 +51,40 @@ class DocumentStatus(models.TextChoices):
     CANCELLED = "CANCELLED", "Cancelled"
 
 
+# Define Doc Type values.
 class DocType(models.TextChoices):
     """Document-type tokens used by the numbering sequence.
 
-    The token becomes the middle segment of a document number, e.g. ``INV`` in
-    ``CFX-B01-INV-2026-00821``. Keep tokens short, uppercase and stable — they are
-    persisted inside human-facing identifiers.
+    The token becomes the prefix of a document number, e.g. ``IV`` in
+    ``IV-12607221``. Keep tokens short (2 chars), uppercase, unique and
+    stable - they are persisted inside human-facing identifiers.
     """
-    JOURNAL = "JNL", "Journal Entry"
-    INVOICE = "INV", "Sales / AR Invoice"
-    RECEIPT = "RCP", "Receipt"
-    PAYMENT = "PAY", "Payment"
-    CREDIT_NOTE = "CRN", "Credit Note"
-    DEBIT_NOTE = "DRN", "Debit Note"
-    REFUND = "RFD", "Customer Refund"
-    PAYMENT_PLAN = "PPL", "Installment Payment Plan"
-    CONCESSION = "CNC", "Concession / Discount / Waiver"
-    DUNNING_NOTICE = "DUN", "Dunning / Payment Reminder"
+    JOURNAL = "JN", "Journal Entry"
+    INVOICE = "IV", "Sales / AR Invoice"
+    RECEIPT = "RC", "Receipt"
+    PAYMENT = "PY", "Payment"
+    CREDIT_NOTE = "CN", "Credit Note"
+    DEBIT_NOTE = "DN", "Debit Note"
+    REFUND = "RF", "Customer Refund"
+    PAYMENT_PLAN = "PP", "Installment Payment Plan"
+    CONCESSION = "CC", "Concession / Discount / Waiver"
+    WRITE_OFF = "WO", "Bad-debt Write-off"
+    DUNNING_NOTICE = "DU", "Dunning / Payment Reminder"
     PURCHASE_REQUISITION = "PR", "Purchase Requisition"
-    RFQ = "RFQ", "Request for Quotation"
-    QUOTATION = "QUO", "Vendor Quotation"
+    RFQ = "RQ", "Request for Quotation"
+    QUOTATION = "QT", "Vendor Quotation"
     PURCHASE_ORDER = "PO", "Purchase Order"
-    GOODS_RECEIVED = "GRN", "Goods Received Note"
-    VENDOR_INVOICE = "VIN", "Vendor Invoice"
-    VENDOR_PAYMENT = "VPY", "Vendor Payment"
-    EXPENSE_CLAIM = "EXP", "Expense Claim"
-    PETTY_CASH_VOUCHER = "PCV", "Petty Cash Voucher"
-    PAYROLL_RUN = "PYR", "Payroll Run"
+    GOODS_RECEIVED = "GN", "Goods Received Note"
+    VENDOR_INVOICE = "VI", "Vendor Invoice"
+    VENDOR_PAYMENT = "VP", "Vendor Payment"
+    EXPENSE_CLAIM = "EX", "Expense Claim"
+    PETTY_CASH_VOUCHER = "PC", "Petty Cash Voucher"
+    PAYROLL_RUN = "PL", "Payroll Run"
     FIXED_ASSET = "FA", "Fixed Asset"
-    TAX_FILING = "TXF", "Tax Filing / Remittance"
+    TAX_FILING = "TX", "Tax Filing / Remittance"
+    BUDGET = "BG", "Budget"
 
+# Define Account Type values.
 class AccountType(models.TextChoices):
     """The five roots of double-entry accounting.
 
@@ -101,10 +107,43 @@ class AccountType(models.TextChoices):
     EXPENSE = "EXPENSE", "Expense"
 
 
+ACCOUNT_TYPE_BY_CODE_PREFIX = {
+    "1": AccountType.ASSET,
+    "2": AccountType.LIABILITY,
+    "3": AccountType.EQUITY,
+    "4": AccountType.INCOME,
+    "5": AccountType.EXPENSE,
+}
+ACCOUNT_CODE_LENGTH = 4
+
+
+def account_type_from_code(code):
+    """Return the canonical account type encoded by a Chart-of-Accounts code."""
+    value = str(code).strip()
+    return ACCOUNT_TYPE_BY_CODE_PREFIX.get(value[:1])
+
+
+# Group behavior for Normal Balance.
 class NormalBalance(models.TextChoices):
     """The side on which an account normally carries its balance."""
     DEBIT = "DEBIT", "Debit"
     CREDIT = "CREDIT", "Credit"
+
+
+# Group behavior for Fee Applies To.
+class FeeAppliesTo(models.TextChoices):
+    """Who a :class:`vs_finance.models.FeeStructure` bills.
+
+    This is a *generic* platform - a fee structure is not tied to a school term.
+    It classifies the counterparty type the template charges: a client/customer
+    (e.g. a school's students/payers), a vendor, a staff member, or a general
+    template not bound to any counterparty type. Only ``CUSTOMER`` structures can
+    currently generate AR invoices.
+    """
+    CUSTOMER = "CUSTOMER", "Customer"
+    VENDOR = "VENDOR", "Vendor"
+    STAFF = "STAFF", "Staff"
+    GENERAL = "GENERAL", "General"
 
 
 #: Default natural balance for each account root (before any contra flip).
@@ -117,8 +156,9 @@ NORMAL_BALANCE_BY_TYPE = {
 }
 
 
+# Group behavior for Journal Source.
 class JournalSource(models.TextChoices):
-    """Where a journal entry originated — for filtering and audit, not for posting logic.
+    """Where a journal entry originated - for filtering and audit, not for posting logic.
 
     MANUAL entries are typed by a person; the rest are raised by sub-ledgers and
     automated processes (AR/AP postings, bank reconciliation, period-close accruals
@@ -135,8 +175,9 @@ class JournalSource(models.TextChoices):
     SYSTEM = "SYSTEM", "System"
 
 
+# Group behavior for Invoice Source.
 class InvoiceSource(models.TextChoices):
-    """What generated an invoice — keeps the AR core domain-neutral.
+    """What generated an invoice - keeps the AR core domain-neutral.
 
     The invoice model is generic; ``source`` records the originating mechanism so a
     school-fee run, a subscription engine or an API caller can all emit the *same*
@@ -147,10 +188,12 @@ class InvoiceSource(models.TextChoices):
     FEE_BILLING = "FEE_BILLING", "Fee Billing"
     SUBSCRIPTION = "SUBSCRIPTION", "Subscription"
     API = "API", "API"
+    OPENING = "OPENING", "Opening Balance"
 
 
+# Define Invoice Payment Status values.
 class InvoicePaymentStatus(models.TextChoices):
-    """How much of an invoice has been settled — distinct from its document status.
+    """How much of an invoice has been settled - distinct from its document status.
 
     Document ``status`` (DRAFT→POSTED→…) tracks the *ledger* lifecycle; this tracks
     *cash* against the invoice and is derived from amount paid vs total.
@@ -160,19 +203,21 @@ class InvoicePaymentStatus(models.TextChoices):
     PAID = "PAID", "Paid"
 
 
+# Define Credit Note Kind values.
 class CreditNoteKind(models.TextChoices):
     """Direction of a credit/debit note against a customer's receivable.
 
     CREDIT reduces what the customer owes (a sales return, allowance or correction:
     ``Dr revenue/returns + Dr output tax, Cr AR``); it may be *applied* to specific
     invoices like a non-cash payment. DEBIT increases what the customer owes (an extra
-    charge or under-bill correction: ``Dr AR, Cr revenue + Cr output tax``) — a
+    charge or under-bill correction: ``Dr AR, Cr revenue + Cr output tax``) - a
     supplementary invoice, so it is never allocated to reduce another invoice.
     """
     CREDIT = "CREDIT", "Credit note (reduces AR)"
     DEBIT = "DEBIT", "Debit note (increases AR)"
 
 
+# Group behavior for Payment Plan Frequency.
 class PaymentPlanFrequency(models.TextChoices):
     """Spacing between installments in a payment plan (drives each due date)."""
     WEEKLY = "WEEKLY", "Weekly"
@@ -181,6 +226,7 @@ class PaymentPlanFrequency(models.TextChoices):
     QUARTERLY = "QUARTERLY", "Quarterly"
 
 
+# Define Payment Plan Status values.
 class PaymentPlanStatus(models.TextChoices):
     """Lifecycle of an installment payment plan (a scheduling overlay, never posted).
 
@@ -195,6 +241,7 @@ class PaymentPlanStatus(models.TextChoices):
     CANCELLED = "CANCELLED", "Cancelled"
 
 
+# Define Installment Status values.
 class InstallmentStatus(models.TextChoices):
     """Settlement state of a single installment, derived from amount settled vs due."""
     PENDING = "PENDING", "Pending"
@@ -202,6 +249,7 @@ class InstallmentStatus(models.TextChoices):
     PAID = "PAID", "Settled"
 
 
+# Define Concession Kind values.
 class ConcessionKind(models.TextChoices):
     """A non-cash reduction of a receivable granted to a customer.
 
@@ -210,7 +258,7 @@ class ConcessionKind(models.TextChoices):
     SCHOLARSHIP -> a granted allowance against billed amounts (domain-neutral name for
                    a bursary/scholarship in a school tenant).
 
-    All three post the same way — ``Dr discounts & allowances, Cr AR control`` — and
+    All three post the same way - ``Dr discounts & allowances, Cr AR control`` - and
     reduce the invoice's balance via :attr:`Invoice.amount_credited`; ``kind`` is a
     reporting tag, not a different posting.
     """
@@ -219,18 +267,18 @@ class ConcessionKind(models.TextChoices):
     SCHOLARSHIP = "SCHOLARSHIP", "Scholarship / bursary"
 
 
+# Group behavior for Dunning Channel.
 class DunningChannel(models.TextChoices):
     """How a dunning reminder is delivered (operational detail; vs_finance only records it).
 
-    vs_finance does not itself send email/SMS — it tracks the *intent* and outcome; an
+    vs_finance does not itself send email/SMS - it tracks the *intent* and outcome; an
     outer service (notifications) reads PENDING notices and dispatches them.
     """
     EMAIL = "EMAIL", "Email"
-    SMS = "SMS", "SMS"
-    LETTER = "LETTER", "Letter"
     IN_APP = "IN_APP", "In-app"
 
 
+# Define Dunning Notice Status values.
 class DunningNoticeStatus(models.TextChoices):
     """Lifecycle of a single dunning notice (a communications overlay, never posted).
 
@@ -245,6 +293,44 @@ class DunningNoticeStatus(models.TextChoices):
     CANCELLED = "CANCELLED", "Cancelled"
 
 
+# Define which customer-facing document a delivery carried.
+class FinanceDeliveryDocument(models.TextChoices):
+    """The kinds of finance document that can be emailed to a customer.
+
+    STATEMENT is not a stored document: it is a report over a customer and a date
+    range, so its delivery row carries the period rather than a document id.
+    """
+    INVOICE = "INVOICE", "Invoice"
+    RECEIPT = "RECEIPT", "Receipt"
+    STATEMENT = "STATEMENT", "Statement of account"
+
+
+# Define Finance Delivery Status values.
+class FinanceDeliveryStatus(models.TextChoices):
+    """Outcome of one attempt to email a customer document.
+
+    PENDING -> handed to vs_notifications, no outcome yet.
+    SENT    -> every notification for the attempt reported success.
+    FAILED  -> at least one reported failure; the attempt can be retried.
+
+    There is deliberately no AWAITING_APPROVAL state (unlike a purchase order):
+    a finance document is emailed on demand, with nothing to wait for.
+    """
+    PENDING = "PENDING", "Pending"
+    SENT = "SENT", "Sent"
+    FAILED = "FAILED", "Failed"
+
+
+# Define how a customer document email was requested.
+class FinanceDeliverySource(models.TextChoices):
+    """Why the delivery happened, so history distinguishes the automatic copy sent
+    on posting from a re-send somebody asked for."""
+    AUTOMATIC = "AUTOMATIC", "Automatic on posting"
+    MANUAL = "MANUAL", "Manual send"
+    RETRY = "RETRY", "Retry"
+
+
+# Define Payment Method values.
 class PaymentMethod(models.TextChoices):
     """How a customer receipt was tendered (operational detail, not posting logic)."""
     CASH = "CASH", "Cash"
@@ -256,9 +342,10 @@ class PaymentMethod(models.TextChoices):
 
 
 # --------------------------------------------------------------------------- #
-# Phase 4 — banking, expenses, payroll, budget, fixed assets, period close     #
+# Phase 4 - banking, expenses, payroll, budget, fixed assets, period close     #
 # --------------------------------------------------------------------------- #
 
+# Define Bank Line Status values.
 class BankLineStatus(models.TextChoices):
     """Reconciliation state of an imported bank-statement line.
 
@@ -271,6 +358,29 @@ class BankLineStatus(models.TextChoices):
     IGNORED = "IGNORED", "Ignored"
 
 
+# Group behavior for Bank Match Source.
+class BankMatchSource(models.TextChoices):
+    """How a statement line came to be matched."""
+    AUTO = "AUTO", "Auto"
+    MANUAL = "MANUAL", "Manual"
+    ADJUSTMENT = "ADJUSTMENT", "Adjustment"
+
+
+# Define Bank Statement Status values.
+class BankStatementStatus(models.TextChoices):
+    """Lifecycle of an imported bank statement (a batch of lines for a period)."""
+    UPLOADED = "UPLOADED", "Uploaded"
+    RECONCILED = "RECONCILED", "Reconciled"
+
+
+# Define Bank Recon Status values.
+class BankReconStatus(models.TextChoices):
+    """Outcome of a reconciliation run."""
+    BALANCED = "BALANCED", "Balanced"
+    OUT_OF_BALANCE = "OUT_OF_BALANCE", "Out of balance"
+
+
+# Define Payroll Run Status values.
 class PayrollRunStatus(models.TextChoices):
     """Lifecycle of a payroll run (a batch of employee pay lines)."""
     DRAFT = "DRAFT", "Draft"
@@ -279,18 +389,52 @@ class PayrollRunStatus(models.TextChoices):
     CANCELLED = "CANCELLED", "Cancelled"
 
 
+# Define Salary Component Kind values.
+class SalaryComponentKind(models.TextChoices):
+    """Whether a salary-structure component adds to pay or is withheld from it."""
+    EARNING = "EARNING", "Earning"
+    DEDUCTION = "DEDUCTION", "Deduction"
+
+
+# Define Salary Calc Method values.
+class SalaryCalcMethod(models.TextChoices):
+    """How a salary component's amount is derived from an employee's gross."""
+    FIXED = "FIXED", "Fixed amount"
+    PERCENT_OF_GROSS = "PERCENT_OF_GROSS", "Percent of gross"
+    PERCENT_OF_BASIC = "PERCENT_OF_BASIC", "Percent of basic"
+
+
+# Define Statutory Type values.
+class StatutoryType(models.TextChoices):
+    """Which statutory liability a deduction feeds - routes the GL credit and the return.
+
+    Earnings are always ``NONE``; deductions must be ``PAYE`` or ``PENSION`` so the
+    accrual journal stays balanced (``net = gross - paye - pension``).
+    """
+    NONE = "NONE", "None"
+    PAYE = "PAYE", "PAYE"
+    PENSION = "PENSION", "Pension"
+
+
+# Define Budget Status values.
 class BudgetStatus(models.TextChoices):
-    """Lifecycle of a budget; locked on approval so actuals can't be re-planned."""
+    """Lifecycle of a budget; approval locks the figures so actuals can't be re-planned.
+
+    Two states only: a DRAFT budget is editable; APPROVED locks it (see
+    :attr:`Budget.is_locked`). There is no separate LOCKED state - approval *is* the lock.
+    """
     DRAFT = "DRAFT", "Draft"
     APPROVED = "APPROVED", "Approved"
-    LOCKED = "LOCKED", "Locked"
 
 
+# Define Depreciation Method values.
 class DepreciationMethod(models.TextChoices):
-    """Depreciation method for a fixed asset. Straight-line only for now."""
+    """Depreciation method for a fixed asset."""
     STRAIGHT_LINE = "STRAIGHT_LINE", "Straight line"
+    DECLINING_BALANCE = "DECLINING_BALANCE", "Declining balance"
 
 
+# Define Asset Status values.
 class AssetStatus(models.TextChoices):
     """Lifecycle of a fixed asset in the register."""
     DRAFT = "DRAFT", "Draft"
@@ -299,12 +443,25 @@ class AssetStatus(models.TextChoices):
     DISPOSED = "DISPOSED", "Disposed"
 
 
+# Group behavior for Asset Category.
+class AssetCategory(models.TextChoices):
+    """Broad register category for a fixed asset (drives the list filter/column)."""
+    VEHICLES = "VEHICLES", "Vehicles"
+    BUILDINGS = "BUILDINGS", "Buildings"
+    PLANT_MACHINERY = "PLANT_MACHINERY", "Plant & machinery"
+    IT_EQUIPMENT = "IT_EQUIPMENT", "IT equipment"
+    FURNITURE = "FURNITURE", "Furniture & fittings"
+    EQUIPMENT = "EQUIPMENT", "Equipment"
+    OTHER = "OTHER", "Other"
+
+
+# Define Finance Audit Action values.
 class FinanceAuditAction(models.TextChoices):
     """Auditable finance actions recorded in the in-app, append-only audit log.
 
     The ledger itself (immutable posted/reversed journals + period locks) is the
     primary financial audit trail; this enum names the *actions around* it that the
-    journals can't capture on their own — who pressed post, rejected attempts, period
+    journals can't capture on their own - who pressed post, rejected attempts, period
     state changes and master-data edits.
     """
     JOURNAL_POSTED = "JOURNAL_POSTED", "Journal posted"
@@ -312,17 +469,22 @@ class FinanceAuditAction(models.TextChoices):
     JOURNAL_POST_REJECTED = "JOURNAL_POST_REJECTED", "Journal posting rejected"
     INVOICE_POSTED = "INVOICE_POSTED", "Invoice posted"
     INVOICE_CANCELLED = "INVOICE_CANCELLED", "Invoice cancelled"
+    INVOICE_REVERSED = "INVOICE_REVERSED", "Invoice reversed"
     INVOICE_WRITTEN_OFF = "INVOICE_WRITTEN_OFF", "Invoice written off (bad debt)"
     PAYMENT_POSTED = "PAYMENT_POSTED", "Payment posted"
     PAYMENT_ALLOCATED = "PAYMENT_ALLOCATED", "Payment allocated"
+    PAYMENT_REVERSED = "PAYMENT_REVERSED", "Payment reversed"
     CREDIT_NOTE_POSTED = "CREDIT_NOTE_POSTED", "Credit note posted"
     CREDIT_NOTE_ALLOCATED = "CREDIT_NOTE_ALLOCATED", "Credit note allocated"
     DEBIT_NOTE_POSTED = "DEBIT_NOTE_POSTED", "Debit note posted"
+    CREDIT_NOTE_REVERSED = "CREDIT_NOTE_REVERSED", "Credit/debit note reversed"
     REFUND_POSTED = "REFUND_POSTED", "Customer refund posted"
+    REFUND_REVERSED = "REFUND_REVERSED", "Customer refund reversed"
     PAYMENT_PLAN_ACTIVATED = "PAYMENT_PLAN_ACTIVATED", "Installment plan activated"
     PAYMENT_PLAN_COMPLETED = "PAYMENT_PLAN_COMPLETED", "Installment plan completed"
     PAYMENT_PLAN_CANCELLED = "PAYMENT_PLAN_CANCELLED", "Installment plan cancelled"
     CONCESSION_POSTED = "CONCESSION_POSTED", "Concession / discount / waiver posted"
+    CONCESSION_REVERSED = "CONCESSION_REVERSED", "Concession / discount / waiver reversed"
     DUNNING_RUN_GENERATED = "DUNNING_RUN_GENERATED", "Dunning run generated"
     DUNNING_NOTICE_SENT = "DUNNING_NOTICE_SENT", "Dunning notice marked sent"
     DUNNING_NOTICE_CANCELLED = "DUNNING_NOTICE_CANCELLED", "Dunning notice cancelled"
@@ -330,19 +492,43 @@ class FinanceAuditAction(models.TextChoices):
     PERIOD_REOPENED = "PERIOD_REOPENED", "Period re-opened"
     ACCOUNT_CREATED = "ACCOUNT_CREATED", "Account created"
     ACCOUNT_UPDATED = "ACCOUNT_UPDATED", "Account updated"
+    FINANCE_SETTINGS_UPDATED = "FINANCE_SETTINGS_UPDATED", "Finance settings updated"
+    FINANCE_DOCUMENT_SETTINGS_UPDATED = (
+        "FIN_DOCUMENT_SETTINGS_UPDATED", "Finance document settings updated"
+    )
+    FINANCE_BANKING_SETTINGS_UPDATED = (
+        "FIN_BANK_SETTINGS_UPDATED", "Finance banking settings updated"
+    )
+    PROCUREMENT_SETTINGS_UPDATED = "PROCUREMENT_SETTINGS_UPDATED", "Procurement settings updated"
     # Procure-to-Pay. The vendor/PO/GRN documents live in vs_procurement,
     # but their audit vocabulary belongs to finance's authoritative log (finance does
-    # not import procurement — these are just string constants).
+    # not import procurement - these are just string constants).
     REQUISITION_APPROVED = "REQUISITION_APPROVED", "Requisition approved"
+    # A spend document that nobody could approve, released without a vote by a
+    # permissioned human. This is the row an auditor looks for: it is never written
+    # by an ordinary approval, only by the dedicated, reasoned override.
+    SPEND_APPROVAL_OVERRIDDEN = (
+        "SPEND_APPROVAL_OVERRIDDEN", "Spend approval released by override (no review)"
+    )
     RFQ_ISSUED = "RFQ_ISSUED", "Request for quotation issued"
     RFQ_CANCELLED = "RFQ_CANCELLED", "Request for quotation cancelled"
+    RFQ_CLOSED = "RFQ_CLOSED", "Request for quotation closed without award"
     QUOTATION_SUBMITTED = "QUOTATION_SUBMITTED", "Vendor quotation submitted"
     QUOTATION_AWARDED = "QUOTATION_AWARDED", "Vendor quotation awarded → PO"
+    QUOTATION_REJECTED = "QUOTATION_REJECTED", "Vendor quotation rejected"
     VENDOR_CONTRACT_ACTIVATED = "VENDOR_CONTRACT_ACTIVATED", "Vendor contract activated"
     VENDOR_CONTRACT_RENEWED = "VENDOR_CONTRACT_RENEWED", "Vendor contract renewed"
     VENDOR_CONTRACT_TERMINATED = "VENDOR_CONTRACT_TERMINATED", "Vendor contract terminated"
     CONTRACT_MILESTONE_COMPLETED = "CONTRACT_MILESTONE_COMPLETED", "Contract milestone completed"
     PURCHASE_ORDER_APPROVED = "PURCHASE_ORDER_APPROVED", "Purchase order approved"
+    PURCHASE_ORDER_EMAIL_SCHEDULED = "PO_EMAIL_SCHEDULED", "Purchase order email scheduled"
+    PURCHASE_ORDER_EMAIL_QUEUED = "PO_EMAIL_QUEUED", "Purchase order email queued"
+    PURCHASE_ORDER_EMAIL_SENT = "PO_EMAIL_SENT", "Purchase order email sent"
+    PURCHASE_ORDER_EMAIL_FAILED = "PO_EMAIL_FAILED", "Purchase order email failed"
+    PURCHASE_ORDER_EMAIL_CANCELLED = "PO_EMAIL_CANCELLED", "Purchase order email cancelled"
+    DOCUMENT_EMAIL_QUEUED = "DOC_EMAIL_QUEUED", "Customer document email queued"
+    DOCUMENT_EMAIL_SENT = "DOC_EMAIL_SENT", "Customer document email sent"
+    DOCUMENT_EMAIL_FAILED = "DOC_EMAIL_FAILED", "Customer document email failed"
     GRN_POSTED = "GRN_POSTED", "Goods receipt posted"
     GRN_POST_REJECTED = "GRN_POST_REJECTED", "Goods receipt posting rejected"
     VENDOR_INVOICE_MATCHED = "VENDOR_INVOICE_MATCHED", "Vendor invoice matched"
@@ -357,35 +543,45 @@ class FinanceAuditAction(models.TextChoices):
     STOCK_ISSUE_REJECTED = "STOCK_ISSUE_REJECTED", "Stock issue rejected"
     STOCK_ADJUSTED = "STOCK_ADJUSTED", "Stock adjusted"
     STOCK_ADJUST_REJECTED = "STOCK_ADJUST_REJECTED", "Stock adjustment rejected"
-    # Phase 4 — banking, expenses, payroll, budget, fixed assets, period close.
+    # Phase 4 - banking, expenses, payroll, budget, fixed assets, period close.
+    BANK_STATEMENT_CORRECTED = "BANK_STATEMENT_CORRECTED", "Bank statement corrected"
     BANK_RECONCILED = "BANK_RECONCILED", "Bank statement reconciled"
     BANK_CHARGE_POSTED = "BANK_CHARGE_POSTED", "Bank charge posted"
     EXPENSE_CLAIM_POSTED = "EXPENSE_CLAIM_POSTED", "Expense claim posted"
     EXPENSE_CLAIM_POST_REJECTED = "EXPENSE_CLAIM_POST_REJECTED", "Expense claim posting rejected"
     EXPENSE_CLAIM_SETTLED = "EXPENSE_CLAIM_SETTLED", "Expense claim settled"
+    EXPENSE_CLAIM_VOIDED = "EXPENSE_CLAIM_VOIDED", "Expense claim voided"
     PETTY_CASH_ESTABLISHED = "PETTY_CASH_ESTABLISHED", "Petty cash fund established / topped up"
     PETTY_CASH_VOUCHER_POSTED = "PETTY_CASH_VOUCHER_POSTED", "Petty cash voucher posted"
     PETTY_CASH_VOUCHER_REJECTED = "PETTY_CASH_VOUCHER_REJECTED", "Petty cash voucher rejected"
+    PETTY_CASH_VOUCHER_VOIDED = "PETTY_CASH_VOUCHER_VOIDED", "Petty cash voucher voided"
     PETTY_CASH_REPLENISHED = "PETTY_CASH_REPLENISHED", "Petty cash fund replenished"
     PAYROLL_POSTED = "PAYROLL_POSTED", "Payroll run posted"
     PAYROLL_POST_REJECTED = "PAYROLL_POST_REJECTED", "Payroll run posting rejected"
     PAYROLL_PAID = "PAYROLL_PAID", "Payroll run disbursed"
+    PAYROLL_CANCELLED = "PAYROLL_CANCELLED", "Payroll run cancelled / voided"
     BUDGET_APPROVED = "BUDGET_APPROVED", "Budget approved"
+    BUDGET_DELETED = "BUDGET_DELETED", "Budget deleted"
     ASSET_ACQUIRED = "ASSET_ACQUIRED", "Fixed asset acquired"
     DEPRECIATION_POSTED = "DEPRECIATION_POSTED", "Depreciation posted"
+    ASSET_DISPOSED = "ASSET_DISPOSED", "Fixed asset disposed"
     PERIOD_LOCKED = "PERIOD_LOCKED", "Period locked"
+    FISCAL_YEAR_CLOSED = "FISCAL_YEAR_CLOSED", "Fiscal year closed"
     TAX_FILING_PREPARED = "TAX_FILING_PREPARED", "Tax filing prepared"
     TAX_FILING_FILED = "TAX_FILING_FILED", "Tax filing submitted to authority"
+    TAX_FILING_UNFILED = "TAX_FILING_UNFILED", "Tax filing un-filed (reverted to draft)"
     TAX_FILING_PAID = "TAX_FILING_PAID", "Tax filing paid / remitted"
     TAX_FILING_REJECTED = "TAX_FILING_REJECTED", "Tax filing action rejected"
 
 
+# Define Finance Audit Status values.
 class FinanceAuditStatus(models.TextChoices):
     """Outcome of an audited action."""
     SUCCESS = "SUCCESS", "Success"
     FAILED = "FAILED", "Failed"
 
 
+# Define Tax Obligation Type values.
 class TaxObligationType(models.TextChoices):
     """The statutory tax a remittance obligation covers."""
     VAT = "VAT", "Value Added Tax"
@@ -395,6 +591,7 @@ class TaxObligationType(models.TextChoices):
     OTHER = "OTHER", "Other statutory levy"
 
 
+# Group behavior for Tax Filing Frequency.
 class TaxFilingFrequency(models.TextChoices):
     """How often a return falls due for an obligation."""
     MONTHLY = "MONTHLY", "Monthly"
@@ -402,6 +599,7 @@ class TaxFilingFrequency(models.TextChoices):
     ANNUAL = "ANNUAL", "Annual"
 
 
+# Define Tax Filing Status values.
 class TaxFilingStatus(models.TextChoices):
     """Lifecycle of a single tax return: prepared, filed with the authority, paid."""
     DRAFT = "DRAFT", "Draft / prepared"
@@ -410,6 +608,7 @@ class TaxFilingStatus(models.TextChoices):
     CANCELLED = "CANCELLED", "Cancelled"
 
 
+# Define I F R S Line values.
 class IFRSLine(models.TextChoices):
     """IFRS-for-SMEs presentation lines a chart account rolls up to.
 
@@ -421,23 +620,23 @@ class IFRSLine(models.TextChoices):
     :data:`DEFAULT_IFRS_LINE_BY_TYPE`), so the mapping degrades gracefully on a
     customised chart.
     """
-    # Statement of Financial Position — non-current assets.
+    # Statement of Financial Position - non-current assets.
     PPE = "PPE", "Property, plant and equipment"
     INTANGIBLES = "INTANGIBLES", "Intangible assets"
     INVESTMENTS = "INVESTMENTS", "Investments"
-    # Statement of Financial Position — current assets.
+    # Statement of Financial Position - current assets.
     INVENTORIES = "INVENTORIES", "Inventories"
     TRADE_RECEIVABLES = "TRADE_RECEIVABLES", "Trade and other receivables"
     CURRENT_TAX_ASSET = "CURRENT_TAX_ASSET", "Current tax assets"
     CASH = "CASH", "Cash and cash equivalents"
     OTHER_CURRENT_ASSETS = "OTHER_CURRENT_ASSETS", "Other current assets"
-    # Statement of Financial Position — equity.
+    # Statement of Financial Position - equity.
     SHARE_CAPITAL = "SHARE_CAPITAL", "Share capital"
     RETAINED_EARNINGS = "RETAINED_EARNINGS", "Retained earnings"
     OTHER_RESERVES = "OTHER_RESERVES", "Other reserves"
-    # Statement of Financial Position — non-current liabilities.
+    # Statement of Financial Position - non-current liabilities.
     LONG_TERM_BORROWINGS = "LONG_TERM_BORROWINGS", "Long-term borrowings"
-    # Statement of Financial Position — current liabilities.
+    # Statement of Financial Position - current liabilities.
     TRADE_PAYABLES = "TRADE_PAYABLES", "Trade and other payables"
     CURRENT_TAX_PAYABLE = "CURRENT_TAX_PAYABLE", "Current tax payable"
     EMPLOYEE_PAYABLES = "EMPLOYEE_PAYABLES", "Employee benefit obligations"
@@ -471,8 +670,8 @@ PPE_ACCOUNT_CODE = "1500"                 # Property, Plant & Equipment (asset)
 ACCUM_DEPRECIATION_CODE = "1900"          # Accumulated depreciation (contra-asset)
 ACCRUED_REIMBURSEMENT_CODE = "2400"       # Staff expense-claim liability
 PETTY_CASH_CODE = "1110"                  # Petty cash float (asset, child of 1100)
-OUTPUT_VAT_CODE = "2200"                  # Output VAT payable (liability) — sales collect here
-INPUT_VAT_CODE = "1300"                   # Input VAT recoverable (asset) — purchases offset here
+OUTPUT_VAT_CODE = "2200"                  # Output VAT payable (liability) - sales collect here
+INPUT_VAT_CODE = "1300"                   # Input VAT recoverable (asset) - purchases offset here
 WHT_PAYABLE_CODE = "2300"                 # Withholding-tax payable (liability)
 PAYE_PAYABLE_CODE = "2310"                # PAYE (employee income tax) payable
 PENSION_PAYABLE_CODE = "2320"             # Pension payable
@@ -480,15 +679,59 @@ NET_WAGES_PAYABLE_CODE = "2330"           # Net wages payable (cleared on disbur
 SALARIES_EXPENSE_CODE = "5200"            # Salaries & wages expense
 DEPRECIATION_EXPENSE_CODE = "5400"        # Depreciation expense
 BANK_CHARGES_CODE = "5500"               # Bank charges expense
-RETAINED_EARNINGS_CODE = "3200"          # Retained earnings (equity) — net income closes here
+RETAINED_EARNINGS_CODE = "3200"          # Retained earnings (equity) - net income closes here
+OPERATING_REVENUE_CODE = "4100"          # Operating revenue (income) - generic revenue line
 CASH_BANK_CODE = "1100"                  # Cash & bank (the cash-flow statement's cash line)
-SALES_RETURNS_CODE = "4900"              # Sales returns (contra-revenue) — credit notes default here
-DISCOUNTS_ALLOWED_CODE = "4910"          # Discounts & allowances (contra-revenue) — concessions default here
-BAD_DEBT_EXPENSE_CODE = "5300"           # Bad-debt / general expense — write-offs default here
+SALES_RETURNS_CODE = "4900"              # Sales returns (contra-revenue) - credit notes default here
+DISCOUNTS_ALLOWED_CODE = "4910"          # Discounts & allowances (contra-revenue) - concessions default here
+BAD_DEBT_EXPENSE_CODE = "5300"           # Bad-debt / general expense - write-offs default here
+CUSTOMER_CREDIT_CODE = "2140"            # Customer credit balances (liability) - overpayments / unapplied credit / refundable
 
-#: Document-number prefix for the whole platform's finance documents (Code X Finance).
-DOC_NUMBER_PREFIX = "CFX"
+
+class AccountMappingKey(models.TextChoices):
+    """Entity-level account roles used by Finance and Procurement services."""
+
+    CASH_BANK = "CASH_BANK", "Cash and bank"
+    ACCOUNTS_RECEIVABLE = "ACCOUNTS_RECEIVABLE", "Accounts receivable"
+    ACCOUNTS_PAYABLE = "ACCOUNTS_PAYABLE", "Accounts payable"
+    CUSTOMER_CREDIT = "CUSTOMER_CREDIT", "Customer credit"
+    VENDOR_ADVANCE = "VENDOR_ADVANCE", "Vendor advances"
+    GRIR_CLEARING = "GRIR_CLEARING", "GR/IR clearing"
+    OUTPUT_VAT = "OUTPUT_VAT", "Output VAT"
+    WHT_PAYABLE = "WHT_PAYABLE", "WHT payable"
+    RETAINED_EARNINGS = "RETAINED_EARNINGS", "Retained earnings"
+    BAD_DEBT_EXPENSE = "BAD_DEBT_EXPENSE", "Bad debt expense"
+    BANK_CHARGES = "BANK_CHARGES", "Bank charges"
+    INVENTORY_ASSET = "INVENTORY_ASSET", "Inventory asset"
+    INVENTORY_ADJUSTMENT = "INVENTORY_ADJUSTMENT", "Inventory adjustment"
+    PURCHASE_PRICE_VARIANCE = "PURCHASE_PRICE_VARIANCE", "Purchase price variance"
 
 #: Reserved code for CodeX's own platform set of books (the operator's entity).
 #: An uppercase identifier (like all entity codes); the display name is "CodeX".
 PLATFORM_ENTITY_CODE = "CODEX"
+
+# --------------------------------------------------------------------------- #
+# Adjustment-approval defaults (see vs_finance.approvals)                      #
+# --------------------------------------------------------------------------- #
+
+#: Template code for the seeded finance ladders. One per document type, matching
+#: procurement and payouts so a tenant holds one mental model for approval.
+WF_DEFAULT_TEMPLATE_CODE = "standard"
+
+#: Roles the seeded adjustment stages name. Resolved inside whichever tenant raised
+#: the document, so one central definition serves every tenant. Created by the seed
+#: with nobody appointed: a ladder arrives blocked, not open.
+WF_ADJUSTMENT_APPROVER_ROLE = "finance-adjustment-approver"
+WF_SENIOR_ADJUSTMENT_APPROVER_ROLE = "finance-senior-adjustment-approver"
+
+#: Kobo at or above which a concession or credit note needs a second person.
+#:
+#: ₦50,000. Deliberately far below procurement's ₦500,000 senior bar, because these
+#: are different risks. A purchase at ₦400,000 still buys the entity something; a
+#: waiver at ₦400,000 is income given away, and a term's fees can sit well under
+#: procurement's bar. Small goodwill allowances stay frictionless, which is the only
+#: reason not to gate everything.
+#:
+#: Overridable per call to ``ensure_tenant_approval_templates`` and on the seed
+#: command, so a tenant that wants every waiver approved sets it to zero.
+WF_ADJUSTMENT_THRESHOLD = 5_000_000

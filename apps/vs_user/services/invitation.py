@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import logging
 import uuid
 
 from django.contrib.auth.password_validation import validate_password
@@ -21,8 +22,7 @@ from ..models import User, UserInvitation, AuthEventLog, PlatformStaffProfile
 from ..services.audit import log_auth_event
 from ..tokens import CodeXRefreshToken
 
-
-INVITATION_EXPIRY_DAYS = 7
+logger = logging.getLogger(__name__)
 
 
 class InvitationService:
@@ -35,10 +35,12 @@ class InvitationService:
         Creates a UserInvitation record for a newly created user.
         Called by UserCreationService immediately after the user row is saved.
 
-        Uses get_or_create so it is safe to call multiple times —
+        Uses get_or_create so it is safe to call multiple times -
         if a record already exists it is reset instead of duplicated.
         """
         with transaction.atomic():
+            from vs_config.runtime_settings import get_security_value
+
             invitation = UserInvitation.objects.select_for_update().filter(user=user).first()
             if invitation:
                 invitation.reset(invited_by=invited_by)
@@ -46,11 +48,17 @@ class InvitationService:
                 invitation = UserInvitation.objects.create(
                     user=user,
                     invited_by=invited_by,
-                    expires_at=timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS),
+                    expires_at=timezone.now() + timedelta(
+                        days=get_security_value("invitation_expiry_days")
+                        if user.tenant_id is None
+                        else get_security_value(
+                            "invitation_expiry_days", tenant=user.tenant, branch=user.branch,
+                        )
+                    ),
                     is_used=False,
                 )
                 
-            if user.user_type == User.UserType.CX_STAFF:
+            if user.is_platform_user:
                 profile, _ = PlatformStaffProfile.objects.get_or_create(user=user)
                 # If a seat was assigned at creation time, settle the profile's
                 # position cache (and thus department + line manager) now that
@@ -78,7 +86,7 @@ class InvitationService:
             user = User.objects.get(activation_key=activation_key)
             invitation = (
                 UserInvitation.objects
-                .select_related('user__school')
+                .select_related('user__tenant__school_profile')
                 .get(user_id=user.id)
             )
         except UserInvitation.DoesNotExist:
@@ -120,15 +128,33 @@ class InvitationService:
           3. Set the password on the user
           4. Set is_active=True, status=ACTIVE
           5. Consume the invitation (is_used=True)
-          6. Issue JWT tokens so the user is logged in immediately
-          7. Write audit log
+          6. Write audit log
 
-        Returns a dict with access token, refresh token, and user data
-        so the frontend can log the user in without a separate login call.
+        Returns a dict with a single 'message' key confirming the account is
+        active. No tokens are issued here: the frontend must send the user
+        through the normal login flow afterwards.
         """
         # 1. Validate invitation
         invitation = InvitationService.get_valid_invitation(activation_key)
         user = invitation.user
+
+        # 1b. ...and validate the ACCOUNT, which the link's own validity says
+        # nothing about. An invitation is issued when a hire is approved, and
+        # the account can change underneath it before the link is clicked: a
+        # withdrawn or cancelled workflow runs on_rejected and drives the same
+        # user to REJECTED while their invitation email sits unread in an
+        # inbox, still unused and still inside its expiry window. Without this,
+        # clicking it set a password and wrote status=ACTIVE - the rejection
+        # undone by the rejected person, through the front door.
+        #
+        # PENDING and nothing else: activation is the one transition this
+        # method performs, and every other status either has not reached it
+        # yet or is already past it.
+        if user.status != User.Status.PENDING:
+            raise ValueError({
+                'error_code': 'INVITATION_NOT_ACTIONABLE',
+                'message':    'This invitation link is no longer valid.',
+            })
 
         # 2. Validate password strength
         try:
@@ -152,14 +178,14 @@ class InvitationService:
             'activation_key',
         ])
 
-        # 5. Consume the invitation — link is now dead
+        # 5. Consume the invitation - link is now dead
         invitation.consume()
 
-        # 7. Audit log
+        # 6. Audit log
         log_auth_event(
             actor=user,
             subject=user,
-            school=user.school,
+            tenant=user.tenant,
             event=AuthEventLog.Event.ACCOUNT_ACTIVATED,
             request=request,
         )
@@ -175,8 +201,8 @@ class InvitationService:
     def resend(user: User, requested_by: User, request=None) -> UserInvitation:
         """
         Resets the invitation and dispatches a new invitation email.
-        The URL stays the same — vision.codexng.com/invite/{user.id}/ —
-        but the expiry is extended to 7 days from now.
+        The URL stays the same - vision.codexng.com/invite/{user.id}/ -
+        but the expiry is extended using the live platform security setting.
 
         Only valid for PENDING accounts. Caller must check status before
         calling this.
@@ -185,25 +211,36 @@ class InvitationService:
             invitation = UserInvitation.objects.get(user=user)
             invitation.reset(invited_by=requested_by)
         except UserInvitation.DoesNotExist:
-            # No invitation record exists — create one fresh.
+            # No invitation record exists - create one fresh.
             invitation = InvitationService.create(
                 user=user,
                 invited_by=requested_by,
             )
 
         from ..tasks import send_invitation_email_task
-        send_invitation_email_task.delay(
+        try:
+            send_invitation_email_task.delay(
                 str(user.activation_key),
-                _job_owner_id=str(user.id),
-                _job_school_id=user.school_id,
+                # Owner is the admin doing the resend - not the invitee.
+                _job_owner_id=str(requested_by.id) if requested_by else None,
                 _job_label=f"Invitation email to {user.email}",
                 _job_kind="email",
+                # Fan-out plumbing: one bell notification per invited row is spam.
+                _job_notify=False,
+            )
+        except Exception:
+            # The invitation record is already reset - an email dispatch
+            # failure must not fail the resend request. The failure is
+            # visible via the invitation's email_status tracking.
+            logger.error(
+                'Failed to dispatch invitation email for user %s - email will need to be resent manually.',
+                user.pk, exc_info=True,
             )
 
         log_auth_event(
             actor=requested_by,
             subject=user,
-            school=user.school,
+            tenant=user.tenant,
             event=AuthEventLog.Event.INVITATION_SENT,
             request=request,
         )

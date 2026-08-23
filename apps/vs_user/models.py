@@ -23,10 +23,18 @@ from django.contrib.auth.models import PermissionsMixin
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import Q, Max
+from django.db.models.functions import Lower
 from django.utils import timezone
 
-from vs_schools.models import School, Branch
+from vs_tenants.models import Branch, Tenant
 from vs_rbac.managers import TenantAwareManager
+
+from . import email_normalization
+
+# The one fact that used to be recorded twice - once as the tenant's kind and
+# once as a ``CX_STAFF`` persona on every one of its users. Bound to a name
+# here so the several places that ask it read alike.
+PLATFORM_TENANT_KIND = Tenant.Kind.PLATFORM
 
 
 # =============================================================================
@@ -44,20 +52,61 @@ class TimeStampedModel(models.Model):
 # UserManager + User
 # =============================================================================
 
-class UserManager(BaseUserManager):
+class UserQuerySet(models.QuerySet):
+    """The bulk writes, which do not go through ``User.save()``.
+
+    ``bulk_create`` and ``bulk_update`` build their SQL from the instances
+    directly, so the normalisation in ``save()`` never runs for them and a
+    mixed-case address would land in the table. They are folded here instead.
+
+    ``QuerySet.update(email=...)`` cannot be intercepted this way - the value
+    is an expression, not an instance - and neither can raw SQL. Those are
+    caught by the ``ck_user_email_lowercase`` database constraint, which is the
+    only guard that holds for every path including psql.
+    """
+
+    # The helper is applied to the attribute rather than through
+    # User._normalize_email(): UserManager is use_in_migrations, so these two
+    # methods also run against the historical model rebuilt from migration
+    # state, and that model has the fields but none of the methods.
+
+    def bulk_create(self, objs, *args, **kwargs):
+        objs = list(objs)  # may arrive as a generator; normalising consumes it
+        for obj in objs:
+            obj.email = email_normalization.normalize_email(obj.email)
+        return super().bulk_create(objs, *args, **kwargs)
+
+    def bulk_update(self, objs, fields, *args, **kwargs):
+        objs = list(objs)
+        if 'email' in fields:
+            for obj in objs:
+                obj.email = email_normalization.normalize_email(obj.email)
+        return super().bulk_update(objs, fields, *args, **kwargs)
+
+
+class UserManager(BaseUserManager.from_queryset(UserQuerySet)):
     use_in_migrations = True
+
+    # Django's inherited normalize_email() lowercases only the domain. Every
+    # path that reaches it - this manager, createsuperuser, anything that calls
+    # User.objects.normalize_email() directly - must get the whole address
+    # folded, so it delegates to the shared helper. Written module-qualified on
+    # purpose: a bare name here would read like a recursive call.
+    @classmethod
+    def normalize_email(cls, email):
+        return email_normalization.normalize_email(email)
 
     def _create_user(self, email: str, password=None, **extra_fields):
         if not email:
             raise ValueError('Email is required')
-        email = self.normalize_email(email).strip()
+        email = self.normalize_email(email)
         user  = self.model(email=email, **extra_fields)
         if password:
             user.set_password(password)
         else:
             # No password on creation.
             # The user sets their own password during activation
-            # via the invitation link — see models/invitation.py.
+            # via the invitation link - see models/invitation.py.
             user.set_unusable_password()
         user.full_clean()
         user.save(using=self._db)
@@ -82,25 +131,53 @@ class UserManager(BaseUserManager):
 # User model
 # ─────────────────────────────────────────────────────────────────────────────
 
+# What a caller is told when an address is refused because it already belongs
+# to an account at ANOTHER tenant and sign-in cannot yet tell the two apart.
+#
+# It names no tenant, no school, no account and no person, and it does not say
+# that an account exists elsewhere. An administrator at Greenfield who typed
+# ada@gmail.com must not be able to learn from this refusal that Bright Star
+# has a parent by that address - that is the same enumeration concern the
+# barcode preview was scoped for, and it applies to any message a customer's
+# own staff can trigger with a guess.
+CROSS_TENANT_EMAIL_REFUSAL = (
+    'This email address cannot be used for a new account here yet. Sign-in '
+    'does not yet name the tenant it is addressed to, so two accounts sharing '
+    'one address could not be told apart. Please use a different address, or '
+    'contact CodeX support.'
+)
+
+
 class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     """
-    Every person who logs into any part of CodeX Vision — Vision staff,
-    school admins, teachers, students, parents — is a record here.
+    Every person who logs into any part of CodeX Vision - Vision staff,
+    school admins, teachers, students, parents - is a record here.
     """
 
     workflow_document_type = "PLATFORM_USER_CREATION"
 
     # ── Choices ──────────────────────────────────────────────────────────────
 
-    class UserType(models.TextChoices):
-        CX_STAFF          = 'CX_STAFF',      'CX Staff'
-        SCHOOL_ADMIN      = 'SCHOOL_ADMIN',  'School Admin'
-        BRANCH_ADMIN      = 'BRANCH_ADMIN',  'Branch Admin'
-        STAFF             = 'STAFF',         'Staff'
-        STUDENT           = 'STUDENT',       'Student'
-        PARENT            = 'PARENT',        'Parent/Guardian'
+    # There is deliberately no ``UserType``.
+    #
+    # A persona column can disagree with reality, and nothing could ever
+    # detect the disagreement: a row marked STUDENT with no student record
+    # anywhere was writable and undetectable. Every question the column used to
+    # answer is now asked of something that cannot be wrong about itself.
+    #
+    #   "does this person work for the platform?"  ->  ``is_platform_user``,
+    #       which reads the kind of the tenant the account actually belongs to;
+    #   "is this person a parent?"                 ->  they have a guardian
+    #       record;
+    #   "what does this person do here?"           ->  their role, which is
+    #       also the only thing that decides what they may do.
+    #
+    # CX_STAFF and "belongs to the PLATFORM tenant" were the same fact recorded
+    # twice, with nothing holding the two copies together. STUDENT and PARENT
+    # were read by no line of code at all.
 
     class Status(models.TextChoices):
+        DRAFT            = 'DRAFT',            'Draft'
         PENDING_APPROVAL = 'PENDING_APPROVAL', 'Pending Approval'
         PENDING          = 'PENDING',          'Pending Activation'
         ACTIVE           = 'ACTIVE',           'Active'
@@ -109,39 +186,101 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         DEACTIVATED      = 'DEACTIVATED',      'Deactivated'
         REJECTED         = 'REJECTED',         'Creation Rejected'
 
+    # ── Which statuses may authenticate, and which may hold a password ────────
+    #
+    # These two sets are the single answer to a question that used to be asked
+    # in five places, each of them by listing the statuses it wanted to REFUSE
+    # and letting everything else through:
+    #
+    #   * ``LoginService._check_status`` named PENDING, LOCKED, SUSPENDED and
+    #     DEACTIVATED, so DRAFT, PENDING_APPROVAL and REJECTED signed in;
+    #   * ``IsAuthenticatedAndActive`` (vs_rbac) named SUSPENDED, LOCKED and
+    #     DEACTIVATED, as string literals, so the same three passed;
+    #   * ``AdminPasswordResetView`` named none at all, so an admin could put a
+    #     working password on any account in any state;
+    #   * ``PasswordService.request_reset`` named only DEACTIVATED;
+    #   * ``PasswordService.confirm_reset`` promoted LOCKED and PENDING and left
+    #     every other status where it was, holding a brand-new usable password.
+    #
+    # Naming the refusals is the defect, not a detail of it. Every status added
+    # to the enum since - DRAFT, PENDING_APPROVAL and REJECTED all postdate that
+    # code - became able to sign in the moment it was added, silently, because
+    # no one edited five lists. So the sets below enumerate what is PERMITTED
+    # and everything absent is refused. A status added tomorrow can do nothing
+    # until it is deliberately written into one of them.
+
+    #: The only statuses a sign-in may succeed from. Not a shorthand for
+    #: "not obviously bad": PENDING has been invited but has not set a password,
+    #: LOCKED is mid-incident, SUSPENDED and DEACTIVATED are administratively
+    #: closed, and DRAFT / PENDING_APPROVAL / REJECTED were never granted a
+    #: login at all. Exactly one status means "this person may work today".
+    SIGN_IN_STATUSES = frozenset({Status.ACTIVE})
+
+    #: The statuses that may hold a usable password. Wider than SIGN_IN_STATUSES
+    #: on purpose, and the two cannot be collapsed into one set:
+    #:
+    #:   * PENDING is the normal invited-but-not-activated path - the invitation
+    #:     link exists precisely to put a first password on the account;
+    #:   * LOCKED is unlocked BY a reset, so refusing one would strand the
+    #:     account behind the lockout it is meant to clear;
+    #:   * SUSPENDED may be given a new password (an admin resetting a
+    #:     suspected-compromised credential before reinstating) and still may
+    #:     not sign in, which is what suspension means.
+    #:
+    #: Absent, and refused: DEACTIVATED, which is terminal and which the
+    #: self-service reset already refused while the admin reset did not; and
+    #: DRAFT, PENDING_APPROVAL and REJECTED, which are not accounts anyone has
+    #: been granted yet. A credential on one of those is the bug this exists to
+    #: close - see the two properties below and their call sites.
+    PASSWORD_STATUSES = frozenset({
+        Status.ACTIVE, Status.PENDING, Status.LOCKED, Status.SUSPENDED,
+    })
+
     class Gender(models.TextChoices):
         MALE    = 'MALE',   'Male'
         FEMALE  = 'FEMALE', 'Female'
 
     # ── Tenant scoping ────────────────────────────────────────────────────────
 
-    school = models.ForeignKey(
-        School, on_delete=models.PROTECT,
-        related_name='users', null=True, blank=True,
-        help_text='NULL only for Vision Staff.',
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant",
+        on_delete=models.PROTECT,
+        related_name="users",
+        help_text="Canonical home tenant.",
     )
+
     branch = models.ForeignKey(
         Branch, on_delete=models.PROTECT,
         related_name='users', null=True, blank=True,
-        help_text='NULL for Vision Staff and School Admins.',
+        help_text=(
+            'The one branch this person is posted to. NULL means "across the '
+            'whole tenant" for a tenant user, and is the only legal value for '
+            'Vision Staff, who belong to no tenant branch at all.'
+        ),
     )
 
     # ── Identity ──────────────────────────────────────────────────────────────
 
-    email      = models.EmailField(max_length=254, unique=True)
+    # NOT unique on its own: one real address may be a login at more than one
+    # customer of this platform. Ada Okoye has a child at Bright Star and
+    # another at Greenfield and uses ada@gmail.com at both, and neither school
+    # may learn anything about the other. Uniqueness is per tenant instead -
+    # see uq_user_email_per_tenant below.
+    email      = models.EmailField(max_length=254)
     first_name = models.CharField(max_length=100)
     last_name  = models.CharField(max_length=100)
     gender     = models.CharField(max_length=20, choices=Gender.choices, blank=True, default='')
     phone      = models.CharField(max_length=32, blank=True, null=True, default='')
 
-    # Auto-assigned on create; unique within school for school users,
-    # unique across all Vision Staff for VISION_STAFF. Starts at 10.
+    # Auto-assigned on create; unique within the TENANT for tenant-scoped
+    # users - which is what unique_uid_per_tenant below actually enforces, and
+    # a school is one tenant, not the key - and unique across all CX staff.
+    # Starts at 10.
     uid = models.PositiveIntegerField(null=True, blank=True, editable=False)
 
-    # ──User type and status ───────────────────────────────────────────────────────
+    # ── Status ────────────────────────────────────────────────────────────────
 
-    user_type = models.CharField(max_length=32, choices=UserType.choices)
-    role      = models.CharField(max_length=120, blank=True, default='')  # Denormalized display name; actual grants live in SchoolUserRoleAssignment.
+    role      = models.CharField(max_length=120, blank=True, default='')  # Denormalized display name; actual grants live in TenantUserRoleAssignment.
     status    = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
 
     # ── Django auth flags ─────────────────────────────────────────────────────
@@ -159,7 +298,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     password_changed_at = models.DateTimeField(null=True, blank=True)
     last_login_at       = models.DateTimeField(null=True, blank=True)
 
-    # Tracks which admin created this user — useful for audit and support.
+    # Tracks which admin created this user - useful for audit and support.
     invited_by = models.ForeignKey(
         'self', on_delete=models.SET_NULL,
         null=True, blank=True, related_name='invited_users',
@@ -179,78 +318,304 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     class Meta:
         db_table = 'vs_users_user'
         constraints = [
-            # Vision Staff must not be bound to any school or branch.
-            models.CheckConstraint(
-                condition=(
-                    Q(user_type='CX_STAFF', school__isnull=True, branch__isnull=True)
-                    | ~Q(user_type='CX_STAFF')
-                ),
-                name='ck_vision_staff_no_school',
-            ),
-            # All non-Vision Staff must have an school.
-            models.CheckConstraint(
-                condition=(
-                    Q(user_type='CX_STAFF')
-                    | Q(school__isnull=False)
-                ),
-                name='ck_school_bound_users',
-            ),
-            # Branch-level user types must have a branch.
-            models.CheckConstraint(
-                condition=(
-                    Q(user_type__in=['CX_STAFF', 'SCHOOL_ADMIN'])
-                    | Q(branch__isnull=False)
-                ),
-                name='ck_branch_required_for_branch_level_users',
-            ),
-            # uid is unique within each school for school-scoped users.
+            # THE BRANCH RULE IS NOT HERE. It is a database TRIGGER, installed
+            # by vs_user migration 0009, and this comment is the signpost to it.
+            #
+            # The rule itself is unchanged: a user on a PLATFORM-kind tenant
+            # must not be bound to a branch. Platform staff work for the
+            # platform, and the platform tenant owns no branches for them to be
+            # bound to. Every tenant user MAY carry one, and a NULL means
+            # "across the whole tenant" - the same first-class value the
+            # academic structure and procurement documents already use. It does
+            # not mean "no branches exist".
+            #
+            # It used to be ``ck_vision_staff_no_branch``, a CheckConstraint
+            # reading ``user_type='CX_STAFF'``. That was a correlated proxy for
+            # the tenant kind, not the rule, and the two could drift apart in
+            # silence. Stating the real rule needs the tenant's ``kind``, which
+            # lives in another table - and a CHECK constraint is evaluated per
+            # row and may not contain a subquery, on PostgreSQL or anywhere
+            # else, so no CheckConstraint can express it. Django says so first:
+            # a relational lookup in a CheckConstraint raises FieldError
+            # ("Joined field references are not permitted in this query").
+            #
+            # A trigger can, so the guarantee is kept rather than downgraded to
+            # a Python-only check. Two triggers, in fact - see the migration -
+            # because the pair (user.tenant.kind, user.branch_id) can be broken
+            # from either side: by writing the user row, or by flipping an
+            # existing tenant to PLATFORM underneath its users.
+            #
+            # ``User.branch_assignment_error`` states the same rule for Python,
+            # and ``clean()`` and ``UserCreateSerializer`` both consult it, so
+            # the database and the application cannot drift apart.
+
+            # uid is unique within its tenant - for every user, now that there
+            # is no persona to split them by.
+            #
+            # This was two constraints: uid unique per tenant for non-CX users,
+            # and uid unique globally for CX staff. They were never two rules.
+            # All platform staff live in the one PLATFORM tenant, so "unique
+            # among CX staff" and "unique within the platform tenant" pick out
+            # exactly the same rows - the second constraint was the first one
+            # spelled differently because the persona was doing the tenant's
+            # job. One rule states it for everybody.
             models.UniqueConstraint(
-                fields=['school', 'uid'],
-                condition=Q(school__isnull=False),
-                name='unique_uid_per_school',
+                fields=['tenant', 'uid'],
+                name='unique_uid_per_tenant',
             ),
-            # uid is unique across all Vision Staff.
+            # No address reaches this table with an uppercase character in it.
+            # save(), full_clean() and the bulk writes all fold the value, but
+            # a QuerySet.update(), a data migration or a hand-typed psql
+            # statement goes round every one of them. Every existence check on
+            # this column now compares with '=' against a normalised input, so
+            # a single stray capital would make an account invisible to the
+            # check that is supposed to find it - and, once Phase 3 lands,
+            # invisible to the constraint that is supposed to reject it.
+            models.CheckConstraint(
+                condition=Q(email=Lower('email')),
+                name='ck_user_email_lowercase',
+            ),
+            # One address, one account, PER TENANT.
+            #
+            # Written on the plain columns rather than as a Lower('email')
+            # expression, and it is genuinely case-insensitive all the same,
+            # because ck_user_email_lowercase above holds every stored address
+            # to its folded form: a row that could defeat this constraint by
+            # capitalising a letter cannot be written in the first place.
+            #
+            # The plain form also earns its keep twice. Its index is on
+            # (tenant_id, email), which the ordinary equality lookups every
+            # caller writes - filter(tenant=..., email=...) - can actually use;
+            # an index on (tenant_id, lower(email)) would serve neither those
+            # nor Django's __iexact, which compiles to UPPER() on PostgreSQL
+            # (backends/postgresql/operations.py lookup_cast) and so matches no
+            # LOWER() index either. And a `fields` constraint is one Django's
+            # own validation can report in words - UniqueConstraint.validate
+            # falls back to unique_error_message() for it, where an expression
+            # constraint can only say that some named constraint was violated.
             models.UniqueConstraint(
-                fields=['uid'],
-                condition=Q(user_type='CX_STAFF'),
-                name='unique_uid_vision_staff',
+                fields=['tenant', 'email'],
+                name='uq_user_email_per_tenant',
             ),
         ]
         indexes = [
-            models.Index(fields=['school', 'user_type', 'status']),
-            models.Index(fields=['school', 'branch']),
+            models.Index(fields=['tenant', 'status']),
+            models.Index(fields=['tenant', 'branch']),
             models.Index(fields=['email', 'status']),
         ]
         ordering = ['-created_at']
 
     # ── Validation ────────────────────────────────────────────────────────────
 
+    @classmethod
+    def branch_assignment_error(cls, tenant, has_branch: bool) -> str | None:
+        """The branch rule, stated once, for every writer to consult.
+
+        Returns the refusal in words, or ``None`` when the pairing is legal.
+
+        The rule is short: a user on the PLATFORM tenant takes no branch, and
+        everybody else may or may not have one. It used to be asked of
+        ``user_type``, which only correlated with the answer; asking the tenant
+        is asking the fact.
+
+        Takes ``has_branch`` as a bool rather than the branch itself so a caller
+        holding only an unresolved reference - the create serializer, which must
+        judge a platform hire before it looks a branch up - can ask the same
+        question as a caller holding a saved row. ``tenant`` is likewise taken
+        as the object (or ``None``) rather than read off an instance, for the
+        same caller.
+
+        The database enforces this too. See the note in ``Meta.constraints``:
+        it is a trigger rather than a CheckConstraint, because the rule spans
+        two tables.
+        """
+        if getattr(tenant, 'kind', None) == PLATFORM_TENANT_KIND and has_branch:
+            return 'Platform staff must not be assigned to a branch.'
+        return None
+
     def clean(self):
         super().clean()
-        if self.user_type != self.UserType.CX_STAFF:
-            if not self.school_id:
-                raise ValidationError('Non-Vision Staff must be assigned to an school.')
-            if self.user_type not in (self.UserType.SCHOOL_ADMIN,) and not self.branch_id:
-                raise ValidationError(f'{self.user_type} must be assigned to a branch.')
-        if self.user_type == self.UserType.CX_STAFF:
-            if self.school_id or self.branch_id:
-                raise ValidationError('Vision Staff must not be assigned to an school or branch.')
+        # Reads tenant_id first so an unsaved instance with no tenant yet asks
+        # nothing of the database and simply passes - the missing tenant is
+        # reported by clean_fields(), which has already run.
+        tenant = self.tenant if self.tenant_id else None
+        error = self.branch_assignment_error(tenant, bool(self.branch_id))
+        if error:
+            raise ValidationError(error)
+        self._guard_cross_tenant_email()
+
+    def validate_unique(self, exclude=None):
+        """Keep a same-tenant duplicate address reported ON the email field.
+
+        ``unique=True`` used to make this Django's own job, and its error came
+        back as ``{'email': [...]}``. The replacement is a two-column
+        UniqueConstraint, and Django reports a multi-field constraint under
+        NON_FIELD_ERRORS - so leaving it to the framework would quietly change
+        the error shape of every creation path that goes through
+        ``full_clean()``, including ``UserManager._create_user``.
+
+        Checking it here restores the old shape, and costs nothing extra:
+        ``full_clean()`` adds every field it has already collected an error for
+        to the exclusion set before it runs ``validate_constraints()``, so
+        ``uq_user_email_per_tenant`` skips itself and the clash is reported
+        once, not twice.
+        """
+        super().validate_unique(exclude=exclude)
+        if exclude and ('email' in exclude or 'tenant' in exclude):
+            return
+        if not self.email or not self.tenant_id:
+            return
+        clash = User.objects.filter(tenant_id=self.tenant_id, email=self.email)
+        if self.pk is not None:
+            clash = clash.exclude(pk=self.pk)
+        if clash.exists():
+            raise ValidationError({
+                'email': [ValidationError(
+                    'A user with this email already exists.', code='unique',
+                )],
+            })
+
+    def _guard_cross_tenant_email(self, update_fields=None):
+        """Refuse a second tenant's copy of an address while sign-in is unscoped.
+
+        ``uq_user_email_per_tenant`` makes ada@gmail.com legal at Bright Star
+        AND at Greenfield. Sign-in can only tell those two accounts apart when
+        the request names the tenant it is addressed to. While
+        ``sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN`` was False an unscoped
+        sign-in fell back to ``filter(email__iexact=...).first()``, so Ada - who
+        reuses her password - would have been signed in to whichever of her two
+        schools came back first, silently, and a reset asked for at one would
+        have rewritten her password at the other.
+
+        Nothing but the order of two deployments stopped that pair from being
+        created, and an ordering assumption that lives only in a plan document
+        is not a safeguard. So while the switch is off the pair is refused;
+        when it is on the refusal lifts and no code changes.
+
+        THE SWITCH IS NOW ON, so this guard is standing down: one address may
+        be an account at several tenants. It stays here because the switch is
+        meant to be flippable, and because turning it back off must re-arm the
+        refusal in the same instant.
+
+        It lives here, called from both ``clean()`` and ``save()``, for the
+        same reason ``_derive_tenant`` and ``_normalize_email`` are: a
+        serializer covers one door, and this table is written through many -
+        ``objects.create()``, ``create_user``, the school-admin provisioner,
+        the bulk importer, the seeders and the management commands. The
+        database cannot hold this rule itself, because it is conditional on a
+        Python constant that is meant to be flipped.
+
+        Only an address being INTRODUCED is checked. If a legal pair ever does
+        exist - made while the switch was on - a later save of either account
+        must still work, or a status change, or the ``last_login_at`` write at
+        the end of every successful sign-in, would start failing outright.
+
+        ``bulk_create``/``bulk_update`` go round ``save()`` and are not covered.
+        Nothing in this codebase creates users that way (only the test that
+        proves the case-folding in ``UserQuerySet``), and the queryset methods
+        run against historical models during migrations, where reaching into
+        ``services.sign_in_scope`` would be wrong.
+        """
+        from .services import sign_in_scope
+
+        if sign_in_scope.tenant_is_required():
+            return
+        if not self.email or not self.tenant_id:
+            return
+        if update_fields is not None and 'email' not in update_fields:
+            return
+        if not self._state.adding and self.pk is not None:
+            unchanged = not (
+                User.objects.filter(pk=self.pk).exclude(email=self.email).exists()
+            )
+            if unchanged:
+                return
+
+        clash = User.objects.filter(email=self.email).exclude(tenant_id=self.tenant_id)
+        if self.pk is not None:
+            clash = clash.exclude(pk=self.pk)
+        if clash.exists():
+            raise ValidationError({'email': [CROSS_TENANT_EMAIL_REFUSAL]})
+
+    def _derive_tenant(self):
+        """Fill in the canonical home tenant when one wasn't supplied.
+
+        A branch names its own tenant, so a branch-bound user inherits it.
+        There is exactly one such derivation, and it reads a real relationship.
+
+        Nothing else can be derived, and nothing should be. A user with no
+        branch could belong to any tenant on the platform, and picking one
+        would put a person inside a customer they have no business being in.
+        There used to be a second rule here - a ``CX_STAFF`` account fell back
+        to the Codex PLATFORM tenant - and it was the persona column standing
+        in for the answer it was supposed to be derived FROM. With the column
+        gone the circle is broken: a caller creating platform staff names the
+        platform tenant, the same way a caller creating a school user names
+        the school's.
+
+        Note what is deliberately NOT written here. "No branch and no tenant"
+        does not mean "platform staff" - that would be inferring an identity
+        from an absence, and one mistyped tenant would silently mint a
+        colleague inside CodeX. The instance is left with a null tenant and
+        refused instead: ``full_clean()`` reports it as
+        ``{'tenant': ['This field cannot be null.']}``, and ``save()`` raises
+        rather than reaching the database, where it would surface as an
+        IntegrityError naming a column instead of the mistake.
+        """
+        if self.tenant_id:
+            return
+        if self.branch_id:
+            self.tenant_id = self.branch.tenant_id
+
+    def _normalize_email(self):
+        """Fold the address to the single form this table stores.
+
+        Called from both ``full_clean()`` and ``save()``, for the same reason
+        ``_derive_tenant`` is: an instance that has only been validated must
+        already carry the value that will be persisted, or the two disagree.
+
+        Doing it before ``super().full_clean()`` also makes the model's own
+        uniqueness check case-insensitive for free. ``validate_unique()``
+        compares with ``=``, so ``Ada@gmail.com`` used to slip past a stored
+        ``ada@gmail.com`` and fail later as an IntegrityError; now both sides
+        of that comparison are lowercase.
+        """
+        self.email = email_normalization.normalize_email(self.email)
+
+    def full_clean(self, *args, **kwargs):
+        # Derive the tenant BEFORE super().full_clean(): clean_fields() runs
+        # first inside it and would otherwise collect a spurious
+        # {'tenant': ['This field cannot be null.']}. Setting it in clean()
+        # is too late - clean_fields() has already run by then.
+        self._derive_tenant()
+        self._normalize_email()
+        super().full_clean(*args, **kwargs)
 
     def save(self, *args, **kwargs):
+        self._derive_tenant()  # backstop for saves that skip full_clean()
+        self._normalize_email()  # ditto - every write lands lowercase
+        if not self.tenant_id:
+            # See _derive_tenant: nothing to infer one from, and no safe guess.
+            raise ValidationError({'tenant': [
+                'A tenant is required. A user with no branch cannot have one '
+                'derived, so it must be supplied.'
+            ]})
+        if self.branch_id and self.branch.tenant_id != self.tenant_id:
+            raise ValidationError("User branch must belong to the user's tenant.")
+        # Backstop for the many writers that never call full_clean().
+        self._guard_cross_tenant_email(update_fields=kwargs.get('update_fields'))
         if self.uid is None:
             with transaction.atomic():
-                if self.user_type == self.UserType.CX_STAFF:
-                    max_uid = (
-                        User.objects.select_for_update()
-                        .filter(user_type=self.UserType.CX_STAFF)
-                        .aggregate(m=Max('uid'))['m']
-                    )
-                else:
-                    max_uid = (
-                        User.objects.select_for_update()
-                        .filter(school_id=self.school_id)
-                        .aggregate(m=Max('uid'))['m']
-                    )
+                # One allocation rule, matching the one uid constraint: the
+                # next number within this account's own tenant. Platform staff
+                # used to be counted separately, over every CX_STAFF row
+                # regardless of tenant - which, since they all sit in the one
+                # PLATFORM tenant, produced the same sequence this does.
+                max_uid = (
+                    User.objects.select_for_update()
+                    .filter(tenant_id=self.tenant_id)
+                    .aggregate(m=Max('uid'))['m']
+                )
                 self.uid = (max_uid or 9) + 1
                 self._sync_is_active()
                 update_fields = kwargs.get('update_fields')
@@ -266,15 +631,55 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         super().save(*args, **kwargs)
 
     def _sync_is_active(self):
-        if self.status in (self.Status.SUSPENDED, self.Status.DEACTIVATED,
-                           self.Status.PENDING, self.Status.PENDING_APPROVAL,
-                           self.Status.REJECTED):
-            self.is_active = False
-        elif self.status == self.Status.ACTIVE:
-            self.is_active = True
-        # LOCKED: is_active left unchanged — blocked at RBAC layer, not Django auth
+        """Keep Django's ``is_active`` flag derived from ``status``.
+
+        ``is_active`` is NOT a third opinion about whether this account may be
+        used. It is a cache of one bit of ``status``, maintained here so that
+        the Django and SimpleJWT machinery this project does not own - notably
+        ``JWTAuthentication.get_user``, which rejects an inactive user, and the
+        ``user__is_active=True`` filters in ``Position.occupancy`` - agree with
+        the status column instead of drifting from it. ``status`` is the source
+        of truth; every authorisation decision in this codebase reads it, or
+        reads ``may_sign_in`` / ``may_hold_password`` above it.
+
+        Written as a single derivation rather than a list of statuses that mean
+        False. The old form listed five and so silently left DRAFT alone: a
+        draft that had ever been ``is_active=True`` stayed that way, and
+        ``confirm_reset`` set exactly that flag, which is how a parked draft
+        ended up with a working password AND a session the API accepted.
+
+        LOCKED remains the one deliberate exception. A lockout is temporary and
+        clearing it must restore the account as it was, so the flag is left
+        where the last real status put it and the refusal is made by
+        ``may_sign_in`` instead. Every other status now answers here.
+        """
+        if self.status == self.Status.LOCKED:
+            return
+        self.is_active = self.status == self.Status.ACTIVE
 
     # ── Properties ────────────────────────────────────────────────────────────
+
+    @property
+    def may_sign_in(self) -> bool:
+        """Whether a sign-in may succeed for this account right now.
+
+        The one place that question is answered. ``LoginService._check_status``
+        and ``vs_rbac.permissions.IsAuthenticatedAndActive`` both read it, so a
+        session cannot be issued to an account the request gate would refuse,
+        nor the reverse.
+        """
+        return self.status in self.SIGN_IN_STATUSES
+
+    @property
+    def may_hold_password(self) -> bool:
+        """Whether a usable password may be set on this account.
+
+        Read by every route that can put one there: the admin reset, the
+        self-service reset request, the reset confirmation and the logged-in
+        change. Deliberately wider than :attr:`may_sign_in` - see
+        PASSWORD_STATUSES for why the two are separate sets and not one.
+        """
+        return self.status in self.PASSWORD_STATUSES
 
     @property
     def full_name(self) -> str:
@@ -289,26 +694,34 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         return self.status == self.Status.SUSPENDED
 
     @property
-    def is_vision_staff(self) -> bool:
-        return self.user_type == self.UserType.CX_STAFF
+    def is_platform_user(self) -> bool:
+        """True when this account belongs to a PLATFORM-kind tenant.
+
+        The replacement for ``user_type == CX_STAFF``, and the same question -
+        asked of the tenant the account is actually in rather than of a column
+        that merely agreed with it. Nothing kept those two in step, so they
+        could have disagreed at any time without anything noticing.
+
+        Says nothing about what the person may do: that is their role, and only
+        their role. This answers "which side of the platform boundary is this
+        account on", which is a different question and the only one it answers.
+        """
+        return getattr(self.tenant, 'kind', None) == PLATFORM_TENANT_KIND
 
     def mark_password_change(self):
         self.password_changed_at = timezone.now()
 
     def __str__(self):
-        return f'{self.email} ({self.user_type})'
+        return f'{self.email} ({self.status})'
 
 # =============================================================================
 # UserInvitation
 # =============================================================================
 
-INVITATION_EXPIRY_DAYS = 7
-
-
 class UserInvitation(TimeStampedModel):
     """
     One record per user. Tracks whether the invitation link is still
-    valid (unused and within the 7-day window).
+    valid (unused and within the configured invitation window).
 
     OneToOneField enforces one active invitation per user at all times.
     On resend, the existing record is reset rather than a new one created.
@@ -319,7 +732,7 @@ class UserInvitation(TimeStampedModel):
         SENT    = 'SENT',    'Sent'
         FAILED  = 'FAILED',  'Failed'
 
-    # OneToOne — a user can only have one invitation record at a time.
+    # OneToOne - a user can only have one invitation record at a time.
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -334,7 +747,7 @@ class UserInvitation(TimeStampedModel):
         related_name='sent_invitations',
     )
 
-    # 7 days from creation. Reset to 7 days from now on resend.
+    # Configured number of days from creation or the most recent resend.
     expires_at = models.DateTimeField()
 
     # Flipped to True on successful activation. Once True the activation link is dead.
@@ -367,18 +780,24 @@ class UserInvitation(TimeStampedModel):
         """
         Mark as used after successful activation.
         After this, visiting vision.codexng.com/invite/{user.id}/
-        will show an error — account is already active.
+        will show an error - account is already active.
         """
         self.is_used = True
         self.save(update_fields=['is_used'])
 
     def reset(self, invited_by=None):
         """
-        Reset for a resend. Gives the user a fresh 7-day window from now.
+        Reset for a resend. Gives the user a fresh configured window from now.
         Updates invited_by if a new admin triggered the resend.
         """
+        from vs_config.runtime_settings import get_security_value
+
         self.is_used         = False
-        self.expires_at      = timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS)
+        self.expires_at      = timezone.now() + timedelta(
+            days=get_security_value(
+                "invitation_expiry_days", tenant=self.user.tenant, branch=self.user.branch,
+            )
+        )
         self.email_status    = self.EmailStatus.PENDING
         self.email_sent_at   = None
         self.email_last_error = ''
@@ -411,8 +830,8 @@ class LoginSession(TimeStampedModel):
 
     # Copied from user context at login time for fast filtering
     # without joining back to the User table on every query.
-    school = models.ForeignKey(
-        School, on_delete=models.PROTECT,
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
         related_name='login_sessions', null=True, blank=True,
     )
 
@@ -421,7 +840,7 @@ class LoginSession(TimeStampedModel):
     device_label = models.CharField(max_length=128, blank=True, default='')
     last_seen_at = models.DateTimeField(default=timezone.now)
 
-    # JTI of the refresh token — links this session to the SimpleJWT blacklist.
+    # JTI of the refresh token - links this session to the SimpleJWT blacklist.
     refresh_jti = models.CharField(max_length=64, blank=True, default='', db_index=True)
 
     is_active  = models.BooleanField(default=True)
@@ -464,13 +883,13 @@ class AuthAttempt(TimeStampedModel):
 
     email_entered = models.EmailField(max_length=254)
 
-    # Null if the email was not found — do not reveal its existence.
+    # Null if the email was not found - do not reveal its existence.
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         null=True, blank=True, related_name='auth_attempts',
     )
-    school = models.ForeignKey(
-        School, on_delete=models.SET_NULL,
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.SET_NULL,
         null=True, blank=True, related_name='auth_attempts',
     )
 
@@ -502,7 +921,7 @@ class AuthAttempt(TimeStampedModel):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AccountLockout
-# One row per user — keeps lockout state separate from the User model
+# One row per user - keeps lockout state separate from the User model
 # so the User model stays lean and lockout queries stay simple.
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -548,7 +967,7 @@ class AccountLockout(TimeStampedModel):
 
 class PasswordResetRequest(TimeStampedModel):
     """
-    Tracks password reset tokens. Only the SHA-256 hash is stored —
+    Tracks password reset tokens. Only the SHA-256 hash is stored -
     never the raw token. This limits exposure if the database is compromised.
 
     requested_by distinguishes self-service (1 hr expiry) from
@@ -624,7 +1043,7 @@ class AuthEventLog(TimeStampedModel):
         PASSWORD_CHANGED         = 'PASSWORD_CHANGED',         'Password Changed'
         EMAIL_CHANGED            = 'EMAIL_CHANGED',            'Email Changed'
 
-    # Who performed the action — could be the user themselves or an admin.
+    # Who performed the action - could be the user themselves or an admin.
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         null=True, blank=True, related_name='auth_events_as_actor',
@@ -636,8 +1055,8 @@ class AuthEventLog(TimeStampedModel):
         null=True, blank=True, related_name='auth_events_as_subject',
     )
 
-    school = models.ForeignKey(
-        School, on_delete=models.SET_NULL,
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.SET_NULL,
         null=True, blank=True, related_name='auth_events',
     )
 
@@ -664,9 +1083,10 @@ class AuthEventLog(TimeStampedModel):
 
 class PlatformStaffProfile(TimeStampedModel):
     """
-    Extended personal / HR profile for CX Staff (User.UserType.CX_STAFF).
+    Extended personal / HR profile for platform staff - the users whose
+    tenant is PLATFORM-kind.
     One row per platform staff member. Kept separate from User so the auth
-    model stays lean — same pattern as AccountLockout / LoginSession.
+    model stays lean - same pattern as AccountLockout / LoginSession.
 
     CX-only by design. School-side staff profiles will live in the future
     `staff` app and are intentionally out of scope here.
@@ -709,7 +1129,7 @@ class PlatformStaffProfile(TimeStampedModel):
     )
     bio             = models.TextField(blank=True, default='')
 
-    # ── Contact (personal — work email/phone live on User) ────────────────────
+    # ── Contact (personal - work email/phone live on User) ────────────────────
     personal_email      = models.EmailField(max_length=254, blank=True, default='')
     alternate_phone     = models.CharField(max_length=32, blank=True, default='')
     residential_address = models.TextField(blank=True, default='')
@@ -725,7 +1145,8 @@ class PlatformStaffProfile(TimeStampedModel):
     # ── Employment ────────────────────────────────────────────────────────────
     # Human-facing staff number, distinct from User.uid.
     employee_id       = models.CharField(max_length=32, null=True, blank=True, unique=True)
-    job_title         = models.CharField(max_length=120, blank=True, default='')
+    # Mirrors Position.title because a primary seat is the source of truth.
+    job_title         = models.CharField(max_length=150, blank=True, default='')
     position          = models.ForeignKey(
         'Position',
         on_delete=models.SET_NULL, null=True, blank=True,
@@ -741,7 +1162,7 @@ class PlatformStaffProfile(TimeStampedModel):
     date_joined       = models.DateField(null=True, blank=True)
     date_exited       = models.DateField(null=True, blank=True)
 
-    # ── Payroll (sensitive — gated behind FLS at the serializer layer) ────────
+    # ── Payroll (sensitive - gated behind FLS at the serializer layer) ────────
     bank_name      = models.CharField(max_length=120, blank=True, default='')
     account_name   = models.CharField(max_length=200, blank=True, default='')
     account_number = models.CharField(max_length=20,  blank=True, default='')
@@ -756,10 +1177,11 @@ class PlatformStaffProfile(TimeStampedModel):
 
     def clean(self):
         super().clean()
-        # Profile is valid only for CX Staff. user_type lives on the User
-        # table, so this is enforced here rather than via a DB CheckConstraint.
-        if self.user_id and self.user.user_type != User.UserType.CX_STAFF:
-            raise ValidationError('PlatformStaffProfile can only be attached to CX Staff users.')
+        # Platform staff only. The fact lives on the User's TENANT, one join
+        # away, so it is enforced here rather than via a DB CheckConstraint -
+        # the same reason the branch rule needed a trigger.
+        if self.user_id and not self.user.is_platform_user:
+            raise ValidationError('PlatformStaffProfile can only be attached to platform staff.')
 
     @property
     def is_active_employee(self) -> bool:
@@ -817,7 +1239,7 @@ class PlatformStaffProfile(TimeStampedModel):
 
 
 # =============================================================================
-# Organogram — OrgNode / Position / PositionAssignment / MatrixReport
+# Organogram - OrgNode / Position / PositionAssignment / MatrixReport
 # =============================================================================
 #
 # Position-based organisational chart for CX (platform) staff only.
@@ -864,9 +1286,14 @@ class OrgNode(TimeStampedModel):
     kind        = models.CharField(
         max_length=16, choices=Kind.choices, default=Kind.DEPARTMENT,
     )
+    # PROTECT, not SET_NULL: orphaning a child would produce a parentless
+    # Department/Team, a state clean() below forbids outright - such rows are
+    # then neither editable (the serializer re-runs clean()) nor deletable, and
+    # drop out of every department/division roll-up. Delete or re-parent the
+    # subtree first; the API answers 409 with the blocking counts.
     parent      = models.ForeignKey(
         'self',
-        on_delete=models.SET_NULL, null=True, blank=True,
+        on_delete=models.PROTECT, null=True, blank=True,
         related_name='children',
     )
     # The position whose holder heads this node (e.g. "Head of Engineering").
@@ -992,7 +1419,7 @@ class Position(TimeStampedModel):
 
     title        = models.CharField(max_length=150)
     code         = models.CharField(max_length=40, unique=True)
-    # The org node this seat belongs to — may be a Division, Department, or Team.
+    # The org node this seat belongs to - may be a Division, Department, or Team.
     org_node     = models.ForeignKey(
         OrgNode,
         on_delete=models.PROTECT,
@@ -1006,7 +1433,7 @@ class Position(TimeStampedModel):
     )
     # Optional default RBAC role granted when someone is assigned this seat.
     default_role = models.ForeignKey(
-        'vs_rbac.PlatformRoleTemplate',
+        'vs_rbac.TenantRoleTemplate',
         on_delete=models.SET_NULL, null=True, blank=True,
         related_name='default_for_positions',
     )
@@ -1136,8 +1563,8 @@ class PositionAssignment(TimeStampedModel):
 
     def clean(self):
         super().clean()
-        if self.user_id and self.user.user_type != User.UserType.CX_STAFF:
-            raise ValidationError('Only CX Staff can be assigned to a position.')
+        if self.user_id and not self.user.is_platform_user:
+            raise ValidationError('Only platform staff can be assigned to a position.')
         if self.end_date and self.end_date < self.start_date:
             raise ValidationError('end_date cannot be before start_date.')
         # One current primary assignment per user (MariaDB-safe: enforced here).

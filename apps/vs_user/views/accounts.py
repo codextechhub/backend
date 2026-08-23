@@ -11,24 +11,29 @@
 #   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet
 
 from __future__ import annotations
-from django.db.models import Q
+from django.db import transaction
+from django.db.models import Prefetch, Q
 from rest_framework import status, viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
+from vs_rbac.models import TenantUserRoleAssignment, TenantRoleTemplate
+from vs_tenants.models import Tenant
 from core.mixins import (
     XVSModelViewSetMixin,
 )
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
 from ..models import (
-    User,
+    Position, User,
 )
 from ..serializers import (
     UserReadSerializer, UserListSerializer, UserCreateSerializer, UserUpdateSerializer,
     EmailChangeSerializer,
 )
+from ..account_scope import administrable_user, administrable_users
 from ..services.user       import UserCreationService, EmailChangeService, UserStatusService
 from vs_workflow.services.submission import submit_for_approval as _wf_submit
 from vs_workflow.serializers import WorkflowInstanceListSerializer as _WFInstanceSerializer
@@ -37,19 +42,38 @@ from vs_workflow.serializers import WorkflowInstanceListSerializer as _WFInstanc
 from .me import _get_date_param
 
 
+def _is_truthy(value) -> bool:
+    """Coerce a JSON bool or a form/string flag ('true'/'1'/'yes') to bool."""
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _as_row_id(value, field):
+    """Validate a filter value that addresses an integer primary key.
+
+    Rejecting a non-numeric or out-of-range id here keeps it out of the query,
+    where it would be a server error rather than the 400 it actually is.
+    """
+    raw = str(value).strip()
+    if not raw.isdigit() or int(raw) > 9_223_372_036_854_775_807:
+        raise ValidationError({field: 'Must be a numeric id.'})
+    return int(raw)
+
+
 # =============================================================================
 # # USER MANAGEMENT VIEWS
 # =============================================================================
 
 class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     """
-    GET    /users/          — list users scoped to requesting admin's school
-    POST   /users/          — create user + dispatch invitation email
-    GET    /users/{id}/     — retrieve full user profile
-    PATCH  /users/{id}/     — update profile fields (not email, not status)
-    DELETE /users/{id}/     — soft-deactivate (never hard-delete)
+    GET    /users/          - list users scoped to requesting admin's school
+    POST   /users/          - create user + dispatch invitation email
+    GET    /users/{id}/     - retrieve full user profile
+    PATCH  /users/{id}/     - update profile fields (not email, not status)
+    DELETE /users/{id}/     - soft-deactivate (never hard-delete)
 
-    Permission matrix (TODO — wire up RBAC):
+    Permission matrix (TODO - wire up RBAC):
       list:           IsAuthenticatedAndActive, HasRBACPermission
                       RBAC: identity.user_account.create (read access implied by create)
       create:         IsAuthenticatedAndActive, HasRBACPermission
@@ -78,15 +102,28 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         return UserReadSerializer
 
     def get_queryset(self):
-        user   = self.request.user
         params = self.request.query_params
 
-        qs = User.objects.select_related('school', 'branch', 'invited_by', 'invitation')
+        qs = User.objects.select_related(
+            'tenant__school_profile', 'branch', 'invited_by', 'invitation'
+        ).prefetch_related(
+            Prefetch(
+                'tenant_role_assignments',
+                queryset=TenantUserRoleAssignment.objects.filter(
+                    assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+                ).select_related('role'),
+                to_attr='active_school_role_assignments',
+            )
+        )
 
-        if getattr(user, 'user_type', None) == User.UserType.CX_STAFF:
-            pass  # no tenant boundary — sees all users
-        else:
-            qs = qs.filter(school=user.school)
+        # Who this caller may touch at all: the tenant boundary and the branch
+        # narrowing, both from ``account_scope``. This used to be two clauses
+        # written out here and nowhere else, which is why the six by-id account
+        # actions (suspend, unlock, reactivate, email change, admin password
+        # reset, invitation resend) had neither - the same line is what stops an
+        # Ikeja admin deactivating a Lekki-posted colleague by id, and what stops
+        # a Bright Star admin suspending a Greenfield teacher by id.
+        qs = administrable_users(self.request, qs)
 
         qs = qs.exclude(status__in=[User.Status.PENDING_APPROVAL, User.Status.REJECTED])
 
@@ -94,13 +131,45 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             qs = qs.filter(status=status_val)
 
         if exclude_status := params.get('exclude_status'):
-            qs = qs.exclude(status=exclude_status)
+            # Accept a comma-separated list, e.g. "PENDING,DRAFT".
+            excluded = [s.strip() for s in exclude_status.split(',') if s.strip()]
+            qs = qs.exclude(status__in=excluded)
 
-        if user_type := params.get('user_type'):
-            qs = qs.filter(user_type=user_type)
+        # The ``user_type`` filter is gone with the column. ``scope`` below
+        # asks the question it was actually being used for, against the tenant
+        # kind, which is where the CX / School split has always really lived.
 
+        # The platform console presents tenant-bound accounts separately from
+        # internal platform staff. Keep this filter server-side so pagination
+        # totals and every page are scoped correctly (client-side filtering
+        # would not). Keyed off the tenant kind.
+        # Both directions, deliberately. Only the negative half existed, so the
+        # platform console had no way to ask for its OWN staff: an unfiltered
+        # list is every user on the platform, and the CX tabs and the pickers
+        # built on them - super-admin transfer, organogram, workflow templates -
+        # would offer school users. The transfer one decides who holds platform
+        # super-admin, so "no filter" there is not a cosmetic gap.
+        scope = params.get('scope')
+        if scope == 'school':
+            qs = qs.exclude(tenant__kind=Tenant.Kind.PLATFORM)
+        elif scope == 'platform':
+            qs = qs.filter(tenant__kind=Tenant.Kind.PLATFORM)
+
+        # Both of these address integer-keyed rows, so a non-numeric or
+        # oversized value is a bad request rather than a lookup - handing it
+        # straight to the ORM turns an empty page into a 500.
+        if school_id := params.get('school_id'):
+            # school_id query param maps to the tenant's school profile now.
+            qs = qs.filter(tenant__school_profile__id=_as_row_id(school_id, 'school_id'))
+
+        # ``administrable_users`` above has already applied the caller's own
+        # entitlement. The ``branch_id`` filter below is ANDed with it, because
+        # the two are different questions - "whose staff may I administer?" and
+        # "whose staff am I looking at right now?" - so a pinned admin asking for
+        # somebody else's branch gets an empty page rather than that branch's
+        # people, while one asking for her own narrows to it.
         if branch_id := params.get('branch_id'):
-            qs = qs.filter(branch_id=branch_id)
+            qs = qs.filter(branch_id=_as_row_id(branch_id, 'branch_id'))
 
         if search := params.get('search'):
             if len(search) > 64:
@@ -141,6 +210,7 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             'list':           'platform.team.view',
             'retrieve':       'platform.team.view',
             'create':         'platform.team.create',
+            'submit':         'platform.team.create',
             'update':         'platform.team.update',
             'partial_update': 'platform.team.update',
             'destroy':        'platform.team.delete',
@@ -149,17 +219,37 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def create(self, request, *args, **kwargs):
+        save_as_draft = _is_truthy(request.data.get("save_as_draft"))
         serializer = self.get_serializer(data=request.data)
+        # Draft mode relaxes the role requirement (filled in before submit).
+        serializer.context["draft"] = save_as_draft
         serializer.is_valid(raise_exception=True)
 
-        # Workflow gate only applies to platform (CX_STAFF) user creation.
-        if serializer.validated_data.get("user_type") == User.UserType.CX_STAFF:
+        # Draft: park the record; no workflow, no invite. Applies to any type.
+        if save_as_draft:
             user = UserCreationService.create_pending(
                 validated_data=serializer.validated_data,
                 requesting_user=request.user,
                 request=request,
+                status=User.Status.DRAFT,
             )
-            wf_instance = _wf_submit(document=user, requested_by=request.user)
+            return Response(UserReadSerializer(user).data, status=status.HTTP_201_CREATED)
+
+        # Workflow gate only applies to platform user creation. The serializer
+        # has already resolved which tenant will own the row, so ask that.
+        if getattr(
+            serializer.validated_data.get("tenant"), "kind", None
+        ) == Tenant.Kind.PLATFORM:
+            # User, role/profile setup, workflow submission, and any immediate
+            # no-approver approval are one unit. A missing/invalid template must
+            # never leave an orphaned PENDING_APPROVAL account behind.
+            with transaction.atomic():
+                user = UserCreationService.create_pending(
+                    validated_data=serializer.validated_data,
+                    requesting_user=request.user,
+                    request=request,
+                )
+                wf_instance = _wf_submit(document=user, requested_by=request.user)
             return Response({
                 "user": UserReadSerializer(user).data,
                 "workflow_instance": _WFInstanceSerializer(wf_instance).data,
@@ -173,6 +263,82 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         )
         UserCreationService.finalize_invitation(user=user, requested_by=request.user)
         return Response(UserReadSerializer(user).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="submit")
+    def submit(self, request, *args, **kwargs):
+        """POST /user/users/<id>/submit/ - promote a DRAFT into the normal flow.
+
+        Optionally accepts a ``role`` key to assign the role at submit time when
+        the draft doesn't already have one. Platform drafts must already have a
+        position or submit one by id/code. Platform staff enter the approval
+        workflow; tenant users are invited immediately (mirrors single-create).
+        """
+        user = self.get_object()
+
+        role_instance = None
+        role_key = (request.data.get("role") or "").strip()
+        if role_key:
+            role_instance = TenantRoleTemplate.objects.filter(
+                tenant=user.tenant, key=role_key,
+            ).first()
+            if role_instance is None:
+                return error_response(
+                    message="Invalid role.",
+                    error={"role": f'Role with key "{role_key}" not found in the target tenant.'},
+                )
+
+        position_instance = None
+        position_ref = str(request.data.get("position") or "").strip()
+        if position_ref:
+            positions = Position.objects.filter(is_active=True)
+            position_instance = (
+                positions.filter(pk=position_ref).first()
+                if position_ref.isdigit()
+                else positions.filter(code__iexact=position_ref).first()
+            )
+            if position_instance is None:
+                return error_response(
+                    message="Invalid position.",
+                    error={"position": f'Active position "{position_ref}" not found.'},
+                )
+
+        try:
+            with transaction.atomic():
+                if user.is_platform_user:
+                    existing_position = getattr(
+                        getattr(user, "platform_staff_profile", None), "position", None,
+                    )
+                    position_instance = position_instance or existing_position
+                    if position_instance is None:
+                        raise ValueError({
+                            "error_code": "POSITION_REQUIRED",
+                            "message": "A position must be assigned before this draft can be submitted.",
+                        })
+                    if existing_position != position_instance:
+                        from ..services.organogram import OrganogramService
+                        OrganogramService.assign_position(
+                            user=user, position=position_instance, assigned_by=request.user,
+                        )
+                UserCreationService.submit_draft(
+                    user=user, requesting_user=request.user, request=request,
+                    role_instance=role_instance,
+                )
+                if user.is_platform_user:
+                    wf_instance = _wf_submit(document=user, requested_by=request.user)
+                else:
+                    UserCreationService.finalize_invitation(user=user, requested_by=request.user)
+                    wf_instance = None
+        except ValueError as exc:
+            raw = exc.args[0] if exc.args else {}
+            detail = raw if isinstance(raw, dict) else {"detail": str(raw)}
+            return error_response(
+                message=detail.get("message", "Could not submit this draft."), error=detail,
+            )
+
+        payload = {"user": UserReadSerializer(user).data}
+        if wf_instance is not None:
+            payload["workflow_instance"] = _WFInstanceSerializer(wf_instance).data
+        return Response(payload, status=status.HTTP_200_OK)
 
     def perform_destroy(self, instance):
         # Never hard-delete. Records and audit history are always preserved.
@@ -198,9 +364,8 @@ class UserEmailChangeView(APIView):
     rbac_permission = "platform.team.update"
 
     def patch(self, request, user_id):
-        try:
-            user = User.objects.get(id=user_id)
-        except User.DoesNotExist:
+        user = administrable_user(request, user_id)
+        if user is None:
             return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         ser = EmailChangeSerializer(data=request.data)
@@ -246,9 +411,8 @@ class UserSuspendView(APIView):
     rbac_permission = "platform.team.suspend"
 
     def post(self, request, user_id):
-        try:
-            user = User.objects.get(id=user_id)
-        except User.DoesNotExist:
+        user = administrable_user(request, user_id)
+        if user is None:
             return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         try:
@@ -277,9 +441,8 @@ class UserReactivateView(APIView):
     rbac_permission = "platform.team.reactivate"
 
     def post(self, request, user_id):
-        try:
-            user = User.objects.get(id=user_id)
-        except User.DoesNotExist:
+        user = administrable_user(request, user_id)
+        if user is None:
             return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         try:
@@ -308,9 +471,8 @@ class UserUnlockView(APIView):
     rbac_permission = "platform.team.reactivate"
 
     def post(self, request, user_id):
-        try:
-            user = User.objects.get(id=user_id)
-        except User.DoesNotExist:
+        user = administrable_user(request, user_id)
+        if user is None:
             return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         try:
@@ -324,4 +486,3 @@ class UserUnlockView(APIView):
             message="User unlocked successfully.",
             data=UserListSerializer(updated).data,
         )
-

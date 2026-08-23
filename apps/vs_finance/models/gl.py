@@ -22,11 +22,11 @@ from ..money import MoneyField
 from .core import TimeStampedModel, LedgerEntity, FinanceDocument
 
 # ---------------------------------------------------------------------------
-# Phase 1 — General Ledger core
+# Phase 1 - General Ledger core
 # ---------------------------------------------------------------------------
 #
-# Reference data (Currency, FxRate) is **global** — a naira is a naira regardless of
-# whose books it sits in — while everything that records value or structure (Account,
+# Reference data (Currency, FxRate) is **global** - a naira is a naira regardless of
+# whose books it sits in - while everything that records value or structure (Account,
 # fiscal calendar, tax codes, analytical dimensions, journals, balances) is scoped to
 # a :class:`LedgerEntity`. The entity is the tenant; never a School.
 
@@ -62,7 +62,7 @@ class Currency(TimeStampedModel):
 class FxRate(TimeStampedModel):
     """A spot exchange rate from one currency to another on a given date.
 
-    Stored as a high-precision ``Decimal`` (a *rate*, not money — money never leaves
+    Stored as a high-precision ``Decimal`` (a *rate*, not money - money never leaves
     integer minor units). ``rate`` means: 1 unit of ``base`` = ``rate`` units of
     ``quote``. Global reference data; sourced from CBN/ECB feeds in a later phase.
     """
@@ -106,7 +106,7 @@ class Account(TimeStampedModel):
     Header accounts (``is_postable=False``) give the CoA its structure and roll-up
     totals; only **leaf**, postable accounts take journal lines. Each account has an
     :class:`~vs_finance.constants.AccountType` root and a :class:`NormalBalance`
-    derived from it — flipped when ``is_contra`` is set (accumulated depreciation,
+    derived from it - flipped when ``is_contra`` is set (accumulated depreciation,
     sales returns …). ``code`` is unique within the entity, so two entities may both
     run a ``1000`` cash account without collision.
     """
@@ -180,7 +180,7 @@ class Account(TimeStampedModel):
 
 
 class FiscalYear(TimeStampedModel):
-    """A financial year for an entity — the container its periods sit in.
+    """A financial year for an entity - the container its periods sit in.
 
     Often a calendar year, but not necessarily: schools and many businesses run
     Sept–Aug or Apr–Mar years. The ``year`` integer is the label used in document
@@ -342,6 +342,11 @@ class Dimension(TimeStampedModel):
     )
     code = models.CharField(max_length=32, help_text="Axis key used inside line ``dimensions`` JSON, e.g. FUND.")
     name = models.CharField(max_length=160)
+    allowed_values = models.JSONField(
+        default=list, blank=True,
+        help_text="Permitted values for this axis, e.g. ['GRANT-A', 'INTERNAL']. "
+                  "Empty means no values are defined yet (lines may not use the axis).",
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:
@@ -357,7 +362,7 @@ class Dimension(TimeStampedModel):
 
 
 class JournalEntry(FinanceDocument):
-    """A balanced double-entry transaction — the atom of the ledger.
+    """A balanced double-entry transaction - the atom of the ledger.
 
     Extends :class:`FinanceDocument`, so it inherits entity scoping, a ``CFX-…-JNL-…``
     number, status and ``created_by``. Its lines (:class:`JournalLine`) must net to
@@ -366,11 +371,16 @@ class JournalEntry(FinanceDocument):
     :func:`vs_finance.posting.post_journal` (never by flipping ``status`` by hand).
 
     A reversal is itself a journal whose ``reverses`` points back at the original and
-    whose lines are the mirror image — the audit-friendly way to undo, leaving both
+    whose lines are the mirror image - the audit-friendly way to undo, leaving both
     entries permanently on the record.
     """
 
     DOC_TYPE = DocType.JOURNAL
+
+    #: vs_workflow document-type token. When a WorkflowTemplate exists for this
+    #: token at the journal's (school, branch) scope, posting is gated behind
+    #: approval (opt-in by template); otherwise the direct-post path is unchanged.
+    workflow_document_type = "finance.journal"
 
     date = models.DateField(help_text="Accounting date; determines the period it posts to.")
     period = models.ForeignKey(
@@ -416,6 +426,19 @@ class JournalEntry(FinanceDocument):
     def is_posted(self) -> bool:
         return self.status == DocumentStatus.POSTED
 
+    @property
+    def total_debit_kobo(self) -> int:
+        """Sum of this entry's line debits in kobo.
+
+        Exposed as a plain property so workflow threshold conditions can read it
+        via a dot-path (``{"op": "gte", "field": "total_debit_kobo", ...}``). On a
+        balanced entry this equals the total credits, i.e. the entry's magnitude.
+        """
+        from ..posting import sum_sides
+
+        total_debit, _ = sum_sides(self.lines.all())
+        return total_debit
+
     def totals(self) -> tuple[int, int]:
         """Return ``(total_debit, total_credit)`` in kobo over this entry's lines."""
         from ..posting import sum_sides
@@ -425,7 +448,7 @@ class JournalEntry(FinanceDocument):
 class JournalLine(TimeStampedModel):
     """One leg of a journal entry: a debit or a credit against one account.
 
-    By convention a line is **one-sided** — exactly one of ``debit``/``credit`` is
+    By convention a line is **one-sided** - exactly one of ``debit``/``credit`` is
     non-zero (both are kobo via :class:`~vs_finance.money.MoneyField`). The optional
     ``cost_center`` and ``dimensions`` JSON attach analytics without widening the
     table. Lines are immutable once their journal is posted; corrections are made by
@@ -476,7 +499,7 @@ class JournalLine(TimeStampedModel):
 
 
 class AccountBalance(TimeStampedModel):
-    """Running per-period totals for an account — a denormalised read model.
+    """Running per-period totals for an account - a denormalised read model.
 
     Truth lives in the immutable journal lines; this table is the fast aggregate the
     posting service maintains atomically as entries post and reverse, so trial
@@ -525,12 +548,12 @@ class AccountBalance(TimeStampedModel):
 class FinanceAuditLog(models.Model):
     """Authoritative, **append-only** audit record for finance actions.
 
-    This is the finance module's own audit home — deliberately *not* the central
+    This is the finance module's own audit home - deliberately *not* the central
     ``vs_audit`` system. Two properties make it the right place for financial audit:
 
     * **Transactional.** Success rows are written in the *same* atomic transaction as
       the action they record (a posting can never commit without its audit row), and
-      a write failure here is *not* swallowed — unlike central audit, which is
+      a write failure here is *not* swallowed - unlike central audit, which is
       best-effort by design and may silently drop events.
     * **Immutable.** Rows cannot be updated or deleted (enforced below); corrections
       are new rows, mirroring how the ledger corrects by reversal rather than edit.
@@ -538,7 +561,7 @@ class FinanceAuditLog(models.Model):
     The journals themselves remain the primary trail for the *transactions*; this log
     captures the actions *around* them (who posted/reversed, **rejected attempts**,
     period state changes, master-data edits). A best-effort copy is still mirrored to
-    ``vs_audit`` so the platform-wide activity view stays complete — but the record
+    ``vs_audit`` so the platform-wide activity view stays complete - but the record
     here is the source of truth.
     """
 

@@ -11,6 +11,7 @@ _ACTION_MAP: dict[str, str] = {
     # Batch lifecycle
     "batch_uploaded": AuditActionType.DATA_FILE_UPLOADED,
     "batch_updated": AuditActionType.UPDATE,
+    "batch_cancelled": AuditActionType.UPDATE,
     "batch_deleted": AuditActionType.DELETE,
     # Validation
     "batch_validated": AuditActionType.CUSTOM,
@@ -68,10 +69,22 @@ def create_import_audit_log(
         **metadata,
     }
 
+    # Imports run inside Celery tasks (see vs_import_data.tasks), where there is
+    # no request and therefore no ambient tenant to inherit. Every row a
+    # 900-pupil import writes would otherwise be unattributable to the school it
+    # was written for. Both references carry the tenant directly; the branch is
+    # preferred because a branch-scoped import names it precisely.
+    tenant = None
+    if branch is not None:
+        tenant = branch.tenant
+    elif school is not None:
+        tenant = school.tenant
+
     return emit_audit_event(
         module_key=AuditModuleKey.IMPORT,
         action_type=action_type,
         actor_user=actor,
+        tenant=tenant,
         entity_type=entity_type or "ImportBatch",
         entity_id=str(entity_id) if entity_id else (str(import_batch.pk) if import_batch else ""),
         entity_label=str(import_batch) if import_batch else "",

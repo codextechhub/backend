@@ -24,6 +24,15 @@ from .models import (
 )
 
 
+class _FinanceImportReadMixin:
+    """Let a finance statement importer read wizard payloads for its scoped batch."""
+
+    def _can_read(self, field: str, user_perms: set[str]) -> bool:
+        if "finance.bankaccount.import" in user_perms:
+            return True
+        return super()._can_read(field, user_perms)
+
+
 # =========================================================
 # Small reusable nested display helpers
 # =========================================================
@@ -222,7 +231,7 @@ class ImportTemplateUpdateSerializer(serializers.ModelSerializer):
     """
     Used when a CX staff member PATCHes an existing system template.
     Columns are optional; when provided they fully replace all existing columns.
-    dataset_type and code are intentionally excluded — change them via migration.
+    dataset_type and code are intentionally excluded - change them via migration.
     """
     columns = ImportTemplateColumnWriteSerializer(many=True, required=False)
 
@@ -354,7 +363,11 @@ class ImportValidationIssueResolveSerializer(serializers.ModelSerializer):
 # =========================================================
 # Import Job Row Result Serializers
 # =========================================================
-class ImportJobRowResultSerializer(FieldSecurityMixin, serializers.ModelSerializer):
+class ImportJobRowResultSerializer(
+    _FinanceImportReadMixin,
+    FieldSecurityMixin,
+    serializers.ModelSerializer,
+):
     """
     Shows one processed row result from an import job.
     """
@@ -411,7 +424,11 @@ class ImportJobListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class ImportJobDetailSerializer(FieldSecurityMixin, serializers.ModelSerializer):
+class ImportJobDetailSerializer(
+    _FinanceImportReadMixin,
+    FieldSecurityMixin,
+    serializers.ModelSerializer,
+):
     """
     Full serializer for one import job.
     """
@@ -570,7 +587,11 @@ class ImportBatchListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class ImportBatchDetailSerializer(FieldSecurityMixin, serializers.ModelSerializer):
+class ImportBatchDetailSerializer(
+    _FinanceImportReadMixin,
+    FieldSecurityMixin,
+    serializers.ModelSerializer,
+):
     """
     Full serializer for one import batch.
     """
@@ -583,6 +604,7 @@ class ImportBatchDetailSerializer(FieldSecurityMixin, serializers.ModelSerialize
     branch = serializers.SerializerMethodField()
     uploaded_by = serializers.SerializerMethodField()
     template = ImportTemplateDetailSerializer(read_only=True)
+    domain_context = serializers.SerializerMethodField()
 
     validation_issues = ImportValidationIssueListSerializer(many=True, read_only=True)
     notifications = ImportNotificationSerializer(many=True, read_only=True)
@@ -598,6 +620,7 @@ class ImportBatchDetailSerializer(FieldSecurityMixin, serializers.ModelSerialize
             "branch",
             "uploaded_by",
             "template",
+            "domain_context",
             "original_filename",
             "file",
             "file_format",
@@ -654,6 +677,30 @@ class ImportBatchDetailSerializer(FieldSecurityMixin, serializers.ModelSerialize
             "id": str(user.id),
             "email": getattr(user, "email", ""),
             "full_name": getattr(user, "full_name", ""),
+        }
+
+    def get_domain_context(self, obj):
+        if obj.dataset_type != "bank_statements":
+            return None
+        try:
+            context = obj.bank_statement_context
+        except AttributeError:
+            return None
+        from vs_finance.money import to_naira
+
+        return {
+            "type": "bank_statement",
+            "bank_account_id": context.bank_account_id,
+            "bank_account_name": context.bank_account.name,
+            "entity_id": context.bank_account.entity_id,
+            "entity_code": context.bank_account.entity.code,
+            "statement_date": context.statement_date,
+            "period_label": context.period_label,
+            "opening_balance": context.opening_balance,
+            "opening_balance_major": str(to_naira(context.opening_balance)),
+            "closing_balance": context.closing_balance,
+            "closing_balance_major": str(to_naira(context.closing_balance)),
+            "published_statement_id": context.published_statement_id,
         }
 
 
@@ -719,11 +766,13 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
         if template and uploaded_file:
             ext = os.path.splitext(uploaded_file.name.lower())[1].lstrip(".")
             expected = template.default_file_format.lower()
-            if ext != expected:
+            allowed = template.validation_rules.get("allowed_file_formats") or [expected]
+            allowed = [str(item).lower().lstrip(".") for item in allowed]
+            if ext not in allowed:
                 raise serializers.ValidationError({
                     "file": (
-                        f"This template only accepts {expected.upper()} files. "
-                        f"You uploaded a {ext.upper()} file. Please convert your file to {expected.upper()} and try again."
+                        f"This template accepts {', '.join(item.upper() for item in allowed)} files. "
+                        f"You uploaded a {ext.upper()} file."
                     )
                 })
         return attrs
@@ -772,7 +821,7 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
                 "file": f"Could not read file: {exc}. Ensure the file is not corrupted and matches the selected format.",
             })
 
-        validated_data["school"] = self.context.get("school")
+        validated_data["tenant"] = self.context["request"].tenant
         validated_data["branch"] = self.context.get("branch")
         validated_data["uploaded_by"] = self.context["request"].user
         validated_data["template"] = template
@@ -877,5 +926,3 @@ class RollbackImportSerializer(serializers.Serializer):
                 "Only completed, failed, or cancelled jobs can be rolled back."
             )
         return attrs
-
-

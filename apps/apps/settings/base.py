@@ -24,18 +24,42 @@ TEMP_PASSWORD_PEPPER = config("TEMP_PASSWORD_PEPPER")
 
 AUTH_USER_MODEL = "vs_user.User"
 
+# auth.E003 says USERNAME_FIELD must be globally unique. It deliberately is
+# not: one real address can be a login at more than one customer of this
+# platform (a parent with a child at two schools), so uniqueness lives on
+# vs_user.User's uq_user_email_per_tenant instead - see the per-tenant email
+# work in vs_user/models.py and migration 0007.
+#
+# The check exists because django.contrib.auth's ModelBackend resolves a login
+# with get_by_natural_key(), a bare .get() on the username field, which would
+# raise MultipleObjectsReturned. Nothing here goes through it: requests
+# authenticate with JWT via vs_rbac.authentication, LoginService checks the
+# password itself against a tenant-scoped lookup, and django.contrib.admin -
+# the other ModelBackend caller - is deliberately absent from INSTALLED_APPS.
+#
+# Silenced in base, not per environment: the design decision is the same in
+# development, CI, staging and production. Environment files that add their own
+# entries must extend this list rather than replace it.
+SILENCED_SYSTEM_CHECKS = ["auth.E003"]
+
 REST_FRAMEWORK = {
-    # JSON only by default — local.py adds the browsable API for development.
+    # JSON only by default - local.py adds the browsable API for development.
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
-    # JWT auth that also resolves request.school + the thread-local tenant
+    # JWT auth that also resolves request.tenant + the thread-local tenant
     # context (Django middleware runs too early to see JWT users).
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "vs_rbac.authentication.TenantJWTAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
+        # A tenant that has not gone live reaches the onboarding surface and
+        # nothing else. The gate sits in the defaults so a view that declares
+        # no permission_classes at all is closed to it rather than open by
+        # omission; views that set their own list get the same check through
+        # IsAuthenticatedAndActive / HasRBACPermission.
+        "vs_rbac.permissions.TenantSurfaceAllowed",
     ],
     "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
     "DEFAULT_SCHEMA_CLASS": "core.schema.EnvelopeAutoSchema",
@@ -48,7 +72,9 @@ REST_FRAMEWORK = {
         "login":          "5/minute",
         "password_reset": "3/minute",
         "activation":     "10/minute",
-        # Public barcode-login preview — throttled hard because it confirms
+        "rfq_portal":     "120/hour",
+        "rfq_verification": "10/hour",
+        # Public barcode-login preview - throttled hard because it confirms
         # whether an email belongs to a known account (enumeration surface).
         "login_preview":  "10/minute",
     },
@@ -67,11 +93,13 @@ SIMPLE_JWT = {
 # Application definition
 
 INSTALLED_APPS = [
-    "django.contrib.admin",
+    # django.contrib.admin and django.contrib.messages are deliberately absent.
+    # This is an API serving its own console: the admin site was never routed,
+    # no app ships an admin.py, and messages is a server-rendered flash
+    # framework that nothing here imports - the frontend owns its own toasts.
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
-    "django.contrib.messages",
     "django.contrib.staticfiles",
     "core",  # Custom management commands
 
@@ -82,7 +110,13 @@ INSTALLED_APPS = [
     "drf_spectacular",
 
     # apps
-    "vs_schools",
+    "vs_tenants",
+    # XVS, the schools product. Everything school-shaped lives under
+    # apps/schools/; the app label stays "vs_schools" (see its AppConfig).
+    "schools.vs_schools",
+    # M9. School-specific by construction, so it sits beside vs_schools under
+    # apps/schools/ and never beside the domain-neutral engines.
+    "schools.vs_onboarding",
     "vs_admin_console",
     "vs_user",
     "vs_rbac",
@@ -94,7 +128,9 @@ INSTALLED_APPS = [
     'vs_finance',
     'vs_procurement',
     'vs_payments',
+    'vs_exports',
     'vs_todo',
+    'vs_tickets',
     'vs_health',
 ]
 
@@ -107,15 +143,13 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
 
     # --- Custom middleware for school context and tenant isolation ---
-    'vs_rbac.middleware.TenantContextMiddleware',
-    'vs_rbac.middleware.TenantBoundaryEnforcementMiddleware',
+    'vs_tenants.middleware.TenantContextCleanupMiddleware',
     # Observability: record per-request metrics AFTER tenant context is
     # resolved so the school dimension is available. Self-instrumentation is
     # best-effort and never blocks a request (see vs_health.middleware).
     'vs_health.middleware.RequestMetricsMiddleware',
     # --- End of custom middleware ---
 
-    "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
@@ -131,7 +165,7 @@ CELERY_TASK_SERIALIZER   = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE          = "UTC"
 
-# CORS — locked to known frontend origins (comma-separated env override).
+# CORS - locked to known frontend origins (comma-separated env override).
 # local.py re-opens this for development servers.
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = [
@@ -141,7 +175,37 @@ CORS_ALLOWED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+# Every school is served from its own subdomain (bright-star.xvs.codexng.com),
+# so the browser origin differs per tenant and cannot be enumerated in advance.
+# The pattern matches one label only - it does not reach a.b.xvs.codexng.com -
+# and the bare product site keeps its explicit entry above.
+# django-cors-headers echoes the specific matched origin rather than "*", which
+# is what keeps this legal alongside CORS_ALLOW_CREDENTIALS.
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    origin.strip()
+    for origin in config(
+        "CORS_ALLOWED_ORIGIN_REGEXES",
+        default=r"^https://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.xvs\.codexng\.com$",
+    ).split(",")
+    if origin.strip()
+]
 CORS_ALLOW_CREDENTIALS = True
+
+# Proxy requests carry the audited session id in a custom header. Browsers
+# preflight custom headers even when the origin itself is allowed, so this must
+# be present in every environment (including production).
+from corsheaders.defaults import default_headers
+
+CORS_ALLOW_HEADERS = (
+    *default_headers,
+    "x-impersonation-session",
+    "idempotency-key",
+    # The public vendor quotation portal authenticates with its verified session
+    # token in this header, so every portal call after email verification is a
+    # preflighted cross-origin request.
+    "x-rfq-session",
+)
+IMPERSONATION_IDLE_TIMEOUT_MINUTES = 30  # Proxy sessions idle beyond this are swept to EXPIRED by a cron job.
 
 SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SAMESITE    = "Lax"
@@ -158,7 +222,6 @@ TEMPLATES = [
                 "django.template.context_processors.debug",
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
-                "django.contrib.messages.context_processors.messages",
             ],
         },
     },
@@ -170,23 +233,24 @@ WSGI_APPLICATION = "apps.wsgi.application"
 # Password validation
 # https://docs.djangoproject.com/en/5.0/ref/settings/#auth-password-validators
 
+# Canonical policy = 12 chars + uppercase + lowercase + digit + special
+# (PasswordComplexityValidator, the single source of truth in
+# vs_user/password_policy.py), plus not-common and not-similar-to-user-info.
+# MinimumLength/Numeric are dropped - the complexity validator subsumes both.
 AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
     },
     {
-        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
-    },
-    {
         "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
     },
     {
-        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
+        "NAME": "vs_user.password_policy.PasswordComplexityValidator",
     },
 ]
 
 
-# Email settings — Zoho SMTP (credentials come from environment)
+# Email settings - Zoho SMTP (credentials come from environment)
 EMAIL_BACKEND = config(
     "EMAIL_BACKEND",
     default="django.core.mail.backends.smtp.EmailBackend",
@@ -202,47 +266,83 @@ DEFAULT_FROM_EMAIL = config(
     "DEFAULT_FROM_EMAIL",
     default="CodeX Vision <chidera.ohanenye@codexng.com>",
 )
-# Comma-separated CC addresses added to every outgoing email. Clear to disable.
-EMAIL_CC = [
+# Monitoring copies are BCC, never CC.
+#
+# Every list below is an internal mailbox we copy so somebody can see what went
+# out. Copying it visibly put internal addresses in front of customers and vendors,
+# showed each recipient that their mail is monitored, and handed anyone who hits
+# reply-all a route into an internal inbox. None of that was intended; CC was simply
+# the first thing reached for. BCC delivers the same copy without any of it.
+#
+# Each reads its old CC environment variable as the fallback default, so a
+# deployment that has not renamed its variables keeps the addresses it had.
+EMAIL_BCC = [
     addr.strip()
-    for addr in config("EMAIL_CC", default="").split(",")
+    for addr in config("EMAIL_BCC", default=config("EMAIL_CC", default="")).split(",")
+    if addr.strip()
+]
+# Procurement messages sent to external vendors use a narrower list so monitoring
+# does not copy unrelated platform email into the procurement inbox.
+PROCUREMENT_VENDOR_EMAIL_BCC = [
+    addr.strip()
+    for addr in config(
+        "PROCUREMENT_VENDOR_EMAIL_BCC",
+        default=config("PROCUREMENT_VENDOR_EMAIL_CC", default="backend-test@codexng.com"),
+    ).split(",")
+    if addr.strip()
+]
+# Finance documents sent to paying customers (invoice, receipt, statement) copy a
+# finance-owned mailbox rather than the platform-wide EMAIL_BCC, for the same reason
+# procurement narrows its own: a customer document is not general platform mail.
+FINANCE_CUSTOMER_EMAIL_BCC = [
+    addr.strip()
+    for addr in config(
+        "FINANCE_CUSTOMER_EMAIL_BCC",
+        default=config("FINANCE_CUSTOMER_EMAIL_CC", default="backend-test@codexng.com"),
+    ).split(",")
     if addr.strip()
 ]
 FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="http://localhost:3000")
 
+# Public targets used by the platform-health synthetic probes. Keep these
+# configurable per environment; the defaults are the production API domain.
+HEALTH_PROBE_BASE_URL = config(
+    "HEALTH_PROBE_BASE_URL", default="https://api.codexng.com"
+).rstrip("/")
+HEALTH_SSL_DOMAIN = config("HEALTH_SSL_DOMAIN", default="api.codexng.com")
+
 # --------------------------------------------------------------------------- #
 # Payment providers (vs_payments)                                             #
 # --------------------------------------------------------------------------- #
-# Secrets come from the environment — NEVER commit live keys. Each provider is
+# Secrets come from the environment - NEVER commit live keys. Each provider is
 # optional; an unconfigured provider raises ProviderNotConfiguredError when used.
-# Test/sandbox keys (sk_test_… for Paystack; sandbox host + sandbox keys for OPay)
-# are safe to use in non-production. Hosts/paths are overridable so the OPay
-# endpoints can be pinned to whatever the merchant dashboard issues without a code
-# change. ``PAYMENTS_DEFAULT_PROVIDER`` selects the provider when a caller doesn't.
+# Test/sandbox keys (sk_test_… for Paystack) are safe to use in non-production.
+# ``PAYMENTS_DEFAULT_PROVIDER`` selects the provider when a caller doesn't.
 PAYMENTS_DEFAULT_PROVIDER = config("PAYMENTS_DEFAULT_PROVIDER", default="PAYSTACK")
 # A callback URL the hosted checkout returns the payer to after paying.
 PAYMENTS_CALLBACK_URL = config(
     "PAYMENTS_CALLBACK_URL", default=f"{FRONTEND_BASE_URL}/payments/return"
 )
 
-# Paystack — https://api.paystack.co ; Authorization: Bearer <secret_key>.
+# Platform (CodeX) issuer identity - the letterhead printed on invoices/receipts the
+# CodeX *platform* entity raises for its own customers (the schools). School-owned
+# entities take their letterhead from the school's own branding instead; this is only
+# the fallback identity for the platform books. The pay-to bank still comes from the
+# platform entity's primary collection BankAccount. Configure per environment.
+PLATFORM_ISSUER = {
+    "name": config("PLATFORM_ISSUER_NAME", default="CodeX"),
+    "tagline": config("PLATFORM_ISSUER_TAGLINE", default=""),
+    "address": config("PLATFORM_ISSUER_ADDRESS", default=""),
+    "email": config("PLATFORM_ISSUER_EMAIL", default=""),
+    "phone": config("PLATFORM_ISSUER_PHONE", default=""),
+    "website": config("PLATFORM_ISSUER_WEBSITE", default=""),
+    "logo_url": config("PLATFORM_ISSUER_LOGO_URL", default=""),
+}
+
+# Paystack - https://api.paystack.co ; Authorization: Bearer <secret_key>.
 PAYSTACK_SECRET_KEY = config("PAYSTACK_SECRET_KEY", default="")
 PAYSTACK_PUBLIC_KEY = config("PAYSTACK_PUBLIC_KEY", default="")
 PAYSTACK_BASE_URL = config("PAYSTACK_BASE_URL", default="https://api.paystack.co")
-
-# OPay — merchant ID + secret (signing) + public key (bearer for status calls).
-# Base URL & paths default to the documented cashier host but stay overridable
-# because OPay issues environment-specific hosts/paths per merchant on onboarding.
-OPAY_MERCHANT_ID = config("OPAY_MERCHANT_ID", default="")
-OPAY_SECRET_KEY = config("OPAY_SECRET_KEY", default="")
-OPAY_PUBLIC_KEY = config("OPAY_PUBLIC_KEY", default="")
-OPAY_BASE_URL = config("OPAY_BASE_URL", default="https://api.opaycheckout.com")
-OPAY_CREATE_PATH = config("OPAY_CREATE_PATH", default="/api/v1/international/cashier/create")
-OPAY_STATUS_PATH = config("OPAY_STATUS_PATH", default="/api/v1/international/cashier/status")
-OPAY_TRANSFER_PATH = config("OPAY_TRANSFER_PATH", default="/api/v1/international/transfer/toBank")
-OPAY_TRANSFER_STATUS_PATH = config(
-    "OPAY_TRANSFER_STATUS_PATH", default="/api/v1/international/transfer/status"
-)
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.0/topics/i18n/
@@ -266,7 +366,7 @@ STATICFILES_DIRS = [
 ]
 
 # Media: the platform only receives import spreadsheets and images, all
-# small — so uploads live in the DATABASE (core.storage.DatabaseStorage).
+# small - so uploads live in the DATABASE (core.storage.DatabaseStorage).
 # They survive ephemeral-disk redeploys, ride along with DB backups, and are
 # served with authentication by core.views.MediaView at /media/<name>.
 # Outgrow it? Point STORAGES["default"] at S3 and migrate the rows.
@@ -300,29 +400,29 @@ SPECTACULAR_SETTINGS = {
     "VERSION": "2.0.0",
     "DESCRIPTION": (
         "The XVS API is the complete backend API for the X Vision Systems "
-        "platform — the single API layer through which all platform "
+        "platform - the single API layer through which all platform "
         "functionality is exposed, consumed by frontend collaborators "
         "building against defined contracts and by backend engineers "
         "extending the platform.\n\n"
-        "**Authentication** — all endpoints require a JWT Bearer token issued "
+        "**Authentication** - all endpoints require a JWT Bearer token issued "
         "at login (`/v1/user/auth/login/`). Unauthenticated requests receive "
         "401; authenticated requests without sufficient permission receive "
         "403. Use the Authorize button with `Bearer <access token>`.\n\n"
-        "**Permission model** — access is governed by the two-layer RBAC "
+        "**Permission model** - access is governed by the two-layer RBAC "
         "system (platform roles for CX staff, school roles for school "
         "users); the required permission is enforced per endpoint.\n\n"
-        "**Response envelope** — every response is wrapped in "
+        "**Response envelope** - every response is wrapped in "
         "`{success, message, data}`; list endpoints add a `pagination` "
         "block (`currentPage`, `pageSize`, `totalItems`, `totalPages`, "
         "`next`, `previous`). Errors use `{success: false, message, error}`.\n\n"
-        "**School references** — schools are addressed by numeric `id`; "
+        "**School references** - schools are addressed by numeric `id`; "
         "write fields and URL segments that accept a school also accept the "
         "slug, and responses render the slug for backward compatibility."
     ),
     "SCHEMA_PATH_PREFIX": r"/v1",
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
-    # Hide noisy warnings for plain APIViews without declared serializers —
+    # Hide noisy warnings for plain APIViews without declared serializers -
     # they are still listed, just without typed bodies (annotate over time).
     "DISABLE_ERRORS_AND_WARNINGS": False,
 }

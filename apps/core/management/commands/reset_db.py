@@ -22,7 +22,7 @@ Safety:
 
 Popular Use Cases:
     - Full reset during development
-    - command: python manage.py reset_db --yes --post-commands seed_actions seed_prebuilt_role_templates create_superuser seed_package seed_xvs_modules
+    - command: python manage.py reset_db --yes --post-commands seed_actions seed_prebuilt_role_templates create_superuser seed_package seed_config_catalogue
 """
 
 import os
@@ -68,7 +68,7 @@ class Command(BaseCommand):
             '--post-commands',
             nargs='+',
             type=str,
-            default=["seed_actions", "seed_all_permissions", "create_superuser", "seed_package", "seed_xvs_modules"],
+            default=["seed_actions", "seed_all_permissions", "create_superuser", "seed_package", "seed_config_catalogue"],
             help='Commands to run after migration completes (e.g., seed_roles seed_schools)'
         )
 

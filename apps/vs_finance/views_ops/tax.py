@@ -4,6 +4,7 @@ from __future__ import annotations
 
 
 from rest_framework.exceptions import NotFound, ValidationError
+from vs_rbac.scoping import branch_q  # include_shared spelled out per call site
 
 from core.response import success_response
 
@@ -34,6 +35,7 @@ from .base import (
 # Tax remittance / filing                                                     #
 # --------------------------------------------------------------------------- #
 
+# Group endpoint behavior for Tax Obligation List Create View.
 class TaxObligationListCreateView(_FinanceBase):
     """GET (list) / POST (create) statutory tax obligations for an entity.
 
@@ -41,10 +43,12 @@ class TaxObligationListCreateView(_FinanceBase):
     """
 
     @property
+    # Handle the rbac permission workflow.
     def rbac_permission(self):
         return "finance.tax.manage" if self.request.method == "POST" \
             else "finance.tax.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
         qs = TaxObligation.objects.filter(entity=entity).select_related(
@@ -56,6 +60,7 @@ class TaxObligationListCreateView(_FinanceBase):
             data=TaxObligationSerializer(qs.order_by("code"), many=True).data,
         )
 
+    # Handle POST requests for this endpoint.
     def post(self, request):
         entity = resolve_entity(request)
         body = request.data or {}
@@ -81,13 +86,16 @@ class TaxObligationListCreateView(_FinanceBase):
         )
 
 
+# Group endpoint behavior for Tax Obligation Detail View.
 class TaxObligationDetailView(_FinanceBase):
     """docstring-name: Tax obligations"""
     @property
+    # Handle the rbac permission workflow.
     def rbac_permission(self):
         return "finance.tax.manage" if self.request.method == "PATCH" \
             else "finance.tax.view"
 
+    # Support the obligation workflow.
     def _obligation(self, request, pk):
         entity = resolve_entity(request)
         obligation = TaxObligation.objects.filter(entity=entity, pk=pk).first()
@@ -95,12 +103,14 @@ class TaxObligationDetailView(_FinanceBase):
             raise NotFound("Tax obligation not found for this entity.")
         return entity, obligation
 
+    # Handle GET requests for this endpoint.
     def get(self, request, pk):
         _, obligation = self._obligation(request, pk)
         return success_response(
             "Tax obligation retrieved.", data=TaxObligationSerializer(obligation).data,
         )
 
+    # Handle PATCH requests for this endpoint.
     def patch(self, request, pk):
         entity, obligation = self._obligation(request, pk)
         body = request.data or {}
@@ -126,14 +136,16 @@ class TaxObligationDetailView(_FinanceBase):
         )
 
 
+# Group endpoint behavior for Tax Obligation Outstanding View.
 class TaxObligationOutstandingView(_FinanceBase):
-    """GET — per-obligation unremitted balance sitting in each control account.
+    """GET - per-obligation unremitted balance sitting in each control account.
 
     docstring-name: Outstanding tax obligations
     """
 
     rbac_permission = "finance.tax.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         from ..tax_filing import outstanding_obligations
 
@@ -156,6 +168,37 @@ class TaxObligationOutstandingView(_FinanceBase):
         )
 
 
+# Group endpoint behavior for Tax Filing Summary View.
+class TaxFilingSummaryView(_FinanceBase):
+    """GET - header KPIs over **all** tax filings (accurate under pagination).
+
+    docstring-name: Tax filings
+    """
+
+    rbac_permission = "finance.tax.view"
+
+    # Handle GET requests for this endpoint.
+    def get(self, request):
+        from django.db.models import Count, F, Q, Sum
+        from django.db.models.functions import Coalesce
+
+        from ..constants import TaxFilingStatus
+
+        entity = resolve_entity(request)
+        agg = TaxFiling.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).aggregate(
+            outstanding=Coalesce(
+                Sum(F("amount_due") - F("amount_paid"),
+                    filter=~Q(filing_status=TaxFilingStatus.PAID)), 0),
+            open=Count("id", filter=Q(filing_status=TaxFilingStatus.DRAFT)),
+            filed=Count("id", filter=Q(filing_status=TaxFilingStatus.FILED)),
+            paid=Count("id", filter=Q(filing_status=TaxFilingStatus.PAID)),
+        )
+        return success_response("Tax filing summary retrieved.", data=agg)
+
+
+# Group endpoint behavior for Tax Filing List Create View.
 class TaxFilingListCreateView(_FinanceBase):
     """GET (list) / POST (prepare from GL) tax filings for an entity.
 
@@ -163,23 +206,25 @@ class TaxFilingListCreateView(_FinanceBase):
     """
 
     @property
+    # Handle the rbac permission workflow.
     def rbac_permission(self):
         return "finance.tax.file" if self.request.method == "POST" \
             else "finance.tax.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request):
         entity = resolve_entity(request)
-        qs = TaxFiling.objects.filter(entity=entity).select_related("obligation")
+        qs = TaxFiling.objects.filter(
+            branch_q(request, include_shared=True), entity=entity,
+        ).select_related("obligation")
         if (ob := request.query_params.get("obligation")):
             qs = qs.filter(obligation_id=ob)
         if (status_val := request.query_params.get("filing_status")):
             qs = qs.filter(filing_status=status_val)
-        return success_response(
-            "Tax filings retrieved.",
-            data=TaxFilingSerializer(
-                qs.order_by("-period_end", "-id")[:200], many=True).data,
-        )
+        return self.paginate(
+            request, qs.order_by("-period_end", "-id"), TaxFilingSerializer)
 
+    # Handle POST requests for this endpoint.
     def post(self, request):
         from ..tax_filing import prepare_filing
 
@@ -205,20 +250,26 @@ class TaxFilingListCreateView(_FinanceBase):
         )
 
 
+# Define Tax Filing Action Base values.
 class _TaxFilingActionBase(_FinanceBase):
+    # Support the filing workflow.
     def _filing(self, request, pk):
         entity = resolve_entity(request)
-        filing = TaxFiling.objects.filter(entity=entity, pk=pk).select_related(
+        filing = TaxFiling.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk,
+        ).select_related(
             "obligation").first()
         if filing is None:
             raise NotFound("Tax filing not found for this entity.")
         return entity, filing
 
 
+# Group endpoint behavior for Tax Filing Detail View.
 class TaxFilingDetailView(_TaxFilingActionBase):
     """docstring-name: Tax filings"""
     rbac_permission = "finance.tax.view"
 
+    # Handle GET requests for this endpoint.
     def get(self, request, pk):
         _, filing = self._filing(request, pk)
         return success_response(
@@ -226,14 +277,16 @@ class TaxFilingDetailView(_TaxFilingActionBase):
         )
 
 
+# Group endpoint behavior for Tax Filing File View.
 class TaxFilingFileView(_TaxFilingActionBase):
-    """POST — submit a draft return (net input VAT, book any penalty).
+    """POST - submit a draft return (net input VAT, book any penalty).
 
     docstring-name: File a tax return
     """
 
     rbac_permission = "finance.tax.file"
 
+    # Handle POST requests for this endpoint.
     def post(self, request, pk):
         from ..tax_filing import file_filing
 
@@ -256,14 +309,38 @@ class TaxFilingFileView(_TaxFilingActionBase):
         )
 
 
+# Group endpoint behavior for Tax Filing Unfile View.
+class TaxFilingUnfileView(_TaxFilingActionBase):
+    """POST - revert a filed return to draft (reverse its netting/penalty journal).
+
+    docstring-name: Un-file a tax return
+    """
+
+    rbac_permission = "finance.tax.file"
+
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk):
+        from ..tax_filing import unfile_filing
+
+        _, filing = self._filing(request, pk)
+        unfile_filing(filing, actor_user=request.user)
+        filing.refresh_from_db()
+        return success_response(
+            f"Tax filing {filing.document_number} un-filed.",
+            data=TaxFilingSerializer(filing).data,
+        )
+
+
+# Group endpoint behavior for Tax Filing Pay View.
 class TaxFilingPayView(_TaxFilingActionBase):
-    """POST — remit a filed return (Dr liability, Cr bank).
+    """POST - remit a filed return (Dr liability, Cr bank).
 
     docstring-name: Pay a tax filing
     """
 
     rbac_permission = "finance.tax.pay"
 
+    # Handle POST requests for this endpoint.
     def post(self, request, pk):
         from ..tax_filing import pay_filing
 

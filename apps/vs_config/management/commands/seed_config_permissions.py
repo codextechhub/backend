@@ -1,0 +1,87 @@
+from django.core.management.base import BaseCommand
+from django.db import transaction
+
+
+RESOURCES = [
+    ("definition", [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("archive", "SENSITIVE")]),
+    ("value", [("view", "NORMAL"), ("update", "SENSITIVE")]),
+    ("capability", [("view", "NORMAL"), ("manage", "SENSITIVE")]),
+    ("entitlement", [("view", "SENSITIVE"), ("manage", "CRITICAL")]),
+    ("override", [("view", "NORMAL"), ("manage", "SENSITIVE")]),
+    ("audit", [("view", "SENSITIVE"), ("export", "SENSITIVE")]),
+    ("export", [("create", "SENSITIVE")]),
+    ("security", [("view", "SENSITIVE"), ("manage", "CRITICAL")]),
+    ("integration", [("view", "SENSITIVE"), ("manage", "CRITICAL")]),
+]
+PLATFORM_ROLE_IDS = ["xvs_super_admin", "xvs_platform_admin"]
+_PLATFORM_ROLE_NAMES = {"xvs_super_admin": "XVS Super Admin", "xvs_platform_admin": "XVS Platform Admin"}
+
+
+class Command(BaseCommand):
+    help = "Seed configuration permissions and grant them to platform admin roles."
+
+    @transaction.atomic
+    def handle(self, *args, **options):
+        from vs_rbac.models import (
+            Permission, PermissionAction, PermissionModule, PermissionResource,
+            TenantRolePermission, TenantRoleTemplate,
+    PermissionScope,
+)
+        from vs_tenants.models import Tenant
+
+        module, _ = PermissionModule.objects.get_or_create(
+            name="config",
+            defaults={"description": "Configuration, capability and entitlement management.", "is_active": True},
+        )
+        permissions = []
+        for resource_name, actions in RESOURCES:
+            resource, _ = PermissionResource.objects.get_or_create(
+                module=module, name=resource_name,
+                defaults={"description": f"Configuration {resource_name} operations.", "is_active": True},
+            )
+            for action_name, sensitivity in actions:
+                action, _ = PermissionAction.objects.get_or_create(
+                    name=action_name,
+                    defaults={"description": f"{action_name.title()} records.", "is_active": True},
+                )
+                key = f"config.{resource_name}.{action_name}"
+                permission = Permission.objects.filter(key=key).first()
+                if permission is None:
+                    permission = Permission(
+                        module=module, resource=resource, action=action,
+                        description=f"{action_name.title()} configuration {resource_name} records.",
+                        sensitivity_level=sensitivity,
+                        is_restricted=sensitivity in {"SENSITIVE", "CRITICAL"},
+                        is_active=True,
+                        # Platform-only, every one of them. This module is how
+                        # CodeX decides what a school HAS - which capabilities
+                        # are switched on, which entitlements are granted, what
+                        # the security and integration settings are. A tenant
+                        # that could hold these could grant itself the modules
+                        # it had not bought. Filed as TENANT until 2026-08-22,
+                        # which put nineteen keys in front of every school
+                        # editing one of its own roles; no school role has ever
+                        # held one.
+                        scope=PermissionScope.PLATFORM,
+                    )
+                    permission.save()
+                permissions.append(permission)
+
+        codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
+        if codex is None:
+            self.stdout.write(self.style.WARNING("Codex platform tenant not found; grants skipped."))
+        else:
+            for role_id in PLATFORM_ROLE_IDS:
+                role, _ = TenantRoleTemplate.objects.get_or_create(
+                    tenant=codex, key=role_id,
+                    defaults={
+                        "name": _PLATFORM_ROLE_NAMES.get(role_id, role_id),
+                        "status": "ACTIVE", "is_system_role": True, "is_locked": True,
+                    },
+                )
+                for permission in permissions:
+                    TenantRolePermission.objects.get_or_create(
+                        role=role, permission=permission,
+                        defaults={"granted": True, "granted_by": None},
+                    )
+        self.stdout.write(self.style.SUCCESS(f"Seeded {len(permissions)} configuration permissions."))
