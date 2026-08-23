@@ -96,7 +96,7 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
                 {"label": "Total", "value": format_naira(document.total_amount)},  # Total disbursed.
                 {"label": "Provider", "value": document.provider},  # PSP the batch goes through.
             ],
-            "link": f"/payments/payout-batches/{document.pk}/",  # Deep link to the batch.
+            "link": f"/finance/payments/batches?document={document.pk}",
         }
 
     def on_submitted(self, instance, context) -> None:
