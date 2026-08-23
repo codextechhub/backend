@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import datetime
 import mimetypes
 
 from django.db.models import Count, Q
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
@@ -404,8 +406,6 @@ class GuideAnalyticsSummaryView(APIView):
     rbac_permission = "platform.health.view"
 
     def get(self, request):
-        import datetime
-
         days = request.query_params.get("days", "30")
         try:
             days = int(days)
