@@ -14,8 +14,9 @@ from ..constants import (
     TicketStatus,
     VALID_STATUS_TRANSITIONS,
 )
-from ..models import Ticket, TicketAttachment, TicketComment
+from ..models import Ticket, TicketAttachment, TicketComment, TicketSubscription
 from . import notifications as notify_svc
+from . import subscriptions as subscription_svc
 from .audit import record_ticket_audit, snapshot_ticket
 from .visibility import (
     can_add_internal_note,
@@ -24,6 +25,7 @@ from .visibility import (
     can_comment_on_ticket,
     can_manage_ticket,
     can_update_ticket_fields,
+    can_view_ticket,
     is_support_user,
 )
 
@@ -181,6 +183,14 @@ def add_comment(ticket: Ticket, *, actor, body: str, visibility: str) -> TicketC
             body=body,
             visibility=visibility,
         )
+        # Commenting is an explicit signal of participation. Re-follow a
+        # previously muted thread so later collaborators and lifecycle events
+        # reach this resolver without requiring an assignment or direct reply.
+        subscription_svc.follow(
+            ticket,
+            actor,
+            source=TicketSubscription.Source.COMMENTED,
+        )
         # Internal notes use a distinct audit action so they are easy to filter.
         action = (
             TicketAuditAction.INTERNAL_NOTE_ADDED
@@ -196,6 +206,16 @@ def add_comment(ticket: Ticket, *, actor, body: str, visibility: str) -> TicketC
         )
         notify_svc.notify_commented(comment, actor=actor)
         return comment
+
+
+def set_ticket_following(ticket: Ticket, *, actor, following: bool) -> bool:
+    if not can_view_ticket(actor, ticket):
+        raise PermissionDenied("You cannot follow this ticket.")
+    if following:
+        subscription_svc.follow(ticket, actor)
+    else:
+        subscription_svc.unfollow(ticket, actor)
+    return following
 
 
 # Attach a file to the ticket or to one of its comments.

@@ -189,6 +189,45 @@ class TicketComment(TimeStampedModel):
         return f"Comment<{self.ticket_id}:{self.author_id}>"
 
 
+class TicketSubscription(TimeStampedModel):
+    class Source(models.TextChoices):
+        COMMENTED = "COMMENTED", "Commented"
+        MANUAL = "MANUAL", "Manual"
+
+    ticket = models.ForeignKey(
+        Ticket,
+        on_delete=models.CASCADE,
+        related_name="subscriptions",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="ticket_subscriptions",
+    )
+    source = models.CharField(
+        max_length=20,
+        choices=Source.choices,
+        default=Source.MANUAL,
+    )
+    muted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "vs_tickets_subscription"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["ticket", "user"],
+                name="unique_ticket_subscription_user",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["ticket", "muted_at"]),
+            models.Index(fields=["user", "muted_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"Subscription<{self.ticket_id}:{self.user_id}>"
+
+
 class TicketAttachment(TimeStampedModel):
     ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="attachments")
     comment = models.ForeignKey(

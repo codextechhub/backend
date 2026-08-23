@@ -8,6 +8,8 @@ from vs_notifications.services.dispatch import NotificationService
 from vs_user.models import User
 
 from ..constants import CommentVisibility, TicketPermission, TicketStatus
+from . import subscriptions as subscription_svc
+from .visibility import can_view_internal_notes, can_view_ticket
 
 logger = logging.getLogger("vs_tickets.notifications")
 
@@ -59,9 +61,50 @@ def context_for(ticket, **extra):
     }
 
 
-# Queue a ticket notification after the surrounding transaction commits.
-def dispatch_ticket_event(event_key: str, *, ticket, recipients, actor=None, context=None):
-    recipients = _unique_recipients(recipients, exclude=actor)
+def _ticket_participants(ticket):
+    return [
+        ticket.requester,
+        ticket.assignee,
+        *subscription_svc.active_users(ticket),
+    ]
+
+
+def _eligible_recipients(ticket, users, *, exclude=None, internal=False, respect_mute=True):
+    recipients = _unique_recipients(users, exclude=exclude)
+    muted_ids = (
+        subscription_svc.muted_user_ids(ticket, [user.pk for user in recipients])
+        if respect_mute
+        else set()
+    )
+    can_receive = can_view_internal_notes if internal else can_view_ticket
+    return [
+        user
+        for user in recipients
+        if user.pk not in muted_ids
+        and user.status == User.Status.ACTIVE
+        and user.is_active
+        and can_receive(user, ticket)
+    ]
+
+
+def dispatch_ticket_event(
+    event_key: str,
+    *,
+    ticket,
+    recipients,
+    actor=None,
+    context=None,
+    internal=False,
+    respect_mute=True,
+):
+    # Queue a ticket notification after the surrounding transaction commits.
+    recipients = _eligible_recipients(
+        ticket,
+        recipients,
+        exclude=actor,
+        internal=internal,
+        respect_mute=respect_mute,
+    )
     if not recipients:
         # No recipients is a valid no-op for unassigned or actor-only events.
         return []
@@ -102,6 +145,9 @@ def notify_assigned(ticket, actor=None):
         actor=actor,
         recipients=[ticket.assignee],
         context=context_for(ticket, actor_name=getattr(actor, "full_name", "")),
+        # Direct assignment creates responsibility even when the new owner
+        # previously muted the conversation.
+        respect_mute=False,
     )
 
 
@@ -121,7 +167,7 @@ def notify_status_changed(ticket, *, old_status, actor=None):
         event_key,
         ticket=ticket,
         actor=actor,
-        recipients=[ticket.requester, ticket.assignee],
+        recipients=_ticket_participants(ticket),
         context=context_for(
             ticket,
             actor_name=getattr(actor, "full_name", ""),
@@ -131,12 +177,10 @@ def notify_status_changed(ticket, *, old_status, actor=None):
     )
 
 
-# Notify only support staff for internal notes; public comments notify both sides.
+# Notify every eligible participant without exposing internal notes to requesters.
 def notify_commented(comment, actor=None):
-    if comment.visibility == CommentVisibility.INTERNAL:
-        recipients = [comment.ticket.assignee]
-    else:
-        recipients = [comment.ticket.requester, comment.ticket.assignee]
+    recipients = _ticket_participants(comment.ticket)
+    if comment.visibility != CommentVisibility.INTERNAL:
         # Until a ticket is assigned, the support queue is the other side of
         # the public conversation. Otherwise the requester's reply is reduced
         # to the requester alone and then suppressed as an actor echo.
@@ -156,12 +200,17 @@ def notify_commented(comment, actor=None):
             comment_body=comment.body,
             comment_visibility=comment.visibility,
         ),
+        internal=comment.visibility == CommentVisibility.INTERNAL,
     )
 
 
 # Notify ticket participants when a file is attached.
 def notify_attachment_added(attachment, actor=None):
-    recipients = [attachment.ticket.requester, attachment.ticket.assignee]
+    recipients = _ticket_participants(attachment.ticket)
+    internal = bool(
+        attachment.comment_id
+        and attachment.comment.visibility == CommentVisibility.INTERNAL
+    )
     if (
         attachment.ticket.assignee_id is None
         and attachment.uploaded_by_id == attachment.ticket.requester_id
@@ -177,4 +226,5 @@ def notify_attachment_added(attachment, actor=None):
             actor_name=getattr(actor, "full_name", ""),
             attachment_name=attachment.original_filename,
         ),
+        internal=internal,
     )

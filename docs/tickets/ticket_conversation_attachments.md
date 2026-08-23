@@ -93,6 +93,8 @@ ticket gets a `404` from every route below**, whatever key they hold.
 |---|---|---|---|
 | `GET /tickets/<pk>/comments/` | none | - | `TicketCommentSerializer[]`, oldest first |
 | `POST /tickets/<pk>/comments/` | none | `{"body": "...", "visibility": "PUBLIC"\|"INTERNAL"}` | `201` + the new comment |
+| `POST /tickets/<pk>/follow/` | none | - | `{"is_following": true}` |
+| `DELETE /tickets/<pk>/follow/` | none | - | `{"is_following": false}` |
 | `POST /tickets/<pk>/attachments/` | none | multipart `file`, optional `comment_id` | `201` + `TicketAttachmentSerializer` |
 | `GET /tickets/<pk>/attachments/<id>/download/` | none | - | the bytes, or `404` |
 | `GET /tickets/<pk>/audit/` | `tickets.audit.view` | - | `TicketAuditLogSerializer[]`, newest first |
@@ -167,10 +169,11 @@ ticket they can open, retroactively.
 1. checks `can_comment_on_ticket`, and additionally `can_add_internal_note` when
    the visibility is `INTERNAL` (172-176);
 2. creates the row;
-3. records `COMMENTED` or `INTERNAL_NOTE_ADDED` with
+3. creates or reactivates the author's ticket subscription;
+4. records `COMMENTED` or `INTERNAL_NOTE_ADDED` with
    `metadata = {"comment_id", "visibility"}` - the body is **not** copied into
    the audit row;
-4. fires `ticket.commented` (see `ticket_context_integrations` §4).
+5. fires `ticket.commented` (see `ticket_context_integrations` §3).
 
 `add_attachment` (`services/tickets.py:202`), in one transaction:
 

@@ -26,7 +26,7 @@ from vs_tenants.models import Branch
 from vs_user.models import User
 
 from .constants import CommentVisibility, TicketPermission, TicketStatus
-from .models import TicketAuditLog
+from .models import TicketAuditLog, TicketSubscription
 from .services import tickets as ticket_svc
 from .services import visibility
 
@@ -352,6 +352,211 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
             {self.support.pk, self.other_support.pk},
         )
 
+    def test_commenters_follow_and_receive_later_public_comments(self):
+        ticket = ticket_svc.create_ticket(
+            actor=self.requester,
+            title="Resolvers are collaborating",
+            description="x",
+            category="HELP",
+            priority="MEDIUM",
+        )
+        ticket_svc.add_comment(
+            ticket,
+            actor=self.support,
+            body="I have started the investigation.",
+            visibility=CommentVisibility.PUBLIC,
+        )
+        subscription = TicketSubscription.objects.get(
+            ticket=ticket,
+            user=self.support,
+        )
+        self.assertEqual(subscription.source, TicketSubscription.Source.COMMENTED)
+        self.assertIsNone(subscription.muted_at)
+
+        with mock.patch(
+            "vs_tickets.services.notifications.NotificationService.send"
+        ) as send:
+            with self.captureOnCommitCallbacks(execute=True):
+                ticket_svc.add_comment(
+                    ticket,
+                    actor=self.other_support,
+                    body="The logs point to the export worker.",
+                    visibility=CommentVisibility.PUBLIC,
+                )
+
+        recipients = send.call_args.kwargs["recipients"]
+        self.assertEqual(
+            {user.pk for user in recipients},
+            {self.requester.pk, self.support.pk},
+        )
+
+    def test_commenter_receives_resolution_notification(self):
+        ticket = ticket_svc.create_ticket(
+            actor=self.requester,
+            title="Resolution should reach collaborators",
+            description="x",
+            category="HELP",
+            priority="MEDIUM",
+        )
+        ticket_svc.add_comment(
+            ticket,
+            actor=self.support,
+            body="I found the cause.",
+            visibility=CommentVisibility.PUBLIC,
+        )
+
+        with mock.patch(
+            "vs_tickets.services.notifications.NotificationService.send"
+        ) as send:
+            with self.captureOnCommitCallbacks(execute=True):
+                ticket_svc.transition_ticket(
+                    ticket,
+                    actor=self.other_support,
+                    status=TicketStatus.RESOLVED,
+                )
+
+        self.assertEqual(send.call_args.kwargs["event_key"], "ticket.resolved")
+        self.assertEqual(
+            {user.pk for user in send.call_args.kwargs["recipients"]},
+            {self.requester.pk, self.support.pk},
+        )
+
+    def test_internal_comment_notifies_only_authorized_followers(self):
+        ticket = ticket_svc.create_ticket(
+            actor=self.requester,
+            title="Private resolver collaboration",
+            description="x",
+            category="HELP",
+            priority="MEDIUM",
+        )
+        ticket_svc.add_comment(
+            ticket,
+            actor=self.support,
+            body="I am following this ticket.",
+            visibility=CommentVisibility.PUBLIC,
+        )
+
+        with mock.patch(
+            "vs_tickets.services.notifications.NotificationService.send"
+        ) as send:
+            with self.captureOnCommitCallbacks(execute=True):
+                ticket_svc.add_comment(
+                    ticket,
+                    actor=self.other_support,
+                    body="Private diagnostic detail.",
+                    visibility=CommentVisibility.INTERNAL,
+                )
+
+        self.assertEqual(
+            {user.pk for user in send.call_args.kwargs["recipients"]},
+            {self.support.pk},
+        )
+
+    def test_stale_follower_without_ticket_access_is_not_notified(self):
+        ticket = ticket_svc.create_ticket(
+            actor=self.requester,
+            title="Tenant boundary remains enforced",
+            description="x",
+            category="HELP",
+            priority="MEDIUM",
+        )
+        TicketSubscription.objects.create(
+            ticket=ticket,
+            user=self.outsider,
+            source=TicketSubscription.Source.MANUAL,
+        )
+
+        with mock.patch(
+            "vs_tickets.services.notifications.NotificationService.send"
+        ) as send:
+            with self.captureOnCommitCallbacks(execute=True):
+                ticket_svc.add_comment(
+                    ticket,
+                    actor=self.support,
+                    body="This stays inside the authorized audience.",
+                    visibility=CommentVisibility.PUBLIC,
+                )
+
+        self.assertEqual(
+            {user.pk for user in send.call_args.kwargs["recipients"]},
+            {self.requester.pk},
+        )
+
+    def test_follower_can_mute_and_commenting_follows_again(self):
+        ticket = ticket_svc.create_ticket(
+            actor=self.requester,
+            title="Mute a noisy collaboration",
+            description="x",
+            category="HELP",
+            priority="MEDIUM",
+        )
+        ticket_svc.add_comment(
+            ticket,
+            actor=self.support,
+            body="I can help.",
+            visibility=CommentVisibility.PUBLIC,
+        )
+        client = APIClient()
+        client.force_authenticate(self.support)
+
+        muted = client.delete(f"/v1/support/tickets/{ticket.pk}/follow/")
+        self.assertEqual(muted.status_code, 200, muted.content)
+        self.assertFalse(muted.json()["data"]["is_following"])
+        self.assertFalse(
+            client.get(f"/v1/support/tickets/{ticket.pk}/").json()["data"]["is_following"]
+        )
+
+        with mock.patch(
+            "vs_tickets.services.notifications.NotificationService.send"
+        ) as send:
+            with self.captureOnCommitCallbacks(execute=True):
+                ticket_svc.add_comment(
+                    ticket,
+                    actor=self.other_support,
+                    body="Muted resolvers should not receive this.",
+                    visibility=CommentVisibility.PUBLIC,
+                )
+        self.assertEqual(
+            {user.pk for user in send.call_args.kwargs["recipients"]},
+            {self.requester.pk},
+        )
+
+        ticket_svc.add_comment(
+            ticket,
+            actor=self.support,
+            body="I am participating again.",
+            visibility=CommentVisibility.PUBLIC,
+        )
+        self.assertTrue(
+            client.get(f"/v1/support/tickets/{ticket.pk}/").json()["data"]["is_following"]
+        )
+
+    def test_visible_resolver_can_follow_without_commenting(self):
+        ticket = ticket_svc.create_ticket(
+            actor=self.requester,
+            title="Follow before joining the conversation",
+            description="x",
+            category="HELP",
+            priority="MEDIUM",
+        )
+        client = APIClient()
+        client.force_authenticate(self.support)
+        self.assertFalse(
+            client.get(f"/v1/support/tickets/{ticket.pk}/").json()["data"]["is_following"]
+        )
+
+        response = client.post(f"/v1/support/tickets/{ticket.pk}/follow/")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(response.json()["data"]["is_following"])
+        self.assertTrue(
+            TicketSubscription.objects.filter(
+                ticket=ticket,
+                user=self.support,
+                muted_at__isnull=True,
+            ).exists()
+        )
+
     def test_visibility_is_participant_manager_and_support_scoped(self):
         mine = ticket_svc.create_ticket(
             actor=self.requester, title="Mine", description="x", category="HELP", priority="LOW",
@@ -440,6 +645,17 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
         response = self.client_api.get(f"/v1/support/tickets/{self.ticket.pk}/")
         self.assertEqual(response.status_code, 404)
 
+    def test_cross_tenant_user_cannot_follow_ticket(self):
+        self.client_api.force_authenticate(self.outsider)
+        response = self.client_api.post(f"/v1/support/tickets/{self.ticket.pk}/follow/")
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(
+            TicketSubscription.objects.filter(
+                ticket=self.ticket,
+                user=self.outsider,
+            ).exists()
+        )
+
     def test_same_tenant_peer_cannot_list_or_open_another_users_ticket(self):
         self.client_api.force_authenticate(self.peer)
         listing = self.client_api.get("/v1/support/tickets/").json()["data"]
@@ -461,6 +677,63 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
             {"status": TicketStatus.CLOSED},
         )
         self.assertEqual(response.status_code, 403)
+
+    def test_requester_can_edit_own_ticket_details(self):
+        self.client_api.force_authenticate(self.requester)
+
+        detail = self.client_api.get(f"/v1/support/tickets/{self.ticket.pk}/")
+        response = self.client_api.patch(
+            f"/v1/support/tickets/{self.ticket.pk}/",
+            {"title": "Requester clarified the export failure"},
+            format="json",
+        )
+
+        self.assertTrue(detail.json()["data"]["capabilities"]["can_update"])
+        self.assertEqual(response.status_code, 200, response.content)
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.title, "Requester clarified the export failure")
+
+    def test_assigned_resolver_cannot_edit_requester_details(self):
+        ticket_svc.assign_ticket(
+            self.ticket,
+            actor=self.support,
+            assignee=self.support,
+        )
+        self.client_api.force_authenticate(self.support)
+
+        detail = self.client_api.get(f"/v1/support/tickets/{self.ticket.pk}/")
+        response = self.client_api.patch(
+            f"/v1/support/tickets/{self.ticket.pk}/",
+            {"description": "Resolver replaced the report."},
+            format="json",
+        )
+
+        self.assertFalse(detail.json()["data"]["capabilities"]["can_update"])
+        self.assertEqual(response.status_code, 403)
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.description, "x")
+
+    def test_tenant_manager_cannot_edit_requester_details(self):
+        _grant(
+            self.school_a,
+            self.peer,
+            (TicketPermission.MANAGE, TicketPermission.UPDATE),
+            role_name="Alpha Ticket Manager",
+        )
+        self.client_api.force_authenticate(self.peer)
+
+        detail = self.client_api.get(f"/v1/support/tickets/{self.ticket.pk}/")
+        response = self.client_api.patch(
+            f"/v1/support/tickets/{self.ticket.pk}/",
+            {"priority": "LOW"},
+            format="json",
+        )
+
+        self.assertEqual(detail.status_code, 200, detail.content)
+        self.assertFalse(detail.json()["data"]["capabilities"]["can_update"])
+        self.assertEqual(response.status_code, 403)
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.priority, "HIGH")
 
     def test_consultant_role_can_create_a_ticket(self):
         consultant = _user(

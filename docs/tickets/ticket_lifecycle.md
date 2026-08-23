@@ -78,9 +78,9 @@ the ticket's tenant, the branch belongs to the ticket's tenant, and an
 `tenant.school_profile`. They are the module's one piece of school vocabulary
 and are discussed in `ticket_code_issues.md` §15.
 
-### `TicketComment` (`models.py:161`), `TicketAttachment` (`models.py:192`), `TicketAuditLog` (`models.py:223`)
+### `TicketComment`, `TicketSubscription`, `TicketAttachment`, `TicketAuditLog`
 
-Covered in `ticket_conversation_attachments` §2. All three hang off `Ticket` with
+Covered in `ticket_conversation_attachments` §2. All four hang off `Ticket` with
 `CASCADE`, so the "nothing is ever deleted" rule is enforced by the absence of a
 delete path rather than by the database.
 
@@ -142,7 +142,7 @@ must land on exactly the rows it counted (`views.py:92-96`).
 | Serializer | Fields |
 |---|---|
 | `TicketSerializer` (`serializers.py:58`) | `id`, `ticket_number`, `title`, `description`, `category`, `priority`, `status`, `source`, `context`, `requester`, `assignee`, `tenant` (slug), `branch`, `branch_name`, `resolved_at`, `closed_at`, `comments_count`, `attachments_count`, `created_at`, `updated_at` |
-| `TicketDetailSerializer` (`serializers.py:88`) | the above plus `comments`, `attachments`, `capabilities` |
+| `TicketDetailSerializer` | the above plus `comments`, `attachments`, `capabilities`, `is_following` |
 | `TicketUserSerializer` (`serializers.py:15`) | `id`, `name`, `email`, `tenant_kind`, `role` |
 | `TicketDashboardSerializer` (`serializers.py:241`) | `total`, `by_status`, `by_priority`, `by_category`, `assigned_to_me`, `requested_by_me` |
 

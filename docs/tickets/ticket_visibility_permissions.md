@@ -48,7 +48,7 @@ Declared in `TicketPermission` (`constants.py:70`), seeded by
 | Key | Sensitivity | Checked where | Seeded to |
 |---|---|---|---|
 | `tickets.ticket.view` | NORMAL | **nowhere in this module's API** - only the export dataset and the console overview card | `school_admin`, `branch_admin`, `teacher` |
-| `tickets.ticket.update` | NORMAL | `can_update_ticket_fields` (`visibility.py:139`) | `school_admin`, `branch_admin` |
+| `tickets.ticket.update` | NORMAL | retained in the permission catalogue, but does not override requester-only field editing | `school_admin`, `branch_admin` |
 | `tickets.ticket.manage` | SENSITIVE | `is_support_user`, `visible_tickets_qs`, `can_view_ticket`, `can_manage_ticket`; the `transition` action key | `school_admin`, `branch_admin`, platform roles |
 | `tickets.ticket.assign` | SENSITIVE | `can_assign_ticket`; the `assign` and `eligible-assignees` action keys | platform roles only |
 | `tickets.comment.post` | NORMAL | `can_comment_on_ticket` | `school_admin`, `branch_admin`, `teacher` |
@@ -133,7 +133,7 @@ would show up as a row that lists but will not open, or the reverse.
 | Question | Function | Answer |
 |---|---|---|
 | See it | `can_view_ticket` (110) | support; else same tenant **and** (requester, assignee, or holds `manage`) |
-| Edit title/description/category/priority | `can_update_ticket_fields` (134) | anyone who can manage it, the requester, or a holder of `update` |
+| Edit title/description/category/priority | `can_update_ticket_fields` | the requester only |
 | Assign it | `can_assign_ticket` (143) | support, or a holder of `assign` in the ticket's tenant |
 | Change status | `can_manage_ticket` (124) | support, the assignee, or a holder of `manage` |
 | Reply publicly | `can_comment_on_ticket` (150) | must be able to see it; then support, requester, assignee, or a holder of `comment.post` |
@@ -142,8 +142,9 @@ would show up as a row that lists but will not open, or the reverse.
 
 Three details worth knowing before you change any of them:
 
-- **The requester can edit their own ticket's text** (137-138) but cannot change
-  its status - `test_requester_cannot_transition_own_ticket` (`tests.py:457-463`).
+- **Only the requester can edit the reported details.** Assignment, management,
+  and update grants do not let a resolver rewrite the requester's title,
+  description, category, or priority. The requester still cannot change status.
 - **The assignee can progress a ticket without any broader grant** (127-129).
   That is what lets a CX agent work a ticket in a tenant where they hold nothing.
 - **`can_manage_ticket` and `can_assign_ticket` do not check visibility first.**
@@ -319,7 +320,7 @@ What the suite does not cover:
    `tickets.ticket.view` cannot export tickets they cannot open.
 4. **Branch.** No test has a multi-branch school and asserts anything at all
    about which branch's tickets a branch admin sees.
-5. **`tickets.ticket.update` as the only route in** - the `update` key's branch
-   of `can_update_ticket_fields` is never exercised.
+5. **Permission catalogue cleanup.** `tickets.ticket.update` remains seeded for
+   compatibility, but requester ownership now decides field editing.
 6. **The pending-tenant gate**, in either direction.
 7. **`is_vision_super_admin`'s bypass** through this module.

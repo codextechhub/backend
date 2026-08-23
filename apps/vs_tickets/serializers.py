@@ -89,9 +89,12 @@ class TicketDetailSerializer(TicketSerializer):
     comments = serializers.SerializerMethodField()
     attachments = serializers.SerializerMethodField()
     capabilities = serializers.SerializerMethodField()
+    is_following = serializers.SerializerMethodField()
 
     class Meta(TicketSerializer.Meta):
-        fields = TicketSerializer.Meta.fields + ["comments", "attachments", "capabilities"]
+        fields = TicketSerializer.Meta.fields + [
+            "comments", "attachments", "capabilities", "is_following",
+        ]
 
     def _sees_internal(self, obj) -> bool:
         if not hasattr(self, "_sees_internal_cache"):
@@ -113,13 +116,23 @@ class TicketDetailSerializer(TicketSerializer):
         return TicketAttachmentSerializer(attachments, many=True, context=self.context).data
 
     def get_capabilities(self, obj):
-        from .services.visibility import can_attach_to_ticket, can_comment_on_ticket
+        from .services.visibility import (
+            can_attach_to_ticket,
+            can_comment_on_ticket,
+            can_update_ticket_fields,
+        )
 
         user = self.context["request"].user
         return {
             "can_comment": can_comment_on_ticket(user, obj),
             "can_attach": can_attach_to_ticket(user, obj),
+            "can_update": can_update_ticket_fields(user, obj),
         }
+
+    def get_is_following(self, obj):
+        from .services.subscriptions import is_following
+
+        return is_following(obj, self.context["request"].user)
 
 
 class TicketContextSerializer(serializers.Serializer):

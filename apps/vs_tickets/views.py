@@ -218,6 +218,25 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             data=TicketDetailSerializer(ticket, context={"request": request}).data,
         )
 
+    # Follow or mute a visible ticket without changing who may access it.
+    @action(detail=True, methods=["post", "delete"], url_path="follow")
+    def follow(self, request, pk=None):
+        ticket = self.get_object()
+        following = request.method == "POST"
+        ticket_svc.set_ticket_following(
+            ticket,
+            actor=request.user,
+            following=following,
+        )
+        return success_response(
+            message=(
+                "Ticket notifications enabled."
+                if following
+                else "Ticket notifications muted."
+            ),
+            data={"is_following": following},
+        )
+
     # List visible comments or add a new public reply/internal note.
     @action(detail=True, methods=["get", "post"])
     def comments(self, request, pk=None):

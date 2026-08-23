@@ -160,11 +160,10 @@ def can_manage_ticket(user, ticket: Ticket) -> bool:
 
 # Decide who can edit mutable ticket fields.
 def can_update_ticket_fields(user, ticket: Ticket) -> bool:
-    if can_manage_ticket(user, ticket):
-        return True
-    if ticket.requester_id == getattr(user, "pk", None):
-        return True
-    return has_ticket_permission(user, TicketPermission.UPDATE, tenant=ticket.tenant)
+    # The requester owns the problem statement. Management and assignment
+    # grants allow resolvers to progress the workflow, not rewrite what the
+    # requester reported.
+    return ticket.requester_id == getattr(user, "pk", None)
 
 
 # Decide who can assign or unassign ticket ownership.

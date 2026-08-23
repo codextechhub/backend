@@ -95,36 +95,47 @@ through notification settings.
 |---|---|---|
 | `ticket.created` | `create_ticket` | `support_recipients()` - the CX triage queue |
 | `ticket.assigned` | `assign_ticket`, only when an assignee is set | the new assignee |
-| `ticket.status_changed` | `transition_ticket`, when no more specific key applies | requester + assignee |
-| `ticket.resolved` | transition to `RESOLVED` | requester + assignee |
-| `ticket.closed` | transition to `CLOSED` | requester + assignee |
-| `ticket.reopened` | any transition **out of** `CLOSED` (`services/notifications.py:114-116`) | requester + assignee |
+| `ticket.status_changed` | `transition_ticket`, when no more specific key applies | requester + assignee + active followers |
+| `ticket.resolved` | transition to `RESOLVED` | requester + assignee + active followers |
+| `ticket.closed` | transition to `CLOSED` | requester + assignee + active followers |
+| `ticket.reopened` | any transition **out of** `CLOSED` | requester + assignee + active followers |
 | `ticket.commented` | `add_comment`, both visibilities | see below |
-| `ticket.attachment_added` | `add_attachment` | requester + assignee, plus the queue while unassigned |
+| `ticket.attachment_added` | `add_attachment` | requester + assignee + active followers, plus the queue while unassigned |
 
-`notify_commented` (`services/notifications.py:135`) is the one with real logic:
+`notify_commented` builds its audience from the requester, current assignee and
+active ticket subscriptions:
 
-- an **internal** note goes to the assignee alone - so an internal note written
-  *by* the assignee notifies nobody;
-- a **public** reply goes to requester and assignee; and when the ticket is still
+- an **internal** note reaches only recipients who currently pass
+  `can_view_internal_notes`, so it never leaks to an ordinary requester;
+- a **public** reply reaches every active, unmuted recipient who can still view
+  the ticket; and when the ticket is still
   unassigned and the author is the requester, the whole support queue is added
-  (143-147). Without that, a requester chasing their own unanswered ticket would
+  as the other side of the conversation. Without that, a requester chasing
+  their own unanswered ticket would
   produce a recipient list of exactly themselves, which
   `_unique_recipients` would then empty as an actor echo.
 
-`notify_attachment_added` repeats that unassigned-queue rule (166-169).
+`notify_attachment_added` repeats that unassigned-queue rule and applies the
+comment's internal visibility to an attachment linked to an internal note.
 
-Two behaviours apply to every event:
+These behaviours apply at the shared dispatch boundary:
 
 - **`_unique_recipients` (19)** drops `None`s, duplicates, and the actor - you are
   never told about your own action.
-- **`dispatch_ticket_event` (63)** exits early on an empty list, builds
+- inactive users, muted subscriptions and users who have lost ticket access are
+  removed before dispatch; internal events additionally require current
+  internal-note access. A subscription never grants ticket visibility.
+- **`dispatch_ticket_event`** exits early on an empty list, builds
   `context_for(ticket)` (48) - number, title, status, priority, category,
   requester and assignee names - and stamps
   `metadata = {"ticket_id", "ticket_number"}`. That metadata is what
   `vs_notifications`'s router turns into the in-app destination
   `/support/tickets/<id>` (`vs_notifications/services/routing.py:27-29`) and what
   `acknowledge-route` reads back to mark exactly that ticket's rows read (52-59).
+
+`add_comment` creates or reactivates a `TicketSubscription` for its author.
+`POST /tickets/<pk>/follow/` follows without commenting, while `DELETE` on the
+same route records a mute preference. A later comment follows the ticket again.
 
 **Dispatch is stamped with the ticket's tenant** (`services/notifications.py:75`)
 while the recipients of `ticket.created` are on the platform tenant. That
