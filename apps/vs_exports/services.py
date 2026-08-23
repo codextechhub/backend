@@ -306,6 +306,10 @@ def enqueue(run, actor=None):
         _job_tenant_id=run.tenant_id,
         _job_label=f"Export: {run.frozen_config.get('name') or run.reference}",
         _job_kind="export",
+        # The export module sends one richer result notification with the run
+        # link, row count, omissions and email delivery. Do not add a second
+        # generic "background task completed" bell for the same outcome.
+        _job_notify=False,
     )
     job = BackgroundJob.objects.filter(celery_task_id=async_result.id).first()
     if job is not None:

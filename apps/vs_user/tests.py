@@ -274,6 +274,7 @@ class JobAttributionTests(TestCase):
             )
         kwargs = self._queued_kwargs(delay)
         self.assertEqual(kwargs["_job_owner_id"], str(self.actor.id))
+        self.assertEqual(kwargs["_job_kind"], "email")
 
     def test_self_service_reset_job_is_owned_by_the_requesting_user(self):
         from vs_user.services.password import PasswordService

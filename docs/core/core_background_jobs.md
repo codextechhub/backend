@@ -121,10 +121,12 @@ is a signal, not noise (`core/tasks.py:22-24`).
 - **`kind` is guessed when not given.** `_short_kind` (`tasks_base.py:62-67`)
   matches on the task name: `"import"` in it → `import`; `"email"` or
   `"notification"` → `email`; otherwise `system`.
-- **`notify_owner` defaults to True by absence.**
-  `meta["_job_notify"] is not False` (`tasks_base.py:99`), so only an explicit
-  `False` opts out. The reason is per-recipient fan-out: one invitation email job
-  per imported row would otherwise ring the actor's bell once per row.
+- **Bell delivery follows user importance, not Celery attribution.** An absent
+  `_job_notify` resolves from the job kind. Imports notify because the operator
+  is waiting for a usable result. Email and system plumbing stay silent, while
+  exports opt out because `export.run_completed` or `export.run_failed` already
+  carries the precise result, action link and email. An explicit `True` supports
+  a new user-facing result kind; an explicit `False` suppresses a duplicate.
 - **`result` is stored only for JSON-safe scalars and containers** -
   `dict, list, str, int, float, bool` (`tasks_base.py:175-176`). A task returning
   a model instance records nothing rather than failing.
@@ -142,7 +144,7 @@ is a signal, not noise (`core/tasks.py:22-24`).
 | `apply_async` | a `QUEUED` `BackgroundJob`, for attributed tasks only |
 | `before_start` | the row if absent; `RUNNING`, `started_at`, `worker` |
 | `_finish` | terminal status, `finished_at`, `progress`, `result` or `error`+`traceback` |
-| `_notify_owner` | one `task.completed` / `task.failed` notification through `vs_notifications`, with `tenant=job.tenant` |
+| `_notify_owner` | one `task.completed` / `task.failed` notification through `vs_notifications` when the resolved importance policy enables it, with `tenant=job.tenant` |
 | `prune_background_jobs_task` | deletes terminal rows older than 90 days |
 
 Four log lines, all `logger.warning` with `exc_info`, one per swallowed failure
@@ -269,8 +271,9 @@ platform tenant, so it appears in the platform's queue and not the school's.
 `core/test_jobs.py` is focused and good:
 
 - `TrackedTaskTests` (`test_jobs.py:48-116`) - an owned task's full lifecycle
-  plus its notification; a failure records the error; `_job_notify=False` tracks
-  the job but stays silent; a system task is recorded without an owner.
+  plus its notification; routine email stays silent by default; explicit opt-in
+  and opt-out both work; a failure records the error; and a system task is
+  recorded without an owner.
 - `MyTasksAPITests` (`118-168`) - the `mine` scope shows only my jobs, the `all`
   scope requires an admin, the filters work, and the summary flags the admin
   toggle.

@@ -17,18 +17,20 @@ so task signatures stay untouched::
 
 ``_job_owner_id`` is the ACTOR who triggered the work - never the subject the
 work is *about*. An invitation email to Jane, queued by admin Ada, is owned by
-Ada: she triggered it, she sees it in View Queues, she is the one told when it
-lands. Passing the subject there hands a stranger someone else's queue row and
-completion notification. Omit ``_job_tenant_id`` unless it must differ from the
-owner's tenant - it is derived from the owner otherwise.
+Ada: she triggered it and she sees its timing and outcome in View Queues. If a
+task opts into a completion alert, that alert also goes to Ada. Passing the
+subject there hands a stranger someone else's queue row and any enabled result
+alert. Omit ``_job_tenant_id`` unless it must differ from the owner's tenant;
+it is derived from the owner otherwise.
 
 Tasks queued without these kwargs (beat schedules, internal fan-out) are
 recorded as system rows (owner=None) when they start.
 
-On completion the owner gets an in-app notification (best-effort - a
-notification failure never fails the task). Pass ``_job_notify=False`` for
-per-recipient fan-out (one email job per imported row) so the actor gets the
-queue rows without one bell notification per row.
+Every attributed task remains visible in View Queues. Completion notifications
+are reserved for user-facing result jobs such as imports. Routine delivery and
+system plumbing stay silent by default. Pass ``_job_notify=True`` only when a
+new task produces a result the owner is waiting to use, or ``False`` when a
+domain-specific notification already reports the outcome.
 
 Tracking is best-effort by design: any database problem while writing the
 job row is logged and swallowed so the underlying task is never blocked.
@@ -46,6 +48,12 @@ _JOB_KWARGS = (
     "_job_owner_id", "_job_tenant_id", "_job_label",
     "_job_kind", "_job_notify",
 )
+
+# These categories produce a user-visible result that is not already announced
+# by its owning module. Export jobs deliberately opt out at their call site
+# because export.run_completed and export.run_failed carry the file-specific
+# result and action link.
+_DEFAULT_NOTIFY_KINDS = frozenset({"import"})
 
 
 def _resolve_job_tenant_id(meta=None):
@@ -67,6 +75,13 @@ def _short_kind(task_name: str) -> str:
     return "system"
 
 
+def _should_notify_owner(kind: str, explicit_notify) -> bool:
+    """Resolve bell importance without making every Celery detail user-facing."""
+    if explicit_notify is not None:
+        return bool(explicit_notify)
+    return kind in _DEFAULT_NOTIFY_KINDS
+
+
 class TrackedTask(Task):
 
     # ------------------------------------------------------------------ #
@@ -86,17 +101,18 @@ class TrackedTask(Task):
         try:
             from core.models import BackgroundJob
 
+            kind = meta["_job_kind"] or _short_kind(self.name or "")
+
             BackgroundJob.objects.get_or_create(
                 celery_task_id=task_id,
                 defaults=dict(
                     owner_id=meta["_job_owner_id"] or None,
                     tenant_id=_resolve_job_tenant_id(meta),
                     label=meta["_job_label"] or "",
-                    kind=meta["_job_kind"] or _short_kind(self.name or ""),
+                    kind=kind,
                     task_name=self.name or "",
                     status=BackgroundJob.Status.QUEUED,
-                    # Absent kwarg means "notify" - only an explicit False opts out.
-                    notify_owner=meta["_job_notify"] is not False,
+                    notify_owner=_should_notify_owner(kind, meta["_job_notify"]),
                 ),
             )
         except Exception:  # pragma: no cover - tracking must never block queuing

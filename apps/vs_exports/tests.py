@@ -411,6 +411,25 @@ class ExportRunTests(_ExportFixture, TestCase):
         self.assertIn("1240000.00", body)
         self.assertNotIn("₦", body)
 
+    def test_queue_suppresses_the_duplicate_generic_completion_alert(self):
+        definition = self.make_definition()
+        run = ExportRun.objects.create(
+            tenant=self.tenant,
+            entity=self.entity,
+            definition=definition,
+            frozen_config=services.freeze(definition),
+            requested_by=self.admin,
+            status=RunStatus.QUEUED,
+        )
+        async_result = mock.Mock(id="export-task-1")
+        with mock.patch(
+            "vs_exports.tasks.run_export_task.delay",
+            return_value=async_result,
+        ) as delay:
+            services.enqueue(run, self.admin)
+
+        self.assertIs(delay.call_args.kwargs["_job_notify"], False)
+
     def test_xlsx_run_produces_a_workbook(self):
         definition = self.make_definition(fmt=ExportFormat.XLSX)
         run, _ = services.trigger_run(definition=definition, actor=self.admin)

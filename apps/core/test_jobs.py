@@ -61,11 +61,11 @@ class TrackedTaskTests(TestCase):
             21,
             _job_owner_id=str(self.owner.id),
             _job_label="Probe job",
-            _job_kind="export",
+            _job_kind="import",
         )
         job = BackgroundJob.objects.get(owner=self.owner)
         self.assertEqual(job.status, BackgroundJob.Status.SUCCEEDED)
-        self.assertEqual(job.kind, "export")
+        self.assertEqual(job.kind, "import")
         self.assertEqual(job.result, {"doubled": 42})
         self.assertEqual(job.progress, 100)
         self.assertIsNotNone(job.started_at)
@@ -107,6 +107,39 @@ class TrackedTaskTests(TestCase):
         self.assertFalse(job.notify_owner)
         # …but no bell notification, so 200 imported rows stay 200 rows and 0 bells.
         self.assertFalse(Notification.objects.filter(recipient=self.owner).exists())
+
+    def test_routine_email_job_is_silent_by_default(self):
+        from vs_notifications.models import Notification
+
+        _job_probe_ok.delay(
+            1,
+            _job_owner_id=str(self.owner.id),
+            _job_label="Password reset email",
+            _job_kind="email",
+        )
+        job = BackgroundJob.objects.get(owner=self.owner)
+        self.assertEqual(job.status, BackgroundJob.Status.SUCCEEDED)
+        self.assertFalse(job.notify_owner)
+        self.assertFalse(Notification.objects.filter(recipient=self.owner).exists())
+
+    def test_explicit_notify_opt_in_supports_new_user_result_jobs(self):
+        from vs_notifications.constants import ChannelChoices
+        from vs_notifications.models import Notification
+
+        _job_probe_ok.delay(
+            1,
+            _job_owner_id=str(self.owner.id),
+            _job_label="Forecast report",
+            _job_kind="report",
+            _job_notify=True,
+        )
+        job = BackgroundJob.objects.get(owner=self.owner)
+        self.assertTrue(job.notify_owner)
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.owner,
+            channel=ChannelChoices.IN_APP,
+            event_type__key="task.completed",
+        ).exists())
 
     def test_system_task_recorded_without_owner(self):
         _job_probe_ok.delay(1)
