@@ -1,0 +1,140 @@
+"""A school can read its own campuses, and only its own.
+
+Written because it could not. Every view in ``views/branch.py`` demands
+``platform.branches.*``, which is PLATFORM-scoped and held by no school role, so
+a live school administrator asking for her own sites was refused outright -
+verified against lagoon-view before this existed.
+
+The fix is deliberately the read half only. Creating and editing a branch stays
+CodeX's, so opening those views (which share one key with create and update)
+would have handed a school both.
+"""
+from __future__ import annotations
+
+from django.test import TestCase
+from django.urls import reverse
+from rest_framework.test import APIClient
+
+from vs_user.tokens import CodeXRefreshToken
+from vs_rbac.models import PermissionScope
+from vs_rbac.tests.helpers import (
+    make_assignment,
+    make_branch,
+    make_permission,
+    make_role,
+    make_role_permission,
+    make_school,
+    make_school_admin,
+)
+
+
+class MyBranchesTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="bright-star", name="Bright Star")
+        cls.main = make_branch(cls.school, name="Main Campus", is_main=True)
+        cls.annex = make_branch(cls.school, name="Lekki Annex", is_main=False)
+        cls.tenant = cls.school.tenant
+
+        view = make_permission("school.branches.view", scope=PermissionScope.TENANT)
+        role = make_role(cls.school, name="School Admin", key="school_admin")
+        make_role_permission(role, view)
+        cls.admin = make_school_admin(
+            None, email="amaka@bright-star.example.com", tenant=cls.tenant,
+        )
+        make_assignment(cls.school, cls.admin, role, branch=None)
+
+        # A second school, to prove the scoping rather than assume it.
+        cls.other = make_school(slug="greenfield", name="Greenfield")
+        cls.other_branch = make_branch(cls.other, name="Greenfield Main", is_main=True)
+
+    def client_for(self, user):
+        token = str(CodeXRefreshToken.for_user(user).access_token)
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        return client
+
+    def test_a_school_reads_its_own_campuses(self):
+        response = self.client_for(self.admin).get(
+            reverse("my-branch-list"), {"tenant": self.tenant.slug},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        names = {row["name"] for row in response.data["data"]}
+        self.assertEqual(names, {"Main Campus", "Lekki Annex"})
+
+    def test_the_main_campus_leads(self):
+        """Ordered the way a school talks about its own sites."""
+        response = self.client_for(self.admin).get(
+            reverse("my-branch-list"), {"tenant": self.tenant.slug},
+        )
+        self.assertTrue(response.data["data"][0]["is_main"])
+
+    def test_another_school_is_not_in_the_list(self):
+        response = self.client_for(self.admin).get(
+            reverse("my-branch-list"), {"tenant": self.tenant.slug},
+        )
+        names = {row["name"] for row in response.data["data"]}
+        self.assertNotIn("Greenfield Main", names)
+
+    def test_a_code_this_school_does_not_have_is_a_404(self):
+        """A campus this school has no code for is absent, not forbidden.
+
+        Note that branch codes are PER SCHOOL, so Greenfield's code 1 and Bright
+        Star's code 1 are different campuses - asking for 1 correctly returns
+        Bright Star's own. The case that matters is a code only the other school
+        has, which is what this builds.
+        """
+        third = make_branch(self.other, name="Greenfield Annex", is_main=False)
+        fourth = make_branch(self.other, name="Greenfield Third", is_main=False)
+        # A code beyond anything Bright Star owns, held by Greenfield.
+        self.assertGreater(fourth.code, self.annex.code)
+
+        response = self.client_for(self.admin).get(
+            reverse("my-branch-detail", kwargs={"code": fourth.code}),
+            {"tenant": self.tenant.slug},
+        )
+        self.assertEqual(response.status_code, 404, response.data)
+        del third
+
+    def test_the_counts_are_null_rather_than_invented(self):
+        """There is no Student, Teacher or Class model in the product yet.
+
+        Null says "not known" and the screen renders a dash. A zero would say
+        the campus has no students, which is a different and false claim.
+        """
+        response = self.client_for(self.admin).get(
+            reverse("my-branch-list"), {"tenant": self.tenant.slug},
+        )
+        row = response.data["data"][0]
+        for field in ("students_count", "teachers_count", "classes_count"):
+            self.assertIn(field, row, f"{field} must be in the shape already")
+            self.assertIsNone(row[field])
+
+    def test_a_reader_without_the_key_is_refused(self):
+        stranger = make_school_admin(
+            None, email="nobody@bright-star.example.com", tenant=self.tenant,
+        )
+        response = self.client_for(stranger).get(
+            reverse("my-branch-list"), {"tenant": self.tenant.slug},
+        )
+        self.assertEqual(response.status_code, 403, response.data)
+
+    def test_there_is_no_way_to_write(self):
+        """Read-only on purpose: branches are CodeX's to create and edit.
+
+        If somebody adds a POST or PATCH here, this fails and asks them to
+        settle that question rather than let it arrive by accident.
+        """
+        client = self.client_for(self.admin)
+        # The tenant assertion has to be on the URL or the request is refused
+        # with 400 before it ever reaches a handler, which would make this pass
+        # for the wrong reason.
+        url = f"{reverse('my-branch-list')}?tenant={self.tenant.slug}"
+        for method in ("post", "put", "patch", "delete"):
+            response = getattr(client, method)(
+                url, {"name": "New Campus"}, format="json",
+            )
+            self.assertEqual(
+                response.status_code, 405,
+                f"{method.upper()} must not be allowed on {url}",
+            )

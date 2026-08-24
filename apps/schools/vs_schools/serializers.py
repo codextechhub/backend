@@ -1812,3 +1812,54 @@ class SchoolStaffSerializer(serializers.Serializer):
 
     def get_can_resend(self, obj) -> bool:
         return obj.status == "PENDING"
+
+
+class SchoolBranchSerializer(serializers.ModelSerializer):
+    """One campus, as a school's own branches screen reads it.
+
+    Distinct from ``BranchListSerializer`` and ``BranchDetailSerializer``, which
+    serve CodeX's branch management: those carry ``school_slug`` (a school
+    already knows which school it is) and split list from detail. This is one
+    shape for both, because a school's card and its detail view show the same
+    facts.
+
+    **The three counts are deliberately null.** There is no Student, Teacher or
+    Class model in the product yet, so a number here would be invented. Null
+    says "not known", the screen renders a dash, and the day those models land
+    this becomes an annotation without the response shape changing under any
+    client already reading it.
+    """
+
+    branch_type = serializers.CharField(source="_type", read_only=True)
+    students_count = serializers.SerializerMethodField()
+    teachers_count = serializers.SerializerMethodField()
+    classes_count = serializers.SerializerMethodField()
+
+    def get_students_count(self, obj) -> None:
+        return None
+
+    def get_teachers_count(self, obj) -> None:
+        return None
+
+    def get_classes_count(self, obj) -> None:
+        return None
+
+    class Meta:
+        model = Branch
+        fields = [
+            "id",
+            "code",
+            "name",
+            "is_main",
+            "branch_type",
+            "status",
+            "address",
+            "email",
+            "state",
+            "country",
+            "opened_at",
+            "students_count",
+            "teachers_count",
+            "classes_count",
+        ]
+        read_only_fields = fields

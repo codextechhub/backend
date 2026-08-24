@@ -1,5 +1,6 @@
 from django.urls import path
 
+from .views.my_branches import MyBranchDetailView, MyBranchListView
 from .views.package import PackagePlanListView, XVSModuleListView
 from .views.staff import SchoolStaffListCreateView, SchoolStaffResendView
 from .views.school import (
@@ -41,6 +42,14 @@ urlpatterns = [
     # the reserved list.
     path("me/profile/", SchoolProfileView.as_view(), name="school-profile"),
     path("me/profile/logo/", SchoolLogoView.as_view(), name="school-profile-logo"),
+    # A school's own campuses, read-only. See views/my_branches.py for why this
+    # exists rather than opening the platform's branch views.
+    path("me/branches/", MyBranchListView.as_view(), name="my-branch-list"),
+    path(
+        "me/branches/<int:code>/",
+        MyBranchDetailView.as_view(),
+        name="my-branch-detail",
+    ),
     path("me/staff/", SchoolStaffListCreateView.as_view(), name="school-staff"),
     path(
         "me/staff/<int:pk>/resend/",
