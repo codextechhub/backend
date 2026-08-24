@@ -535,8 +535,12 @@ class TenantRoleTemplateListCreateView(TenantScopedRBACMixin, CreateModelMixin, 
         qs = (
             TenantRoleTemplate.objects.filter(tenant=tenant)
             .annotate(
+                # Count the people, not the grants. ``distinct=True`` over
+                # ``user_assignments`` de-duplicates assignment rows, and one
+                # person holding Storekeeper at Ikeja and at Lekki is two of
+                # those and one user - so the roles list would report 2.
                 assigned_users_count=Count(
-                    "user_assignments",
+                    "user_assignments__user",
                     filter=Q(user_assignments__assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE),
                     distinct=True,
                 ),
@@ -1004,20 +1008,26 @@ class TenantUserRoleAssignmentReplaceView(TenantScopedRBACMixin, APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
+        # The replacement is written at ``assignment.branch`` (below), so the
+        # duplicate it must not collide with is the one at that same branch -
+        # not any grant of the role anywhere in the tenant. Holding Storekeeper
+        # at Ikeja is no reason to refuse Storekeeper at Lekki.
         duplicate = (
-            TenantUserRoleAssignment.objects
-            .select_for_update()
-            .filter(
+            TenantUserRoleAssignment.conflicting_active_grants(
                 tenant=tenant,
                 user=assignment.user,
                 role=target_role,
-                assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+                branch=assignment.branch,
+                exclude_pk=assignment.pk,
             )
+            .select_for_update()
             .exists()
         )
         if duplicate:
             return error_response(
-                message="This user already has an active assignment for the selected role.",
+                message=TenantUserRoleAssignment.duplicate_grant_message(
+                    target_role, assignment.branch,
+                ),
                 status=status.HTTP_409_CONFLICT,
             )
 

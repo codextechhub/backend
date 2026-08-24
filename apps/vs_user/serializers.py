@@ -211,7 +211,14 @@ class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     def get_role(self, obj) -> str:
         assignments = getattr(obj, 'active_school_role_assignments', None)
         if assignments is not None:
-            names = [assignment.role.name for assignment in assignments]
+            # A set, and sorted so the label is stable between requests. One
+            # person may hold the same role at two branches, and listing the
+            # grants rather than the roles renders "Teacher, Teacher".
+            names = sorted({
+                assignment.role.name
+                for assignment in assignments
+                if assignment.role and assignment.role.name
+            })
             if names:
                 return ', '.join(names)
         return obj.role or ''

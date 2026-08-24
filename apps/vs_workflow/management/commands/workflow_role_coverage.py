@@ -111,7 +111,10 @@ class Command(BaseCommand):
                     assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
                     user__is_active=True,
                 ).select_related("user")
-                holders = held_by.count()
+                # People, not grants. One person may hold the role at two
+                # branches, and counting rows would report two holders where
+                # there is one - turning the hard block below into silence.
+                holders = held_by.values("user_id").distinct().count()
                 if holders == 0:
                     unassigned_total += 1
                     problems.append(f"{key}: role exists but nobody holds it")

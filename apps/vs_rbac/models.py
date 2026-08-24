@@ -766,6 +766,67 @@ class TenantUserRoleAssignment(TimeStampedModel):
 
     objects = ScopeGuardedManager()
 
+    # ---------------------------------------------------------------- #
+    # The rule the two constraints above spell out, said once in Python #
+    # ---------------------------------------------------------------- #
+    @classmethod
+    def conflicting_active_grants(cls, *, tenant, user, role, branch, exclude_pk=None):
+        """Active grants that a grant of *role* at *branch* would collide with.
+
+        The Python half of the split constraints, and it has to say exactly what
+        they say: a whole-tenant grant conflicts only with another whole-tenant
+        grant of the same role, and a branch-pinned grant conflicts only with
+        another grant of that role *at that same branch*. Both API write paths
+        ask this one question, so neither can drift from the schema or from the
+        other. They both used to ask a branch-blind one instead, which refused
+        Mr Eze his second Teacher grant at Lekki: the schema stored the
+        arrangement happily and the API would not let anybody create it.
+
+        ``branch`` is the branch itself or ``None`` for a whole-tenant grant,
+        never a bare id, because the two cases are different lookups.
+        """
+        qs = cls.objects.filter(
+            tenant=tenant,
+            user=user,
+            role=role,
+            assignment_status=cls.AssignmentStatus.ACTIVE,
+        )
+        # The NULL trap the constraint comment warns about, in its ORM form.
+        # Writing ``branch=branch`` for both cases works today only because
+        # Django rewrites ``= None`` into ``IS NULL``; it reads as an equality
+        # test against NULL, and the first caller to pass an id-or-``None``
+        # through the same expression loses the whole-tenant guarantee - the
+        # exact duplicate the constraints were split in two to prevent. Keeping
+        # "no branch" a lookup rather than a value makes that unavailable.
+        qs = qs.filter(branch__isnull=True) if branch is None else qs.filter(branch=branch)
+        if exclude_pk is not None:
+            qs = qs.exclude(pk=exclude_pk)
+        return qs
+
+    @staticmethod
+    def duplicate_grant_message(role, branch):
+        """What to tell the administrator whose grant was just refused.
+
+        This renders under a field on the assign-role form, so it says what is
+        actually refused rather than the old "already has an active assignment
+        for this role", which stopped being true the moment branch mattered:
+        they may well hold the role elsewhere, legitimately. Where the refusal
+        is about one site, the message names it, because "at Ikeja" is the
+        difference between a mistake and a puzzle.
+
+        The way out is the same sentence on both write paths deliberately.
+        "Pick another branch" would read well on the assign form and be useless
+        on the replace endpoint, which keeps the branch it was given and offers
+        no choice of one - and useless again to a school with a single site,
+        where the branch control is not on screen at all.
+        """
+        role_name = getattr(role, "name", None) or getattr(role, "key", None) or "this"
+        where = "across the whole organisation" if branch is None else f"at {branch.name}"
+        return (
+            f"This user already holds the {role_name} role {where}. "
+            f"Revoke that assignment first."
+        )
+
     def assert_scope_allowed(self):
         """Refuse to hand a person a role carrying keys their tenant may not hold.
 

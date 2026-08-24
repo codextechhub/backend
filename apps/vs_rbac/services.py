@@ -231,14 +231,19 @@ def transfer_super_admin(from_user, to_user):
         raise ValueError("Codex platform tenant not found.") from exc
 
     # Guard the transfer authority with the active super-admin assignment itself.
-    active_assignment = TenantUserRoleAssignment.objects.filter(
+    # A queryset rather than ``.first()``: the split unique constraints allow a
+    # whole-tenant grant and a branch-pinned one of the same role to coexist, and
+    # revoking only the first one found would demote the outgoing holder on
+    # paper while ``is_vision_super_admin`` - a branch-blind ``.exists()`` -
+    # still answered yes for the grant left behind, leaving two super admins.
+    outgoing_grants = TenantUserRoleAssignment.objects.filter(
         tenant=codex,
         user=from_user,
         role__key=SUPER_ADMIN_ROLE_KEY,
         role__tenant=codex,
         assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
-    ).first()
-    if not active_assignment:
+    )
+    if not outgoing_grants.exists():
         raise ValueError("You do not hold the Vision Super Admin role.")
 
     try:
@@ -249,9 +254,11 @@ def transfer_super_admin(from_user, to_user):
 
     now = timezone.now()
 
-    # Revoke the old super-admin assignment before issuing replacements.
-    active_assignment.revoke(by_user=from_user, reason="Super admin role transferred to another user.")
-    active_assignment.save(update_fields=["assignment_status", "revoked_at", "revoked_by", "reason_note", "updated_at"])
+    # Revoke every old super-admin assignment before issuing replacements, the
+    # same way the incoming holder's roles are cleared below.
+    for active_assignment in outgoing_grants:
+        active_assignment.revoke(by_user=from_user, reason="Super admin role transferred to another user.")
+        active_assignment.save(update_fields=["assignment_status", "revoked_at", "revoked_by", "reason_note", "updated_at"])
 
     # Clear existing tenant roles so the new holder has exactly the super-admin role.
     TenantUserRoleAssignment.objects.filter(

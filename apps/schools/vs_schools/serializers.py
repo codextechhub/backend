@@ -1786,18 +1786,25 @@ class SchoolStaffSerializer(serializers.Serializer):
         ).strip()
 
     def get_role(self, obj) -> str:
-        """The whole-school role, read from the prefetched assignments.
+        """The roles this person holds, read from the prefetched assignments.
 
         Reads the prefetched list rather than querying, so a page of people
         does not become a page of queries.
+
+        Every distinct role name, not the first one found. One person may hold
+        the same role at two branches, and the prefetch is unordered, so taking
+        the first match returned whichever grant the database happened to yield
+        and could name a different one on the next page load. Names are
+        de-duplicated so two branches of one role read as one role, and sorted
+        so the same person reads the same way every time.
         """
-        for assignment in obj.tenant_role_assignments.all():
-            if assignment.assignment_status != "ACTIVE":
-                continue
-            role = getattr(assignment, "role", None)
-            if role is not None:
-                return role.name or role.key
-        return ""
+        names = sorted({
+            (assignment.role.name or assignment.role.key)
+            for assignment in obj.tenant_role_assignments.all()
+            if assignment.assignment_status == "ACTIVE"
+            and getattr(assignment, "role", None) is not None
+        })
+        return ", ".join(names)
 
     def get_invited_at(self, obj):
         invitation = getattr(obj, "invitation", None)

@@ -672,17 +672,20 @@ class TenantUserRoleAssignmentSerializer(
             new_status == TenantUserRoleAssignment.AssignmentStatus.ACTIVE
             and user and role
         ):
-            qs = TenantUserRoleAssignment.objects.filter(
+            # Branch-aware on purpose: the same role at two branches is two
+            # grants, not a duplicate, and the model's split unique constraints
+            # have always allowed it. ``conflicting_active_grants`` is the one
+            # place that rule is written down.
+            conflicts = TenantUserRoleAssignment.conflicting_active_grants(
                 tenant=tenant,
                 user=user,
                 role=role,
-                assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+                branch=branch,
+                exclude_pk=self.instance.pk if self.instance else None,
             )
-            if self.instance:
-                qs = qs.exclude(pk=self.instance.pk)
-            if qs.exists():
+            if conflicts.exists():
                 raise serializers.ValidationError(
-                    {"role": "This user already has an active assignment for this role."}
+                    {"role": TenantUserRoleAssignment.duplicate_grant_message(role, branch)}
                 )
 
         is_assigning_super_admin = (
