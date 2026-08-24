@@ -1145,13 +1145,16 @@ def _build_default_templates() -> dict:
         },
 
         # ── task.completed / task.failed (core background jobs, IN_APP) ──────
+        # Named plainly rather than quoted. A label in single quotes reads as
+        # scare quotes in the tray - "Confirm Default Roles & RBAC" reopened -
+        # and nothing else in the product does it.
         ("task.completed", C.IN_APP): {
             "subject": "",
-            "body": "Your background task '{{ label }}' finished successfully.",
+            "body": "{{ label }} finished successfully.",
         },
         ("task.failed", C.IN_APP): {
             "subject": "",
-            "body": "Your background task '{{ label }}' FAILED. {{ error }}",
+            "body": "{{ label }} did not finish. {{ error }}",
         },
 
         # ── export.run_completed / export.run_failed (Export Centre) ─────────
