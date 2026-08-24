@@ -11,6 +11,10 @@ the school administrator of Brightfield Schools:
 * Selecting **Schools Master Import** and importing one row created a whole new
   school AND a new tenant (``kind=SCHOOL status=PENDING``). A customer could
   provision tenants on the platform.
+* Selecting **Branches Master Import** created a branch, a branch administrator
+  and a branch-scoped role - none of which a school may create through the
+  branch endpoints, which are all platform-only. The upload was a way around a
+  permission the API refuses at the front door.
 * Selecting **CX Users Master Import** created a user inside the ``codex``
   PLATFORM tenant with ``status=PENDING_APPROVAL``, submitted into CodeX's own
   staff-approval workflow - a request indistinguishable from a real internal
@@ -51,17 +55,46 @@ from .models import DatasetTypeChoices
 PLATFORM_ONLY_DATASETS: frozenset[str] = frozenset({
     DatasetTypeChoices.SCHOOLS,
     DatasetTypeChoices.CX_USERS,
+    # Reconciliation data, loaded by whoever runs the ledger. Not something a
+    # school is asked for during onboarding, and not on this checklist.
+    DatasetTypeChoices.BANK_STATEMENTS,
+    # Listed rather than left to the fail-closed default, because this one is a
+    # DECISION and not an oversight. A branch looks like a school's own data;
+    # creating one is CodeX's. See TENANT_DATASETS below for why.
+    DatasetTypeChoices.BRANCHES,
 })
 
 #: Datasets a school may import for itself.
 #:
-#: ``branches`` is a school's own campus list - the one thing on the onboarding
-#: checklist that can genuinely be uploaded today. ``bank_statements`` is
-#: reconciliation data belonging to the school's own ledger entity.
-TENANT_DATASETS: frozenset[str] = frozenset({
-    DatasetTypeChoices.BRANCHES,
-    DatasetTypeChoices.BANK_STATEMENTS,
-})
+#: **Empty today, and that is the honest answer.** The three datasets this step
+#: exists for - students, staff and parents - have no template and no model to
+#: import into. Nothing else on the list is a school's to load: schools and CX
+#: users are CodeX's records, bank statements are ledger reconciliation rather
+#: than onboarding, and branches are CodeX's to create (below).
+#:
+#: The import screen reads this through the API and shows an empty templates
+#: table, which is what the design draws for the case. When a students template
+#: lands, adding it here is the only change needed.
+#:
+#: ``branches`` is NOT here, and the reason is the sharpest argument for
+#: classifying datasets rather than assuming. A branch looks like a school's own
+#: data, and it is - but creating one is not a school's to do. Every view in
+#: ``vs_schools/views/branch.py`` demands ``platform.branches.create`` /
+#: ``.update``, which is PLATFORM-scoped and held by no school role. A live
+#: school administrator posting to the branch endpoint is refused outright
+#: (verified against lagoon-view: "You do not have permission to perform this
+#: action").
+#:
+#: The import engine asked none of that. Uploading a branches CSV created the
+#: branch, a branch administrator account, and a branch-scoped role - so the
+#: file upload was a way around a permission the API refuses at the front door.
+#: A school cannot create one branch by asking, and could create twenty by
+#: uploading a spreadsheet.
+#:
+#: A school still administers the branches it HAS - ``school.branches.view``
+#: and ``.manage`` are its own. It is opening and editing them that is not, and
+#: those two keys have been dropped from the school permission group.
+TENANT_DATASETS: frozenset[str] = frozenset()
 
 
 def platform_only(dataset_type: str | None) -> bool:

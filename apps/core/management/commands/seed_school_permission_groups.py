@@ -108,13 +108,17 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
     (
         "Branch Administration",
         SCHOOL_WIDE,
-        "Open, edit, close and list the school's branches. Creating a branch is "
-        "an act of the school, not of any one branch.",
+        "See and administer the branches this school already has. Opening a new "
+        "branch, or changing one's details, is CodeX's to do - ask the team.",
         (
             "school.branches.view",
-            "school.branches.create",
-            "school.branches.update",
             "school.branches.manage",
+            # ``create`` and ``update`` are deliberately absent. Every branch
+            # view demands ``platform.branches.*``, which no school role holds,
+            # so a school administrator posting to the branch endpoint is
+            # refused outright. Offering the keys here promised something the
+            # API declines, and the import engine was briefly a way around it -
+            # see vs_import_data/datasets.py.
         ),
     ),
     (

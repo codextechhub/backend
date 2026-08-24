@@ -49,10 +49,25 @@ class DatasetOwnershipRuleTests(TestCase):
         self.assertFalse(may_import(SCHOOL, DatasetTypeChoices.SCHOOLS))
         self.assertFalse(may_import(SCHOOL, DatasetTypeChoices.CX_USERS))
 
-    def test_a_school_may_import_its_own_data(self):
-        """The narrowing must not take away the thing the card exists for."""
-        self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.BRANCHES))
-        self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.BANK_STATEMENTS))
+    def test_no_dataset_is_a_school_import_today(self):
+        """The honest state of this step, asserted rather than assumed.
+
+        The three datasets it exists for - students, staff, parents - have no
+        template and no model to import into. Every dataset that DOES exist
+        belongs to CodeX: schools and cx_users are its records, branches are its
+        to create, and bank statements are ledger reconciliation rather than
+        onboarding.
+
+        This test is meant to fail the day a students template lands. That is
+        the point: adding it to TENANT_DATASETS is the only change needed, and
+        this is what says so.
+        """
+        for dataset in DatasetTypeChoices.values:
+            self.assertFalse(
+                may_import(SCHOOL, dataset),
+                f"{dataset} is now a school import - add it to TENANT_DATASETS "
+                f"and update this test",
+            )
 
     def test_codex_keeps_every_dataset(self):
         for dataset in DatasetTypeChoices.values:
@@ -86,6 +101,35 @@ class DatasetOwnershipRuleTests(TestCase):
             "Classify these in vs_import_data/datasets.py - a school may "
             f"import a dataset only if it is listed there: {unclassified}",
         )
+
+    def test_branches_are_not_a_school_dataset(self):
+        """A school cannot create a branch by asking, so not by uploading either.
+
+        Every view in vs_schools/views/branch.py demands platform.branches.*,
+        which no school role holds - a live school administrator posting to the
+        branch endpoint is refused. The import engine asked none of that, so a
+        branches CSV created the branch, a branch administrator and a
+        branch-scoped role: a way around a permission the API refuses at the
+        front door.
+        """
+        self.assertFalse(may_import(SCHOOL, DatasetTypeChoices.BRANCHES))
+        self.assertTrue(may_import(CODEX, DatasetTypeChoices.BRANCHES))
+
+    def test_the_picker_and_the_rule_cannot_disagree(self):
+        """The list must narrow by the same set the rule reads.
+
+        These were two expressions of one idea - the list excluded a
+        PLATFORM_ONLY set while the rule tested membership of TENANT_DATASETS -
+        and they drifted the first time a dataset moved: branches was refused on
+        upload and still offered in the picker. A reader saw a template, chose
+        it, filled it in, and was refused at the end.
+        """
+        for dataset in DatasetTypeChoices.values:
+            offered = dataset in TENANT_DATASETS
+            self.assertEqual(
+                offered, may_import(SCHOOL, dataset),
+                f"the picker and the rule disagree about {dataset}",
+            )
 
     def test_a_user_with_no_tenant_is_not_treated_as_codex(self):
         class _Nobody:
@@ -144,7 +188,34 @@ class ExecutorRefusesPlatformDatasetsTests(TestCase):
         self.assertIs(result, sentinel)
         handler.assert_called_once()
 
-    def test_a_school_dataset_still_reaches_its_handler(self):
+    def test_a_school_queued_branch_batch_is_skipped_too(self):
+        """Branches moved out of the school's reach; the executor follows.
+
+        This test used to assert the opposite - that branches reached its
+        handler for a school - which is exactly the behaviour that let a school
+        create branches it cannot create through the branch endpoint.
+        """
+        from unittest.mock import patch
+
+        from vs_import_data.services import import_executor as ex
+        from vs_import_data.models import ImportRowActionChoices
+
+        class _Template:
+            dataset_type = DatasetTypeChoices.BRANCHES
+
+        class _Batch:
+            template = _Template()
+
+        with patch.object(
+            ex, "import_branches_row",
+            side_effect=AssertionError("the branch handler must not run for a school"),
+        ):
+            result = ex.execute_dataset_handler(_Batch(), {}, SCHOOL)
+
+        self.assertEqual(result.action, ImportRowActionChoices.SKIP)
+
+    def test_codex_still_reaches_the_branch_handler(self):
+        """CodeX provisions branches, and must keep being able to."""
         from unittest.mock import patch
 
         from vs_import_data.services import import_executor as ex
@@ -157,6 +228,6 @@ class ExecutorRefusesPlatformDatasetsTests(TestCase):
 
         sentinel = object()
         with patch.object(ex, "import_branches_row", return_value=sentinel):
-            result = ex.execute_dataset_handler(_Batch(), {"a": 1}, SCHOOL)
+            result = ex.execute_dataset_handler(_Batch(), {"a": 1}, CODEX)
 
         self.assertIs(result, sentinel)

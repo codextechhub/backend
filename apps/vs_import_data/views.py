@@ -69,8 +69,12 @@ from .services.validation_service import validate_import_batch
 # =========================================================
 # Helpers
 # =========================================================
+# Narrowed by what a school MAY have rather than by what it may not, so the
+# list agrees with ``platform_only()`` by construction. Excluding a
+# platform-only set instead let the two drift: a dataset removed from
+# TENANT_DATASETS was refused on upload but still offered in the picker.
 from .datasets import (  # noqa: E402 - grouped with the module's own helpers
-    PLATFORM_ONLY_DATASETS,
+    TENANT_DATASETS,
 )
 
 
@@ -220,7 +224,7 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
             queryset = queryset.filter(
                 status=TemplateStatusChoices.ACTIVE,
                 is_download_enabled=True,
-            ).exclude(dataset_type__in=PLATFORM_ONLY_DATASETS)
+            ).filter(dataset_type__in=TENANT_DATASETS)
 
         dataset_type = self.request.query_params.get("dataset_type")
         if dataset_type:
