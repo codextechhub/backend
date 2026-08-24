@@ -56,10 +56,21 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     # Filing a ticket is the one escalation route a school that has not gone
     # live still has, so POST /v1/support/tickets/ is part of the pending-tenant
-    # surface (FR-010, FR-012). Only the create action: the rest of the desk
-    # (lists, threads, attachments, assignment) opens at go-live like everything
-    # else.
-    pending_tenant_surface = ("create",)
+    # surface (FR-010, FR-012).
+    #
+    # ``attachments`` joins it: a school reporting that a screen is wrong needs
+    # to show the screen. Without it the only route was "reply to the
+    # confirmation email with a screenshot", which moves the evidence off the
+    # platform and out of the ticket it belongs to.
+    #
+    # This is narrower than it looks. The action is detail=True, and
+    # ``get_queryset`` still scopes tickets to the caller, so a pending school
+    # can only attach to a ticket it filed itself. Every file goes through
+    # ``validate_upload`` first: 10 MB, an extension allowlist, and a magic-byte
+    # check that the content matches the extension.
+    #
+    # The rest of the desk (lists, threads, assignment) still opens at go-live.
+    pending_tenant_surface = ("create", "attachments")
 
     # Actions gated by an RBAC key (support staff bypass in the permission
     # class). Absent actions rely on queryset/object scoping: anyone may file
