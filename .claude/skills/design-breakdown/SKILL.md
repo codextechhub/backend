@@ -208,6 +208,13 @@ To `docs/<module>-api-plan.md`:
 Summarise in chat and **stop for approval.** Opening a surface and building a
 module are not the same decision.
 
+**If the FRD needs a new version, it is written before you build**, not after.
+The plan says what to build; the FRD is what the build is checked against, and a
+backend built ahead of its own specification is how the two drift on day one.
+Say so explicitly in the summary: whether the delta is large enough to need a
+revision, or small enough to fold into the next one. That is the user's call,
+but they cannot make it if you do not raise it.
+
 ### 7. Build, in this order
 
 1. The **closed** ones first. A flag and a seeder row unblocks a whole screen,
