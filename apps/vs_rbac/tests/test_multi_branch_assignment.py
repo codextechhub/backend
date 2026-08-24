@@ -58,11 +58,11 @@ class _AssignmentAPIFixture(TestCase):
         _grant(self.admin, ROLE_KEYS)
 
         self.eze = make_staff_user(self.ikeja, email="eze@eze-multi.test")
-        # A colleague with no home posting. ``visible_branch_ids`` still falls
-        # back to ``User.branch`` whenever the grants imply no narrowing, so a
-        # person who has one cannot be used to assert WHOLE_TENANT: the answer
-        # would be their home branch and the assertion would prove nothing
-        # about the grants. This one has none, so the grants alone speak.
+        # A colleague with no home posting. ``User.branch`` is now consulted
+        # only for somebody whose grants say nothing at all, so a whole-tenant
+        # grant answers WHOLE_TENANT either way - but this person having no home
+        # posting keeps every assertion below about the grants and nothing else,
+        # which is what the assignment API tests are here to pin.
         self.roamer = make_staff_user(
             None, email="roamer@eze-multi.test", tenant=self.tenant,
         )

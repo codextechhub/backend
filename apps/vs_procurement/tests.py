@@ -11264,8 +11264,12 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
         breaker = self.user_for(
             self.multi_tenant, "ikeja-breaker@t.com", branch=self.ikeja, first_name="Ikeja",
         )
+        # Pinned at Ikeja, like every other approver in this fixture. The grant is
+        # what bounds her, not her home posting: a break-glass role granted for the
+        # whole school is granted for the whole school, and would legitimately
+        # release Lekki's spend. This test is about the other person.
         self.grant(breaker, WF_APPROVAL_OVERRIDE_PERMISSION,
-                   tenant=self.multi_tenant, role_key="breaker")
+                   tenant=self.multi_tenant, role_key="breaker", branch=self.ikeja)
         refused = TenantAPIClient(user=breaker).post(
             f"/v1/procurement/approvals/{instance.id}/override/?entity={code}",
             {"reason": "We need these chairs."}, format="json",
@@ -11279,7 +11283,7 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
             self.multi_tenant, "lekki-breaker@t.com", branch=self.lekki, first_name="Lekki",
         )
         self.grant(holder, WF_APPROVAL_OVERRIDE_PERMISSION,
-                   tenant=self.multi_tenant, role_key="breaker-lekki")
+                   tenant=self.multi_tenant, role_key="breaker-lekki", branch=self.lekki)
         released = TenantAPIClient(user=holder).post(
             f"/v1/procurement/approvals/{instance.id}/override/?entity={code}",
             {"reason": "We need these chairs."}, format="json",
@@ -13310,20 +13314,30 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
         visible = self.listed_order_ids(self.as_client(user=officer))
         self.assertEqual(visible, {order.pk for order in orders.values()})
 
-    def test_todays_arrangement_keeps_behaving_exactly_as_it_does(self):
-        """Acceptance 4. Access from a whole-tenant grant, visibility from ``User.branch``.
+    def test_a_whole_tenant_grant_outranks_the_holders_home_posting(self):
+        """Acceptance 4, corrected: the school-wide grant means the school.
 
-        This is how everybody currently working holds their access, so it is the
-        case that must not move by a single row.
+        This used to assert ``{orders["lekki"].pk}`` on the grounds that access
+        came from the grant and visibility from ``User.branch``. Mrs Adebayo is
+        Finance Officer for the whole of the school and her staff record says
+        Lekki, so she opened the purchases screen and saw one branch, while the
+        colleague holding the identical grant with no home posting saw all
+        three. A staff column is not a permission; the grant decides.
         """
         orders = self.orders_in_every_branch()
         legacy = self.user_for(self.multi_tenant, "legacy@multi.test", branch=self.lekki)
         self.grant_at(
             legacy, self.PO_VIEW, tenant=self.multi_tenant, role_key="finance-officer",
         )
+        colleague = self.user_for(self.multi_tenant, "colleague@multi.test")
+        self.grant_at(
+            colleague, self.PO_VIEW, tenant=self.multi_tenant, role_key="finance-officer",
+        )
 
         visible = self.listed_order_ids(self.as_client(user=legacy))
-        self.assertEqual(visible, {orders["lekki"].pk})
+        self.assertEqual(visible, {order.pk for order in orders.values()})
+        # The point of the fix: the same grant answers the same either way.
+        self.assertEqual(visible, self.listed_order_ids(self.as_client(user=colleague)))
 
     def test_a_rival_tenants_purchases_stay_unreachable(self):
         """Acceptance 5. A branch grant narrows within a tenant, never across one."""

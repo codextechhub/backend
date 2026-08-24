@@ -14,11 +14,16 @@ Adebayo can open the purchases screen and sees only Ikeja's rows - lives in
 ``vs_procurement.tests.ProcurementBranchGrantAcceptanceTests``.
 """
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.test import TestCase
 
 from vs_rbac.evaluator import ANY_BRANCH, get_effective_permissions, has_permission
 from vs_rbac.models import TenantUserRoleAssignment
-from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
+from vs_rbac.scoping import (
+    WHOLE_TENANT,
+    branch_scope_for_user,
+    visible_branch_ids,
+)
 from vs_tenants.models import BranchStatus
 
 from .helpers import (
@@ -207,17 +212,35 @@ class BranchScopedGrantVisibilityTests(_BranchGrantFixture):
 
         self.assertIs(visible_branch_ids(officer, self.tenant), WHOLE_TENANT)
 
-    def test_user_branch_still_narrows_a_whole_tenant_grant_holder(self):
-        """Acceptance 4: today's arrangement keeps behaving exactly as it does.
+    def test_a_whole_tenant_grant_outranks_the_holders_home_posting(self):
+        """A school-wide role means the school, whatever the staff record says.
 
-        Access from a whole-tenant grant, visibility from ``User.branch``.
+        This assertion used to read ``frozenset({self.lekki.pk})``, on the
+        grounds that access came from the grant and visibility from
+        ``User.branch``. It cannot: two people holding the identical grant then
+        saw different schools depending on whether their staff record named a
+        site, which makes a home posting into a permission. The grant decides.
         """
         legacy = self.person(self.tenant, "legacy@grant.test", branch=self.lekki)
         role = self.role_granting(self.tenant, "Finance Officer")
         make_assignment(self.tenant, legacy, role)
 
         self.assertTrue(has_permission(legacy, BURSAR_KEY, tenant=self.tenant))
-        self.assertEqual(visible_branch_ids(legacy, self.tenant), frozenset({self.lekki.pk}))
+        self.assertIs(visible_branch_ids(legacy, self.tenant), WHOLE_TENANT)
+
+    def test_the_same_grant_answers_the_same_with_or_without_a_home_posting(self):
+        """The defect stated as the thing it broke: two colleagues, one role."""
+        role = self.role_granting(self.tenant, "Finance Officer")
+        posted = self.person(self.tenant, "posted@grant.test", branch=self.ikeja)
+        unposted = self.person(self.tenant, "unposted@grant.test")
+        make_assignment(self.tenant, posted, role)
+        make_assignment(self.tenant, unposted, role)
+
+        self.assertIs(
+            visible_branch_ids(posted, self.tenant),
+            visible_branch_ids(unposted, self.tenant),
+        )
+        self.assertIs(visible_branch_ids(posted, self.tenant), WHOLE_TENANT)
 
     def test_user_branch_still_narrows_someone_with_no_grants_at_all(self):
         """Access may come from a personal override, so this must not go empty."""
@@ -255,6 +278,175 @@ class BranchScopedGrantVisibilityTests(_BranchGrantFixture):
 
         self.assertFalse(has_permission(adebayo, BURSAR_KEY, tenant=self.tenant))
         self.assertIs(visible_branch_ids(adebayo, self.tenant), WHOLE_TENANT)
+
+
+class WholeTenantGrantReachTests(_BranchGrantFixture):
+    """The four situations side by side, so none can be mistaken for another.
+
+    ``visible_branch_ids`` answers in two *shapes* - ``WHOLE_TENANT`` or a
+    frozenset - but four situations stand behind them:
+
+    ===============================  =============================================
+    the caller                       what they see
+    ===============================  =============================================
+    holds a whole-tenant grant       every branch, home posting or not
+    holds branch-pinned grants only  exactly those branches
+    holds no grants at all           their home posting, or every branch if none
+    holds grants at withdrawn sites  nothing at all
+    ===============================  =============================================
+
+    The first and the third used to be the same answer inside ``_grant_scope``,
+    which is what let a home posting narrow a school-wide grant. Each test below
+    names one row, and the last two are asserted against each other as well as
+    against themselves: ``frozenset()`` and "the whole tenant" are opposite
+    answers a single typo apart, and the typo widens rather than narrows.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # The third shape of school, and the commonest one: exactly one branch.
+        # A multi-branch school proves the grant reaches every site; this one
+        # proves the answer stays "the whole tenant" rather than becoming
+        # "the id of the only branch", which would put a branch filter on every
+        # query in a school that has no branch dimension to speak of.
+        self.solo_school = make_school(slug="grant-solo", name="One Site School")
+        self.solo_tenant = self.solo_school.tenant
+        self.solo_branch = make_branch(self.solo_tenant, name="Main", is_main=True)
+
+    def test_a_whole_tenant_holder_with_a_home_posting_sees_every_branch(self):
+        """Mrs Adebayo: Finance Officer for the school, staff record says Ikeja."""
+        adebayo = self.person(self.tenant, "adebayo-wide@grant.test", branch=self.ikeja)
+        role = self.role_granting(self.tenant, "Finance Officer")
+        make_assignment(self.tenant, adebayo, role)
+
+        scope = branch_scope_for_user(adebayo, tenant=self.tenant)
+        self.assertIs(visible_branch_ids(adebayo, self.tenant), WHOLE_TENANT)
+        self.assertFalse(scope.is_narrowed)
+        self.assertEqual(scope.q(), Q())
+
+    def test_access_and_visibility_agree_for_a_posted_whole_tenant_holder(self):
+        """The invariant this module exists to hold, at the case that broke it.
+
+        ``_assignment_branch_q`` has always matched a whole-tenant grant against
+        *any* named branch, so the gate let Mrs Adebayo act on a Lekki document
+        while the list filter hid it from her. Two mechanisms, one answer, is the
+        whole point of resolving both from the grants.
+        """
+        adebayo = self.person(self.tenant, "adebayo-agree@grant.test", branch=self.ikeja)
+        role = self.role_granting(self.tenant, "Finance Officer")
+        make_assignment(self.tenant, adebayo, role)
+
+        for branch in (self.ikeja, self.lekki, self.yaba):
+            with self.subTest(branch=branch.name):
+                self.assertTrue(
+                    has_permission(
+                        adebayo, BURSAR_KEY, tenant=self.tenant, branch=branch,
+                    ),
+                    "the gate admits this branch",
+                )
+                # The read side's own predicate (see ``caller_may_use_branch``).
+                ids = visible_branch_ids(adebayo, self.tenant)
+                self.assertTrue(
+                    ids is WHOLE_TENANT or branch.pk in ids,
+                    "so the rows at that branch must be visible too",
+                )
+
+    def test_a_whole_tenant_holder_without_a_home_posting_sees_every_branch(self):
+        """Her colleague, whose staff record happens to name no site."""
+        colleague = self.person(self.tenant, "colleague-wide@grant.test")
+        role = self.role_granting(self.tenant, "Finance Officer")
+        make_assignment(self.tenant, colleague, role)
+
+        self.assertIs(visible_branch_ids(colleague, self.tenant), WHOLE_TENANT)
+
+    def test_a_whole_tenant_holder_is_unnarrowed_in_a_single_branch_school(self):
+        """One branch: the dimension recedes, it does not become a filter of one."""
+        head = self.person(self.solo_tenant, "head@solo-grant.test", branch=self.solo_branch)
+        role = self.role_granting(self.solo_tenant, "Finance Officer")
+        make_assignment(self.solo_tenant, head, role)
+
+        self.assertIs(visible_branch_ids(head, self.solo_tenant), WHOLE_TENANT)
+
+    def test_a_whole_tenant_grant_wins_over_a_branch_grant_and_a_home_posting(self):
+        """Both narrower facts present at once; the widest grant still decides."""
+        officer = self.person(self.tenant, "officer-both@grant.test", branch=self.lekki)
+        wide = self.role_granting(self.tenant, "Finance Officer")
+        narrow = self.role_granting(self.tenant, "Storekeeper Ikeja")
+        make_assignment(self.tenant, officer, wide)
+        make_assignment(self.tenant, officer, narrow, branch=self.ikeja)
+
+        self.assertIs(visible_branch_ids(officer, self.tenant), WHOLE_TENANT)
+
+    def test_a_branch_pinned_holder_is_untouched_by_the_widening(self):
+        """The people the change must not reach, in both shapes of school."""
+        pinned = self.person(self.tenant, "pinned@grant.test", branch=self.lekki)
+        role = self.role_granting(self.tenant, "Storekeeper Ikeja")
+        make_assignment(self.tenant, pinned, role, branch=self.ikeja)
+        self.assertEqual(
+            visible_branch_ids(pinned, self.tenant), frozenset({self.ikeja.pk}),
+        )
+
+        solo_pinned = self.person(self.solo_tenant, "pinned@solo-grant.test")
+        solo_role = self.role_granting(self.solo_tenant, "Storekeeper Main")
+        make_assignment(self.solo_tenant, solo_pinned, solo_role, branch=self.solo_branch)
+        self.assertEqual(
+            visible_branch_ids(solo_pinned, self.solo_tenant),
+            frozenset({self.solo_branch.pk}),
+        )
+
+    def test_no_grants_at_all_still_falls_back_to_the_home_posting(self):
+        """The arm ``User.branch`` keeps, and the one it was always for."""
+        stranger = self.person(self.tenant, "stranger-home@grant.test", branch=self.yaba)
+
+        self.assertEqual(
+            visible_branch_ids(stranger, self.tenant), frozenset({self.yaba.pk}),
+        )
+
+    def test_no_grants_and_no_home_posting_is_still_the_whole_tenant(self):
+        """The one place the two shapes legitimately meet, and it is not a grant."""
+        stranger = self.person(self.tenant, "stranger-nowhere@grant.test")
+
+        self.assertIs(visible_branch_ids(stranger, self.tenant), WHOLE_TENANT)
+
+    def test_every_granted_branch_withdrawn_sees_nothing_and_is_not_confused(self):
+        """Sees nothing, and is neither of the two answers standing beside it.
+
+        The failure this guards is the whole reason the "no grants" case needed a
+        value of its own: an empty frozenset and ``WHOLE_TENANT`` are opposite
+        answers, and folding either into the other hands a caller the whole
+        school. The home posting must not rescue her either.
+        """
+        adebayo = self.person(self.tenant, "adebayo-gone@grant.test", branch=self.yaba)
+        role = self.role_granting(self.tenant, "Bursar")
+        make_assignment(self.tenant, adebayo, role, branch=self.ikeja)
+        self.ikeja.suspend(actor_id="test", reason="Closed for the term")
+
+        from vs_user.models import User
+
+        adebayo = User.objects.get(pk=adebayo.pk)  # As the next request sees her.
+        visible = visible_branch_ids(adebayo, self.tenant)
+        self.assertEqual(visible, frozenset())
+        self.assertIsNot(visible, WHOLE_TENANT)
+        self.assertNotEqual(visible, frozenset({self.yaba.pk}))
+
+    def test_the_widened_answer_memoises_like_any_other(self):
+        """One query, then none, and the cached value is the widened one."""
+        adebayo = self.person(self.tenant, "adebayo-cache@grant.test", branch=self.ikeja)
+        role = self.role_granting(self.tenant, "Finance Officer")
+        make_assignment(self.tenant, adebayo, role)
+
+        from vs_user.models import User
+
+        adebayo = User.objects.get(pk=adebayo.pk)  # Unwarmed, as a request is.
+        with self.assertNumQueries(1):
+            first = visible_branch_ids(adebayo, self.tenant)
+        with self.assertNumQueries(0):
+            second = visible_branch_ids(adebayo, self.tenant)
+
+        self.assertIs(first, WHOLE_TENANT)
+        self.assertIs(second, WHOLE_TENANT)
+        # The sentinel is module-private and must never reach the cache.
+        self.assertEqual(adebayo._rbac_visible_branches, {self.tenant.pk: WHOLE_TENANT})
 
 
 class WithdrawnBranchTests(_BranchGrantFixture):

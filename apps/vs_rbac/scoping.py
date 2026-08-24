@@ -26,10 +26,15 @@ Read in order, first match wins::
     else                            -> fall back to ``User.branch``
 
 A whole-tenant grant dominating is not a detail: it is what "whole tenant"
-means, and it is how everybody working today holds their access. Only the
-middle arm is new, and the only people it can reach are those whose grants are
-*all* branch-pinned - who, before this, could not open the screen at all. Nobody
-who works today is narrowed by it.
+means, and it is how everybody working today holds their access. It dominates
+``User.branch`` too, which is the part that was written down here and not
+delivered: the first arm and the last one both used to answer "no narrowing",
+the caller fell through to their home posting either way, and a Finance Officer
+for the whole school saw the one site her staff record happened to name. Two
+people holding the identical grant then saw different schools because one of
+them had a home posting and the other did not, which is a permission decided by
+a field that is not a permission. The grant wins; ``User.branch`` is the
+fallback for somebody whose grants say nothing, which is all it was ever for.
 
 The branch arm may legitimately resolve to *nothing* (every granted branch has
 since been suspended or closed). That is an empty set, not a missing answer, and
@@ -54,22 +59,50 @@ from .models import TenantUserRoleAssignment
 WHOLE_TENANT = None
 
 
-def _grant_scope(user, tenant) -> Optional[FrozenSet[int]]:
-    """The narrowing the caller's role grants imply, or ``None`` for no narrowing.
+class _NoGrants:
+    """Type of the :data:`_SILENT` sentinel (a singleton, compared by identity)."""
 
-    Returns ``None`` when the grants say nothing about branches (a whole-tenant
-    grant, or no grants at all - access may still come from a personal
-    override). Returns a frozenset, possibly empty, when every grant is
-    branch-pinned.
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid only
+        return "SILENT"
+
+
+#: "The caller's grants say nothing at all, so ask their home posting."
+#:
+#: Module-private, and deliberately *not* :data:`WHOLE_TENANT`. There are three
+#: answers a set of grants can give, not two:
+#:
+#: * a whole-tenant grant -> :data:`WHOLE_TENANT`, the whole tenant, final;
+#: * branch-pinned grants -> those branches, possibly *none* of them once the
+#:   sites are withdrawn, which is an empty frozenset and means "sees nothing";
+#: * no grants at all -> this, the only case ``User.branch`` still decides.
+#:
+#: The first and third used to share ``None`` and were therefore indistinguishable
+#: to :func:`visible_branch_ids`, which is exactly how a whole-tenant grant came
+#: to be narrowed to its holder's home posting. It never leaves this module: the
+#: public answer is still ``None`` or a frozenset, and only that is memoised.
+_SILENT = _NoGrants()
+
+
+def _grant_scope(user, tenant):
+    """The narrowing the caller's role grants imply: one of the three answers above.
+
+    :data:`WHOLE_TENANT` for a whole-tenant grant, a frozenset (possibly empty)
+    when every grant is branch-pinned, and :data:`_SILENT` when there are no
+    grants to speak for the caller at all - access may still come from a personal
+    override, so that case is not "sees nothing", it is "not this function's
+    answer".
 
     One query: the branch ids of the caller's active grants, with ``None``
     present in the result iff they hold a whole-tenant one.
     """
     if getattr(user, "tenant_id", None) != tenant.pk:
         # Branch grants only exist inside the caller's own tenant, so this
-        # function has nothing to say about another one. Cross-tenant access is
+        # function has nothing to say about another one - the same silence as
+        # holding no grants, and answered the same way. Cross-tenant access is
         # refused by entity scoping, which this change does not touch.
-        return None
+        return _SILENT
 
     from vs_tenants.models import Branch
 
@@ -88,9 +121,11 @@ def _grant_scope(user, tenant) -> Optional[FrozenSet[int]]:
         ).values_list("branch_id", "branch__status")
     )
     if not rows:
-        return WHOLE_TENANT  # No grants: overrides may still admit them.
+        return _SILENT  # No grants: overrides may still admit them.
     if any(branch_id is None for branch_id, _ in rows):
-        return WHOLE_TENANT  # A whole-tenant grant means the whole tenant.
+        # A whole-tenant grant means the whole tenant, and it outranks both the
+        # branch-pinned grants held beside it and the holder's home posting.
+        return WHOLE_TENANT
     # ``IN_SERVICE_STATES`` is the same constant the permission gate filters on
     # in ``evaluator._assignment_branch_q``, so a branch that stops conferring
     # access stops conferring visibility in the same breath.
@@ -121,9 +156,11 @@ def visible_branch_ids(user, tenant=None) -> Optional[FrozenSet[int]]:
         return cache[tenant.pk]
 
     scope = _grant_scope(user, tenant)
-    if scope is None:
-        # No branch-pinned grants to speak for this caller, so their home
-        # posting still decides - exactly as it did before branch grants worked.
+    if scope is _SILENT:
+        # No grants at all to speak for this caller, so their home posting still
+        # decides - exactly as it did before branch grants worked, and the only
+        # arm that reads the column. A whole-tenant grant does not come through
+        # here: it answered WHOLE_TENANT above and that is the final answer.
         # ``branch_id`` rather than ``branch``: the id is already on the row, and
         # dereferencing the relation would fetch the whole Branch on the hot path
         # of every read just to read its primary key back.

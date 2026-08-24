@@ -44,11 +44,20 @@ _counter = itertools.count(1)
 factory = APIRequestFactory()
 
 
-def _grant(user, keys):
+def _grant(user, keys, branch=None):
+    """Grant *keys* to *user*, whole tenant by default or pinned to *branch*.
+
+    The default is deliberate: a whole-tenant grant reaches the whole tenant
+    however the holder's staff record is filled in, so a caller who must be
+    narrowed to one site has to be *granted* at that site. Passing the user's
+    ``branch`` here is what makes them a branch user; setting it on the account
+    alone never did, and reading it as though it did was the defect
+    ``vs_rbac.scoping`` now spells out.
+    """
     role = make_role(user.tenant, name=f"scope-grant-{next(_counter)}")
     for k in keys:
         make_role_permission(role, make_permission(k))
-    make_assignment(user.tenant, user, role)
+    make_assignment(user.tenant, user, role, branch=branch)
     return role
 
 
@@ -193,7 +202,33 @@ class TemplateScopingTests(_TwoTenants):
 
     def test_branch_user_sees_tenant_wide_templates(self):
         """Branch-pinned templates override the tenant-wide default rather than
-        replacing it, so a branch user must see both."""
+        replacing it, so a branch user must see both.
+
+        The caller is granted *at* ``mine_branch``, not merely posted there: a
+        whole-tenant grant is not narrowed by a staff record, so ``self.admin``
+        (granted school-wide) would correctly see the other branch's template too
+        and would prove nothing about branch narrowing.
+        """
+        self._template(self.mine.tenant, "tenant-wide")
+        WorkflowTemplate.objects.create(
+            tenant=self.mine.tenant, branch=self.mine_branch,
+            document_type="SCOPE_DOC", code="branch-pinned", name="Branch")
+        WorkflowTemplate.objects.create(
+            tenant=self.mine.tenant,
+            branch=make_branch(self.mine, name="Other Branch", is_main=False),
+            document_type="SCOPE_DOC", code="other-branch", name="Other")
+
+        pinned = make_school_admin(self.mine_branch, email="scope-pinned@test.com")
+        _grant(pinned, [PERM_TEMPLATE_VIEW], branch=self.mine_branch)
+
+        view = WorkflowTemplateViewSet.as_view({"get": "list"})
+        codes = {r["code"] for r in _rows(_call(view, "get", pinned, self.mine.tenant))}
+        self.assertIn("tenant-wide", codes)
+        self.assertIn("branch-pinned", codes)
+        self.assertNotIn("other-branch", codes)
+
+    def test_a_school_wide_grant_holder_sees_every_branchs_templates(self):
+        """The other half, and the shape the narrowing must not be applied to."""
         self._template(self.mine.tenant, "tenant-wide")
         WorkflowTemplate.objects.create(
             tenant=self.mine.tenant, branch=self.mine_branch,
@@ -205,9 +240,9 @@ class TemplateScopingTests(_TwoTenants):
 
         view = WorkflowTemplateViewSet.as_view({"get": "list"})
         codes = {r["code"] for r in _rows(_call(view, "get", self.admin, self.mine.tenant))}
-        self.assertIn("tenant-wide", codes)
-        self.assertIn("branch-pinned", codes)
-        self.assertNotIn("other-branch", codes)
+        self.assertLessEqual(
+            {"tenant-wide", "branch-pinned", "other-branch"}, codes,
+        )
 
 class DelegationScopingTests(_TwoTenants):
 
