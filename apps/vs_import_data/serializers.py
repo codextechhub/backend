@@ -113,6 +113,27 @@ class ImportTemplateListSerializer(serializers.ModelSerializer):
     Used to list available system templates for download/use.
     """
     total_columns = serializers.IntegerField(source="columns.count", read_only=True)
+    can_import = serializers.SerializerMethodField()
+    # The design's Columns cell reads "18 columns · 11 required", so the count
+    # of mandatory ones has to come with the total.
+    required_columns = serializers.SerializerMethodField()
+
+    def get_required_columns(self, obj) -> int:
+        return sum(1 for column in obj.columns.all() if column.is_required)
+
+    def get_can_import(self, obj) -> bool:
+        """Whether THIS caller may act on this template.
+
+        The list shows a school the whole catalogue, including the datasets
+        CodeX loads on its behalf, because hiding them makes the step look
+        emptier than it is. This is what lets the client grey those rows out
+        rather than pretend they do not exist - and it is a display hint, not a
+        gate: batch creation and the executor ask the same question again.
+        """
+        from .datasets import may_import
+
+        request = self.context.get("request")
+        return may_import(getattr(request, "user", None), obj.dataset_type)
 
     class Meta:
         model = ImportTemplate
@@ -126,6 +147,8 @@ class ImportTemplateListSerializer(serializers.ModelSerializer):
             "default_file_format",
             "is_download_enabled",
             "total_columns",
+            "required_columns",
+            "can_import",
             "published_at",
             "created_at",
             "updated_at",

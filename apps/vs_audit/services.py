@@ -71,6 +71,42 @@ _SUMMARY_TEMPLATES: dict[str, str] = {
 }
 
 
+def _resolve_actor(actor_user):
+    """Return a User for whatever a caller handed us, or None.
+
+    The choke point for a defect that lost audit records silently. Callers
+    disagree about what an "actor" is: the school views put a User object into a
+    serializer context key called ``actor_id``, while the import executor
+    honours the name and puts ``str(user.id)`` into the same key. Both end up
+    here as ``actor_user``, and the model needs an instance - so the importer's
+    string raised, ``emit_audit_event`` swallowed it (see the except below), and
+    the branch creation left no trail at all.
+
+    Normalising here rather than at each call site is deliberate: the failure
+    mode is a SWALLOWED exception, so a wrong caller produces no error anybody
+    will notice. There is no reason to trust that the call sites found by
+    grepping are all of them.
+
+    An id that resolves to nobody yields None - an event recorded with no actor
+    is worth strictly more than no event.
+    """
+    if actor_user is None:
+        return None
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    if isinstance(actor_user, User):
+        return actor_user
+    try:
+        return User.objects.filter(pk=actor_user).first()
+    except (TypeError, ValueError):
+        logger.warning(
+            "emit_audit_event got an unusable actor %r; recording without one",
+            actor_user,
+        )
+        return None
+
+
 def _build_summary(action_type: str, actor_user, entity_label: str, entity_type: str) -> str:
     """Generate a readable one-sentence summary from available context."""
     template = _SUMMARY_TEMPLATES.get(action_type, "{actor} performed {action_type} on {entity}")
@@ -203,6 +239,14 @@ def emit_audit_event(
     try:
         with transaction.atomic():
             from vs_tenants.context import resolve_audit_identity
+
+            # Normalised BEFORE anything else reads them. Everything downstream -
+            # impersonation resolution, the actor_type decision, the summary -
+            # assumes a User or None, and handing it a raw id was what lost the
+            # event entirely rather than just its actor.
+            actor_user = _resolve_actor(actor_user)
+            effective_user = _resolve_actor(effective_user)
+
             actor_user, effective_user, impersonation_session = resolve_audit_identity(
                 actor_user, effective_user, impersonation_session,
             )

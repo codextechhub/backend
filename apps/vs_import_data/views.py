@@ -74,7 +74,8 @@ from .services.validation_service import validate_import_batch
 # platform-only set instead let the two drift: a dataset removed from
 # TENANT_DATASETS was refused on upload but still offered in the picker.
 from .datasets import (  # noqa: E402 - grouped with the module's own helpers
-    TENANT_DATASETS,
+    REFUSAL_MESSAGE,
+    may_import,
 )
 
 
@@ -224,7 +225,13 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
             queryset = queryset.filter(
                 status=TemplateStatusChoices.ACTIVE,
                 is_download_enabled=True,
-            ).filter(dataset_type__in=TENANT_DATASETS)
+            )
+            # Deliberately NOT narrowed to what this school may import. A school
+            # sees the whole catalogue - what CodeX loads on its behalf as well
+            # as what it loads itself - because hiding a template makes the step
+            # look emptier than it is. Each row carries ``can_import``, and the
+            # two gates that matter (batch creation and the executor) are
+            # unchanged: this is what the reader may SEE, never what they may do.
 
         dataset_type = self.request.query_params.get("dataset_type")
         if dataset_type:
@@ -333,6 +340,16 @@ class SystemImportTemplateDownloadView(APIView):
         if not _is_platform(request.user):
             qs = qs.filter(status=TemplateStatusChoices.ACTIVE, is_download_enabled=True)
         template = get_object_or_404(qs, id=template_id)
+
+        # A disabled button that still works at the URL is decoration. The
+        # template itself is only column headers, so this is tidiness rather
+        # than a hole - but a school downloading the form for a thing it cannot
+        # import has been invited to waste an afternoon on it.
+        if not may_import(request.user, template.dataset_type):
+            return error_response(
+                message=REFUSAL_MESSAGE,
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         requested_format = request.query_params.get("file_format", template.default_file_format)
         filename_base = f"{template.code}_template"

@@ -367,7 +367,12 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
     # SimpleNamespace gives us a minimal stand-in without importing django.test.
     context = {
         "request": SimpleNamespace(user=queued_by),
-        "actor_id": str(queued_by.id),
+        # The USER, not its id, despite the key's name. Every other caller of
+        # these serializers - the school views' ActorContextMixin - puts a User
+        # object here, and the audit emitter needs one. Honouring the name cost
+        # us the audit record for every branch created by import: the emitter
+        # raised on the string, swallowed it, and wrote nothing.
+        "actor_id": queued_by,
     }
 
     return run_create_serializer(
@@ -481,7 +486,12 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
     context = {
         "request": SimpleNamespace(user=queued_by),
         "school": school,
-        "actor_id": str(queued_by.id),
+        # The USER, not its id, despite the key's name. Every other caller of
+        # these serializers - the school views' ActorContextMixin - puts a User
+        # object here, and the audit emitter needs one. Honouring the name cost
+        # us the audit record for every branch created by import: the emitter
+        # raised on the string, swallowed it, and wrote nothing.
+        "actor_id": queued_by,
     }
 
     return run_create_serializer(
