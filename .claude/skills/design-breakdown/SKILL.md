@@ -1,6 +1,6 @@
 ---
 name: design-breakdown
-description: Read a Claude Design export (a .dc.html source or a bundled .html) and work out the API behind it - what every screen reads and writes, which endpoints already serve it, which exist but are closed to the caller, which return the wrong shape, and which do not exist at all. Reconciles all of it against the module's FRD and reports where the two disagree. Produces an API plan plus an FRD delta, then builds it. Use when a frontend module is being built from a design and you own the backend it will call.
+description: Read a Claude Design export (a .dc.html source or a bundled .html) and work out the API behind it - what every screen reads and writes, which endpoints already serve it, which exist but are closed to the caller, which return the wrong shape, and which do not exist at all. Reconciles all of it against the module's FRD and reports where the two disagree. Produces an API plan plus an FRD delta, revises the FRD, builds it, and reconciles the FRD with what shipped. Use when a frontend module is being built from a design and you own the backend it will call.
 ---
 
 # design-breakdown - turn a design into the API behind it
@@ -12,8 +12,13 @@ build the wrong half: usually a new endpoint beside a working one nobody could
 reach, because the real problem was a permission key.
 
 This skill reads the prototype, extracts the data behind every screen, checks it
-against the module's FRD, and classifies each against this codebase. Then it
-builds what is missing.
+against the module's FRD, and classifies each against this codebase. You approve
+a plan. Then it revises the FRD, builds what is missing, seeds something to look
+at, and reconciles the FRD with what actually shipped.
+
+**One approval, one loop.** The FRD is revised before the build so there is
+something to check the build against, and again afterwards only if what shipped
+diverged from what was specified.
 
 **The FRD is the contract the backend builds from, and the design is where the
 requirements actually come from.** Neither contains the other, which is why the
@@ -208,14 +213,44 @@ To `docs/<module>-api-plan.md`:
 Summarise in chat and **stop for approval.** Opening a surface and building a
 module are not the same decision.
 
-**If the FRD needs a new version, it is written before you build**, not after.
-The plan says what to build; the FRD is what the build is checked against, and a
-backend built ahead of its own specification is how the two drift on day one.
-Say so explicitly in the summary: whether the delta is large enough to need a
-revision, or small enough to fold into the next one. That is the user's call,
-but they cannot make it if you do not raise it.
+Once approved, you carry straight on through steps 7 to 10 without further
+prompting: the FRD is revised, the backend is built, something is seeded to look
+at, and the FRD is reconciled with what actually shipped. **The approval is on
+the plan, and it covers the whole of the rest.**
 
-### 7. Build, in this order
+Say in the summary whether the delta warrants a new FRD version or is small
+enough to fold into the next one, so the user can redirect that before it
+happens.
+
+### 7. Revise the FRD, before you build
+
+The plan is approved. **Now the FRD catches up, and it happens before any code
+is written** - the FRD is what the build is checked against, so a backend built
+ahead of its own specification has nothing to be wrong against.
+
+Work from the delta in step 3, and apply the precedence:
+
+- **List 1 - the design implies it, the FRD lacks it.** These become
+  requirements. No question to ask; the design decided them.
+- **List 2 - the design asks for what the code cannot serve.** These go in the
+  document's own refusal list, with the reason. Never dropped silently.
+- **List 3 - the FRD wants what no screen shows.** These stay as they are unless
+  the user said otherwise. Most are legitimately backend-only.
+
+Follow the document rules in `CLAUDE.md`: start from the latest version, never
+overwrite it, pick the version increment from what actually changed, and update
+the correction table, the change log and the traceability together. Match the
+house conventions of the module's existing versions rather than inventing a
+shape.
+
+**If no FRD exists**, this is where the first one gets written, and the plan is
+most of its content already.
+
+**If the delta was genuinely small**, say so and fold it into the next revision
+rather than minting a version for one sentence. That is a judgement, and it
+should be stated rather than assumed either way.
+
+### 8. Build, in this order
 
 1. The **closed** ones first. A flag and a seeder row unblocks a whole screen,
    and it is the cheapest work in the plan.
@@ -233,7 +268,7 @@ ship-check asks for exactly this:
 
 Then run the module's suite plus anything sharing the serializer.
 
-### 8. Seed something to look at
+### 9. Seed something to look at
 
 A screen cannot be verified against an endpoint that returns nothing. If the
 design shows several states - ready, rejected, live, empty - add or extend a
@@ -242,6 +277,28 @@ services** so a state that cannot be reached honestly fails loudly instead of
 being faked. `seed_onboarding_scenarios` is the worked example.
 
 Run it twice. A seeder that is not idempotent is a seeder that invents data.
+
+### 10. Reconcile the FRD with what actually shipped
+
+Building always teaches you something the plan did not know. A refusal you had
+to add, a field the serializer could not carry, a permission key that turned out
+to belong to another module, a shape that changed once real data went through
+it. **The FRD written in step 7 describes what you intended. This step makes it
+describe what exists.**
+
+Go back through what you built and compare it to what step 7 specified. Then:
+
+- **If nothing diverged, say so and stop.** A version bump for an unchanged
+  document is churn, and "the build matched the spec" is a genuine result worth
+  reporting.
+- **If something diverged, revise the FRD again** - and say plainly which way it
+  went. The build being right and the spec being wrong is the ordinary case, and
+  the document moves. The spec being right and the build being expedient is the
+  case that matters, and it is a finding rather than a documentation task.
+
+Note the two are different questions and only the first is bookkeeping. A
+divergence you fix by editing the document may be one you should have fixed by
+editing the code.
 
 ## What this skill is careful about
 
