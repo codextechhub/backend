@@ -75,6 +75,7 @@ from .services.validation_service import validate_import_batch
 # TENANT_DATASETS was refused on upload but still offered in the picker.
 from .datasets import (  # noqa: E402 - grouped with the module's own helpers
     REFUSAL_MESSAGE,
+    TENANT_DATASETS,
     may_import,
 )
 
@@ -225,13 +226,7 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
             queryset = queryset.filter(
                 status=TemplateStatusChoices.ACTIVE,
                 is_download_enabled=True,
-            )
-            # Deliberately NOT narrowed to what this school may import. A school
-            # sees the whole catalogue - what CodeX loads on its behalf as well
-            # as what it loads itself - because hiding a template makes the step
-            # look emptier than it is. Each row carries ``can_import``, and the
-            # two gates that matter (batch creation and the executor) are
-            # unchanged: this is what the reader may SEE, never what they may do.
+            ).filter(dataset_type__in=TENANT_DATASETS)
 
         dataset_type = self.request.query_params.get("dataset_type")
         if dataset_type:
