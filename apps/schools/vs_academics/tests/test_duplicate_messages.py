@@ -250,11 +250,14 @@ class BlockedDeleteWordingTests(_AllAcademics):
         self.assertEqual(response.status_code, 409, response.data)
         self.assertIn("1 class sits at JSS1", response.data["message"])
 
-    def test_a_level_only_subjects_use_says_to_edit_the_subjects(self):
-        """Offerings block too, and are the school's other job.
+    def test_offerings_go_with_the_level_and_the_subjects_survive(self):
+        """An offering is a statement ABOUT the level, so it cascades.
 
-        Phrased as "2 subjects are offered at JSS1" rather than as offerings:
-        nobody deletes an offering, they stop offering a subject at a level.
+        It does NOT block: making a school open every subject offered at a
+        level and untick it, before deleting a level with no classes, is a
+        chore with no safety value - none of those edits mean anything once the
+        level is gone. The SUBJECTS themselves are untouched, which is the part
+        that would matter if this were wrong.
         """
         from schools.vs_academics.models import SubjectOffering
 
@@ -271,8 +274,40 @@ class BlockedDeleteWordingTests(_AllAcademics):
             )
         url = f"/v1/academics/levels/{level.pk}/?tenant={self.tenant.slug}"
         response = self.client_for(self.admin).delete(url)
-        self.assertEqual(response.status_code, 409, response.data)
-        self.assertIn("2 subjects are offered at JSS1", response.data["message"])
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(SubjectOffering.all_objects.filter(level_id=level.pk).count(), 0)
+        self.assertEqual(Subject.all_objects.filter(tenant=self.tenant).count(), 2)
+
+    def test_the_level_list_says_how_many_subjects_would_go_with_it(self):
+        """The delete confirmation reads this, so it has to be there.
+
+        Without it the screen removes offerings the reader was never told about,
+        which is the failure that makes a cascade feel like data loss.
+        """
+        from schools.vs_academics.models import SubjectOffering
+
+        jss = self.program("Junior Secondary", "JSS")
+        level = Level.all_objects.create(
+            tenant=self.tenant, program=jss, name="JSS1", code="JSS1", order_index=1,
+        )
+        subject = Subject.all_objects.create(
+            tenant=self.tenant, name="Mathematics", code="MTH",
+        )
+        SubjectOffering.all_objects.create(
+            tenant=self.tenant, subject=subject, level=level,
+        )
+        # Both routes to a level, because the accordion reads the NESTED one
+        # and it has its own prefetch queryset - an annotation added to only one
+        # of them reaches the serializer as a silent zero.
+        flat = self.get(self.admin, "academics-level-list", pk=jss.pk)
+        self.assertEqual(flat.status_code, 200, flat.data)
+        self.assertEqual(flat.data["data"][0]["subject_count"], 1)
+
+        nested = self.get(self.admin, "academics-program-list")
+        program = next(
+            p for p in nested.data["data"] if p["id"] == jss.pk
+        )
+        self.assertEqual(program["levels"][0]["subject_count"], 1)
 
     def test_an_unused_level_still_deletes(self):
         jss = self.program("Junior Secondary", "JSS")

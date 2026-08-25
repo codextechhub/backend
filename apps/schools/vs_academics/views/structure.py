@@ -24,9 +24,7 @@ from ..constants import (
     PERM_STRUCTURE_VIEW,
 )
 from ..exceptions import AcademicsError
-from ..models import (
-    Department, Level, Program, SchoolClass, Subject, SubjectOffering,
-)
+from ..models import Department, Level, Program, SchoolClass, Subject
 from ..serializers import (
     BulkLevelSerializer,
     DepartmentSerializer,
@@ -66,12 +64,11 @@ class ProgramHasLevels(AcademicsError):
 
 
 class LevelInUse(AcademicsError):
-    """Deleting a level that classes sit at, or that subjects are offered at.
+    """Deleting a level that classes still sit at.
 
-    Both block, and they are different jobs, so the message names whichever
-    applies rather than listing both in one breath. Classes are moved or
-    archived from the Classes screen; offerings are cleared by editing the
-    subject.
+    Only classes block. Subject offerings cascade - see SubjectOffering.level
+    for why - so this refusal names one job rather than two, and it is a job the
+    school does on the Classes screen.
     """
 
     error_code = "PROTECTED_REFERENCE"
@@ -325,10 +322,18 @@ class ProgramListCreateView(_StructureBase, generics.ListCreateAPIView):
         return super().get_permissions()
 
     def get_queryset(self):
+        # The SAME annotations _levels_for carries. The accordion nests levels
+        # through this prefetch rather than through the level endpoint, so an
+        # annotation added there and not here reaches the serializer as its
+        # zero default - which is how the delete confirmation came to say a
+        # level with five subjects on it had none.
         levels = scope_to_visible_branches(
             Level.objects.filter(tenant=self.tenant)
             .select_related("branch", "program", "next_level")
-            .annotate(class_count_annotated=Count("classes", distinct=True))
+            .annotate(
+                class_count_annotated=Count("classes", distinct=True),
+                subject_count_annotated=Count("subject_offerings", distinct=True),
+            )
             .order_by("order_index"),
             self.request.user, self.tenant,
         )
@@ -455,7 +460,13 @@ def _levels_for(tenant):
         # reads a whole programme at once, so a lazy relation here is a query
         # per level on exactly the screen that lists them all.
         .select_related("branch", "program", "next_level")
-        .annotate(class_count_annotated=Count("classes", distinct=True))
+        .annotate(
+            class_count_annotated=Count("classes", distinct=True),
+            # Exposed so a screen can say what deleting this level takes with
+            # it. Offerings CASCADE now, so silence here would make the delete
+            # remove rows the reader was never told about.
+            subject_count_annotated=Count("subject_offerings", distinct=True),
+        )
     )
 
 
@@ -666,18 +677,9 @@ class LevelDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
                 f"{'them' if classes > 1 else 'it'} first, then delete the level.",
                 **{"SchoolClass": classes},
             )
-        # Checked second, and phrased as the school's own job rather than as a
-        # join row: nobody deletes an "offering", they stop offering a subject
-        # at a level.
-        offerings = SubjectOffering.all_objects.filter(level=level).count()
-        if offerings:
-            raise LevelInUse(
-                f"{offerings} subject{'s are' if offerings > 1 else ' is'} "
-                f"offered at {level.name}. Remove {level.name} from "
-                f"{'those subjects' if offerings > 1 else 'that subject'} "
-                f"first, then delete the level.",
-                **{"SubjectOffering": offerings},
-            )
+        # Offerings do NOT block: they CASCADE, because an offering is a
+        # statement about this level and goes with it. The screen says how many
+        # before asking, so nothing disappears unannounced.
         name, pk = level.name, level.pk
         level.delete()
         emit_audit_event(

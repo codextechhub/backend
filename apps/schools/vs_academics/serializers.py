@@ -195,6 +195,7 @@ class DepartmentWriteSerializer(serializers.ModelSerializer):
 
 class LevelSerializer(_ScopedSerializer):
     class_count = serializers.SerializerMethodField()
+    subject_count = serializers.SerializerMethodField()
     program_name = serializers.CharField(source="program.name", read_only=True)
     # The promotion target by name as well as by id, so a screen can render
     # "JSS1 promotes to JSS2" from one response. Null means the level is
@@ -210,11 +211,20 @@ class LevelSerializer(_ScopedSerializer):
         fields = [
             "id", "name", "code", "description", "order_index", "is_active",
             "program", "program_name", "next_level", "next_level_name",
-            "branch", "branch_name", "scope_label", "class_count",
+            "branch", "branch_name", "scope_label",
+            "class_count", "subject_count",
         ]
 
     def get_class_count(self, obj) -> int:
         return getattr(obj, "class_count_annotated", 0)
+
+    def get_subject_count(self, obj) -> int:
+        """How many subjects are offered here.
+
+        Read by the delete confirmation: offerings cascade with the level, so a
+        screen that did not say how many would remove them unannounced.
+        """
+        return getattr(obj, "subject_count_annotated", 0)
 
 
 class LevelWriteSerializer(serializers.ModelSerializer):

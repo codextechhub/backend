@@ -460,8 +460,13 @@ class SubjectOffering(models.Model):
     subject = models.ForeignKey(
         Subject, on_delete=models.CASCADE, related_name="offerings",
     )
+    # CASCADE, not PROTECT. An offering is a statement ABOUT a level -
+    # "Mathematics is taught at JSS1" - and it is meaningless the moment JSS1
+    # is gone. Protecting it made a level with no classes undeletable until
+    # somebody opened every subject offered at it and unticked that level, none
+    # of which edits meant anything. Classes still PROTECT: those carry history.
     level = models.ForeignKey(
-        Level, on_delete=models.PROTECT, related_name="subject_offerings",
+        Level, on_delete=models.CASCADE, related_name="subject_offerings",
     )
     # Overrides Subject.is_core for this level when set; null means inherit.
     is_core = models.BooleanField(null=True, blank=True)
