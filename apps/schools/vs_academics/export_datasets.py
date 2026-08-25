@@ -298,3 +298,112 @@ def register_datasets():
             )),
         ),
     ))
+
+
+# ── Screen bindings ────────────────────────────────────────────────────────
+#
+# "Export what this table is showing." The translation lives here rather than in
+# vs_exports, because only this module knows that ``is_active=all`` means "do
+# not filter" and that ``status`` on the sessions screen is a session status.
+#
+# **The branch lens is reported as unmapped, not carried, and that is the honest
+# answer rather than a shortcut.** The lens means "school-wide rows PLUS this
+# branch's", which is an OR across a nullable column that no single FilterDef
+# expresses. Carrying it as ``branch__name contains X`` would silently DROP every
+# school-wide row - most of a catalogue - and hand back a file narrower than the
+# screen with nothing to say so. So it is declared in ``handles`` and returned
+# unmapped, which sets ``exact`` false and puts the fact in front of the person
+# before they run it.
+#
+# A branch-TIED caller needs none of this: the base querysets above already
+# narrow to their branches, so their file matches their screen either way.
+
+
+def _flag(params, key):
+    """A screen's tri-state filter. "all" means the screen is not filtering."""
+    value = str(params.get(key, "")).strip().lower()
+    if value in ("true", "1"):
+        return True
+    if value in ("false", "0"):
+        return False
+    return None
+
+
+def _common(params):
+    """search, is_active and the branch lens - every catalogue screen sends these."""
+    filters, unmapped = [], []
+    search = str(params.get("search", "")).strip()
+    if search:
+        filters.append({"id": "search", "value": search})
+
+    active = _flag(params, "is_active")
+    if active is not None:
+        filters.append({"id": "is_active", "value": active})
+
+    if str(params.get("branch", "")).strip():
+        unmapped.append("branch")
+    return filters, unmapped
+
+
+def _translate_catalogue(params):
+    return _common(params)
+
+
+def _translate_classes(params):
+    filters, unmapped = _common(params)
+    # The screen filters by level ID; the dataset filters on the level's NAME,
+    # and this translator has no tenant to resolve one into the other. Reported
+    # rather than guessed.
+    if str(params.get("level", "")).strip():
+        unmapped.append("level")
+    return filters, unmapped
+
+
+def _translate_subjects(params):
+    filters, unmapped = _common(params)
+    core = _flag(params, "is_core")
+    if core is not None:
+        filters.append({"id": "is_core", "value": core})
+    return filters, unmapped
+
+
+def _translate_sessions(params):
+    filters, unmapped = [], []
+    search = str(params.get("search", "")).strip()
+    if search:
+        filters.append({"id": "search", "value": search})
+    status = str(params.get("status", "")).strip().upper()
+    if status and status != "ALL":
+        filters.append({"id": "status", "value": [status]})
+    if str(params.get("branch", "")).strip():
+        unmapped.append("branch")
+    return filters, unmapped
+
+
+#: Params every academics screen carries that are not filters. Listed so they
+#: are not reported as dropped: a page number is not a narrowing.
+_IGNORE = ("page", "page_size", "tenant", "view", "session")
+
+
+def register_screens():
+    """Called once from AppConfig.ready(), after register_datasets()."""
+    from vs_exports.catalogue import ScreenBinding, register_screen
+
+    for key, label, dataset, translate, handles in (
+        ("academics.sessions", "Academics - Sessions & terms", "academics.sessions",
+         _translate_sessions, ("search", "status", "branch")),
+        ("academics.departments", "Academics - Departments", "academics.departments",
+         _translate_catalogue, ("search", "is_active", "branch")),
+        ("academics.programs", "Academics - Programmes", "academics.programs",
+         _translate_catalogue, ("search", "is_active", "branch")),
+        ("academics.levels", "Academics - Levels", "academics.levels",
+         _translate_catalogue, ("search", "is_active", "branch")),
+        ("academics.classes", "Academics - Classes & arms", "academics.classes",
+         _translate_classes, ("search", "is_active", "branch", "level")),
+        ("academics.subjects", "Academics - Subjects", "academics.subjects",
+         _translate_subjects, ("search", "is_active", "branch", "is_core")),
+    ):
+        register_screen(ScreenBinding(
+            key=key, label=label, dataset_key=dataset,
+            translate=translate, handles=handles, ignore=_IGNORE,
+        ))
