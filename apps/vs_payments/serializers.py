@@ -80,6 +80,7 @@ class PayoutInstructionSerializer(FieldSecurityMixin, serializers.ModelSerialize
     read_permissions = {
         "beneficiary_name": "payments.payout.view_sensitive",
         "beneficiary_account_number": "payments.payout.view_sensitive",
+        "beneficiary_bank_code": "payments.payout.view_sensitive",
     }
 
     class Meta:

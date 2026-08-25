@@ -5,6 +5,9 @@ from typing import Any, Dict, Optional, Type
 class BaseWorkflowHandler:
     document_type: str = ""
     document_model: Optional[Type] = None
+    # Most document types may use the generic release for an unstaffed stage. A
+    # handler can turn it off when terminal approval is itself a safety boundary.
+    allows_continue_without_approval: bool = True
 
     # Choose the template code when the submitter does not provide one.
     def resolve_default_template_code(self, document: Any) -> str:

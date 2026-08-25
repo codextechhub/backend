@@ -572,6 +572,15 @@ class WorkflowInstanceViewSet(
         docstring-name: Continue without approval
         """
         instance = self.get_object()
+        if not release_svc.handler_allows_release(instance):
+            return Response({
+                "success": False,
+                "message": "This document type requires a human approval and cannot continue without one.",
+                "error": {
+                    "code": "CONTINUE_WITHOUT_APPROVAL_NOT_ALLOWED",
+                    "detail": release_svc.describe_park(instance),
+                },
+            }, status=status.HTTP_409_CONFLICT)
         if not release_svc.may_release(instance, request.user):
             return Response({
                 "success": False,
@@ -583,6 +592,15 @@ class WorkflowInstanceViewSet(
                 instance, actor_user=request.user,
                 reason=(request.data or {}).get("reason"),
             )
+        except release_svc.ReleaseNotAllowedError as exc:
+            return Response({
+                "success": False,
+                "message": str(exc),
+                "error": {
+                    "code": "CONTINUE_WITHOUT_APPROVAL_NOT_ALLOWED",
+                    "detail": release_svc.describe_park(instance),
+                },
+            }, status=status.HTTP_409_CONFLICT)
         except release_svc.NotParkedError as exc:
             # Somebody became able to approve between the warning and the click. The
             # document is fine; it just needs a decision now, so this is not an error

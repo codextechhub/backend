@@ -262,6 +262,10 @@ class Vendor(_AutoMasterCodeMixin, TimeStampedModel):
         help_text="Canonical tax identifier used only for entity-scoped duplicate detection.",
     )
     bank_name = models.CharField(max_length=120, blank=True, default="")
+    bank_code = models.CharField(
+        max_length=20, blank=True, default="",
+        help_text="Provider bank code used for verified electronic disbursements.",
+    )
     bank_account_number = models.CharField(max_length=32, blank=True, default="")
     bank_account_name = models.CharField(max_length=160, blank=True, default="")
 
@@ -317,13 +321,48 @@ class Vendor(_AutoMasterCodeMixin, TimeStampedModel):
 
     def save(self, *args, **kwargs):
         """Keep duplicate-detection identifiers canonical for every ORM write path."""
+        bank_fields = {
+            "bank_name", "bank_code", "bank_account_name", "bank_account_number",
+        }
+        update_fields = kwargs.get("update_fields")
+        bank_fields_to_check = (
+            bank_fields if update_fields is None else bank_fields & set(update_fields)
+        )
+        self.bank_name = str(self.bank_name or "").strip()
+        self.bank_code = str(self.bank_code or "").strip().upper()
+        self.bank_account_name = str(self.bank_account_name or "").strip()
+        self.bank_account_number = re.sub(
+            r"\s+", "", str(self.bank_account_number or "").upper(),
+        )
+        bank_changed = False
+        if self.pk:
+            previous = type(self).objects.filter(pk=self.pk).values(*bank_fields).first()
+            if previous is not None:
+                normalizers = {
+                    "bank_name": lambda value: str(value or "").strip(),
+                    "bank_code": lambda value: str(value or "").strip().upper(),
+                    "bank_account_name": lambda value: str(value or "").strip(),
+                    "bank_account_number": lambda value: re.sub(
+                        r"\s+", "", str(value or "").upper(),
+                    ),
+                }
+                bank_changed = any(
+                    normalizers[field](previous[field])
+                    != normalizers[field](getattr(self, field))
+                    for field in bank_fields_to_check
+                )
         self.code = str(self.code or "").strip().upper()
         self.tax_id = str(self.tax_id or "").strip().upper()
         self.tax_id_normalized = re.sub(r"[^A-Z0-9]", "", self.tax_id)
-        update_fields = kwargs.get("update_fields")
+        if bank_changed:
+            # A verified decision covers one exact destination. Any master-data change
+            # invalidates that decision, including when the same save asks to verify it.
+            self.kyc_status = VendorKycStatus.PENDING
         if update_fields is not None and "tax_id" in update_fields:
             # Callers that intentionally update only tax_id must persist its paired key too.
             kwargs["update_fields"] = set(update_fields) | {"tax_id_normalized"}
+        if update_fields is not None and bank_changed:
+            kwargs["update_fields"] = set(kwargs["update_fields"]) | {"kyc_status"}
         return super().save(*args, **kwargs)
 
     def __str__(self) -> str:

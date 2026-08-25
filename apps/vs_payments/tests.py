@@ -108,6 +108,9 @@ class _PaymentsFixtureMixin:
             entity=entity, code="SUPP1", name="Supplier Ltd",
             payable_account=Account.objects.get(entity=entity, code="2100"),
             default_expense_account=Account.objects.get(entity=entity, code="5300"),
+            bank_name="Guarantee Trust Bank", bank_code="058",
+            bank_account_name="Supplier Ltd", bank_account_number="0123456789",
+            kyc_status="VERIFIED",
         )
         self.fake = FakeProvider(secret="test-secret")
         # Resolve the default provider name and the fake's own name to this instance.
@@ -115,6 +118,21 @@ class _PaymentsFixtureMixin:
         registry.register("FAKE", self.fake)
         self.addCleanup(registry.unregister)
         return entity, customer, vendor
+
+    def make_processing_payout(self, entity, vendor, *, amount, narration=""):
+        """Create an already-dispatched gateway row for confirmation/read-side tests."""
+        reference = services._new_reference(entity)
+        return PayoutInstruction.objects.create(
+            entity=entity, provider="PAYSTACK", reference=reference,
+            provider_reference=f"FAKE-TR-{reference}", amount=amount,
+            currency=entity.base_currency,
+            beneficiary_name=vendor.bank_account_name,
+            beneficiary_account_number=vendor.bank_account_number,
+            beneficiary_bank_code=vendor.bank_code,
+            narration=narration, status=PayoutStatus.PROCESSING,
+            vendor_source_type="vs_procurement.Vendor",
+            vendor_source_id=str(vendor.pk),
+        )
 
     # Prepare or verify the make posted invoice test path.
     def make_posted_invoice(self, entity, customer, *, amount):
@@ -622,18 +640,20 @@ class VirtualAccountDepositTests(_PaymentsFixtureMixin, TestCase):
 
 # Group tests for Payout Tests.
 class PayoutTests(_PaymentsFixtureMixin, TestCase):
-    # Verify initiate then confirm books vendor payment behavior.
-    def test_initiate_then_confirm_books_vendor_payment(self):
+    def test_standalone_initiation_is_disabled(self):
         entity, _, vendor = self.build()
-        payout = services.initiate_payout(
-            entity=entity, amount=70000, beneficiary_name="Supplier Ltd",
-            beneficiary_account_number="0123456789", beneficiary_bank_code="058",
-            vendor=vendor, narration="Settle bill",
-        )
-        self.assertEqual(payout.status, PayoutStatus.PROCESSING)
-        self.assertEqual(
-            payout.reference,
-            f"CXP-{entity.tenant_id}{timezone.localdate():%y%m%d}1",
+        with self.assertRaises(PaymentStateError):
+            services.initiate_payout(
+                entity=entity, amount=70000, beneficiary_name="Supplier Ltd",
+                beneficiary_account_number="0123456789", beneficiary_bank_code="058",
+                vendor=vendor, narration="Settle bill",
+            )
+
+    # Verify an approved provider row can still confirm and book the vendor payment.
+    def test_confirm_books_vendor_payment(self):
+        entity, _, vendor = self.build()
+        payout = self.make_processing_payout(
+            entity, vendor, amount=70000, narration="Settle bill",
         )
         payout = services.confirm_payout(payout, status=PayoutStatus.PAID)
         self.assertEqual(payout.status, PayoutStatus.PAID)
@@ -645,11 +665,7 @@ class PayoutTests(_PaymentsFixtureMixin, TestCase):
     # Verify payout webhook confirms behavior.
     def test_payout_webhook_confirms(self):
         entity, _, vendor = self.build()
-        payout = services.initiate_payout(
-            entity=entity, amount=15000, beneficiary_name="Supplier Ltd",
-            beneficiary_account_number="0123456789", beneficiary_bank_code="058",
-            vendor=vendor,
-        )
+        payout = self.make_processing_payout(entity, vendor, amount=15000)
         # Webhook triggers re-verification; provider verify_transfer is the source of truth.
         self.fake.forced_status[payout.reference] = "PAID"
         raw, headers = self.fake.build_webhook(
@@ -667,11 +683,7 @@ class PayoutTests(_PaymentsFixtureMixin, TestCase):
         # Mirror of confirm_collection: the verify path books what actually left the
         # account, retaining the instructed amount in metadata.
         entity, _, vendor = self.build()
-        payout = services.initiate_payout(
-            entity=entity, amount=70000, beneficiary_name="Supplier Ltd",
-            beneficiary_account_number="0123456789", beneficiary_bank_code="058",
-            vendor=vendor,
-        )
+        payout = self.make_processing_payout(entity, vendor, amount=70000)
         # Provider verify reports PAID for 68,000 (a 2,000 shortfall vs the 70,000 instructed).
         self.fake.forced_amount[payout.reference] = 68000
         self.fake.forced_status[payout.reference] = "PAID"
@@ -684,11 +696,7 @@ class PayoutTests(_PaymentsFixtureMixin, TestCase):
     # Verify an explicit PAID status without an amount never overrides behavior.
     def test_confirm_payout_status_without_amount_keeps_instructed(self):
         entity, _, vendor = self.build()
-        payout = services.initiate_payout(
-            entity=entity, amount=70000, beneficiary_name="Supplier Ltd",
-            beneficiary_account_number="0123456789", beneficiary_bank_code="058",
-            vendor=vendor,
-        )
+        payout = self.make_processing_payout(entity, vendor, amount=70000)
         # status supplied, amount omitted → settled falls back to the instructed 70,000.
         payout = services.confirm_payout(payout, status=PayoutStatus.PAID)
         self.assertEqual(payout.amount, 70000)
@@ -699,11 +707,7 @@ class PayoutTests(_PaymentsFixtureMixin, TestCase):
     # Verify failed payout books nothing behavior.
     def test_failed_payout_books_nothing(self):
         entity, _, vendor = self.build()
-        payout = services.initiate_payout(
-            entity=entity, amount=15000, beneficiary_name="Supplier Ltd",
-            beneficiary_account_number="0123456789", beneficiary_bank_code="058",
-            vendor=vendor,
-        )
+        payout = self.make_processing_payout(entity, vendor, amount=15000)
         payout = services.confirm_payout(payout, status=PayoutStatus.FAILED)
         self.assertEqual(payout.status, PayoutStatus.FAILED)
         self.assertIsNone(payout.vendor_payment_id)
@@ -737,10 +741,8 @@ class PayoutBatchTests(_PaymentsFixtureMixin, TestCase):
     # Support the items workflow.
     def _items(self, vendor, *amounts):
         return [
-            {"amount": amt, "beneficiary_name": "Supplier Ltd",
-             "beneficiary_account_number": f"012345678{i}", "beneficiary_bank_code": "058",
-             "vendor": vendor}
-            for i, amt in enumerate(amounts)
+            {"amount": amt, "vendor": vendor}
+            for amt in amounts
         ]
 
     # Verify create batch assembles pending instructions without submitting behavior.
@@ -766,22 +768,22 @@ class PayoutBatchTests(_PaymentsFixtureMixin, TestCase):
         # Nothing was sent to the provider yet → no provider_reference.
         self.assertTrue(all(not p.provider_reference for p in batch.instructions.all()))
 
-    # Verify submit batch dispatches every item behavior.
-    def test_submit_batch_dispatches_every_item(self):
+    # Verify direct service submission is closed without an approved workflow.
+    def test_submit_batch_requires_approved_workflow(self):
         entity, _, vendor = self.build()
         batch = services.create_payout_batch(entity=entity, items=self._items(vendor, 5000, 7000))
-        batch = services.submit_payout_batch(batch)
-        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
-        self.assertIsNotNone(batch.submitted_at)
-        self.assertTrue(
-            all(p.status == PayoutStatus.PROCESSING for p in batch.instructions.all())
-        )
+        with self.assertRaises(PaymentStateError):
+            services.submit_payout_batch(batch)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
 
     # Verify confirming all items completes the batch behavior.
     def test_confirming_all_items_completes_the_batch(self):
         entity, _, vendor = self.build()
         batch = services.create_payout_batch(entity=entity, items=self._items(vendor, 5000, 7000))
-        services.submit_payout_batch(batch)
+        batch.instructions.update(status=PayoutStatus.PROCESSING)
+        batch.status = PayoutBatchStatus.PROCESSING
+        batch.save(update_fields=["status", "updated_at"])
         for payout in batch.instructions.all():
             services.confirm_payout(payout, status=PayoutStatus.PAID)
         batch.refresh_from_db()
@@ -797,7 +799,12 @@ class PayoutBatchTests(_PaymentsFixtureMixin, TestCase):
         registry.register("PAYSTACK", flaky)
         registry.register("FAKE", flaky)
         batch = services.create_payout_batch(entity=entity, items=self._items(vendor, 5000, 7000))
-        services.submit_payout_batch(batch)
+        first, second = list(batch.instructions.order_by("pk"))
+        first.status = PayoutStatus.PROCESSING
+        first.save(update_fields=["status", "updated_at"])
+        second.status = PayoutStatus.FAILED
+        second.save(update_fields=["status", "updated_at"])
+        services._recompute_batch_status(batch)
         # One dispatched (PROCESSING), one rejected at submit (FAILED).
         statuses = sorted(p.status for p in batch.instructions.all())
         self.assertEqual(statuses, [PayoutStatus.FAILED, PayoutStatus.PROCESSING])
@@ -879,11 +886,7 @@ class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
     # Verify amount fallback match for a payout behavior.
     def test_amount_fallback_match_for_a_payout(self):
         entity, _, vendor = self.build()
-        payout = services.initiate_payout(
-            entity=entity, amount=15000, beneficiary_name="Supplier Ltd",
-            beneficiary_account_number="0123456789", beneficiary_bank_code="058",
-            vendor=vendor,
-        )
+        payout = self.make_processing_payout(entity, vendor, amount=15000)
         services.confirm_payout(payout, status=PayoutStatus.PAID)
         ba = self._bank_account(entity)
         # No shared reference, but the signed amount matches (-15000 outflow).
@@ -938,11 +941,7 @@ class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
         services.confirm_collection(c, status=CollectionStatus.SUCCEEDED)
         c.refresh_from_db()
         # An amount-only-matched payout - ambiguous, flagged.
-        p = services.initiate_payout(
-            entity=entity, amount=15000, beneficiary_name="Supplier Ltd",
-            beneficiary_account_number="0123456789", beneficiary_bank_code="058",
-            vendor=vendor,
-        )
+        p = self.make_processing_payout(entity, vendor, amount=15000)
         services.confirm_payout(p, status=PayoutStatus.PAID)
         ba = self._bank_account(entity)
         self._bank_line(ba, amount=40000, reference=c.reference)     # reference match
@@ -1077,36 +1076,39 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
 
     # Verify initiate payout endpoint behavior.
     def test_initiate_payout_endpoint(self):
+        from vs_payments.approvals import ensure_default_approval_templates
+
+        ensure_default_approval_templates()
         entity, _, vendor = self.build()
         resp = self.client.post(
             f"/v1/payments/payouts/?entity={entity.code}",
-            {"amount": 60000, "beneficiary_name": "Supplier Ltd",
-             "beneficiary_account_number": "0123456789", "beneficiary_bank_code": "058",
-             "vendor": vendor.pk},
+            {"amount": 60000, "vendor": vendor.pk},
             format="json",
+            HTTP_IDEMPOTENCY_KEY="single-api-1",
         )
         self.assertEqual(resp.status_code, 201)
-        self.assertEqual(resp.json()["data"]["status"], PayoutStatus.PROCESSING)
+        self.assertEqual(resp.json()["data"]["status"], PayoutStatus.PENDING)
+        self.assertTrue(resp.json()["data"]["approval"]["parked"])
 
     # Verify create and submit payout batch endpoint behavior.
     def test_create_and_submit_payout_batch_endpoint(self):
+        from vs_payments.approvals import ensure_default_approval_templates
+
+        ensure_default_approval_templates()
         entity, _, vendor = self.build()
         resp = self.client.post(
             f"/v1/payments/payout-batches/?entity={entity.code}",
             {"title": "Run", "submit": True,
              "items": [
-                 {"amount": 11000, "beneficiary_name": "Supplier Ltd",
-                  "beneficiary_account_number": "0123456789", "beneficiary_bank_code": "058",
-                  "vendor": vendor.pk},
-                 {"amount": 22000, "beneficiary_name": "Supplier Ltd",
-                  "beneficiary_account_number": "0123456780", "beneficiary_bank_code": "058",
-                  "vendor": vendor.pk},
+                 {"amount": 11000, "vendor": vendor.pk},
+                 {"amount": 22000, "vendor": vendor.pk},
              ]},
             format="json",
+            HTTP_IDEMPOTENCY_KEY="batch-api-1",
         )
         self.assertEqual(resp.status_code, 201)
         data = resp.json()["data"]
-        self.assertEqual(data["status"], PayoutBatchStatus.PROCESSING)
+        self.assertEqual(data["status"], PayoutBatchStatus.DRAFT)
         self.assertEqual(data["item_count"], 2)
         self.assertEqual(data["total_amount"], 33000)
         self.assertEqual(len(data["instructions"]), 2)
@@ -1118,10 +1120,10 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
         ok = self.client.post(
             f"/v1/payments/payout-batches/?entity={entity.code}",
             {"title": "By code", "items": [
-                {"amount": 40000, "wht_amount": 4000, "beneficiary_name": "Supplier Ltd",
-                 "beneficiary_account_number": "0123456789", "vendor": vendor.code},
+                {"amount": 40000, "wht_amount": 4000, "vendor": vendor.code},
             ]},
             format="json",
+            HTTP_IDEMPOTENCY_KEY="batch-api-by-code",
         )
         self.assertEqual(ok.status_code, 201, ok.content)
         self.assertEqual(ok.json()["data"]["instructions"][0]["wht_amount"], 4000)
@@ -1131,11 +1133,15 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
             {"items": [{"amount": 40000, "beneficiary_name": "X",
                         "beneficiary_account_number": "0123456789"}]},
             format="json",
+            HTTP_IDEMPOTENCY_KEY="batch-api-no-vendor",
         )
         self.assertEqual(bad.status_code, 400, bad.content)
 
     # Verify payout batch summary queued reflects only in-flight children behavior.
     def test_payout_batch_summary_queued_counts_only_in_flight_children(self):
+        from vs_payments.approvals import ensure_default_approval_templates
+
+        ensure_default_approval_templates()
         entity, _, vendor = self.build()
         flaky = _FlakyProvider(secret="test-secret", fail_amount=7000)  # Fails the 7,000 item at submit.
         registry.register("PAYSTACK", flaky)
@@ -1143,30 +1149,23 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
         resp = self.client.post(
             f"/v1/payments/payout-batches/?entity={entity.code}",
             {"title": "Run", "submit": True, "items": [
-                {"amount": 11000, "beneficiary_name": "Supplier Ltd",
-                 "beneficiary_account_number": "0123456789", "beneficiary_bank_code": "058",
-                 "vendor": vendor.pk},
-                {"amount": 7000, "beneficiary_name": "Supplier Ltd",
-                 "beneficiary_account_number": "0123456780", "beneficiary_bank_code": "058",
-                 "vendor": vendor.pk},
+                {"amount": 11000, "vendor": vendor.pk},
+                {"amount": 7000, "vendor": vendor.pk},
             ]},
             format="json",
+            HTTP_IDEMPOTENCY_KEY="batch-api-summary",
         )
         self.assertEqual(resp.status_code, 201, resp.content)
         summary = self.client.get(f"/v1/payments/payout-batches/summary/?entity={entity.code}")
         self.assertEqual(summary.status_code, 200)
-        # Only the surviving in-flight child (11,000) is queued money; the FAILED 7,000 is not.
-        self.assertEqual(summary.json()["data"]["queued"]["kobo"], 11000)
+        # Approval-pending instructions are both queued; no provider call has happened.
+        self.assertEqual(summary.json()["data"]["queued"]["kobo"], 18000)
 
     # Verify movements feed does not expose internal ledger ids behavior.
     def test_movements_feed_hides_internal_linked_id(self):
         entity, customer, vendor = self.build()
         services.initiate_collection(entity=entity, amount=40000, customer=customer)
-        services.initiate_payout(
-            entity=entity, amount=15000, beneficiary_name="Supplier Ltd",
-            beneficiary_account_number="0123456789", beneficiary_bank_code="058",
-            vendor=vendor,
-        )
+        self.make_processing_payout(entity, vendor, amount=15000)
         resp = self.client.get(f"/v1/payments/movements/?entity={entity.code}")
         self.assertEqual(resp.status_code, 200)
         rows = resp.json()["data"]
@@ -1292,11 +1291,11 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
 
 # Group tests for Payout Batch Approval (maker-checker over the cash-out path).
 class PayoutBatchApprovalTests(TestCase):
-    """Approval-gating bulk payout batches via vs_workflow (opt-in by template).
+    """Approval-gating bulk payout batches via vs_workflow.
 
-    A payout batch is the highest-risk cash-out path, so - when a
-    ``payments.payout_batch`` template exists for its scope - provider submission
-    happens only after approval; with no template, direct submit is unchanged.
+    A payout batch is the highest-risk cash-out path. Provider submission happens
+    only after a matching workflow reaches terminal human approval, and a missing
+    template fails closed.
     """
 
     APPROVE_ROLE = "payout-approver"
@@ -1310,7 +1309,6 @@ class PayoutBatchApprovalTests(TestCase):
             TenantRoleTemplate, TenantUserRoleAssignment, TenantRolePermission,
         )
         from vs_tenants.models import Tenant
-        from schools.vs_schools.models import School
 
         call_command("seed_payments_permissions", verbosity=0, stdout=io.StringIO())
 
@@ -1319,13 +1317,16 @@ class PayoutBatchApprovalTests(TestCase):
         self.TenantRolePermission = TenantRolePermission
         self.TenantUserRoleAssignment = TenantUserRoleAssignment
 
-        # A school-owned entity so batch.school resolves and SCHOOL-scoped approver
-        # resolution has a pool to draw from.
-        self.school = School.objects.create(name="Cedar", slug="cedar-pba", code="CDRPBA", status="ACTIVE")
+        # A tenant-owned entity with one branch. The workflow scope token is legacy,
+        # but approver resolution is tenant-wide for branchless payout batches.
+        self.tenant = Tenant.objects.create(
+            name="Cedar", slug="cedar-pba", kind=Tenant.Kind.SCHOOL,
+            status=Tenant.Status.ACTIVE,
+        )
         seed_currencies()
         self.entity = LedgerEntity.objects.create(
             name="Cedar Books", code="CDRBK", kind=LedgerEntity.Kind.TENANT,
-            tenant=self.school.tenant,
+            tenant=self.tenant,
         )
         seed_chart_of_accounts(self.entity)
         today = datetime.date.today()
@@ -1346,15 +1347,17 @@ class PayoutBatchApprovalTests(TestCase):
             entity=self.entity, code="SUPP1", name="Supplier Ltd",
             payable_account=Account.objects.get(entity=self.entity, code="2100"),
             default_expense_account=Account.objects.get(entity=self.entity, code="5300"),
+            bank_name="Guarantee Trust Bank", bank_code="058",
+            bank_account_name="Supplier Ltd", bank_account_number="0123456789",
+            kyc_status="VERIFIED",
         )
         self.fake = FakeProvider(secret="test-secret")
         registry.register("PAYSTACK", self.fake)
         registry.register("FAKE", self.fake)
         self.addCleanup(registry.unregister)
 
-        # Requester: a school user holding every payments/finance key at this
-        # school (the entity is school-owned, so only its tenant may address it;
-        # approve verbs excluded so SoD scenarios stay meaningful).
+        # Requester: a tenant user holding every tenant-scoped payments/finance key;
+        # approve verbs are excluded so separation-of-duties cases stay meaningful.
         from vs_tenants.models import Branch
         from django.db.models import Q
 
@@ -1364,19 +1367,19 @@ class PayoutBatchApprovalTests(TestCase):
             TenantRolePermission,
         )
         branch = Branch.objects.create(
-            tenant=self.school.tenant, name="Main", is_main=True, status="ACTIVE",
+            tenant=self.tenant, name="Main", is_main=True, status="ACTIVE",
         )
         self.requester = self.User.objects.create_user(
             email="req-pba@test.com", password="pw", status="ACTIVE",
             first_name="Req", last_name="Ester", branch=branch,
         )
         ops_role, created = TenantRoleTemplate.objects.get_or_create(
-            tenant=self.school.tenant, key="payments-ops-all",
+            tenant=self.tenant, key="payments-ops-all",
             defaults={"name": "Payments Ops (all keys)", "status": "ACTIVE"},
         )
         if created:
-            # Scope-filtered, not just prefix-filtered: this builds a SCHOOL
-            # role, and a handful of finance keys are platform-only because
+            # Scope-filtered, not just prefix-filtered: this builds a tenant role,
+            # and a handful of finance keys are platform-only because
             # they write global reference tables (currencies, FX rates). The
             # grant guard refuses those, so "every finance key" has to mean
             # every finance key a tenant may actually hold.
@@ -1391,7 +1394,7 @@ class PayoutBatchApprovalTests(TestCase):
                 ignore_conflicts=True,
             )
         TenantUserRoleAssignment.objects.create(
-            tenant=self.school.tenant, user=self.requester, role=ops_role,
+            tenant=self.tenant, user=self.requester, role=ops_role,
             assignment_status="ACTIVE",
         )
         from core.test_utils import TenantAPIClient
@@ -1401,10 +1404,8 @@ class PayoutBatchApprovalTests(TestCase):
 
     def _draft_batch(self, *amounts):
         items = [
-            {"amount": a, "beneficiary_name": "Supplier Ltd",
-             "beneficiary_account_number": f"012345678{i}", "beneficiary_bank_code": "058",
-             "vendor": self.vendor}
-            for i, a in enumerate(amounts or (10000,))
+            {"amount": a, "vendor": self.vendor}
+            for a in (amounts or (10000,))
         ]
         return services.create_payout_batch(entity=self.entity, items=items, title="Run")
 
@@ -1417,7 +1418,7 @@ class PayoutBatchApprovalTests(TestCase):
         role deliberately does NOT staff it: that is ``_make_approver``'s job.
         """
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
-            tenant=self.school.tenant, key=self.APPROVE_ROLE,
+            tenant=self.tenant, key=self.APPROVE_ROLE,
             defaults={"name": "Payout Checker", "status": "ACTIVE"},
         )
         return role
@@ -1427,7 +1428,7 @@ class PayoutBatchApprovalTests(TestCase):
 
         self._ensure_approve_role()
         return publish_template(
-            tenant=self.school.tenant, branch=None,
+            tenant=self.tenant, branch=None,
             document_type="payments.payout_batch", code="standard",
             name="Payout batch approval",
             stages_payload=[{
@@ -1441,12 +1442,29 @@ class PayoutBatchApprovalTests(TestCase):
     def _make_approver(self, email="apr-pba@test.com"):
         user = self.User.objects.create_user(
             email=email, password="pw", status="ACTIVE",
-            first_name="Apr", last_name="Over", tenant=self.school.tenant,
+            first_name="Apr", last_name="Over", tenant=self.tenant,
         )
         # The stage names this role directly, so staffing it is one assignment.
         role = self._ensure_approve_role()
         self.TenantUserRoleAssignment.objects.create(
-            tenant=self.school.tenant, user=user, role=role, assignment_status="ACTIVE",
+            tenant=self.tenant, user=user, role=role, assignment_status="ACTIVE",
+        )
+        return user
+
+    def _make_senior_approver(self, email="senior-pba@test.com"):
+        from vs_payments.constants import WF_DEFAULT_HIGH_VALUE_ROLE
+
+        user = self.User.objects.create_user(
+            email=email, password="pw", status="ACTIVE",
+            first_name="Senior", last_name="Checker", tenant=self.tenant,
+        )
+        role, _ = self.TenantRoleTemplate.objects.get_or_create(
+            tenant=self.tenant, key=WF_DEFAULT_HIGH_VALUE_ROLE,
+            defaults={"name": "Payout Senior Approver", "status": "ACTIVE"},
+        )
+        self.TenantUserRoleAssignment.objects.create(
+            tenant=self.tenant, user=user, role=role,
+            assignment_status="ACTIVE",
         )
         return user
 
@@ -1463,17 +1481,255 @@ class PayoutBatchApprovalTests(TestCase):
         from vs_workflow.models import WorkflowInstance
         return WorkflowInstance.objects.for_document(batch).first()
 
-    # --- 1. gate off: no template → direct submit works -------------------- #
+    def _post_single(self, key=None, **overrides):
+        payload = {"amount": 10_000, "vendor": self.vendor.pk} | overrides
+        kwargs = {"format": "json"}
+        if key is not None:
+            kwargs["HTTP_IDEMPOTENCY_KEY"] = key
+        return self.client.post(
+            f"/v1/payments/payouts/?entity={self.entity.code}", payload, **kwargs,
+        )
 
-    def test_gate_off_direct_submit_works(self):
-        from vs_finance.approvals import approval_required
+    def test_single_payout_requires_idempotency_key(self):
+        response = self._post_single()
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertFalse(PayoutBatch.objects.exists())
 
-        batch = self._draft_batch(10000, 20000)
-        self.assertFalse(approval_required(batch))
-        resp = self._direct_submit(batch)
-        self.assertEqual(resp.status_code, 200, resp.content)
+    def test_batch_creation_requires_idempotency_key(self):
+        response = self.client.post(
+            f"/v1/payments/payout-batches/?entity={self.entity.code}",
+            {"items": [{"amount": 10_000, "vendor": self.vendor.pk}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertFalse(PayoutBatch.objects.exists())
+
+    def test_batch_creation_replays_same_key_without_duplicate_rows(self):
+        url = f"/v1/payments/payout-batches/?entity={self.entity.code}"
+        payload = {
+            "title": "Supplier run",
+            "items": [{"amount": 10_000, "vendor": self.vendor.pk}],
+        }
+        first = self.client.post(
+            url, payload, format="json", HTTP_IDEMPOTENCY_KEY="batch-replay-1",
+        )
+        replay = self.client.post(
+            url, payload, format="json", HTTP_IDEMPOTENCY_KEY="batch-replay-1",
+        )
+
+        self.assertEqual(first.status_code, 201, first.content)
+        self.assertEqual(replay.status_code, 200, replay.content)
+        self.assertEqual(first.json()["data"]["id"], replay.json()["data"]["id"])
+        self.assertEqual(PayoutBatch.objects.count(), 1)
+        self.assertEqual(PayoutInstruction.objects.count(), 1)
+
+    def test_creator_without_permission_is_refused(self):
+        from core.test_utils import TenantAPIClient
+
+        user = self.User.objects.create_user(
+            email="no-payout-create@test.com", password="pw", status="ACTIVE",
+            first_name="No", last_name="Grant", tenant=self.tenant,
+        )
+        client = TenantAPIClient(user=user)
+        response = client.post(
+            f"/v1/payments/payouts/?entity={self.entity.code}",
+            {"amount": 10_000, "vendor": self.vendor.pk},
+            format="json", HTTP_IDEMPOTENCY_KEY="no-create-permission",
+        )
+        self.assertEqual(response.status_code, 403, response.content)
+        self.assertFalse(PayoutBatch.objects.exists())
+
+    def test_batch_detail_strips_beneficiary_bank_fields_without_sensitive_grant(self):
+        from core.test_utils import TenantAPIClient
+        from vs_rbac.models import Permission, TenantRolePermission
+
+        viewer = self.User.objects.create_user(
+            email="payout-view-only@test.com", password="pw", status="ACTIVE",
+            first_name="View", last_name="Only", tenant=self.entity.tenant,
+        )
+        role = self.TenantRoleTemplate.objects.create(
+            tenant=self.entity.tenant, key="payout-view-only",
+            name="Payout view only", status="ACTIVE",
+        )
+        TenantRolePermission.objects.create(
+            role=role, permission=Permission.objects.get(key="payments.payout.view"),
+        )
+        self.TenantUserRoleAssignment.objects.create(
+            tenant=self.entity.tenant, user=viewer, role=role,
+            assignment_status="ACTIVE",
+        )
+        batch = self._draft_batch(10_000)
+
+        response = TenantAPIClient(user=viewer).get(
+            f"/v1/payments/payout-batches/{batch.pk}/?entity={self.entity.code}",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        instruction = response.json()["data"]["instructions"][0]
+        protected = {
+            "beneficiary_name", "beneficiary_account_number", "beneficiary_bank_code",
+        }
+        self.assertTrue(protected.isdisjoint(instruction))
+        self.assertEqual(set(instruction["_stripped_fields"]), protected)
+
+    def test_vendor_from_another_tenant_is_rejected(self):
+        from vs_tenants.models import Tenant
+
+        other_tenant = Tenant.objects.create(
+            name="Maple", slug="maple-payout-vendor",
+            kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
+        )
+        other_entity = LedgerEntity.objects.create(
+            name="Maple Books", code="MPLPB", kind=LedgerEntity.Kind.TENANT,
+            tenant=other_tenant,
+        )
+        other_vendor = Vendor.objects.create(
+            entity=other_entity, code="OTHER", name="Other Supplier",
+            bank_name="Other Bank", bank_code="999",
+            bank_account_name="Other Supplier", bank_account_number="1111111111",
+            kyc_status="VERIFIED",
+        )
+
+        response = self._post_single("cross-tenant-vendor", vendor=other_vendor.pk)
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertFalse(PayoutBatch.objects.exists())
+
+    def test_single_payout_replay_returns_the_same_batch_instruction_and_workflow(self):
+        from unittest.mock import patch
+        from vs_workflow.models import WorkflowInstance
+
+        self._publish_template()
+        self._make_approver()
+        with patch.object(
+            self.fake, "create_transfer", wraps=self.fake.create_transfer,
+        ) as create_transfer:
+            first = self._post_single("single-replay-1")
+            replay = self._post_single("single-replay-1")
+
+        self.assertEqual(first.status_code, 201, first.content)
+        self.assertEqual(replay.status_code, 200, replay.content)
+        self.assertEqual(first.json()["data"]["id"], replay.json()["data"]["id"])
+        self.assertEqual(
+            first.json()["data"]["batch_id"], replay.json()["data"]["batch_id"],
+        )
+        self.assertEqual(PayoutBatch.objects.count(), 1)
+        self.assertEqual(PayoutInstruction.objects.count(), 1)
+        self.assertEqual(WorkflowInstance.all_objects.count(), 1)
+        instruction = PayoutInstruction.objects.get()
+        self.assertEqual(instruction.beneficiary_name, self.vendor.bank_account_name)
+        self.assertEqual(
+            instruction.beneficiary_account_number, self.vendor.bank_account_number,
+        )
+        self.assertEqual(instruction.beneficiary_bank_code, self.vendor.bank_code)
+        create_transfer.assert_not_called()
+
+    def test_reusing_payout_key_for_changed_payload_returns_typed_conflict(self):
+        self._publish_template()
+        self._make_approver()
+        self.assertEqual(self._post_single("single-conflict-1").status_code, 201)
+
+        conflict = self._post_single("single-conflict-1", amount=20_000)
+
+        self.assertEqual(conflict.status_code, 409, conflict.content)
+        self.assertEqual(
+            conflict.json()["error"]["code"], "PAYOUT_IDEMPOTENCY_CONFLICT",
+        )
+        self.assertEqual(PayoutBatch.objects.count(), 1)
+
+    def test_missing_template_fails_closed_without_persisting_a_single_payout(self):
+        response = self._post_single("single-no-template")
+
+        self.assertEqual(response.status_code, 404, response.content)
+        self.assertEqual(response.json()["error"]["code"], "TEMPLATE_NOT_FOUND")
+        self.assertFalse(PayoutBatch.objects.exists())
+        self.assertFalse(PayoutInstruction.objects.exists())
+
+    def test_batch_submit_flag_fails_closed_without_template(self):
+        response = self.client.post(
+            f"/v1/payments/payout-batches/?entity={self.entity.code}",
+            {
+                "submit": True,
+                "items": [{"amount": 10_000, "vendor": self.vendor.pk}],
+            },
+            format="json", HTTP_IDEMPOTENCY_KEY="batch-no-template",
+        )
+
+        self.assertEqual(response.status_code, 404, response.content)
+        self.assertEqual(response.json()["error"]["code"], "TEMPLATE_NOT_FOUND")
+        self.assertFalse(PayoutBatch.objects.exists())
+        self.assertFalse(PayoutInstruction.objects.exists())
+
+    def test_vendor_must_be_currently_eligible_and_have_complete_bank_master(self):
+        self._publish_template()
+        self._make_approver()
+        baseline = {
+            "is_active": True, "kyc_status": "VERIFIED", "on_hold": False,
+            "bank_account_name": "Supplier Ltd", "bank_account_number": "0123456789",
+            "bank_code": "058",
+        }
+        cases = (
+            ("inactive", {"is_active": False}),
+            ("pending-kyc", {"kyc_status": "PENDING"}),
+            ("on-hold", {"on_hold": True}),
+            ("missing-account-name", {"bank_account_name": ""}),
+            ("missing-account-number", {"bank_account_number": ""}),
+            ("missing-bank-code", {"bank_code": ""}),
+        )
+        for index, (label, change) in enumerate(cases):
+            with self.subTest(label=label):
+                vendor_values = {**baseline, **change}
+                Vendor.objects.filter(pk=self.vendor.pk).update(**vendor_values)
+                response = self._post_single(f"vendor-gate-{index}")
+                self.assertEqual(response.status_code, 400, response.content)
+        self.assertFalse(PayoutBatch.objects.exists())
+
+    def test_legacy_beneficiary_value_must_match_vendor_master(self):
+        self._publish_template()
+        self._make_approver()
+
+        response = self._post_single(
+            "single-mismatch", beneficiary_account_number="9999999999",
+        )
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertFalse(PayoutBatch.objects.exists())
+
+    def test_bank_change_after_submission_blocks_provider_dispatch(self):
+        from unittest.mock import patch
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.services import actions as wf_actions
+
+        self._publish_template()
+        approver = self._make_approver()
+        response = self._post_single("single-bank-change")
+        batch = PayoutBatch.objects.get(pk=response.json()["data"]["batch_id"])
+        # Bypass the model reset deliberately to prove the exact snapshot check is
+        # independent of KYC reset and runs again at the provider boundary.
+        Vendor.objects.filter(pk=self.vendor.pk).update(
+            bank_account_number="9999999999", kyc_status="VERIFIED",
+        )
+
+        with patch.object(
+            self.fake, "create_transfer", wraps=self.fake.create_transfer,
+        ) as create_transfer:
+            with self.assertRaises(PaymentStateError):
+                wf_actions.record_action(
+                    self._instance_for(batch).id, approver, ActionEnum.APPROVED,
+                )
+
+        create_transfer.assert_not_called()
         batch.refresh_from_db()
-        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+
+    # --- 1. direct provider submission is always closed -------------------- #
+
+    def test_direct_submit_without_template_is_refused(self):
+        batch = self._draft_batch(10000, 20000)
+        resp = self._direct_submit(batch)
+        self.assertEqual(resp.status_code, 409, resp.content)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
 
     # --- 2. gate on: direct submit refused --------------------------------- #
 
@@ -1481,7 +1737,7 @@ class PayoutBatchApprovalTests(TestCase):
         self._publish_template()
         batch = self._draft_batch(10000)
         resp = self._direct_submit(batch)
-        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertEqual(resp.status_code, 409, resp.content)
         batch.refresh_from_db()
         self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
         self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
@@ -1499,32 +1755,34 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertEqual((batch.metadata or {}).get("approval_status"), "PENDING_APPROVAL")
         self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
 
-    # --- 3b. another school cannot submit this batch ----------------------- #
+    # --- 3b. another tenant cannot submit this batch ----------------------- #
 
-    def test_another_school_cannot_submit_this_batch(self):
+    def test_another_tenant_cannot_submit_this_batch(self):
         """The reported hole, on a real batch.
 
-        A bursar at a different school used to be able to POST this batch's pk
+        A finance user at a different tenant used to be able to POST this batch's pk
         to the generic ``/v1/workflow/instances/`` endpoint. The instance was
-        created inside *this* school, the handler marked the batch pending
+        created inside *this* tenant, the handler marked the batch pending
         approval, and the 201 handed the outsider the reference, the total, the
-        provider and the names of this school's approvers. The endpoint is gone;
+        provider and the names of this tenant's approvers. The endpoint is gone;
         this asserts the service refuses even when a caller reaches it directly.
         """
-        from schools.vs_schools.models import School
+        from vs_tenants.models import Tenant
         from vs_workflow.exceptions import CrossTenantDocumentError
         from vs_workflow.models import WorkflowInstance
         from vs_workflow.services.submission import submit_for_approval
 
         self._publish_template()
         self._make_approver()
-        batch = self._draft_batch(3_860_000_00)
+        batch = self._draft_batch(386_000_000)
 
-        outsider_school = School.objects.create(
-            name="Greenfield", slug="greenfield-pba", code="GRNPBA", status="ACTIVE")
+        outsider_tenant = Tenant.objects.create(
+            name="Greenfield", slug="greenfield-pba",
+            kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
+        )
         outsider = self.User.objects.create_user(
             email="bursar-greenfield@test.com", password="pw", status="ACTIVE",
-            first_name="Tunde", last_name="Bursar", tenant=outsider_school.tenant,
+            first_name="Tunde", last_name="Bursar", tenant=outsider_tenant,
         )
 
         with self.assertRaises(CrossTenantDocumentError):
@@ -1539,17 +1797,17 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertTrue(all(p.status == PayoutStatus.PENDING
                             for p in batch.instructions.all()))
 
-    def test_the_owning_school_still_submits_the_same_batch(self):
+    def test_the_owning_tenant_still_submits_the_same_batch(self):
         """The control for the test above: the guard refuses outsiders only."""
         from vs_workflow.services.submission import submit_for_approval
 
         self._publish_template()
         self._make_approver()
-        batch = self._draft_batch(3_860_000_00)
+        batch = self._draft_batch(386_000_000)
 
         instance = submit_for_approval(document=batch, requested_by=self.requester)
 
-        self.assertEqual(instance.tenant, self.school.tenant)
+        self.assertEqual(instance.tenant, self.tenant)
         batch.refresh_from_db()
         self.assertEqual((batch.metadata or {}).get("approval_status"), "PENDING_APPROVAL")
 
@@ -1591,6 +1849,55 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertEqual((batch.metadata or {}).get("approval_status"), "APPROVED")
         self.assertTrue(all(p.status == PayoutStatus.PROCESSING for p in batch.instructions.all()))
 
+    def test_an_approved_instance_cannot_dispatch_a_different_batch(self):
+        from unittest.mock import patch
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.services import actions as wf_actions
+
+        self._publish_template()
+        approver = self._make_approver()
+        approved_batch = self._draft_batch(10_000)
+        target_batch = self._draft_batch(20_000)
+        self._submit_for_approval(approved_batch)
+        self._submit_for_approval(target_batch)
+        approved_instance = self._instance_for(approved_batch)
+        wf_actions.record_action(approved_instance.id, approver, ActionEnum.APPROVED)
+
+        with patch.object(
+            self.fake, "create_transfer", wraps=self.fake.create_transfer,
+        ) as create_transfer:
+            with self.assertRaises(PaymentStateError):
+                services.submit_payout_batch(
+                    target_batch, approved_instance=approved_instance,
+                )
+
+        create_transfer.assert_not_called()
+        self.assertTrue(target_batch.instructions.filter(status=PayoutStatus.PENDING).exists())
+
+    def test_locked_batch_integrity_is_rechecked_before_provider_dispatch(self):
+        from unittest.mock import patch
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.services import actions as wf_actions
+
+        self._publish_template()
+        approver = self._make_approver()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+        batch.instructions.update(
+            status=PayoutStatus.PENDING, provider_reference="", recipient_code="",
+        )
+        PayoutBatch.objects.filter(pk=batch.pk).update(item_count=2)
+
+        with patch.object(
+            self.fake, "create_transfer", wraps=self.fake.create_transfer,
+        ) as create_transfer:
+            with self.assertRaises(PaymentStateError):
+                services.submit_payout_batch(batch, approved_instance=instance)
+
+        create_transfer.assert_not_called()
+
     # --- 7. the seeded ladder, not a hand-made one ------------------------- #
 
     def _seed_tenant_ladder(self, **kwargs):
@@ -1599,33 +1906,33 @@ class PayoutBatchApprovalTests(TestCase):
 
         self._ensure_approve_role()  # Publishing names it; nobody is in it yet.
         template, _created = ensure_tenant_approval_templates(
-            self.school.tenant, **kwargs)
+            self.tenant, **kwargs)
         return template
 
     def _grant(self, user, permission_key, role_key):
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
-            tenant=self.school.tenant, key=role_key,
+            tenant=self.tenant, key=role_key,
             defaults={"name": role_key, "status": "ACTIVE"},
         )
         self.TenantRolePermission.objects.get_or_create(
             role=role, permission_id=permission_key, defaults={"granted": True},
         )
         self.TenantUserRoleAssignment.objects.get_or_create(
-            tenant=self.school.tenant, user=user, role=role,
+            tenant=self.tenant, user=user, role=role,
             defaults={"assignment_status": "ACTIVE"},
         )
 
-    def test_the_seeded_ladder_closes_the_open_door(self):
-        """The real seed, not a test fixture, is what has to stop a direct submit."""
+    def test_the_seeded_ladder_makes_the_approval_route_available(self):
+        """The real seed creates an applicable route without weakening direct submit."""
         from vs_finance.approvals import approval_required
 
         batch = self._draft_batch(10000)
-        self.assertFalse(approval_required(batch))  # Open before seeding.
+        self.assertFalse(approval_required(batch))  # No workflow route before seeding.
         self._seed_tenant_ladder()
         batch.refresh_from_db()
-        self.assertTrue(approval_required(batch))  # Closed after it.
+        self.assertTrue(approval_required(batch))  # The approval route now applies.
         resp = self._direct_submit(batch)
-        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertEqual(resp.status_code, 409, resp.content)
         batch.refresh_from_db()
         self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
         self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
@@ -1645,7 +1952,7 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
 
     def test_one_approval_releases_the_batch(self):
-        """The whole ladder is one stage, so one checker's vote dispatches it."""
+        """A low-value batch skips the senior stage after one checker vote."""
         from vs_workflow.services import actions as wf_actions
         from vs_workflow.constants import WorkflowStageAction as ActionEnum
 
@@ -1659,24 +1966,48 @@ class PayoutBatchApprovalTests(TestCase):
         batch.refresh_from_db()
         self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
 
-    def test_batch_size_does_not_change_who_must_sign(self):
-        """No threshold any more: a large run takes the same single approval.
-
-        Pinned rather than assumed, because the ladder used to escalate on total and a
-        reinstated condition would silently park large batches for a stage nobody holds.
-        """
+    def test_high_value_batch_needs_a_distinct_senior_approver(self):
         from vs_workflow.services import actions as wf_actions
         from vs_workflow.constants import WorkflowStageAction as ActionEnum
 
         self._seed_tenant_ladder()
         approver = self._make_approver()
-        batch = self._draft_batch(900_000_00, 900_000_00)  # Far past the old bar.
+        senior = self._make_senior_approver()
+        batch = self._draft_batch(90_000_000, 90_000_000)
         self._submit_for_approval(batch)
 
         wf_actions.record_action(self._instance_for(batch).id, approver, ActionEnum.APPROVED)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+
+        wf_actions.record_action(self._instance_for(batch).id, senior, ActionEnum.APPROVED)
 
         batch.refresh_from_db()
         self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
+
+    def test_same_person_cannot_satisfy_both_high_value_stages(self):
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.services import actions as wf_actions
+
+        self._seed_tenant_ladder()
+        approver = self._make_approver()
+        high_role = self.TenantRoleTemplate.objects.get(
+            tenant=self.tenant, key="payout-senior-approver",
+        )
+        self.TenantUserRoleAssignment.objects.create(
+            tenant=self.tenant, user=approver, role=high_role,
+            assignment_status="ACTIVE",
+        )
+        batch = self._draft_batch(50_000_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+
+        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+        with self.assertRaises(PaymentStateError):
+            wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
 
     # --- 10. surviving a change in how approvers are resolved -------------- #
 
@@ -1816,9 +2147,9 @@ class PayoutBatchApprovalTests(TestCase):
         self.addCleanup(logging.disable, logging.NOTSET)
 
         # Both the sweep and the queue read it powers stay standing.
-        self.assertEqual(parking.repair_workflows(tenant=self.school.tenant), 0)
+        self.assertEqual(parking.repair_workflows(tenant=self.tenant), 0)
         self.assertEqual(
-            my_queue.pending_approval_snapshots(self.requester, self.school.tenant), [])
+            my_queue.pending_approval_snapshots(self.requester, self.tenant), [])
 
     def test_a_role_stage_with_no_key_still_resolves_to_nobody(self):
         """Not every empty answer is a misconfiguration; this one is legitimate."""
@@ -1846,12 +2177,12 @@ class PayoutBatchApprovalTests(TestCase):
 
         park = release.approval_block(self._instance_for(batch))
         self.assertTrue(park["parked"])
-        self.assertEqual(park["stage_label"], "Payout approval")
+        self.assertEqual(park["stage_label"], "Payout checker approval")
+        self.assertFalse(park["can_continue_without_approval"])
         # Names the role an administrator would fill, rather than just "no approver".
         self.assertEqual(park["role_key"], self.APPROVE_ROLE)
 
-    def test_continuing_without_approval_dispatches_the_batch(self):
-        """Choosing to continue takes the batch the whole way, as an approval would."""
+    def test_continuing_without_approval_is_refused_for_payouts(self):
         from vs_workflow.services import release
 
         self._seed_tenant_ladder()
@@ -1859,12 +2190,15 @@ class PayoutBatchApprovalTests(TestCase):
         self._submit_for_approval(batch)
         instance = self._instance_for(batch)
 
-        release.release_parked_stage(instance, actor_user=self.requester, reason="Payroll is due.")
+        with self.assertRaises(release.ReleaseNotAllowedError):
+            release.release_parked_stage(
+                instance, actor_user=self.requester, reason="Payroll is due.",
+            )
 
         batch.refresh_from_db()
-        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
         instance.refresh_from_db()
-        self.assertEqual(instance.status, "APPROVED")
+        self.assertEqual(instance.status, "IN_PROGRESS")
 
     def test_continuing_is_refused_while_anybody_can_still_approve(self):
         """The safety property: this is never a bypass of a reviewer who exists.
@@ -1879,7 +2213,7 @@ class PayoutBatchApprovalTests(TestCase):
         batch = self._draft_batch(10_000)
         self._submit_for_approval(batch)
 
-        with self.assertRaises(release.NotParkedError):
+        with self.assertRaises(release.ReleaseNotAllowedError):
             release.release_parked_stage(
                 self._instance_for(batch), actor_user=self.requester, reason="Let me through.")
 
@@ -1898,13 +2232,12 @@ class PayoutBatchApprovalTests(TestCase):
 
         self._make_approver()  # Appointed while the dialog was open.
 
-        with self.assertRaises(release.NotParkedError):
+        with self.assertRaises(release.ReleaseNotAllowedError):
             release.release_parked_stage(instance, actor_user=self.requester)
         batch.refresh_from_db()
         self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
 
-    def test_who_released_it_and_why_is_on_the_record(self):
-        """The bypass trades a reviewer for a record, so the record has to be real."""
+    def test_refused_release_writes_no_override_record(self):
         from vs_workflow.models import WorkflowAuditLog
         from vs_workflow.services import release
 
@@ -1913,19 +2246,14 @@ class PayoutBatchApprovalTests(TestCase):
         self._submit_for_approval(batch)
         instance = self._instance_for(batch)
 
-        release.release_parked_stage(
-            instance, actor_user=self.requester, reason="Payroll is due today.")
+        with self.assertRaises(release.ReleaseNotAllowedError):
+            release.release_parked_stage(
+                instance, actor_user=self.requester, reason="Payroll is due today.")
 
-        row = WorkflowAuditLog.objects.filter(
-            instance=instance, context__action="RELEASED_NO_APPROVER").first()
-        self.assertIsNotNone(row, "the release left no audit row")
-        self.assertEqual(row.actor_id, self.requester.pk)
-        self.assertEqual(row.context["reason"], "Payroll is due today.")
-        self.assertEqual(row.context["role_key"], self.APPROVE_ROLE)
+        self.assertFalse(WorkflowAuditLog.objects.filter(
+            instance=instance, context__action="RELEASED_NO_APPROVER").exists())
 
-    def test_a_release_with_no_typed_reason_still_records_one(self):
-        """The dialog asks for no text, so the default has to carry the meaning."""
-        from vs_workflow.models import WorkflowAuditLog
+    def test_release_endpoint_reports_the_domain_policy(self):
         from vs_workflow.services import release
 
         self._seed_tenant_ladder()
@@ -1933,11 +2261,15 @@ class PayoutBatchApprovalTests(TestCase):
         self._submit_for_approval(batch)
         instance = self._instance_for(batch)
 
-        release.release_parked_stage(instance, actor_user=self.requester)
-
-        row = WorkflowAuditLog.objects.filter(
-            instance=instance, context__action="RELEASED_NO_APPROVER").get()
-        self.assertEqual(row.context["reason"], release.DEFAULT_REASON)
+        response = self.client.post(
+            f"/v1/workflow/instances/{instance.pk}/continue-without-approval/",
+            {}, format="json",
+        )
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertEqual(
+            response.json()["error"]["code"],
+            "CONTINUE_WITHOUT_APPROVAL_NOT_ALLOWED",
+        )
 
     def test_only_the_submitter_may_continue(self):
         """Ungated by permission is not the same as open to every user in the tenant."""
@@ -1950,10 +2282,11 @@ class PayoutBatchApprovalTests(TestCase):
 
         stranger = self.User.objects.create_user(
             email="stranger-pba@test.com", password="pw", status="ACTIVE", first_name="Stran", last_name="Ger",
-            tenant=self.school.tenant,
+            tenant=self.tenant,
         )
         self.assertFalse(release.may_release(instance, stranger))
         self.assertTrue(release.may_release(instance, instance.requested_by))
+        self.assertFalse(release.handler_allows_release(instance))
 
     # --- 8. parked work becomes reachable again ---------------------------- #
 
@@ -1990,14 +2323,14 @@ class PayoutBatchApprovalTests(TestCase):
         batch = self._park_a_batch()
         outsider = self.User.objects.create_user(
             email="nobody-pba@test.com", password="pw", status="ACTIVE", first_name="No", last_name="Body",
-            tenant=self.school.tenant,
+            tenant=self.tenant,
         )
         # Nobody holds the key yet, so there is nothing to restore and nothing to see.
-        self.assertEqual(my_queue.pending_approval_snapshots(outsider, self.school.tenant), [])
+        self.assertEqual(my_queue.pending_approval_snapshots(outsider, self.tenant), [])
 
         approver = self._make_approver()  # Appointed after the stage already activated.
         # Reading the queue is what repairs it; no resubmission anywhere.
-        snaps = my_queue.pending_approval_snapshots(approver, self.school.tenant)
+        snaps = my_queue.pending_approval_snapshots(approver, self.tenant)
         self.assertEqual(len(snaps), 1)
 
         wf_actions.record_action(self._instance_for(batch).id, approver, ActionEnum.APPROVED)
@@ -2019,7 +2352,7 @@ class PayoutBatchApprovalTests(TestCase):
         # A second holder appears after activation. The stage is staffed, so the
         # repair must not reach in and add them mid-review.
         self._make_approver(email="apr2-pba@test.com")
-        self.assertEqual(parking.repair_workflows(tenant=self.school.tenant), 0)
+        self.assertEqual(parking.repair_workflows(tenant=self.tenant), 0)
         self.assertEqual(
             set(WorkflowStageApprover.objects.values_list("pk", flat=True)), before)
         self.assertTrue(WorkflowStageApprover.objects.filter(user=first).exists())
@@ -2046,13 +2379,10 @@ class PayoutBatchApprovalTests(TestCase):
 
 # Group tests for the seeded payout-approval ladder (turning the gate ON).
 class PayoutApprovalSeedingTests(TestCase):
-    """Provisioning the approval rules that make the payout gate actually engage.
+    """Provisioning the default payout approval policy.
 
-    The gating *behaviour* is covered by :class:`PayoutBatchApprovalTests`, which
-    hand-publishes a template. What is covered here is the thing that decides whether
-    any template exists at all: with none, a payout batch goes straight to the provider,
-    so an unconfigured install has an open door on its highest-risk cash-out path rather
-    than a locked one.
+    The provider boundary is mandatory independently of the template. These tests pin
+    the default two-stage ladder and its non-destructive provisioning behavior.
     """
 
     APPROVE_ROLE = "payout-approver"
@@ -2060,12 +2390,13 @@ class PayoutApprovalSeedingTests(TestCase):
     def setUp(self):
         import io
         from django.core.management import call_command
-        from schools.vs_schools.models import School
+        from vs_tenants.models import Tenant
 
         call_command("seed_payments_permissions", verbosity=0, stdout=io.StringIO())
-        self.school = School.objects.create(
-            name="Rowan", slug="rowan-seed", code="RWNSD", status="ACTIVE")
-        self.tenant = self.school.tenant
+        self.tenant = Tenant.objects.create(
+            name="Rowan", slug="rowan-seed", kind=Tenant.Kind.ORGANIZATION,
+            status=Tenant.Status.ACTIVE,
+        )
 
     def _stages(self, template):
         """The template's live stages, in routing order."""
@@ -2073,18 +2404,22 @@ class PayoutApprovalSeedingTests(TestCase):
 
     # --- shape ------------------------------------------------------------- #
 
-    def test_the_platform_fallback_publishes_one_always_on_stage(self):
-        """One stage, no condition: every batch takes the same single approval."""
+    def test_the_platform_fallback_publishes_the_two_stage_ladder(self):
         from vs_payments.approvals import ensure_default_approval_templates
 
         template = ensure_default_approval_templates()
         self.assertIsNone(template.tenant)  # Platform-scoped fallback.
         self.assertIsNone(template.branch)
-        (only,) = self._stages(template)
-        self.assertEqual(only.approver_role_key, self.APPROVE_ROLE)
-        self.assertEqual(only.approver_source, "ROLE")
-        self.assertIsNone(only.inclusion_condition)  # Always runs.
-        self.assertEqual(only.advance_rule, "ANY")
+        checker, senior = self._stages(template)
+        self.assertEqual(checker.approver_role_key, self.APPROVE_ROLE)
+        self.assertEqual(checker.approver_source, "ROLE")
+        self.assertIsNone(checker.inclusion_condition)  # Always runs.
+        self.assertEqual(checker.advance_rule, "ANY")
+        self.assertEqual(senior.approver_role_key, "payout-senior-approver")
+        self.assertEqual(
+            senior.inclusion_condition,
+            {"op": "gte", "field": "total_amount", "value": 50_000_000},
+        )
 
     def test_no_stage_may_ever_auto_skip_itself(self):
         """The whole point: an unstaffed stage must park, not approve.
@@ -2105,8 +2440,8 @@ class PayoutApprovalSeedingTests(TestCase):
         from vs_payments.approvals import ensure_default_approval_templates
 
         template = ensure_default_approval_templates(approve_role_key="other-approver")
-        (only,) = self._stages(template)
-        self.assertEqual(only.approver_role_key, "other-approver")
+        checker, _senior = self._stages(template)
+        self.assertEqual(checker.approver_role_key, "other-approver")
 
     # --- provisioning semantics -------------------------------------------- #
 
@@ -2116,7 +2451,10 @@ class PayoutApprovalSeedingTests(TestCase):
         template, created = ensure_tenant_approval_templates(self.tenant)
         self.assertTrue(created)
         self.assertEqual(template.tenant_id, self.tenant.pk)
-        self.assertEqual(len(self._stages(template)), 1)
+        self.assertEqual(len(self._stages(template)), 2)
+        self.assertTrue(self.tenant.role_templates.filter(
+            key="payout-senior-approver",
+        ).exists())
 
     def test_reseeding_a_tenant_never_overwrites_what_an_admin_configured(self):
         """Non-destructive by contract: a customised ladder survives a re-run."""
@@ -2127,8 +2465,8 @@ class PayoutApprovalSeedingTests(TestCase):
         again, created = ensure_tenant_approval_templates(self.tenant)
         self.assertFalse(created)
         self.assertEqual(again.pk, template.pk)
-        (only,) = self._stages(again)
-        self.assertEqual(only.approver_role_key, "other-approver")  # Untouched.
+        checker, _senior = self._stages(again)
+        self.assertEqual(checker.approver_role_key, "other-approver")  # Untouched.
 
     def test_reseeding_the_platform_row_upserts_rather_than_duplicating(self):
         from vs_workflow.models import WorkflowTemplate
@@ -2139,8 +2477,8 @@ class PayoutApprovalSeedingTests(TestCase):
         rows = WorkflowTemplate.all_objects.filter(
             tenant=None, branch=None, document_type="payments.payout_batch")
         self.assertEqual(rows.count(), 1)  # One shared row, rewritten in place.
-        (only,) = self._stages(rows.get())
-        self.assertEqual(only.approver_role_key, "other-approver")
+        checker, _senior = self._stages(rows.get())
+        self.assertEqual(checker.approver_role_key, "other-approver")
 
     def test_a_tenant_is_required(self):
         from vs_payments.approvals import ensure_tenant_approval_templates
@@ -2179,6 +2517,69 @@ class PayoutApprovalSeedingTests(TestCase):
             dry_run=True, verbosity=0, stdout=io.StringIO())
         self.assertFalse(WorkflowTemplate.all_objects.filter(
             document_type="payments.payout_batch").exists())
+
+
+class PayoutApprovalDataMigrationTests(TestCase):
+    """The ladder upgrade recognizes shipped data and leaves custom policy alone."""
+
+    def _template(self, tenant, *, stage_code="approver"):
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_workflow.models import WorkflowStage, WorkflowTemplate
+
+        role = TenantRoleTemplate.objects.create(
+            tenant=tenant, key="payout-approver", name="Payout Approver",
+            status="ACTIVE",
+        )
+        template = WorkflowTemplate.all_objects.create(
+            tenant=tenant, branch=None, document_type="payments.payout_batch",
+            code="standard", name="Payout-batch approval",
+            description="Approval rule for a payout batch.",
+        )
+        WorkflowStage.objects.create(
+            template=template, code=stage_code, label="Payout approval",
+            kind="APPROVAL", order=10, approver_source="ROLE",
+            approver_scope="SCHOOL", approver_role_key="payout-approver",
+            approver_role=role, advance_rule="ANY", quorum_count=0,
+            on_rejection="TERMINAL", skip_if_no_approvers=False,
+            inclusion_condition=None,
+        )
+        return template
+
+    def test_only_exact_seeded_one_stage_template_is_upgraded(self):
+        import importlib
+        from django.apps import apps as django_apps
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_tenants.models import Tenant
+
+        seeded_tenant = Tenant.objects.create(
+            name="Seeded", slug="seeded-payout-migration",
+            kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
+        )
+        custom_tenant = Tenant.objects.create(
+            name="Custom", slug="custom-payout-migration",
+            kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
+        )
+        seeded = self._template(seeded_tenant)
+        custom = self._template(custom_tenant, stage_code="custom-check")
+        migration = importlib.import_module(
+            "vs_payments.migrations.0005_upgrade_seeded_payout_ladders",
+        )
+
+        migration.upgrade_seeded_ladders(django_apps, None)
+
+        self.assertEqual(
+            list(seeded.stages.order_by("order").values_list("code", flat=True)),
+            ["approver", "senior"],
+        )
+        self.assertTrue(TenantRoleTemplate.objects.filter(
+            tenant=seeded_tenant, key="payout-senior-approver",
+        ).exists())
+        self.assertEqual(
+            list(custom.stages.values_list("code", flat=True)), ["custom-check"],
+        )
+        self.assertFalse(TenantRoleTemplate.objects.filter(
+            tenant=custom_tenant, key="payout-senior-approver",
+        ).exists())
 
 # Group tests for Paystack Adapter Tests (real adapter, network function mocked).
 class PaystackAdapterTests(TestCase):
@@ -3052,17 +3453,22 @@ class UnbookedReceiptAlertTests(_PaymentsFixtureMixin, TestCase):
 class PayoutOnboardingSeedTests(TestCase):
     """The payout gate arrives with the tenant's books.
 
-    Batch approval is opt-in by template, so a tenant whose ladder was never published
-    had no maker-checker at all on the highest-risk cash-out path: one person could
-    send a whole salary run to the bank. Publishing it was a management command
-    somebody had to remember. It is now provisioned with the entity.
+    The provider boundary already fails closed without a template. Provisioning still
+    supplies a usable tenant ladder automatically, so the first payout parks for an
+    appointed checker instead of becoming an operational dead end.
     """
 
     def _tenant(self, slug="cedar-onboard", code="CDRON"):
-        from schools.vs_schools.models import School
+        from vs_tenants.models import Branch, Tenant
 
-        return School.objects.create(
-            name="Cedar", slug=slug, code=code, status="ACTIVE").tenant
+        tenant = Tenant.objects.create(
+            name="Cedar", slug=slug, kind=Tenant.Kind.SCHOOL,
+            status=Tenant.Status.ACTIVE,
+        )
+        Branch.objects.create(
+            tenant=tenant, name="Main", is_main=True, status="ACTIVE",
+        )
+        return tenant
 
     def _entity(self, tenant, code):
         from vs_finance.models import LedgerEntity

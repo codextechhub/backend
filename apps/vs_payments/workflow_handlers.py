@@ -1,11 +1,9 @@
 """vs_workflow handler for approval-gating bulk payout batches.
 
-A :class:`~vs_payments.models.PayoutBatch` disburses money *out* to many
-beneficiaries at once, so it is the highest-risk cash-out path - exactly the thing
-a maker-checker gate belongs on. When a ``payments.payout_batch`` WorkflowTemplate
-is published for a batch's ``(school, branch)`` scope, submitting the batch to the
-provider happens only after approval; with no template, direct submit is unchanged
-(opt-in by template, mirroring the finance approval slices).
+A :class:`~vs_payments.models.PayoutBatch` disburses money *out* to one or more
+beneficiaries, so it is a high-risk cash-out path. Every payout enters this handler,
+including a single payout represented as a one-line batch. Provider submission happens
+only from terminal approval; a missing template fails closed before this callback.
 
 Unlike a finance document, a payout batch is **not** a GL posting - approval gates
 the *provider submission* (:func:`vs_payments.services.submit_payout_batch`), which
@@ -31,6 +29,8 @@ from vs_workflow.handlers import BaseWorkflowHandler, register_handler
 class PayoutBatchApprovalHandler(BaseWorkflowHandler):
     """Approval handler for a bulk :class:`~vs_payments.models.PayoutBatch`."""
 
+    allows_continue_without_approval = False
+
     # --- helpers ------------------------------------------------------------ #
     @property
     def document_model(self):  # Concrete model the engine's object_id points at.
@@ -45,8 +45,8 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
 
         The engine's ``on_approved`` context does not carry the acting user, so we read
         it back from the immutable action log - the most recent non-reversed APPROVED
-        vote on this instance, visible in the same transaction that recorded it. Falls
-        back to the requester only if no human ever voted (a fully auto-skipped template).
+        vote on this instance, visible in the same transaction that recorded it. Returns
+        ``None`` when no human voted; the dispatch service refuses that state.
         """
         from vs_workflow.models import WorkflowStageAction
 
@@ -59,7 +59,7 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
             .order_by("-acted_at", "-id")
             .first()
         )
-        return action.actor if action is not None else instance.requested_by
+        return action.actor if action is not None else None
 
     def _set_approval_status(self, instance, value):  # Record the approval phase in metadata.
         with transaction.atomic():
@@ -119,7 +119,10 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
         meta["approval_status"] = "APPROVED"  # Record that approval completed.
         batch.metadata = meta
         batch.save(update_fields=["metadata", "updated_at"])
-        submit_payout_batch(batch, actor_user=self._final_approver(instance))  # Dispatch to the PSP.
+        submit_payout_batch(
+            batch, approved_instance=instance,
+            actor_user=self._final_approver(instance),
+        )  # Dispatch to the PSP.
 
     def on_rejected(self, instance, context) -> None:
         self._set_approval_status(instance, "DRAFT")  # Back to a plain draft.

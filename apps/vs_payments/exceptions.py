@@ -65,3 +65,17 @@ class PaymentStateError(PaymentError):
     error_code = "PAYMENT_STATE_ERROR"  # The requested action does not match the current payment state.
     default_message = "The payment is not in a valid state for this action."  # Default invalid-state message.
     http_status = 409  # Conflicts reflect invalid state transitions.
+
+
+class IdempotencyConflictError(PaymentStateError):
+    """The caller reused a creation key for a different normalized request."""
+
+    error_code = "PAYOUT_IDEMPOTENCY_CONFLICT"
+    default_message = "This idempotency key was already used for a different payout request."
+
+
+class PayoutApprovalRequiredError(PaymentStateError):
+    """A provider dispatch lacks the exact terminal human approval it requires."""
+
+    error_code = "PAYOUT_APPROVAL_REQUIRED"
+    default_message = "This payout batch does not have the required human approval."

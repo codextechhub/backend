@@ -15,6 +15,9 @@ handler, so the views stay thin.  # Keep business logic in services, not views.
 """
 from __future__ import annotations
 
+import re
+
+from django.db import transaction
 from django.db.models import Count, Q
 from django.utils import timezone
 from rest_framework import generics
@@ -41,7 +44,7 @@ from .constants import (
     VirtualAccountStatus,
     WebhookStatus,
 )
-from .exceptions import DuplicateWebhookError
+from .exceptions import DuplicateWebhookError, PayoutApprovalRequiredError
 from .models import (
     CollectionIntent,
     PaymentEvent,
@@ -68,6 +71,7 @@ def _paginate(request, qs, serializer_cls, view, **ser_kwargs):
     paginator = XVSPagination()  # Build the shared pagination helper.
     paginator.page_size = 25  # Default to 25 rows per page for this API.
     page = paginator.paginate_queryset(qs, request, view=view)  # Slice the queryset for the current page.
+    ser_kwargs.setdefault("context", {"request": request})
     return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)  # Wrap the serialized page.
 
 
@@ -90,6 +94,52 @@ def _entity_obj(entity, model, ref, field):
     if obj is None:  # Nothing matched the entity-scoped lookup.
         raise ValidationError({field: f"No {model.__name__.lower()} '{ref}' in this entity."})
     return obj  # Return the resolved object.
+
+
+_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
+
+
+def _required_idempotency_key(request) -> str:
+    """Validate the standard creation key without silently rewriting it."""
+    value = request.headers.get("Idempotency-Key")
+    if value in (None, ""):
+        raise ValidationError({"idempotency_key": "The Idempotency-Key header is required."})
+    key = str(value)
+    if key != key.strip():
+        raise ValidationError({"idempotency_key": "Leading or trailing whitespace is not allowed."})
+    if len(key) > 128:
+        raise ValidationError({"idempotency_key": "Must be 128 characters or fewer."})
+    if not _IDEMPOTENCY_KEY_RE.fullmatch(key):
+        raise ValidationError({
+            "idempotency_key": "Use only letters, numbers, dot, underscore, colon, or hyphen.",
+        })
+    return key
+
+
+def _payout_vendor(entity, reference):
+    """Resolve a vendor by id or code inside the selected entity."""
+    from django.db.models import Q
+    from vs_procurement.models import Vendor
+
+    raw = str(reference or "")
+    if not raw:
+        raise ValidationError({"vendor": "A payout must be linked to a vendor."})
+    lookup = Q(code=raw) | Q(pk=raw) if raw.isdigit() else Q(code=raw)
+    vendor = Vendor.objects.filter(entity=entity).filter(lookup).first()
+    if vendor is None:
+        raise ValidationError({"vendor": "No such vendor in this entity."})
+    return vendor
+
+
+def _legacy_beneficiary_fields(body) -> dict:
+    """Carry compatibility fields only when the caller actually supplied them."""
+    return {
+        field: body.get(field)
+        for field in (
+            "beneficiary_name", "beneficiary_account_number", "beneficiary_bank_code",
+        )
+        if field in body
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -389,34 +439,40 @@ class PayoutListCreateView(APIView):
     def post(self, request):
         entity = resolve_entity(request)  # Resolve the tenant entity.
         body = request.data  # Read the incoming payload once.
+        idempotency_key = _required_idempotency_key(request)
         amount = int(body.get("amount") or 0)
         if amount <= 0:  # Reject invalid payout amounts.
             raise ValidationError({"amount": "A positive amount (in kobo) is required."})
-        for field in ("beneficiary_name", "beneficiary_account_number"):  # Validate the required beneficiary fields.
-            if not body.get(field):
-                raise ValidationError({field: "This field is required."})
-        # A payout settles a vendor's payable, so a vendor is required (it is what
-        # confirmation books - Dr the vendor's AP control / Cr bank).  # Vendor is needed for AP posting.
-        if not body.get("vendor"):
-            raise ValidationError({"vendor": "A payout must be linked to a vendor."})
-        from django.db.models import Q
-        from vs_procurement.models import Vendor
-        raw = str(body.get("vendor"))
-        lookup = Q(code=raw) | Q(pk=raw) if raw.isdigit() else Q(code=raw)
-        vendor = Vendor.objects.filter(entity=entity).filter(lookup).first()
-        if vendor is None:  # Reject unknown vendors.
-            raise ValidationError({"vendor": "No such vendor in this entity."})
+        vendor = _payout_vendor(entity, body.get("vendor"))
         source = _entity_obj(entity, Account, body.get("source_account"), "source_account")
-        payout = services.initiate_payout(  # Delegate to the payment service layer.
-            entity=entity, amount=amount, beneficiary_name=body["beneficiary_name"],
-            beneficiary_account_number=body["beneficiary_account_number"],
-            beneficiary_bank_code=body.get("beneficiary_bank_code", ""), vendor=vendor,
-            source_account=source, provider=body.get("provider"),
-            narration=body.get("narration", ""), wht_amount=int(body.get("wht_amount") or 0),
-            metadata=body.get("metadata") or {}, actor_user=request.user,
-        )
+        item = {
+            "amount": amount, "vendor": vendor,
+            "narration": body.get("narration", ""),
+            "wht_amount": int(body.get("wht_amount") or 0),
+            "metadata": body.get("metadata") or {},
+            **_legacy_beneficiary_fields(body),
+        }
+        with transaction.atomic():
+            batch = services.create_payout_batch(
+                entity=entity, items=[item], provider=body.get("provider"),
+                source_account=source, title=body.get("title", ""),
+                narration=body.get("narration", ""), actor_user=request.user,
+                idempotency_key=idempotency_key, request_kind="single",
+                submit_for_approval=True,
+            )
+            replay = bool(getattr(batch, "_idempotency_replay", False))
+            instance = services.submit_payout_batch_for_approval(
+                batch, requested_by=request.user,
+            )
+            payout = batch.instructions.get()
+        from vs_workflow.services import release as release_svc
+
         return success_response(
-            "Payout initiated.", data=PayoutInstructionSerializer(payout).data, status=201,
+            "Payout already queued for approval." if replay else "Payout queued for approval.",
+            data=PayoutInstructionSerializer(
+                payout, context={"request": request},
+            ).data | {"approval": release_svc.approval_block(instance)},
+            status=200 if replay else 201,
         )
 
 
@@ -464,8 +520,9 @@ class PayoutSummaryView(APIView):
 class PayoutBatchListCreateView(APIView):
     """GET (list) / POST (assemble a bulk batch of payouts) for an entity.
 
-    POST creates the batch and its child instructions in ``DRAFT`` - it does **not**
-    submit. Pass ``{"submit": true}`` to dispatch immediately after assembly.
+    POST creates the batch and its child instructions in ``DRAFT``. Pass
+    ``{"submit": true}`` to submit the batch for approval. Neither path calls the
+    provider directly.
 
     docstring-name: Payout batches
     """
@@ -493,6 +550,7 @@ class PayoutBatchListCreateView(APIView):
     def post(self, request):
         entity = resolve_entity(request)  # Resolve the tenant entity.
         body = request.data  # Read the incoming batch payload.
+        idempotency_key = _required_idempotency_key(request)
         raw_items = body.get("items")
         if not isinstance(raw_items, list) or not raw_items:  # Require at least one item.
             raise ValidationError({"items": "A non-empty list of payout items is required."})
@@ -502,49 +560,40 @@ class PayoutBatchListCreateView(APIView):
             amount = int(raw.get("amount") or 0)
             if amount <= 0:  # Reject empty or negative line amounts.
                 raise ValidationError({f"items[{idx}].amount": "A positive amount (kobo) is required."})
-            for field in ("beneficiary_name", "beneficiary_account_number"):  # Validate beneficiary fields per line.
-                if not raw.get(field):
-                    raise ValidationError({f"items[{idx}].{field}": "This field is required."})
-            # Each line settles a vendor's payable on confirmation, so a vendor is
-            # required (resolved by code or id - the picker emits codes).  # Vendor drives the AP posting later.
-            if not raw.get("vendor"):
-                raise ValidationError({f"items[{idx}].vendor": "Each line must be linked to a vendor."})
-            from django.db.models import Q
-            from vs_procurement.models import Vendor
-            vref = str(raw.get("vendor"))
-            vlookup = Q(code=vref) | Q(pk=vref) if vref.isdigit() else Q(code=vref)
-            vendor = Vendor.objects.filter(entity=entity).filter(vlookup).first()
-            if vendor is None:  # Reject unknown vendors.
-                raise ValidationError({f"items[{idx}].vendor": "No such vendor in this entity."})
+            try:
+                vendor = _payout_vendor(entity, raw.get("vendor"))
+            except ValidationError as exc:
+                raise ValidationError({f"items[{idx}].vendor": "No such vendor in this entity."}) from exc
             items.append({
                 "amount": amount,  # Normalized line amount.
-                "beneficiary_name": raw["beneficiary_name"],  # Beneficiary display name.
-                "beneficiary_account_number": raw["beneficiary_account_number"],  # Beneficiary account number.
-                "beneficiary_bank_code": raw.get("beneficiary_bank_code", ""),
                 "vendor": vendor,  # Resolved vendor object.
                 "narration": raw.get("narration", ""),
                 "wht_amount": int(raw.get("wht_amount") or 0),
                 "metadata": raw.get("metadata") or {},
+                **_legacy_beneficiary_fields(raw),
             })  # Keep the normalized payout item.
-        batch = services.create_payout_batch(  # Assemble the draft batch in the service layer.
-            entity=entity, items=items, provider=body.get("provider"),
-            source_account=source, title=body.get("title", ""),
-            narration=body.get("narration", ""), actor_user=request.user,
-        )
-        # Direct submit only when approval is NOT gated for this batch. When a
-        # payments.payout_batch template exists, submit=true is ignored and the batch
-        # is left DRAFT to be routed via /payout-batches/<id>/submit-for-approval/.
-        from vs_finance.approvals import approval_required
         wants_submit = body.get("submit") in (True, "1", "true", "True")
-        gated = approval_required(batch)  # True iff a stage of the batch's resolved template would actually run.
-        if wants_submit and not gated:
-            batch = services.submit_payout_batch(batch, actor_user=request.user)  # Submit the draft batch immediately.
-        message = (  # Tell the caller whether they still need to route it for approval.
-            "Payout batch created; submit it for approval."
-            if (wants_submit and gated) else "Payout batch created."
-        )
+        with transaction.atomic():
+            batch = services.create_payout_batch(  # Assemble the draft batch in the service layer.
+                entity=entity, items=items, provider=body.get("provider"),
+                source_account=source, title=body.get("title", ""),
+                narration=body.get("narration", ""), actor_user=request.user,
+                idempotency_key=idempotency_key, request_kind="batch",
+                submit_for_approval=wants_submit,
+            )
+            replay = bool(getattr(batch, "_idempotency_replay", False))
+            instance = None
+            if wants_submit:
+                instance = services.submit_payout_batch_for_approval(
+                    batch, requested_by=request.user,
+                )
+        data = PayoutBatchSerializer(batch, context={"request": request}).data
+        if instance is not None:
+            from vs_workflow.services import release as release_svc
+            data |= {"approval": release_svc.approval_block(instance)}
         return success_response(
-            message, data=PayoutBatchSerializer(batch).data, status=201,
+            "Payout batch already exists." if replay else "Payout batch created.",
+            data=data, status=200 if replay else 201,
         )
 
 
@@ -591,7 +640,7 @@ class PayoutBatchSummaryView(APIView):
 
 # Group endpoint behavior for Payout Batch Detail View.
 class PayoutBatchDetailView(APIView):
-    """GET a batch with its items; POST submits the batch's pending instructions.
+    """GET a batch with its items; POST refuses direct provider submission.
 
     docstring-name: Payout batches
     """
@@ -614,25 +663,18 @@ class PayoutBatchDetailView(APIView):
         if batch is None:  # Return 404 when the batch does not belong to this tenant.
             raise NotFound("No such payout batch in this entity.")
         return success_response(
-            "Payout batch retrieved.", data=PayoutBatchSerializer(batch).data,
+            "Payout batch retrieved.",
+            data=PayoutBatchSerializer(batch, context={"request": request}).data,
         )
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
-        from vs_finance.approvals import approval_required
-
         entity = resolve_entity(request)  # Resolve the tenant entity.
         batch = PayoutBatch.objects.filter(entity=entity, pk=pk).first()
         if batch is None:  # Return 404 when the batch does not belong to this tenant.
             raise NotFound("No such payout batch in this entity.")
-        if approval_required(batch):  # Direct submit is refused once approval is gated.
-            raise ValidationError({
-                "detail": "This payout batch is approval-gated; submit it for approval "
-                          "instead of submitting directly.",
-            })
-        batch = services.submit_payout_batch(batch, actor_user=request.user)  # Submit pending instructions.
-        return success_response(
-            "Payout batch submitted.", data=PayoutBatchSerializer(batch).data,
+        raise PayoutApprovalRequiredError(
+            "Direct payout batch submission is disabled. Submit the batch for approval.",
         )
 
 
@@ -652,21 +694,19 @@ class PayoutBatchSubmitForApprovalView(APIView):
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
-        from vs_workflow.services.submission import submit_for_approval
-
         entity = resolve_entity(request)  # Resolve the tenant entity.
         batch = PayoutBatch.objects.filter(entity=entity, pk=pk).first()
         if batch is None:  # Return 404 when the batch does not belong to this tenant.
             raise NotFound("No such payout batch in this entity.")
         from vs_workflow.services import release as release_svc
 
-        instance = submit_for_approval(batch, requested_by=request.user)  # Instance + stage 1.
+        instance = services.submit_payout_batch_for_approval(
+            batch, requested_by=request.user,
+        )  # Instance + stage 1, replay-safe for this batch.
         batch.refresh_from_db()  # Pick up the handler's metadata change.
         return success_response(
             "Payout batch submitted for approval.",
-            data=PayoutBatchSerializer(batch).data
-            # Same contract as procurement: if nobody holds the approving permission the
-            # batch has parked, and the client can offer to continue without approval.
+            data=PayoutBatchSerializer(batch, context={"request": request}).data
             | {"approval": release_svc.approval_block(instance)},
         )
 

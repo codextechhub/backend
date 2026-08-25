@@ -73,6 +73,24 @@ class NotParkedError(Exception):
     """The instance has somebody who can decide it, so there is nothing to release."""
 
 
+class ReleaseNotAllowedError(Exception):
+    """The document handler forbids completing approval without a human vote."""
+
+
+def handler_allows_release(instance) -> bool:
+    """Whether this document type permits the generic unstaffed-stage release."""
+    from vs_workflow.exceptions import UnknownDocumentTypeError
+    from vs_workflow.handlers import get_handler
+
+    try:
+        handler = get_handler(instance.document_type)
+    except UnknownDocumentTypeError:
+        # Preserve the existing behavior for orphaned legacy document types. The
+        # release still requires a genuinely parked stage and an authorized actor.
+        return True
+    return bool(getattr(handler, "allows_continue_without_approval", True))
+
+
 def _actor_label(user) -> str:
     """A display name for the audit message, never an email address."""
     return (getattr(user, "full_name", "") or "").strip() or user.get_full_name() or "A user"
@@ -174,8 +192,9 @@ def describe_park(instance) -> dict:
     anything.
     """
     stage_instance = parked_stage(instance)
+    can_continue = handler_allows_release(instance)
     if stage_instance is None:
-        return {"parked": False}
+        return {"parked": False, "can_continue_without_approval": can_continue}
     stage = stage_instance.stage
     return {
         "parked": True,
@@ -189,6 +208,7 @@ def describe_park(instance) -> dict:
         ),
         "requirement": stage_requirement(stage),
         "document_type": instance.document_type,
+        "can_continue_without_approval": can_continue,
     }
 
 
@@ -202,6 +222,10 @@ def release_parked_stage(instance, *, actor_user, reason=None):
     release is one transaction, so a failure in the engine's terminal callbacks rolls the
     audit row back with it rather than claiming a release that did not happen.
     """
+    if not handler_allows_release(instance):
+        raise ReleaseNotAllowedError(
+            "This document type requires a human approval and cannot continue without one.",
+        )
     reason_text = _clean_reason(reason)
 
     # A repair pass runs first: if anybody has since been granted the approving

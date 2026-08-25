@@ -14,8 +14,10 @@ Amounts stay integer **kobo** throughout.
 from __future__ import annotations
 
 import datetime
+import hashlib
+import json
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -32,9 +34,14 @@ from .constants import (
     PayoutBatchStatus,
     PayoutStatus,
     REFERENCE_PREFIX,
+    WF_DEFAULT_HIGH_VALUE_THRESHOLD,
     VirtualAccountStatus,
 )
-from .exceptions import PaymentStateError
+from .exceptions import (
+    IdempotencyConflictError,
+    PaymentStateError,
+    PayoutApprovalRequiredError,
+)
 from .models import CollectionIntent, PayoutBatch, PayoutInstruction, VirtualAccount
 from .providers.registry import get_provider
 
@@ -394,42 +401,214 @@ def initiate_payout(*, entity, amount, beneficiary_name, beneficiary_account_num
                     beneficiary_bank_code, vendor=None, source_account=None,
                     provider=None, narration="", currency=None, wht_amount=0,
                     metadata=None, actor_user=None):
-    """Create a :class:`PayoutInstruction` and ask the provider to transfer funds out.
+    """Refuse the retired standalone cash-out route.
 
-    The ledger entry (a vendor payment) is booked only on *confirmation*. If ``vendor``
-    is given it is recorded as a loose reference so confirm can re-resolve and book a
-    ``VendorPayment``; the WHT split (``wht_amount``) flows through to that posting.
+    Callers must create a one-item :class:`PayoutBatch` and submit that batch for
+    workflow approval. Keeping this function as an explicit refusal prevents an old
+    worker or integration from silently retaining the former direct-dispatch behavior.
     """
-    from django.conf import settings
-
-    provider_name = provider or getattr(settings, "PAYMENTS_DEFAULT_PROVIDER", "PAYSTACK")  # Resolve the PSP to use.
-    client = get_provider(provider_name)  # Prepare the transfer client up front.
-    reference = _new_reference(entity)  # Assign a unique payout reference.
-    currency = currency or _entity_currency(entity)  # Default to the entity currency for outbound transfers.
-
-    payout = PayoutInstruction.objects.create(
-        entity=entity, provider=provider_name, reference=reference, amount=amount,
-        currency=currency, beneficiary_name=beneficiary_name,
-        beneficiary_account_number=beneficiary_account_number,
-        beneficiary_bank_code=beneficiary_bank_code, source_account=source_account,
-        narration=narration, status=PayoutStatus.PENDING,
-        vendor_source_type="vs_procurement.Vendor" if vendor else "",
-        vendor_source_id=str(vendor.pk) if vendor else "",
-        metadata={**(metadata or {}), "wht_amount": int(wht_amount)},
-        created_by=actor_user,
+    raise PayoutApprovalRequiredError(
+        "Standalone payout dispatch is disabled. Create a payout batch and submit it "
+        "for approval.",
     )
-    return _dispatch_transfer(payout, client=client, metadata=metadata, actor_user=actor_user)  # Submit the payout immediately.
+
+
+def _normalize_account_name(value) -> str:
+    """Canonical account name used only for compatibility comparisons."""
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _normalize_account_number(value) -> str:
+    """Canonical provider account number without presentation whitespace."""
+    return "".join(str(value or "").split()).upper()
+
+
+def _normalize_bank_code(value) -> str:
+    """Canonical provider bank code."""
+    return str(value or "").strip().upper()
+
+
+def _eligible_vendor_snapshot(entity, vendor, item) -> dict:
+    """Validate one vendor master and return its provider-bound destination."""
+    from vs_procurement.constants import VendorKycStatus
+
+    if vendor is None or vendor.entity_id != entity.pk:
+        raise ValidationError({"vendor": "No such vendor in this entity."})
+    if not vendor.is_active:
+        raise ValidationError({"vendor": "Select an active vendor for payout."})
+    if vendor.kyc_status != VendorKycStatus.VERIFIED:
+        raise ValidationError({"vendor": "The vendor must have verified KYC before payout."})
+    if vendor.on_hold:
+        raise ValidationError({"vendor": "This vendor is on hold and cannot be paid."})
+
+    snapshot = {
+        "beneficiary_name": str(vendor.bank_account_name or "").strip(),
+        "beneficiary_account_number": _normalize_account_number(vendor.bank_account_number),
+        "beneficiary_bank_code": _normalize_bank_code(vendor.bank_code),
+    }
+    missing = [
+        field for field, value in (
+            ("bank_account_name", snapshot["beneficiary_name"]),
+            ("bank_account_number", snapshot["beneficiary_account_number"]),
+            ("bank_code", snapshot["beneficiary_bank_code"]),
+        ) if not value
+    ]
+    if missing:
+        raise ValidationError({
+            "vendor": "The vendor needs a verified account name, account number, and bank code.",
+            "missing_bank_fields": missing,
+        })
+
+    supplied = (
+        ("beneficiary_name", _normalize_account_name, snapshot["beneficiary_name"]),
+        (
+            "beneficiary_account_number", _normalize_account_number,
+            snapshot["beneficiary_account_number"],
+        ),
+        ("beneficiary_bank_code", _normalize_bank_code, snapshot["beneficiary_bank_code"]),
+    )
+    for field, normalize, master_value in supplied:
+        if field in item and item[field] not in (None, ""):
+            if normalize(item[field]) != normalize(master_value):
+                raise ValidationError({
+                    field: "The supplied beneficiary value does not match the verified vendor master.",
+                })
+    return snapshot
+
+
+def _canonical_batch_payload(
+    *, items, provider, source_account, title, narration, request_kind,
+    submit_for_approval,
+) -> dict:
+    """Build the stable, normalized payload bound to an idempotency key."""
+    normalized_items = []
+    for item in items:
+        vendor = item.get("vendor")
+        normalized_items.append({
+            "amount": int(item.get("amount") or 0),
+            "vendor_id": getattr(vendor, "pk", None),
+            "source_account_id": getattr(item.get("source_account") or source_account, "pk", None),
+            "narration": str(item.get("narration", "") or narration).strip(),
+            "wht_amount": int(item.get("wht_amount") or 0),
+            "metadata": item.get("metadata") or {},
+            "beneficiary_name": (
+                _normalize_account_name(item.get("beneficiary_name"))
+                if "beneficiary_name" in item else None
+            ),
+            "beneficiary_account_number": (
+                _normalize_account_number(item.get("beneficiary_account_number"))
+                if "beneficiary_account_number" in item else None
+            ),
+            "beneficiary_bank_code": (
+                _normalize_bank_code(item.get("beneficiary_bank_code"))
+                if "beneficiary_bank_code" in item else None
+            ),
+        })
+    return {
+        "request_kind": request_kind,
+        "submit_for_approval": bool(submit_for_approval),
+        "provider": str(provider).upper(),
+        "source_account_id": getattr(source_account, "pk", None),
+        "title": str(title or "").strip(),
+        "narration": str(narration or "").strip(),
+        "items": normalized_items,
+    }
+
+
+def payout_request_fingerprint(**kwargs) -> str:
+    """SHA-256 of the canonical payout creation request."""
+    payload = _canonical_batch_payload(**kwargs)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _validate_instruction_snapshot(payout, vendor) -> None:
+    """Recheck current eligibility and the exact destination approved earlier."""
+    snapshot = _eligible_vendor_snapshot(payout.entity, vendor, {})
+    if (
+        _normalize_account_name(payout.beneficiary_name)
+        != _normalize_account_name(snapshot["beneficiary_name"])
+        or _normalize_account_number(payout.beneficiary_account_number)
+        != snapshot["beneficiary_account_number"]
+        or _normalize_bank_code(payout.beneficiary_bank_code)
+        != snapshot["beneficiary_bank_code"]
+    ):
+        raise PaymentStateError(
+            "The vendor bank destination changed after this payout was created. "
+            "Create and approve a new payout batch.",
+        )
+
+
+def _validate_approved_instance(batch, approved_instance):
+    """Require exact terminal approval and the minimum distinct human votes."""
+    from django.contrib.contenttypes.models import ContentType
+    from vs_workflow.constants import (
+        WorkflowInstanceStatus,
+        WorkflowStageAction as StageActionEnum,
+    )
+    from vs_workflow.models import WorkflowInstance, WorkflowStageAction
+
+    if approved_instance is None:
+        raise PayoutApprovalRequiredError()
+    instance = WorkflowInstance.all_objects.filter(pk=approved_instance.pk).first()
+    expected_ct = ContentType.objects.get_for_model(PayoutBatch)
+    if (
+        instance is None
+        or instance.status != WorkflowInstanceStatus.APPROVED
+        or instance.document_type != batch.workflow_document_type
+        or instance.document_content_type_id != expected_ct.pk
+        or instance.document_object_id != str(batch.pk)
+        or instance.tenant_id != batch.entity.tenant_id
+    ):
+        raise PayoutApprovalRequiredError(
+            "Provider dispatch requires the terminal approved workflow instance for "
+            "this exact payout batch.",
+        )
+
+    actor_ids = set(
+        WorkflowStageAction.objects.filter(
+            stage_instance__instance=instance,
+            action=StageActionEnum.APPROVED,
+            reversed_at__isnull=True,
+            is_reversal_of__isnull=True,
+        ).exclude(actor_id=instance.requested_by_id).values_list("actor_id", flat=True)
+    )
+    required = 2 if batch.total_amount >= WF_DEFAULT_HIGH_VALUE_THRESHOLD else 1
+    if len(actor_ids) < required:
+        requirement = (
+            "two distinct human approvers"
+            if required == 2 else "a human approver distinct from the requester"
+        )
+        raise PayoutApprovalRequiredError(
+            f"Provider dispatch requires {requirement} for this payout batch.",
+            required_approvers=required,
+            distinct_approved_actors=len(actor_ids),
+        )
+    return instance
 
 
 # Support the dispatch transfer workflow.
-def _dispatch_transfer(payout, *, client=None, metadata=None, actor_user=None):
+def _dispatch_transfer(
+    payout, *, batch=None, approved_instance=None, vendor=None,
+    client=None, metadata=None, actor_user=None,
+):
     """Ask the provider to transfer funds for an already-created ``PENDING`` payout.
 
-    Shared by single :func:`initiate_payout` and bulk :func:`submit_payout_batch`. On
-    provider rejection the payout is marked FAILED and the error re-raised; on success it
-    moves to PROCESSING with the provider's reference/recipient stored. Booking the ledger
-    entry still happens later, on confirmation.
+    This private boundary still validates the exact approved batch so a direct caller
+    cannot turn it back into a standalone cash-out route. On provider rejection the
+    payout is marked FAILED; on success it moves to PROCESSING.
     """
+    if payout.batch_id is None or batch is None or payout.batch_id != batch.pk:
+        raise PayoutApprovalRequiredError(
+            "A payout instruction can be dispatched only through its approved batch.",
+        )
+    _validate_approved_instance(batch, approved_instance)
+    if vendor is None:
+        if not payout.vendor_source_id:
+            raise PaymentStateError("The payout instruction has no vendor master reference.")
+        from vs_procurement.models import Vendor
+        vendor = Vendor.objects.filter(pk=int(payout.vendor_source_id)).first()
+    _validate_instruction_snapshot(payout, vendor)
     client = client or get_provider(payout.provider)  # Allow callers to reuse or lazily resolve the PSP client.
     currency = payout.currency  # Store the payout currency once for the request.
 
@@ -474,8 +653,11 @@ def _dispatch_transfer(payout, *, client=None, metadata=None, actor_user=None):
 # --------------------------------------------------------------------------- #
 
 # Handle the create payout batch workflow.
-def create_payout_batch(*, entity, items, provider=None, source_account=None,
-                        title="", narration="", currency=None, actor_user=None):
+def create_payout_batch(
+    *, entity, items, provider=None, source_account=None,
+    title="", narration="", currency=None, actor_user=None,
+    idempotency_key="", request_kind="batch", submit_for_approval=False,
+):
     """Assemble a :class:`PayoutBatch` plus its child ``PENDING`` instructions (no submit).
 
     ``items`` is an iterable of dicts, each with ``amount`` (kobo) and beneficiary fields
@@ -489,30 +671,74 @@ def create_payout_batch(*, entity, items, provider=None, source_account=None,
     if not items:  # A batch with no items is not meaningful.
         raise PaymentStateError("A payout batch must contain at least one item.")
 
-    provider_name = provider or getattr(settings, "PAYMENTS_DEFAULT_PROVIDER", "PAYSTACK")  # Resolve the batch PSP.
-    get_provider(provider_name)  # Validate the provider configuration before creating batch rows.
+    provider_name = str(
+        provider or getattr(settings, "PAYMENTS_DEFAULT_PROVIDER", "PAYSTACK")
+    ).strip().upper()  # Resolve the batch PSP.
     currency = currency or _entity_currency(entity)  # Default the batch currency to the entity currency.
-    batch_reference = _new_reference(entity)  # Use one reference for the whole batch.
+    fingerprint = payout_request_fingerprint(
+        items=items, provider=provider_name, source_account=source_account,
+        title=title, narration=narration, request_kind=request_kind,
+        submit_for_approval=submit_for_approval,
+    )
+    idempotency_key = str(idempotency_key or "")
 
     with transaction.atomic():
-        batch = PayoutBatch.objects.create(
-            entity=entity, provider=provider_name, reference=batch_reference,
-            title=title, narration=narration, currency=currency,
-            source_account=source_account, status=PayoutBatchStatus.DRAFT,
-            created_by=actor_user,
-        )
-        total = 0  # Accumulate the batch total as each instruction is added.
-        for item in items:  # Each dict becomes one payout instruction.
+        if idempotency_key:
+            existing = PayoutBatch.objects.filter(
+                entity=entity, idempotency_key=idempotency_key,
+            ).first()
+            if existing is not None:
+                if existing.request_fingerprint != fingerprint:
+                    raise IdempotencyConflictError()
+                existing._idempotency_replay = True
+                return existing
+
+        snapshots = []
+        for item in items:
             amount = int(item.get("amount") or 0)
-            if amount <= 0:  # Reject empty or negative payout lines.
-                raise PaymentStateError("Each payout item needs a positive amount (kobo).")
+            if amount <= 0:
+                raise ValidationError({"amount": "Each payout item needs a positive amount (kobo)."})
+            wht_amount = int(item.get("wht_amount") or 0)
+            if wht_amount < 0 or wht_amount > amount:
+                raise ValidationError({
+                    "wht_amount": "Withholding tax must be between zero and the payout amount.",
+                })
+            snapshots.append(_eligible_vendor_snapshot(entity, item.get("vendor"), item))
+
+        get_provider(provider_name)  # Validate configuration without sending money.
+        batch_reference = _new_reference(entity)  # Use one reference for the whole batch.
+        try:
+            # Keep an idempotency-key race inside a savepoint so the winning row can
+            # be read without leaving the surrounding creation transaction broken.
+            with transaction.atomic():
+                batch = PayoutBatch.objects.create(
+                    entity=entity, provider=provider_name, reference=batch_reference,
+                    idempotency_key=idempotency_key, request_fingerprint=fingerprint,
+                    title=str(title or "").strip(), narration=str(narration or "").strip(),
+                    currency=currency, source_account=source_account,
+                    status=PayoutBatchStatus.DRAFT, created_by=actor_user,
+                )
+        except IntegrityError:
+            existing = PayoutBatch.objects.filter(
+                entity=entity, idempotency_key=idempotency_key,
+            ).first() if idempotency_key else None
+            if existing is None:
+                raise
+            if existing.request_fingerprint != fingerprint:
+                raise IdempotencyConflictError()
+            existing._idempotency_replay = True
+            return existing
+
+        total = 0  # Accumulate the batch total as each instruction is added.
+        for item, snapshot in zip(items, snapshots):  # Each dict becomes one payout instruction.
+            amount = int(item.get("amount") or 0)
             vendor = item.get("vendor")
             PayoutInstruction.objects.create(
                 entity=entity, batch=batch, provider=provider_name,
                 reference=_new_reference(entity), amount=amount, currency=currency,
-                beneficiary_name=item["beneficiary_name"],
-                beneficiary_account_number=item["beneficiary_account_number"],
-                beneficiary_bank_code=item.get("beneficiary_bank_code", ""),
+                beneficiary_name=snapshot["beneficiary_name"],
+                beneficiary_account_number=snapshot["beneficiary_account_number"],
+                beneficiary_bank_code=snapshot["beneficiary_bank_code"],
                 source_account=item.get("source_account") or source_account,
                 narration=item.get("narration", "") or narration,
                 status=PayoutStatus.PENDING,
@@ -526,6 +752,7 @@ def create_payout_batch(*, entity, items, provider=None, source_account=None,
         batch.total_amount = total  # Store the aggregate amount on the batch.
         batch.item_count = len(items)  # Store the number of instructions on the batch.
         batch.save(update_fields=["total_amount", "item_count", "updated_at"])
+        batch._idempotency_replay = False
 
     audit.record(  # Write a batch-level audit event after the transaction commits.
         action=PaymentAuditAction.PAYOUT_BATCH_CREATED, entity=entity,
@@ -535,8 +762,26 @@ def create_payout_batch(*, entity, items, provider=None, source_account=None,
     return batch  # Return the draft batch for later submission.
 
 
+@transaction.atomic
+def submit_payout_batch_for_approval(batch, *, requested_by):
+    """Submit one batch once, returning the existing instance on a replay."""
+    from vs_workflow.models import WorkflowInstance
+    from vs_workflow.services.submission import submit_for_approval
+
+    locked = PayoutBatch.objects.select_for_update().get(pk=batch.pk)
+    existing = (
+        WorkflowInstance.all_objects.for_document(locked)
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if existing is not None:
+        return existing
+    return submit_for_approval(locked, requested_by=requested_by)
+
+
 # Handle the submit payout batch workflow.
-def submit_payout_batch(batch, *, actor_user=None):
+@transaction.atomic
+def submit_payout_batch(batch, *, approved_instance=None, actor_user=None):
     """Submit every ``PENDING`` instruction in ``batch`` to the provider, one by one.
 
     Each item rides the shared :func:`_dispatch_transfer`; a per-item provider rejection
@@ -545,10 +790,56 @@ def submit_payout_batch(batch, *, actor_user=None):
     (non-PENDING) are skipped, so re-submitting a partially-failed batch only retries the
     stragglers.
     """
+    batch = PayoutBatch.objects.select_for_update().get(pk=batch.pk)
+    approved_instance = _validate_approved_instance(batch, approved_instance)
+    instructions = list(batch.instructions.select_for_update().order_by("pk"))
+    if batch.item_count != len(instructions) or batch.total_amount != sum(
+        payout.amount for payout in instructions
+    ):
+        raise PaymentStateError(
+            "The payout batch totals no longer match its locked instructions. "
+            "Review and recreate the batch.",
+        )
+    if any(
+        payout.entity_id != batch.entity_id or payout.provider != batch.provider
+        for payout in instructions
+    ):
+        raise PaymentStateError("A payout instruction does not match its owning batch.")
+
+    pending = [payout for payout in instructions if payout.status == PayoutStatus.PENDING]
+    if not pending:
+        _recompute_batch_status(batch)
+        return batch
+
+    from vs_procurement.models import Vendor
+
+    vendor_ids = []
+    for payout in pending:
+        if payout.vendor_source_type != "vs_procurement.Vendor" or not payout.vendor_source_id:
+            raise PaymentStateError("Every payout instruction must reference a vendor master.")
+        try:
+            vendor_ids.append(int(payout.vendor_source_id))
+        except (TypeError, ValueError) as exc:
+            raise PaymentStateError("A payout instruction has an invalid vendor reference.") from exc
+    vendors = {
+        vendor.pk: vendor
+        for vendor in Vendor.objects.select_for_update().filter(pk__in=sorted(set(vendor_ids)))
+    }
+    for payout, vendor_id in zip(pending, vendor_ids):
+        vendor = vendors.get(vendor_id)
+        if vendor is None:
+            raise PaymentStateError("A payout instruction's vendor master no longer exists.")
+        _validate_instruction_snapshot(payout, vendor)
+
     submitted = failed = 0  # Track how many instructions were accepted or rejected.
-    for payout in batch.instructions.filter(status=PayoutStatus.PENDING):
+    client = get_provider(batch.provider)
+    for payout, vendor_id in zip(pending, vendor_ids):
         try:  # One failed instruction should not abort the whole batch.
-            _dispatch_transfer(payout, actor_user=actor_user)  # Submit this payout to the provider.
+            _dispatch_transfer(
+                payout, batch=batch, approved_instance=approved_instance,
+                vendor=vendors[vendor_id], client=client,
+                metadata=payout.metadata or {}, actor_user=actor_user,
+            )  # Submit this payout to the provider.
             submitted += 1  # Count successful submissions.
         except FinanceError:  # Keep going so later rows still have a chance to submit.
             failed += 1  # Count provider rejections.

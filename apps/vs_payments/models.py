@@ -184,9 +184,8 @@ class PayoutBatch(TimeStampedModel):
     in sync by the services layer.
     """
 
-    # vs_workflow document-type token. When a WorkflowTemplate exists for it at this
-    # batch's (school, branch) scope, submitting the batch to the provider is gated
-    # behind approval (opt-in by template); otherwise direct submit is unchanged.
+    # vs_workflow document-type token. Every provider submission must carry the exact
+    # terminal approved instance for this batch; a missing template fails closed.
     workflow_document_type = "payments.payout_batch"
 
     # Field the engine reads for a threshold-gated stage's inclusion condition. The
@@ -200,7 +199,15 @@ class PayoutBatch(TimeStampedModel):
     provider = models.CharField(max_length=16, choices=PaymentProvider.choices)
     reference = models.CharField(
         max_length=64, unique=True,
-        help_text="Our reference / idempotency key for this batch.",
+        help_text="Our stable provider reference for this batch.",
+    )
+    idempotency_key = models.CharField(
+        max_length=128, blank=True, default="",
+        help_text="Caller-supplied key that deduplicates batch creation within an entity.",
+    )
+    request_fingerprint = models.CharField(
+        max_length=64, blank=True, default="",
+        help_text="SHA-256 of the normalized request bound to the idempotency key.",
     )
     title = models.CharField(max_length=200, blank=True, default="")
     narration = models.CharField(max_length=255, blank=True, default="")
@@ -226,6 +233,13 @@ class PayoutBatch(TimeStampedModel):
     )
 
     class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "idempotency_key"],
+                condition=~models.Q(idempotency_key=""),
+                name="uniq_payments_pbatch_entity_idem_key",
+            ),
+        ]
         indexes = [
             models.Index(fields=["entity", "status"]),
             models.Index(fields=["provider"]),
@@ -236,18 +250,7 @@ class PayoutBatch(TimeStampedModel):
         return f"{self.reference} · {self.item_count} items · {self.total_amount} kobo · {self.status}"
 
     @property
-    def school(self):  # Bridges the entity-scoped batch to the school-scoped workflow engine.
-        """School owning this batch's ledger entity (None for platform/product books).
-
-        The vs_workflow approval engine is school-scoped (it reads ``document.school`` /
-        ``document.branch`` to resolve approvers); a payout batch is entity-scoped, so
-        this maps the entity back to its originating school. ``None`` for platform books,
-        which the engine handles as platform-level scoping.
-        """
-        return getattr(self.entity.tenant, "school_profile", None)  # Originating school, or None.
-
-    @property
-    def branch(self):  # The engine also reads document.branch; batches have none.
+    def branch(self):  # The engine reads document.branch; batches have none.
         return None  # Payout batches are not branch-scoped.
 
     @property

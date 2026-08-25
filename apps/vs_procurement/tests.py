@@ -658,13 +658,18 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
         entity, _, vendor, _, _ = self.build_p2p()
         vendor.email = "accounts@example.com"
         vendor.tax_id = "TIN-123"
+        vendor.bank_code = "058"
         vendor.bank_account_number = "0123456789"
-        vendor.save(update_fields=["email", "tax_id", "bank_account_number", "updated_at"])
+        vendor.save(update_fields=[
+            "email", "tax_id", "bank_code", "bank_account_number", "updated_at",
+        ])
         client = self._client(entity)
         response = client.get(f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}")
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("email", response.data["data"])
         self.assertIn("email", response.data["data"]["_stripped_fields"])
+        self.assertNotIn("bank_code", response.data["data"])
+        self.assertIn("bank_code", response.data["data"]["_stripped_fields"])
         other = LedgerEntity.objects.create(name="Other", code="OTHER", kind=LedgerEntity.Kind.TENANT)
         cross = client.get(f"/v1/procurement/vendors/{vendor.id}/?entity={other.code}")
         self.assertEqual(cross.status_code, 404)
@@ -725,6 +730,51 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
             {"bank_account_number": "0123456789"}, format="json",
         )
         self.assertEqual(response.status_code, 403)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    @patch("vs_procurement.views.vendors._has_sensitive_access", return_value=True)
+    @patch("vs_procurement.views.vendors._has_vendor_manage_access", return_value=True)
+    def test_bank_change_resets_verified_kyc_even_when_patch_tries_to_reverify(
+        self, _manage, _sensitive, _permission,
+    ):
+        entity, _, vendor, _, _ = self.build_p2p()
+        Vendor.objects.filter(pk=vendor.pk).update(
+            bank_name="Old Bank", bank_code="001",
+            bank_account_name="Acme Supplier", bank_account_number="0123456789",
+            kyc_status=VendorKycStatus.VERIFIED,
+        )
+
+        response = self._client(entity).patch(
+            f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}",
+            {
+                "bank_name": "New Bank", "bank_code": "058",
+                "bank_account_name": "Acme Supplier Ltd",
+                "bank_account_number": "9999999999",
+                "kyc_status": "VERIFIED",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        vendor.refresh_from_db()
+        self.assertEqual(vendor.bank_code, "058")
+        self.assertEqual(vendor.bank_account_number, "9999999999")
+        self.assertEqual(vendor.kyc_status, VendorKycStatus.PENDING)
+
+    def test_non_bank_partial_save_does_not_reset_verified_vendor_kyc(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        Vendor.objects.filter(pk=vendor.pk).update(
+            bank_name="Old Bank", bank_code="058",
+            bank_account_name="Acme Supplier", bank_account_number="0123456789",
+            kyc_status=VendorKycStatus.VERIFIED,
+        )
+        vendor.refresh_from_db()
+
+        vendor.name = "Acme Supplier Limited"
+        vendor.save(update_fields=["name", "updated_at"])
+
+        vendor.refresh_from_db()
+        self.assertEqual(vendor.kyc_status, VendorKycStatus.VERIFIED)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     @patch("vs_procurement.views.vendors.is_vision_super_admin", return_value=False)

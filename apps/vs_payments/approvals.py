@@ -1,16 +1,13 @@
 """Approval-rule provisioning for bulk payout batches.
 
-The maker-checker *machinery* for a :class:`~vs_payments.models.PayoutBatch` already
-exists: :mod:`vs_payments.workflow_handlers` gates the provider submission behind
-``vs_workflow`` approval, and the submit-for-approval endpoint routes a batch into it.
-What was missing is the thing that turns the gate on.
+Every payout is represented by a :class:`~vs_payments.models.PayoutBatch`, including a
+single payout as a one-line batch. Provider submission is allowed only from the
+terminal approval callback, and that boundary independently validates the exact
+approved workflow instance and the required distinct human votes. A missing template
+therefore fails closed before any provider call.
 
-The gate is opt-in by template: :func:`vs_finance.approvals.approval_required` asks
-whether a ``payments.payout_batch`` WorkflowTemplate exists for the batch's scope, and
-with no template a batch goes straight to the provider. So an unconfigured install did
-not have a jammed door on its highest-risk cash-out path, it had an open one, and a
-single person could push a whole batch to the bank unreviewed. This module publishes
-the ladder that closes it.
+This module publishes the default two-stage ladder: an always-on checker, followed by
+a senior checker when the batch reaches the high-value threshold.
 
 Deliberately the same shape as :mod:`vs_procurement.approvals`, because a
 tenant should not have to hold two different mental models for "who signs off on money
@@ -25,7 +22,12 @@ noted at the point it applies.
 """
 from __future__ import annotations
 
-from .constants import WF_DEFAULT_APPROVE_ROLE, WF_DEFAULT_TEMPLATE_CODE
+from .constants import (
+    WF_DEFAULT_APPROVE_ROLE,
+    WF_DEFAULT_HIGH_VALUE_ROLE,
+    WF_DEFAULT_HIGH_VALUE_THRESHOLD,
+    WF_DEFAULT_TEMPLATE_CODE,
+)
 
 #: The single approvable document type in this app, and its human labels.
 DOCUMENT_TYPE = "payments.payout_batch"
@@ -33,19 +35,14 @@ TEMPLATE_NAME = "Payout-batch approval"
 TEMPLATE_LABEL = "payout batch"
 
 
-def _default_stages_payload(*, approve_role_key: str) -> list:
-    """The one-stage ladder, shared by the platform and per-tenant seeds.
+def _default_stages_payload(
+    *, approve_role_key: str, high_value_role_key: str, high_value_threshold: int,
+) -> list:
+    """The two-stage ladder shared by platform and per-tenant provisioning.
 
-    A single always-on APPROVAL stage: any holder of the ``approve_role_key`` role can
-    approve, and that decision releases the batch.
-
-    **Why one stage and not two.** This started as a threshold-gated pair, mirroring
-    procurement: an ordinary stage plus a senior one for large runs. A second signature
-    is only a real control when a second *person* holds the senior authority, and in
-    practice the same small finance team held both, so the extra stage bought an extra
-    click rather than an extra reviewer, while doubling the ways a batch could park. A
-    tenant that genuinely separates signing authority can publish its own ladder with
-    that stage restored, pointing it at a role of its own.
+    The checker stage always runs. The senior stage runs when the batch total reaches
+    the configured high-value threshold. Provider-bound enforcement independently
+    requires distinct human actors, so a weakened template cannot weaken cash-out.
 
     Two properties are carried over from procurement on purpose.
 
@@ -54,22 +51,23 @@ def _default_stages_payload(*, approve_role_key: str) -> list:
     snapshot and the batch *parks* rather than reaching a terminal APPROVED decision
     with no human involved. That is the safe failure, and it is the reason seeding is
     safe to run before anybody has been appointed. Parking is not a dead end: the
-    engine's repair (:mod:`vs_workflow.services.parking`) releases the batch as soon as
-    somebody is appointed to it, and the audited override releases it when nobody can be.
+    engine's repair (:mod:`vs_workflow.services.parking`) makes the batch actionable as
+    soon as somebody is appointed. Payout handlers deliberately forbid continuing
+    without a human vote.
 
     ``advance_rule="ANY"`` and ``on_rejection="TERMINAL"``: one holder's vote carries
     the stage, and a rejection ends the attempt rather than routing onwards.
 
-    The one deliberate divergence from procurement is ``approver_scope="SCHOOL"`` where
-    it uses ``"BRANCH"``. A payout batch is entity-scoped and its ``branch`` property is
-    always ``None``, so the engine would forward ``None`` under either value and resolve
-    to tenant-wide holders identically. SCHOOL is simply the honest declaration of what
-    this document is, rather than a branch claim the model cannot back.
+    The one deliberate divergence from procurement is the engine's legacy tenant-wide
+    scope token, ``approver_scope="SCHOOL"``, where procurement uses ``"BRANCH"``. A
+    payout batch is entity-scoped and its ``branch`` property is always ``None``, so the
+    resolver selects tenant-wide holders rather than claiming a branch the model cannot
+    back.
     """
     return [
         {
-            "code": "approver",
-            "label": "Payout approval",
+            "code": "checker",
+            "label": "Payout checker approval",
             "kind": "APPROVAL",
             "order": 10,
             "approver_source": "ROLE",
@@ -82,12 +80,30 @@ def _default_stages_payload(*, approve_role_key: str) -> list:
             # pay itself out.
             "skip_if_no_approvers": False,
         },
+        {
+            "code": "senior",
+            "label": "Senior payout approval",
+            "kind": "APPROVAL",
+            "order": 20,
+            "approver_source": "ROLE",
+            "approver_role_key": high_value_role_key,
+            "approver_scope": "SCHOOL",
+            "advance_rule": "ANY",
+            "on_rejection": "TERMINAL",
+            "skip_if_no_approvers": False,
+            "inclusion_condition": {
+                "op": "gte", "field": "total_amount",
+                "value": int(high_value_threshold),
+            },
+        },
     ]
 
 
 def ensure_default_approval_templates(
     *,
     approve_role_key: str = WF_DEFAULT_APPROVE_ROLE,
+    high_value_role_key: str = WF_DEFAULT_HIGH_VALUE_ROLE,
+    high_value_threshold: int = WF_DEFAULT_HIGH_VALUE_THRESHOLD,
     created_by=None,
 ):
     """Publish (idempotently) the **platform-wide** default payout-batch ladder.
@@ -108,7 +124,11 @@ def ensure_default_approval_templates(
         code=WF_DEFAULT_TEMPLATE_CODE, name=TEMPLATE_NAME,
         description=f"Default approval rule for a {TEMPLATE_LABEL}.",
         created_by=created_by,
-        stages_payload=_default_stages_payload(approve_role_key=approve_role_key),
+        stages_payload=_default_stages_payload(
+            approve_role_key=approve_role_key,
+            high_value_role_key=high_value_role_key,
+            high_value_threshold=high_value_threshold,
+        ),
     )
 
 
@@ -116,6 +136,8 @@ def ensure_tenant_approval_templates(
     tenant,
     *,
     approve_role_key: str = WF_DEFAULT_APPROVE_ROLE,
+    high_value_role_key: str = WF_DEFAULT_HIGH_VALUE_ROLE,
+    high_value_threshold: int = WF_DEFAULT_HIGH_VALUE_THRESHOLD,
     created_by=None,
 ):
     """Give one tenant its **own** payout-approval rules. Returns ``(template, created)``.
@@ -155,16 +177,24 @@ def ensure_tenant_approval_templates(
     # A tenant-scoped ROLE stage will not publish against a role key the tenant does
     # not have, and a brand-new tenant has no roles at all. Create the role (holder-
     # less) so seeding works on a fresh tenant without inventing approval authority.
-    ensure_approver_role(
-        tenant, approve_role_key,
-        description="Approves payout batches. Nobody holds it until an "
-                    "administrator assigns someone, so batches park until then.",
-    )
+    for role_key, label in (
+        (approve_role_key, "payout batches"),
+        (high_value_role_key, "high-value payout batches"),
+    ):
+        ensure_approver_role(
+            tenant, role_key,
+            description=f"Approves {label}. Nobody holds it until an administrator "
+                        "assigns someone, so batches park until then.",
+        )
 
     return publish_template(
         tenant=tenant, branch=None, document_type=DOCUMENT_TYPE,
         code=WF_DEFAULT_TEMPLATE_CODE, name=TEMPLATE_NAME,
         description=f"Approval rule for a {TEMPLATE_LABEL}.",
         created_by=created_by,
-        stages_payload=_default_stages_payload(approve_role_key=approve_role_key),
+        stages_payload=_default_stages_payload(
+            approve_role_key=approve_role_key,
+            high_value_role_key=high_value_role_key,
+            high_value_threshold=high_value_threshold,
+        ),
     ), True

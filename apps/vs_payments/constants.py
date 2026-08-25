@@ -153,15 +153,12 @@ REFERENCE_PREFIX = "CXP"
 #: Template code for the seeded ladder. One per document type, matching procurement.
 WF_DEFAULT_TEMPLATE_CODE = "standard"
 
-#: The role the single approving stage resolves approvers against. Resolved inside
-#: whichever tenant raised the batch, so one central template serves every tenant.
-#:
-#: The ladder is one stage on purpose (see vs_payments.approvals). The threshold-gated
-#: senior stage was removed: a second signature is only a real control when a second
-#: person actually holds the senior authority, and in practice the same small finance
-#: team held both, so it bought a click rather than a reviewer. A tenant that does
-#: have a separate signing authority can publish its own ladder with that stage back.
+#: Roles used by the default two-stage payout approval ladder.
 WF_DEFAULT_APPROVE_ROLE = "payout-approver"
+WF_DEFAULT_HIGH_VALUE_ROLE = "payout-senior-approver"
+
+#: Batches at or above N500,000 require an additional, distinct senior approver.
+WF_DEFAULT_HIGH_VALUE_THRESHOLD = 50_000_000
 
 
 # --------------------------------------------------------------------------- #

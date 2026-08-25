@@ -47,7 +47,7 @@ from .base import (
 
 _SENSITIVE_VENDOR_FIELDS = {
     "email", "phone", "address", "tax_id",
-    "bank_name", "bank_account_number", "bank_account_name", "contacts",
+    "bank_name", "bank_code", "bank_account_number", "bank_account_name", "contacts",
 }
 _COMPLIANCE_VENDOR_FIELDS = {"kyc_status", "risk", "on_hold"}
 
@@ -549,6 +549,7 @@ class VendorListCreateView(_ProcBase):
                 phone=_clean_text(body, "phone", 32), address=str(body.get("address") or "").strip(), tax_id=tax_id,
                 tax_id_normalized=_normalise_tax_id(tax_id),
                 bank_name=_clean_text(body, "bank_name", 120),
+                bank_code=_clean_text(body, "bank_code", 20, upper=True),
                 bank_account_number=re.sub(r"\s+", "", _clean_text(body, "bank_account_number", 32, upper=True)),
                 bank_account_name=_clean_text(body, "bank_account_name", 160),
                 payable_account=payable, default_expense_account=expense,
@@ -653,10 +654,16 @@ class VendorDetailView(_ProcBase):
             vendor.category = _resolve_assignable_category(
                 entity, body.get("category"), current_id=vendor.category_id,
             )
-        text_fields = {"email": 254, "phone": 32, "bank_name": 120, "bank_account_name": 160}
+        text_fields = {
+            "email": 254, "phone": 32, "bank_name": 120,
+            "bank_code": 20, "bank_account_name": 160,
+        }
         for field, max_length in text_fields.items():
             if field in body:
-                value = _clean_text(body, field, max_length, lower=field == "email")
+                value = _clean_text(
+                    body, field, max_length,
+                    lower=field == "email", upper=field == "bank_code",
+                )
                 setattr(vendor, field, _validate_email(value) if field == "email" else value)
         if "address" in body:
             vendor.address = str(body.get("address") or "").strip()

@@ -123,6 +123,7 @@ class VendorSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         "address": "procurement.vendor.view_sensitive",
         "tax_id": "procurement.vendor.view_sensitive",
         "bank_name": "procurement.vendor.view_sensitive",
+        "bank_code": "procurement.vendor.view_sensitive",
         "bank_account_number": "procurement.vendor.view_sensitive",
         "bank_account_name": "procurement.vendor.view_sensitive",
         "contacts": "procurement.vendor.view_sensitive",
@@ -133,7 +134,7 @@ class VendorSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         fields = [
             "id", "code", "name", "category_id", "category_code",
             "email", "phone", "address", "tax_id",
-            "bank_name", "bank_account_number", "bank_account_name",
+            "bank_name", "bank_code", "bank_account_number", "bank_account_name",
             "payable_account_id", "payable_code",
             "default_expense_account_id", "default_expense_code",
             "default_wht_tax_code_id", "default_wht_tax_code_value",

@@ -1,11 +1,9 @@
-"""Turn on the maker-checker gate over bulk payouts (idempotent, non-destructive).
+"""Provision the mandatory maker-checker ladder for payouts.
 
-A payout batch pays many beneficiaries at once and is the highest-risk cash-out path in
-the product. The approval handler for it already exists, but the gate is opt-in by
-template, so an install with no template does not have a locked door on that path, it
-has an open one. This command is the operational half of the fix
-(:mod:`vs_payments.approvals` is the service half): it publishes the single approving
-stage that makes approval actually required.
+A payout batch pays one or more beneficiaries and is a high-risk cash-out path. Every
+payout must enter the workflow before any provider call. This command publishes the
+default checker and high-value senior stages; a missing template fails closed rather
+than restoring a direct cash-out path.
 
 Usage::
 
@@ -19,9 +17,9 @@ Two guarantees, both deliberate and matching ``seed_procurement_approvals``:
   skipped, so re-running after an administrator customised the approving role or
   added stages of their own cannot restore the defaults over them. Only ``--platform``
   upserts, because that row is platform provisioning's to own.
-* **Seeded blocked.** The rules arrive with nobody holding the approving role, so
-  the first batch submitted parks and asks for an approver rather than paying itself
-  out. Appoint somebody to the ``payout-approver`` role deliberately afterwards.
+* **Seeded blocked.** The rules arrive with nobody holding either approving role, so
+  each applicable stage parks and asks for an approver rather than paying itself out.
+  Appoint holders deliberately afterwards.
 
 Safe to re-run. ``--dry-run`` reports what would change and writes nothing.
 """
@@ -32,7 +30,11 @@ from vs_payments.approvals import (
     ensure_default_approval_templates,
     ensure_tenant_approval_templates,
 )
-from vs_payments.constants import WF_DEFAULT_APPROVE_ROLE
+from vs_payments.constants import (
+    WF_DEFAULT_APPROVE_ROLE,
+    WF_DEFAULT_HIGH_VALUE_ROLE,
+    WF_DEFAULT_HIGH_VALUE_THRESHOLD,
+)
 
 
 class Command(BaseCommand):
@@ -53,7 +55,15 @@ class Command(BaseCommand):
         )
         parser.add_argument(
             "--approve-role", default=WF_DEFAULT_APPROVE_ROLE,
-            help="Role key the approving stage resolves approvers against.",
+            help="Role key the standard checker stage resolves against.",
+        )
+        parser.add_argument(
+            "--high-value-role", default=WF_DEFAULT_HIGH_VALUE_ROLE,
+            help="Role key the high-value senior stage resolves against.",
+        )
+        parser.add_argument(
+            "--high-value-threshold", type=int, default=WF_DEFAULT_HIGH_VALUE_THRESHOLD,
+            help="Batch total in kobo that activates senior approval.",
         )
         parser.add_argument(
             "--dry-run", action="store_true", help="Report what would change; write nothing.",
@@ -65,7 +75,11 @@ class Command(BaseCommand):
         slugs = options["tenants"]
         if not (slugs or options["all_tenants"] or options["platform"]):
             raise CommandError("Pass --tenant SLUG, --all-tenants, or --platform.")
-        ladder_kwargs = {"approve_role_key": options["approve_role"]}
+        ladder_kwargs = {
+            "approve_role_key": options["approve_role"],
+            "high_value_role_key": options["high_value_role"],
+            "high_value_threshold": options["high_value_threshold"],
+        }
 
         tenants = []
         if slugs:
@@ -76,8 +90,7 @@ class Command(BaseCommand):
         elif options["all_tenants"]:
             tenants = list(Tenant.objects.all().order_by("slug"))
 
-        # One transaction: a half-seeded run would leave some tenants gated and others
-        # paying out unreviewed, which is the state this command exists to end.
+        # One transaction prevents a partially provisioned approval policy.
         with transaction.atomic():
             if options["platform"]:
                 ensure_default_approval_templates(**ladder_kwargs)
@@ -95,6 +108,6 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(
             "Done. Payouts now need approval; nobody can approve until somebody "
-            "holds the payout-approver role, so the first batch will park "
-            "until one does.",
+            "holds the required payout approval roles, so each unstaffed stage will "
+            "park until an administrator appoints one.",
         ))
