@@ -233,7 +233,11 @@ def publish_template(*, tenant, branch=None, document_type: str, code: str, name
             "advance_rule": s.get("advance_rule", "UNANIMOUS"),
             "quorum_count": s.get("quorum_count", 0),
             "on_rejection": s.get("on_rejection", "TERMINAL"),
-            "skip_if_no_approvers": s.get("skip_if_no_approvers", True),
+            # Omitted means park, matching the model default. A tenant editing
+            # one field of its own ladder does not resend the fields it is not
+            # changing, so the value an omission lands on is the value most
+            # published stages will carry.
+            "skip_if_no_approvers": s.get("skip_if_no_approvers", False),
             "inclusion_condition": s.get("inclusion_condition"),
             "retired_at": None,  # Re-including a stage code reactivates it for future routing.
         }

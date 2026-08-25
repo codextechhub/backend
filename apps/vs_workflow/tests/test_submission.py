@@ -332,3 +332,52 @@ class RetiredSubmitPermissionTests(TestCase):
         self.assertFalse(Permission.objects.filter(key=self.KEY).exists())
         # The counterweight: the keys that do gate something are still seeded.
         self.assertTrue(Permission.objects.filter(key="workflow.instance.view").exists())
+
+
+class AutoSkipDefaultTests(TestCase):
+    """A stage published without ``skip_if_no_approvers`` parks, it does not skip.
+
+    The default used to be True on both the model and the publish service, so the
+    dangerous answer arrived by omission. Omission is the common case: a tenant
+    publishes its own full version of a central ladder, and an editor changing one
+    threshold does not resend the fields it is not changing. A payout ladder
+    republished that way would auto-skip a stage nobody could approve and dispatch
+    the money unapproved.
+    """
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import make_school
+
+        self.tenant = make_school(slug="skip-default", name="Skip Default").tenant
+
+    def _publish(self, stage):
+        from vs_workflow.services.templates import publish_template
+
+        return publish_template(
+            tenant=self.tenant, branch=None, document_type="TEST_DOC",
+            code="standard", name="Ladder", stages_payload=[stage],
+        )
+
+    def test_an_omitted_flag_parks(self):
+        template = self._publish({
+            "code": "checker", "label": "Checker", "kind": "APPROVAL", "order": 1,
+            "approver_source": "RBAC_PERMISSION",
+            "approver_permission_key": "finance.journal.approve",
+        })
+        self.assertFalse(template.stages.get(code="checker").skip_if_no_approvers)
+
+    def test_the_model_default_agrees_with_the_publish_default(self):
+        """Two defaults for one decision is how they drift apart."""
+        from vs_workflow.models import WorkflowStage
+
+        self.assertIs(WorkflowStage._meta.get_field("skip_if_no_approvers").default, False)
+
+    def test_asking_for_auto_skip_still_gets_it(self):
+        """The counterweight: this is a safer default, not a removed capability."""
+        template = self._publish({
+            "code": "optional", "label": "Optional", "kind": "APPROVAL", "order": 1,
+            "approver_source": "RBAC_PERMISSION",
+            "approver_permission_key": "finance.journal.approve",
+            "skip_if_no_approvers": True,
+        })
+        self.assertTrue(template.stages.get(code="optional").skip_if_no_approvers)

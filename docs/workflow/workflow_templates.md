@@ -78,7 +78,7 @@ The node. Carries its own `code` (unique per template), `label`, `kind`
 | `advance_rule` | `UNANIMOUS` (default), `QUORUM`, `ANY` |
 | `quorum_count` | Threshold when the rule is `QUORUM` |
 | `on_rejection` | `TERMINAL` (default) or `RETURN_TO_REQUESTER` |
-| `skip_if_no_approvers` | Default `True`. Every money ladder sets it `False` |
+| `skip_if_no_approvers` | Default `False`: an unstaffed stage parks. Auto-skipping must be asked for by name |
 | `inclusion_condition` | JSON condition; the stage is skipped when it is false |
 | `retired_at` | Soft-retirement stamp; `is_retired` reads it |
 

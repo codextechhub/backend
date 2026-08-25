@@ -41,7 +41,7 @@ class UnknownOperatorError(WorkflowError):
 # Raised when a stage names an approver source the resolver cannot resolve.
 # Deliberately an error rather than an empty approver list: "nobody could be
 # resolved" and "this stage is misconfigured" look identical downstream, and a
-# stage with skip_if_no_approvers=True (the model default) treats the former as
+# stage with skip_if_no_approvers=True treats the former as
 # permission to skip itself. Returning [] for an unrecognised source would
 # therefore let a configuration mistake silently approve spend.
 class UnknownApproverSourceError(WorkflowError):

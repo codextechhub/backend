@@ -338,6 +338,13 @@ Full evidence in **`error/workflow/workflow_code_issues.md`**.
   `document_scope` returns, before the handler's `on_submitted` can touch the
   record. Every module submits through its own scoped queryset
   (`workflow_code_issues.md` §1).
+- **An unstaffed stage now parks by default.** ``skip_if_no_approvers``
+  defaulted to True on both the model and the publish service, so a stage
+  published without the field auto-skipped when nobody could approve it. A
+  tenant may publish its own full version of a central ladder, and an editor
+  changing one threshold does not resend the fields it is not changing, so the
+  dangerous answer arrived by omission. Both defaults are now False
+  (``vs_workflow.0010``); existing stage rows are untouched.
 - **A route condition can read any attribute reachable from the document**, and
   whatever it finds is stringified into the `ROUTE_EVALUATED` audit trace, which
   the instance detail returns raw (`workflow_code_issues.md` §3).

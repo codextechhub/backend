@@ -252,7 +252,7 @@ Full evidence in **`error/workflow/workflow_code_issues.md`**.
   platform-only today; a school role holding it would gain a cross-tenant people
   lookup (`workflow_code_issues.md` §16).
 - **A group with `is_active = False` resolves to nobody silently.** Combined with
-  `skip_if_no_approvers = True`, deactivating a group makes every stage that
+  `skip_if_no_approvers = True` (no longer the default, but still settable), deactivating a group makes every stage that
   names it auto-approve. There is no warning at deactivation time and no
   coverage check equivalent to `workflow_role_coverage` for groups.
 - **`role_holder_ids` and `_users_for_role_key` do not honour personal
