@@ -1815,7 +1815,7 @@ class SchoolStaffSerializer(serializers.Serializer):
 
 
 class SchoolBranchSerializer(serializers.ModelSerializer):
-    """One campus, as a school's own branches screen reads it.
+    """One branch, as a school's own branches screen reads it.
 
     Distinct from ``BranchListSerializer`` and ``BranchDetailSerializer``, which
     serve CodeX's branch management: those carry ``school_slug`` (a school

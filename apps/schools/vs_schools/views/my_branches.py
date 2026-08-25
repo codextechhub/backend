@@ -1,4 +1,4 @@
-"""A school's own campuses, read-only, at ``/v1/i/me/branches/``.
+"""A school's own branches, read-only, at ``/v1/i/me/branches/``.
 
 Why this exists beside ``views/branch.py`` rather than opening those. Every view
 in that module demands ``platform.branches.view`` / ``.create`` / ``.update``,
@@ -17,7 +17,7 @@ this is the read half only, on the school's own key, in the shape
 is no slug to tamper with and no way to read another school's sites.
 
 **It is read-only.** No create, no update, no transition. A school that needs a
-new campus or a corrected address asks CodeX, which is the same answer the
+new branch or a corrected address asks CodeX, which is the same answer the
 branch endpoints give today - only now it is a screen saying so rather than a
 403 nobody can act on.
 
@@ -53,14 +53,14 @@ class _MyBranchBase:
             return Branch.objects.none()
         return (
             Branch.objects.filter(tenant=tenant)
-            # Main campus first, then by the code a school already knows its
+            # The main branch first, then by the code a school already knows its
             # sites by, so the order matches how they talk about them.
             .order_by("-is_main", "code")
         )
 
 
 class MyBranchListView(_MyBranchBase, generics.ListAPIView):
-    """GET /v1/i/me/branches/ - the campuses this school runs.
+    """GET /v1/i/me/branches/ - the branches this school runs.
 
     docstring-name: My school's branches
     """
@@ -69,7 +69,7 @@ class MyBranchListView(_MyBranchBase, generics.ListAPIView):
 
 
 class MyBranchDetailView(_MyBranchBase, generics.RetrieveAPIView):
-    """GET /v1/i/me/branches/<code>/ - one campus in full.
+    """GET /v1/i/me/branches/<code>/ - one branch in full.
 
     Looked up by ``code``, the per-school number a school uses for its own
     sites, rather than the global row id. Another school's branch cannot be
@@ -87,7 +87,7 @@ class MyBranchDetailView(_MyBranchBase, generics.RetrieveAPIView):
             code=self.kwargs[self.lookup_url_kwarg],
         ).first()
         if branch is None:
-            raise NotFound("No such campus at this school.")
+            raise NotFound("No such branch at this school.")
         return branch
 
     def retrieve(self, request, *args, **kwargs):

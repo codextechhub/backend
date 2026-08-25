@@ -16,9 +16,27 @@ it writes known passwords.
 """
 from __future__ import annotations
 
+import zlib
+
 from dataclasses import dataclass, field
 
 DEFAULT_PASSWORD = "School@2025"
+
+#: (main-branch street, annex street) pairs, so two branches at one school never
+#: read as the same place. Real Lagos roads: a seeded address that looks made up
+#: undermines the screen it is there to demonstrate.
+_STREETS = [
+    ("12 Awolowo Road, Ikoyi", "5 Admiralty Way, Lekki"),
+    ("7 Bode Thomas Street, Surulere", "21 Opebi Road, Ikeja"),
+    ("3 Ozumba Mbadiwe Avenue, Victoria Island", "18 Allen Avenue, Ikeja"),
+    ("45 Isaac John Street, GRA Ikeja", "9 Ligali Ayorinde Street, Victoria Island"),
+    ("2 Herbert Macaulay Way, Yaba", "31 Adeniran Ogunsanya Street, Surulere"),
+    ("64 Marina Street, Lagos Island", "8 Kofo Abayomi Street, Victoria Island"),
+    ("15 Oba Akran Avenue, Ikeja", "27 Ikorodu Road, Palmgrove"),
+    ("39 Adeola Odeku Street, Victoria Island", "6 Ogunlana Drive, Surulere"),
+    ("22 Awolowo Way, Ikeja", "11 Sanusi Fafunwa Street, Victoria Island"),
+    ("50 Ahmadu Bello Way, Victoria Island", "4 Montgomery Road, Yaba"),
+]
 
 
 @dataclass
@@ -100,11 +118,35 @@ def build_school(
     tenant = school.tenant
     SchoolBranding.objects.get_or_create(school=school)
 
-    main, _ = Branch.all_objects.get_or_create(
+    # Two different streets per school, picked from the slug so a given school
+    # always seeds the same pair. A branch with no address renders as "No
+    # address on file" on the branches screen, which is honest but makes every
+    # seeded school look half-built when the point of the seed is to show the
+    # screen working.
+    # crc32 rather than a character sum: summing characters collides constantly
+    # on slugs of similar length, and two seeded schools sharing a street makes
+    # the whole fixture look copy-pasted.
+    street = _STREETS[zlib.crc32(slug.encode()) % len(_STREETS)]
+    # No trailing state: ``state`` is its own column and the branches screen
+    # joins address, state and country. Including it here rendered
+    # "GRA Ikeja, Lagos, Lagos, Nigeria".
+    main_address = street[0]
+    annex_address = street[1]
+
+    # Renamed BEFORE the get_or_create below, not instead of it. That call keys
+    # on the name, so simply changing the string would leave every school seeded
+    # earlier with its old "Main Campus" row and create a second "Main Branch"
+    # beside it. They are branches, and the seed should say so.
+    Branch.all_objects.filter(
         tenant=tenant, name=f"{name} Main Campus",
+    ).update(name=f"{name} Main Branch")
+
+    main, _ = Branch.all_objects.get_or_create(
+        tenant=tenant, name=f"{name} Main Branch",
         defaults=dict(
             is_main=True, status="ACTIVE", country="Nigeria", state="Lagos",
             _type="Secondary", email=f"main@{slug}.example.com",
+            address=main_address,
         ),
     )
     if extra_branch:
@@ -113,8 +155,20 @@ def build_school(
             defaults=dict(
                 is_main=False, status="ACTIVE", country="Nigeria", state="Lagos",
                 _type="Primary", email=f"annex@{slug}.example.com",
+                address=annex_address,
             ),
         )
+
+    # Top up a branch seeded before addresses were added here. ``get_or_create``
+    # only applies its defaults on creation, so without this every school seeded
+    # earlier keeps an empty address for good. Only a BLANK one is filled, so a
+    # branch somebody has since given a real address is left alone.
+    Branch.all_objects.filter(
+        tenant=tenant, is_main=True, address="",
+    ).update(address=main_address)
+    Branch.all_objects.filter(
+        tenant=tenant, is_main=False, address="",
+    ).update(address=annex_address)
 
     # Roles copied from the prebuilt templates, never hand-assembled: a role
     # built here would carry whatever this file happened to list and would drift

@@ -1,8 +1,8 @@
-"""A school can read its own campuses, and only its own.
+"""A school can read its own branches, and only its own.
 
 Written because it could not. Every view in ``views/branch.py`` demands
 ``platform.branches.*``, which is PLATFORM-scoped and held by no school role, so
-a live school administrator asking for her own sites was refused outright -
+a live school administrator asking for her own branches was refused outright -
 verified against lagoon-view before this existed.
 
 The fix is deliberately the read half only. Creating and editing a branch stays
@@ -32,7 +32,7 @@ class MyBranchesTests(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.school = make_school(slug="bright-star", name="Bright Star")
-        cls.main = make_branch(cls.school, name="Main Campus", is_main=True)
+        cls.main = make_branch(cls.school, name="Main Branch", is_main=True)
         cls.annex = make_branch(cls.school, name="Lekki Annex", is_main=False)
         cls.tenant = cls.school.tenant
 
@@ -54,15 +54,15 @@ class MyBranchesTests(TestCase):
         client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
         return client
 
-    def test_a_school_reads_its_own_campuses(self):
+    def test_a_school_reads_its_own_branches(self):
         response = self.client_for(self.admin).get(
             reverse("my-branch-list"), {"tenant": self.tenant.slug},
         )
         self.assertEqual(response.status_code, 200, response.data)
         names = {row["name"] for row in response.data["data"]}
-        self.assertEqual(names, {"Main Campus", "Lekki Annex"})
+        self.assertEqual(names, {"Main Branch", "Lekki Annex"})
 
-    def test_the_main_campus_leads(self):
+    def test_the_main_branch_leads(self):
         """Ordered the way a school talks about its own sites."""
         response = self.client_for(self.admin).get(
             reverse("my-branch-list"), {"tenant": self.tenant.slug},
@@ -77,10 +77,10 @@ class MyBranchesTests(TestCase):
         self.assertNotIn("Greenfield Main", names)
 
     def test_a_code_this_school_does_not_have_is_a_404(self):
-        """A campus this school has no code for is absent, not forbidden.
+        """A branch this school has no code for is absent, not forbidden.
 
         Note that branch codes are PER SCHOOL, so Greenfield's code 1 and Bright
-        Star's code 1 are different campuses - asking for 1 correctly returns
+        Star's code 1 are different branches - asking for 1 correctly returns
         Bright Star's own. The case that matters is a code only the other school
         has, which is what this builds.
         """
@@ -100,7 +100,7 @@ class MyBranchesTests(TestCase):
         """There is no Student, Teacher or Class model in the product yet.
 
         Null says "not known" and the screen renders a dash. A zero would say
-        the campus has no students, which is a different and false claim.
+        the branch has no students, which is a different and false claim.
         """
         response = self.client_for(self.admin).get(
             reverse("my-branch-list"), {"tenant": self.tenant.slug},
@@ -132,7 +132,7 @@ class MyBranchesTests(TestCase):
         url = f"{reverse('my-branch-list')}?tenant={self.tenant.slug}"
         for method in ("post", "put", "patch", "delete"):
             response = getattr(client, method)(
-                url, {"name": "New Campus"}, format="json",
+                url, {"name": "New Branch"}, format="json",
             )
             self.assertEqual(
                 response.status_code, 405,
