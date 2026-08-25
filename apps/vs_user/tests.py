@@ -2694,14 +2694,28 @@ class EmailCaseCreationChecksAgreeTests(TestCase):
         )
 
     def test_admin_provisioning_treats_a_case_variant_as_the_same_account(self):
-        """The idempotency check that used to miss and blow its own savepoint."""
+        """The idempotency check that used to miss and blow its own savepoint.
+
+        The role is here so the case-folding is what the test measures. Since
+        the four-rules change, ``provision_admin_user`` refuses to post an
+        existing user it cannot grant anything to - an admin who can sign in and
+        do nothing is not a provisioned admin - and that refusal fires before
+        the address is ever compared. Passing no role would make this pass or
+        fail on the role rule instead, which
+        ``vs_schools.tests_admin_provisioning`` already owns.
+        """
         from types import SimpleNamespace
 
         from schools.vs_schools.models import InviteStatus
         from schools.vs_schools.services.admin_provisioning import provision_admin_user
+        from vs_rbac.models import TenantRoleTemplate
 
         school = make_school(name="Bright Star School", slug="bright-star")
         existing = make_school_admin(school, email="head@bright-star.test")
+        role = TenantRoleTemplate.objects.create(
+            tenant=school.tenant, key="school_admin", name="School Admin",
+            status="ACTIVE",
+        )
         link = SimpleNamespace(
             invite_status=InviteStatus.QUEUED, invite_sent_at=None,
             save=lambda **kwargs: None,
@@ -2710,9 +2724,11 @@ class EmailCaseCreationChecksAgreeTests(TestCase):
         returned = provision_admin_user(
             contact=SimpleNamespace(email="HEAD@Bright-Star.TEST", full_name="Head Teacher"),
             admin_link=link, school=school, branch=None,
-            role="", actor=None,
+            role=role.key, actor=None,
         )
 
+        # The mixed-case address resolved to the account already on file rather
+        # than minting a second one beside it.
         self.assertEqual(returned, existing)
         self.assertEqual(link.invite_status, InviteStatus.SENT)
 
