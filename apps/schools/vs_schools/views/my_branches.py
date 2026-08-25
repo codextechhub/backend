@@ -21,8 +21,24 @@ new branch or a corrected address asks CodeX, which is the same answer the
 branch endpoints give today - only now it is a screen saying so rather than a
 403 nobody can act on.
 
-**It is NOT on the pending-tenant surface.** Branches are a live-school screen;
-during onboarding the control room is the whole app.
+**The list IS on the pending-tenant surface; the detail read is not.** That is a
+correction rather than an original position. This module first reasoned that
+branches are a live-school screen and that during onboarding the control room is
+the whole app, which is right about a *branches screen* and wrong about this
+list, because academic structure is built before go-live and cannot be built
+without it.
+
+``TaskKey.ACADEMIC_STRUCTURE`` is a required onboarding task
+(``schools/vs_onboarding/constants.py``), and M13's screens scope a department,
+a programme, a level, a class or a subject to "the whole school" or to one
+branch. That control reads this list. With the surface shut, a two-branch school
+still PENDING gets an empty branch picker, cannot scope anything to a branch,
+and so cannot finish the required task that would make it live - the school is
+locked out of go-live by the gate that exists to protect go-live.
+
+Only the list is opened. Nothing before go-live reads one branch on its own, and
+``pending_tenant_surface`` is per view precisely so that absence keeps meaning
+closed for the next view added here.
 """
 from __future__ import annotations
 
@@ -64,6 +80,11 @@ class MyBranchListView(_MyBranchBase, generics.ListAPIView):
 
     docstring-name: My school's branches
     """
+
+    # A school builds its academic structure while it is still PENDING, and
+    # every "applies to" control on those screens picks from this list. See the
+    # module docstring for why the detail route below is deliberately left shut.
+    pending_tenant_surface = True
 
     pagination_class = XVSPagination
 

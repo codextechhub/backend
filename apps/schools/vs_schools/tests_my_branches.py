@@ -11,6 +11,8 @@ would have handed a school both.
 """
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
@@ -138,3 +140,94 @@ class MyBranchesTests(TestCase):
                 response.status_code, 405,
                 f"{method.upper()} must not be allowed on {url}",
             )
+
+
+class PendingSchoolBranchesTests(TestCase):
+    """A school still onboarding can read its own branches.
+
+    Written because it could not, and because the consequence was not a broken
+    screen but an unreachable go-live: ``TaskKey.ACADEMIC_STRUCTURE`` is a
+    required onboarding task, M13's screens scope every row to the whole school
+    or to one branch, and that control reads this list. Shut, a two-branch
+    school could never finish the task that would make it live.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(
+            slug="brightfield", name="Brightfield Schools", status="PENDING",
+        )
+        cls.lekki = make_branch(cls.school, name="Lekki Campus", is_main=True)
+        cls.ikeja = make_branch(cls.school, name="Ikeja Campus", is_main=False)
+        cls.tenant = cls.school.tenant
+
+        view = make_permission("school.branches.view", scope=PermissionScope.TENANT)
+        role = make_role(cls.school, name="School Admin", key="school_admin")
+        make_role_permission(role, view)
+        cls.admin = make_school_admin(
+            None, email="adaeze@brightfield.example.com", tenant=cls.tenant,
+        )
+        make_assignment(cls.school, cls.admin, role, branch=None)
+
+    def setUp(self):
+        # School.save() mirrors status onto the tenant; assert the fixture is
+        # the shape this class is about rather than trusting it.
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.status, "PENDING")
+
+    def client_for(self, user):
+        token = str(CodeXRefreshToken.for_user(user).access_token)
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        return client
+
+    def test_a_pending_school_reads_its_own_branches(self):
+        response = self.client_for(self.admin).get(
+            reverse("my-branch-list"), {"tenant": self.tenant.slug},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        names = {row["name"] for row in response.data["data"]}
+        self.assertEqual(names, {"Lekki Campus", "Ikeja Campus"})
+
+    def test_removing_the_declaration_refuses_with_tenant_not_live(self):
+        """What proves the attribute is doing the work.
+
+        Without this case the suite passes whether or not the declaration is
+        there, because every other tenant in this file is ACTIVE.
+        """
+        from schools.vs_schools.views.my_branches import MyBranchListView
+
+        with patch.object(MyBranchListView, "pending_tenant_surface", False):
+            response = self.client_for(self.admin).get(
+                reverse("my-branch-list"), {"tenant": self.tenant.slug},
+            )
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(response.data["error"]["code"], "TENANT_NOT_LIVE")
+
+    def test_the_detail_route_stays_shut_before_go_live(self):
+        """Only the list was opened, and absence still means closed.
+
+        Nothing before go-live reads one branch on its own. If that changes,
+        this fails and asks for the decision rather than letting a second
+        surface open by accident.
+        """
+        response = self.client_for(self.admin).get(
+            reverse("my-branch-detail", kwargs={"code": self.lekki.code}),
+            {"tenant": self.tenant.slug},
+        )
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(response.data["error"]["code"], "TENANT_NOT_LIVE")
+
+    def test_an_active_school_is_unaffected(self):
+        """The case an ACTIVE-only suite would have covered anyway.
+
+        Here to prove opening the surface changed nothing for a live school,
+        which is the half of the blast radius the PENDING cases cannot see.
+        """
+        self.school.status = "ACTIVE"
+        self.school.save()
+        response = self.client_for(self.admin).get(
+            reverse("my-branch-list"), {"tenant": self.tenant.slug},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data["data"]), 2)
