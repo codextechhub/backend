@@ -112,12 +112,23 @@ class _StructureBase(AcademicsViewMixin):
         branch = (params.get("branch") or "").strip()
         if branch and self.multi_branch:
             if branch.lower() in ("none", "school", "shared"):
+                # The one exclusive reading, and it is asked for by name:
+                # "show me only what is shared", which is a real question.
                 qs = qs.filter(branch__isnull=True)
             else:
                 from vs_tenants.references import resolve_branch_reference
 
+                # INCLUSIVE, and this is the whole point of a nullable branch.
+                # A null branch does not mean "no branch" - it means EVERY
+                # branch, so a school-wide department belongs to Ikeja as much
+                # as an Ikeja-only one does. Filtering on equality alone read it
+                # as "unassigned" and emptied the screen: most of a catalogue is
+                # shared, so picking a branch hid nearly everything the branch
+                # actually has. The tree, the overview and the export datasets
+                # all already read it this way; the lists were the odd one out.
                 qs = qs.filter(
-                    branch=resolve_branch_reference(self.tenant, branch, "branch"),
+                    Q(branch__isnull=True)
+                    | Q(branch=resolve_branch_reference(self.tenant, branch, "branch")),
                 )
         return qs
 

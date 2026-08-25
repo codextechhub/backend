@@ -50,6 +50,30 @@ class _Base(TestCase):
         cls.solo = make_school(slug="st-monicas", name="St. Monica's Academy")
         make_branch(cls.solo, name="Main Campus", is_main=True)
 
+        cls.live = make_school(slug="holy-cross", name="Holy Cross College")
+        make_branch(cls.live, name="Holy Cross Main Branch", is_main=True)
+        make_branch(cls.live, name="Holy Cross Annex", is_main=False)
+
+    def test_the_cast_and_this_fixture_name_the_same_schools(self):
+        """A school added to CAST and not here fails EVERY test in this file.
+
+        The seeder refuses a slug it cannot find, so the failure is eight
+        CommandErrors rather than one clear miss - which is what it did when
+        holy-cross joined the cast. Asserting the pair keeps the next addition
+        to a single, readable failure.
+        """
+        from schools.vs_academics.management.commands.seed_academic_scenarios import (
+            CAST,
+        )
+
+        from schools.vs_schools.models import School
+
+        seeded = set(School.objects.values_list("slug", flat=True))
+        self.assertEqual(
+            sorted(set(CAST) - seeded), [],
+            "these are in CAST but not built by this fixture",
+        )
+
     def seed(self, only=None):
         out = StringIO()
         call_command(
