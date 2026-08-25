@@ -60,6 +60,10 @@ class SeedSchoolPermissionsKeyTests(TestCase):
             "academics.session.view",
             "academics.calendar.manage",
             "academics.classes.assign",
+            "academics.structure.view",
+            "academics.structure.manage",
+            "academics.subject.create",
+            "academics.subject.manage",
         ):
             self.assertTrue(
                 Permission.objects.filter(key=key).exists(),
@@ -67,16 +71,22 @@ class SeedSchoolPermissionsKeyTests(TestCase):
             )
 
     def test_total_key_count(self):
-        """48 = the 46 the catalogue shipped with, plus school.profile.{view,update}.
+        """56 = 48, plus M13's academics.structure.* and academics.subject.*.
 
         Deliberately a hand-maintained number: the school permission surface
         growing is something a person should have to notice and agree to, so
         adding a key is meant to fail here until someone updates it.
+
+        The 48 was the 46 the catalogue shipped with plus
+        school.profile.{view,update}. The eight added at M13 are two new
+        resources on the academics module, four verbs each: ``structure`` for
+        departments, programs and levels, and ``subject``. They are agreed to
+        here rather than merely observed.
         """
         _run_school_seed()
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            48,
+            56,
         )
 
     def test_impersonation_keys_are_critical_and_restricted(self):
@@ -135,8 +145,9 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
             .values_list("permission_id", flat=True)
         )
 
-    def test_school_admin_gets_all_48(self):
-        self.assertEqual(len(self._defaults("school_admin")), 48)
+    def test_school_admin_gets_all_56(self):
+        """A school admin holds every key in both modules, M13's eight included."""
+        self.assertEqual(len(self._defaults("school_admin")), 56)
 
     def test_only_school_admin_gets_impersonation_by_default(self):
         # The most powerful school keys must never be a branch_admin/teacher
@@ -160,19 +171,41 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         self.assertFalse(overrides & self._defaults("teacher"))
 
     def test_branch_admin_default_count(self):
-        """23 = 22, plus reading the school profile.
+        """27 = 23, plus four of M13's eight.
 
-        A branch admin reads the profile because the currency and term
-        structure on it govern screens they work in; changing it stays with
-        the school admin, so only the .view key lands here.
+        The 23 was 22 plus reading the school profile: a branch admin reads it
+        because the currency and term structure on it govern screens they work
+        in, and changing it stays with the school admin.
+
+        M13 adds four and withholds four, which is the shape of the module
+        rather than an oversight. A branch admin reads the structure and works
+        with subjects - academics.structure.view, academics.subject.view,
+        .create and .update - because a subject may genuinely belong to one
+        branch. Creating a department, a programme or a level is a statement
+        about the whole school's curriculum, so structure.create, .update and
+        .manage stay with the school admin, and so does subject.manage, which
+        deletes.
         """
-        self.assertEqual(len(self._defaults("branch_admin")), 23)
+        self.assertEqual(len(self._defaults("branch_admin")), 27)
+        self.assertIn("academics.subject.create", self._defaults("branch_admin"))
+        self.assertNotIn("academics.structure.create", self._defaults("branch_admin"))
         self.assertIn("school.profile.view", self._defaults("branch_admin"))
         self.assertNotIn("school.profile.update", self._defaults("branch_admin"))
 
     def test_teacher_default_count(self):
+        """9 = 7, plus the two read keys M13 gives a teacher.
+
+        A teacher reads the structure and the subjects and writes neither.
+        Note that academics.classes.update was already a teacher default before
+        M13, which the FRD records as an open question rather than a decision
+        this module took.
+        """
         keys = self._defaults("teacher")
-        self.assertEqual(len(keys), 7)
+        self.assertEqual(len(keys), 9)
+        self.assertIn("academics.structure.view", keys)
+        self.assertIn("academics.subject.view", keys)
+        self.assertNotIn("academics.structure.create", keys)
+        self.assertNotIn("academics.subject.create", keys)
         self.assertIn("school.dashboard.view", keys)
         self.assertIn("school.students.view", keys)
         self.assertIn("academics.classes.update", keys)
@@ -214,8 +247,8 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        # school_admin defaults are all 48 keys.
-        self.assertEqual(len(keys), 48)
+        # school_admin defaults are all 56 keys.
+        self.assertEqual(len(keys), 56)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
         self.assertIn("academics.classes.assign", keys)
@@ -266,7 +299,7 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=teacher_role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        self.assertEqual(len(keys), 7)
+        self.assertEqual(len(keys), 9)
         self.assertIn("school.students.view", keys)
         self.assertNotIn("school.students.create", keys)
 

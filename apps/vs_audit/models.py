@@ -65,6 +65,7 @@ class AuditModuleKey(models.TextChoices):
     FINANCE = "FINANCE", "Finance"
     PROCUREMENT = "PROCUREMENT", "Procurement"
     SCHOOL = "SCHOOL", "School Management"
+    ACADEMICS = "ACADEMICS", "Academic Structure"
     BRANCH = "BRANCH", "Branch Management"
     EXPORTS = "EXPORTS", "Export Centre"
     SYSTEM = "SYSTEM", "System"
@@ -163,6 +164,22 @@ class AuditActionType(models.TextChoices):
     # school, so both have to be findable afterwards.
     ONBOARDING_EXPIRED = "ONBOARDING_EXPIRED", "Onboarding Expired"
     ONBOARDING_REINSTATED = "ONBOARDING_REINSTATED", "Onboarding Reinstated"
+
+    # Academic structure (M13). Registered before the module emits anything,
+    # for the reason the onboarding block above gives. Only the lifecycle
+    # events that CREATE, UPDATE and DELETE cannot express are listed: an
+    # ordinary create or edit of a department, a programme or a class uses the
+    # generic three with entity_type naming the model.
+    ACADEMIC_SESSION_ACTIVATED = "ACADEMIC_SESSION_ACTIVATED", "Academic Session Activated"
+    ACADEMIC_SESSION_ARCHIVED = "ACADEMIC_SESSION_ARCHIVED", "Academic Session Archived"
+    # A session losing branches to another session that claimed them. Without
+    # it a school-wide year silently stops covering a branch and nothing in the
+    # trail says when or why (M13 FR-013).
+    ACADEMIC_SESSION_NARROWED = "ACADEMIC_SESSION_NARROWED", "Academic Session Narrowed"
+    ACADEMIC_TERM_ARCHIVED = "ACADEMIC_TERM_ARCHIVED", "Academic Term Archived"
+    ACADEMIC_CLASS_ARCHIVED = "ACADEMIC_CLASS_ARCHIVED", "Academic Class Archived"
+    ACADEMIC_CLASS_RESTORED = "ACADEMIC_CLASS_RESTORED", "Academic Class Restored"
+    ACADEMIC_STRUCTURE_BULK_CREATED = "ACADEMIC_STRUCTURE_BULK_CREATED", "Academic Structure Bulk Created"
 
     CUSTOM = "CUSTOM", "Custom"
 

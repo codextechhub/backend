@@ -113,12 +113,9 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
         (
             "school.branches.view",
             "school.branches.manage",
-            # ``create`` and ``update`` are deliberately absent. Every branch
-            # view demands ``platform.branches.*``, which no school role holds,
-            # so a school administrator posting to the branch endpoint is
-            # refused outright. Offering the keys here promised something the
-            # API declines, and the import engine was briefly a way around it -
-            # see vs_import_data/datasets.py.
+            # ``create`` and ``update`` are deliberately absent - see
+            # DELIBERATELY_UNGROUPED below, which is where that decision is
+            # recorded in a form the exhaustiveness test can read.
         ),
     ),
     (
@@ -172,8 +169,9 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
     (
         "Academic Sessions",
         SCHOOL_WIDE,
-        "Open, edit and close academic sessions and terms. A session is the "
-        "school's, and every branch sits inside the same one.",
+        "Open, edit and close academic sessions and terms. A session normally "
+        "covers the whole school, and can be narrowed to named branches when "
+        "one of them runs its own year.",
         (
             "academics.session.view",
             "academics.session.create",
@@ -237,6 +235,31 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
         ),
     ),
     (
+        "Academic Structure",
+        BRANCH_SCOPABLE,
+        "Build the departments, programmes and levels a school teaches. Held "
+        "for one branch it shows that branch's, plus everything the school "
+        "shares.",
+        (
+            "academics.structure.view",
+            "academics.structure.create",
+            "academics.structure.update",
+            "academics.structure.manage",
+        ),
+    ),
+    (
+        "Subjects",
+        BRANCH_SCOPABLE,
+        "Add subjects and record the levels they are taught at. A subject can "
+        "belong to the whole school or to one branch.",
+        (
+            "academics.subject.view",
+            "academics.subject.create",
+            "academics.subject.update",
+            "academics.subject.manage",
+        ),
+    ),
+    (
         "Academic Calendar",
         BRANCH_SCOPABLE,
         "Add and edit calendar entries. A branch keeps its own dates inside the "
@@ -269,6 +292,25 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
 #: ``BRANCH_ADMIN``: it says which keys are meaningless when pinned to one
 #: branch, which is the only thing those two personas ever really recorded. It
 #: is exported rather than left implicit in the table.
+#: Keys that exist in the registry and belong in no bundle, on purpose.
+#:
+#: The exhaustiveness test treats an ungrouped key as an omission, which is
+#: right: a key nobody can find is a key nobody can grant. But a deliberate
+#: exclusion is a different thing from a forgotten one, and it has to be
+#: written somewhere the test can read, or the test fails forever and is
+#: eventually deleted rather than answered.
+#:
+#: ``school.branches.create`` and ``.update`` are here because every branch
+#: write view demands ``platform.branches.*``, which no school role holds. A
+#: school administrator posting to the branch endpoint is refused outright, so
+#: offering the keys in a bundle would promise something the API declines. The
+#: import engine was briefly a way around that - see vs_import_data/datasets.py.
+DELIBERATELY_UNGROUPED: frozenset[str] = frozenset({
+    "school.branches.create",
+    "school.branches.update",
+})
+
+
 SCHOOL_WIDE_KEYS: frozenset[str] = frozenset(
     key
     for _name, reach, _description, keys in SCHOOL_PERMISSION_GROUPS

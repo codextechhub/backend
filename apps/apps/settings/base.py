@@ -114,6 +114,7 @@ INSTALLED_APPS = [
     # XVS, the schools product. Everything school-shaped lives under
     # apps/schools/; the app label stays "vs_schools" (see its AppConfig).
     "schools.vs_schools",
+    "schools.vs_academics",
     # M9. School-specific by construction, so it sits beside vs_schools under
     # apps/schools/ and never beside the domain-neutral engines.
     "schools.vs_onboarding",

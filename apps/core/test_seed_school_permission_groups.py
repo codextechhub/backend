@@ -22,6 +22,7 @@ from core.management.commands.seed_school_permission_groups import (
     BRANCH_SCOPABLE_KEYS,
     SCHOOL_PERMISSION_GROUPS,
     SCHOOL_WIDE,
+    DELIBERATELY_UNGROUPED,
     SCHOOL_WIDE_KEYS,
 )
 from vs_rbac.evaluator import get_effective_permissions
@@ -100,7 +101,7 @@ class SchoolPermissionGroupTableTests(TestCase):
         """
         _seed_every_module()
 
-        catalogued = SCHOOL_WIDE_KEYS | BRANCH_SCOPABLE_KEYS
+        catalogued = SCHOOL_WIDE_KEYS | BRANCH_SCOPABLE_KEYS | DELIBERATELY_UNGROUPED
         registered = set(
             Permission.objects.filter(
                 module_id__in=["school", "academics"],
@@ -109,7 +110,30 @@ class SchoolPermissionGroupTableTests(TestCase):
         self.assertEqual(
             registered - catalogued,
             set(),
-            "school/academics keys exist that no permission group places.",
+            "school/academics keys exist that no permission group places. Add "
+            "them to a bundle, or to DELIBERATELY_UNGROUPED with the reason.",
+        )
+
+    def test_a_deliberate_exclusion_is_a_real_key_and_is_in_no_bundle(self):
+        """The escape hatch must not become a way to hide a mistake.
+
+        Without this, DELIBERATELY_UNGROUPED could be padded with typos or
+        with keys that are in fact grouped, and the exhaustiveness test above
+        would keep passing while meaning less each time.
+        """
+        _seed_every_module()
+        registered = set(
+            Permission.objects.filter(
+                module_id__in=["school", "academics"],
+            ).values_list("key", flat=True)
+        )
+        self.assertTrue(
+            DELIBERATELY_UNGROUPED <= registered,
+            "DELIBERATELY_UNGROUPED names a key the seeder does not register.",
+        )
+        self.assertFalse(
+            DELIBERATELY_UNGROUPED & (SCHOOL_WIDE_KEYS | BRANCH_SCOPABLE_KEYS),
+            "A key cannot be both deliberately ungrouped and in a bundle.",
         )
 
     def test_the_table_calls_a_branch_a_branch(self):

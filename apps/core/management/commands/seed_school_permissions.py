@@ -3,7 +3,8 @@ and backfill already-onboarded schools.
 
 This is the single source of truth for the school-facing permission keys used by
 school-fe (the XVS school-facing app). It registers two modules - ``school``
-(administration / people) and ``academics`` (sessions / calendar / classes) -
+(administration / people) and ``academics`` (sessions / calendar / classes /
+structure / subject) -
 then attaches sensible defaults to the ``school_admin`` / ``branch_admin`` /
 ``teacher`` PrebuiltRoleTemplates and, critically, backfills those defaults into
 any existing tenant role template that was provisioned from one of those prebuilt
@@ -136,11 +137,25 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("academics", "classes", "update",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
     ("academics", "classes", "manage",         _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("academics", "classes", "assign",         _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+
+    # M13 Academic Structure. "structure" covers departments, programs and
+    # levels, which are one screen and one mental object to a school; "subject"
+    # is its own resource because a branch admin may create one and may not
+    # create a programme. Sessions and classes reuse the resources above.
+    ("academics", "structure", "view",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
+    ("academics", "structure", "create",       _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
+    ("academics", "structure", "update",       _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
+    ("academics", "structure", "manage",       _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+
+    ("academics", "subject", "view",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
+    ("academics", "subject", "create",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("academics", "subject", "update",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("academics", "subject", "manage",         _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 ]
 
 MODULES: dict[str, str] = {
     "school": "School administration - branches, people, fees, settings, roles.",
-    "academics": "Academic operations - sessions, calendar, classes.",
+    "academics": "Academic operations - sessions, calendar, classes, structure, subjects.",
 }
 
 # Short descriptions per resource (for PermissionResource rows).
@@ -159,6 +174,8 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("academics", "session"):     "Academic sessions",
     ("academics", "calendar"):    "Academic calendar",
     ("academics", "classes"):     "Classes",
+    ("academics", "structure"):   "Academic structure - departments, programs and levels",
+    ("academics", "subject"):     "Subjects and the levels they are offered at",
 }
 
 
