@@ -1784,6 +1784,22 @@ class UserBranchAssignmentTests(TestCase):
 
     # -- refusals ---------------------------------------------------------
 
+    def test_user_creation_cannot_assign_restricted_role_above_grant_ceiling(self):
+        from vs_rbac.tests.helpers import make_permission, make_role_permission
+
+        restricted = make_permission(
+            "payments.payout.create", is_restricted=True,
+            sensitivity_level="CRITICAL",
+        )
+        make_role_permission(self.role, restricted)
+
+        resp = self._post()
+
+        self.assertEqual(resp.status_code, 403, resp.content)
+        self.assertFalse(
+            User.objects.filter(email="new.person@branched.test").exists()
+        )
+
     def test_branch_from_another_tenant_is_refused_exactly_like_an_unknown_one(self):
         """A foreign branch must not be distinguishable from a missing one.
 

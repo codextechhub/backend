@@ -121,6 +121,17 @@ class UserPermissionOverrideTests(TestCase):
         _override(self.target, extra, UserPermissionOverride.Mode.ALLOW)
         self.assertTrue(has_permission(_fresh(self.target), extra, tenant=self.tenant))
 
+    def test_legacy_restricted_allow_is_ignored(self):
+        key = "payments.payout.create"
+        permission = make_permission(key)
+        _override(self.target, key, UserPermissionOverride.Mode.ALLOW)
+        permission.is_restricted = True
+        permission.save(update_fields=["is_restricted", "updated_at"])
+
+        self.assertNotIn(
+            key, get_effective_permissions(_fresh(self.target), tenant=self.tenant),
+        )
+
     def test_deny_beats_allow_for_the_same_key(self):
         # The unique constraint makes an ALLOW+DENY pair impossible to persist,
         # so the ordering is asserted at the evaluator boundary directly:
@@ -304,6 +315,20 @@ class UserPermissionOverrideTests(TestCase):
 
         me = _client(self.target).get(_q(reverse("auth-me"), self.slug))
         self.assertIn(extra, me.json()["data"]["permissions"])
+
+    def test_restricted_allow_override_is_rejected(self):
+        key = "payments.payout.create"
+        make_permission(
+            key, is_restricted=True,
+            sensitivity_level="CRITICAL",
+        )
+
+        resp = self._create(
+            permission=key, mode="ALLOW", reason="Temporary payout cover.",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(UserPermissionOverride.objects.filter(permission_id=key).exists())
 
     def test_lift_restores_role_access(self):
         created = self._create().json()["data"]

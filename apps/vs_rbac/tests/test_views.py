@@ -57,6 +57,7 @@ ROLE_KEYS = [
     "school.roles.delete",
     "school.roles.assign",
 ]
+ROLE_APPROVE_KEY = "school.roles.approve"
 
 
 def _grant(user, keys, tenant=None):
@@ -211,6 +212,31 @@ class TenantRoleTemplateViewTests(TestCase):
         self.assertEqual(role.role_permissions.count(), 1)
         self.assertTrue(role.key)
 
+    def test_create_role_rejects_restricted_permission(self):
+        make_permission(
+            "payments.payout.create", is_restricted=True,
+            sensitivity_level=Permission.Sensitivity.CRITICAL,
+        )
+        resp = _token_client(self.admin).post(
+            self._list_url(),
+            {
+                "name": "Temporary Payments Officer",
+                "permission_keys": ["payments.payout.create"],
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(
+            TenantRoleTemplate.objects.filter(
+                tenant=self.school.tenant, name="Temporary Payments Officer",
+            ).exists()
+        )
+        payout = _token_client(self.admin).post(
+            _q(reverse("payments-payouts"), self.slug), {}, format="json",
+        )
+        self.assertEqual(payout.status_code, status.HTTP_403_FORBIDDEN)
+
     def test_create_role_ignores_body_tenant_mass_assignment(self):
         other = make_school(slug="mass-other", name="Mass Other")
         data = {"name": "Scoped Role", "tenant": other.slug}
@@ -251,6 +277,22 @@ class TenantRoleTemplateViewTests(TestCase):
             {"students.profile.update"},
         )
         self.assertEqual(role.version, 2)
+
+    def test_update_role_rejects_new_restricted_permission(self):
+        role = make_role(self.school, name="Payments Officer")
+        make_permission(
+            "payments.payout.create", is_restricted=True,
+            sensitivity_level=Permission.Sensitivity.CRITICAL,
+        )
+
+        resp = _token_client(self.admin).patch(
+            self._detail_url(role.key),
+            {"permission_keys": ["payments.payout.create"]},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(role.role_permissions.exists())
 
     def test_delete_role(self):
         role = make_role(self.school, name="Teacher")
@@ -344,6 +386,26 @@ class TenantUserRoleAssignmentViewTests(TestCase):
         self.assertEqual(resp.data["data"]["role_key"], self.role.key)
         self.assertEqual(resp.data["data"]["assigned_by_id"], str(self.admin.id))
         self.assertEqual(resp.data["data"]["assigned_by_name"], self.admin.full_name)
+
+    def test_cannot_assign_restricted_role_above_grant_ceiling(self):
+        restricted = make_permission(
+            "payments.payout.create", is_restricted=True,
+            sensitivity_level=Permission.Sensitivity.CRITICAL,
+        )
+        make_role_permission(self.role, restricted)
+
+        resp = _token_client(self.admin).post(
+            self._list_url(),
+            {"user": self.admin.id, "role": self.role.id},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(
+            TenantUserRoleAssignment.objects.filter(
+                user=self.admin, role=self.role,
+            ).exists()
+        )
 
     def test_list_and_filter(self):
         make_assignment(self.school, self.staff, self.role)
@@ -492,6 +554,30 @@ class TenantUserRoleAssignmentViewTests(TestCase):
         self.assertEqual(replacement.reason_note, "Promotion")
         self.assertEqual(resp.data["data"]["assigned_by_name"], self.admin.full_name)
 
+    def test_replace_rejects_restricted_role_above_grant_ceiling(self):
+        old = make_assignment(self.school, self.staff, self.role)
+        restricted_role = make_role(self.school, name="Payout Officer")
+        restricted = make_permission(
+            "payments.payout.create", is_restricted=True,
+            sensitivity_level=Permission.Sensitivity.CRITICAL,
+        )
+        make_role_permission(restricted_role, restricted)
+
+        resp = _token_client(self.admin).post(
+            self._replace_url(old.id),
+            {"role": restricted_role.id, "reason_note": "Temporary cover"},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        old.refresh_from_db()
+        self.assertEqual(old.assignment_status, "ACTIVE")
+        self.assertFalse(
+            TenantUserRoleAssignment.objects.filter(
+                user=self.staff, role=restricted_role,
+            ).exists()
+        )
+
     def test_replace_assignment_preserves_other_active_roles(self):
         old = make_assignment(self.school, self.staff, self.role)
         retained_role = make_role(self.school, name="Exam Officer")
@@ -570,6 +656,10 @@ class TenantRoleChangeRequestViewTests(TestCase):
         self.slug = self.school.slug
         self.admin = make_school_admin(self.branch, email="rcr-admin@test.com")
         _grant(self.admin, ROLE_KEYS)
+        self.reviewer = make_school_admin(
+            self.branch, email="rcr-reviewer@test.com",
+        )
+        _grant(self.reviewer, [ROLE_APPROVE_KEY])
         self.plain = make_staff_user(self.branch, email="rcr-plain@test.com")
         self.role = make_role(self.school, name="Finance Manager")
         self.perm_view = make_permission("finance.invoice.view")
@@ -642,13 +732,13 @@ class TenantRoleChangeRequestViewTests(TestCase):
             request=rcr, permission=self.perm_export,
             operation=TenantRoleChangeDeltaItem.Operation.ADD,
         )
-        resp = _token_client(self.admin).post(
+        resp = _token_client(self.reviewer).post(
             self._decide_url(rcr.id), {"action": "APPROVE", "notes": "ok"}, format="json"
         )
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         rcr.refresh_from_db()
         self.assertEqual(rcr.status, "APPROVED")
-        self.assertEqual(rcr.reviewer, self.admin)
+        self.assertEqual(rcr.reviewer, self.reviewer)
         self.assertEqual(
             set(TenantRolePermission.objects.filter(role=self.role, granted=True)
                 .values_list("permission_id", flat=True)),
@@ -657,7 +747,7 @@ class TenantRoleChangeRequestViewTests(TestCase):
 
     def test_deny(self):
         rcr = make_role_change_request(self.school, self.admin, self.role)
-        resp = _token_client(self.admin).post(
+        resp = _token_client(self.reviewer).post(
             self._decide_url(rcr.id), {"action": "DENY", "notes": "no"}, format="json"
         )
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
@@ -666,23 +756,100 @@ class TenantRoleChangeRequestViewTests(TestCase):
 
     def test_deny_without_notes_rejected(self):
         rcr = make_role_change_request(self.school, self.admin, self.role)
-        resp = _token_client(self.admin).post(
+        resp = _token_client(self.reviewer).post(
             self._decide_url(rcr.id), {"action": "DENY", "notes": ""}, format="json"
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_decide_already_decided_conflict(self):
         rcr = make_role_change_request(self.school, self.admin, self.role, status="APPROVED")
-        resp = _token_client(self.admin).post(
+        resp = _token_client(self.reviewer).post(
             self._decide_url(rcr.id), {"action": "DENY", "notes": "late"}, format="json"
         )
         self.assertEqual(resp.status_code, status.HTTP_409_CONFLICT)
 
     def test_decide_not_found(self):
-        resp = _token_client(self.admin).post(
+        resp = _token_client(self.reviewer).post(
             self._decide_url(999999), {"action": "APPROVE"}, format="json"
         )
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_requester_cannot_approve_own_request(self):
+        _grant(self.admin, [ROLE_APPROVE_KEY])
+        rcr = make_role_change_request(self.school, self.admin, self.role)
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=self.perm_view,
+            operation=TenantRoleChangeDeltaItem.Operation.ADD,
+        )
+
+        resp = _token_client(self.admin).post(
+            self._decide_url(rcr.id), {"action": "APPROVE"}, format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        rcr.refresh_from_db()
+        self.assertEqual(rcr.status, TenantRoleChangeRequest.Status.PENDING)
+
+    def test_restricted_approval_enforces_reviewer_grant_ceiling(self):
+        restricted = make_permission(
+            "payments.payout.create", is_restricted=True,
+            sensitivity_level=Permission.Sensitivity.CRITICAL,
+        )
+        rcr = make_role_change_request(self.school, self.admin, self.role)
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=restricted,
+            operation=TenantRoleChangeDeltaItem.Operation.ADD,
+        )
+
+        refused = _token_client(self.reviewer).post(
+            self._decide_url(rcr.id), {"action": "APPROVE"}, format="json",
+        )
+        self.assertEqual(refused.status_code, status.HTTP_403_FORBIDDEN)
+        rcr.refresh_from_db()
+        self.assertEqual(rcr.status, TenantRoleChangeRequest.Status.PENDING)
+        self.assertFalse(self.role.role_permissions.filter(permission=restricted).exists())
+
+        _grant(self.reviewer, [restricted.key])
+        approved = _token_client(self.reviewer).post(
+            self._decide_url(rcr.id), {"action": "APPROVE"}, format="json",
+        )
+        self.assertEqual(approved.status_code, status.HTTP_200_OK, approved.content)
+        self.assertTrue(self.role.role_permissions.filter(permission=restricted).exists())
+
+    def test_platform_super_admin_can_bootstrap_first_restricted_holder(self):
+        restricted = make_permission(
+            "payments.payout.create", is_restricted=True,
+            sensitivity_level=Permission.Sensitivity.CRITICAL,
+        )
+        rcr = make_role_change_request(self.school, self.admin, self.role)
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=restricted,
+            operation=TenantRoleChangeDeltaItem.Operation.ADD,
+        )
+        platform_reviewer = make_vision_user(
+            email="rcr-platform-reviewer@test.com", super_admin=True,
+        )
+
+        resp = _token_client(platform_reviewer).post(
+            self._decide_url(rcr.id),
+            {"action": "APPROVE", "notes": "Initial tenant bootstrap."},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        self.assertTrue(self.role.role_permissions.filter(permission=restricted).exists())
+
+    def test_update_permission_cannot_decide_without_approval_permission(self):
+        updater = make_staff_user(self.branch, email="rcr-updater@test.com")
+        _grant(updater, ["school.roles.update"])
+        rcr = make_role_change_request(self.school, self.admin, self.role)
+
+        resp = _token_client(updater).post(
+            self._decide_url(rcr.id), {"action": "DENY", "notes": "No."},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_cross_tenant_path_404(self):
         other = make_school(slug="rcr-cross", name="Rcr Cross")
@@ -776,4 +943,44 @@ class PermissionGroupCreationScopeTests(TestCase):
 
         self.assertTrue(
             TenantRoleGroup.objects.filter(role=role, group=group).exists(),
+        )
+
+    def test_group_rejects_restricted_permission_membership(self):
+        from vs_rbac.serializers.registry import PermissionGroupDetailSerializer
+
+        make_permission(
+            "payments.payout.create", is_restricted=True,
+            sensitivity_level=Permission.Sensitivity.CRITICAL,
+        )
+        serializer = PermissionGroupDetailSerializer(data={
+            "name": "Payout shortcut",
+            "permission_keys": ["payments.payout.create"],
+        })
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("permission_keys", serializer.errors)
+
+    def test_legacy_restricted_group_member_is_not_effective(self):
+        from vs_rbac.models import GroupPermission, PermissionGroup, TenantRoleGroup
+        from vs_user.models import User
+
+        permission = make_permission("payments.payout.create")
+        group = PermissionGroup.objects.create(
+            name="Legacy payouts", scope="TENANT",
+        )
+        GroupPermission.objects.create(group=group, permission=permission)
+        school = make_school(slug="legacy-group", name="Legacy Group School")
+        branch = make_branch(school)
+        role = make_role(school, name="Legacy Payout Officer")
+        TenantRoleGroup.objects.create(role=role, group=group)
+        holder = make_staff_user(branch, email="legacy-group@test.com")
+        make_assignment(school, holder, role)
+
+        permission.is_restricted = True
+        permission.save(update_fields=["is_restricted", "updated_at"])
+
+        fresh = User.objects.get(pk=holder.pk)
+        self.assertNotIn(
+            permission.key,
+            get_effective_permissions(fresh, tenant=school.tenant),
         )

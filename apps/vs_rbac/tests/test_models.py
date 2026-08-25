@@ -91,6 +91,63 @@ class PermissionDependencyModelTests(TestCase):
             make_dependency("finance.invoice.approve", "finance.invoice.view")
 
 
+class RestrictedGrantCleanupMigrationTests(TestCase):
+    def test_cleanup_removes_unverified_grants_and_preserves_system_role_bootstrap(self):
+        import importlib
+        from django.apps import apps as django_apps
+        from vs_rbac.models import (
+            GroupPermission,
+            PermissionGroup,
+            TenantRoleGroup,
+            TenantRolePermission,
+            UserPermissionOverride,
+        )
+
+        school = make_school(slug="cleanup-school", name="Cleanup School")
+        branch = make_branch(school)
+        holder = make_staff_user(branch, email="cleanup-holder@test.com")
+        role = make_role(school, name="Cleanup Role")
+        system_role = make_role(school, name="System Bootstrap", is_system_role=True)
+        permission = make_permission("payments.payout.create")
+        group = PermissionGroup.objects.create(
+            name="Legacy payout group", scope="TENANT",
+        )
+        GroupPermission.objects.create(group=group, permission=permission)
+        TenantRoleGroup.objects.create(role=role, group=group)
+        UserPermissionOverride.objects.create(
+            tenant=school.tenant, user=holder, permission=permission,
+            mode=UserPermissionOverride.Mode.ALLOW, reason="Legacy grant.",
+        )
+        TenantRolePermission.objects.create(
+            role=role, permission=permission, granted=True,
+        )
+        TenantRolePermission.objects.create(
+            role=system_role, permission=permission, granted=True,
+        )
+        permission.is_restricted = True
+        permission.save(update_fields=["is_restricted", "updated_at"])
+
+        migration = importlib.import_module(
+            "vs_rbac.migrations.0009_remove_restricted_grant_bypasses"
+        )
+        migration.remove_bypasses(django_apps, None)
+
+        role.refresh_from_db()
+        self.assertEqual(role.version, 2)
+        self.assertFalse(GroupPermission.objects.filter(group=group).exists())
+        self.assertFalse(
+            UserPermissionOverride.objects.filter(user=holder, permission=permission).exists()
+        )
+        self.assertFalse(
+            TenantRolePermission.objects.filter(role=role, permission=permission).exists()
+        )
+        self.assertTrue(
+            TenantRolePermission.objects.filter(
+                role=system_role, permission=permission, granted=True,
+            ).exists()
+        )
+
+
 # =============================================================================
 # TenantRoleTemplate
 # =============================================================================

@@ -7,6 +7,7 @@ import logging
 
 from django.db import transaction
 from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,25 @@ from vs_tenants.models import Tenant
 
 
 class UserCreationService:
+
+    @staticmethod
+    def _enforce_role_grant_ceiling(role_instance, requesting_user) -> None:
+        if role_instance is None:
+            return
+        from vs_rbac.validators import (
+            missing_restricted_grant_authority,
+            role_restricted_permission_keys,
+        )
+
+        missing = missing_restricted_grant_authority(
+            requesting_user, role_restricted_permission_keys(role_instance),
+        )
+        if missing:
+            raise PermissionDenied(
+                "You cannot assign a role carrying restricted permissions "
+                "outside your grant authority: "
+                f"{', '.join(sorted(missing))}."
+            )
 
     @staticmethod
     def _next_employee_id(tenant) -> str:
@@ -55,6 +75,9 @@ class UserCreationService:
         role_instance = validated_data.pop('role_instance', None)
         position_instance = validated_data.pop('position_instance', None)
         profile_prefill = validated_data.pop('profile_prefill', None) or {}
+        UserCreationService._enforce_role_grant_ceiling(
+            role_instance, requesting_user,
+        )
 
         target_tenant = validated_data.get('tenant') or requesting_user.tenant
         creating_platform_staff = (
@@ -170,6 +193,9 @@ class UserCreationService:
             if role_instance is None:
                 raise ValueError({'error_code': 'ROLE_REQUIRED',
                                   'message': 'A role must be assigned before this draft can be submitted.'})
+            UserCreationService._enforce_role_grant_ceiling(
+                role_instance, requesting_user,
+            )
             TenantUserRoleAssignment.objects.create(
                 tenant=user.tenant,
                 branch=user.branch if role_instance.branch_id else None,

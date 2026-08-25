@@ -7,8 +7,8 @@ What is worth testing here is not that rows appear. It is:
 
   (a) the table names only keys that actually exist - a bundle silently missing
       a member is the failure mode a hand-maintained table has;
-  (b) every school/academics key is placed exactly once, so the catalogue is a
-      partition and not a selection;
+  (b) every school/academics key is classified exactly once, while restricted
+      keys stay out of the immediately attachable group rows;
   (c) the command grants nobody anything, which is the promise that makes it
       safe to run against a live school.
 """
@@ -176,8 +176,16 @@ class SchoolPermissionGroupSeedTests(TestCase):
             )
             self.assertEqual(
                 set(group.permissions.values_list("key", flat=True)),
-                set(keys),
+                set(
+                    Permission.objects.filter(
+                        key__in=keys, is_restricted=False,
+                    ).values_list("key", flat=True)
+                ),
                 f"Group {name!r} has the wrong membership.",
+            )
+            self.assertFalse(
+                group.permissions.filter(is_restricted=True).exists(),
+                f"Group {name!r} contains an approval bypass.",
             )
 
     def test_is_idempotent(self):

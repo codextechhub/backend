@@ -376,6 +376,10 @@ class Command(BaseCommand):
             action = "Created" if created else "Found  "
             self.stdout.write(f"  {action} group: {name!r}")
 
+            GroupPermission.objects.filter(
+                group=group, permission__is_restricted=True,
+            ).delete()
+
             added = 0
             for key in keys:
                 perm = Permission.objects.filter(key=key).first()
@@ -388,7 +392,7 @@ class Command(BaseCommand):
                 # here, at the point all three bundles link through, so a
                 # platform-scoped key added later is excluded by construction
                 # rather than crashing the seed.
-                if perm.scope != PermissionScope.TENANT:
+                if perm.scope != PermissionScope.TENANT or perm.is_restricted:
                     continue
                 _, link_created = GroupPermission.objects.get_or_create(
                     group=group,

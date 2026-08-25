@@ -22,10 +22,10 @@ row. Every school's effective permissions are byte-identical before and after a
 run. The groups are a catalogue an administrator can pick from, not a change to
 anybody's access.
 
-**It never removes a key from a group.** Membership is topped up, never pruned,
-for the same reason ``seed_school_permissions`` phase 3 never flips an explicit
-deny: an administrator who has curated a bundle must not have that undone by a
-re-run.
+**It never puts a restricted key in a group.** Restricted authority must travel
+through a reviewed role change, while attaching a group takes effect
+immediately. Re-running removes legacy restricted memberships so a bundle can
+never become an approval bypass.
 
 Reach: school-wide versus branch-scopable
 -----------------------------------------
@@ -140,6 +140,7 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
             "school.roles.view",
             "school.roles.create",
             "school.roles.update",
+            "school.roles.approve",
             "school.roles.delete",
             "school.roles.assign",
             "school.user_overrides.view",
@@ -398,6 +399,14 @@ class Command(BaseCommand):
             else:
                 self.stdout.write(f"    {name} (exists)")
 
+            removed, _ = GroupPermission.objects.filter(
+                group=group, permission__is_restricted=True,
+            ).delete()
+            if removed:
+                self.stdout.write(self.style.WARNING(
+                    f"  !  removed {removed} restricted membership(s) from {name!r}."
+                ))
+
             if not group.is_system:
                 # Somebody built a bundle of their own under this name before
                 # the catalogue claimed it. Topping it up would silently widen
@@ -411,16 +420,19 @@ class Command(BaseCommand):
 
             attached = 0
             for key in keys:
-                if not Permission.objects.filter(key=key, is_active=True).exists():
+                perm = Permission.objects.filter(key=key, is_active=True).first()
+                if perm is None:
                     # The key's own seeder has not run, or has been changed
                     # without this table being updated. Named rather than
                     # skipped in silence: a bundle that quietly loses a member
                     # is worse than one that fails to build.
                     missing_keys.append(key)
                     continue
+                if perm.is_restricted:
+                    continue
                 _, link_created = GroupPermission.objects.get_or_create(
                     group=group,
-                    permission_id=key,
+                    permission=perm,
                 )
                 if link_created:
                     attached += 1

@@ -150,4 +150,12 @@ class UserPermissionOverrideSerializer(serializers.ModelSerializer):
                     f"to a user inside a tenant."
                 ),
             })
+        if permission.is_restricted:
+            raise serializers.ValidationError({
+                "permission": (
+                    f"'{permission.pk}' is restricted and cannot be granted "
+                    "through a per-user override. Use an approved role change "
+                    "request instead."
+                ),
+            })
         return attrs

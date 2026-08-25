@@ -1499,6 +1499,60 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertEqual((batch.metadata or {}).get("approval_status"), "PENDING_APPROVAL")
         self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
 
+    # --- 3b. another school cannot submit this batch ----------------------- #
+
+    def test_another_school_cannot_submit_this_batch(self):
+        """The reported hole, on a real batch.
+
+        A bursar at a different school used to be able to POST this batch's pk
+        to the generic ``/v1/workflow/instances/`` endpoint. The instance was
+        created inside *this* school, the handler marked the batch pending
+        approval, and the 201 handed the outsider the reference, the total, the
+        provider and the names of this school's approvers. The endpoint is gone;
+        this asserts the service refuses even when a caller reaches it directly.
+        """
+        from schools.vs_schools.models import School
+        from vs_workflow.exceptions import CrossTenantDocumentError
+        from vs_workflow.models import WorkflowInstance
+        from vs_workflow.services.submission import submit_for_approval
+
+        self._publish_template()
+        self._make_approver()
+        batch = self._draft_batch(3_860_000_00)
+
+        outsider_school = School.objects.create(
+            name="Greenfield", slug="greenfield-pba", code="GRNPBA", status="ACTIVE")
+        outsider = self.User.objects.create_user(
+            email="bursar-greenfield@test.com", password="pw", status="ACTIVE",
+            first_name="Tunde", last_name="Bursar", tenant=outsider_school.tenant,
+        )
+
+        with self.assertRaises(CrossTenantDocumentError):
+            submit_for_approval(document=batch, requested_by=outsider)
+
+        # No instance filed into Cedar, and the batch is untouched: still DRAFT,
+        # no approval_status stamped, every instruction still pending.
+        self.assertFalse(WorkflowInstance.objects.for_document(batch).exists())
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+        self.assertIsNone((batch.metadata or {}).get("approval_status"))
+        self.assertTrue(all(p.status == PayoutStatus.PENDING
+                            for p in batch.instructions.all()))
+
+    def test_the_owning_school_still_submits_the_same_batch(self):
+        """The control for the test above: the guard refuses outsiders only."""
+        from vs_workflow.services.submission import submit_for_approval
+
+        self._publish_template()
+        self._make_approver()
+        batch = self._draft_batch(3_860_000_00)
+
+        instance = submit_for_approval(document=batch, requested_by=self.requester)
+
+        self.assertEqual(instance.tenant, self.school.tenant)
+        batch.refresh_from_db()
+        self.assertEqual((batch.metadata or {}).get("approval_status"), "PENDING_APPROVAL")
+
     # --- 4. SoD: requester cannot approve own batch ------------------------ #
 
     def test_requester_cannot_approve_own_batch(self):

@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.db import transaction
 from django.db.models import Count, Q
 from rest_framework import generics, status
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.views import APIView
 
 from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, DestroyModelMixin
@@ -62,6 +62,7 @@ ROLE_VIEW_KEYS = ["school.roles.view", "platform.roles.view"]
 ROLE_LIST_KEYS = ROLE_VIEW_KEYS + ["workflow.template.manage"]
 ROLE_CREATE_KEYS = ["school.roles.create", "platform.roles.create"]
 ROLE_UPDATE_KEYS = ["school.roles.update", "platform.roles.update"]
+ROLE_APPROVE_KEYS = ["school.roles.approve", "platform.roles.approve"]
 ROLE_DELETE_KEYS = ["school.roles.delete", "platform.roles.delete"]
 ROLE_ASSIGN_KEYS = ["school.roles.assign", "platform.roles.assign"]
 
@@ -1002,6 +1003,26 @@ class TenantUserRoleAssignmentReplaceView(TenantScopedRBACMixin, APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
+        from .validators import (
+            missing_restricted_grant_authority,
+            role_restricted_permission_keys,
+        )
+
+        missing = missing_restricted_grant_authority(
+            request.user, role_restricted_permission_keys(target_role),
+        )
+        if missing:
+            return error_response(
+                message=(
+                    "You cannot assign a role carrying restricted permissions "
+                    "outside your grant authority."
+                ),
+                error={"role": [
+                    f"Missing grant authority: {', '.join(sorted(missing))}."
+                ]},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         if assignment.role_id == target_role.id:
             return error_response(
                 message="The user already has this role through the selected assignment.",
@@ -1108,6 +1129,10 @@ class TenantRoleChangeRequestApprovalQueueView(TenantScopedRBACMixin, generics.L
     """
     serializer_class = TenantRoleChangeRequestSerializer
     pagination_class = XVSPagination
+    # A platform reviewer may bootstrap the first qualified holder inside a
+    # tenant. Authentication keeps RBAC evaluation on the reviewer's platform
+    # tenant while request.tenant remains the school being reviewed.
+    platform_cross_tenant_param = True
 
     def get_permissions(self):
         self.rbac_permission = ROLE_VIEW_KEYS
@@ -1139,6 +1164,7 @@ class TenantRoleChangeRequestApprovalDetailView(TenantScopedRBACMixin, RetrieveM
     """
     serializer_class = TenantRoleChangeRequestSerializer
     lookup_field = "id"
+    platform_cross_tenant_param = True
 
     def get_permissions(self):
         self.rbac_permission = ROLE_VIEW_KEYS
@@ -1167,8 +1193,10 @@ class TenantRoleChangeRequestDecisionView(TenantScopedRBACMixin, APIView):
     docstring-name: Decide a role change request
     """
 
+    platform_cross_tenant_param = True
+
     def get_permissions(self):
-        self.rbac_permission = ROLE_UPDATE_KEYS
+        self.rbac_permission = ROLE_APPROVE_KEYS
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def post(self, request, tenant_slug: str, request_id: str):
@@ -1190,6 +1218,12 @@ class TenantRoleChangeRequestDecisionView(TenantScopedRBACMixin, APIView):
             return error_response(
                 message=f"Request already decided ({obj.status}).",
                 status=status.HTTP_409_CONFLICT,
+            )
+
+        if obj.requested_by_id == request.user.pk:
+            return error_response(
+                message="You cannot decide your own role change request.",
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         if action == "DENY":
@@ -1214,6 +1248,17 @@ class TenantRoleChangeRequestDecisionView(TenantScopedRBACMixin, APIView):
                 with transaction.atomic():
                     from .services import apply_role_change_request
                     apply_role_change_request(obj=obj, reviewer=request.user, notes=notes)
+                obj.refresh_from_db()
+            except PermissionDenied as exc:
+                return error_response(
+                    message=str(exc.detail),
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            except ValidationError as exc:
+                return error_response(
+                    message=str(exc.detail),
+                    status=status.HTTP_409_CONFLICT,
+                )
             except Exception as exc:
                 obj.mark_apply_failed(reviewer=request.user, notes=str(exc))
                 obj.save(update_fields=[

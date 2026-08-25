@@ -42,6 +42,7 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
             ("view",     "View platform roles",                       False, _NORMAL),
             ("create",   "Create new platform roles",                 False, _NORMAL),
             ("update",   "Edit platform role metadata",               False, _NORMAL),
+            ("approve",  "Approve restricted platform role grants",   True,  _CRITICAL),
             ("assign",   "Assign roles to users",                     True,  _SENSITIVE),
             ("manage",   "Full control over platform roles",          True,  _SENSITIVE),
             ("delete",   "Delete platform roles",                     True,  _SENSITIVE),

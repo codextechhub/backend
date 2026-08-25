@@ -15,6 +15,7 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils.text import slugify
 from rest_framework import serializers
+from rest_framework.exceptions import PermissionDenied
 
 from vs_tenants.models import Branch
 
@@ -342,7 +343,51 @@ class TenantRoleTemplateDetailSerializer(
                     {"name": "A role with this name already exists in this tenant."}
                 )
         self._reject_out_of_scope_keys(attrs, tenant)
+        self._reject_restricted_additions(attrs)
         return attrs
+
+    def _reject_restricted_additions(self, attrs):
+        """Keep direct saves from activating a new restricted permission."""
+        if "permission_keys" not in attrs and "group_ids" not in attrs:
+            return
+
+        from ..validators import (
+            RESTRICTED_ROLE_CHANGE_MESSAGE,
+            group_permission_keys,
+            restricted_permission_keys,
+            role_permission_keys,
+        )
+
+        current_keys = role_permission_keys(self.instance) if self.instance else set()
+        current_group_ids = set(
+            TenantRoleGroup.objects.filter(role=self.instance).values_list(
+                "group_id", flat=True,
+            )
+        ) if self.instance else set()
+        direct_keys = set(attrs.get("permission_keys", []))
+        if "permission_keys" not in attrs and self.instance:
+            direct_keys = set(
+                TenantRolePermission.objects.filter(
+                    role=self.instance, granted=True,
+                ).values_list("permission_id", flat=True)
+            )
+        group_ids = set(attrs.get("group_ids", []))
+        if "group_ids" not in attrs:
+            group_ids = current_group_ids
+
+        proposed_keys = direct_keys | group_permission_keys(group_ids)
+        added_restricted = restricted_permission_keys(proposed_keys - current_keys)
+        newly_attached_groups = group_ids - current_group_ids
+        added_restricted.update(
+            restricted_permission_keys(group_permission_keys(newly_attached_groups))
+        )
+        if added_restricted:
+            raise serializers.ValidationError({
+                "permission_keys": [
+                    RESTRICTED_ROLE_CHANGE_MESSAGE,
+                    f"Restricted additions: {', '.join(sorted(added_restricted))}.",
+                ],
+            })
 
     def _reject_out_of_scope_keys(self, attrs, tenant):
         """Report a platform key in a tenant role as a 400, not a 500.
@@ -697,6 +742,28 @@ class TenantUserRoleAssignmentSerializer(
             raise serializers.ValidationError(
                 {"role": "Use Transfer Super Admin to assign the Super Admin role."}
             )
+
+        if (
+            new_status == TenantUserRoleAssignment.AssignmentStatus.ACTIVE
+            and role is not None
+        ):
+            request = self.context.get("request")
+            actor = request.user if request and request.user.is_authenticated else None
+            if actor is not None:
+                from ..validators import (
+                    missing_restricted_grant_authority,
+                    role_restricted_permission_keys,
+                )
+
+                missing = missing_restricted_grant_authority(
+                    actor, role_restricted_permission_keys(role),
+                )
+                if missing:
+                    raise PermissionDenied(
+                        "You cannot assign a role carrying restricted "
+                        "permissions outside your grant authority: "
+                        f"{', '.join(sorted(missing))}."
+                    )
 
         is_removing_super_admin = (
             self.instance

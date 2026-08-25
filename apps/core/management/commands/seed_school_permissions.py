@@ -100,6 +100,7 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     # authority over role templates (tenant refactor: personas grant nothing).
     ("school", "roles", "create",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("school", "roles", "update",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("school", "roles", "approve",             _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
     ("school", "roles", "delete",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
     # School-scoped proxy (impersonation). Deliberately a SEPARATE namespace

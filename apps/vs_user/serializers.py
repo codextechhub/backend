@@ -11,6 +11,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from rest_framework import serializers
+from rest_framework.exceptions import PermissionDenied
 from rest_framework_simplejwt.serializers import (
     TokenRefreshSerializer as JWTTokenRefreshSerializer,
 )
@@ -392,6 +393,21 @@ class UserCreateSerializer(serializers.Serializer):
                     raise serializers.ValidationError(
                         {'role': 'A Vision Super Admin already exists. Only one is allowed.'}
                     )
+
+            from vs_rbac.validators import (
+                missing_restricted_grant_authority,
+                role_restricted_permission_keys,
+            )
+
+            missing = missing_restricted_grant_authority(
+                actor, role_restricted_permission_keys(role),
+            )
+            if missing:
+                raise PermissionDenied(
+                    "You cannot assign a role carrying restricted permissions "
+                    "outside your grant authority: "
+                    f"{', '.join(sorted(missing))}."
+                )
 
             attrs['role'] = role.name
             attrs['role_instance'] = role

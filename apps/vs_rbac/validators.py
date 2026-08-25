@@ -11,7 +11,86 @@ from __future__ import annotations
 from typing import Set, List, Dict
 from django.core.exceptions import ValidationError
 
-from .models import GroupPermission, Permission, PermissionDependency
+from .models import (
+    GroupPermission,
+    Permission,
+    PermissionDependency,
+    TenantRoleGroup,
+    TenantRolePermission,
+)
+
+
+RESTRICTED_ROLE_CHANGE_MESSAGE = (
+    "Restricted permissions cannot be granted directly. Submit a role change "
+    "request for approval."
+)
+
+
+def restricted_permission_keys(permission_keys) -> Set[str]:
+    """Return the restricted subset of a permission-key iterable."""
+    keys = {key for key in permission_keys or [] if key}
+    if not keys:
+        return set()
+    return set(
+        Permission.objects.filter(key__in=keys, is_restricted=True).values_list(
+            "key", flat=True,
+        )
+    )
+
+
+def group_permission_keys(group_ids, *, include_restricted=True) -> Set[str]:
+    """Flatten group membership, optionally ignoring forbidden legacy members."""
+    if not group_ids:
+        return set()
+    qs = GroupPermission.objects.filter(group_id__in=group_ids)
+    if not include_restricted:
+        qs = qs.filter(permission__is_restricted=False)
+    return set(qs.values_list("permission_id", flat=True))
+
+
+def role_permission_keys(role, *, include_restricted_groups=True) -> Set[str]:
+    """Return a role's direct and group-derived permission keys."""
+    direct = set(
+        TenantRolePermission.objects.filter(role=role, granted=True).values_list(
+            "permission_id", flat=True,
+        )
+    )
+    group_ids = TenantRoleGroup.objects.filter(role=role).values_list(
+        "group_id", flat=True,
+    )
+    return direct | group_permission_keys(
+        group_ids, include_restricted=include_restricted_groups,
+    )
+
+
+def role_restricted_permission_keys(role) -> Set[str]:
+    """Return every restricted key a role would hand to an assignee."""
+    return restricted_permission_keys(role_permission_keys(role))
+
+
+def missing_restricted_grant_authority(actor, permission_keys) -> Set[str]:
+    """Restricted keys outside the actor's effective grant ceiling.
+
+    A restricted grant may be approved or assigned only by somebody who
+    already holds that key. The Vision super admin is the bootstrap authority
+    and may provision the first holder.
+    """
+    restricted = restricted_permission_keys(permission_keys)
+    if not restricted:
+        return set()
+
+    from .permissions import is_vision_super_admin
+
+    if is_vision_super_admin(actor):
+        return set()
+
+    from .evaluator import get_effective_permissions
+
+    tenant = getattr(actor, "tenant", None)
+    if tenant is None:
+        return restricted
+    held = get_effective_permissions(actor, tenant=tenant)
+    return restricted - held
 
 
 # Validate role permission sets against the dependency graph.
@@ -146,11 +225,9 @@ def flatten_permission_keys(
 
     if group_ids:
         # Group grants count toward dependency satisfaction just like direct grants.
-        result.update(
-            GroupPermission.objects.filter(group_id__in=group_ids).values_list(
-                "permission_id", flat=True
-            )
-        )
+        # Restricted permissions are never valid group members. The filter is
+        # a runtime backstop for rows written before that rule existed.
+        result.update(group_permission_keys(group_ids, include_restricted=False))
 
     return sorted(result)
 

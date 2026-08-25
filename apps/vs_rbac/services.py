@@ -13,6 +13,7 @@ from __future__ import annotations
 from django.db import transaction
 from django.utils import timezone
 from django.utils.text import slugify
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from vs_audit.models import AuditModuleKey, AuditActionType
 from vs_rbac.audit import record_rbac_audit as emit_audit_event
@@ -28,7 +29,7 @@ from .models import (
     TenantRoleTemplate,
     TenantUserRoleAssignment,
 )
-from .validators import validate_role_permissions
+from .validators import missing_restricted_grant_authority, validate_role_permissions
 
 
 SUPER_ADMIN_ROLE_KEY = "xvs_super_admin"
@@ -126,7 +127,19 @@ def apply_role_change_request(obj: TenantRoleChangeRequest, reviewer, notes: str
     Raises if validation fails or apply fails.
     """
     with transaction.atomic():
-        target_role = obj.target_role
+        obj = (
+            TenantRoleChangeRequest.objects.select_for_update()
+            .select_related("target_role", "requested_by", "tenant")
+            .get(pk=obj.pk)
+        )
+        if obj.status != TenantRoleChangeRequest.Status.PENDING:
+            raise ValidationError(f"Request already decided ({obj.status}).")
+        if obj.requested_by_id == getattr(reviewer, "pk", None):
+            raise PermissionDenied("You cannot decide your own role change request.")
+
+        target_role = TenantRoleTemplate.objects.select_for_update().get(
+            pk=obj.target_role_id,
+        )
 
         # Snapshot current grants so the durable audit shows the exact before/after set.
         current_keys = set(
@@ -137,12 +150,25 @@ def apply_role_change_request(obj: TenantRoleChangeRequest, reviewer, notes: str
         before_keys = sorted(current_keys)
 
         # Replay the requested delta in memory before replacing stored grants.
-        delta_items = obj.delta_items.select_related("permission").all()
+        delta_items = list(obj.delta_items.select_related("permission").all())
         for item in delta_items:
             if item.operation == TenantRoleChangeDeltaItem.Operation.ADD:
                 current_keys.add(item.permission_id)
             elif item.operation == TenantRoleChangeDeltaItem.Operation.REMOVE:
                 current_keys.discard(item.permission_id)
+
+        added_keys = {
+            item.permission_id
+            for item in delta_items
+            if item.operation == TenantRoleChangeDeltaItem.Operation.ADD
+            and item.permission_id not in before_keys
+        }
+        missing = missing_restricted_grant_authority(reviewer, added_keys)
+        if missing:
+            raise PermissionDenied(
+                "You cannot approve restricted permissions outside your grant "
+                f"authority: {', '.join(sorted(missing))}."
+            )
 
         # Validate final permission set - include group-derived permissions so
         # dependency checks pass for permissions provided via groups.

@@ -100,7 +100,11 @@ def _holdable_filter(tenant) -> dict:
 def _group_permission_keys(group_ids, tenant=None) -> Set[str]:
     if not group_ids:
         return set()
-    qs = GroupPermission.objects.filter(group_id__in=group_ids)
+    # Restricted permissions must never travel through a group. This is the
+    # runtime backstop for legacy rows until the cleanup migration removes them.
+    qs = GroupPermission.objects.filter(
+        group_id__in=group_ids, permission__is_restricted=False,
+    )
     if tenant is not None:
         qs = qs.filter(**_holdable_filter(tenant))
     return set(qs.values_list("permission_id", flat=True))
@@ -134,7 +138,13 @@ def get_user_override_keys(user, tenant) -> Tuple[Set[str], Set[str]]:
     allows: Set[str] = set()
     denies: Set[str] = set()
     qs = _active_override_qs(tenant).filter(user=user, **_holdable_filter(tenant))
-    for key, mode in qs.values_list("permission_id", "mode"):
+    for key, mode, is_restricted in qs.values_list(
+        "permission_id", "mode", "permission__is_restricted",
+    ):
+        # A restricted ALLOW is an unapproved grant. Restricted DENY rows remain
+        # effective because taking authority away is never an escalation.
+        if mode == UserPermissionOverride.Mode.ALLOW and is_restricted:
+            continue
         (denies if mode == UserPermissionOverride.Mode.DENY else allows).add(key)
     return allows, denies
 

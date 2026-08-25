@@ -354,7 +354,8 @@ class PermissionGroup(TimeStampedModel):
             inside it lands in the effective set), so it carries the same
             declaration a single permission does. A ``TENANT`` group may only
             contain ``TENANT`` keys; ``GroupPermission`` enforces that, so the
-            declaration cannot drift from the contents.
+            declaration cannot drift from the contents. No group may contain a
+            restricted key because attachment takes effect without approval.
         is_system: True for Vision-seeded groups; False for custom groups.
         is_active: Soft-delete / hide toggle.
         permissions: M2M to ``Permission`` via ``GroupPermission``.
@@ -436,6 +437,14 @@ class GroupPermission(TimeStampedModel):
                 "permission": (
                     f"'{self.permission_id}' is platform-scoped and cannot be placed "
                     f"in a tenant-scoped permission group."
+                ),
+            })
+        if self.permission_id and self.permission.is_restricted:
+            raise ValidationError({
+                "permission": (
+                    f"'{self.permission_id}' is restricted and cannot be placed "
+                    "in a permission group. Grant it through an approved role "
+                    "change request instead."
                 ),
             })
 
@@ -691,6 +700,18 @@ class TenantRoleGroup(TimeStampedModel):
             group_id=self.group_id,
         ).values_list("permission_id", flat=True)
         assert_tenant_may_hold(member_keys, tenant, field="group")
+        restricted = sorted(
+            GroupPermission.objects.filter(
+                group_id=self.group_id, permission__is_restricted=True,
+            ).values_list("permission_id", flat=True)
+        )
+        if restricted:
+            raise ValidationError({
+                "group": (
+                    "Permission groups cannot grant restricted permissions: "
+                    f"{', '.join(restricted)}."
+                ),
+            })
 
     def clean(self):
         super().clean()
@@ -900,10 +921,10 @@ class UserPermissionOverride(TimeStampedModel):
     lazy: an expired row simply stops matching the evaluator's filter, so no
     cron is required to make it stop applying.
 
-    There is deliberately **no approval workflow** (owner decision, rev 2):
-    accountability comes from the required ``reason``, the ``RBACAuditLog``
-    trail, and the fact that the ``*.overrides.manage`` key is CRITICAL and
-    restricted.
+    There is deliberately **no approval workflow** for ordinary overrides
+    (owner decision, rev 2): accountability comes from the required ``reason``
+    and the ``RBACAuditLog`` trail. A restricted ALLOW is refused entirely and
+    must be granted to a role through the reviewed change-request path.
 
     Attributes:
         tenant: Tenant that owns both the override and the user.
@@ -984,6 +1005,14 @@ class UserPermissionOverride(TimeStampedModel):
         if self.mode != self.Mode.ALLOW or not self.permission_id:
             return
         assert_tenant_may_hold([self.permission_id], self.tenant if self.tenant_id else None)
+        if self.permission.is_restricted:
+            raise ValidationError({
+                "permission": (
+                    f"'{self.permission_id}' is restricted and cannot be granted "
+                    "through a per-user override. Use an approved role change "
+                    "request instead."
+                ),
+            })
 
     def clean(self):
         super().clean()

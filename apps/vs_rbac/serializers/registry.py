@@ -359,6 +359,21 @@ class PermissionGroupDetailSerializer(
             raise serializers.ValidationError("A permission group with this name already exists.")
         return value
 
+    def validate_permission_keys(self, keys):
+        keys = super().validate_permission_keys(keys)
+        restricted = list(
+            Permission.objects.filter(
+                key__in=keys, is_restricted=True,
+            ).values_list("key", flat=True)
+        )
+        if restricted:
+            raise serializers.ValidationError(
+                "Restricted permissions cannot belong to permission groups: "
+                f"{', '.join(sorted(restricted))}. Grant them through an "
+                "approved role change request instead."
+            )
+        return keys
+
     @transaction.atomic
     def create(self, validated_data):
         permission_keys = validated_data.pop("permission_keys", [])
@@ -409,5 +424,4 @@ class PermissionGroupDetailSerializer(
                 role.save(update_fields=["version", "updated_at"])
 
         return instance
-
 

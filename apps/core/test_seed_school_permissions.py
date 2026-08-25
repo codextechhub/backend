@@ -56,6 +56,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
             "school.roles.assign",
             "school.roles.create",
             "school.roles.update",
+            "school.roles.approve",
             "school.roles.delete",
             "academics.session.view",
             "academics.calendar.manage",
@@ -71,7 +72,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
             )
 
     def test_total_key_count(self):
-        """56 = 48, plus M13's academics.structure.* and academics.subject.*.
+        """57 = 48, M13's eight academic keys, and restricted-role approval.
 
         Deliberately a hand-maintained number: the school permission surface
         growing is something a person should have to notice and agree to, so
@@ -86,7 +87,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         _run_school_seed()
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            56,
+            57,
         )
 
     def test_impersonation_keys_are_critical_and_restricted(self):
@@ -147,7 +148,7 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
 
     def test_school_admin_gets_all_56(self):
         """A school admin holds every key in both modules, M13's eight included."""
-        self.assertEqual(len(self._defaults("school_admin")), 56)
+        self.assertEqual(len(self._defaults("school_admin")), 57)
 
     def test_only_school_admin_gets_impersonation_by_default(self):
         # The most powerful school keys must never be a branch_admin/teacher
@@ -247,10 +248,11 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        # school_admin defaults are all 56 keys.
-        self.assertEqual(len(keys), 56)
+        # school_admin defaults are all 57 keys.
+        self.assertEqual(len(keys), 57)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
+        self.assertIn("school.roles.approve", keys)
         self.assertIn("academics.classes.assign", keys)
         # The backfill is what gives ALREADY-provisioned schools the new
         # impersonation keys - provision_role_from_prebuilt only copies
@@ -354,6 +356,7 @@ class SchoolAdminEffectivePermissionsTests(TestCase):
         self.assertIn("school.students.view", perms)
         self.assertIn("academics.classes.assign", perms)
         self.assertIn("school.roles.update", perms)
+        self.assertIn("school.roles.approve", perms)
 
     def test_effective_permissions_respect_explicit_deny(self):
         TenantRolePermission.objects.filter(
