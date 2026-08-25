@@ -18,8 +18,11 @@ exists" would have passed against the old scope key too.
 No test previously created a school with ``package_setup_data``, which is why a
 crash on the main creation path went unnoticed.
 """
+from datetime import timedelta
+
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from vs_config.models import (
@@ -31,7 +34,7 @@ from vs_config.services.capabilities import (
     bulk_effective_capabilities,
     effective_capability,
 )
-from vs_rbac.tests.helpers import make_branch, make_vision_user
+from vs_rbac.tests.helpers import make_branch, make_school, make_vision_user
 from vs_tenants.models import BranchStatus
 
 from .models import PackagePlan, School, SchoolPackageSetup
@@ -435,3 +438,218 @@ class SchoolPackageEntitlementTests(TestCase):
         )
         self.assertTrue(effective_capability(self.students, tenant=first.tenant))
         self.assertTrue(effective_capability(self.students, tenant=second.tenant))
+
+
+class PlanBranchCeilingTests(TestCase):
+    """``PackagePlan.max_branch``, which nothing used to read.
+
+    The column was there, ``seed_package`` filled it with real numbers - Starter
+    1, Standard 5, Premium 20 - and the plans screen showed them, and no
+    creation path ever looked. Bright Star signed for one site and opened four.
+    That is not a limit a school worked around, it is a promise the product made
+    on its own pricing page and then broke by itself.
+
+    Both ways in are covered, because they fail differently. The standalone
+    endpoint adds a site to a school that already has some; school creation
+    arrives with the whole list at once and could walk straight past the ceiling
+    in a single request without ever adding a second branch to anything.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="branch-ceiling@example.com", super_admin=True,
+        )
+        cls.starter = PackagePlan.objects.create(
+            name="Starter", code="ceiling-starter",
+            max_students=500, max_teachers=50, max_admins=5, max_branch=1,
+        )
+        cls.standard = PackagePlan.objects.create(
+            name="Standard", code="ceiling-standard",
+            max_students=5000, max_teachers=500, max_admins=50, max_branch=3,
+        )
+        cls.unlimited = PackagePlan.objects.create(
+            name="Enterprise", code="ceiling-enterprise",
+            max_students=None, max_teachers=None, max_admins=None, max_branch=None,
+        )
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        return client
+
+    def _school_on(self, plan, *, slug, name, branches=("Ikeja",)):
+        """An ACTIVE school with a plan and some sites already open.
+
+        Built through the ORM rather than the create endpoint because that
+        endpoint leaves a school PENDING and the branch endpoint serves only
+        ACTIVE ones - which is the state a school is in for every branch it
+        opens after onboarding, and therefore the state this ceiling is
+        actually enforced in.
+        """
+        school = make_school(slug=slug, name=name)
+        for index, branch_name in enumerate(branches):
+            make_branch(
+                school, name=branch_name, is_main=index == 0,
+                status=BranchStatus.ACTIVE,
+            )
+        if plan is not None:
+            SchoolPackageSetup.objects.create(
+                school=school,
+                package_plan=plan,
+                student_capacity=100,
+                teacher_capacity=10,
+                admin_capacity=5,
+                subscription_expires_at=timezone.localdate() + timedelta(days=365),
+            )
+        return school
+
+    def _add_branch(self, school, *, name, expect):
+        response = self._client().post(
+            reverse("branch-create", kwargs={"slug": school.slug}),
+            {
+                "name": name,
+                "state": "Lagos",
+                "is_main": False,
+                "primary_admin_data": {
+                    "full_name": f"{name} Head",
+                    "email": f"{name.lower().replace(' ', '-')}@{school.slug}.test",
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, expect, response.data)
+        return response
+
+    def _onboard(self, *, slug, plan, branch_names, expect):
+        payload = {
+            "name": slug.replace("-", " ").title(),
+            "slug": slug,
+            "branches": [
+                {
+                    "name": name,
+                    "state": "Lagos",
+                    "is_main": index == 0,
+                    "primary_admin_data": {
+                        "full_name": f"{name} Head",
+                        "email": f"head-{index}@{slug}.test",
+                    },
+                }
+                for index, name in enumerate(branch_names)
+            ],
+        }
+        if plan is not None:
+            payload["package_setup_data"] = {
+                "package_plan": plan.code,
+                "enabled_modules": [],
+                "student_capacity": 100,
+                "teacher_capacity": 10,
+                "admin_capacity": 5,
+            }
+        response = self._client().post(
+            reverse("school-create"), payload, format="json",
+        )
+        self.assertEqual(response.status_code, expect, response.data)
+        return response
+
+    # --- the standalone endpoint ------------------------------------------
+
+    def test_a_starter_school_cannot_open_a_second_branch(self):
+        school = self._school_on(
+            self.starter, slug="ceiling-bright-star", name="Ceiling Bright Star",
+        )
+
+        response = self._add_branch(school, name="Lekki", expect=400)
+
+        self.assertIn("Starter allows 1 branch", str(response.data))
+        self.assertEqual(school.tenant.branches.count(), 1)
+
+    def test_a_standard_school_may_open_branches_up_to_its_ceiling(self):
+        """The refusal must not be a blanket one."""
+        school = self._school_on(
+            self.standard, slug="ceiling-greenfield", name="Ceiling Greenfield",
+        )
+
+        self._add_branch(school, name="Lekki", expect=201)
+        self._add_branch(school, name="Yaba", expect=201)
+        self._add_branch(school, name="Surulere", expect=400)
+
+        self.assertEqual(school.tenant.branches.count(), 3)
+
+    def test_an_unlimited_plan_has_no_ceiling(self):
+        """``max_branch=None`` is what Enterprise means by unlimited."""
+        school = self._school_on(
+            self.unlimited, slug="ceiling-corona", name="Ceiling Corona",
+        )
+
+        for name in ["Lekki", "Yaba", "Surulere", "Apapa"]:
+            self._add_branch(school, name=name, expect=201)
+
+        self.assertEqual(school.tenant.branches.count(), 5)
+
+    def test_a_school_with_no_package_setup_has_no_ceiling(self):
+        """A school onboarded before its plan is chosen is not on plan zero."""
+        school = self._school_on(
+            None, slug="ceiling-nosetup", name="Ceiling No Setup",
+        )
+
+        self._add_branch(school, name="Lekki", expect=201)
+
+    def test_a_closed_branch_gives_its_seat_back(self):
+        """Closing Ikeja and opening Yaba is a replacement, not growth.
+
+        CLOSED is terminal - the site is gone. Counting it would mean a school
+        on a one-site plan that shuts its only site can never open another,
+        only ever buy a bigger plan.
+        """
+        school = self._school_on(
+            self.starter, slug="ceiling-closed", name="Ceiling Closed",
+        )
+        make_branch(
+            school, name="Old Yaba", is_main=False, status=BranchStatus.CLOSED,
+        )
+
+        response = self._add_branch(school, name="New Yaba", expect=400)
+        self.assertIn("Starter allows 1 branch", str(response.data))
+
+        school.tenant.branches.filter(name="Ikeja").update(
+            status=BranchStatus.CLOSED,
+        )
+        self._add_branch(school, name="New Yaba", expect=201)
+
+    def test_a_suspended_branch_keeps_its_seat(self):
+        """A site expected back is still a site the school is paying for."""
+        school = self._school_on(
+            self.starter, slug="ceiling-suspended", name="Ceiling Suspended",
+        )
+        school.tenant.branches.update(status=BranchStatus.SUSPENDED)
+
+        self._add_branch(school, name="Lekki", expect=400)
+
+    # --- onboarding, where the whole list arrives at once -------------------
+
+    def test_a_starter_school_cannot_be_onboarded_with_two_branches(self):
+        """The loophole that made the endpoint check alone worth nothing."""
+        response = self._onboard(
+            slug="ceiling-multi", plan=self.starter,
+            branch_names=["Ikeja", "Lekki"], expect=400,
+        )
+
+        self.assertIn("Starter allows 1 branch", str(response.data))
+        self.assertFalse(School.objects.filter(slug="ceiling-multi").exists())
+
+    def test_a_standard_school_may_be_onboarded_with_three(self):
+        self._onboard(
+            slug="ceiling-three", plan=self.standard,
+            branch_names=["Ikeja", "Lekki", "Yaba"], expect=201,
+        )
+
+        school = School.objects.get(slug="ceiling-three")
+        self.assertEqual(school.tenant.branches.count(), 3)
+
+    def test_a_school_onboarded_without_a_package_is_not_refused(self):
+        """The package step is optional; no plan is no ceiling, not zero."""
+        self._onboard(
+            slug="ceiling-planless", plan=None,
+            branch_names=["Ikeja", "Lekki"], expect=201,
+        )

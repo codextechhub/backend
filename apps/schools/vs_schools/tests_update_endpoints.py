@@ -392,17 +392,27 @@ class BranchUpdateBlankFieldTests(TestCase):
     # --- the field that is genuinely required -------------------------------
 
     def test_a_genuinely_required_field_still_refuses_the_write(self):
-        """``name`` was deliberately not swept: a site must be named. The point
-        of the sweep was to stop *optional* columns behaving like required
-        ones, not to make every column optional."""
+        """``name`` was deliberately not swept: a site must be named.
+
+        What changed is *when* that is asked. This class used to assert the
+        refusal by patching ``address`` on a nameless row, which made the point
+        about the column but sent the error to the wrong request: the caller
+        was refused over a field they had not touched, could not see on the
+        screen they were on, and on the School endpoint could not have fixed if
+        they wanted to, since ``name`` is not writable there at all. The rule is
+        now that a request answers for what it wrote, so the refusal arrives
+        when somebody actually tries to unname a branch - see
+        ``PartialUpdateValidatesOnlyWhatItWasSentTests`` for the other half.
+        """
         branch = self._row_with_blank_type(name="Nameless Branch")
-        Branch.all_objects.filter(pk=branch.pk).update(name="")
 
         response = self._client().patch(
-            self._url(branch), {"address": "Somewhere"}, format="json",
+            self._url(branch), {"name": ""}, format="json",
         )
 
         self.assertEqual(response.status_code, 400, response.data)
+        branch.refresh_from_db()
+        self.assertEqual(branch.name, "Nameless Branch")
 
     def test_that_refusal_names_the_field(self):
         """The third defect. ``full_clean()`` raises ``{"name": [...]}`` and
@@ -410,10 +420,9 @@ class BranchUpdateBlankFieldTests(TestCase):
         could not be blank on an endpoint that writes eight of them - and never
         which one."""
         branch = self._row_with_blank_type(name="Unnamed Branch")
-        Branch.all_objects.filter(pk=branch.pk).update(name="")
 
         response = self._client().patch(
-            self._url(branch), {"address": "Somewhere"}, format="json",
+            self._url(branch), {"name": "   "}, format="json",
         )
 
         detail = response.data["error"]["detail"]
@@ -636,7 +645,7 @@ class SchoolResetConfigAuditTests(TestCase):
         client.force_authenticate(user=self.vision_user)
         response = client.post(
             reverse("school-reset-config", kwargs={"slug": school.slug}),
-            {"confirmation_token": "RESET", "reason": "Rebrand"},
+            {"confirmation_token": school.slug, "reason": "Rebrand"},
             format="json",
         )
 
@@ -712,7 +721,7 @@ class SchoolTrailIsKeyedOnThePrimaryKeyTests(TestCase):
     def _reset_config(self, school):
         response = self._client().post(
             reverse("school-reset-config", kwargs={"slug": school.slug}),
-            {"confirmation_token": "RESET", "reason": "Rebrand"}, format="json",
+            {"confirmation_token": school.slug, "reason": "Rebrand"}, format="json",
         )
         self.assertEqual(response.status_code, 200, response.data)
 
@@ -1170,3 +1179,224 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         rows = response.data["data"]
         self.assertEqual([row["entity_label"] for row in rows], ["Greenfield Lekki"])
+
+
+class PartialUpdateValidatesOnlyWhatItWasSentTests(TestCase):
+    """A PATCH must not answer for a column the caller never touched.
+
+    Both update serializers applied the changed attributes and then called
+    ``full_clean()``, which validates every field on the row. So a Branch stored
+    with a blank required column - by ``seed_import``, a data migration, the
+    shell, a test factory - refused a request that only changed its address,
+    naming a field nobody had sent. Worse, the refusal was self-sealing: the way
+    to fix a blank column is to fill it, filling it is an update, and the update
+    is what is being refused. The row is unpatchable through the API for ever.
+
+    ``Branch._type`` reached exactly that dead end and was given ``blank=True``
+    to escape it (vs_tenants 0007), which fixed one column. These tests pin the
+    rule that stops the next one: full_clean sees the fields the request named
+    and nothing else.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="partial-update@example.com", super_admin=True,
+        )
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        return client
+
+    # --- branches ----------------------------------------------------------
+
+    def test_a_branch_with_a_blank_name_can_still_have_its_address_fixed(self):
+        school = make_school(slug="blank-name", name="Blank Name School")
+        branch = make_branch(school, name="Main Branch")
+        # Straight to the column, the way an importer or a shell would leave
+        # it: no serializer, no full_clean, no save() hook in the way.
+        Branch.all_objects.filter(pk=branch.pk).update(name="")
+
+        response = self._client().patch(
+            reverse(
+                "branch-update",
+                kwargs={"slug": school.slug, "code": branch.code},
+            ),
+            {"address": "12 Admiralty Way"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        branch.refresh_from_db()
+        self.assertEqual(branch.address, "12 Admiralty Way")
+        self.assertEqual(branch.name, "", "the untouched column was rewritten")
+
+    def test_the_blank_column_can_itself_be_filled_in(self):
+        """The way out of the dead end, which used to be shut too."""
+        school = make_school(slug="blank-name-fix", name="Blank Name Fix")
+        branch = make_branch(school, name="Main Branch")
+        Branch.all_objects.filter(pk=branch.pk).update(name="")
+
+        response = self._client().patch(
+            reverse(
+                "branch-update",
+                kwargs={"slug": school.slug, "code": branch.code},
+            ),
+            {"name": "Ikeja"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        branch.refresh_from_db()
+        self.assertEqual(branch.name, "Ikeja")
+
+    def test_a_field_the_request_did_send_is_still_validated(self):
+        """Narrowing what is checked must not stop anything being checked."""
+        school = make_school(slug="still-validated", name="Still Validated")
+        branch = make_branch(school, name="Main Branch")
+
+        response = self._client().patch(
+            reverse(
+                "branch-update",
+                kwargs={"slug": school.slug, "code": branch.code},
+            ),
+            {"name": ""},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        branch.refresh_from_db()
+        self.assertEqual(branch.name, "Main Branch")
+
+    # --- schools -----------------------------------------------------------
+
+    def test_a_school_with_a_blank_name_can_still_correct_its_motto(self):
+        """Same serializer shape, same defect, and ``name`` is not even
+        writable here - so without this rule the row could not be repaired
+        through this endpoint at all."""
+        school = make_school(slug="blank-school", name="Blank School")
+        make_branch(school, name="Main Branch")
+        School.objects.filter(pk=school.pk).update(name="")
+
+        response = self._client().patch(
+            reverse("school-update", kwargs={"slug": school.slug}),
+            {"motto": "Knowledge is light"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        school.refresh_from_db()
+        self.assertEqual(school.motto, "Knowledge is light")
+
+    def test_a_school_slug_it_did_send_is_still_refused_when_reserved(self):
+        """``School.clean()`` runs whatever is excluded, and must keep running."""
+        school = make_school(
+            slug="reserved-check", name="Reserved Check",
+            status=SchoolStatus.PENDING,
+        )
+        make_branch(school, name="Main Branch", status=BranchStatus.PENDING)
+
+        response = self._client().patch(
+            reverse("school-update", kwargs={"slug": school.slug}),
+            {"slug": "admin"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        school.refresh_from_db()
+        self.assertEqual(school.slug, "reserved-check")
+
+
+class SchoolResetConfigTokenTests(TestCase):
+    """The token has to name the school it is about to wipe.
+
+    ``confirmation_token`` was read, stripped, checked for emptiness and then
+    discarded. Nothing ever compared it to the school. So a CodeX operator with
+    Bright Star open in one tab and Greenfield in another, firing a reset at the
+    wrong slug, was waved straight through: Bright Star's branding was deleted
+    and nothing in the request had ever said "Bright Star" for anyone - the
+    operator, the API, a reviewer reading the body afterwards - to catch it.
+
+    It is the slug because that is the address the operator is already looking
+    at in the URL, and because it is the one identifier that names one school.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="reset-token@example.com", super_admin=True,
+        )
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        return client
+
+    def _branded_school(self, *, slug, name):
+        school = make_school(slug=slug, name=name)
+        make_branch(school, name="Main Branch")
+        SchoolBranding.objects.create(
+            school=school, logo=f"school_logos/{slug}.png",
+        )
+        return school
+
+    def _reset(self, school, token):
+        return self._client().post(
+            reverse("school-reset-config", kwargs={"slug": school.slug}),
+            {"confirmation_token": token, "reason": "Rebrand"},
+            format="json",
+        )
+
+    # --- refusals ----------------------------------------------------------
+
+    def test_an_arbitrary_token_is_refused(self):
+        school = self._branded_school(slug="bright-star", name="Bright Star")
+
+        response = self._reset(school, "x")
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertTrue(SchoolBranding.objects.filter(school=school).exists())
+
+    def test_another_school_s_slug_is_refused(self):
+        """The mis-aimed reset. Both schools exist; the token names the wrong
+        one, and the URL names the right one."""
+        bright_star = self._branded_school(slug="bright-star", name="Bright Star")
+        self._branded_school(slug="greenfield", name="Greenfield")
+
+        response = self._reset(bright_star, "greenfield")
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("confirmation_token", str(response.data))
+        self.assertTrue(
+            SchoolBranding.objects.filter(school=bright_star).exists(),
+            "the wrong school's branding was deleted",
+        )
+
+    def test_an_empty_token_is_refused(self):
+        school = self._branded_school(slug="bright-star", name="Bright Star")
+
+        response = self._reset(school, "   ")
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertTrue(SchoolBranding.objects.filter(school=school).exists())
+
+    # --- and the reset the operator meant ----------------------------------
+
+    def test_the_school_s_own_slug_resets_it(self):
+        school = self._branded_school(slug="bright-star", name="Bright Star")
+
+        response = self._reset(school, "bright-star")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertFalse(SchoolBranding.objects.filter(school=school).exists())
+
+    def test_a_typed_capital_is_the_same_school(self):
+        """Slugs are stored lowercase and a shift key is not a different
+        school. Whitespace either, for the same reason."""
+        school = self._branded_school(slug="bright-star", name="Bright Star")
+
+        response = self._reset(school, "  Bright-Star  ")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertFalse(SchoolBranding.objects.filter(school=school).exists())

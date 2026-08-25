@@ -84,23 +84,63 @@ def provision_admin_user(
             # stored address is lowercase (User.save plus
             # ck_user_email_lowercase).
             existing = User.objects.filter(email=email, tenant=tenant).first()
+            invited_by = actor if isinstance(actor, User) else None
+            role_obj = (
+                TenantRoleTemplate.objects.filter(tenant=tenant, key=role).first()
+                if role else None
+            )
+
             if existing:
-                logger.warning(
-                    "provision_admin_user: %s already has a User account at "
-                    "tenant %s; skipping creation and marking link as SENT",
-                    email, getattr(tenant, "slug", tenant),
-                )
+                # One person, several postings. Corona names head@corona.ng as
+                # the primary admin of both Lekki and Ikeja in one create
+                # request: the first call makes the account and the second
+                # lands here. It used to return at this point, so the account
+                # existed, Ikeja's link said SENT, and the grant that would let
+                # that person do anything at Ikeja was never written - they
+                # signed in and could work at Lekki only, with nothing on the
+                # record to say why. The account is still made once and the
+                # invitation still sent once; what repeats is the grant, which
+                # is the part that is genuinely per-branch.
+                #
+                # ``branch=role_obj.branch`` matches the creation path below,
+                # and the get_or_create is keyed on exactly the columns the
+                # ACTIVE partial unique indexes cover, so re-running this is a
+                # no-op rather than an IntegrityError.
+                if role_obj:
+                    _, created = TenantUserRoleAssignment.objects.get_or_create(
+                        tenant=tenant,
+                        user=existing,
+                        role=role_obj,
+                        branch=role_obj.branch,
+                        assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+                        defaults={"assigned_by": invited_by},
+                    )
+                    if created:
+                        logger.info(
+                            "provision_admin_user: %s already had an account at "
+                            "tenant %s; granted %s (branch=%s) for this posting",
+                            email,
+                            getattr(tenant, "slug", tenant),
+                            role_obj.key,
+                            getattr(role_obj.branch, "pk", None),
+                        )
+                else:
+                    # Same refusal as a fresh account below, and for the same
+                    # reason: a posting with no grant behind it is an admin who
+                    # can sign in and do nothing. The savepoint rolls back and
+                    # the link stays QUEUED for an operator to pick up.
+                    raise ValueError(
+                        f"Refusing to post existing user {email} without a role "
+                        f"assignment. Expected TenantRoleTemplate key={role!r} on "
+                        f"tenant {getattr(tenant, 'slug', tenant)}."
+                    )
+
                 admin_link.invite_status = InviteStatus.SENT
                 admin_link.invite_sent_at = timezone.now()
                 admin_link.save(update_fields=["invite_status", "invite_sent_at"])
                 return existing
 
             first_name, last_name = _split_name(contact.full_name)
-            invited_by = actor if isinstance(actor, User) else None
-            role_obj = (
-                TenantRoleTemplate.objects.filter(tenant=tenant, key=role).first()
-                if role else None
-            )
 
             # An administrator without a role is a half-broken
             # account: they receive the invitation email, activate it, and

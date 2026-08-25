@@ -70,9 +70,20 @@ Useful seed / bootstrap commands (in `core/management/commands/`):
 ```bash
 ../cx/bin/python manage.py seed_all_permissions   # RBAC permission catalogue
 ../cx/bin/python manage.py seed_xvs_modules       # module registry
+../cx/bin/python manage.py seed_notification_event_types  # notification event catalogue
 ../cx/bin/python manage.py create_superuser --assign-role --email you@codexng.com
 ../cx/bin/python manage.py seed_finance --all     # chart of accounts + currencies
 ```
+
+`seed_notification_event_types` is not optional on a fresh checkout, and
+skipping it fails quietly rather than loudly. `CELERY_TASK_ALWAYS_EAGER=True`
+in `apps/settings/local.py` runs the invitation dispatch inline, inside the
+savepoint `provision_admin_user` opens; with no `user.invited` event type
+seeded the dispatch raises, the savepoint rolls back, and creating a school
+answers 201 with no admin account and no invitation - the school, tenant and
+branches are all there, and the person who was supposed to administer them
+never hears from us. The failure is in the `vs_schools.admin_provisioning`
+logger at ERROR; nothing surfaces in the response.
 
 ## Tests
 

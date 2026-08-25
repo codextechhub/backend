@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from django.utils import timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils.text import slugify
@@ -60,7 +60,51 @@ def _slug_is_unique(slug: str, exclude_school_slug: Optional[str] = None) -> boo
     return not qs.filter(slug=slug).exists()
 
 
-def full_clean_as_field_errors(instance) -> None:
+#: Branch states that still occupy a seat on the school's plan. CLOSED is
+#: terminal and the site is gone, so a school that shuts Ikeja gets that seat
+#: back and can open Yaba in its place; a merely suspended or inactive site is
+#: expected to come back and keeps its seat. Counting closed sites would mean a
+#: school on a two-site plan could never replace one, only ever pay for more.
+BRANCH_STATES_AGAINST_PLAN = [
+    BranchStatus.ACTIVE,
+    BranchStatus.PENDING,
+    BranchStatus.SUSPENDED,
+    BranchStatus.INACTIVE,
+]
+
+
+def branch_ceiling_refusal(*, plan, existing: int, adding: int = 1) -> str:
+    """The refusal for a plan's branch ceiling, or "" when there is room.
+
+    ``PackagePlan.max_branch`` was stored, seeded with real numbers (Starter 1,
+    Standard 5, Premium 20) and shown on the plans screen, and nothing in the
+    codebase ever read it: Bright Star signed for one site and opened four,
+    which made the ceiling a sales promise the product quietly broke. It is
+    checked here rather than in each caller so the two ways a school gains a
+    branch - the standalone create endpoint and the nested list inside school
+    creation - cannot answer the question differently.
+
+    ``max_branch=None`` is unlimited, which is what the Enterprise plan means by
+    it, and a school with no package setup at all has no ceiling to breach.
+    """
+    limit = getattr(plan, "max_branch", None) if plan else None
+    if limit is None:
+        return ""
+    if existing + adding <= limit:
+        return ""
+    plan_name = getattr(plan, "name", "") or "this plan"
+    seats = "branch" if limit == 1 else "branches"
+    if existing:
+        have = f"This school already has {existing}."
+    else:
+        have = f"This request would create {adding}."
+    return (
+        f"{plan_name} allows {limit} {seats}. {have} "
+        f"Upgrade the package plan to add more."
+    )
+
+
+def full_clean_as_field_errors(instance, *, wrote: Optional[Iterable[str]] = None) -> None:
     """``instance.full_clean()``, with its refusal renamed into DRF's shape.
 
     A model ``ValidationError`` is keyed by field - ``{"_type": ["This field
@@ -74,9 +118,40 @@ def full_clean_as_field_errors(instance) -> None:
     moves model-level (``__all__``) errors under ``non_field_errors``, so a
     ``full_clean`` failure lands in exactly the place a caller already reads
     field errors from this endpoint.
+
+    ``wrote`` names the fields the request actually set, and everything else on
+    the row is excluded from field validation. A PATCH validating columns
+    nobody touched hands the caller somebody else's problem: a Branch stored
+    with a blank ``name`` by ``seed_import``, a data migration or the shell
+    answers "This field cannot be blank" to a request that only changed the
+    address, and the row is then unpatchable through the API for ever - the
+    field cannot be corrected either, because correcting it is an update and
+    the update is what is being refused. ``Branch._type`` reached exactly that
+    dead end (vs_tenants 0007 gave it ``blank=True`` to escape), and giving one
+    column a default fixes one column; excluding the untouched ones is what
+    stops the next column doing it again.
+
+    Excluding a field also drops it from ``validate_unique`` and
+    ``validate_constraints``, which is right rather than merely tolerable: an
+    untouched column still holds the value the row was already stored with, so
+    there is nothing a re-check could discover, and the database indexes stand
+    either way. ``Model.clean()`` runs regardless of ``exclude``, so the
+    row-level rules - ``Branch.clean()`` stamping ``closed_at``,
+    ``School.clean()`` refusing a reserved slug - are untouched by this.
+
+    Passing no ``wrote`` keeps the old whole-row behaviour, for a caller that
+    means to validate the entire instance.
     """
+    exclude = None
+    if wrote is not None:
+        touched = set(wrote)
+        exclude = {
+            field.name
+            for field in instance._meta.concrete_fields
+            if field.name not in touched
+        }
     try:
-        instance.full_clean()
+        instance.full_clean(exclude=exclude)
     except DjangoValidationError as exc:
         raise serializers.ValidationError(
             serializers.as_serializer_error(exc)
@@ -485,6 +560,27 @@ class BranchCreateSerializer(serializers.ModelSerializer):
             if Branch.all_objects.filter(tenant=school.tenant, is_main=True).exists():
                 raise serializers.ValidationError({"is_main": "This school already has a main branch."})
 
+        # The plan's branch ceiling, checked before anything is written.
+        if school:
+            setup = SchoolPackageSetup.objects.filter(
+                school=school
+            ).select_related("package_plan").first()
+            if setup:
+                refusal = branch_ceiling_refusal(
+                    plan=setup.package_plan,
+                    # ``all_objects``, not ``objects``: the latter is
+                    # tenant-scoped to the caller, and the caller here is
+                    # usually a CodeX operator adding a branch on the school's
+                    # behalf. Scoped, they would count zero sites and every
+                    # plan would look empty.
+                    existing=Branch.all_objects.filter(
+                        tenant=school.tenant,
+                        status__in=BRANCH_STATES_AGAINST_PLAN,
+                    ).count(),
+                )
+                if refusal:
+                    raise serializers.ValidationError({"non_field_errors": [refusal]})
+
         primary_admin_data = attrs.get("primary_admin_data")
         if primary_admin_data:
             from vs_user.services.email_availability import email_refusal
@@ -672,6 +768,11 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
             exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deactivated_at"],
         )
 
+        # Every field this request named, including the ``is_main`` popped just
+        # below: what full_clean is allowed to look at is decided by what the
+        # caller sent, not by which of those values turned out to differ.
+        wrote = set(validated_data)
+
         # Handled by promote_to_main, not by a plain attribute write: the
         # incumbent has to be demoted first or the partial unique index refuses
         # the promotion even though the end state is legal.
@@ -686,7 +787,7 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
         if changes == 0:
             raise serializers.ValidationError({"detail": "No changes detected in update payload."})
 
-        full_clean_as_field_errors(instance)
+        full_clean_as_field_errors(instance, wrote=wrote)
         instance.save()
 
         if promoting:
@@ -1016,6 +1117,21 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 "branches": "Only one branch can be marked as is_main=true."
             })
+
+        # Rule 3: the submitted branches must fit the plan being signed for.
+        # Checked here as well as on the standalone branch endpoint, because
+        # onboarding is the one moment a school can arrive with several sites
+        # at once - refusing the fourth branch later while letting all four in
+        # at creation would leave the ceiling enforced everywhere except the
+        # one path that can breach it in a single request.
+        package_setup_data = attrs.get("package_setup_data") or {}
+        refusal = branch_ceiling_refusal(
+            plan=package_setup_data.get("package_plan"),
+            existing=0,
+            adding=len(branches),
+        )
+        if refusal:
+            raise serializers.ValidationError({"branches": refusal})
 
         return attrs
 
@@ -1389,6 +1505,11 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
             exclude_fields=["created_at", "updated_at", "activated_at", "deactivated_at"],
         )
 
+        # Same rule as the branch above: full_clean sees the fields this
+        # request named and nothing else, so a column left blank by some other
+        # path cannot refuse an edit that never went near it.
+        wrote = set(validated_data)
+
         changes = 0
         for attr, value in validated_data.items():
             if getattr(instance, attr) != value:
@@ -1398,7 +1519,7 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
         if changes == 0:
             raise serializers.ValidationError({"detail": "No changes detected in update payload."})
 
-        full_clean_as_field_errors(instance)
+        full_clean_as_field_errors(instance, wrote=wrote)
         instance.save()
 
         # Branding upsert
@@ -1578,9 +1699,28 @@ class SchoolResetConfigSerializer(serializers.Serializer):
     def save(self, **kwargs) -> School:
         school: School = self.context["school"]
 
+        # The token has to be this school's address, and nothing else will do.
+        # It used to be checked for emptiness only, so "x" reset any school an
+        # operator could name: with Bright Star open in one tab and Greenfield
+        # in another, a reset fired at the wrong slug went through, Bright
+        # Star's branding was deleted, and nothing in the request had ever said
+        # "Bright Star" for anyone to catch it. Naming the school in the body
+        # is what makes a mis-aimed reset a 400 instead of a deletion, and the
+        # slug is the right thing to name because it is the address the
+        # operator is already looking at in the URL.
+        #
+        # Compared case-insensitively because slugs are stored lowercase and a
+        # typed capital is not a different school; whitespace is stripped for
+        # the same reason. Neither loosens what the token has to be.
         token = (self.validated_data.get("confirmation_token") or "").strip()
         if not token:
             raise serializers.ValidationError({"confirmation_token": "Confirmation token is required."})
+        if token.casefold() != (school.slug or "").casefold():
+            raise serializers.ValidationError({
+                "confirmation_token": (
+                    f"Type this school's address ({school.slug}) to confirm the reset."
+                )
+            })
 
         # Baseline reset example:
         # - Remove branding

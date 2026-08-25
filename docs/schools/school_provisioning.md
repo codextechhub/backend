@@ -91,7 +91,7 @@ every failure path returns `None` without touching the link
 
 | Route | Verb | Gate | Body actually read |
 |---|---|---|---|
-| `/v1/i/<slug>/reset-config/` | POST | `IsVisionSuperAdmin` **only** | `confirmation_token` (required, unchecked), `reason` (optional) |
+| `/v1/i/<slug>/reset-config/` | POST | `IsVisionSuperAdmin` **only** | `confirmation_token` (required, must equal the school's slug), `reason` (optional) |
 
 That permission list is the whole gate (`views/ops.py:45`). It does **not**
 include `IsAuthenticatedAndActive`, so the account-status checks (SUSPENDED /
@@ -269,9 +269,12 @@ an `ImageField`, `model_to_dict` hands back the `FieldFile` itself, and a
 `FieldFile` in a `JSONField` raises inside `emit_audit_event` - which swallows
 its own failures, so the whole event would vanish.
 
-The `confirmation_token` is read, stripped, checked for emptiness and then
-discarded. Nothing derives an expected value from the school, the slug, the
-actor or a nonce.
+The `confirmation_token` is read, stripped and compared, case-insensitively,
+to the school's own slug. Anything else is a 400 on the `confirmation_token`
+field naming the address the caller has to type. It used to be checked for
+emptiness and then discarded, so `"x"` reset whichever school the URL named -
+an operator with Bright Star and Greenfield both open reset the wrong one and
+nothing in the body had ever said which school it was aimed at.
 
 ## 6. What writing writes
 
@@ -280,7 +283,7 @@ actor or a nonce.
 | Row | Detail |
 |---|---|
 | `User` | `status=PENDING`, `is_active=False`, `is_staff=False`, `password=None`, `role=role_obj.name` (the display name, not the key), `tenant`, `branch`, `invited_by` |
-| `TenantUserRoleAssignment` | `tenant`, `user`, `role=role_obj`, `branch=role_obj.branch`, `assigned_by=invited_by` |
+| `TenantUserRoleAssignment` | `tenant`, `user`, `role=role_obj`, `branch=role_obj.branch`, `assigned_by=invited_by`. Written on the existing-user path too, via `get_or_create`, so one person named as admin of two branches in one request is granted at both. |
 | `UserInvitation` | via `InvitationService.create(user=user, invited_by=invited_by or user)` |
 | A queued Celery task | `send_invitation_email_task.delay(activation_key, _job_owner_id=…, _job_label=…, _job_kind="email", _job_notify=False)` |
 | The admin link | `invite_status=SENT`, `invite_sent_at=now` |
@@ -384,11 +387,11 @@ school. A Vision super admin calls:
 
 ```http
 POST /v1/i/greenfield/reset-config/?tenant=codex
-{"confirmation_token": "x", "reason": "Logo uploaded to the wrong school."}
+{"confirmation_token": "greenfield", "reason": "Logo uploaded to the wrong school."}
 ```
 
-`"x"` is accepted - the token is checked for emptiness and nothing else. The
-`SchoolBranding` row is deleted, a WARNING audit event is written naming the
+The token has to be `greenfield`, the slug in the URL; `"x"` is a 400 and so is
+`bright-star`, which is the point of it. The `SchoolBranding` row is deleted, a WARNING audit event is written naming the
 actor and the reason, and the full school detail comes back. The modules and the
 localization the docstring promises to reset are untouched, which in this case is
 lucky.
