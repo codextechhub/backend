@@ -43,6 +43,7 @@ from ..serializers import (
     SubjectSerializer,
     SubjectWriteSerializer,
 )
+from ..services.years import assert_year_is_writable
 from ..services.scoping import (
     UNSET,
     assert_within_parent,
@@ -64,11 +65,19 @@ def _classes_for(tenant):
 
 
 def _level_or_404(tenant, pk, user):
+    """The level a class write names, and the year that level puts it in.
+
+    Only the write paths reach this - creating a class, moving one, generating
+    a set of arms - and all three take the class's YEAR from the level rather
+    than from the lens, so the lens guard in AcademicsViewMixin.session never
+    sees it. Checked here instead, which is the point all three share.
+    """
     level = scope_to_visible_branches(
         Level.objects.filter(tenant=tenant, pk=pk), user, tenant,
-    ).select_related("branch").first()
+    ).select_related("branch", "session").first()
     if level is None:
         raise NotFound("No such level at this school.")
+    assert_year_is_writable(level.session)
     return level
 
 

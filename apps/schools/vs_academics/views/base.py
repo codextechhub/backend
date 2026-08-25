@@ -20,6 +20,7 @@ asserted by a test that enumerates the URL conf.
 from __future__ import annotations
 
 from rest_framework.exceptions import NotFound
+from rest_framework.permissions import SAFE_METHODS
 
 from core.pagination import XVSPagination
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
@@ -58,6 +59,13 @@ class AcademicsViewMixin:
         year. Never "all years": levels, classes and subjects belong to exactly
         one, so a list without a year is a list of several years' rows piled on
         top of each other - which is what this module used to show.
+
+        On a WRITE it must also be a year that may still be written to. An
+        archived year is last year's record, and the whole point of giving the
+        structure a year was that reading 2025/2026 back shows what actually
+        happened - which is not true if today's admin can still add a class to
+        it. Refused here rather than in each view, because there are eleven
+        write paths and the one that forgets is the one that rewrites history.
         """
         cached = getattr(self, "_session", None)
         if cached is not None:
@@ -65,6 +73,7 @@ class AcademicsViewMixin:
 
         from ..exceptions import NoSessionYet
         from ..models import AcademicSession, SessionStatus
+        from ..services.years import assert_year_is_writable
 
         raw = str(self.request.query_params.get("session") or "").strip()
         if raw:
@@ -81,6 +90,8 @@ class AcademicsViewMixin:
             )
             if found is None:
                 raise NoSessionYet()
+        if self.request.method not in SAFE_METHODS:
+            assert_year_is_writable(found)
         self._session = found
         return found
 

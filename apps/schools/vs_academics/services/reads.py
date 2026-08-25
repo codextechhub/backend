@@ -189,27 +189,25 @@ def build_overview(user, tenant, *, today=None, multi_branch=True, branch=None,
     """
     today = today or dt.date.today()
 
-    active = (
-        AcademicSession.objects
-        .filter(tenant=tenant, status=SessionStatus.ACTIVE)
-        .prefetch_related("terms").first()
-    )
-    session_block = None
-    if active is not None:
-        terms = list(active.terms.all())
-        total = max((active.end_date - active.start_date).days, 1)
-        elapsed = min(max((today - active.start_date).days, 0), total)
+    def _session_block(year):
+        """One year's shape: how far through it the school is, and its terms."""
+        if year is None:
+            return None
+        terms = list(year.terms.all())
+        total = max((year.end_date - year.start_date).days, 1)
+        elapsed = min(max((today - year.start_date).days, 0), total)
         current = next(
             (t for t in terms if term_state(t, today) == "ongoing"), None,
         )
         upcoming = next(
             (t for t in terms if term_state(t, today) == "pending"), None,
         )
-        session_block = {
-            "id": active.id,
-            "name": active.name,
-            "start_date": active.start_date,
-            "end_date": active.end_date,
+        return {
+            "id": year.id,
+            "name": year.name,
+            "status": year.status,
+            "start_date": year.start_date,
+            "end_date": year.end_date,
             "percent_elapsed": round(elapsed / total * 100),
             "current_term": current.name if current else None,
             "next_term": upcoming.name if upcoming else None,
@@ -224,6 +222,26 @@ def build_overview(user, tenant, *, today=None, multi_branch=True, branch=None,
                 for t in terms
             ],
         }
+
+    active = (
+        AcademicSession.objects
+        .filter(tenant=tenant, status=SessionStatus.ACTIVE)
+        .prefetch_related("terms").first()
+    )
+    session_block = _session_block(active)
+    # The year the READER is on, which is the one the counts below are about.
+    # Without it the screen puts 2025/2026's numbers under a 2026/2027 heading
+    # the moment somebody looks back at last year - a total sitting under a
+    # filter it does not answer to.
+    viewed = session
+    if viewed is not None and active is not None and viewed.pk == active.pk:
+        viewed_block = session_block                     # same year, same block
+    else:
+        viewed_block = _session_block(
+            AcademicSession.objects.filter(pk=viewed.pk)
+            .prefetch_related("terms").first()
+            if viewed is not None else None
+        )
 
     def _count(model):
         qs = _scoped(model, user, tenant, is_active=True)
@@ -248,6 +266,7 @@ def build_overview(user, tenant, *, today=None, multi_branch=True, branch=None,
 
     return {
         "active_session": session_block,
+        "viewed_session": viewed_block,
         "counts": counts,
         "branches_without_a_session": (
             _branches_without_a_session(tenant) if multi_branch else []

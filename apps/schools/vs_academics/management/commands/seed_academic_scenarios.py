@@ -161,6 +161,7 @@ class Command(BaseCommand):
         levels = self._programmes(tenant, secondary, depts, year)
         self._classes(tenant, levels, branches, multi, year)
         self._subjects(tenant, depts, levels, secondary, year)
+        self._history(tenant, year)
 
         self.stdout.write(self.style.SUCCESS(
             f"    done: {Program.all_objects.filter(tenant=tenant).count()} programmes, "
@@ -200,6 +201,39 @@ class Command(BaseCommand):
                 archive_session(session, tenant)
         self.stdout.write(f"    years: {len(YEARS)}")
         return live
+
+    def _history(self, tenant, live):
+        """Give last year a structure of its own, through the real rollover.
+
+        So switching the pill to 2025/2026 shows that year's classes rather
+        than an empty screen - the honest-history half of the change. Next
+        year is left EMPTY on purpose: it is the state the "copy a year
+        forward" flow exists for, and a seed that filled it would hide the one
+        screen worth testing.
+        """
+        from schools.vs_academics.services.rollover import (
+            NothingToCopy,
+            TargetYearNotEmpty,
+            roll_forward,
+        )
+
+        past = (
+            AcademicSession.all_objects.filter(
+                tenant=tenant, status=SessionStatus.ARCHIVED,
+            )
+            .order_by("start_date")
+            .first()
+        )
+        if past is None or live is None:
+            return
+        try:
+            written = roll_forward(tenant, source=live, target=past)
+        except (TargetYearNotEmpty, NothingToCopy):
+            return                                  # already seeded, or nothing yet
+        self.stdout.write(
+            f"    {past.name}: {written['levels']} levels, "
+            f"{written['classes']} classes, {written['subjects']} subjects",
+        )
 
     # ── catalogue ──────────────────────────────────────────────────────────
     def _departments(self, tenant, secondary):

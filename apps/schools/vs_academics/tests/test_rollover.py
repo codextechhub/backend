@@ -388,3 +388,116 @@ class SessionLensTests(_Base):
             Subject.all_objects.get(name="Geology").session_id,
             self.next_year.pk,
         )
+
+
+class ArchivedYearIsReadOnlyTests(_Base):
+    """Last year's record stops being editable, which is why it is a record.
+
+    Without this the year column buys nothing: a school could still open
+    2025/2026 and add the class it forgot, and the register would say a class
+    ran in a year it did not.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.build_this_year()
+        cls.past = AcademicSession.all_objects.create(
+            tenant=cls.tenant, name="2098/2099",
+            start_date=dt.date(2098, 9, 1), end_date=dt.date(2099, 7, 31),
+            status=SessionStatus.ARCHIVED,
+        )
+        cls.old_level = Level.all_objects.create(
+            tenant=cls.tenant, session=cls.past, program=cls.prog,
+            name="JSS1", code="JSS1", order_index=1,
+        )
+
+    def in_past(self, name, body, **kwargs):
+        url = reverse(name, kwargs=kwargs or None)
+        return self.client_for(self.admin).post(
+            f"{url}?tenant={self.tenant.slug}&session={self.past.pk}",
+            body, format="json",
+        )
+
+    def test_a_subject_cannot_be_added_to_an_archived_year(self):
+        response = self.in_past("academics-subject-list", {"name": "Latin"})
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(
+            response.data["error"]["code"], "SESSION_ARCHIVED_READ_ONLY",
+        )
+        self.assertFalse(Subject.all_objects.filter(name="Latin").exists())
+
+    def test_a_level_cannot_be_added_to_an_archived_year(self):
+        response = self.in_past(
+            "academics-level-list",
+            {"name": "JSS4", "code": "JSS4", "order_index": 4},
+            pk=self.prog.pk,
+        )
+        self.assertEqual(response.status_code, 409, response.data)
+
+    def test_a_class_cannot_be_added_to_an_archived_years_level(self):
+        """The lens says this year; the LEVEL says 2098/2099, and it wins.
+
+        A class takes its year from its level, so the guard on the lens never
+        sees this one - it is the path that would otherwise let an archived
+        year be edited from a screen that looks perfectly current.
+        """
+        response = self.post(
+            self.admin, "academics-class-list",
+            {"name": "JSS1 Z", "code": "JSS1-Z", "level": self.old_level.pk,
+             "arm": "Z"},
+        )
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertFalse(SchoolClass.all_objects.filter(name="JSS1 Z").exists())
+
+    def test_generating_arms_into_an_archived_year_is_refused(self):
+        url = reverse("academics-class-arms")
+        response = self.client_for(self.admin).post(
+            f"{url}?tenant={self.tenant.slug}",
+            {"level": self.old_level.pk, "arms": ["A", "B"]}, format="json",
+        )
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(
+            SchoolClass.all_objects.filter(session=self.past).count(), 0,
+        )
+
+    def test_reading_an_archived_year_still_works(self):
+        """Read-only means read-only, not closed."""
+        response = self.get(
+            self.admin, "academics-program-list", {"session": self.past.pk},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        levels = [lvl for row in response.data["data"] for lvl in row["levels"]]
+        self.assertEqual([lvl["name"] for lvl in levels], ["JSS1"])
+
+
+class OverviewNamesTheYearBeingReadTests(_Base):
+    """The heading over a count has to be the year the count is about."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.build_this_year()
+
+    def overview(self, params=None):
+        return self.get(self.admin, "academics-overview", params).data["data"]
+
+    def test_by_default_the_viewed_year_is_the_live_one(self):
+        data = self.overview()
+        self.assertEqual(data["viewed_session"]["id"], self.this_year.pk)
+        self.assertEqual(data["active_session"]["id"], self.this_year.pk)
+
+    def test_looking_back_names_the_year_looked_at_not_the_live_one(self):
+        data = self.overview({"session": self.next_year.pk})
+        self.assertEqual(data["viewed_session"]["name"], "2100/2101")
+        self.assertEqual(data["viewed_session"]["status"], SessionStatus.DRAFT)
+        # The live year is still reported, because the screen says which one
+        # the school is actually running.
+        self.assertEqual(data["active_session"]["name"], "2099/2100")
+
+    def test_the_counts_follow_the_year_that_is_named(self):
+        """Otherwise the numbers and the heading disagree, which is the bug."""
+        live = self.overview()["counts"]
+        drafted = self.overview({"session": self.next_year.pk})["counts"]
+        self.assertEqual((live["levels"], live["classes"]), (2, 1))
+        self.assertEqual((drafted["levels"], drafted["classes"]), (0, 0))
