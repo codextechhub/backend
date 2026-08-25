@@ -66,6 +66,7 @@ class ImportBatchStatusChoices(models.TextChoices):
     IMPORT_SUCCEEDED = "import_succeeded", "Import Succeeded"
     IMPORT_FAILED = "import_failed", "Import Failed"
     ROLLED_BACK = "rolled_back", "Rolled Back"
+    PARTIALLY_ROLLED_BACK = "partially_rolled_back", "Partially Rolled Back"
     CANCELLED = "cancelled", "Cancelled"
 
 
@@ -104,6 +105,7 @@ class ImportJobStatusChoices(models.TextChoices):
     FAILED = "failed", "Failed"
     CANCELLED = "cancelled", "Cancelled"
     ROLLED_BACK = "rolled_back", "Rolled Back"
+    PARTIALLY_ROLLED_BACK = "partially_rolled_back", "Partially Rolled Back"
 
 
 class ImportRowActionChoices(models.TextChoices):
@@ -710,7 +712,7 @@ class ImportJob(TimeStampedModel):
     )
 
     status = models.CharField(
-        max_length=20,
+        max_length=30,
         choices=ImportJobStatusChoices.choices,
         default=ImportJobStatusChoices.QUEUED,
     )

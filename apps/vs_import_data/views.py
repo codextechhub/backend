@@ -5,6 +5,7 @@ import os
 
 from django.http import FileResponse, HttpResponse, Http404
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 
 from rest_framework import generics, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -979,6 +980,9 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
     rbac_permission = ImportPermission.ROLLBACK_RUN
 
     def post(self, request, **_kwargs):
+        from .constants import ROLLBACK_INLINE_ROW_LIMIT
+        from .tasks import rollback_import_job_task
+
         job = self.get_job()
 
         serializer = RollbackImportSerializer(
@@ -986,21 +990,100 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
             context={"job": job},
         )
         serializer.is_valid(raise_exception=True)
+        reason = serializer.validated_data.get("reason", "")
+
+        reversible_rows = job.row_results.exclude(target_object_pk="").count()
+        run_async = serializer.validated_data.get("run_async")
+        if run_async is None:
+            run_async = reversible_rows > ROLLBACK_INLINE_ROW_LIMIT
+
+        if run_async:
+            # Claim the job before queueing. The task runs minutes later, and
+            # until it does, this stamp is the only thing that stops a second
+            # request starting a second rollback over the same rows.
+            job.rollback_started_at = timezone.now()
+            job.rollback_completed_at = None
+            job.save(
+                update_fields=[
+                    "rollback_started_at",
+                    "rollback_completed_at",
+                    "updated_at",
+                ]
+            )
+
+            try:
+                rollback_import_job_task.delay(
+                    job_id=str(job.id),
+                    initiated_by_id=str(request.user.id),
+                    reason=reason,
+                    _job_owner_id=str(request.user.id),
+                    _job_tenant_id=str(job.import_batch.tenant_id),
+                    _job_label=f"Rollback: {job.import_batch.original_filename or job.id}",
+                    _job_kind="import_rollback",
+                )
+            except Exception as exc:
+                # Eager execution propagates a task failure to here. Release the
+                # claim so the operator can try again, and return the real error
+                # rather than leaving the job wedged as permanently in flight.
+                job.rollback_started_at = None
+                job.save(update_fields=["rollback_started_at", "updated_at"])
+
+                import logging
+                logging.getLogger(__name__).exception(
+                    "Rollback task failed synchronously for job %s", job.id
+                )
+                return error_response(
+                    message=f"Rollback failed: {exc}",
+                    code="ROLLBACK_TASK_FAILED",
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            return success_response(
+                message=(
+                    f"Rollback queued for {reversible_rows} rows. Read the result "
+                    "from GET /batches/{id}/jobs/{id}/rollbacks/."
+                ),
+                data={
+                    "job_id": str(job.id),
+                    "queued": True,
+                    "row_count": reversible_rows,
+                },
+            )
 
         try:
             rollback_record = rollback_import_job(
                 job=job,
                 initiated_by=request.user,
-                reason=serializer.validated_data.get("reason", ""),
+                reason=reason,
             )
         except ValueError as exc:
             raise ValidationError({"rollback": str(exc)})
 
+        details = rollback_record.details or {}
+        unreversed = (
+            details.get("refused_rows_count", 0) + details.get("failed_rows_count", 0)
+        )
+
         return success_response(
-            message="Rollback completed successfully.",
+            message=(
+                "Rollback completed successfully."
+                if rollback_record.was_successful
+                else (
+                    f"Rollback partially completed: "
+                    f"{rollback_record.reverted_rows_count} rows reversed, "
+                    f"{unreversed} could not be."
+                )
+            ),
             data={
                 "rollback_id": str(rollback_record.id),
+                "was_successful": rollback_record.was_successful,
                 "reverted_rows_count": rollback_record.reverted_rows_count,
+                "refused_rows_count": details.get("refused_rows_count", 0),
+                "failed_rows_count": details.get("failed_rows_count", 0),
+                "skipped_rows_count": details.get("skipped_rows_count", 0),
+                # Per row, so an operator can see WHICH row was not reversed and
+                # why, instead of being told a number.
+                "rows": details.get("rows", []),
             },
         )
 

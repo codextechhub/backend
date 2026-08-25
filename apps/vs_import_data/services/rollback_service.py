@@ -9,42 +9,45 @@ from ..models import (
     ImportRollbackRecord,
 )
 from .audit_service import create_import_audit_log
+from .reversers import FAILED, REFUSED, REVERTED, SKIPPED, reverse_row
 
 
-def reverse_target_record(row_result):
+def _rows_already_reverted(job) -> set[int]:
+    """Row numbers an earlier rollback of this job already reversed.
+
+    A partial rollback is retryable: the operator deletes whatever was blocking
+    a row and runs it again. Without this, the second run would report every
+    row it reversed the first time as "no such record exists" - true, alarming,
+    and useless.
     """
-    Reverse one imported row. For schools: delete the School record that was created.
-    The cascade takes care of branches, admins, and package setup.
-    """
-    from schools.vs_schools.models import School
+    reverted: set[int] = set()
 
-    pk = row_result.target_object_pk
-    if not pk:
-        return True
+    for record in job.rollback_records.all():
+        details = record.details if isinstance(record.details, dict) else {}
+        for row in details.get("rows") or []:
+            if isinstance(row, dict) and row.get("status") == REVERTED:
+                row_number = row.get("row_number")
+                if isinstance(row_number, int):
+                    reverted.add(row_number)
 
-    try:
-        # ``target_object_pk`` is whatever ``School.pk`` was when the row ran.
-        # B23 moved that from the slug to a surrogate integer id, so a numeric
-        # value is an id and anything else is a slug recorded before the
-        # cutover. Matching on slug alone (as this did) silently deleted
-        # nothing for every school imported since, while still reporting the
-        # rollback as successful.
-        ref = str(pk).strip()
-        qs = (
-            School.objects.filter(pk=int(ref))
-            if ref.isdigit() and int(ref) <= 9_223_372_036_854_775_807
-            else School.objects.filter(slug=ref)
-        )
-        qs.delete()
-        return True
-    except Exception:
-        return False
+    return reverted
 
 
 @transaction.atomic
 def rollback_import_job(job, initiated_by=None, reason: str = ""):
     """
-    Roll back imported rows for a job.
+    Roll back imported rows for a job, and report honestly what happened.
+
+    Each row is reversed by the model it actually created (see ``reversers``),
+    in its own savepoint. A row that cannot be reversed - because no rollback is
+    defined for its model, because the record it names is not the one it
+    created, or because the school it created has been used since - leaves
+    everything alone and is counted separately.
+
+    The job is only marked ROLLED_BACK when every row was in fact reversed.
+    Anything less is PARTIALLY_ROLLED_BACK, which is a state an operator can see
+    and act on, and which the rollback endpoint will accept again once whatever
+    blocked a row has been dealt with.
     """
     if (
         job.import_batch.template
@@ -58,6 +61,8 @@ def rollback_import_job(job, initiated_by=None, reason: str = ""):
             reason=reason,
         )
 
+    already_reverted = _rows_already_reverted(job)
+
     job.rollback_started_at = timezone.now()
     job.save(update_fields=["rollback_started_at", "updated_at"])
 
@@ -68,18 +73,42 @@ def rollback_import_job(job, initiated_by=None, reason: str = ""):
         started_at=timezone.now(),
     )
 
-    reverted_rows_count = 0
+    outcomes = []
 
-    for row_result in job.row_results.exclude(target_object_pk=""):
-        success = reverse_target_record(row_result)
-        if success:
-            reverted_rows_count += 1
+    for row_result in job.row_results.exclude(target_object_pk="").select_related(
+        "job__import_batch"
+    ):
+        if row_result.row_number in already_reverted:
+            outcomes.append(
+                {
+                    "row_number": row_result.row_number,
+                    "target_model": row_result.target_model,
+                    "target_object_pk": row_result.target_object_pk,
+                    "status": SKIPPED,
+                    "message": "Already reversed by an earlier rollback.",
+                }
+            )
+            continue
 
-    rollback_record.was_successful = True
-    rollback_record.reverted_rows_count = reverted_rows_count
+        outcomes.append(
+            reverse_row(row_result, initiated_by=initiated_by).as_dict()
+        )
+
+    counts = {
+        status: sum(1 for outcome in outcomes if outcome["status"] == status)
+        for status in (REVERTED, REFUSED, FAILED, SKIPPED)
+    }
+    fully_reverted = not counts[REFUSED] and not counts[FAILED]
+
+    rollback_record.was_successful = fully_reverted
+    rollback_record.reverted_rows_count = counts[REVERTED]
     rollback_record.completed_at = timezone.now()
     rollback_record.details = {
-        "reverted_rows_count": reverted_rows_count,
+        "reverted_rows_count": counts[REVERTED],
+        "refused_rows_count": counts[REFUSED],
+        "failed_rows_count": counts[FAILED],
+        "skipped_rows_count": counts[SKIPPED],
+        "rows": outcomes,
     }
     rollback_record.save(
         update_fields=[
@@ -91,13 +120,31 @@ def rollback_import_job(job, initiated_by=None, reason: str = ""):
         ]
     )
 
-    job.status = ImportJobStatusChoices.ROLLED_BACK
+    job.status = (
+        ImportJobStatusChoices.ROLLED_BACK
+        if fully_reverted
+        else ImportJobStatusChoices.PARTIALLY_ROLLED_BACK
+    )
     job.rollback_completed_at = timezone.now()
     job.save(update_fields=["status", "rollback_completed_at", "updated_at"])
 
     import_batch = job.import_batch
-    import_batch.status = ImportBatchStatusChoices.ROLLED_BACK
+    import_batch.status = (
+        ImportBatchStatusChoices.ROLLED_BACK
+        if fully_reverted
+        else ImportBatchStatusChoices.PARTIALLY_ROLLED_BACK
+    )
     import_batch.save(update_fields=["status", "updated_at"])
+
+    unreversed = counts[REFUSED] + counts[FAILED]
+    message = (
+        "Import job rolled back successfully."
+        if fully_reverted
+        else (
+            f"Import job partially rolled back: {counts[REVERTED]} of "
+            f"{len(outcomes)} rows reversed, {unreversed} could not be."
+        )
+    )
 
     create_import_audit_log(
         school=import_batch.school,
@@ -109,9 +156,9 @@ def rollback_import_job(job, initiated_by=None, reason: str = ""):
         entity_type="import_job",
         entity_id=str(job.id),
         before_data={"status": "imported"},
-        after_data={"status": "rolled_back"},
-        message="Import job rolled back successfully.",
-        metadata={"reason": reason},
+        after_data={"status": job.status},
+        message=message,
+        metadata={"reason": reason, "outcomes": counts},
     )
 
     return rollback_record

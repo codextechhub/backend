@@ -959,11 +959,35 @@ class RollbackImportSerializer(serializers.Serializer):
     Input serializer for rollback action.
     """
     reason = serializers.CharField(required=False, allow_blank=True)
+    #: Null means "decide by size": a rollback small enough to answer inside the
+    #: request does, and a larger one is queued. A caller that knows better can
+    #: say so either way.
+    run_async = serializers.BooleanField(required=False, allow_null=True, default=None)
 
     def validate(self, attrs):
         job = self.context.get("job")
-        if job and job.status not in {"failed", "cancelled", "succeeded"}:
+        # ``partially_rolled_back`` is here so a partial rollback can be
+        # retried: rows it could not reverse are reported with the reason, the
+        # operator clears it, and the rows already reversed are skipped rather
+        # than reported as missing records on the second run.
+        allowed = {
+            "failed",
+            "cancelled",
+            "succeeded",
+            ImportJobStatusChoices.PARTIALLY_ROLLED_BACK,
+        }
+        if job and job.status not in allowed:
             raise serializers.ValidationError(
-                "Only completed, failed, or cancelled jobs can be rolled back."
+                "Only completed, failed, cancelled, or partially rolled back "
+                "jobs can be rolled back."
             )
+
+        # A queued rollback runs minutes after the request that asked for it, so
+        # the window where a second request could start another one is real. An
+        # in-flight rollback is one that has started and not finished.
+        if job and job.rollback_started_at and not job.rollback_completed_at:
+            raise serializers.ValidationError(
+                "A rollback is already running for this job."
+            )
+
         return attrs

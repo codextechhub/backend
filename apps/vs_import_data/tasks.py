@@ -278,9 +278,13 @@ def rollback_import_job_task(
     """
     Run rollback in the background.
     """
+    # ``ImportBatch.school`` is a property over ``tenant.school_profile``, not a
+    # foreign key, so it cannot be select_related: asking for it raised
+    # FieldError before this task did any work. Nothing calls the task today,
+    # which is why the break was never seen.
     job = ImportJob.objects.select_related(
         "import_batch",
-        "import_batch__school",
+        "import_batch__tenant",
         "import_batch__template",
         "queued_by",
     ).get(id=job_id)
@@ -297,12 +301,36 @@ def rollback_import_job_task(
         recipient = initiated_by or job.queued_by
 
         if recipient:
+            # The notice says what happened, not just that something did. A
+            # rollback that could not reverse every row is the case an operator
+            # most needs to hear about.
+            details = rollback_record.details or {}
+            unreversed = (
+                details.get("refused_rows_count", 0)
+                + details.get("failed_rows_count", 0)
+            )
             ImportNotification.objects.create(
                 import_batch=job.import_batch,
                 recipient=recipient,
-                event_type="import_rollback_completed",
-                title="Import rollback completed",
-                body=f"Rollback finished for import job '{job.id}'.",
+                event_type=(
+                    "import_rollback_completed"
+                    if rollback_record.was_successful
+                    else "import_rollback_partial"
+                ),
+                title=(
+                    "Import rollback completed"
+                    if rollback_record.was_successful
+                    else "Import rollback partially completed"
+                ),
+                body=(
+                    f"Rollback finished for import job '{job.id}'."
+                    if rollback_record.was_successful
+                    else (
+                        f"Rollback of import job '{job.id}' reversed "
+                        f"{rollback_record.reverted_rows_count} rows; "
+                        f"{unreversed} could not be reversed."
+                    )
+                ),
             )
 
         create_import_audit_log(
@@ -333,6 +361,13 @@ def rollback_import_job_task(
     except Exception as exc:
         error_text = _safe_error_text(exc)
         logger.exception("Rollback task failed for job %s", job_id)
+
+        # Release the in-flight claim the view staked before queueing. Without
+        # this a crashed task leaves the job looking like a rollback is still
+        # running, and every later attempt is refused for a rollback that is
+        # not happening.
+        job.rollback_started_at = None
+        job.save(update_fields=["rollback_started_at", "updated_at"])
 
         create_import_audit_log(
             school=job.import_batch.school,
