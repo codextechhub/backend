@@ -277,6 +277,11 @@ class Program(_Branched):
     )
     name = models.CharField(max_length=100)
     code = models.CharField(max_length=20)
+    # Every entity the structure drawer writes carries one, so the same field
+    # means the same thing on all five. Department and Subject had it from the
+    # start; Programme, Level and Class did not, and the drawer's Description box
+    # silently dropped what was typed into it on those three.
+    description = models.TextField(blank=True, default="")
     order_index = models.PositiveSmallIntegerField(default=0)
 
     class Meta(_Branched.Meta):
@@ -315,6 +320,7 @@ class Level(_Branched):
     )
     name = models.CharField(max_length=60)
     code = models.CharField(max_length=20)
+    description = models.TextField(blank=True, default="")
     order_index = models.PositiveSmallIntegerField()
     # The promotion target. Null means graduation to the promoting module - and
     # also means nothing has wired promotion yet, because no screen writes this
@@ -360,6 +366,7 @@ class SchoolClass(_Branched):
     )
     name = models.CharField(max_length=60)
     code = models.CharField(max_length=20)
+    description = models.TextField(blank=True, default="")
     arm = models.CharField(max_length=30, blank=True, default="")
     # Advisory here in the exact sense that nothing in this module reads it to
     # refuse anything: there is no Student model here to count. M11 enforces it

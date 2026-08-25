@@ -110,6 +110,17 @@ class ClassListCreateView(_ClassBase, generics.ListCreateAPIView):
         data["code"] = self._code_for(
             SchoolClass, data.get("name") or level.name, data.get("code"),
         )
+        # Two different scopes, so two calls. A class NAME is unique inside its
+        # level at its branch - "JSS1 A" may exist at both Lekki and Ikeja, and
+        # the constraints allow exactly that - while the CODE is unique across
+        # the school. One check stating one rule would be wrong about the other.
+        self._unique(
+            SchoolClass.all_objects.filter(level=level, branch=branch),
+            name=data.get("name"), within=level.name,
+        )
+        self._unique(
+            SchoolClass.all_objects.filter(tenant=self.tenant), code=data["code"],
+        )
         klass = SchoolClass.objects.create(
             tenant=self.tenant, level=level, branch=branch,
             created_by=request.user, **data,
@@ -172,6 +183,16 @@ class ClassDetailView(_ClassBase, generics.RetrieveUpdateAPIView):
             data["branch"] = self._branch_for_write(self._requested_branch(data))
         assert_within_parent(
             data.get("branch", klass.branch), level.branch, parent_label=level.name,
+        )
+        self._unique(
+            SchoolClass.all_objects.filter(
+                level=level, branch=data.get("branch", klass.branch),
+            ),
+            name=data.get("name"), exclude_pk=klass.pk, within=level.name,
+        )
+        self._unique(
+            SchoolClass.all_objects.filter(tenant=self.tenant),
+            code=data.get("code"), exclude_pk=klass.pk,
         )
         for field, value in data.items():
             setattr(klass, field, value)
@@ -407,6 +428,11 @@ class SubjectListCreateView(_SubjectBase, generics.ListCreateAPIView):
         if department is not None:
             assert_within_parent(branch, department.branch, parent_label=department.name)
         data["code"] = self._code_for(Subject, data["name"], data.get("code"))
+        self._unique(
+            Subject.all_objects.filter(tenant=self.tenant),
+            name=data["name"], code=data["code"],
+            writing_to_branch=branch is not None,
+        )
 
         subject = Subject.objects.create(tenant=self.tenant, branch=branch, **data)
         if level_ids:
@@ -465,6 +491,11 @@ class SubjectDetailView(_SubjectBase, generics.RetrieveUpdateDestroyAPIView):
             assert_within_parent(
                 target_branch, department.branch, parent_label=department.name,
             )
+        self._unique(
+            Subject.all_objects.filter(tenant=self.tenant),
+            name=data.get("name"), code=data.get("code"), exclude_pk=subject.pk,
+            writing_to_branch=target_branch is not None,
+        )
         for field, value in data.items():
             setattr(subject, field, value)
         subject.save()

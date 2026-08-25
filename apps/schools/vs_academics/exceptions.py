@@ -104,3 +104,24 @@ class LevelCrossProgram(AcademicsError):
         "meant it."
     )
     http_status = 422
+
+
+class DuplicateName(AcademicsError):
+    """A name already used by a row of the same kind.
+
+    Separate from ``DuplicateCode`` so a screen can put the message under the
+    right field without parsing it. ``extra`` carries the row that was hit and
+    where it lives, so a client that wants to render its own sentence can -
+    but the message here is written to be shown verbatim, which is what the
+    drawer does.
+    """
+
+    error_code = "DUPLICATE_NAME"
+    default_message = "That name is already in use in this school."
+    http_status = 409
+
+
+class DuplicateCode(AcademicsError):
+    error_code = "DUPLICATE_CODE"
+    default_message = "That code is already in use in this school."
+    http_status = 409

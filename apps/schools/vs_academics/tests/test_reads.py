@@ -316,6 +316,37 @@ class OverviewTests(_BudgetMixin, _Base):
         self.assertEqual(school_level.data["data"]["counts"]["programs"], 2)
         self.assertEqual(branch_level.data["data"]["counts"]["programs"], 1)
 
+    def test_the_branch_filter_narrows_the_counts(self):
+        """The pill above these numbers has to move them.
+
+        A shared programme counts at every branch - that is what a null branch
+        MEANS - so the Lekki view sees Shared and not Ikeja Only.
+        """
+        Program.all_objects.create(tenant=self.tenant, name="Shared", code="SHR")
+        Program.all_objects.create(
+            tenant=self.tenant, name="Ikeja Only", code="IKO", branch=self.ikeja,
+        )
+        unfiltered = self.get(self.admin, "academics-overview")
+        lekki = self.get(
+            self.admin, "academics-overview", {"branch": self.lekki.pk},
+        )
+        ikeja = self.get(
+            self.admin, "academics-overview", {"branch": self.ikeja.pk},
+        )
+        self.assertEqual(unfiltered.data["data"]["counts"]["programs"], 2)
+        self.assertEqual(lekki.data["data"]["counts"]["programs"], 1)
+        self.assertEqual(ikeja.data["data"]["counts"]["programs"], 2)
+
+    def test_the_branch_filter_leaves_the_live_year_alone(self):
+        """Filtering the hero by branch would blank it, which is a different
+        and misleading fact - `branches_without_a_session` reports that one."""
+        session = self.session()
+        activate_session(session, self.tenant)
+        response = self.get(
+            self.admin, "academics-overview", {"branch": self.ikeja.pk},
+        )
+        self.assertIsNotNone(response.data["data"]["active_session"])
+
     def test_a_school_with_no_active_year_says_so(self):
         self.session()
         response = self.get(self.admin, "academics-overview")

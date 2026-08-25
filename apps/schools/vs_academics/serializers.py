@@ -208,7 +208,7 @@ class LevelSerializer(_ScopedSerializer):
     class Meta:
         model = Level
         fields = [
-            "id", "name", "code", "order_index", "is_active",
+            "id", "name", "code", "description", "order_index", "is_active",
             "program", "program_name", "next_level", "next_level_name",
             "branch", "branch_name", "scope_label", "class_count",
         ]
@@ -221,8 +221,8 @@ class LevelWriteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Level
         fields = [
-            "id", "name", "code", "order_index", "branch", "next_level",
-            "is_active",
+            "id", "name", "code", "description", "order_index", "branch",
+            "next_level", "is_active",
         ]
         extra_kwargs = {
             "code": {"required": False, "allow_blank": True},
@@ -248,7 +248,7 @@ class ProgramSerializer(_ScopedSerializer):
     class Meta:
         model = Program
         fields = [
-            "id", "name", "code", "order_index", "is_active",
+            "id", "name", "code", "description", "order_index", "is_active",
             "department", "department_name",
             "branch", "branch_name", "scope_label",
             "levels", "level_count",
@@ -268,8 +268,8 @@ class ProgramWriteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Program
         fields = [
-            "id", "name", "code", "order_index", "department", "branch",
-            "is_active",
+            "id", "name", "code", "description", "order_index", "department",
+            "branch", "is_active",
         ]
         extra_kwargs = {
             "code": {"required": False, "allow_blank": True},
@@ -297,7 +297,7 @@ class SchoolClassSerializer(_ScopedSerializer):
     class Meta:
         model = SchoolClass
         fields = [
-            "id", "name", "code", "arm", "capacity", "is_active",
+            "id", "name", "code", "description", "arm", "capacity", "is_active",
             "level", "level_name",
             "branch", "branch_name", "scope_label", "subject_count",
         ]
@@ -316,8 +316,8 @@ class SchoolClassWriteSerializer(serializers.ModelSerializer):
     class Meta:
         model = SchoolClass
         fields = [
-            "id", "name", "code", "arm", "capacity", "level", "branch",
-            "is_active",
+            "id", "name", "code", "description", "arm", "capacity", "level",
+            "branch", "is_active",
         ]
         extra_kwargs = {
             "code": {"required": False, "allow_blank": True},

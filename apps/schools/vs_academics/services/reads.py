@@ -165,12 +165,22 @@ def term_state(term, today):
     return "pending"
 
 
-def build_overview(user, tenant, *, today=None, multi_branch=True):
+def build_overview(user, tenant, *, today=None, multi_branch=True, branch=None):
     """The landing screen: the live year, and what the school has built.
 
     One call because it is one screen. Composing it from the five list
     endpoints would make a page of numbers cost five round trips, and each of
     those lists would then be paginated for no reason.
+
+    ``branch`` narrows the counts the way it narrows the tree beside them: a
+    shared row counts everywhere, a row belonging to another branch counts
+    nowhere. Without it the screen showed a branch filter above four numbers
+    that ignored it, which reads as a broken filter rather than as a total.
+
+    The SESSION block is deliberately not narrowed. A school runs one live year
+    and the hero states which; filtering it by branch would blank the hero for a
+    branch whose year names other branches, which is a different fact and one
+    ``branches_without_a_session`` already reports.
     """
     today = today or dt.date.today()
 
@@ -210,13 +220,21 @@ def build_overview(user, tenant, *, today=None, multi_branch=True):
             ],
         }
 
+    def _count(model):
+        qs = _scoped(model, user, tenant, is_active=True)
+        if branch is not None:
+            # A shared row belongs to this branch too - that is what a null
+            # branch MEANS - so it is counted, not excluded.
+            qs = qs.filter(Q(branch__isnull=True) | Q(branch=branch))
+        return qs.count()
+
     counts = {
         "sessions": AcademicSession.objects.filter(tenant=tenant).count(),
-        "departments": _scoped(Department, user, tenant, is_active=True).count(),
-        "programs": _scoped(Program, user, tenant, is_active=True).count(),
-        "levels": _scoped(Level, user, tenant, is_active=True).count(),
-        "classes": _scoped(SchoolClass, user, tenant, is_active=True).count(),
-        "subjects": _scoped(Subject, user, tenant, is_active=True).count(),
+        "departments": _count(Department),
+        "programs": _count(Program),
+        "levels": _count(Level),
+        "classes": _count(SchoolClass),
+        "subjects": _count(Subject),
     }
 
     return {

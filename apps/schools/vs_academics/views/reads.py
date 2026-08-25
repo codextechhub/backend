@@ -73,7 +73,11 @@ class StructureTreeView(AcademicsViewMixin, APIView):
 
 
 class OverviewView(AcademicsViewMixin, APIView):
-    """GET /v1/academics/overview/
+    """GET /v1/academics/overview/?branch=
+
+    ``branch`` narrows the counts, and only the counts - see build_overview for
+    why the live year is not filtered. It is accepted here so a screen showing a
+    branch picker above these numbers is not showing a filter that does nothing.
 
     docstring-name: Academic structure overview
     """
@@ -82,8 +86,13 @@ class OverviewView(AcademicsViewMixin, APIView):
     pagination_class = None
 
     def get(self, request):
+        branch = None
+        if self.multi_branch and (request.query_params.get("branch") or "").strip():
+            branch = resolve_branch_reference(
+                self.tenant, request.query_params["branch"].strip(), "branch",
+            )
         data = build_overview(
             request.user, self.tenant,
-            today=dt.date.today(), multi_branch=self.multi_branch,
+            today=dt.date.today(), multi_branch=self.multi_branch, branch=branch,
         )
         return success_response("Overview retrieved.", data=data)

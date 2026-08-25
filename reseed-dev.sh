@@ -65,8 +65,17 @@ run seed_notification_settings --all
 echo "→ Onboarding scenario schools (one per state)..."
 run seed_onboarding_scenarios
 
+# The academic structure for two SHAPES of school, because the two cannot exist
+# in one tenant: brightfield-lekki has two branches (so every scope chip and
+# branch filter has something real behind it) and st-monicas has one (the case
+# where the whole branch dimension must recede from the responses). Without
+# these, the Academic Structure screens cannot be put into most of their states.
+echo "→ Academic structure for the two branch shapes..."
+run seed_academic_scenarios
+
 echo ""
 echo "✔ Done. Logins: admin@codexng.com / Admin@123456 · *.vision.edu / Vision@2025 · school users / School@2025"
 echo "  Onboarding cast (School@2025): brightfield-lekki not-ready · st-monicas ready · holy-cross pending"
 echo "                                grace-fields rejected · crescent-model failed · lagoon-view live"
-echo "                                new-dawn unprovisioned · riverbank expiring — admin@<slug>.example.com"
+echo "                                new-dawn unprovisioned · riverbank expiring - admin@<slug>.example.com"
+echo "  Academic structure seeded for: brightfield-lekki (2 branches) · st-monicas (1 branch)"

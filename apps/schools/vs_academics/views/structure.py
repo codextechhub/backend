@@ -40,6 +40,7 @@ from ..services.scoping import (
     raised_branch,
     scope_to_visible_branches,
 )
+from ..services.uniqueness import assert_unique
 from ..services.structure import (
     assert_promotion_target,
     generate_code,
@@ -117,6 +118,14 @@ class _StructureBase(AcademicsViewMixin):
         }
         return generate_code(name, taken)
 
+    def _unique(self, queryset, **kwargs):
+        """Refuse a duplicate before writing it, with a message worth reading.
+
+        The database refuses it either way; what this adds is WHICH field and
+        WHAT it collided with. See services/uniqueness.py.
+        """
+        assert_unique(queryset, multi_branch=self.multi_branch, **kwargs)
+
     def _audit(self, action, obj, label, summary):
         emit_audit_event(
             module_key=AuditModuleKey.ACADEMICS,
@@ -170,6 +179,13 @@ class DepartmentListCreateView(_StructureBase, generics.ListCreateAPIView):
         data.pop("branch", None)
         branch = self._branch_for_write(requested)
         data["code"] = self._code_for(Department, data["name"], data.get("code"))
+        # all_objects, not objects: an archived department still holds its name
+        # and its code, and the constraint does not exempt it either.
+        self._unique(
+            Department.all_objects.filter(tenant=self.tenant),
+            name=data["name"], code=data["code"],
+            writing_to_branch=branch is not None,
+        )
 
         dept = Department.objects.create(tenant=self.tenant, branch=branch, **data)
         self._audit(AuditActionType.CREATE, dept, dept.name, f"{dept.name} added.")
@@ -215,6 +231,11 @@ class DepartmentDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView
         data = dict(writer.validated_data)
         if "branch" in data:
             data["branch"] = self._branch_for_write(self._requested_branch(data))
+        self._unique(
+            Department.all_objects.filter(tenant=self.tenant),
+            name=data.get("name"), code=data.get("code"), exclude_pk=dept.pk,
+            writing_to_branch=data.get("branch", dept.branch) is not None,
+        )
         for field, value in data.items():
             setattr(dept, field, value)
         dept.save()
@@ -300,6 +321,11 @@ class ProgramListCreateView(_StructureBase, generics.ListCreateAPIView):
         if department is not None:
             assert_within_parent(branch, department.branch, parent_label=department.name)
         data["code"] = self._code_for(Program, data["name"], data.get("code"))
+        self._unique(
+            Program.all_objects.filter(tenant=self.tenant),
+            name=data["name"], code=data["code"],
+            writing_to_branch=branch is not None,
+        )
 
         program = Program.objects.create(tenant=self.tenant, branch=branch, **data)
         self._audit(
@@ -350,6 +376,11 @@ class ProgramDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
             assert_within_parent(
                 target_branch, department.branch, parent_label=department.name,
             )
+        self._unique(
+            Program.all_objects.filter(tenant=self.tenant),
+            name=data.get("name"), code=data.get("code"), exclude_pk=program.pk,
+            writing_to_branch=target_branch is not None,
+        )
         for field, value in data.items():
             setattr(program, field, value)
         program.save()
@@ -435,6 +466,13 @@ class LevelListCreateView(_StructureBase, generics.ListCreateAPIView):
         branch = self._branch_for_write(requested)
         assert_within_parent(branch, program.branch, parent_label=program.name)
         data["code"] = self._code_for(Level, data["name"], data.get("code"))
+        # A level's name and code are unique inside their programme, not across
+        # the school: a school may run Year 1 in both Nursery and Primary. The
+        # message has to say so, or it states a rule the database does not hold.
+        self._unique(
+            Level.all_objects.filter(program=program),
+            name=data["name"], code=data["code"], within=program.name,
+        )
         if not data.get("order_index"):
             highest = (
                 Level.all_objects.filter(program=program)
@@ -563,6 +601,11 @@ class LevelDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
             ).lower() in ("1", "true", "yes")
             assert_promotion_target(level, data["next_level"], cross_program=cross)
 
+        self._unique(
+            Level.all_objects.filter(program=level.program),
+            name=data.get("name"), code=data.get("code"), exclude_pk=level.pk,
+            within=level.program.name,
+        )
         for field, value in data.items():
             setattr(level, field, value)
         level.save()

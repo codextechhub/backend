@@ -222,11 +222,20 @@ class SessionWriteTests(_Base):
         self.assertEqual(response.status_code, 422, response.data)
         self.assertEqual(response.data["error"]["code"], "TERM_OUTSIDE_SESSION")
 
-    def test_a_duplicate_name_is_refused(self):
+    def test_a_duplicate_name_is_refused_and_says_which_year(self):
+        """Was a bare 400 DUPLICATE from the generic IntegrityError branch.
+
+        The drawer renders this message under the Name box, so "a record with
+        these details already exists" told the person nothing they could act on
+        - not which field, not which year. The refusal is now typed and names
+        the year it hit.
+        """
         self.post_session()
         response = self.post_session()
-        self.assertEqual(response.status_code, 400, response.data)
-        self.assertEqual(response.data["error"]["code"], "DUPLICATE")
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data["error"]["code"], "DUPLICATE_NAME")
+        self.assertEqual(response.data["error"]["detail"]["field"], "name")
+        self.assertIn("2026/2027", response.data["message"])
 
     def test_case_alone_is_not_a_different_name(self):
         self.post_session(name="2026/2027")
@@ -238,7 +247,8 @@ class SessionWriteTests(_Base):
             {"name": "2026/2027", "start_date": "2027-09-01",
              "end_date": "2028-07-31"}, format="json",
         )
-        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data["error"]["code"], "DUPLICATE_NAME")
 
     def test_an_archived_year_refuses_an_edit(self):
         session = self.session()

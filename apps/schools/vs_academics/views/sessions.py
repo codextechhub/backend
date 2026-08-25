@@ -24,6 +24,7 @@ from ..constants import (
 )
 from ..models import AcademicSession, AcademicTerm, SessionStatus
 from ..serializers import SessionSerializer, SessionWriteSerializer, TermSerializer
+from ..services.uniqueness import assert_unique
 from ..services.sessions import (
     activate_session,
     archive_session,
@@ -97,6 +98,14 @@ class SessionListCreateView(_SessionBase, generics.ListCreateAPIView):
         terms = writer.validated_data.pop("terms", [])
         branch_ids = writer.validated_data.pop("branch_ids", [])
 
+        # A year's name is unique per school whatever branches it names, so no
+        # scope is passed: "2026/2027 already exists" is the whole rule.
+        assert_unique(
+            AcademicSession.all_objects.filter(tenant=self.tenant),
+            name=writer.validated_data.get("name"),
+            multi_branch=self.multi_branch,
+        )
+
         session = AcademicSession.objects.create(
             tenant=self.tenant, **writer.validated_data,
         )
@@ -158,6 +167,12 @@ class SessionDetailView(_SessionBase, generics.RetrieveUpdateAPIView):
             # A live year's start has already happened. Its name and its end
             # can still be corrected.
             writer.validated_data.pop("start_date")
+
+        assert_unique(
+            AcademicSession.all_objects.filter(tenant=self.tenant),
+            name=writer.validated_data.get("name"), exclude_pk=session.pk,
+            multi_branch=self.multi_branch,
+        )
 
         for field, value in writer.validated_data.items():
             setattr(session, field, value)

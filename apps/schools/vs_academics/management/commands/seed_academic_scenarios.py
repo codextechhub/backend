@@ -57,11 +57,18 @@ YEARS = (
     ("2027/2028", dt.date(2027, 9, 6), dt.date(2028, 7, 14), "draft"),
 )
 
+#: name, code, department (None where a school runs it outside any), levels
+#:
+#: Two of the four carry a department deliberately. A department nothing points
+#: at can always be deleted, so a seed where NO programme is mapped cannot reach
+#: the refusal that says otherwise - and the screen that has to explain it is
+#: then untestable. Nursery and Primary stay unmapped, which is also true of
+#: most schools, so both sides of the delete are reachable.
 PROGRAMMES = (
-    ("Nursery", "NUR", ("Nursery 1", "Nursery 2")),
-    ("Primary", "PRI", tuple(f"Primary {n}" for n in range(1, 7))),
-    ("Junior Secondary", "JSS", ("JSS1", "JSS2", "JSS3")),
-    ("Senior Secondary", "SSS", ("SSS1", "SSS2", "SSS3")),
+    ("Nursery", "NUR", None, ("Nursery 1", "Nursery 2")),
+    ("Primary", "PRI", None, tuple(f"Primary {n}" for n in range(1, 7))),
+    ("Junior Secondary", "JSS", "Sciences", ("JSS1", "JSS2", "JSS3")),
+    ("Senior Secondary", "SSS", "Sciences", ("SSS1", "SSS2", "SSS3")),
 )
 
 DEPARTMENTS = (
@@ -143,7 +150,7 @@ class Command(BaseCommand):
 
         self._years(tenant)
         depts = self._departments(tenant, secondary)
-        levels = self._programmes(tenant, secondary)
+        levels = self._programmes(tenant, secondary, depts)
         self._classes(tenant, levels, branches, multi)
         self._subjects(tenant, depts, levels, secondary)
 
@@ -197,13 +204,21 @@ class Command(BaseCommand):
             )
         return out
 
-    def _programmes(self, tenant, secondary):
+    def _programmes(self, tenant, secondary, depts):
         levels = {}
-        for index, (name, code, level_names) in enumerate(PROGRAMMES):
-            program, _ = Program.all_objects.get_or_create(
+        for index, (name, code, dept, level_names) in enumerate(PROGRAMMES):
+            program, created = Program.all_objects.get_or_create(
                 tenant=tenant, name=name,
-                defaults={"code": code, "order_index": index},
+                defaults={
+                    "code": code, "order_index": index,
+                    "department": depts.get(dept) if dept else None,
+                },
             )
+            # Top up a programme seeded before this column was filled in, so a
+            # re-run fixes an existing dev database rather than only a fresh one.
+            if not created and dept and program.department_id is None:
+                program.department = depts.get(dept)
+                program.save(update_fields=["department", "updated_at"])
             for order, level_name in enumerate(level_names, start=1):
                 level, _ = Level.all_objects.get_or_create(
                     tenant=tenant, program=program, name=level_name,
