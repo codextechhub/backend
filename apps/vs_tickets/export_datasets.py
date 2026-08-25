@@ -1,5 +1,10 @@
 """Support datasets published to the Export Centre.
 
+**Rows narrow to what the caller may see on the ticket list**, through that
+screen's own visibility function rather than through a branch filter. See
+``_tickets`` for why the two are not interchangeable here.
+
+
 Registered from :meth:`vs_tickets.apps.VsTicketsConfig.ready`. Tenant-scoped: a
 support ticket belongs to the organisation that raised it.
 
@@ -28,9 +33,33 @@ from vs_exports.catalogue import (
 
 # Build the tenant-scoped base queryset for support tickets.
 def _tickets(scope):
-    from .models import Ticket
+    """The tickets this caller may actually see, not every ticket in the tenant.
 
-    return Ticket.all_objects.filter(tenant=scope.tenant)
+    Routed through :func:`vs_tickets.services.visibility.visible_tickets_qs`
+    rather than through ``narrow_to_caller_branches``, and the difference
+    matters. This module's rule is compound, not a branch filter: a ticket
+    manager pinned to Ikeja sees Ikeja's tickets plus the ones filed for the
+    school as a whole, while a *participant* sees their own thread whatever
+    branch it was filed for. A ticket carries the branch it was filed for, not
+    the branch of everyone on it, so a plain branch narrowing would take a
+    ticket away from the person assigned to work it - which gets reported as
+    "the export lost my ticket" rather than as a permissions rule.
+
+    Calling the module's own function is also the only way to be sure the file
+    and the screen keep agreeing when that rule changes.
+    """
+    from .models import Ticket
+    from .services import visibility
+
+    user = getattr(scope, "user", None)
+    if user is None:
+        # Fails closed, unlike the catalogue helper, and deliberately: ticket
+        # conversations carry personal and operationally sensitive detail, and
+        # a view grant here is already not school-wide access. Every real run
+        # carries a user - ``ExportRun.requested_by`` is non-null - so this is
+        # the unreachable branch, not the ordinary one.
+        return Ticket.all_objects.none()
+    return visibility.visible_tickets_qs(user).filter(tenant=scope.tenant)
 
 
 _CATEGORY = choice_labels("vs_tickets.constants.TicketCategory")

@@ -1,5 +1,11 @@
 """Workflow datasets published to the Export Centre.
 
+**Rows narrow to the caller's branches, inclusively**, which is what
+``views._filter_by_branch`` and the three ``branch_q(include_shared=True)`` call
+sites beside it already do. An export and the screen it mirrors must not answer
+differently.
+
+
 Registered from :meth:`vs_workflow.apps.VsWorkflowConfig.ready`. Tenant-scoped: an
 approval belongs to the organisation, and one instance may govern a document in any
 module, so there is no single set of books to attach it to.
@@ -18,6 +24,7 @@ from vs_exports.catalogue import (
     DatasetScope,
     Field,
     FilterDef,
+    narrow_to_caller_branches,
     register,
 )
 
@@ -26,7 +33,17 @@ from vs_exports.catalogue import (
 def _instances(scope):
     from .models import WorkflowInstance
 
-    return WorkflowInstance.objects.filter(tenant=scope.tenant)
+    # include_shared=True, matching branch_q(request, include_shared=True) at
+    # every one of this module's own call sites: a branch-pinned row is an
+    # override of the tenant-wide default rather than a replacement for it, so
+    # a branch user must still see the tenant-wide approvals. The exclusive
+    # reading was tried on the screens and is recorded there as a defect - it
+    # left branch users with an empty list whenever the tenant published at
+    # tenant level, which is the normal case.
+    return narrow_to_caller_branches(
+        WorkflowInstance.objects.filter(tenant=scope.tenant),
+        scope, inclusive=True,
+    )
 
 
 # Register every workflow dataset. Called once from AppConfig.ready().
