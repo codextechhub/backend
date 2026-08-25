@@ -132,6 +132,22 @@ class _StructureBase(AcademicsViewMixin):
                 )
         return qs
 
+    def _lens_branch(self):
+        """The branch the screen is filtered to, or None for "everything".
+
+        Resolved the same way `_filtered` resolves it, so a count and the rows
+        it sits under can never disagree about which branch is in view.
+        """
+        params = self.request.query_params
+        branch = (params.get("branch") or "").strip()
+        if not branch or not self.multi_branch:
+            return None
+        if branch.lower() in ("none", "school", "shared"):
+            return None
+        from vs_tenants.references import resolve_branch_reference
+
+        return resolve_branch_reference(self.tenant, branch, "branch")
+
     def _branch_for_write(self, requested=UNSET):
         return raised_branch(self.request.user, self.tenant, requested)
 

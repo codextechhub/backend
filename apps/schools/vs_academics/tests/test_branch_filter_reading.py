@@ -90,3 +90,56 @@ class InclusiveBranchFilterTests(_AllAcademics):
             self.admin, "academics-department-list", {"branch": "99999"},
         )
         self.assertEqual(response.status_code, 400, response.data)
+
+
+class OfferedAtAnswersToTheFilterTests(_AllAcademics):
+    """A count shown under a filter has to answer to it.
+
+    The offerings prefetch was named `visible_offerings` and was not narrowed at
+    all, so a subject card under a branch lens reported every level the subject
+    is taught at - including levels that branch does not have. The row filter was
+    right and the number beside it was not, which is the harder kind of wrong to
+    notice.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from schools.vs_academics.models import SubjectOffering
+
+        shared_prog = self.program("Junior Secondary", "JSS")
+        ikeja_prog = self.program("Vocational", "VOC", branch=self.ikeja)
+        self.shared_level = Level.all_objects.create(
+            tenant=self.tenant, program=shared_prog, name="JSS1", code="JSS1",
+            order_index=1,
+        )
+        self.ikeja_level = Level.all_objects.create(
+            tenant=self.tenant, program=ikeja_prog, name="Vocational 1",
+            code="VOC1", order_index=1, branch=self.ikeja,
+        )
+        self.subject = Subject.all_objects.create(
+            tenant=self.tenant, name="English", code="ENG",
+        )
+        for level in (self.shared_level, self.ikeja_level):
+            SubjectOffering.all_objects.create(
+                tenant=self.tenant, subject=self.subject, level=level,
+            )
+
+    def counts_at(self, params):
+        response = self.get(self.admin, "academics-subject-list", params)
+        row = next(s for s in response.data["data"] if s["name"] == "English")
+        return row["level_count"], row["offered_label"]
+
+    def test_unfiltered_counts_every_level_it_is_taught_at(self):
+        count, label = self.counts_at({})
+        self.assertEqual(count, 2)
+        self.assertIn("Vocational 1", label)
+
+    def test_a_branch_lens_drops_the_levels_that_branch_does_not_have(self):
+        # Lekki has JSS1 (school-wide) and not Vocational 1 (Ikeja's).
+        count, label = self.counts_at({"branch": self.lekki.pk})
+        self.assertEqual(count, 1)
+        self.assertNotIn("Vocational", label)
+
+    def test_the_branch_that_owns_the_level_still_counts_it(self):
+        count, _ = self.counts_at({"branch": self.ikeja.pk})
+        self.assertEqual(count, 2)

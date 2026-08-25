@@ -355,16 +355,30 @@ def _arm_code(level_name, arm, taken):
 
 # ── Subjects ───────────────────────────────────────────────────────────────
 
-def _subjects_for(tenant):
+def _subjects_for(tenant, branch=None):
+    """Subjects, with the levels they are offered at.
+
+    ``branch`` narrows the OFFERINGS as well as nothing else - the subject rows
+    themselves are filtered by ``_filtered``. Without it the prefetch was called
+    ``visible_offerings`` and was not: it counted every level the subject is
+    taught at, including levels the branch in view does not have, so under a
+    branch lens a card read "Nursery 1-Vocational 2 · 16 levels" at a branch
+    that runs fourteen of them. A count shown under a filter has to answer to it.
+    """
+    offerings = SubjectOffering.objects.select_related("level").order_by(
+        "level__program", "level__order_index",
+    )
+    if branch is not None:
+        # A school-wide LEVEL belongs to this branch too - the same inclusive
+        # reading the row filter uses, applied one level down.
+        offerings = offerings.filter(
+            Q(level__branch__isnull=True) | Q(level__branch=branch),
+        )
     return (
         Subject.objects.filter(tenant=tenant)
         .select_related("branch", "department")
         .prefetch_related(Prefetch(
-            "offerings",
-            queryset=SubjectOffering.objects.select_related("level").order_by(
-                "level__program", "level__order_index",
-            ),
-            to_attr="visible_offerings",
+            "offerings", queryset=offerings, to_attr="visible_offerings",
         ))
     )
 
@@ -389,7 +403,7 @@ class _SubjectBase(_StructureBase):
     serializer_class = SubjectSerializer
 
     def get_queryset(self):
-        qs = self._filtered(_subjects_for(self.tenant))
+        qs = self._filtered(_subjects_for(self.tenant, self._lens_branch()))
         is_core = (self.request.query_params.get("is_core") or "").strip().lower()
         if is_core in ("true", "1", "core"):
             qs = qs.filter(is_core=True)
