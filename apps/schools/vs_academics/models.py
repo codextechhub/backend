@@ -29,17 +29,23 @@ from vs_rbac.managers import TenantAwareManager
 
 
 class _Owned(models.Model):
-    """Tenant ownership, the managers that enforce it, and the timestamps.
+    """The managers that enforce tenant ownership, and the timestamps.
 
     ``objects`` applies the ambient tenant eagerly; ``all_objects`` does not and
     exists for migrations, seeders and the constraint-level tests that have to
     write across tenants on purpose. ``base_manager_name`` is the unfiltered one
     so related traversal does not silently drop rows.
+
+    The ``tenant`` column itself is **not** here, and its absence is deliberate.
+    Declaring it once in this base would mean one ``related_name`` shared by
+    five models, so it would have to be ``"+"``, which disables the reverse
+    accessor entirely. That is tidier to write and quietly makes
+    ``tenant.departments`` and ``branch.classes`` impossible - which is how the
+    branch class count that ``vs_schools`` had been waiting for turned out to be
+    unbuildable. Each concrete model declares its own, with the name its FRD
+    section gives it.
     """
 
-    tenant = models.ForeignKey(
-        "vs_tenants.Tenant", on_delete=models.PROTECT, related_name="+",
-    )
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -53,16 +59,12 @@ class _Owned(models.Model):
 
 
 class _Branched(_Owned):
-    """A tenant-owned row that may belong to one branch or to the school."""
+    """A tenant-owned row that may belong to one branch or to the school.
 
-    branch = models.ForeignKey(
-        "vs_tenants.Branch",
-        on_delete=models.PROTECT,
-        null=True,
-        blank=True,
-        related_name="+",
-        help_text="Leave blank for an item the whole school shares.",
-    )
+    ``branch`` itself is declared on each concrete model, for the reason
+    ``_Owned`` gives.
+    """
+
     is_active = models.BooleanField(default=True, db_index=True)
 
     class Meta(_Owned.Meta):
@@ -228,6 +230,15 @@ class AcademicTerm(models.Model):
 class Department(_Branched):
     """A faculty grouping that programs and subjects hang off."""
 
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="departments",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        null=True, blank=True, related_name="departments",
+        help_text="Leave blank for an item the whole school shares.",
+    )
     name = models.CharField(max_length=100)
     code = models.CharField(max_length=20)
     description = models.TextField(blank=True, default="")
@@ -251,6 +262,15 @@ class Department(_Branched):
 class Program(_Branched):
     """A stage a pupil moves through: Nursery, Primary, Junior Secondary."""
 
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="programs",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        null=True, blank=True, related_name="programs",
+        help_text="Leave blank for an item the whole school shares.",
+    )
     department = models.ForeignKey(
         Department, on_delete=models.SET_NULL, null=True, blank=True,
         related_name="programs",
@@ -278,6 +298,15 @@ class Program(_Branched):
 class Level(_Branched):
     """A year group inside a programme: JSS1, Primary 4."""
 
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="levels",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        null=True, blank=True, related_name="levels",
+        help_text="Leave blank for an item the whole school shares.",
+    )
     # PROTECT, not CASCADE: deleting a programme must not silently destroy the
     # levels that classes hang off. The platform answers the blocked delete
     # with 409 PROTECTED_REFERENCE and a count.
@@ -317,6 +346,15 @@ class Level(_Branched):
 class SchoolClass(_Branched):
     """A class pupils sit in: JSS1 A."""
 
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="classes",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        null=True, blank=True, related_name="classes",
+        help_text="Leave blank for an item the whole school shares.",
+    )
     level = models.ForeignKey(
         Level, on_delete=models.PROTECT, related_name="classes",
     )
@@ -366,6 +404,15 @@ class SchoolClass(_Branched):
 class Subject(_Branched):
     """Something taught, and (through SubjectOffering) where it is taught."""
 
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="subjects",
+    )
+    branch = models.ForeignKey(
+        "vs_tenants.Branch", on_delete=models.PROTECT,
+        null=True, blank=True, related_name="subjects",
+        help_text="Leave blank for an item the whole school shares.",
+    )
     department = models.ForeignKey(
         Department, on_delete=models.SET_NULL, null=True, blank=True,
         related_name="subjects",

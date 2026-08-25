@@ -98,19 +98,26 @@ class MyBranchesTests(TestCase):
         self.assertEqual(response.status_code, 404, response.data)
         del third
 
-    def test_the_counts_are_null_rather_than_invented(self):
-        """There is no Student, Teacher or Class model in the product yet.
+    def test_the_unbuilt_counts_are_null_rather_than_invented(self):
+        """There is still no Student and no Teacher model in the product.
 
         Null says "not known" and the screen renders a dash. A zero would say
         the branch has no students, which is a different and false claim.
+
+        ``classes_count`` was in this list until M13 landed a Class model, and
+        the day it did this test had to choose: keep asserting null and freeze
+        the count out, or move it. It moved, to
+        BranchClassCountTests below, where a zero is asserted as a true claim
+        rather than a missing one.
         """
         response = self.client_for(self.admin).get(
             reverse("my-branch-list"), {"tenant": self.tenant.slug},
         )
         row = response.data["data"][0]
-        for field in ("students_count", "teachers_count", "classes_count"):
+        for field in ("students_count", "teachers_count"):
             self.assertIn(field, row, f"{field} must be in the shape already")
             self.assertIsNone(row[field])
+        self.assertIn("classes_count", row)
 
     def test_a_reader_without_the_key_is_refused(self):
         stranger = make_school_admin(
@@ -231,3 +238,96 @@ class PendingSchoolBranchesTests(TestCase):
         )
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(len(response.data["data"]), 2)
+
+
+class BranchClassCountTests(TestCase):
+    """The count SchoolBranchSerializer promised would arrive with M13.
+
+    It shipped as a hard ``None`` with a docstring saying it would become an
+    annotation the day a Class model existed. M13 landed one, so these pin the
+    three things that were decided when it did: live classes only, zero rather
+    than null for a branch with none, and the shared classes of a school that
+    has never used the branch column belonging to no branch's card.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.school = make_school(slug="brightfield", name="Brightfield Schools")
+        cls.tenant = cls.school.tenant
+        cls.lekki = make_branch(cls.school, name="Lekki Campus", is_main=True)
+        cls.ikeja = make_branch(cls.school, name="Ikeja Campus", is_main=False)
+
+        view = make_permission("school.branches.view", scope=PermissionScope.TENANT)
+        role = make_role(cls.school, name="School Admin", key="school_admin")
+        make_role_permission(role, view)
+        cls.admin = make_school_admin(
+            None, email="adaeze@brightfield.example.com", tenant=cls.tenant,
+        )
+        make_assignment(cls.school, cls.admin, role, branch=None)
+
+    def setUp(self):
+        from schools.vs_academics.models import Level, Program
+
+        self.program = Program.all_objects.create(
+            tenant=self.tenant, name="Junior Secondary", code="JSS",
+        )
+        self.level = Level.all_objects.create(
+            tenant=self.tenant, program=self.program, name="JSS1",
+            code="JSS1", order_index=1,
+        )
+
+    def klass(self, name, code, branch=None, active=True):
+        from schools.vs_academics.models import SchoolClass
+
+        return SchoolClass.all_objects.create(
+            tenant=self.tenant, level=self.level, name=name, code=code,
+            branch=branch, is_active=active,
+        )
+
+    def rows(self):
+        token = str(CodeXRefreshToken.for_user(self.admin).access_token)
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = client.get(
+            reverse("my-branch-list"), {"tenant": self.tenant.slug},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return {row["name"]: row for row in response.data["data"]}
+
+    def test_a_branch_reports_its_own_live_classes(self):
+        self.klass("JSS1 A", "JSS1-A", branch=self.lekki)
+        self.klass("JSS1 B", "JSS1-B", branch=self.lekki)
+        self.klass("JSS1 C", "JSS1-C", branch=self.ikeja)
+        rows = self.rows()
+        self.assertEqual(rows["Lekki Campus"]["classes_count"], 2)
+        self.assertEqual(rows["Ikeja Campus"]["classes_count"], 1)
+
+    def test_an_archived_class_is_not_counted(self):
+        """Or the branch card disagrees with the class list beside it."""
+        self.klass("JSS1 A", "JSS1-A", branch=self.lekki)
+        self.klass("JSS1 B", "JSS1-B", branch=self.lekki, active=False)
+        self.assertEqual(self.rows()["Lekki Campus"]["classes_count"], 1)
+
+    def test_a_branch_with_no_classes_reports_zero_not_null(self):
+        """Zero and null are different claims, and zero is the true one here."""
+        rows = self.rows()
+        self.assertEqual(rows["Lekki Campus"]["classes_count"], 0)
+        self.assertIsNotNone(rows["Lekki Campus"]["classes_count"])
+
+    def test_a_school_wide_class_belongs_to_no_branchs_card(self):
+        """A class the school holds as a whole is not one branch's to claim.
+
+        This is the shape a single-branch school writes for every class it has,
+        so counting it on the main branch would double it into a total the
+        school never stated.
+        """
+        self.klass("JSS1 A", "JSS1-A", branch=None)
+        rows = self.rows()
+        self.assertEqual(rows["Lekki Campus"]["classes_count"], 0)
+        self.assertEqual(rows["Ikeja Campus"]["classes_count"], 0)
+
+    def test_the_other_two_counts_are_still_null(self):
+        """M11 and M12 have not landed, so a number for either would be invented."""
+        row = self.rows()["Lekki Campus"]
+        self.assertIsNone(row["students_count"])
+        self.assertIsNone(row["teachers_count"])

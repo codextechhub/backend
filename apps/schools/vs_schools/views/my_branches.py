@@ -42,6 +42,7 @@ closed for the next view added here.
 """
 from __future__ import annotations
 
+from django.db.models import Count, Q
 from rest_framework import generics
 from rest_framework.exceptions import NotFound
 
@@ -69,6 +70,21 @@ class _MyBranchBase:
             return Branch.objects.none()
         return (
             Branch.objects.filter(tenant=tenant)
+            .annotate(
+                # The count SchoolBranchSerializer promised would arrive the
+                # day a Class model existed. Live classes only: an archived one
+                # is retired, and counting it would make this card disagree
+                # with the class list the same admin reads next door.
+                #
+                # Spelled through the reverse accessor rather than by
+                # importing schools.vs_academics, so this app keeps no
+                # dependency on a module that landed after it.
+                classes_count_annotated=Count(
+                    "classes",
+                    filter=Q(classes__is_active=True),
+                    distinct=True,
+                ),
+            )
             # The main branch first, then by the code a school already knows its
             # sites by, so the order matches how they talk about them.
             .order_by("-is_main", "code")

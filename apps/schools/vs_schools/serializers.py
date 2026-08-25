@@ -1963,11 +1963,21 @@ class SchoolBranchSerializer(serializers.ModelSerializer):
     shape for both, because a school's card and its detail view show the same
     facts.
 
-    **The three counts are deliberately null.** There is no Student, Teacher or
-    Class model in the product yet, so a number here would be invented. Null
-    says "not known", the screen renders a dash, and the day those models land
-    this becomes an annotation without the response shape changing under any
-    client already reading it.
+    **Two of the three counts are still deliberately null.** There is no Student
+    and no Teacher model in the product yet, so a number for either would be
+    invented. Null says "not known" and the screen renders a dash; the day M11
+    and M12 land, each becomes an annotation without the response shape changing
+    under any client already reading it.
+
+    ``classes_count`` is the first of the three to become real. M13 landed
+    ``SchoolClass``, so the annotation this docstring promised is now in
+    ``MyBranchListView.get_queryset``, and it counts **live** classes: an
+    archived class is one the school has retired, and including it would make
+    the branch card disagree with the class list beside it.
+
+    A branch with no classes reports ``0``, which is a different claim from
+    ``null`` and a true one - the school has this site and has built nothing on
+    it yet.
     """
 
     branch_type = serializers.CharField(source="_type", read_only=True)
@@ -1981,8 +1991,14 @@ class SchoolBranchSerializer(serializers.ModelSerializer):
     def get_teachers_count(self, obj) -> None:
         return None
 
-    def get_classes_count(self, obj) -> None:
-        return None
+    def get_classes_count(self, obj):
+        """Annotated by the view. Null only where nothing annotated it.
+
+        The fallback matters: this serializer is reachable from the detail
+        route as well as the list, and a count computed per row there would be
+        a query per branch on a screen that already has its answer.
+        """
+        return getattr(obj, "classes_count_annotated", None)
 
     class Meta:
         model = Branch
