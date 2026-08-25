@@ -277,7 +277,7 @@ class ProgramListCreateView(_StructureBase, generics.ListCreateAPIView):
     def get_queryset(self):
         levels = scope_to_visible_branches(
             Level.objects.filter(tenant=self.tenant)
-            .select_related("branch", "program")
+            .select_related("branch", "program", "next_level")
             .annotate(class_count_annotated=Count("classes", distinct=True))
             .order_by("order_index"),
             self.request.user, self.tenant,
@@ -383,7 +383,10 @@ class ProgramDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
 def _levels_for(tenant):
     return (
         Level.objects.filter(tenant=tenant)
-        .select_related("branch", "program")
+        # next_level joined rather than fetched per row: the promotion screen
+        # reads a whole programme at once, so a lazy relation here is a query
+        # per level on exactly the screen that lists them all.
+        .select_related("branch", "program", "next_level")
         .annotate(class_count_annotated=Count("classes", distinct=True))
     )
 

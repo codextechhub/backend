@@ -418,3 +418,74 @@ class PromotionTests(_Base):
         self.assertEqual(response.status_code, 400, response.data)
         self.a.refresh_from_db()
         self.assertIsNone(self.a.next_level_id)
+
+
+class PromotionScreenTests(_Base):
+    """What a screen needs to render and edit the promotion chain.
+
+    The API carried next_level as an id from the start, which is enough to
+    write with and not enough to draw with: a level detail read would have
+    needed a second call just to name what it promotes to.
+    """
+
+    def setUp(self):
+        self.prog = self.program()
+        self.jss1, self.jss2 = (
+            Level.all_objects.create(
+                tenant=self.tenant, program=self.prog, name=n, code=n, order_index=i,
+            )
+            for i, n in enumerate(("JSS1", "JSS2"), start=1)
+        )
+
+    def test_a_level_names_what_it_promotes_to(self):
+        self.jss1.next_level = self.jss2
+        self.jss1.save(update_fields=["next_level"])
+        response = self.get(
+            self.admin, "academics-level-detail", pk=self.jss1.pk,
+        )
+        self.assertEqual(response.data["data"]["next_level"], self.jss2.pk)
+        self.assertEqual(response.data["data"]["next_level_name"], "JSS2")
+
+    def test_a_terminal_level_names_nothing(self):
+        """Null here means terminal OR not yet wired; FR-005 says why both."""
+        response = self.get(
+            self.admin, "academics-level-detail", pk=self.jss2.pk,
+        )
+        self.assertIsNone(response.data["data"]["next_level_name"])
+
+    def test_the_programme_list_draws_the_whole_chain_in_one_call(self):
+        self.jss1.next_level = self.jss2
+        self.jss1.save(update_fields=["next_level"])
+        response = self.get(self.admin, "academics-program-list")
+        levels = response.data["data"][0]["levels"]
+        self.assertEqual(
+            [(lv["name"], lv["next_level_name"]) for lv in levels],
+            [("JSS1", "JSS2"), ("JSS2", None)],
+        )
+
+    def test_naming_the_target_costs_no_extra_query_per_level(self):
+        """The join is what makes the promotion screen affordable.
+
+        Without select_related this is one query per level, on the one screen
+        that lists every level a programme has. Asserted by growing the
+        programme and requiring the count not to move - comparing a count to
+        itself would pass whether or not the join is there.
+        """
+        client = self.client_for(self.admin)
+        url = reverse("academics-program-list")
+        params = {"tenant": self.tenant.slug}
+        client.get(url, params)                         # warm the auth caches
+
+        with self.assertNumQueries(13) as small:
+            client.get(url, params)
+        baseline = len(small.captured_queries)
+
+        for i in range(3, 12):
+            Level.all_objects.create(
+                tenant=self.tenant, program=self.prog, name=f"JSS{i}",
+                code=f"JSS{i}", order_index=i, next_level=self.jss2,
+            )
+        with self.assertNumQueries(baseline):
+            response = client.get(url, params)
+        # And the extra levels really are in the payload being priced.
+        self.assertEqual(len(response.data["data"][0]["levels"]), 11)

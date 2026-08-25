@@ -196,12 +196,20 @@ class DepartmentWriteSerializer(serializers.ModelSerializer):
 class LevelSerializer(_ScopedSerializer):
     class_count = serializers.SerializerMethodField()
     program_name = serializers.CharField(source="program.name", read_only=True)
+    # The promotion target by name as well as by id, so a screen can render
+    # "JSS1 promotes to JSS2" from one response. Null means the level is
+    # terminal OR that promotion has not been wired yet, and the two are not
+    # distinguishable here - FR-005 says why, and why M11 must not read them
+    # as the same thing.
+    next_level_name = serializers.CharField(
+        source="next_level.name", read_only=True, default=None,
+    )
 
     class Meta:
         model = Level
         fields = [
             "id", "name", "code", "order_index", "is_active",
-            "program", "program_name", "next_level",
+            "program", "program_name", "next_level", "next_level_name",
             "branch", "branch_name", "scope_label", "class_count",
         ]
 
