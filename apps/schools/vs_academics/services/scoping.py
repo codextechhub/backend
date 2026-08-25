@@ -38,7 +38,17 @@ def scope_to_visible_branches(queryset, user, tenant, field="branch"):
     )
 
 
-def raised_branch(user, tenant, requested, *, field="branch"):
+#: Sentinel for "the caller did not mention a branch at all".
+#:
+#: Distinct from ``None``, which is the caller explicitly choosing the whole
+#: school - the design's "Applies to: The whole school" radio. The two have to
+#: be told apart: omitting the field means "wherever I work", and a branch-bound
+#: caller gets their own branch filled in; choosing the whole school is a claim
+#: about the entire school, and a branch-bound caller may not make it.
+UNSET = object()
+
+
+def raised_branch(user, tenant, requested=UNSET, *, field="branch"):
     """The branch a row this caller writes belongs to.
 
     Mirrors ``vs_procurement.views.base._raised_branch``: the column semantics
@@ -57,7 +67,12 @@ def raised_branch(user, tenant, requested, *, field="branch"):
     statement about the whole school, and it is refused with 403 rather than
     422, because it is about who the caller is rather than what they typed.
     """
-    branch = resolve_branch_reference(tenant, requested, field) if requested else None
+    explicit_school_wide = requested is None
+    branch = (
+        resolve_branch_reference(tenant, requested, field)
+        if requested not in (UNSET, None, "")
+        else None
+    )
     visible = visible_branch_ids(user, tenant)
 
     if visible is WHOLE_TENANT:
@@ -70,6 +85,15 @@ def raised_branch(user, tenant, requested, *, field="branch"):
         )
 
     if branch is None:
+        if explicit_school_wide:
+            # They asked for the whole school by name. A shared row is a
+            # statement about every branch, including ones they do not work in,
+            # so this is 403 rather than 422: it is about who they are, not
+            # about what they typed.
+            raise PermissionDenied(
+                "You work in one branch, so you cannot create something that "
+                "applies to the whole school. Ask a school administrator.",
+            )
         if len(visible) == 1:
             return _only(tenant, visible)
         raise ValidationError({

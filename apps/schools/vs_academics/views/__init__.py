@@ -6,3 +6,12 @@ from .sessions import (  # noqa: F401
     TermDetailView,
     TermListCreateView,
 )
+from .structure import (  # noqa: F401
+    DepartmentDetailView,
+    DepartmentListCreateView,
+    LevelBulkCreateView,
+    LevelDetailView,
+    LevelListCreateView,
+    ProgramDetailView,
+    ProgramListCreateView,
+)

@@ -1,6 +1,13 @@
 from django.urls import path
 
 from .views import (
+    DepartmentDetailView,
+    DepartmentListCreateView,
+    LevelBulkCreateView,
+    LevelDetailView,
+    LevelListCreateView,
+    ProgramDetailView,
+    ProgramListCreateView,
     SessionActivateView,
     SessionArchiveView,
     SessionDetailView,
@@ -18,4 +25,13 @@ urlpatterns = [
     # No archive route for a term, deliberately. See TermDetailView's docstring;
     # test_no_standalone_term_archive_route asserts the absence.
     path("terms/<int:pk>/", TermDetailView.as_view(), name="academics-term-detail"),
+
+    path("departments/", DepartmentListCreateView.as_view(), name="academics-department-list"),
+    path("departments/<int:pk>/", DepartmentDetailView.as_view(), name="academics-department-detail"),
+
+    path("programs/", ProgramListCreateView.as_view(), name="academics-program-list"),
+    path("programs/<int:pk>/", ProgramDetailView.as_view(), name="academics-program-detail"),
+    path("programs/<int:pk>/levels/", LevelListCreateView.as_view(), name="academics-level-list"),
+    path("programs/<int:pk>/levels/bulk/", LevelBulkCreateView.as_view(), name="academics-level-bulk"),
+    path("levels/<int:pk>/", LevelDetailView.as_view(), name="academics-level-detail"),
 ]

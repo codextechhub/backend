@@ -1,0 +1,588 @@
+"""Departments, programmes and levels.
+
+The three of them are one screen to a school and one permission resource here,
+``academics.structure``. They share the branch rules in
+``services/scoping.py``: reads are inclusive, writes follow the caller's
+narrowing, and a child may be no wider than its parent.
+"""
+from __future__ import annotations
+
+from django.db import transaction
+from django.db.models import Count, Prefetch, Q
+from rest_framework import generics
+from rest_framework.exceptions import NotFound
+from rest_framework.views import APIView
+
+from core.response import success_response
+from vs_audit.models import AuditActionType, AuditModuleKey
+from vs_audit.services import emit_audit_event
+
+from ..constants import (
+    PERM_STRUCTURE_CREATE,
+    PERM_STRUCTURE_MANAGE,
+    PERM_STRUCTURE_UPDATE,
+    PERM_STRUCTURE_VIEW,
+)
+from ..exceptions import AcademicsError
+from ..models import Department, Level, Program, SchoolClass, Subject
+from ..serializers import (
+    BulkLevelSerializer,
+    DepartmentSerializer,
+    DepartmentWriteSerializer,
+    LevelSerializer,
+    LevelWriteSerializer,
+    ProgramSerializer,
+    ProgramWriteSerializer,
+)
+from ..services.scoping import (
+    UNSET,
+    assert_within_parent,
+    raised_branch,
+    scope_to_visible_branches,
+)
+from ..services.structure import (
+    assert_promotion_target,
+    generate_code,
+    plan_bulk_levels,
+)
+from .base import AcademicsViewMixin
+
+
+class DepartmentHasPrograms(AcademicsError):
+    """Deleting a department that programmes point at.
+
+    Reverses what FRD versions 2.0 to 2.5.1 specified. The foreign key is still
+    SET_NULL so no race can destroy a link; this is a service guard in front of
+    it, and it names the blocker because the screen renders that verbatim.
+    """
+
+    error_code = "PROTECTED_REFERENCE"
+    http_status = 409
+
+
+class _StructureBase(AcademicsViewMixin):
+    """Filters and write rules shared by all three."""
+
+    def _filtered(self, qs, *, search_fields=("name", "code")):
+        params = self.request.query_params
+        qs = scope_to_visible_branches(qs, self.request.user, self.tenant)
+
+        search = (params.get("search") or "").strip()
+        if search:
+            clause = Q()
+            for field in search_fields:
+                clause |= Q(**{f"{field}__icontains": search})
+            qs = qs.filter(clause)
+
+        is_active = (params.get("is_active") or "").strip().lower()
+        if is_active in ("true", "1", "active"):
+            qs = qs.filter(is_active=True)
+        elif is_active in ("false", "0", "archived", "inactive"):
+            qs = qs.filter(is_active=False)
+        elif is_active not in ("all",):
+            qs = qs.filter(is_active=True)   # active only, unless asked
+
+        branch = (params.get("branch") or "").strip()
+        if branch and self.multi_branch:
+            if branch.lower() in ("none", "school", "shared"):
+                qs = qs.filter(branch__isnull=True)
+            else:
+                from vs_tenants.references import resolve_branch_reference
+
+                qs = qs.filter(
+                    branch=resolve_branch_reference(self.tenant, branch, "branch"),
+                )
+        return qs
+
+    def _branch_for_write(self, requested=UNSET):
+        return raised_branch(self.request.user, self.tenant, requested)
+
+    def _requested_branch(self, validated):
+        """UNSET when the caller never mentioned a branch, else the id or None.
+
+        Absent and explicitly null are different answers and must not be
+        collapsed: see services/scoping.UNSET.
+        """
+        if "branch" not in validated:
+            return UNSET
+        branch = validated["branch"]
+        return branch.id if branch is not None else None
+
+    def _code_for(self, model, name, given):
+        if given:
+            return given
+        taken = {
+            c.lower() for c in
+            model.all_objects.filter(tenant=self.tenant).values_list("code", flat=True)
+        }
+        return generate_code(name, taken)
+
+    def _audit(self, action, obj, label, summary):
+        emit_audit_event(
+            module_key=AuditModuleKey.ACADEMICS,
+            action_type=action,
+            entity_type=type(obj).__name__,
+            entity_id=str(obj.pk),
+            entity_label=label,
+            tenant=self.tenant,
+            actor_user=self.request.user,
+            summary=summary,
+        )
+
+
+# ── Departments ────────────────────────────────────────────────────────────
+
+def _departments_for(tenant):
+    return (
+        Department.objects.filter(tenant=tenant)
+        .select_related("branch")
+        .annotate(
+            program_count_annotated=Count("programs", distinct=True),
+            subject_count_annotated=Count("subjects", distinct=True),
+        )
+    )
+
+
+class DepartmentListCreateView(_StructureBase, generics.ListCreateAPIView):
+    """GET, POST /v1/academics/departments/
+
+    docstring-name: Departments
+    """
+
+    serializer_class = DepartmentSerializer
+
+    def get_permissions(self):
+        self.rbac_permission = (
+            PERM_STRUCTURE_CREATE if self.request.method == "POST"
+            else PERM_STRUCTURE_VIEW
+        )
+        return super().get_permissions()
+
+    def get_queryset(self):
+        return self._filtered(_departments_for(self.tenant))
+
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        writer = DepartmentWriteSerializer(data=request.data)
+        writer.is_valid(raise_exception=True)
+        data = dict(writer.validated_data)
+        requested = self._requested_branch(data)
+        data.pop("branch", None)
+        branch = self._branch_for_write(requested)
+        data["code"] = self._code_for(Department, data["name"], data.get("code"))
+
+        dept = Department.objects.create(tenant=self.tenant, branch=branch, **data)
+        self._audit(AuditActionType.CREATE, dept, dept.name, f"{dept.name} added.")
+        return success_response(
+            f"{dept.name} added.",
+            data=DepartmentSerializer(
+                _departments_for(self.tenant).get(pk=dept.pk),
+                context=self.get_serializer_context(),
+            ).data,
+            status=201,
+        )
+
+
+class DepartmentDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
+    """GET, PATCH, DELETE /v1/academics/departments/<id>/
+
+    docstring-name: One department
+    """
+
+    serializer_class = DepartmentSerializer
+
+    def get_permissions(self):
+        self.rbac_permission = {
+            "PATCH": PERM_STRUCTURE_UPDATE, "DELETE": PERM_STRUCTURE_MANAGE,
+        }.get(self.request.method, PERM_STRUCTURE_VIEW)
+        return super().get_permissions()
+
+    def get_queryset(self):
+        return scope_to_visible_branches(
+            _departments_for(self.tenant), self.request.user, self.tenant,
+        )
+
+    def retrieve(self, request, *args, **kwargs):
+        return success_response(
+            "Department retrieved.", data=self.get_serializer(self.get_object()).data,
+        )
+
+    @transaction.atomic
+    def update(self, request, *args, **kwargs):
+        dept = self.get_object()
+        writer = DepartmentWriteSerializer(dept, data=request.data, partial=True)
+        writer.is_valid(raise_exception=True)
+        data = dict(writer.validated_data)
+        if "branch" in data:
+            data["branch"] = self._branch_for_write(self._requested_branch(data))
+        for field, value in data.items():
+            setattr(dept, field, value)
+        dept.save()
+        self._audit(AuditActionType.UPDATE, dept, dept.name, f"{dept.name} updated.")
+        return success_response(
+            f"{dept.name} updated.",
+            data=DepartmentSerializer(
+                _departments_for(self.tenant).get(pk=dept.pk),
+                context=self.get_serializer_context(),
+            ).data,
+        )
+
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        dept = self.get_object()
+        count = Program.all_objects.filter(department=dept).count()
+        if count:
+            raise DepartmentHasPrograms(
+                f"{count} programme{'s are' if count > 1 else ' is'} mapped to "
+                f"{dept.name}. Move {'them' if count > 1 else 'it'} to another "
+                f"department first, then delete this one.",
+                **{"Program": count},
+            )
+        name, pk = dept.name, dept.pk
+        dept.delete()
+        emit_audit_event(
+            module_key=AuditModuleKey.ACADEMICS,
+            action_type=AuditActionType.DELETE,
+            entity_type="Department", entity_id=str(pk), entity_label=name,
+            tenant=self.tenant, actor_user=request.user,
+            summary=f"{name} deleted.",
+        )
+        return success_response(f"{name} deleted.")
+
+
+# ── Programmes ─────────────────────────────────────────────────────────────
+
+def _programs_for(tenant):
+    return Program.objects.filter(tenant=tenant).select_related("branch", "department")
+
+
+class ProgramListCreateView(_StructureBase, generics.ListCreateAPIView):
+    """GET, POST /v1/academics/programs/
+
+    Levels come back nested, because the screen is an accordion and a flat
+    list would cost one request per programme to draw one page.
+
+    docstring-name: Programmes and their levels
+    """
+
+    serializer_class = ProgramSerializer
+
+    def get_permissions(self):
+        self.rbac_permission = (
+            PERM_STRUCTURE_CREATE if self.request.method == "POST"
+            else PERM_STRUCTURE_VIEW
+        )
+        return super().get_permissions()
+
+    def get_queryset(self):
+        levels = scope_to_visible_branches(
+            Level.objects.filter(tenant=self.tenant)
+            .select_related("branch", "program")
+            .annotate(class_count_annotated=Count("classes", distinct=True))
+            .order_by("order_index"),
+            self.request.user, self.tenant,
+        )
+        return self._filtered(
+            _programs_for(self.tenant).prefetch_related(
+                Prefetch("levels", queryset=levels, to_attr="visible_levels"),
+            ),
+        )
+
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        writer = ProgramWriteSerializer(data=request.data)
+        writer.is_valid(raise_exception=True)
+        data = dict(writer.validated_data)
+        requested = self._requested_branch(data)
+        data.pop("branch", None)
+        branch = self._branch_for_write(requested)
+        department = data.get("department")
+        if department is not None:
+            assert_within_parent(branch, department.branch, parent_label=department.name)
+        data["code"] = self._code_for(Program, data["name"], data.get("code"))
+
+        program = Program.objects.create(tenant=self.tenant, branch=branch, **data)
+        self._audit(
+            AuditActionType.CREATE, program, program.name, f"{program.name} added.",
+        )
+        return success_response(
+            f"{program.name} added.",
+            data=ProgramSerializer(program, context=self.get_serializer_context()).data,
+            status=201,
+        )
+
+
+class ProgramDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
+    """GET, PATCH, DELETE /v1/academics/programs/<id>/
+
+    docstring-name: One programme
+    """
+
+    serializer_class = ProgramSerializer
+
+    def get_permissions(self):
+        self.rbac_permission = {
+            "PATCH": PERM_STRUCTURE_UPDATE, "DELETE": PERM_STRUCTURE_MANAGE,
+        }.get(self.request.method, PERM_STRUCTURE_VIEW)
+        return super().get_permissions()
+
+    def get_queryset(self):
+        return scope_to_visible_branches(
+            _programs_for(self.tenant), self.request.user, self.tenant,
+        )
+
+    def retrieve(self, request, *args, **kwargs):
+        return success_response(
+            "Programme retrieved.", data=self.get_serializer(self.get_object()).data,
+        )
+
+    @transaction.atomic
+    def update(self, request, *args, **kwargs):
+        program = self.get_object()
+        writer = ProgramWriteSerializer(program, data=request.data, partial=True)
+        writer.is_valid(raise_exception=True)
+        data = dict(writer.validated_data)
+        if "branch" in data:
+            data["branch"] = self._branch_for_write(self._requested_branch(data))
+        target_branch = data.get("branch", program.branch)
+        department = data.get("department", program.department)
+        if department is not None:
+            assert_within_parent(
+                target_branch, department.branch, parent_label=department.name,
+            )
+        for field, value in data.items():
+            setattr(program, field, value)
+        program.save()
+        self._audit(
+            AuditActionType.UPDATE, program, program.name, f"{program.name} updated.",
+        )
+        return success_response(
+            f"{program.name} updated.",
+            data=ProgramSerializer(program, context=self.get_serializer_context()).data,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        # Blocked by on_delete=PROTECT on Level.program. The platform handler
+        # renders it as 409 PROTECTED_REFERENCE with a per-model count, so
+        # this module writes no guard of its own.
+        program = self.get_object()
+        name, pk = program.name, program.pk
+        program.delete()
+        emit_audit_event(
+            module_key=AuditModuleKey.ACADEMICS,
+            action_type=AuditActionType.DELETE,
+            entity_type="Program", entity_id=str(pk), entity_label=name,
+            tenant=self.tenant, actor_user=request.user,
+            summary=f"{name} deleted.",
+        )
+        return success_response(f"{name} deleted.")
+
+
+# ── Levels ─────────────────────────────────────────────────────────────────
+
+def _levels_for(tenant):
+    return (
+        Level.objects.filter(tenant=tenant)
+        .select_related("branch", "program")
+        .annotate(class_count_annotated=Count("classes", distinct=True))
+    )
+
+
+def _program_or_404(tenant, pk, user):
+    program = scope_to_visible_branches(
+        Program.objects.filter(tenant=tenant, pk=pk), user, tenant,
+    ).first()
+    if program is None:
+        raise NotFound("No such programme at this school.")
+    return program
+
+
+class LevelListCreateView(_StructureBase, generics.ListCreateAPIView):
+    """GET, POST /v1/academics/programs/<id>/levels/
+
+    docstring-name: Levels in a programme
+    """
+
+    serializer_class = LevelSerializer
+
+    def get_permissions(self):
+        self.rbac_permission = (
+            PERM_STRUCTURE_CREATE if self.request.method == "POST"
+            else PERM_STRUCTURE_VIEW
+        )
+        return super().get_permissions()
+
+    @property
+    def program(self):
+        return _program_or_404(self.tenant, self.kwargs["pk"], self.request.user)
+
+    def get_queryset(self):
+        return self._filtered(
+            _levels_for(self.tenant).filter(program=self.program),
+        ).order_by("order_index")
+
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        program = self.program
+        writer = LevelWriteSerializer(data=request.data)
+        writer.is_valid(raise_exception=True)
+        data = dict(writer.validated_data)
+        requested = self._requested_branch(data)
+        data.pop("branch", None)
+        branch = self._branch_for_write(requested)
+        assert_within_parent(branch, program.branch, parent_label=program.name)
+        data["code"] = self._code_for(Level, data["name"], data.get("code"))
+        if not data.get("order_index"):
+            highest = (
+                Level.all_objects.filter(program=program)
+                .order_by("-order_index")
+                .values_list("order_index", flat=True).first() or 0
+            )
+            data["order_index"] = highest + 1
+
+        target = data.pop("next_level", None)
+        level = Level.objects.create(
+            tenant=self.tenant, program=program, branch=branch, **data,
+        )
+        if target is not None:
+            assert_promotion_target(level, target)
+            level.next_level = target
+            level.save(update_fields=["next_level", "updated_at"])
+
+        self._audit(
+            AuditActionType.CREATE, level, level.name,
+            f"{level.name} added to {program.name}.",
+        )
+        return success_response(
+            f"{level.name} added to {program.name}.",
+            data=LevelSerializer(
+                _levels_for(self.tenant).get(pk=level.pk),
+                context=self.get_serializer_context(),
+            ).data,
+            status=201,
+        )
+
+
+class LevelBulkCreateView(_StructureBase, APIView):
+    """POST /v1/academics/programs/<id>/levels/bulk/
+
+    A duplicate anywhere fails the whole call and creates nothing, naming
+    every offender: half-creating a run of levels leaves a school unable to
+    tell which of the names it typed took.
+
+    docstring-name: Add levels in bulk
+    """
+
+    rbac_permission = PERM_STRUCTURE_CREATE
+
+    @transaction.atomic
+    def post(self, request, pk):
+        program = _program_or_404(self.tenant, pk, request.user)
+        writer = BulkLevelSerializer(data=request.data)
+        writer.is_valid(raise_exception=True)
+
+        branch = self._branch_for_write(
+            writer.validated_data["branch"] if "branch" in writer.validated_data
+            else UNSET,
+        )
+        assert_within_parent(branch, program.branch, parent_label=program.name)
+
+        taken = {
+            c.lower() for c in
+            Level.all_objects.filter(tenant=self.tenant).values_list("code", flat=True)
+        }
+        plan = plan_bulk_levels(program, writer.validated_data["names"], taken)
+        created = Level.objects.bulk_create([
+            Level(tenant=self.tenant, program=program, branch=branch, **row)
+            for row in plan
+        ])
+        emit_audit_event(
+            module_key=AuditModuleKey.ACADEMICS,
+            action_type=AuditActionType.ACADEMIC_STRUCTURE_BULK_CREATED,
+            entity_type="Program", entity_id=str(program.pk),
+            entity_label=program.name,
+            tenant=self.tenant, actor_user=request.user,
+            summary=f"{len(created)} levels added to {program.name}.",
+            metadata={"names": [row["name"] for row in plan]},
+        )
+        word = "level" if len(created) == 1 else "levels"
+        return success_response(
+            f"{len(created)} {word} added to {program.name}.",
+            data=LevelSerializer(
+                _levels_for(self.tenant).filter(
+                    pk__in=[level.pk for level in created],
+                ).order_by("order_index"),
+                many=True, context={"multi_branch": self.multi_branch},
+            ).data,
+            status=201,
+        )
+
+
+class LevelDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
+    """GET, PATCH, DELETE /v1/academics/levels/<id>/
+
+    docstring-name: One level
+    """
+
+    serializer_class = LevelSerializer
+
+    def get_permissions(self):
+        self.rbac_permission = {
+            "PATCH": PERM_STRUCTURE_UPDATE, "DELETE": PERM_STRUCTURE_MANAGE,
+        }.get(self.request.method, PERM_STRUCTURE_VIEW)
+        return super().get_permissions()
+
+    def get_queryset(self):
+        return scope_to_visible_branches(
+            _levels_for(self.tenant), self.request.user, self.tenant,
+        )
+
+    def retrieve(self, request, *args, **kwargs):
+        return success_response(
+            "Level retrieved.", data=self.get_serializer(self.get_object()).data,
+        )
+
+    @transaction.atomic
+    def update(self, request, *args, **kwargs):
+        level = self.get_object()
+        writer = LevelWriteSerializer(level, data=request.data, partial=True)
+        writer.is_valid(raise_exception=True)
+        data = dict(writer.validated_data)
+
+        if "branch" in data:
+            data["branch"] = self._branch_for_write(self._requested_branch(data))
+            assert_within_parent(
+                data["branch"], level.program.branch, parent_label=level.program.name,
+            )
+        if "next_level" in data:
+            cross = str(
+                request.query_params.get("cross_program", "")
+            ).lower() in ("1", "true", "yes")
+            assert_promotion_target(level, data["next_level"], cross_program=cross)
+
+        for field, value in data.items():
+            setattr(level, field, value)
+        level.save()
+        self._audit(AuditActionType.UPDATE, level, level.name, f"{level.name} updated.")
+        return success_response(
+            f"{level.name} updated.",
+            data=LevelSerializer(
+                _levels_for(self.tenant).get(pk=level.pk),
+                context=self.get_serializer_context(),
+            ).data,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        # Blocked by on_delete=PROTECT on SchoolClass.level; the platform
+        # handler renders the refusal and the count.
+        level = self.get_object()
+        name, pk = level.name, level.pk
+        level.delete()
+        emit_audit_event(
+            module_key=AuditModuleKey.ACADEMICS,
+            action_type=AuditActionType.DELETE,
+            entity_type="Level", entity_id=str(pk), entity_label=name,
+            tenant=self.tenant, actor_user=request.user,
+            summary=f"{name} deleted.",
+        )
+        return success_response(f"{name} deleted.")

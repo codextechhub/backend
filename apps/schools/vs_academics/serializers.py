@@ -17,6 +17,9 @@ from rest_framework import serializers
 from .models import (
     AcademicSession,
     AcademicTerm,
+    Department,
+    Level,
+    Program,
     SessionBranch,
     SessionStatus,
 )
@@ -139,3 +142,136 @@ class SessionWriteSerializer(serializers.ModelSerializer):
                 "end_date": "The session must end after it starts.",
             })
         return attrs
+
+
+# ── Structure: departments, programmes, levels ─────────────────────────────
+
+class _ScopedSerializer(_BranchAware):
+    """A catalogue row that may belong to one branch or to the whole school."""
+
+    branch_name = serializers.SerializerMethodField()
+    scope_label = serializers.SerializerMethodField()
+
+    def get_branch_name(self, obj):
+        return obj.branch.name if obj.branch_id else None
+
+    def get_scope_label(self, obj) -> str:
+        return obj.branch.name if obj.branch_id else "School-wide"
+
+
+class DepartmentSerializer(_ScopedSerializer):
+    program_count = serializers.SerializerMethodField()
+    subject_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Department
+        fields = [
+            "id", "name", "code", "description", "is_active",
+            "branch", "branch_name", "scope_label",
+            "program_count", "subject_count",
+        ]
+
+    def get_program_count(self, obj) -> int:
+        return getattr(obj, "program_count_annotated", 0)
+
+    def get_subject_count(self, obj) -> int:
+        return getattr(obj, "subject_count_annotated", 0)
+
+
+class DepartmentWriteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Department
+        fields = ["id", "name", "code", "description", "branch", "is_active"]
+        extra_kwargs = {
+            # Generated from the name when omitted, so the drawer's Generate
+            # button and an API caller who leaves it out behave alike.
+            "code": {"required": False, "allow_blank": True},
+            "branch": {"required": False, "allow_null": True},
+        }
+
+
+class LevelSerializer(_ScopedSerializer):
+    class_count = serializers.SerializerMethodField()
+    program_name = serializers.CharField(source="program.name", read_only=True)
+
+    class Meta:
+        model = Level
+        fields = [
+            "id", "name", "code", "order_index", "is_active",
+            "program", "program_name", "next_level",
+            "branch", "branch_name", "scope_label", "class_count",
+        ]
+
+    def get_class_count(self, obj) -> int:
+        return getattr(obj, "class_count_annotated", 0)
+
+
+class LevelWriteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Level
+        fields = [
+            "id", "name", "code", "order_index", "branch", "next_level",
+            "is_active",
+        ]
+        extra_kwargs = {
+            "code": {"required": False, "allow_blank": True},
+            "order_index": {"required": False},
+            "branch": {"required": False, "allow_null": True},
+            "next_level": {"required": False, "allow_null": True},
+        }
+
+
+class ProgramSerializer(_ScopedSerializer):
+    """A programme with its levels nested.
+
+    Nested rather than a separate call because the screen is an accordion: a
+    flat list would mean one request per programme to draw one page.
+    """
+
+    levels = serializers.SerializerMethodField()
+    level_count = serializers.SerializerMethodField()
+    department_name = serializers.CharField(
+        source="department.name", read_only=True, default=None,
+    )
+
+    class Meta:
+        model = Program
+        fields = [
+            "id", "name", "code", "order_index", "is_active",
+            "department", "department_name",
+            "branch", "branch_name", "scope_label",
+            "levels", "level_count",
+        ]
+
+    def _levels(self, obj):
+        return getattr(obj, "visible_levels", None) or list(obj.levels.all())
+
+    def get_levels(self, obj):
+        return LevelSerializer(self._levels(obj), many=True, context=self.context).data
+
+    def get_level_count(self, obj) -> int:
+        return len(self._levels(obj))
+
+
+class ProgramWriteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Program
+        fields = [
+            "id", "name", "code", "order_index", "department", "branch",
+            "is_active",
+        ]
+        extra_kwargs = {
+            "code": {"required": False, "allow_blank": True},
+            "order_index": {"required": False},
+            "department": {"required": False, "allow_null": True},
+            "branch": {"required": False, "allow_null": True},
+        }
+
+
+class BulkLevelSerializer(serializers.Serializer):
+    """A run of levels typed one per line."""
+
+    names = serializers.ListField(
+        child=serializers.CharField(max_length=60), allow_empty=False,
+    )
+    branch = serializers.IntegerField(required=False, allow_null=True)
