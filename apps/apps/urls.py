@@ -21,6 +21,7 @@ from core.views import MediaView
 
 urlpatterns = [
     path("v1/i/", include("schools.vs_schools.urls")),
+    path("v1/academics/", include("schools.vs_academics.urls")),
     path("v1/onboarding/", include("schools.vs_onboarding.urls")),
     path("v1/admin/", include("vs_admin_console.urls")),
     path("v1/user/", include("vs_user.urls")),
