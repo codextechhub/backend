@@ -11,12 +11,14 @@ from .views import (
     LevelDetailView,
     GenerateArmsView,
     LevelListCreateView,
+    OverviewView,
     ProgramDetailView,
     ProgramListCreateView,
     SessionActivateView,
     SessionArchiveView,
     SessionDetailView,
     SessionListCreateView,
+    StructureTreeView,
     SubjectDetailView,
     SubjectListCreateView,
     SubjectOfferingsView,
@@ -52,4 +54,7 @@ urlpatterns = [
     path("subjects/", SubjectListCreateView.as_view(), name="academics-subject-list"),
     path("subjects/<int:pk>/", SubjectDetailView.as_view(), name="academics-subject-detail"),
     path("subjects/<int:pk>/offerings/", SubjectOfferingsView.as_view(), name="academics-subject-offerings"),
+
+    path("structure/tree/", StructureTreeView.as_view(), name="academics-structure-tree"),
+    path("overview/", OverviewView.as_view(), name="academics-overview"),
 ]

@@ -25,3 +25,7 @@ from .classes import (  # noqa: F401
     SubjectListCreateView,
     SubjectOfferingsView,
 )
+from .reads import (  # noqa: F401
+    OverviewView,
+    StructureTreeView,
+)
