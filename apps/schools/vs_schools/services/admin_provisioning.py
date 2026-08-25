@@ -180,10 +180,13 @@ def provision_admin_user(
             )
 
             # Invitation record - expiry gate for the activation link.
-            InvitationService.create(user=user, invited_by=invited_by or user)
+            invitation, token = InvitationService.create(
+                user=user, invited_by=invited_by or user,
+            )
 
             send_invitation_email_task.delay(
-                str(user.activation_key),
+                invitation_id=invitation.pk,
+                token=token,
                 # Owner is whoever provisioned the school admin; a provisioning
                 # run with no actor stays a system row (owner=None).
                 _job_owner_id=str(invited_by.id) if invited_by else None,

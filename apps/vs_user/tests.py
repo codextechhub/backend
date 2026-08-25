@@ -257,6 +257,7 @@ class JobAttributionTests(TestCase):
         self.assertIs(kwargs["_job_notify"], False)
 
     def test_invitation_resend_job_is_owned_by_the_resending_admin(self):
+        from vs_user.models import UserInvitation
         from vs_user.services.invitation import InvitationService
 
         InvitationService.create(user=self.subject, invited_by=self.actor)
@@ -1191,20 +1192,15 @@ class EmailFailureResilienceTests(TestCase):
     def test_invitation_email_eager_smtp_failure_marks_failed_without_raising(self):
         """Engine path: dispatch → deliver task fails under eager → receiver marks
         the invitation FAILED via the notification_failed signal, no retry."""
-        from datetime import timedelta
         from unittest import mock
 
-        from django.utils import timezone
-
         from vs_user.models import UserInvitation
+        from vs_user.services.invitation import InvitationService
         from vs_user.tasks import send_invitation_email_task
 
         user = make_cx_user(email="invitee@codex.test")
-        invitation = UserInvitation.objects.create(
-            user=user,
-            invited_by=user,
-            expires_at=timezone.now() + timedelta(days=7),
-            is_used=False,
+        invitation, token = InvitationService.create(
+            user=user, invited_by=user,
         )
 
         with mock.patch("vs_notifications.tasks.send_email", side_effect=self._smtp_down):
@@ -1212,7 +1208,7 @@ class EmailFailureResilienceTests(TestCase):
             # capture and execute it so the eager delivery runs and fails.
             with self.captureOnCommitCallbacks(execute=True):
                 send_invitation_email_task.apply(
-                    kwargs={"activation_key": str(user.activation_key)}
+                    kwargs={"invitation_id": invitation.pk, "token": token}
                 )
 
         invitation.refresh_from_db()
@@ -1250,17 +1246,12 @@ class InvitationEngineDispatchTests(TestCase):
         seed_notification_templates()
 
     def _invitation_for(self, user, invited_by=None):
-        from datetime import timedelta
-
-        from django.utils import timezone
-
-        from vs_user.models import UserInvitation
-        return UserInvitation.objects.create(
+        from vs_user.services.invitation import InvitationService
+        return InvitationService.create(
             user=user, invited_by=invited_by or user,
-            expires_at=timezone.now() + timedelta(days=7), is_used=False,
         )
 
-    def test_invitation_dispatch_creates_notification_with_activation_key(self):
+    def test_invitation_dispatch_creates_notification_with_invitation_id(self):
         from unittest import mock
 
         from vs_notifications.constants import ChannelChoices
@@ -1270,29 +1261,34 @@ class InvitationEngineDispatchTests(TestCase):
         user = make_cx_user(email="invited@codex.test")
         user.invited_by_name = "Ada Admin"
         user.save(update_fields=["invited_by_name"])
+        invitation, token = self._invitation_for(user)
 
         with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
             send_invitation_email_task.apply(
-                kwargs={"activation_key": str(user.activation_key)}
+                kwargs={"invitation_id": invitation.pk, "token": token}
             )
 
         notif = Notification.objects.get(recipient=user, channel=ChannelChoices.EMAIL)
         self.assertEqual(notif.event_type.key, "user.invited")
-        self.assertEqual(notif.metadata.get("activation_key"), str(user.activation_key))
+        self.assertEqual(notif.metadata.get("invitation_id"), invitation.pk)
+        self.assertNotIn(token, str(notif.metadata))
+        self.assertNotIn(token, notif.body)
+        self.assertNotIn(token, notif.html_body)
         self.assertEqual(notif.metadata.get("from_name"), "Ada Admin")
 
     def test_successful_delivery_updates_invitation_via_receiver(self):
         from django.core import mail
 
+        from vs_notifications.models import Notification
         from vs_user.models import UserInvitation
         from vs_user.tasks import send_invitation_email_task
 
         user = make_cx_user(email="invited-ok@codex.test")
-        invitation = self._invitation_for(user)
+        invitation, token = self._invitation_for(user)
 
         with self.captureOnCommitCallbacks(execute=True):
             send_invitation_email_task.apply(
-                kwargs={"activation_key": str(user.activation_key)}
+                kwargs={"invitation_id": invitation.pk, "token": token}
             )
 
         invitation.refresh_from_db()
@@ -1300,6 +1296,10 @@ class InvitationEngineDispatchTests(TestCase):
         self.assertEqual(invitation.email_attempts, 1)
         self.assertIsNotNone(invitation.email_sent_at)
         self.assertEqual(len(mail.outbox), 1)
+        notification = Notification.objects.get(recipient=user, channel="email")
+        self.assertNotIn(token, notification.body)
+        self.assertNotIn(token, notification.html_body)
+        self.assertIn(token, mail.outbox[0].body)
 
     def test_from_name_lands_in_outgoing_from_header(self):
         from django.core import mail
@@ -1309,11 +1309,11 @@ class InvitationEngineDispatchTests(TestCase):
         user = make_cx_user(email="fromname@codex.test")
         user.invited_by_name = "Bola Inviter"
         user.save(update_fields=["invited_by_name"])
-        self._invitation_for(user)
+        invitation, token = self._invitation_for(user)
 
         with self.captureOnCommitCallbacks(execute=True):
             send_invitation_email_task.apply(
-                kwargs={"activation_key": str(user.activation_key)}
+                kwargs={"invitation_id": invitation.pk, "token": token}
             )
 
         self.assertEqual(len(mail.outbox), 1)
@@ -1326,14 +1326,24 @@ class InvitationEngineDispatchTests(TestCase):
 
         from vs_notifications.constants import ChannelChoices
         from vs_notifications.models import Notification
+        from vs_user.action_tokens import issue_password_reset_token
+        from vs_user.models import PasswordResetRequest
         from vs_user.tasks import send_password_reset_email_task
 
         user = make_cx_user(email="pwreset@codex.test")
+        token, token_hash = issue_password_reset_token()
+        reset_request = PasswordResetRequest.objects.create(
+            user=user,
+            token_hash=token_hash,
+            expires_at=timezone.now() + timedelta(hours=1),
+            requested_by="SELF",
+        )
 
         with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
             send_password_reset_email_task.apply(
                 kwargs={
-                    "activation_key": str(user.activation_key),
+                    "reset_request_id": reset_request.pk,
+                    "token": token,
                     "origin": "SELF",
                     "sender_name": "CodeX System",
                 }
@@ -1343,6 +1353,8 @@ class InvitationEngineDispatchTests(TestCase):
         self.assertEqual(notif.event_type.key, "user.password_reset")
         self.assertEqual(notif.metadata.get("from_name"), "CodeX System")
         self.assertIn("reset-password", notif.body)
+        self.assertNotIn(token, notif.body)
+        self.assertNotIn(token, notif.html_body)
 
 
 class PasswordPolicyTests(TestCase):

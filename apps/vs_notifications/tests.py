@@ -491,6 +491,32 @@ class DeliveryTaskTests(_NotifFixture):
         msg = mail.outbox[0]
         self.assertEqual(getattr(msg, "alternatives", []), [])
 
+    def test_ephemeral_replacements_reach_smtp_but_not_the_database(self):
+        from .tasks import deliver_email_notification
+
+        marker = "__ONE_TIME_SECRET__"
+        secret = "pr_secret-value"
+        notif = self._pending_email(html=f"<p>{marker}</p>")
+        notif.body = f"Open {marker}"
+        notif.save(update_fields=["body", "html_body"])
+
+        deliver_email_notification(
+            str(notif.id),
+            replacements={marker: secret},
+        )
+
+        notif.refresh_from_db()
+        self.assertNotIn(secret, notif.body)
+        self.assertNotIn(secret, notif.html_body)
+        self.assertIn(marker, notif.body)
+        self.assertIn(secret, mail.outbox[0].body)
+        html_parts = [
+            content
+            for content, content_type in mail.outbox[0].alternatives
+            if content_type == "text/html"
+        ]
+        self.assertEqual(html_parts, [f"<p>{secret}</p>"])
+
     def test_from_name_metadata_sets_from_header(self):
         from .tasks import deliver_email_notification
         et = self._event("ticket.created")

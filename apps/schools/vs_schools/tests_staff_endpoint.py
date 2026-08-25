@@ -137,16 +137,16 @@ class SchoolStaffEndpointTests(TestCase):
         The invitation RECORD is the assertion rather than ``mail.outbox``: the
         message itself is rendered from a seeded notification template, and a
         test database has none, so the channel is skipped and the outbox is
-        empty for a reason that has nothing to do with this endpoint. The key
-        below is what the activation link is built from, so its existence is
-        the part this endpoint is actually responsible for.
+        empty for a reason that has nothing to do with this endpoint. The
+        digest below proves the one-time activation credential was issued
+        without storing that raw credential on the account.
         """
         response = self._post(self.admin, self._invite())
         self.assertEqual(response.status_code, 201, response.data)
 
         invited = User.objects.get(email="ngozi@bright-star.example.com")
-        self.assertTrue(invited.activation_key)
         self.assertTrue(hasattr(invited, "invitation"))
+        self.assertTrue(invited.invitation.token_hash)
 
     # ── Who may do what ──────────────────────────────────────────────────────
 

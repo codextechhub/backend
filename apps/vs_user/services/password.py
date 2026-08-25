@@ -5,13 +5,13 @@ from __future__ import annotations
 
 from datetime import timedelta
 import logging
-import uuid
 
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils import timezone
 
+from ..action_tokens import issue_password_reset_token, password_reset_token_digest
 from ..models import User, PasswordResetRequest, AuthEventLog, AccountLockout
 from .audit import log_auth_event, blacklist_all_user_tokens, get_client_ip
 from .sign_in_scope import resolve_sign_in_account
@@ -143,10 +143,26 @@ class PasswordService:
         )
 
     @staticmethod
+    def valid_reset_for_token(token: str) -> PasswordResetRequest | None:
+        """Return the one live request that owns ``token``, without consuming it."""
+        token_hash = password_reset_token_digest(token)
+        if token_hash is None:
+            return None
+        reset_request = (
+            PasswordResetRequest.objects
+            .select_related("user")
+            .filter(token_hash=token_hash, used_at__isnull=True)
+            .first()
+        )
+        if reset_request is None or reset_request.is_expired():
+            return None
+        return reset_request
+
+    @staticmethod
     @transaction.atomic
-    def confirm_reset(user, new_password: str, request=None):
+    def confirm_reset(token: str, new_password: str, request=None):
         """
-        Confirms a password reset using the activation key.
+        Confirms the exact password-reset request that owns the submitted token.
         Ends all active sessions on success.
 
         Checked again here, not only where the link was issued. A reset row can
@@ -156,52 +172,73 @@ class PasswordService:
         at issue time only would leave a live link that reinstates a credential
         on an account that has since been closed.
         """
-        _require_password_eligible(user)
-
-        pr = PasswordResetRequest.objects.filter(
-            user=user, used_at__isnull=True
-        ).last()
-
-        if not pr or pr.is_expired():
+        token_hash = password_reset_token_digest(token)
+        if token_hash is None:
             raise ValueError({"error_code": "RESET_KEY_INVALID", "message": "Invalid or expired reset link."})
+
+        # Read only the identifiers first so every path takes locks in the same
+        # order as issuance: user, then reset row. The locked lookup below
+        # repeats every validity predicate, so a revoke or newer request that
+        # wins this race cannot be consumed from a stale read.
+        reset_identity = (
+            PasswordResetRequest.objects
+            .filter(token_hash=token_hash)
+            .values("pk", "user_id")
+            .first()
+        )
+        if reset_identity is None:
+            raise ValueError({"error_code": "RESET_KEY_INVALID", "message": "Invalid or expired reset link."})
+
+        user = User.objects.select_for_update().get(pk=reset_identity["user_id"])
+        try:
+            pr = PasswordResetRequest.objects.select_for_update().get(
+                pk=reset_identity["pk"],
+                token_hash=token_hash,
+                used_at__isnull=True,
+            )
+        except PasswordResetRequest.DoesNotExist:
+            raise ValueError({"error_code": "RESET_KEY_INVALID", "message": "Invalid or expired reset link."})
+
+        if pr.is_expired():
+            raise ValueError({"error_code": "RESET_KEY_INVALID", "message": "Invalid or expired reset link."})
+
+        _require_password_eligible(user)
 
         try:
             validate_password(new_password, user=user)
         except DjangoValidationError as e:
             raise ValueError({"error_code": "PASSWORD_POLICY_VIOLATION", "messages": list(e.messages)})
 
-        with transaction.atomic():
-            user.set_password(new_password)
-            user.password_changed_at = timezone.now()
-            user.activation_key = uuid.uuid4()
+        user.set_password(new_password)
+        user.password_changed_at = timezone.now()
 
-            # ``is_active`` is not set by hand any more. It is derived from
-            # ``status`` in ``User._sync_is_active`` and forcing it True here
-            # was how a parked DRAFT - the one status that derivation used to
-            # skip - came out of a reset with a flag that made its session
-            # valid to SimpleJWT. It stays in update_fields below because the
-            # derivation still writes it.
-            #
-            # This promotion is now total over the statuses that can reach
-            # here: ``_require_password_eligible`` admits exactly ACTIVE,
-            # PENDING, LOCKED and SUSPENDED. LOCKED and PENDING become ACTIVE
-            # (the reset IS the unlock, and the activation); ACTIVE is already
-            # there; SUSPENDED deliberately stays suspended, because a new
-            # password is not a reinstatement. There is no longer any status
-            # that lands here, keeps its own value and walks away with a
-            # working credential - which is what REJECTED used to do.
-            if user.status in (User.Status.LOCKED, User.Status.PENDING):
-                if user.status == User.Status.LOCKED:
-                    lockout = AccountLockout.objects.select_for_update().filter(user=user).first()
-                    if lockout:
-                        lockout.clear()
-                        lockout.save(update_fields=["failure_count", "locked_until", "locked_reason", "updated_at"])
-                user.status = User.Status.ACTIVE
+        # ``is_active`` is not set by hand any more. It is derived from
+        # ``status`` in ``User._sync_is_active`` and forcing it True here
+        # was how a parked DRAFT - the one status that derivation used to
+        # skip - came out of a reset with a flag that made its session
+        # valid to SimpleJWT. It stays in update_fields below because the
+        # derivation still writes it.
+        #
+        # This promotion is now total over the statuses that can reach
+        # here: ``_require_password_eligible`` admits exactly ACTIVE,
+        # PENDING, LOCKED and SUSPENDED. LOCKED and PENDING become ACTIVE
+        # (the reset IS the unlock, and the activation); ACTIVE is already
+        # there; SUSPENDED deliberately stays suspended, because a new
+        # password is not a reinstatement. There is no longer any status
+        # that lands here, keeps its own value and walks away with a
+        # working credential - which is what REJECTED used to do.
+        if user.status in (User.Status.LOCKED, User.Status.PENDING):
+            if user.status == User.Status.LOCKED:
+                lockout = AccountLockout.objects.select_for_update().filter(user=user).first()
+                if lockout:
+                    lockout.clear()
+                    lockout.save(update_fields=["failure_count", "locked_until", "locked_reason", "updated_at"])
+            user.status = User.Status.ACTIVE
 
-            user.save(update_fields=["password", "password_changed_at", "status", "is_active", "updated_at", "activation_key"])
-            pr.mark_used()
-            pr.save(update_fields=["used_at", "updated_at"])
-            blacklist_all_user_tokens(user)
+        user.save(update_fields=["password", "password_changed_at", "status", "is_active", "updated_at"])
+        pr.mark_used()
+        pr.save(update_fields=["used_at", "updated_at"])
+        blacklist_all_user_tokens(user)
 
         log_auth_event(
             actor=None, subject=user, tenant=user.tenant,
@@ -213,6 +250,7 @@ class PasswordService:
     # ── Private ───────────────────────────────────────────────────────────────
 
     @staticmethod
+    @transaction.atomic
     def _create_and_send_reset(user, origin: str, sender_name: str = "CodeX System", request=None, actor=None):
         """
         Creates a PasswordResetRequest record and dispatches the reset email.
@@ -223,6 +261,16 @@ class PasswordService:
         """
         from vs_config.runtime_settings import get_security_value
 
+        # The user row is the stable lock shared by issuance and consumption.
+        # It makes superseding an old request atomic even when two callers ask
+        # for a reset at the same moment.
+        user = (
+            User.objects
+            .select_for_update(of=("self",))
+            .select_related("tenant", "branch")
+            .get(pk=user.pk)
+        )
+
         expiry_hours = get_security_value(
             "self_reset_expiry_hours" if origin == "SELF" else "admin_reset_expiry_hours",
             tenant=user.tenant,
@@ -232,8 +280,10 @@ class PasswordService:
         # Expire any existing unused reset so the unique constraint doesn't block a new request
         PasswordResetRequest.objects.filter(user=user, used_at__isnull=True).update(used_at=timezone.now())
 
-        PasswordResetRequest.objects.create(
+        token, token_hash = issue_password_reset_token()
+        reset_request = PasswordResetRequest.objects.create(
             user=user,
+            token_hash=token_hash,
             expires_at=timezone.now() + timedelta(hours=expiry_hours),
             requested_by=origin,
             requested_ip=get_client_ip(request) if request else None,
@@ -243,7 +293,8 @@ class PasswordService:
         try:
             try:
                 send_password_reset_email_task.delay(
-                    activation_key=str(user.activation_key),
+                    reset_request_id=reset_request.pk,
+                    token=token,
                     origin=origin,
                     sender_name=sender_name,
                     _job_owner_id=str(actor.id) if actor else None,
@@ -254,7 +305,8 @@ class PasswordService:
                 # Broker unavailable - run synchronously so the email still goes out
                 send_password_reset_email_task.apply(
                     kwargs=dict(
-                        activation_key=str(user.activation_key),
+                        reset_request_id=reset_request.pk,
+                        token=token,
                         origin=origin,
                         sender_name=sender_name,
                     )

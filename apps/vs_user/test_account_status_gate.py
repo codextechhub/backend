@@ -34,6 +34,8 @@ the enum without an entry - which is exactly how the three above got in.
 """
 from __future__ import annotations
 
+from unittest import mock
+
 from django.core.cache import cache
 from django.test import TestCase
 from rest_framework.exceptions import PermissionDenied
@@ -417,6 +419,13 @@ class AdminPasswordResetStatusTests(_Fixture):
 class SelfServiceResetStatusTests(_Fixture):
     """Call sites 4 and 5: ``request_reset`` and ``confirm_reset``."""
 
+    def _admin_reset_token(self, user):
+        with mock.patch("vs_user.tasks.send_password_reset_email_task.delay") as delay:
+            PasswordService.admin_reset(
+                target_user=user, requesting_user=self.admin(),
+            )
+        return delay.call_args.kwargs["token"]
+
     def test_request_is_silent_but_sends_nothing_to_an_ineligible_account(self):
         for status, (_, may) in EXPECTED.items():
             with self.subTest(status=status):
@@ -436,15 +445,14 @@ class SelfServiceResetStatusTests(_Fixture):
         reset link sits unused and unexpired in an inbox.
         """
         user = self.user(User.Status.PENDING)
-        admin = self.admin()
-        PasswordService.admin_reset(target_user=user, requesting_user=admin)
+        token = self._admin_reset_token(user)
 
         user.status = User.Status.REJECTED
         user.save(update_fields=["status", "updated_at"])
 
         with self.assertRaises(ValueError) as caught:
             PasswordService.confirm_reset(
-                user=User.objects.get(pk=user.pk), new_password=NEW_PW,
+                token=token, new_password=NEW_PW,
             )
         self.assertEqual(
             caught.exception.args[0]["error_code"], "ACCOUNT_NOT_ELIGIBLE",
@@ -457,10 +465,8 @@ class SelfServiceResetStatusTests(_Fixture):
         for status in (User.Status.LOCKED, User.Status.PENDING):
             with self.subTest(status=status):
                 user = self.user(status)
-                PasswordService.admin_reset(
-                    target_user=user, requesting_user=self.admin(),
-                )
-                PasswordService.confirm_reset(user=user, new_password=NEW_PW)
+                token = self._admin_reset_token(user)
+                PasswordService.confirm_reset(token=token, new_password=NEW_PW)
                 fresh = User.objects.get(pk=user.pk)
                 self.assertEqual(fresh.status, User.Status.ACTIVE)
                 self.assertTrue(fresh.is_active)
@@ -473,8 +479,8 @@ class SelfServiceResetStatusTests(_Fixture):
         """A new password is not a reinstatement - and the account still may
         not sign in with it."""
         user = self.user(User.Status.SUSPENDED)
-        PasswordService.admin_reset(target_user=user, requesting_user=self.admin())
-        PasswordService.confirm_reset(user=user, new_password=NEW_PW)
+        token = self._admin_reset_token(user)
+        PasswordService.confirm_reset(token=token, new_password=NEW_PW)
         fresh = User.objects.get(pk=user.pk)
         self.assertEqual(fresh.status, User.Status.SUSPENDED)
         self.assertFalse(fresh.is_active)
@@ -494,10 +500,8 @@ class SelfServiceResetStatusTests(_Fixture):
                 continue
             with self.subTest(status=status):
                 user = self.user(status)
-                PasswordService.admin_reset(
-                    target_user=user, requesting_user=self.admin(),
-                )
-                PasswordService.confirm_reset(user=user, new_password=NEW_PW)
+                token = self._admin_reset_token(user)
+                PasswordService.confirm_reset(token=token, new_password=NEW_PW)
                 fresh = User.objects.get(pk=user.pk)
                 if status in (User.Status.LOCKED, User.Status.PENDING,
                               User.Status.ACTIVE):
@@ -531,14 +535,15 @@ class InvitationActivationStatusTests(_Fixture):
         from vs_user.services.invitation import InvitationService
 
         user = self.user(User.Status.PENDING)
-        InvitationService.create(user=user, invited_by=self.admin())
-        key = str(User.objects.get(pk=user.pk).activation_key)
+        _invitation, token = InvitationService.create(
+            user=user, invited_by=self.admin(),
+        )
 
         user.status = User.Status.REJECTED
         user.save(update_fields=["status", "updated_at"])
 
         with self.assertRaises(ValueError) as caught:
-            InvitationService.activate(activation_key=key, password=NEW_PW)
+            InvitationService.activate(token=token, password=NEW_PW)
         self.assertEqual(
             caught.exception.args[0]["error_code"], "INVITATION_NOT_ACTIONABLE",
         )
@@ -550,10 +555,11 @@ class InvitationActivationStatusTests(_Fixture):
         from vs_user.services.invitation import InvitationService
 
         user = self.user(User.Status.PENDING)
-        InvitationService.create(user=user, invited_by=self.admin())
-        key = str(User.objects.get(pk=user.pk).activation_key)
+        _invitation, token = InvitationService.create(
+            user=user, invited_by=self.admin(),
+        )
 
-        InvitationService.activate(activation_key=key, password=NEW_PW)
+        InvitationService.activate(token=token, password=NEW_PW)
         fresh = User.objects.get(pk=user.pk)
         self.assertEqual(fresh.status, User.Status.ACTIVE)
         self.assertTrue(fresh.is_active)

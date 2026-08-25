@@ -17,8 +17,8 @@
 # SECTION 1 - INVITATION EMAIL
 # ─────────────────────────────────────────────────────────────────────────────
 # Dispatched when a new user account is created or when an admin resends.
-# The invitation link is: {FRONTEND_BASE_URL}/activate/{user.activation_key}
-# No token is embedded - the user's activation_key is the identifier.
+# The invitation link contains a one-time invitation-family token. Only its
+# HMAC-SHA-256 digest is stored on UserInvitation.
 #
 # SECTION 2 - PASSWORD RESET EMAIL
 # ─────────────────────────────────────────────────────────────────────────────
@@ -35,38 +35,53 @@ from django.core.exceptions import ImproperlyConfigured
 
 logger = logging.getLogger('vs_user.tasks')
 
+_INVITATION_TOKEN_MARKER = "__XVS_INVITATION_TOKEN__"
+_PASSWORD_RESET_TOKEN_MARKER = "__XVS_PASSWORD_RESET_TOKEN__"
+
 
 # =============================================================================
 # SECTION 1 - INVITATION EMAIL
 # =============================================================================
 
 @shared_task(bind=True, name="vs_user.send_invitation_email_task")
-def send_invitation_email_task(self, activation_key: str):
+def send_invitation_email_task(self, invitation_id: int, token: str):
     """
     Dispatch the account activation email via the notification engine.
 
     The engine's user.invited template renders:
       - The user's first name / full name
-      - The invitation link: {FRONTEND_BASE_URL}/activate/{user.activation_key}
+      - The invitation link containing the raw one-time token
       - The school name (or a school-less variant when the user has no school)
       - The 7-day expiry notice
 
-    The URL is the same on resend - only the expiry window is extended.
+    A resend rotates the token, so an earlier URL stops working immediately.
 
     From-address parity: the inviter's display name is carried in metadata as
     from_name so the delivery task builds the From from it. Delivery tracking
     (UserInvitation.email_*) is updated by the receivers in vs_user/receivers.py,
-    correlated via metadata.activation_key.
+    correlated via metadata.invitation_id. The raw token is never copied into
+    notification metadata.
     """
     from vs_notifications.notify import send_notification
 
-    from .models import User
+    from .action_tokens import invitation_token_digest
+    from .models import UserInvitation
 
     try:
-        user = User.objects.select_related('tenant__school_profile').get(activation_key=activation_key)
-    except User.DoesNotExist:
-        logger.error('send_invitation_email_task: no user with activation_key=%s', activation_key)
+        invitation = (
+            UserInvitation.objects
+            .select_related('user__tenant__school_profile')
+            .get(pk=invitation_id)
+        )
+    except UserInvitation.DoesNotExist:
+        logger.error('send_invitation_email_task: no invitation with id=%s', invitation_id)
         return
+
+    if invitation_token_digest(token) != invitation.token_hash or not invitation.is_valid:
+        logger.info('send_invitation_email_task: invitation %s is no longer valid', invitation_id)
+        return
+
+    user = invitation.user
 
     school = getattr(user.tenant, 'school_profile', None)  # None for platform users.
     school_name = school.name if school else 'CodeX'
@@ -74,7 +89,7 @@ def send_invitation_email_task(self, activation_key: str):
     if not base_url:
         raise ImproperlyConfigured('FRONTEND_BASE_URL must be set in settings.')
 
-    invitation_url = f'{base_url.rstrip("/")}/activate/{user.activation_key}'
+    invitation_url = f'{base_url.rstrip("/")}/activate/{_INVITATION_TOKEN_MARKER}'
 
     send_notification(
         event_key="user.invited",
@@ -90,9 +105,10 @@ def send_invitation_email_task(self, activation_key: str):
         recipients=[user],
         tenant=user.tenant,
         metadata={
-            'activation_key': str(user.activation_key),
+            'invitation_id': invitation.pk,
             'from_name':      user.invited_by_name or None,
         },
+        delivery_replacements={_INVITATION_TOKEN_MARKER: token},
     )
     logger.info('Invitation email dispatched for %s', user.email)
 
@@ -102,7 +118,10 @@ def send_invitation_email_task(self, activation_key: str):
 # =============================================================================
 
 @shared_task(bind=True, name="vs_user.send_password_reset_email_task")
-def send_password_reset_email_task(self, activation_key: str, origin: str, sender_name: str = 'CodeX System'):
+def send_password_reset_email_task(
+    self, reset_request_id: int, token: str, origin: str,
+    sender_name: str = 'CodeX System',
+):
     """
     Dispatch a password reset email via the notification engine.
 
@@ -118,18 +137,32 @@ def send_password_reset_email_task(self, activation_key: str, origin: str, sende
     """
     from vs_notifications.notify import send_notification
 
-    from .models import User
+    from .action_tokens import password_reset_token_digest
+    from .models import PasswordResetRequest
 
     try:
-        user = User.objects.get(activation_key=activation_key)
-    except User.DoesNotExist:
-        logger.error('send_password_reset_email_task: no user with activation_key=%s', activation_key)
+        reset_request = (
+            PasswordResetRequest.objects
+            .select_related('user')
+            .get(pk=reset_request_id)
+        )
+    except PasswordResetRequest.DoesNotExist:
+        logger.error('send_password_reset_email_task: no request with id=%s', reset_request_id)
         return
+
+    if (
+        password_reset_token_digest(token) != reset_request.token_hash
+        or not reset_request.is_valid
+    ):
+        logger.info('send_password_reset_email_task: request %s is no longer valid', reset_request_id)
+        return
+
+    user = reset_request.user
 
     base_url = getattr(settings, 'FRONTEND_BASE_URL', None)
     if not base_url:
         raise ImproperlyConfigured('FRONTEND_BASE_URL must be set in settings.')
-    reset_url    = f'{base_url.rstrip("/")}/reset-password/{activation_key}'
+    reset_url    = f'{base_url.rstrip("/")}/reset-password/{_PASSWORD_RESET_TOKEN_MARKER}'
     expiry_hours = 1 if origin == 'SELF' else 24
 
     send_notification(
@@ -144,5 +177,6 @@ def send_password_reset_email_task(self, activation_key: str, origin: str, sende
         recipients=[user],
         tenant=user.tenant,
         metadata={'from_name': sender_name},
+        delivery_replacements={_PASSWORD_RESET_TOKEN_MARKER: token},
     )
     logger.info('Password reset email dispatched for %s (origin=%s)', user.email, origin)

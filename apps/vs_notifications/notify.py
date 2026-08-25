@@ -58,6 +58,7 @@ def send_notification(
     suppress: bool = False,
     unregistered_recipients: Optional[list[UnregisteredRecipient]] = None,
     metadata: Optional[dict] = None,
+    delivery_replacements: Optional[dict[str, str]] = None,
 ) -> list[str]:
     """
     Send a notification to one or more recipients for the given event.
@@ -77,6 +78,10 @@ def send_notification(
                                  recipients who have no User account yet (e.g. user.invited).
         metadata:                Optional internal-only dict stored on every created
                                  record (e.g. activation_key). Never serialized out.
+        delivery_replacements:   Optional marker-to-value substitutions applied by
+                                 the email task immediately before SMTP. Values are
+                                 never stored on Notification rows. Use this for
+                                 one-time credentials that must not enter history.
 
     Returns:
         List of created Notification UUIDs as strings.
@@ -94,4 +99,5 @@ def send_notification(
         suppress=suppress,
         unregistered_recipients=unregistered_recipients,
         metadata=metadata,
+        delivery_replacements=delivery_replacements,
     )

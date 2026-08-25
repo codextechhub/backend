@@ -4,7 +4,7 @@
 # Contents (in order):
 #   TimeStampedModel      - shared abstract base
 #   User + UserManager    - platform-wide custom user model (AUTH_USER_MODEL)
-#   UserInvitation        - invitation expiry/usage gate (UUID-based, no token)
+#   UserInvitation        - hashed invitation token and expiry/usage gate
 #   LoginSession          - application-level session tracker
 #   AuthAttempt           - every login attempt, success or failure
 #   AccountLockout        - per-user brute-force lockout state
@@ -16,7 +16,6 @@ from __future__ import annotations
 import hashlib
 from datetime import timedelta
 
-import uuid
 from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
@@ -290,9 +289,6 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     # False until the user completes activation via the invitation link.
     # Set to True by InvitationService.activate().
     is_active = models.BooleanField(default=False)
-    # activation_token is a UUID used to validate the invitation link.
-    activation_key = models.UUIDField(unique=True, default=uuid.uuid4, editable=False)
-
     # ── Audit timestamps ──────────────────────────────────────────────────────
 
     password_changed_at = models.DateTimeField(null=True, blank=True)
@@ -739,6 +735,11 @@ class UserInvitation(TimeStampedModel):
         related_name='invitation',
     )
 
+    # The raw invitation token exists only in the email. Purpose-separated
+    # HMAC-SHA-256 means a database leak cannot be turned into an activation
+    # URL, and a reset token cannot be submitted to this flow.
+    token_hash = models.CharField(max_length=64, unique=True, editable=False)
+
     # The admin who created or last resent this invitation.
     invited_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -785,7 +786,7 @@ class UserInvitation(TimeStampedModel):
         self.is_used = True
         self.save(update_fields=['is_used'])
 
-    def reset(self, invited_by=None):
+    def reset(self, *, token_hash: str, invited_by=None):
         """
         Reset for a resend. Gives the user a fresh configured window from now.
         Updates invited_by if a new admin triggered the resend.
@@ -793,6 +794,7 @@ class UserInvitation(TimeStampedModel):
         from vs_config.runtime_settings import get_security_value
 
         self.is_used         = False
+        self.token_hash      = token_hash
         self.expires_at      = timezone.now() + timedelta(
             days=get_security_value(
                 "invitation_expiry_days", tenant=self.user.tenant, branch=self.user.branch,
@@ -805,7 +807,7 @@ class UserInvitation(TimeStampedModel):
         if invited_by:
             self.invited_by = invited_by
         self.save(update_fields=[
-            'is_used', 'expires_at', 'invited_by_id',
+            'is_used', 'token_hash', 'expires_at', 'invited_by_id',
             'email_status', 'email_sent_at', 'email_last_error', 'email_attempts',
         ])
 
@@ -967,7 +969,7 @@ class AccountLockout(TimeStampedModel):
 
 class PasswordResetRequest(TimeStampedModel):
     """
-    Tracks password reset tokens. Only the SHA-256 hash is stored -
+    Tracks password reset tokens. Only the HMAC-SHA-256 digest is stored -
     never the raw token. This limits exposure if the database is compromised.
 
     requested_by distinguishes self-service (1 hr expiry) from
@@ -979,6 +981,10 @@ class PasswordResetRequest(TimeStampedModel):
         on_delete=models.CASCADE,
         related_name='password_resets',
     )
+
+    # The raw reset token exists only in the email. This digest binds that
+    # credential to this exact request row rather than to the user generally.
+    token_hash = models.CharField(max_length=64, unique=True, editable=False)
 
     expires_at = models.DateTimeField()
     used_at    = models.DateTimeField(null=True, blank=True)

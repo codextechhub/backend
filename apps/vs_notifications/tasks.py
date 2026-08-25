@@ -28,7 +28,9 @@ logger = logging.getLogger("vs_notifications.tasks")
 
 # Deliver one queued email notification and publish the terminal delivery signal.
 @shared_task(bind=True, name="vs_notifications.deliver_email_notification")
-def deliver_email_notification(self, notification_id: str):
+def deliver_email_notification(
+    self, notification_id: str, replacements: dict[str, str] | None = None,
+):
     """
     Dispatch a single email Notification record via core.mail.send_email so the
     platform's from-address and CC conventions apply. Multipart when the record
@@ -68,6 +70,8 @@ def deliver_email_notification(self, notification_id: str):
 
     Args:
         notification_id:  UUID string of the Notification record.
+        replacements:     Ephemeral marker substitutions applied immediately
+                          before SMTP and never persisted on Notification.
     """
     from .models import Notification, NotificationStatus
 
@@ -109,6 +113,13 @@ def deliver_email_notification(self, notification_id: str):
             notification_id,
         )
         return
+
+    for marker, value in (replacements or {}).items():
+        if not marker:
+            continue
+        subject = subject.replace(str(marker), str(value))
+        body = body.replace(str(marker), str(value))
+        html_body = html_body.replace(str(marker), str(value))
 
     # ── No email address - mark FAILED (terminal) and fire the signal ──────
     if not email_addr:

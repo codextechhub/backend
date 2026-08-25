@@ -11,13 +11,13 @@ from __future__ import annotations
 
 from datetime import timedelta
 import logging
-import uuid
 
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils import timezone
 
+from ..action_tokens import invitation_token_digest, issue_invitation_token
 from ..models import User, UserInvitation, AuthEventLog, PlatformStaffProfile
 from ..services.audit import log_auth_event
 from ..tokens import CodeXRefreshToken
@@ -30,7 +30,7 @@ class InvitationService:
     # ── Create ────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def create(user: User, invited_by: User) -> UserInvitation:
+    def create(user: User, invited_by: User) -> tuple[UserInvitation, str]:
         """
         Creates a UserInvitation record for a newly created user.
         Called by UserCreationService immediately after the user row is saved.
@@ -38,16 +38,18 @@ class InvitationService:
         Uses get_or_create so it is safe to call multiple times -
         if a record already exists it is reset instead of duplicated.
         """
+        token, token_hash = issue_invitation_token()
         with transaction.atomic():
             from vs_config.runtime_settings import get_security_value
 
             invitation = UserInvitation.objects.select_for_update().filter(user=user).first()
             if invitation:
-                invitation.reset(invited_by=invited_by)
+                invitation.reset(token_hash=token_hash, invited_by=invited_by)
             else:
                 invitation = UserInvitation.objects.create(
                     user=user,
                     invited_by=invited_by,
+                    token_hash=token_hash,
                     expires_at=timezone.now() + timedelta(
                         days=get_security_value("invitation_expiry_days")
                         if user.tenant_id is None
@@ -69,32 +71,33 @@ class InvitationService:
                     profile.position = primary
                     profile.save(update_fields=['position', 'updated_at'])
 
-        return invitation
+        return invitation, token
 
     # ── Validate ──────────────────────────────────────────────────────────────
 
     @staticmethod
-    def get_valid_invitation(activation_key: str) -> UserInvitation:
+    def get_valid_invitation(token: str) -> UserInvitation:
         """
-        Looks up a UserInvitation by the user's UUID.
+        Looks up the exact UserInvitation that owns the submitted token.
         This is called when the user lands on the activation screen
         at vision.codexng.com/invite/{user_id}/
 
         Raises ValueError with a user-facing message on any failure.
         """
-        try:
-            user = User.objects.get(activation_key=activation_key)
-            invitation = (
-                UserInvitation.objects
-                .select_related('user__tenant__school_profile')
-                .get(user_id=user.id)
-            )
-        except UserInvitation.DoesNotExist:
+        token_hash = invitation_token_digest(token)
+        if token_hash is None:
             raise ValueError({
                 'error_code': 'INVITATION_NOT_FOUND',
                 'message':    'This invitation link is invalid.',
             })
-        except User.DoesNotExist:
+
+        try:
+            invitation = (
+                UserInvitation.objects
+                .select_related('user__tenant__school_profile')
+                .get(token_hash=token_hash)
+            )
+        except UserInvitation.DoesNotExist:
             raise ValueError({
                 'error_code': 'INVITATION_NOT_FOUND',
                 'message':    'This invitation link is invalid.',
@@ -118,12 +121,12 @@ class InvitationService:
 
     @staticmethod
     @transaction.atomic
-    def activate(activation_key: str, password: str, request=None) -> dict:
+    def activate(token: str, password: str, request=None) -> dict:
         """
         Activates a user account.
 
         Steps:
-          1. Validate the invitation by activation_key
+          1. Validate and lock the invitation identified by the token
           2. Validate the password against Django's password validators
           3. Set the password on the user
           4. Set is_active=True, status=ACTIVE
@@ -134,9 +137,40 @@ class InvitationService:
         active. No tokens are issued here: the frontend must send the user
         through the normal login flow afterwards.
         """
-        # 1. Validate invitation
-        invitation = InvitationService.get_valid_invitation(activation_key)
-        user = invitation.user
+        # 1. Resolve and lock the exact invitation row. This is deliberately
+        # repeated here instead of calling the preview helper because only the
+        # consuming path may serialize concurrent submissions.
+        token_hash = invitation_token_digest(token)
+        if token_hash is None:
+            raise ValueError({
+                'error_code': 'INVITATION_NOT_FOUND',
+                'message': 'This invitation link is invalid.',
+            })
+        try:
+            invitation = (
+                UserInvitation.objects
+                .select_for_update(of=("self",))
+                .select_related('user__tenant__school_profile')
+                .get(token_hash=token_hash)
+            )
+        except UserInvitation.DoesNotExist:
+            raise ValueError({
+                'error_code': 'INVITATION_NOT_FOUND',
+                'message': 'This invitation link is invalid.',
+            })
+
+        if invitation.is_used:
+            raise ValueError({
+                'error_code': 'INVITATION_ALREADY_USED',
+                'message': 'This invitation link has already been used. Please log in.',
+            })
+        if invitation.is_expired:
+            raise ValueError({
+                'error_code': 'INVITATION_EXPIRED',
+                'message': 'This invitation link has expired. Please contact your administrator.',
+            })
+
+        user = User.objects.select_for_update().get(pk=invitation.user_id)
 
         # 1b. ...and validate the ACCOUNT, which the link's own validity says
         # nothing about. An invitation is issued when a hire is approved, and
@@ -170,12 +204,10 @@ class InvitationService:
         user.password_changed_at = timezone.now()
         user.is_active           = True
         user.status              = User.Status.ACTIVE
-        user.activation_key       = uuid.uuid4() # Invalidate the activation key immediately
-        
+
         user.save(update_fields=[
             'password', 'password_changed_at',
             'is_active', 'status', 'updated_at',
-            'activation_key',
         ])
 
         # 5. Consume the invitation - link is now dead
@@ -200,19 +232,20 @@ class InvitationService:
     @transaction.atomic
     def resend(user: User, requested_by: User, request=None) -> UserInvitation:
         """
-        Resets the invitation and dispatches a new invitation email.
-        The URL stays the same - vision.codexng.com/invite/{user.id}/ -
-        but the expiry is extended using the live platform security setting.
+        Rotates the invitation token and dispatches a new invitation email.
+        The previous URL dies immediately and the expiry is extended using the
+        live platform security setting.
 
         Only valid for PENDING accounts. Caller must check status before
         calling this.
         """
-        try:
-            invitation = UserInvitation.objects.get(user=user)
-            invitation.reset(invited_by=requested_by)
-        except UserInvitation.DoesNotExist:
+        token, token_hash = issue_invitation_token()
+        invitation = UserInvitation.objects.select_for_update().filter(user=user).first()
+        if invitation is not None:
+            invitation.reset(token_hash=token_hash, invited_by=requested_by)
+        else:
             # No invitation record exists - create one fresh.
-            invitation = InvitationService.create(
+            invitation, token = InvitationService.create(
                 user=user,
                 invited_by=requested_by,
             )
@@ -220,7 +253,8 @@ class InvitationService:
         from ..tasks import send_invitation_email_task
         try:
             send_invitation_email_task.delay(
-                str(user.activation_key),
+                invitation_id=invitation.pk,
+                token=token,
                 # Owner is the admin doing the resend - not the invitee.
                 _job_owner_id=str(requested_by.id) if requested_by else None,
                 _job_label=f"Invitation email to {user.email}",

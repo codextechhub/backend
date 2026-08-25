@@ -389,9 +389,9 @@ class ActivationPreviewView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
 
-    def get(self, request, activation_key):
+    def get(self, request, token):
         try:
-            invitation = InvitationService.get_valid_invitation(activation_key=activation_key)
+            invitation = InvitationService.get_valid_invitation(token=token)
         except ValueError as e:
             payload = e.args[0] if e.args else {}
             message = payload.get('detail', 'Invalid activation key.') if isinstance(payload, dict) else str(payload)
@@ -419,7 +419,7 @@ class ActivationView(APIView):
     permission_classes = [AllowAny]
     throttle_scope = 'activation'
 
-    def post(self, request, activation_key):
+    def post(self, request, token):
         ser = ActivationSerializer(data=request.data)
         if not ser.is_valid():
             return error_response(message="Invalid request.", error=ser.errors)
@@ -432,7 +432,7 @@ class ActivationView(APIView):
 
         try:
             result = InvitationService.activate(
-                activation_key=activation_key,
+                token=token,
                 password=ser.validated_data['password'],
                 request=request,
             )

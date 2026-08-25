@@ -200,10 +200,13 @@ class UserCreationService:
         user.status = User.Status.PENDING
         user.save(update_fields=["status", "updated_at"])
 
-        InvitationService.create(user=user, invited_by=requested_by)
+        invitation, token = InvitationService.create(
+            user=user, invited_by=requested_by,
+        )
         try:
             send_invitation_email_task.delay(
-                str(user.activation_key),
+                invitation_id=invitation.pk,
+                token=token,
                 # The job belongs to whoever asked for the invite, not the invitee:
                 # a bulk approval must not drop queue rows and completion
                 # notifications into 200 strangers' inboxes.

@@ -11,15 +11,12 @@
 #   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet
 
 from __future__ import annotations
-from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 from core.response import success_response, error_response
-from ..models import (
-    User, PasswordResetRequest,
-)
+from ..models import User
 from ..serializers import (
     PasswordResetPreviewSerializer, PasswordChangeSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
 )
@@ -132,7 +129,7 @@ class PasswordResetRequestView(APIView):
 
 class PasswordResetPreviewView(APIView):
     """
-    GET /auth/reset-password/{activation_key}/
+    GET /auth/reset-password/{token}/
     Called when the user clicks the link in their email.
     Verifies the token and returns the user's name and email
     so the frontend can pre-fill them as read-only fields.
@@ -145,18 +142,10 @@ class PasswordResetPreviewView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
 
-    def get(self, request, activation_key):
-        try:
-            user = User.objects.get(activation_key=activation_key)
-        except User.DoesNotExist:
-            return error_response(message="Invalid or expired key. Contact your administrator for assistance.")
-
-        reset_request = PasswordResetRequest.objects.filter(user=user, used_at__isnull=True).last()
+    def get(self, request, token):
+        reset_request = PasswordService.valid_reset_for_token(token)
         if not reset_request:
             return error_response(message="Invalid or expired key. Contact your administrator for assistance.")
-
-        if reset_request.expires_at < timezone.now():
-            return error_response(message="Reset key has expired. Try again.")
 
         return success_response(
             message="User data retrieved successfully.",
@@ -178,19 +167,14 @@ class PasswordResetConfirmView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
 
-    def post(self, request, activation_key):
+    def post(self, request, token):
         ser = PasswordResetConfirmSerializer(data=request.data)
         if not ser.is_valid():
             return error_response(message="Invalid request.", error=ser.errors)
 
         try:
-            user = User.objects.get(activation_key=activation_key)
-        except User.DoesNotExist:
-            return error_response(message="Invalid or expired key. Contact your administrator for assistance.")
-
-        try:
             PasswordService.confirm_reset(
-                user=user,
+                token=token,
                 new_password=ser.validated_data['password'],
                 request=request,
             )
@@ -255,4 +239,3 @@ class AdminPasswordResetView(APIView):
             return error_response(message=message, error=error_detail, status=http_status)
 
         return success_response(message="Password reset email sent.")
-

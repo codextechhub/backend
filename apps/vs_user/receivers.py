@@ -5,7 +5,7 @@
 # The invitation email is dispatched through vs_notifications; the engine fires
 # notification_sent / notification_failed on terminal delivery. These receivers
 # correlate the terminal record back to its UserInvitation via the
-# activation_key carried in Notification.metadata and update the same tracking
+# invitation id carried in Notification.metadata and update the same tracking
 # fields the old bypass task wrote (email_attempts / email_status / email_sent_at
 # / email_last_error).
 #
@@ -30,13 +30,13 @@ def _update_invitation(notification, *, success: bool):
         if notification.event_type.key != _INVITED_EVENT_KEY:
             return
 
-        activation_key = (notification.metadata or {}).get("activation_key")
-        if not activation_key:
+        invitation_id = (notification.metadata or {}).get("invitation_id")
+        if not invitation_id:
             return
 
         from .models import UserInvitation
 
-        inv = UserInvitation.objects.get(user__activation_key=activation_key)
+        inv = UserInvitation.objects.get(pk=invitation_id)
         inv.email_attempts += 1
         if success:
             inv.email_status     = UserInvitation.EmailStatus.SENT

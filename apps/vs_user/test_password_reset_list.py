@@ -28,14 +28,17 @@ from vs_rbac.tests.helpers import (
     make_vision_user,
 )
 from vs_user.models import PasswordResetRequest
+from vs_user.action_tokens import issue_password_reset_token
 
 URL = "/v1/user/password-resets/"
 
 
 def _reset(user, *, hours=1, used=False):
     """One reset row for *user*. Only one may be active per user."""
+    _token, token_hash = issue_password_reset_token()
     return PasswordResetRequest.objects.create(
         user=user,
+        token_hash=token_hash,
         expires_at=timezone.now() + timedelta(hours=hours),
         used_at=timezone.now() if used else None,
         requested_by="ADMIN",

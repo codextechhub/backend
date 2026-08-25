@@ -84,6 +84,7 @@ class NotificationService:
         suppress: bool = False,
         unregistered_recipients: Optional[list[UnregisteredRecipient]] = None,
         metadata: Optional[dict] = None,
+        delivery_replacements: Optional[dict[str, str]] = None,
     ) -> list:
         """
         Dispatch notifications for a given event to a list of recipients.
@@ -103,6 +104,9 @@ class NotificationService:
                                      internal-only metadata field (e.g. an
                                      activation_key for delivery-signal receivers).
                                      Never exposed via any serializer.
+            delivery_replacements:   Optional marker-to-value substitutions passed
+                                     only to the email delivery task. They are not
+                                     written to Notification history.
 
         Returns:
             List of created Notification UUIDs (as strings).
@@ -123,6 +127,11 @@ class NotificationService:
             tenant = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
 
         metadata = metadata or {}
+        delivery_replacements = {
+            str(marker): str(value)
+            for marker, value in (delivery_replacements or {}).items()
+            if str(marker)
+        }
 
         # ── 1. Resolve event type ──────────────────────────────────────────
         try:
@@ -276,7 +285,13 @@ class NotificationService:
                 if email_ids:
                     from ..tasks import deliver_email_notification
                     for notif_id in email_ids:
-                        deliver_email_notification.delay(notif_id)
+                        if delivery_replacements:
+                            deliver_email_notification.delay(
+                                notif_id,
+                                replacements=delivery_replacements,
+                            )
+                        else:
+                            deliver_email_notification.delay(notif_id)
                 for notif in preflight_failed:
                     # Pre-flight failures have no task, so emit the same terminal signal here.
                     notification_failed.send(
