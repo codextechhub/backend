@@ -443,10 +443,20 @@ class ExportRun(TimeStampedModel):
         Built from the run's own columns rather than the definition's, so a definition
         moved to another entity after the fact cannot change what an old run reports
         having read.
+
+        ``user`` is the one part not read off this row, and deliberately: a run
+        executes *as* the definition's owner, or as whoever requested an ad-hoc
+        one, and :func:`vs_exports.services.execute_run` has already refused to
+        start if that person is no longer active. Branch narrowing therefore
+        resolves against the grants they hold when the file is built, which is
+        the same person and the same moment the column narrowing already uses.
         """
         from .catalogue import ScopeContext
 
-        return ScopeContext(tenant=self.tenant, entity=self.entity)
+        owner = self.definition.owner if self.definition_id else self.requested_by
+        return ScopeContext(
+            tenant=self.tenant, entity=self.entity, user=owner or self.requested_by,
+        )
 
     @property
     def failure_guidance(self) -> str:

@@ -199,15 +199,31 @@ class FilterDef:
 
 @dataclass(frozen=True)
 class ScopeContext:
-    """The boundary one export reads inside - always a tenant, sometimes an entity.
+    """The boundary one export reads inside - a tenant, sometimes an entity, and
+    the person it runs as.
 
     Passed to :attr:`Dataset.base` instead of a bare entity so a tenant-scoped dataset
     (audit events, users, configuration) is expressible without inventing a fake
     entity, and an entity-scoped one still cannot reach past its set of books.
+
+    ``user`` is the third boundary and the newest. The engine already narrows
+    *columns* per person - :func:`resolve_columns` runs at build time to shape the
+    picker and again at run time to shape the file - but until this field existed a
+    dataset had no way to narrow *rows* the same way. That asymmetry is what let a
+    branch-pinned caller export sites whose screens answer 404 for them, on every
+    branch-scoped dataset in the platform rather than in any one module.
+
+    A dataset opts in with :func:`narrow_to_caller_branches`; one that does not is
+    unaffected and still reads its whole tenant or entity, which is right for audit
+    events and configuration. ``user`` may be ``None`` where no person is in
+    context - a system-triggered estimate - and the helper treats that as no
+    narrowing, deliberately, because a missing caller is not a caller with no
+    branches.
     """
 
     tenant: object
     entity: object = None
+    user: object = None
 
     @property
     def entity_code(self) -> str:
@@ -217,6 +233,51 @@ class ScopeContext:
     def label(self) -> str:
         """What the review step and the Filters sheet call this scope."""
         return self.entity_code or getattr(self.tenant, "name", "") or "your organisation"
+
+
+def narrow_to_caller_branches(queryset, scope, *, field="branch", inclusive=True):
+    """Narrow *queryset* to the branches ``scope.user`` may see.
+
+    The single place a dataset expresses branch narrowing, so the rule cannot be
+    written five subtly different ways across five modules. It defers to
+    :func:`vs_rbac.scoping.visible_branch_ids`, which is the platform's one
+    authority on the question and is what the screens already ask, so an export
+    and the list it mirrors cannot answer differently.
+
+    ``inclusive`` decides what a NULL branch means to this dataset, and the two
+    readings are both correct for different things:
+
+    * ``True`` - a row with no branch belongs to the whole tenant and everyone
+      sees it. Right for a catalogue, where the shared rows are most of it, and
+      excluding them leaves a branch user with an almost empty file.
+    * ``False`` - a row with no branch is a scope of its own that a
+      branch-pinned caller is not in. Right for a document, where an
+      entity-wide purchase is not one site's to read. This is the reading
+      ``vs_procurement`` takes on its own screens.
+
+    A caller with no narrowing at all sees everything, and one whose granted
+    branches have all been withdrawn sees the shared rows only under
+    ``inclusive`` - neither everything nor nothing, which is the correct answer
+    for a catalogue that is still the tenant's.
+    """
+    from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
+
+    user = getattr(scope, "user", None)
+    if user is None:
+        # No person in context. Not the same as a person with no branches, and
+        # conflating them would silently empty a system-triggered estimate.
+        return queryset
+
+    visible = visible_branch_ids(user, scope.tenant)
+    if visible is WHOLE_TENANT:
+        return queryset
+
+    ids = tuple(sorted(visible))
+    if inclusive:
+        return queryset.filter(
+            Q(**{f"{field}__isnull": True}) | Q(**{f"{field}_id__in": ids}),
+        )
+    return queryset.filter(**{f"{field}_id__in": ids})
 
 
 @dataclass(frozen=True)

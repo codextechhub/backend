@@ -185,11 +185,17 @@ class _ExportBase(APIView):
         """
         from .catalogue import ScopeContext
 
+        # The caller travels with the scope, so a builder's estimate and preview
+        # narrow to the same rows the finished file will contain. Without it the
+        # estimate would promise a branch user rows the run then omits.
+        user = getattr(self.request, "effective_user", None) or self.request.user
         if not dataset.needs_entity:
-            return ScopeContext(tenant=self.tenant)
+            return ScopeContext(tenant=self.tenant, user=user)
         # resolve_entity raises ValidationError when ?entity= is absent and NotFound
         # when it is unknown or belongs to another tenant.
-        return ScopeContext(tenant=self.tenant, entity=resolve_entity(self.request))
+        return ScopeContext(
+            tenant=self.tenant, entity=resolve_entity(self.request), user=user,
+        )
 
 
 # --------------------------------------------------------------------------- #

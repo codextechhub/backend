@@ -10,3 +10,11 @@ class VsAcademicsConfig(AppConfig):
     # anyway, but every table and every future migration reads it, so it is
     # stated rather than inferred.
     label = "vs_academics"
+
+    def ready(self):
+        # Publish this module's datasets to the Export Centre. Registration
+        # lives in the domain app, never in vs_exports, so the engine keeps no
+        # import of a school-shaped module.
+        from .export_datasets import register_datasets
+
+        register_datasets()
