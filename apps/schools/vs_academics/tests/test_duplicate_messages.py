@@ -211,3 +211,74 @@ class ArchivedRowsStillHoldTheirNameTests(_AllAcademics):
         )
         self.assertEqual(response.status_code, 409, response.data)
         self.assertIn("Yoruba", response.data["message"])
+
+
+class BlockedDeleteWordingTests(_AllAcademics):
+    """A blocked delete names the job, not the table.
+
+    PROTECT refuses these either way. What is asserted is that the sentence is
+    one a school can act on: the platform handler pluralises from MODEL names
+    and told the reader "2 school class and 5 subject offerings still reference
+    it", which names two things a school has never heard of and asks them to
+    reassign a join row they cannot see.
+    """
+
+    def test_a_programme_holding_levels_names_the_levels(self):
+        jss = self.program("Junior Secondary", "JSS")
+        for n, name in enumerate(("JSS1", "JSS2"), start=1):
+            Level.all_objects.create(
+                tenant=self.tenant, program=jss, name=name, code=name,
+                order_index=n,
+            )
+        url = f"/v1/academics/programs/{jss.pk}/?tenant={self.tenant.slug}"
+        response = self.client_for(self.admin).delete(url)
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertIn("2 levels sit inside Junior Secondary", response.data["message"])
+        self.assertNotIn("reference", response.data["message"])
+
+    def test_a_level_holding_classes_says_to_move_the_classes(self):
+        jss = self.program("Junior Secondary", "JSS")
+        level = Level.all_objects.create(
+            tenant=self.tenant, program=jss, name="JSS1", code="JSS1", order_index=1,
+        )
+        SchoolClass.all_objects.create(
+            tenant=self.tenant, level=level, branch=self.lekki,
+            name="JSS1 A", code="JSS1-A",
+        )
+        url = f"/v1/academics/levels/{level.pk}/?tenant={self.tenant.slug}"
+        response = self.client_for(self.admin).delete(url)
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertIn("1 class sits at JSS1", response.data["message"])
+
+    def test_a_level_only_subjects_use_says_to_edit_the_subjects(self):
+        """Offerings block too, and are the school's other job.
+
+        Phrased as "2 subjects are offered at JSS1" rather than as offerings:
+        nobody deletes an offering, they stop offering a subject at a level.
+        """
+        from schools.vs_academics.models import SubjectOffering
+
+        jss = self.program("Junior Secondary", "JSS")
+        level = Level.all_objects.create(
+            tenant=self.tenant, program=jss, name="JSS1", code="JSS1", order_index=1,
+        )
+        for name, code in (("Mathematics", "MTH"), ("English", "ENG")):
+            subject = Subject.all_objects.create(
+                tenant=self.tenant, name=name, code=code,
+            )
+            SubjectOffering.all_objects.create(
+                tenant=self.tenant, subject=subject, level=level,
+            )
+        url = f"/v1/academics/levels/{level.pk}/?tenant={self.tenant.slug}"
+        response = self.client_for(self.admin).delete(url)
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertIn("2 subjects are offered at JSS1", response.data["message"])
+
+    def test_an_unused_level_still_deletes(self):
+        jss = self.program("Junior Secondary", "JSS")
+        level = Level.all_objects.create(
+            tenant=self.tenant, program=jss, name="JSS3", code="JSS3", order_index=3,
+        )
+        url = f"/v1/academics/levels/{level.pk}/?tenant={self.tenant.slug}"
+        response = self.client_for(self.admin).delete(url)
+        self.assertEqual(response.status_code, 200, response.data)

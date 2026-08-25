@@ -24,7 +24,9 @@ from ..constants import (
     PERM_STRUCTURE_VIEW,
 )
 from ..exceptions import AcademicsError
-from ..models import Department, Level, Program, SchoolClass, Subject
+from ..models import (
+    Department, Level, Program, SchoolClass, Subject, SubjectOffering,
+)
 from ..serializers import (
     BulkLevelSerializer,
     DepartmentSerializer,
@@ -47,6 +49,33 @@ from ..services.structure import (
     plan_bulk_levels,
 )
 from .base import AcademicsViewMixin
+
+
+class ProgramHasLevels(AcademicsError):
+    """Deleting a programme that still holds levels.
+
+    PROTECT on Level.program refuses it either way. What this adds is the
+    module's own voice: the platform handler pluralises from MODEL names, so
+    the reader was told "2 school class and 5 subject offerings still reference
+    it" - which names two things a school has never heard of and asks them to
+    "reassign" a join row they cannot see.
+    """
+
+    error_code = "PROTECTED_REFERENCE"
+    http_status = 409
+
+
+class LevelInUse(AcademicsError):
+    """Deleting a level that classes sit at, or that subjects are offered at.
+
+    Both block, and they are different jobs, so the message names whichever
+    applies rather than listing both in one breath. Classes are moved or
+    archived from the Classes screen; offerings are cleared by editing the
+    subject.
+    """
+
+    error_code = "PROTECTED_REFERENCE"
+    http_status = 409
 
 
 class DepartmentHasPrograms(AcademicsError):
@@ -392,11 +421,19 @@ class ProgramDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
             data=ProgramSerializer(program, context=self.get_serializer_context()).data,
         )
 
+    @transaction.atomic
     def destroy(self, request, *args, **kwargs):
-        # Blocked by on_delete=PROTECT on Level.program. The platform handler
-        # renders it as 409 PROTECTED_REFERENCE with a per-model count, so
-        # this module writes no guard of its own.
         program = self.get_object()
+        # Guarded here rather than left to PROTECT, so the refusal is written
+        # for the person reading it - see ProgramHasLevels.
+        levels = Level.all_objects.filter(program=program).count()
+        if levels:
+            raise ProgramHasLevels(
+                f"{levels} level{'s sit' if levels > 1 else ' sits'} inside "
+                f"{program.name}. Delete or move {'them' if levels > 1 else 'it'} "
+                f"first, then delete the programme.",
+                **{"Level": levels},
+            )
         name, pk = program.name, program.pk
         program.delete()
         emit_audit_event(
@@ -618,10 +655,29 @@ class LevelDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
             ).data,
         )
 
+    @transaction.atomic
     def destroy(self, request, *args, **kwargs):
-        # Blocked by on_delete=PROTECT on SchoolClass.level; the platform
-        # handler renders the refusal and the count.
         level = self.get_object()
+        classes = SchoolClass.all_objects.filter(level=level).count()
+        if classes:
+            raise LevelInUse(
+                f"{classes} class{'es sit' if classes > 1 else ' sits'} at "
+                f"{level.name}. Archive or move "
+                f"{'them' if classes > 1 else 'it'} first, then delete the level.",
+                **{"SchoolClass": classes},
+            )
+        # Checked second, and phrased as the school's own job rather than as a
+        # join row: nobody deletes an "offering", they stop offering a subject
+        # at a level.
+        offerings = SubjectOffering.all_objects.filter(level=level).count()
+        if offerings:
+            raise LevelInUse(
+                f"{offerings} subject{'s are' if offerings > 1 else ' is'} "
+                f"offered at {level.name}. Remove {level.name} from "
+                f"{'those subjects' if offerings > 1 else 'that subject'} "
+                f"first, then delete the level.",
+                **{"SubjectOffering": offerings},
+            )
         name, pk = level.name, level.pk
         level.delete()
         emit_audit_event(
