@@ -6,6 +6,8 @@ school.
 """
 from __future__ import annotations
 
+import datetime as dt
+
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
@@ -21,7 +23,12 @@ from vs_rbac.tests.helpers import (
     make_school_admin,
 )
 from vs_user.tokens import CodeXRefreshToken
-from schools.vs_academics.models import Department, Level, Program
+from schools.vs_academics.models import (
+    AcademicSession,
+    Department,
+    Level,
+    Program,
+)
 
 KEYS = (
     "academics.structure.view",
@@ -56,6 +63,21 @@ class _Base(TestCase):
         make_assignment(cls.school, cls.lekki_head, cls.role, branch=cls.lekki)
 
         cls.other = make_school(slug="sunrise", name="Sunrise Academy")
+        # The other school needs a year of its own: a level belongs to one, and
+        # a year belongs to one school.
+        cls.other_year = AcademicSession.all_objects.create(
+            tenant=cls.other.tenant, name="2099/2100",
+            start_date=dt.date(2099, 9, 1), end_date=dt.date(2100, 7, 31),
+            status="ACTIVE",
+        )
+        # Levels, classes and subjects belong to a year now, so the
+        # fixtures need one to put them in.
+        cls.year = AcademicSession.all_objects.create(
+            tenant=cls.tenant, name="2099/2100",
+            start_date=dt.date(2099, 9, 1), end_date=dt.date(2100, 7, 31),
+            status="ACTIVE",
+        )
+
         make_branch(cls.other, name="Main", is_main=True)
 
     def client_for(self, user):
@@ -229,7 +251,7 @@ class DepartmentTests(_Base):
 
         dept = self.dept()
         subject = Subject.all_objects.create(
-            tenant=self.tenant, name="Mathematics", code="MTH", department=dept,
+            tenant=self.tenant, session=self.year, name="Mathematics", code="MTH", department=dept,
         )
         url = reverse("academics-department-detail", kwargs={"pk": dept.pk})
         response = self.client_for(self.admin).delete(
@@ -351,7 +373,7 @@ class PromotionTests(_Base):
         self.prog = self.program()
         self.a, self.b, self.c = (
             Level.all_objects.create(
-                tenant=self.tenant, program=self.prog, name=n, code=n, order_index=i,
+                tenant=self.tenant, session=self.year, program=self.prog, name=n, code=n, order_index=i,
             )
             for i, n in enumerate(("JSS1", "JSS2", "JSS3"), start=1)
         )
@@ -383,7 +405,7 @@ class PromotionTests(_Base):
     def test_another_programme_needs_cross_program(self):
         other = self.program("Senior Secondary", "SSS")
         target = Level.all_objects.create(
-            tenant=self.tenant, program=other, name="SSS1", code="SSS1", order_index=1,
+            tenant=self.tenant, session=self.year, program=other, name="SSS1", code="SSS1", order_index=1,
         )
         response = self.patch_level(self.c, {"next_level": target.pk})
         self.assertEqual(response.status_code, 422, response.data)
@@ -399,7 +421,7 @@ class PromotionTests(_Base):
     def test_a_shared_level_may_not_promote_into_one_branchs_level(self):
         """It would push every branch's pupils to one site."""
         branch_level = Level.all_objects.create(
-            tenant=self.tenant, program=self.prog, name="Lekki Extra",
+            tenant=self.tenant, session=self.year, program=self.prog, name="Lekki Extra",
             code="LEX", order_index=9, branch=self.lekki,
         )
         response = self.patch_level(self.c, {"next_level": branch_level.pk})
@@ -411,7 +433,7 @@ class PromotionTests(_Base):
             tenant=self.other.tenant, name="Theirs", code="THR",
         )
         theirs = Level.all_objects.create(
-            tenant=self.other.tenant, program=other_prog, name="JSS2",
+            tenant=self.other.tenant, session=self.other_year, program=other_prog, name="JSS2",
             code="JSS2", order_index=1,
         )
         response = self.patch_level(self.a, {"next_level": theirs.pk})
@@ -432,7 +454,7 @@ class PromotionScreenTests(_Base):
         self.prog = self.program()
         self.jss1, self.jss2 = (
             Level.all_objects.create(
-                tenant=self.tenant, program=self.prog, name=n, code=n, order_index=i,
+                tenant=self.tenant, session=self.year, program=self.prog, name=n, code=n, order_index=i,
             )
             for i, n in enumerate(("JSS1", "JSS2"), start=1)
         )
@@ -476,13 +498,15 @@ class PromotionScreenTests(_Base):
         params = {"tenant": self.tenant.slug}
         client.get(url, params)                         # warm the auth caches
 
-        with self.assertNumQueries(13) as small:
+        # Fourteen, not thirteen: resolving which year the screen is about is
+        # one query, paid once per request rather than once per level.
+        with self.assertNumQueries(14) as small:
             client.get(url, params)
         baseline = len(small.captured_queries)
 
         for i in range(3, 12):
             Level.all_objects.create(
-                tenant=self.tenant, program=self.prog, name=f"JSS{i}",
+                tenant=self.tenant, session=self.year, program=self.prog, name=f"JSS{i}",
                 code=f"JSS{i}", order_index=i, next_level=self.jss2,
             )
         with self.assertNumQueries(baseline):

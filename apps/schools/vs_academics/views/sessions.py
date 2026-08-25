@@ -7,7 +7,7 @@ from __future__ import annotations
 from django.db import transaction
 from django.db.models import Count, Prefetch, Q
 from rest_framework import generics
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -17,6 +17,7 @@ from vs_audit.services import emit_audit_event
 from vs_tenants.references import resolve_branch_reference
 
 from ..constants import (
+    PERM_STRUCTURE_CREATE,
     PERM_SESSION_CREATE,
     PERM_SESSION_MANAGE,
     PERM_SESSION_UPDATE,
@@ -204,6 +205,50 @@ class SessionDetailView(_SessionBase, generics.RetrieveUpdateAPIView):
         return success_response(
             f"{session.name} updated.",
             data=SessionSerializer(session, context=self.get_serializer_context()).data,
+        )
+
+
+class SessionRollForwardView(AcademicsViewMixin, APIView):
+    """POST /v1/academics/sessions/<id>/roll-forward/  {"from": <session id>}
+
+    Seed this year's structure from another year's. See services/rollover.py for
+    what is copied and what is deliberately not.
+
+    docstring-name: Copy a year's structure forward
+    """
+
+    rbac_permission = PERM_STRUCTURE_CREATE
+
+    def post(self, request, pk):
+        from ..models import AcademicSession
+        from ..services.rollover import roll_forward
+
+        target = _get_or_404(self.tenant, pk)
+        raw = str(request.data.get("from") or "").strip()
+        if not raw:
+            raise ValidationError({
+                "from": "Name the year to copy from.",
+            })
+        source = AcademicSession.objects.filter(tenant=self.tenant, pk=raw).first()
+        if source is None:
+            raise NotFound("No such session at this school.")
+
+        written = roll_forward(self.tenant, source=source, target=target)
+        emit_audit_event(
+            module_key=AuditModuleKey.ACADEMICS,
+            action_type=AuditActionType.ACADEMIC_STRUCTURE_BULK_CREATED,
+            entity_type="AcademicSession", entity_id=str(target.pk),
+            entity_label=target.name,
+            tenant=self.tenant, actor_user=request.user,
+            summary=(
+                f"{source.name} structure copied into {target.name}: "
+                f"{written['levels']} levels, {written['classes']} classes, "
+                f"{written['subjects']} subjects."
+            ),
+            metadata={"from": source.name, **written},
+        )
+        return success_response(
+            f"{source.name} copied into {target.name}.", data=written,
         )
 
 

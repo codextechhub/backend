@@ -76,7 +76,7 @@ class _ClassBase(_StructureBase):
     serializer_class = SchoolClassSerializer
 
     def get_queryset(self):
-        qs = self._filtered(_classes_for(self.tenant))
+        qs = self._filtered(_classes_for(self.tenant).filter(session=self.session))
         level = (self.request.query_params.get("level") or "").strip()
         if level:
             qs = qs.filter(level_id=level)
@@ -109,6 +109,7 @@ class ClassListCreateView(_ClassBase, generics.ListCreateAPIView):
 
         data["code"] = self._code_for(
             SchoolClass, data.get("name") or level.name, data.get("code"),
+            session=level.session,
         )
         # Two different scopes, so two calls. A class NAME is unique inside its
         # level at its branch - "JSS1 A" may exist at both Lekki and Ikeja, and
@@ -118,12 +119,16 @@ class ClassListCreateView(_ClassBase, generics.ListCreateAPIView):
             SchoolClass.all_objects.filter(level=level, branch=branch),
             name=data.get("name"), within=level.name,
         )
+        # Per YEAR: JSS1-A is free again every September.
         self._unique(
-            SchoolClass.all_objects.filter(tenant=self.tenant), code=data["code"],
+            SchoolClass.all_objects.filter(
+                tenant=self.tenant, session_id=level.session_id,
+            ),
+            code=data["code"],
         )
         klass = SchoolClass.objects.create(
             tenant=self.tenant, level=level, branch=branch,
-            created_by=request.user, **data,
+            session_id=level.session_id, created_by=request.user, **data,
         )
         self._audit(
             AuditActionType.CREATE, klass, klass.name, f"{klass.name} added.",
@@ -191,9 +196,14 @@ class ClassDetailView(_ClassBase, generics.RetrieveUpdateAPIView):
             name=data.get("name"), exclude_pk=klass.pk, within=level.name,
         )
         self._unique(
-            SchoolClass.all_objects.filter(tenant=self.tenant),
+            SchoolClass.all_objects.filter(
+                tenant=self.tenant, session_id=level.session_id,
+            ),
             code=data.get("code"), exclude_pk=klass.pk,
         )
+        # Moving a class to a level in another year moves the class with it -
+        # the two must agree, and the level is the one that decides.
+        klass.session_id = level.session_id
         for field, value in data.items():
             setattr(klass, field, value)
         klass.save()
@@ -296,8 +306,9 @@ class GenerateArmsView(_ClassBase, APIView):
         }
         taken = {
             c.lower() for c in
-            SchoolClass.all_objects.filter(tenant=self.tenant)
-            .values_list("code", flat=True)
+            SchoolClass.all_objects.filter(
+                tenant=self.tenant, session_id=level.session_id,
+            ).values_list("code", flat=True)
         }
 
         made = []
@@ -313,7 +324,8 @@ class GenerateArmsView(_ClassBase, APIView):
             existing.add(name.lower())
             made.append(SchoolClass(
                 tenant=self.tenant, level=level, branch=branch, name=name,
-                arm=arm, code=code, created_by=request.user,
+                arm=arm, code=code, session_id=level.session_id,
+                created_by=request.user,
             ))
         created = SchoolClass.objects.bulk_create(made)
 
@@ -403,7 +415,10 @@ class _SubjectBase(_StructureBase):
     serializer_class = SubjectSerializer
 
     def get_queryset(self):
-        qs = self._filtered(_subjects_for(self.tenant, self._lens_branch()))
+        qs = self._filtered(
+            _subjects_for(self.tenant, self._lens_branch())
+            .filter(session=self.session),
+        )
         is_core = (self.request.query_params.get("is_core") or "").strip().lower()
         if is_core in ("true", "1", "core"):
             qs = qs.filter(is_core=True)
@@ -441,14 +456,18 @@ class SubjectListCreateView(_SubjectBase, generics.ListCreateAPIView):
         department = data.get("department")
         if department is not None:
             assert_within_parent(branch, department.branch, parent_label=department.name)
-        data["code"] = self._code_for(Subject, data["name"], data.get("code"))
+        data["code"] = self._code_for(
+            Subject, data["name"], data.get("code"), session=self.session,
+        )
         self._unique(
-            Subject.all_objects.filter(tenant=self.tenant),
+            Subject.all_objects.filter(tenant=self.tenant, session=self.session),
             name=data["name"], code=data["code"],
             writing_to_branch=branch is not None,
         )
 
-        subject = Subject.objects.create(tenant=self.tenant, branch=branch, **data)
+        subject = Subject.objects.create(
+            tenant=self.tenant, branch=branch, session=self.session, **data,
+        )
         if level_ids:
             _write_offerings(
                 self.tenant, subject,
@@ -506,7 +525,9 @@ class SubjectDetailView(_SubjectBase, generics.RetrieveUpdateDestroyAPIView):
                 target_branch, department.branch, parent_label=department.name,
             )
         self._unique(
-            Subject.all_objects.filter(tenant=self.tenant),
+            Subject.all_objects.filter(
+                tenant=self.tenant, session_id=subject.session_id,
+            ),
             name=data.get("name"), code=data.get("code"), exclude_pk=subject.pk,
             writing_to_branch=target_branch is not None,
         )

@@ -162,13 +162,19 @@ class _StructureBase(AcademicsViewMixin):
         branch = validated["branch"]
         return branch.id if branch is not None else None
 
-    def _code_for(self, model, name, given):
+    def _code_for(self, model, name, given, *, session=None):
+        """A generated code, unique among the ones it has to be unique among.
+
+        `session` for the kinds that belong to a year - a code taken by last
+        year's level is free again this year, and suffixing around it would
+        produce JSS1-2 in a year that has no JSS1.
+        """
         if given:
             return given
-        taken = {
-            c.lower() for c in
-            model.all_objects.filter(tenant=self.tenant).values_list("code", flat=True)
-        }
+        rows = model.all_objects.filter(tenant=self.tenant)
+        if session is not None:
+            rows = rows.filter(session=session)
+        taken = {c.lower() for c in rows.values_list("code", flat=True)}
         return generate_code(name, taken)
 
     def _unique(self, queryset, **kwargs):
@@ -355,7 +361,7 @@ class ProgramListCreateView(_StructureBase, generics.ListCreateAPIView):
         # zero default - which is how the delete confirmation came to say a
         # level with five subjects on it had none.
         levels = scope_to_visible_branches(
-            Level.objects.filter(tenant=self.tenant)
+            Level.objects.filter(tenant=self.tenant, session=self.session)
             .select_related("branch", "program", "next_level")
             .annotate(
                 class_count_annotated=Count("classes", distinct=True),
@@ -458,7 +464,9 @@ class ProgramDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
         program = self.get_object()
         # Guarded here rather than left to PROTECT, so the refusal is written
         # for the person reading it - see ProgramHasLevels.
-        levels = Level.all_objects.filter(program=program).count()
+        levels = Level.all_objects.filter(
+            program=program, session=self.session,
+        ).count()
         if levels:
             raise ProgramHasLevels(
                 f"{levels} level{'s sit' if levels > 1 else ' sits'} inside "
@@ -527,7 +535,9 @@ class LevelListCreateView(_StructureBase, generics.ListCreateAPIView):
 
     def get_queryset(self):
         return self._filtered(
-            _levels_for(self.tenant).filter(program=self.program),
+            _levels_for(self.tenant).filter(
+                program=self.program, session=self.session,
+            ),
         ).order_by("order_index")
 
     @transaction.atomic
@@ -540,17 +550,19 @@ class LevelListCreateView(_StructureBase, generics.ListCreateAPIView):
         data.pop("branch", None)
         branch = self._branch_for_write(requested)
         assert_within_parent(branch, program.branch, parent_label=program.name)
-        data["code"] = self._code_for(Level, data["name"], data.get("code"))
-        # A level's name and code are unique inside their programme, not across
-        # the school: a school may run Year 1 in both Nursery and Primary. The
-        # message has to say so, or it states a rule the database does not hold.
+        data["code"] = self._code_for(
+            Level, data["name"], data.get("code"), session=self.session,
+        )
+        # Unique inside a programme AND a year: a school may run Year 1 in both
+        # Nursery and Primary, and runs JSS1 again every September. Scoping to
+        # the year is what lets next year's structure be built beside this one.
         self._unique(
-            Level.all_objects.filter(program=program),
+            Level.all_objects.filter(program=program, session=self.session),
             name=data["name"], code=data["code"], within=program.name,
         )
         if not data.get("order_index"):
             highest = (
-                Level.all_objects.filter(program=program)
+                Level.all_objects.filter(program=program, session=self.session)
                 .order_by("-order_index")
                 .values_list("order_index", flat=True).first() or 0
             )
@@ -558,7 +570,8 @@ class LevelListCreateView(_StructureBase, generics.ListCreateAPIView):
 
         target = data.pop("next_level", None)
         level = Level.objects.create(
-            tenant=self.tenant, program=program, branch=branch, **data,
+            tenant=self.tenant, program=program, branch=branch,
+            session=self.session, **data,
         )
         if target is not None:
             assert_promotion_target(level, target)
@@ -605,11 +618,15 @@ class LevelBulkCreateView(_StructureBase, APIView):
 
         taken = {
             c.lower() for c in
-            Level.all_objects.filter(tenant=self.tenant).values_list("code", flat=True)
+            Level.all_objects.filter(tenant=self.tenant, session=self.session)
+            .values_list("code", flat=True)
         }
         plan = plan_bulk_levels(program, writer.validated_data["names"], taken)
         created = Level.objects.bulk_create([
-            Level(tenant=self.tenant, program=program, branch=branch, **row)
+            Level(
+                tenant=self.tenant, program=program, branch=branch,
+                session=self.session, **row,
+            )
             for row in plan
         ])
         emit_audit_event(
@@ -677,7 +694,9 @@ class LevelDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
             assert_promotion_target(level, data["next_level"], cross_program=cross)
 
         self._unique(
-            Level.all_objects.filter(program=level.program),
+            Level.all_objects.filter(
+                program=level.program, session_id=level.session_id,
+            ),
             name=data.get("name"), code=data.get("code"), exclude_pk=level.pk,
             within=level.program.name,
         )

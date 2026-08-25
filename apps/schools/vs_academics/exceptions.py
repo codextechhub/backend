@@ -125,3 +125,29 @@ class DuplicateCode(AcademicsError):
     error_code = "DUPLICATE_CODE"
     default_message = "That code is already in use in this school."
     http_status = 409
+
+
+class SessionMismatch(AcademicsError):
+    """A row pointed at a different academic year from the row it sits inside."""
+
+    error_code = "SESSION_MISMATCH"
+    default_message = (
+        "That would sit in a different academic year from the level it belongs to."
+    )
+    http_status = 422
+
+
+class NoSessionYet(AcademicsError):
+    """Structure was written before the school had a year to put it in.
+
+    Levels, classes and subjects belong to a year now, so there has to be one.
+    Refused rather than guessed: picking a year on the school's behalf is how a
+    whole year's structure ends up filed under the wrong one.
+    """
+
+    error_code = "NO_SESSION_YET"
+    default_message = (
+        "Create an academic session first. Levels, classes and subjects belong "
+        "to a school year, so there has to be one to put them in."
+    )
+    http_status = 409

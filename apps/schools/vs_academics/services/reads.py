@@ -54,8 +54,12 @@ def build_tree(user, tenant, *, session=None, branch=None, full=False,
     appears with its counts narrowed.
     """
     programs = _scoped(Program, user, tenant, is_active=True)
-    levels = _scoped(Level, user, tenant, is_active=True)
-    classes = _scoped(SchoolClass, user, tenant, is_active=True)
+    # Programmes are shared across years; what hangs off them is not, so the
+    # year filters the levels and everything below them. A programme with no
+    # levels this year still appears - "Vocational, no levels yet" is a true
+    # and useful thing to see when a year is being built.
+    levels = _scoped(Level, user, tenant, is_active=True, session=session)
+    classes = _scoped(SchoolClass, user, tenant, is_active=True, session=session)
 
     if branch is not None:
         narrow = Q(branch__isnull=True) | Q(branch=branch)
@@ -165,7 +169,8 @@ def term_state(term, today):
     return "pending"
 
 
-def build_overview(user, tenant, *, today=None, multi_branch=True, branch=None):
+def build_overview(user, tenant, *, today=None, multi_branch=True, branch=None,
+                   session=None):
     """The landing screen: the live year, and what the school has built.
 
     One call because it is one screen. Composing it from the five list
@@ -222,6 +227,10 @@ def build_overview(user, tenant, *, today=None, multi_branch=True, branch=None):
 
     def _count(model):
         qs = _scoped(model, user, tenant, is_active=True)
+        # The three that belong to a year are counted within it; departments
+        # and programmes are the shared spine and are counted whole.
+        if session is not None and model in (Level, SchoolClass, Subject):
+            qs = qs.filter(session=session)
         if branch is not None:
             # A shared row belongs to this branch too - that is what a null
             # branch MEANS - so it is counted, not excluded.

@@ -152,11 +152,15 @@ class Command(BaseCommand):
             f"{len(branches)} branch{'es' if multi else ''}",
         )
 
-        self._years(tenant)
+        year = self._years(tenant)
         depts = self._departments(tenant, secondary)
-        levels = self._programmes(tenant, secondary, depts)
-        self._classes(tenant, levels, branches, multi)
-        self._subjects(tenant, depts, levels, secondary)
+        # Structure hangs off ONE year - the live one. A school's other years
+        # are its history and its plan; seeding all three identically would
+        # make "switch the year" look like it does nothing, which is the very
+        # thing the year column exists to fix.
+        levels = self._programmes(tenant, secondary, depts, year)
+        self._classes(tenant, levels, branches, multi, year)
+        self._subjects(tenant, depts, levels, secondary, year)
 
         self.stdout.write(self.style.SUCCESS(
             f"    done: {Program.all_objects.filter(tenant=tenant).count()} programmes, "
@@ -167,6 +171,8 @@ class Command(BaseCommand):
 
     # ── years ──────────────────────────────────────────────────────────────
     def _years(self, tenant):
+        """Builds the three years and returns the LIVE one."""
+        live = None
         for name, start, end, state in YEARS:
             session = AcademicSession.all_objects.filter(
                 tenant=tenant, name=name,
@@ -184,13 +190,16 @@ class Command(BaseCommand):
                 ])
                 set_branches(session, tenant, [])       # the whole school
 
-            if state == "active" and session.status != SessionStatus.ACTIVE:
-                activate_session(session, tenant)
+            if state == "active":
+                if session.status != SessionStatus.ACTIVE:
+                    activate_session(session, tenant)
+                live = session
             elif state == "archived" and session.status != SessionStatus.ARCHIVED:
                 from schools.vs_academics.services.sessions import archive_session
 
                 archive_session(session, tenant)
         self.stdout.write(f"    years: {len(YEARS)}")
+        return live
 
     # ── catalogue ──────────────────────────────────────────────────────────
     def _departments(self, tenant, secondary):
@@ -208,7 +217,7 @@ class Command(BaseCommand):
             )
         return out
 
-    def _programmes(self, tenant, secondary, depts):
+    def _programmes(self, tenant, secondary, depts, year):
         levels = {}
         for index, (name, code, dept, level_names) in enumerate(PROGRAMMES):
             program, created = Program.all_objects.get_or_create(
@@ -225,7 +234,7 @@ class Command(BaseCommand):
                 program.save(update_fields=["department", "updated_at"])
             for order, level_name in enumerate(level_names, start=1):
                 level, _ = Level.all_objects.get_or_create(
-                    tenant=tenant, program=program, name=level_name,
+                    tenant=tenant, session=year, program=program, name=level_name,
                     defaults={
                         "code": level_name.replace(" ", "").upper()[:20],
                         "order_index": order,
@@ -242,7 +251,7 @@ class Command(BaseCommand):
             )
             for order, level_name in enumerate(("Vocational 1", "Vocational 2"), 1):
                 level, _ = Level.all_objects.get_or_create(
-                    tenant=tenant, program=vocational, name=level_name,
+                    tenant=tenant, session=year, program=vocational, name=level_name,
                     defaults={
                         "code": f"VOC{order}", "order_index": order,
                         "branch": secondary,
@@ -251,7 +260,7 @@ class Command(BaseCommand):
                 levels[level_name] = level
         return levels
 
-    def _classes(self, tenant, levels, branches, multi):
+    def _classes(self, tenant, levels, branches, multi, year):
         """Arms for the secondary levels, spread across the branches."""
         made = 0
         for level_name in ("JSS1", "JSS2", "SSS1", "SSS2"):
@@ -268,14 +277,14 @@ class Command(BaseCommand):
                 ).exists():
                     continue
                 SchoolClass.all_objects.create(
-                    tenant=tenant, level=level, name=name,
+                    tenant=tenant, session=year, level=level, name=name,
                     code=f"{level.code}-{arm}"[:20], arm=arm, branch=branch,
                     capacity=30,
                 )
                 made += 1
         self.stdout.write(f"    classes: +{made}")
 
-    def _subjects(self, tenant, depts, levels, secondary):
+    def _subjects(self, tenant, depts, levels, secondary, year):
         groups = {
             "ALL": list(levels),
             "PRI+JSS+SSS": [n for n in levels if n.startswith(("Primary", "JSS", "SSS"))],
@@ -285,7 +294,7 @@ class Command(BaseCommand):
         }
         for name, code, dept, core, group in SUBJECTS:
             subject, created = Subject.all_objects.get_or_create(
-                tenant=tenant, name=name,
+                tenant=tenant, session=year, name=name,
                 defaults={
                     "code": code, "is_core": core,
                     "department": depts.get(dept),
@@ -301,7 +310,7 @@ class Command(BaseCommand):
         if secondary is not None:
             # A subject one branch teaches and the other does not.
             yoruba, created = Subject.all_objects.get_or_create(
-                tenant=tenant, name="Yoruba",
+                tenant=tenant, session=year, name="Yoruba",
                 defaults={
                     "code": "YOR", "is_core": False, "branch": secondary,
                     "department": depts.get("Languages"),

@@ -50,6 +50,40 @@ class AcademicsViewMixin:
             self._multi_branch = cached
         return cached
 
+    @property
+    def session(self):
+        """The academic year this request is about.
+
+        `?session=<id>` when the screen names one, else the school's ACTIVE
+        year. Never "all years": levels, classes and subjects belong to exactly
+        one, so a list without a year is a list of several years' rows piled on
+        top of each other - which is what this module used to show.
+        """
+        cached = getattr(self, "_session", None)
+        if cached is not None:
+            return cached
+
+        from ..exceptions import NoSessionYet
+        from ..models import AcademicSession, SessionStatus
+
+        raw = str(self.request.query_params.get("session") or "").strip()
+        if raw:
+            found = AcademicSession.objects.filter(tenant=self.tenant, pk=raw).first()
+            if found is None:
+                raise NotFound("No such session at this school.")
+        else:
+            found = (
+                AcademicSession.objects.filter(
+                    tenant=self.tenant, status=SessionStatus.ACTIVE,
+                ).first()
+                or AcademicSession.objects.filter(tenant=self.tenant)
+                .order_by("-start_date").first()
+            )
+            if found is None:
+                raise NoSessionYet()
+        self._session = found
+        return found
+
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context["multi_branch"] = self.multi_branch

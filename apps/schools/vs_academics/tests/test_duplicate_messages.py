@@ -128,7 +128,7 @@ class ScopeOfTheRuleTests(_AllAcademics):
         jss = self.program("Junior Secondary", "JSS")
         nursery = self.program("Nursery", "NUR")
         Level.all_objects.create(
-            tenant=self.tenant, program=jss, name="Year 1", code="J1",
+            tenant=self.tenant, session=self.year, program=jss, name="Year 1", code="J1",
             order_index=1,
         )
         ok = self.post(
@@ -148,11 +148,11 @@ class ScopeOfTheRuleTests(_AllAcademics):
         """"JSS1 A" may exist at Lekki and at Ikeja. The constraints say so."""
         jss = self.program("Junior Secondary", "JSS")
         level = Level.all_objects.create(
-            tenant=self.tenant, program=jss, name="JSS1", code="JSS1",
+            tenant=self.tenant, session=self.year, program=jss, name="JSS1", code="JSS1",
             order_index=1,
         )
         SchoolClass.all_objects.create(
-            tenant=self.tenant, level=level, branch=self.lekki,
+            tenant=self.tenant, session=self.year, level=level, branch=self.lekki,
             name="JSS1 A", code="JSS1-A",
         )
         url = f"/v1/academics/classes/?tenant={self.tenant.slug}"
@@ -176,11 +176,11 @@ class ScopeOfTheRuleTests(_AllAcademics):
     def test_a_class_code_is_unique_across_the_whole_school(self):
         jss = self.program("Junior Secondary", "JSS")
         level = Level.all_objects.create(
-            tenant=self.tenant, program=jss, name="JSS1", code="JSS1",
+            tenant=self.tenant, session=self.year, program=jss, name="JSS1", code="JSS1",
             order_index=1,
         )
         SchoolClass.all_objects.create(
-            tenant=self.tenant, level=level, branch=self.lekki,
+            tenant=self.tenant, session=self.year, level=level, branch=self.lekki,
             name="JSS1 A", code="JSS1-A",
         )
         url = f"/v1/academics/classes/?tenant={self.tenant.slug}"
@@ -203,7 +203,7 @@ class ArchivedRowsStillHoldTheirNameTests(_AllAcademics):
         module exists to replace.
         """
         Subject.all_objects.create(
-            tenant=self.tenant, name="Yoruba", code="YOR", is_active=False,
+            tenant=self.tenant, session=self.year, name="Yoruba", code="YOR", is_active=False,
         )
         url = f"/v1/academics/subjects/?tenant={self.tenant.slug}"
         response = self.client_for(self.admin).post(
@@ -227,7 +227,7 @@ class BlockedDeleteWordingTests(_AllAcademics):
         jss = self.program("Junior Secondary", "JSS")
         for n, name in enumerate(("JSS1", "JSS2"), start=1):
             Level.all_objects.create(
-                tenant=self.tenant, program=jss, name=name, code=name,
+                tenant=self.tenant, session=self.year, program=jss, name=name, code=name,
                 order_index=n,
             )
         url = f"/v1/academics/programs/{jss.pk}/?tenant={self.tenant.slug}"
@@ -239,10 +239,10 @@ class BlockedDeleteWordingTests(_AllAcademics):
     def test_a_level_holding_classes_says_to_move_the_classes(self):
         jss = self.program("Junior Secondary", "JSS")
         level = Level.all_objects.create(
-            tenant=self.tenant, program=jss, name="JSS1", code="JSS1", order_index=1,
+            tenant=self.tenant, session=self.year, program=jss, name="JSS1", code="JSS1", order_index=1,
         )
         SchoolClass.all_objects.create(
-            tenant=self.tenant, level=level, branch=self.lekki,
+            tenant=self.tenant, session=self.year, level=level, branch=self.lekki,
             name="JSS1 A", code="JSS1-A",
         )
         url = f"/v1/academics/levels/{level.pk}/?tenant={self.tenant.slug}"
@@ -263,11 +263,11 @@ class BlockedDeleteWordingTests(_AllAcademics):
 
         jss = self.program("Junior Secondary", "JSS")
         level = Level.all_objects.create(
-            tenant=self.tenant, program=jss, name="JSS1", code="JSS1", order_index=1,
+            tenant=self.tenant, session=self.year, program=jss, name="JSS1", code="JSS1", order_index=1,
         )
         for name, code in (("Mathematics", "MTH"), ("English", "ENG")):
             subject = Subject.all_objects.create(
-                tenant=self.tenant, name=name, code=code,
+                tenant=self.tenant, session=self.year, name=name, code=code,
             )
             SubjectOffering.all_objects.create(
                 tenant=self.tenant, subject=subject, level=level,
@@ -288,10 +288,10 @@ class BlockedDeleteWordingTests(_AllAcademics):
 
         jss = self.program("Junior Secondary", "JSS")
         level = Level.all_objects.create(
-            tenant=self.tenant, program=jss, name="JSS1", code="JSS1", order_index=1,
+            tenant=self.tenant, session=self.year, program=jss, name="JSS1", code="JSS1", order_index=1,
         )
         subject = Subject.all_objects.create(
-            tenant=self.tenant, name="Mathematics", code="MTH",
+            tenant=self.tenant, session=self.year, name="Mathematics", code="MTH",
         )
         SubjectOffering.all_objects.create(
             tenant=self.tenant, subject=subject, level=level,
@@ -312,7 +312,7 @@ class BlockedDeleteWordingTests(_AllAcademics):
     def test_an_unused_level_still_deletes(self):
         jss = self.program("Junior Secondary", "JSS")
         level = Level.all_objects.create(
-            tenant=self.tenant, program=jss, name="JSS3", code="JSS3", order_index=3,
+            tenant=self.tenant, session=self.year, program=jss, name="JSS3", code="JSS3", order_index=3,
         )
         url = f"/v1/academics/levels/{level.pk}/?tenant={self.tenant.slug}"
         response = self.client_for(self.admin).delete(url)

@@ -1,6 +1,8 @@
 """Classes and subjects over HTTP."""
 from __future__ import annotations
 
+import datetime as dt
+
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
@@ -18,6 +20,7 @@ from vs_rbac.tests.helpers import (
 )
 from vs_user.tokens import CodeXRefreshToken
 from schools.vs_academics.models import (
+    AcademicSession,
     Level,
     Program,
     SchoolClass,
@@ -39,6 +42,13 @@ class _Base(TestCase):
     def setUpTestData(cls):
         cls.school = make_school(slug="brightfield", name="Brightfield Schools")
         cls.tenant = cls.school.tenant
+        # Levels, classes and subjects belong to a year now, so the fixtures
+        # need one to put them in.
+        cls.year = AcademicSession.all_objects.create(
+            tenant=cls.tenant, name="2099/2100",
+            start_date=dt.date(2099, 9, 1), end_date=dt.date(2100, 7, 31),
+            status="ACTIVE",
+        )
         cls.lekki = make_branch(cls.school, name="Lekki Campus", is_main=True)
         cls.ikeja = make_branch(cls.school, name="Ikeja Campus", is_main=False)
 
@@ -57,6 +67,13 @@ class _Base(TestCase):
         make_assignment(cls.school, cls.lekki_head, cls.role, branch=cls.lekki)
 
         cls.other = make_school(slug="sunrise", name="Sunrise Academy")
+        # The other school needs a year of its own: a level belongs to one, and
+        # a year belongs to one school.
+        cls.other_year = AcademicSession.all_objects.create(
+            tenant=cls.other.tenant, name="2099/2100",
+            start_date=dt.date(2099, 9, 1), end_date=dt.date(2100, 7, 31),
+            status="ACTIVE",
+        )
         make_branch(cls.other, name="Main", is_main=True)
 
     def setUp(self):
@@ -64,11 +81,11 @@ class _Base(TestCase):
             tenant=self.tenant, name="Junior Secondary", code="JSS",
         )
         self.jss1 = Level.all_objects.create(
-            tenant=self.tenant, program=self.prog, name="JSS1",
+            tenant=self.tenant, session=self.year, program=self.prog, name="JSS1",
             code="JSS1", order_index=1,
         )
         self.jss2 = Level.all_objects.create(
-            tenant=self.tenant, program=self.prog, name="JSS2",
+            tenant=self.tenant, session=self.year, program=self.prog, name="JSS2",
             code="JSS2", order_index=2,
         )
 
@@ -106,11 +123,11 @@ class ClassSecurityTests(_Base):
             tenant=self.other.tenant, name="Theirs", code="THR",
         )
         their_level = Level.all_objects.create(
-            tenant=self.other.tenant, program=their_prog, name="JSS1",
+            tenant=self.other.tenant, session=self.other_year, program=their_prog, name="JSS1",
             code="JSS1", order_index=1,
         )
         theirs = SchoolClass.all_objects.create(
-            tenant=self.other.tenant, level=their_level, name="JSS1 A", code="X1",
+            tenant=self.other.tenant, session=self.other_year, level=their_level, name="JSS1 A", code="X1",
         )
         response = self.get(self.admin, "academics-class-detail", pk=theirs.pk)
         self.assertEqual(response.status_code, 404, response.data)
@@ -123,7 +140,7 @@ class ClassSecurityTests(_Base):
         to agree first - so this fails and asks.
         """
         klass = SchoolClass.all_objects.create(
-            tenant=self.tenant, level=self.jss1, name="JSS1 A", code="JSS1-A",
+            tenant=self.tenant, session=self.year, level=self.jss1, name="JSS1 A", code="JSS1-A",
         )
         url = reverse("academics-class-detail", kwargs={"pk": klass.pk})
         response = self.client_for(self.admin).delete(
@@ -135,7 +152,7 @@ class ClassSecurityTests(_Base):
 class ClassLifecycleTests(_Base):
     def klass(self, name="JSS1 A", code="JSS1-A", branch=None, active=True):
         return SchoolClass.all_objects.create(
-            tenant=self.tenant, level=self.jss1, name=name, code=code,
+            tenant=self.tenant, session=self.year, level=self.jss1, name=name, code=code,
             branch=branch, is_active=active,
         )
 
@@ -180,7 +197,7 @@ class ClassLifecycleTests(_Base):
     def test_the_level_filter_narrows(self):
         self.klass()
         SchoolClass.all_objects.create(
-            tenant=self.tenant, level=self.jss2, name="JSS2 A", code="JSS2-A",
+            tenant=self.tenant, session=self.year, level=self.jss2, name="JSS2 A", code="JSS2-A",
         )
         response = self.get(
             self.admin, "academics-class-list", {"level": self.jss2.pk},
@@ -245,7 +262,7 @@ class ClassScopeTests(_Base):
 
     def test_a_class_may_not_be_wider_than_its_level(self):
         branch_level = Level.all_objects.create(
-            tenant=self.tenant, program=self.prog, name="Lekki Only",
+            tenant=self.tenant, session=self.year, program=self.prog, name="Lekki Only",
             code="LKO", order_index=9, branch=self.lekki,
         )
         response = self.post(
@@ -258,16 +275,16 @@ class ClassScopeTests(_Base):
     def test_the_subject_count_is_this_classs_own(self):
         """Not the school's subject total wearing a class's name."""
         maths = Subject.all_objects.create(
-            tenant=self.tenant, name="Mathematics", code="MTH",
+            tenant=self.tenant, session=self.year, name="Mathematics", code="MTH",
         )
         SubjectOffering.all_objects.create(
             tenant=self.tenant, subject=maths, level=self.jss1,
         )
         Subject.all_objects.create(
-            tenant=self.tenant, name="Yoruba", code="YOR",
+            tenant=self.tenant, session=self.year, name="Yoruba", code="YOR",
         )   # offered nowhere
         SchoolClass.all_objects.create(
-            tenant=self.tenant, level=self.jss1, name="JSS1 A", code="JSS1-A",
+            tenant=self.tenant, session=self.year, level=self.jss1, name="JSS1 A", code="JSS1-A",
         )
         response = self.get(self.admin, "academics-class-list")
         self.assertEqual(response.data["data"][0]["subject_count"], 1)
@@ -287,7 +304,7 @@ class SubjectTests(_Base):
         levels = [self.jss1.pk, self.jss2.pk]
         for i in range(3, 6):
             levels.append(Level.all_objects.create(
-                tenant=self.tenant, program=self.prog, name=f"JSS{i}",
+                tenant=self.tenant, session=self.year, program=self.prog, name=f"JSS{i}",
                 code=f"JSS{i}", order_index=i,
             ).pk)
         response = self.post(
@@ -328,7 +345,7 @@ class SubjectTests(_Base):
             tenant=self.other.tenant, name="Theirs", code="THR",
         )
         theirs = Level.all_objects.create(
-            tenant=self.other.tenant, program=their_prog, name="JSS9",
+            tenant=self.other.tenant, session=self.other_year, program=their_prog, name="JSS9",
             code="JSS9", order_index=1,
         )
         url = reverse("academics-subject-offerings", kwargs={"pk": pk})
@@ -345,7 +362,7 @@ class SubjectTests(_Base):
 
     def test_a_branch_subject_may_not_be_offered_at_another_branchs_level(self):
         ikeja_level = Level.all_objects.create(
-            tenant=self.tenant, program=self.prog, name="Ikeja Only",
+            tenant=self.tenant, session=self.year, program=self.prog, name="Ikeja Only",
             code="IKO", order_index=9, branch=self.ikeja,
         )
         response = self.post(
@@ -358,7 +375,7 @@ class SubjectTests(_Base):
 
     def test_a_shared_subject_may_be_offered_anywhere(self):
         ikeja_level = Level.all_objects.create(
-            tenant=self.tenant, program=self.prog, name="Ikeja Only",
+            tenant=self.tenant, session=self.year, program=self.prog, name="Ikeja Only",
             code="IKO", order_index=9, branch=self.ikeja,
         )
         response = self.post(

@@ -35,6 +35,16 @@ class _Base(TestCase):
     def setUpTestData(cls):
         cls.school = make_school(slug="brightfield", name="Brightfield Schools")
         cls.tenant = cls.school.tenant
+        # Levels, classes and subjects belong to a year now, so the fixtures
+        # need one to put them in.
+        cls.year = AcademicSession.all_objects.create(
+            tenant=cls.tenant, name="2099/2100",
+            start_date=dt.date(2099, 9, 1), end_date=dt.date(2100, 7, 31),
+            # DRAFT on purpose: this file tests the "one ACTIVE year" rules, and
+            # a fixture year that is itself active would be the collision every
+            # one of them then reports.
+            status=SessionStatus.DRAFT,
+        )
         cls.lekki = make_branch(cls.school, name="Lekki Campus", is_main=True)
         cls.ikeja = make_branch(cls.school, name="Ikeja Campus", is_main=False)
         cls.other = make_school(slug="sunrise", name="Sunrise Academy")
@@ -67,7 +77,9 @@ class OneActiveSessionTests(_Base):
         self.session("2026/2027", SessionStatus.ACTIVE)
         self.session("2027/2028", SessionStatus.DRAFT)
         self.session("2025/2026", SessionStatus.ARCHIVED)
-        self.assertEqual(AcademicSession.all_objects.count(), 3)
+        self.assertEqual(
+            AcademicSession.all_objects.exclude(pk=self.year.pk).count(), 3,
+        )
 
     def test_one_active_session_per_branch(self):
         """Two branch-scoped years may both be live; not on the same branch."""
@@ -125,7 +137,9 @@ class SessionShapeTests(_Base):
     def test_the_same_name_at_another_school_is_fine(self):
         self.session("2026/2027")
         self.session("2026/2027", tenant=self.other.tenant)
-        self.assertEqual(AcademicSession.all_objects.count(), 2)
+        self.assertEqual(
+            AcademicSession.all_objects.exclude(pk=self.year.pk).count(), 2,
+        )
 
     def test_end_date_must_follow_start_date(self):
         with self.assertRaises(IntegrityError), transaction.atomic():
@@ -230,13 +244,13 @@ class ClassNameTests(_Base):
             tenant=self.tenant, name="Junior Secondary", code="JSS",
         )
         self.level = Level.all_objects.create(
-            tenant=self.tenant, program=self.program, name="JSS1",
+            tenant=self.tenant, session=self.year, program=self.program, name="JSS1",
             code="JSS1", order_index=1,
         )
 
     def klass(self, name, code, branch=None):
         return SchoolClass.all_objects.create(
-            tenant=self.tenant, level=self.level, name=name, code=code,
+            tenant=self.tenant, session=self.year, level=self.level, name=name, code=code,
             branch=branch,
         )
 
@@ -271,11 +285,11 @@ class OfferingTests(_Base):
             tenant=self.tenant, name="Junior Secondary", code="JSS",
         )
         self.level = Level.all_objects.create(
-            tenant=self.tenant, program=self.program, name="JSS1",
+            tenant=self.tenant, session=self.year, program=self.program, name="JSS1",
             code="JSS1", order_index=1,
         )
         self.subject = Subject.all_objects.create(
-            tenant=self.tenant, name="Mathematics", code="MTH",
+            tenant=self.tenant, session=self.year, name="Mathematics", code="MTH",
         )
 
     def test_a_subject_is_offered_at_a_level_once(self):
@@ -307,12 +321,12 @@ class LevelOrderTests(_Base):
 
     def test_order_index_is_unique_within_a_programme(self):
         Level.all_objects.create(
-            tenant=self.tenant, program=self.program, name="JSS1",
+            tenant=self.tenant, session=self.year, program=self.program, name="JSS1",
             code="JSS1", order_index=1,
         )
         with self.assertRaises(IntegrityError), transaction.atomic():
             Level.all_objects.create(
-                tenant=self.tenant, program=self.program, name="JSS2",
+                tenant=self.tenant, session=self.year, program=self.program, name="JSS2",
                 code="JSS2", order_index=1,
             )
 
@@ -322,11 +336,11 @@ class LevelOrderTests(_Base):
             tenant=self.tenant, name="Senior Secondary", code="SSS",
         )
         Level.all_objects.create(
-            tenant=self.tenant, program=self.program, name="Year 1",
+            tenant=self.tenant, session=self.year, program=self.program, name="Year 1",
             code="Y1", order_index=1,
         )
         Level.all_objects.create(
-            tenant=self.tenant, program=other, name="Year 1",
+            tenant=self.tenant, session=self.year, program=other, name="Year 1",
             code="Y1", order_index=1,
         )
         self.assertEqual(Level.all_objects.count(), 2)

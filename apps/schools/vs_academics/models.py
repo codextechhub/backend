@@ -318,6 +318,18 @@ class Level(_Branched):
     program = models.ForeignKey(
         Program, on_delete=models.PROTECT, related_name="levels",
     )
+    #: The year this level belongs to.
+    #:
+    #: Levels, classes and subjects are what a school rebuilds each year;
+    #: departments and programmes are the spine they hang off and stay shared.
+    #: A class carries its own copy, because a constraint cannot join: "this
+    #: code is free again next September" has to be expressed as
+    #: (tenant, session, code), and Postgres will not take `level__session`
+    #: there. The two are kept in step by `assert_same_session` on every write,
+    #: which is the price of the denormalisation and is paid in one place.
+    session = models.ForeignKey(
+        AcademicSession, on_delete=models.PROTECT, related_name="levels",
+    )
     name = models.CharField(max_length=60)
     code = models.CharField(max_length=20)
     description = models.TextField(blank=True, default="")
@@ -334,13 +346,16 @@ class Level(_Branched):
         ordering = ["program", "order_index"]
         constraints = [
             models.UniqueConstraint(
-                Lower("name"), "program", name="uq_academic_level_name",
+                Lower("name"), "program", "session",
+                name="uq_academic_level_name",
             ),
             models.UniqueConstraint(
-                Lower("code"), "program", name="uq_academic_level_code",
+                Lower("code"), "program", "session",
+                name="uq_academic_level_code",
             ),
             models.UniqueConstraint(
-                fields=["program", "order_index"], name="uq_academic_level_order",
+                fields=["program", "session", "order_index"],
+                name="uq_academic_level_order",
             ),
         ]
         indexes = [models.Index(fields=["tenant", "branch", "is_active"])]
@@ -363,6 +378,12 @@ class SchoolClass(_Branched):
     )
     level = models.ForeignKey(
         Level, on_delete=models.PROTECT, related_name="classes",
+    )
+    #: Always its level's session - see Level.session for why it is stored
+    #: rather than joined, and services.sessions.assert_same_session for what
+    #: keeps the two from drifting.
+    session = models.ForeignKey(
+        AcademicSession, on_delete=models.PROTECT, related_name="classes",
     )
     name = models.CharField(max_length=60)
     code = models.CharField(max_length=20)
@@ -396,7 +417,8 @@ class SchoolClass(_Branched):
                 name="uq_academic_class_level_name_nobranch",
             ),
             models.UniqueConstraint(
-                Lower("code"), "tenant", name="uq_academic_class_code",
+                Lower("code"), "tenant", "session",
+                name="uq_academic_class_code",
             ),
         ]
         indexes = [
@@ -424,6 +446,10 @@ class Subject(_Branched):
         Department, on_delete=models.SET_NULL, null=True, blank=True,
         related_name="subjects",
     )
+    #: The year this subject is taught in. See Level.session.
+    session = models.ForeignKey(
+        AcademicSession, on_delete=models.PROTECT, related_name="subjects",
+    )
     name = models.CharField(max_length=100)
     code = models.CharField(max_length=20)
     is_core = models.BooleanField(default=True)
@@ -438,10 +464,12 @@ class Subject(_Branched):
         ordering = ["name"]
         constraints = [
             models.UniqueConstraint(
-                Lower("name"), "tenant", name="uq_academic_subject_name",
+                Lower("name"), "tenant", "session",
+                name="uq_academic_subject_name",
             ),
             models.UniqueConstraint(
-                Lower("code"), "tenant", name="uq_academic_subject_code",
+                Lower("code"), "tenant", "session",
+                name="uq_academic_subject_code",
             ),
         ]
         indexes = [models.Index(fields=["tenant", "branch", "is_active"])]

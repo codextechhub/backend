@@ -45,6 +45,13 @@ class _Base(TestCase):
     def setUpTestData(cls):
         cls.school = make_school(slug="brightfield", name="Brightfield Schools")
         cls.tenant = cls.school.tenant
+        # Levels, classes and subjects belong to a year now, so the fixtures
+        # need one to put them in.
+        cls.year = AcademicSession.all_objects.create(
+            tenant=cls.tenant, name="2099/2100",
+            start_date=dt.date(2099, 9, 1), end_date=dt.date(2100, 7, 31),
+            status="ACTIVE",
+        )
         cls.lekki = make_branch(cls.school, name="Lekki Campus", is_main=True)
         cls.ikeja = make_branch(cls.school, name="Ikeja Campus", is_main=False)
 
@@ -91,18 +98,18 @@ class _Base(TestCase):
             )
             for lv in range(levels):
                 level = Level.all_objects.create(
-                    tenant=self.tenant, program=program, name=f"{tag}P{p}L{lv}",
+                    tenant=self.tenant, session=self.year, program=program, name=f"{tag}P{p}L{lv}",
                     code=f"{tag}P{p}L{lv}", order_index=lv,
                 )
                 made.append(level)
                 for c in range(classes):
                     SchoolClass.all_objects.create(
-                        tenant=self.tenant, level=level,
+                        tenant=self.tenant, session=self.year, level=level,
                         name=f"{tag}P{p}L{lv} {c}", code=f"{tag}P{p}L{lv}C{c}",
                     )
         for s in range(subjects):
             subject = Subject.all_objects.create(
-                tenant=self.tenant, name=f"{tag} Subject {s}", code=f"{tag}S{s}",
+                tenant=self.tenant, session=self.year, name=f"{tag} Subject {s}", code=f"{tag}S{s}",
             )
             for level in made:
                 SubjectOffering.all_objects.create(
@@ -134,7 +141,7 @@ class TreeShapeTests(_Base):
     def test_a_subject_row_says_core_or_elective(self):
         levels = self.build(programs=1, levels=1, classes=1, subjects=0)
         elective = Subject.all_objects.create(
-            tenant=self.tenant, name="Further Maths", code="FMT", is_core=False,
+            tenant=self.tenant, session=self.year, name="Further Maths", code="FMT", is_core=False,
         )
         SubjectOffering.all_objects.create(
             tenant=self.tenant, subject=elective, level=levels[0],
@@ -148,7 +155,7 @@ class TreeShapeTests(_Base):
     def test_an_offering_overrides_the_subjects_own_core_flag(self):
         levels = self.build(programs=1, levels=1, classes=1, subjects=0)
         subject = Subject.all_objects.create(
-            tenant=self.tenant, name="Mathematics", code="MTH", is_core=True,
+            tenant=self.tenant, session=self.year, name="Mathematics", code="MTH", is_core=True,
         )
         SubjectOffering.all_objects.create(
             tenant=self.tenant, subject=subject, level=levels[0], is_core=False,
@@ -348,6 +355,11 @@ class OverviewTests(_BudgetMixin, _Base):
         self.assertIsNotNone(response.data["data"]["active_session"])
 
     def test_a_school_with_no_active_year_says_so(self):
+        # The fixture school runs a live year; retire it, because that is the
+        # state being described.
+        AcademicSession.all_objects.filter(pk=self.year.pk).update(
+            status=SessionStatus.ARCHIVED,
+        )
         self.session()
         response = self.get(self.admin, "academics-overview")
         self.assertIsNone(response.data["data"]["active_session"])
@@ -382,6 +394,9 @@ class OverviewTests(_BudgetMixin, _Base):
         is in nothing and there is no correct year to guess for it - so the
         school is told rather than a year being picked for it.
         """
+        AcademicSession.all_objects.filter(pk=self.year.pk).update(
+            status=SessionStatus.ARCHIVED,
+        )
         lekki_only = self.session("2027 Lekki")
         set_branches(lekki_only, self.tenant, [self.lekki])
         activate_session(lekki_only, self.tenant)
@@ -405,10 +420,12 @@ class OverviewTests(_BudgetMixin, _Base):
             expected=20,
         )
         # Six counts, the live session with its terms, and the stranded-branch
-        # check. Each once, none of them per row. Nine rather than ten because
+        # check. Each once, none of them per row. Ten rather than eleven because
         # a school already running a school-wide year needs no branch sweep:
-        # a year that names no branches covers all of them.
-        self.assertEqual(n, 9)
+        # a year that names no branches covers all of them. The tenth is the
+        # year itself: every academics read now resolves which year it is
+        # about before it counts anything.
+        self.assertEqual(n, 10)
 
     def test_a_caller_without_the_key_is_refused(self):
         stranger = make_school_admin(

@@ -7,11 +7,15 @@ rather than a convenience.
 """
 from __future__ import annotations
 
+import datetime as dt
+
 from django.test import TestCase
 
 from vs_exports.catalogue import get_dataset
 from vs_rbac.tests.helpers import make_branch, make_school
-from schools.vs_academics.models import Department, Level, Program, SchoolClass
+from schools.vs_academics.models import (
+    AcademicSession, Department, Level, Program, SchoolClass,
+)
 
 KEYS = (
     "academics.sessions", "academics.departments", "academics.programs",
@@ -73,6 +77,11 @@ class DatasetFencingTests(TestCase):
         make_branch(cls.other, name="Main", is_main=True)
 
         for tenant, tag in ((cls.school.tenant, "BF"), (cls.other.tenant, "SR")):
+            year = AcademicSession.all_objects.create(
+                tenant=tenant, name="2099/2100",
+                start_date=dt.date(2099, 9, 1), end_date=dt.date(2100, 7, 31),
+                status="ACTIVE",
+            )
             Department.all_objects.create(
                 tenant=tenant, name=f"{tag} Sciences", code=f"{tag}SCI",
             )
@@ -80,11 +89,11 @@ class DatasetFencingTests(TestCase):
                 tenant=tenant, name=f"{tag} Junior", code=f"{tag}JSS",
             )
             level = Level.all_objects.create(
-                tenant=tenant, program=program, name=f"{tag}JSS1",
+                tenant=tenant, session=year, program=program, name=f"{tag}JSS1",
                 code=f"{tag}JSS1", order_index=1,
             )
             SchoolClass.all_objects.create(
-                tenant=tenant, level=level, name=f"{tag}JSS1 A", code=f"{tag}JSS1-A",
+                tenant=tenant, session=year, level=level, name=f"{tag}JSS1 A", code=f"{tag}JSS1-A",
             )
 
     def rows(self, key, tenant):

@@ -1,6 +1,7 @@
 from .sessions import (  # noqa: F401
     SessionActivateView,
     SessionArchiveView,
+    SessionRollForwardView,
     SessionDetailView,
     SessionListCreateView,
     TermDetailView,

@@ -94,5 +94,6 @@ class OverviewView(AcademicsViewMixin, APIView):
         data = build_overview(
             request.user, self.tenant,
             today=dt.date.today(), multi_branch=self.multi_branch, branch=branch,
+            session=self.session,
         )
         return success_response("Overview retrieved.", data=data)

@@ -288,3 +288,22 @@ def assert_term_deletable(term):
             session=term.session.name,
             status=term.session.status,
         )
+
+
+def assert_same_session(child_session, parent_session, *, child_label, parent_label):
+    """A class may not sit in a different year from its level.
+
+    The class stores its own session because a unique constraint cannot join to
+    its level's - see SchoolClass.session. This is the price of that: the two
+    values are kept in step here, in the one place every write passes through,
+    rather than trusted to stay equal on their own.
+    """
+    from ..exceptions import SessionMismatch
+
+    if child_session is None or parent_session is None:
+        return
+    if child_session != parent_session:
+        raise SessionMismatch(
+            f"{child_label} would sit in a different academic year from "
+            f"{parent_label}. A class belongs to the year its level runs in.",
+        )
