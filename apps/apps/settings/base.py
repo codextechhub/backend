@@ -74,6 +74,7 @@ REST_FRAMEWORK = {
         "activation":     "10/minute",
         "rfq_portal":     "120/hour",
         "rfq_verification": "10/hour",
+        "guide_analytics": "120/minute",
         # Public barcode-login preview - throttled hard because it confirms
         # whether an email belongs to a known account (enumeration surface).
         "login_preview":  "10/minute",

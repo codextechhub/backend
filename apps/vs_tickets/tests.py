@@ -3,10 +3,12 @@ from __future__ import annotations
 import datetime
 from unittest import mock
 
+from django.core.cache import cache
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
+from rest_framework.throttling import ScopedRateThrottle
 
 from vs_rbac.models import (
     Permission,
@@ -36,6 +38,7 @@ from .constants import (
 from .models import GuideAnalyticsEvent, TicketAuditLog, TicketSubscription
 from .services import tickets as ticket_svc
 from .services import visibility
+from .views import GuideAnalyticsEventView
 
 REQUESTER_KEYS = (
     TicketPermission.VIEW,
@@ -163,6 +166,41 @@ class GuideAnalyticsTests(TicketFixtureMixin, TestCase):
         )
         self.assertEqual(refused.status_code, 400)
         self.assertEqual(GuideAnalyticsEvent.objects.count(), 1)
+
+    def test_event_ingest_is_scoped_and_rate_limited_per_user(self):
+        payload = {
+            "name": GuideAnalyticsEventName.GUIDE_VIEWED,
+            "guide_id": "getting-started.console-basics",
+        }
+
+        with (
+            mock.patch.object(
+                GuideAnalyticsEventView,
+                "throttle_classes",
+                [ScopedRateThrottle],
+            ),
+            mock.patch.object(
+                ScopedRateThrottle,
+                "THROTTLE_RATES",
+                {"guide_analytics": "2/minute"},
+            ),
+        ):
+            cache.clear()
+            first = self.client.post(
+                "/v1/support/guides/analytics/events/", payload, format="json",
+            )
+            second = self.client.post(
+                "/v1/support/guides/analytics/events/", payload, format="json",
+            )
+            refused = self.client.post(
+                "/v1/support/guides/analytics/events/", payload, format="json",
+            )
+            cache.clear()
+
+        self.assertEqual(first.status_code, 200, first.content)
+        self.assertEqual(second.status_code, 200, second.content)
+        self.assertEqual(refused.status_code, 429, refused.content)
+        self.assertEqual(GuideAnalyticsEvent.objects.count(), 2)
 
     def test_no_result_search_redacts_unknown_words_and_numbers(self):
         response = self.client.post(

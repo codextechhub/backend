@@ -392,6 +392,7 @@ class GuideAnalyticsEventView(APIView):
     """Record one closed, privacy-safe how-to event with no user or tenant id."""
 
     permission_classes = [IsAuthenticatedAndActive]
+    throttle_scope = "guide_analytics"
 
     def post(self, request):
         serializer = GuideAnalyticsEventSerializer(data=request.data)
