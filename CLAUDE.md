@@ -337,3 +337,27 @@ commit the implementation or generated documents until the user approves them,
 unless the user explicitly waives this review gate. After approval, stage only
 the intended files, never use `git add -A`, and never include Office lock files,
 rendered PDFs, page images, or other render artifacts in the commit.
+
+## Vocabulary: it is a **branch**, never a campus
+
+A school site is a **branch**. That is the word the data model uses
+(`Branch`, `branch_id`, `branch__isnull=True`), the word the API returns
+(`branch`, `branch_name`, `scope_label`), and the word the product uses on
+screen.
+
+Never write "campus" - not in UI copy, not in comments, not in variable names,
+not in commit messages, not in docs. A design prototype or a mockup that says
+"campus" is using the wrong word: translate it to branch as you build. The same
+goes for "site" and "location" when a branch is meant.
+
+| Say | Not |
+| --- | --- |
+| Ikeja Branch | Ikeja Campus |
+| All branches | All campuses |
+| School-wide | Applies to the whole school (fine), "every campus" (not) |
+| This branch runs the class | This campus runs the class |
+| Branch admin | Campus admin |
+
+The one exception is quoted third-party text - an error message from an
+external system, or a school's own words in a support ticket. Quote those
+verbatim and do not silently correct them.
