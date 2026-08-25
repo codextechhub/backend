@@ -20,11 +20,16 @@ KEYS = (
 
 
 class _Scope:
-    """The minimum a dataset's ``base`` callable reads."""
+    """The minimum a dataset's ``base`` callable reads.
 
-    def __init__(self, tenant):
+    ``user`` carries the person the export runs as, which is what lets a
+    dataset narrow rows the way the screens do.
+    """
+
+    def __init__(self, tenant, user=None):
         self.tenant = tenant
         self.entity = None
+        self.user = user
 
 
 class DatasetRegistrationTests(TestCase):
@@ -111,3 +116,110 @@ class DatasetFencingTests(TestCase):
         """
         self.assertEqual(len(self.rows("academics.classes", self.school.tenant)), 1)
         self.assertEqual(len(self.rows("academics.classes", self.other.tenant)), 1)
+
+
+class DatasetBranchNarrowingTests(TestCase):
+    """The catalogue reading: shared rows plus the caller's own.
+
+    Inclusive, because a curriculum mostly is not one branch's. The exclusive
+    reading here would hand a branch admin a nearly empty file whenever the
+    school publishes at school level, which is the normal case - the defect
+    vs_workflow already found and fixed once.
+
+    These live here rather than in vs_exports because the engine may not import
+    a schools app, and because this is where somebody changing the reading will
+    look.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from vs_rbac.models import PermissionScope
+        from vs_rbac.tests.helpers import (
+            make_assignment, make_permission, make_role, make_role_permission,
+            make_school_admin,
+        )
+
+        cls.school = make_school(slug="brightfield", name="Brightfield Schools")
+        cls.tenant = cls.school.tenant
+        cls.lekki = make_branch(cls.school, name="Lekki Campus", is_main=True)
+        cls.ikeja = make_branch(cls.school, name="Ikeja Campus", is_main=False)
+
+        role = make_role(cls.school, name="Branch Admin", key="branch_admin")
+        make_role_permission(
+            role,
+            make_permission("academics.structure.view", scope=PermissionScope.TENANT),
+        )
+        cls.lekki_head = make_school_admin(
+            None, email="head@lekki.test", tenant=cls.tenant,
+        )
+        make_assignment(cls.school, cls.lekki_head, role, branch=cls.lekki)
+        cls.school_level = make_school_admin(
+            None, email="adaeze@brightfield.test", tenant=cls.tenant,
+        )
+        make_assignment(cls.school, cls.school_level, role, branch=None)
+
+    def setUp(self):
+        Department.all_objects.create(
+            tenant=self.tenant, name="Sciences", code="SCI",
+        )
+        Department.all_objects.create(
+            tenant=self.tenant, name="Lekki Extra", code="LEX", branch=self.lekki,
+        )
+        Department.all_objects.create(
+            tenant=self.tenant, name="Ikeja Extra", code="IEX", branch=self.ikeja,
+        )
+
+    def names(self, key, user):
+        return {
+            row.name for row in get_dataset(key).base(
+                _Scope(self.tenant, user=user),
+            )
+        }
+
+    def test_a_branch_admin_exports_the_shared_rows_plus_their_own(self):
+        self.assertEqual(
+            self.names("academics.departments", self.lekki_head),
+            {"Sciences", "Lekki Extra"},
+        )
+
+    def test_a_branch_admin_never_exports_another_branchs_rows(self):
+        self.assertNotIn(
+            "Ikeja Extra", self.names("academics.departments", self.lekki_head),
+        )
+
+    def test_a_school_level_caller_still_exports_the_whole_school(self):
+        """Narrowing must not restrict the people it was never about."""
+        self.assertEqual(
+            self.names("academics.departments", self.school_level),
+            {"Sciences", "Lekki Extra", "Ikeja Extra"},
+        )
+
+    def test_sessions_are_not_narrowed(self):
+        """A year applies to a named SET of branches, not through a column.
+
+        The helper does not fit a join table, so this is left rather than
+        guessed at. Asserted so the omission is visible and deliberate.
+        """
+        from schools.vs_academics.models import AcademicSession
+
+        AcademicSession.all_objects.create(
+            tenant=self.tenant, name="2026/2027",
+            start_date="2026-09-01", end_date="2027-07-31",
+        )
+        rows = list(get_dataset("academics.sessions").base(
+            _Scope(self.tenant, user=self.lekki_head),
+        ))
+        self.assertEqual(len(rows), 1)
+
+    def test_every_catalogue_dataset_narrows(self):
+        """Enumerated, so a dataset added later is caught here."""
+        import inspect
+
+        from schools.vs_academics import export_datasets as ex
+
+        for name in ("_departments", "_programs", "_levels", "_classes", "_subjects"):
+            source = inspect.getsource(getattr(ex, name))
+            self.assertIn(
+                "narrow_to_caller_branches", source,
+                f"{name} does not narrow by branch",
+            )

@@ -1,5 +1,16 @@
 """Finance datasets published to the Export Centre.
 
+**Rows narrow to the caller's branches, inclusively.** ``include_shared=True``
+is spelled out at every call site below for the same reason ``views_ar`` spells
+it out at every one of its own: a null branch means "shared across the school",
+so a school-wide invoice, customer or credit note stays visible to a
+branch-pinned caller. An export and the screen it mirrors must not answer
+differently, and the only way to be sure of that is to make the same call.
+
+``InvoiceLine`` and ``JournalLine`` reach ``branch`` through their parent, so
+they pass a prefix rather than growing a column of their own.
+
+
 Registered from :meth:`vs_finance.apps.VsFinanceConfig.ready`, so the Export Centre
 never imports this app and this app never imports the Export Centre's views. All three
 are :data:`~vs_exports.constants.DatasetScope.ENTITY`-scoped: a finance row belongs to
@@ -27,6 +38,7 @@ from vs_exports.catalogue import (
     Field,
     FilterDef,
     choice_labels,
+    narrow_to_caller_branches,
     register,
 )
 
@@ -35,42 +47,78 @@ from vs_exports.catalogue import (
 def _invoices(scope):
     from .models import Invoice
 
-    return Invoice.objects.filter(entity=scope.entity)
+    # include_shared=True, as every finance screen spells out: a null
+    # branch means shared across the school, so a school-wide row stays
+    # visible to a branch-pinned caller.
+    return narrow_to_caller_branches(
+        Invoice.objects.filter(entity=scope.entity),
+        scope, inclusive=True,
+    )
 
 
 # Build the entity-scoped base queryset for invoice lines.
 def _invoice_lines(scope):
     from .models import InvoiceLine
 
-    return InvoiceLine.objects.filter(invoice__entity=scope.entity)
+    # include_shared=True, as every finance screen spells out: a null
+    # branch means shared across the school, so a school-wide row stays
+    # visible to a branch-pinned caller.
+    return narrow_to_caller_branches(
+        InvoiceLine.objects.filter(invoice__entity=scope.entity),
+        scope, inclusive=True, prefix="invoice__",
+    )
 
 
 # Build the entity-scoped base queryset for journal lines.
 def _gl_postings(scope):
     from .models import JournalLine
 
-    return JournalLine.objects.filter(entry__entity=scope.entity)
+    # include_shared=True, as every finance screen spells out: a null
+    # branch means shared across the school, so a school-wide row stays
+    # visible to a branch-pinned caller.
+    return narrow_to_caller_branches(
+        JournalLine.objects.filter(entry__entity=scope.entity),
+        scope, inclusive=True, prefix="entry__",
+    )
 
 
 # Build the entity-scoped base queryset for customer receipts.
 def _payments(scope):
     from .models import Payment
 
-    return Payment.objects.filter(entity=scope.entity)
+    # include_shared=True, as every finance screen spells out: a null
+    # branch means shared across the school, so a school-wide row stays
+    # visible to a branch-pinned caller.
+    return narrow_to_caller_branches(
+        Payment.objects.filter(entity=scope.entity),
+        scope, inclusive=True,
+    )
 
 
 # Build the entity-scoped base queryset for staff expense claims.
 def _expense_claims(scope):
     from .models import ExpenseClaim
 
-    return ExpenseClaim.objects.filter(entity=scope.entity)
+    # include_shared=True, as every finance screen spells out: a null
+    # branch means shared across the school, so a school-wide row stays
+    # visible to a branch-pinned caller.
+    return narrow_to_caller_branches(
+        ExpenseClaim.objects.filter(entity=scope.entity),
+        scope, inclusive=True,
+    )
 
 
 # Build the entity-scoped base queryset for the AR customer master.
 def _customers(scope):
     from .models import Customer
 
-    return Customer.objects.filter(entity=scope.entity)
+    # include_shared=True, as every finance screen spells out: a null
+    # branch means shared across the school, so a school-wide row stays
+    # visible to a branch-pinned caller.
+    return narrow_to_caller_branches(
+        Customer.objects.filter(entity=scope.entity),
+        scope, inclusive=True,
+    )
 
 
 _DOC_STATUS = choice_labels("vs_finance.constants.DocumentStatus")

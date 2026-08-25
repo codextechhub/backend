@@ -1,5 +1,13 @@
 """Procurement datasets published to the Export Centre.
 
+**Rows narrow to the caller's branches, exclusively.** ``include_shared=False``
+matches what ``vs_procurement/views/base.py`` already does on the screens these
+mirror: a purchase belongs to one place, and an entity-wide purchase is a scope
+of its own that a branch-pinned buyer is not in rather than a row shared with
+them. That is the opposite reading from finance, and both are right for what
+they describe - see ``vs_rbac.scoping.BranchScope``.
+
+
 Registered from :meth:`vs_procurement.apps.VsProcurementConfig.ready`. Entity-scoped
 like finance: a purchase order belongs to the set of books that will pay it.
 
@@ -24,6 +32,7 @@ from vs_exports.catalogue import (
     Field,
     FilterDef,
     choice_labels,
+    narrow_to_caller_branches,
     register,
 )
 
@@ -32,28 +41,52 @@ from vs_exports.catalogue import (
 def _purchase_orders(scope):
     from .models import PurchaseOrder
 
-    return PurchaseOrder.objects.filter(entity=scope.entity)
+    # include_shared=False, as vs_procurement/views/base.py spells out:
+    # an entity-wide purchase is a scope of its own that a branch-pinned
+    # buyer is not in, not a row shared with them.
+    return narrow_to_caller_branches(
+        PurchaseOrder.objects.filter(entity=scope.entity),
+        scope, inclusive=False,
+    )
 
 
 # Build the entity-scoped base queryset for vendor invoices.
 def _vendor_invoices(scope):
     from .models import VendorInvoice
 
-    return VendorInvoice.objects.filter(entity=scope.entity)
+    # include_shared=False, as vs_procurement/views/base.py spells out:
+    # an entity-wide purchase is a scope of its own that a branch-pinned
+    # buyer is not in, not a row shared with them.
+    return narrow_to_caller_branches(
+        VendorInvoice.objects.filter(entity=scope.entity),
+        scope, inclusive=False,
+    )
 
 
 # Build the entity-scoped base queryset for the vendor master.
 def _vendors(scope):
     from .models import Vendor
 
-    return Vendor.objects.filter(entity=scope.entity)
+    # include_shared=False, as vs_procurement/views/base.py spells out:
+    # an entity-wide purchase is a scope of its own that a branch-pinned
+    # buyer is not in, not a row shared with them.
+    return narrow_to_caller_branches(
+        Vendor.objects.filter(entity=scope.entity),
+        scope, inclusive=False,
+    )
 
 
 # Build the entity-scoped base queryset for purchase requisitions.
 def _requisitions(scope):
     from .models import PurchaseRequisition
 
-    return PurchaseRequisition.objects.filter(entity=scope.entity)
+    # include_shared=False, as vs_procurement/views/base.py spells out:
+    # an entity-wide purchase is a scope of its own that a branch-pinned
+    # buyer is not in, not a row shared with them.
+    return narrow_to_caller_branches(
+        PurchaseRequisition.objects.filter(entity=scope.entity),
+        scope, inclusive=False,
+    )
 
 
 _DOC_STATUS = choice_labels("vs_finance.constants.DocumentStatus")

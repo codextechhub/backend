@@ -235,49 +235,44 @@ class ScopeContext:
         return self.entity_code or getattr(self.tenant, "name", "") or "your organisation"
 
 
-def narrow_to_caller_branches(queryset, scope, *, field="branch", inclusive=True):
+def narrow_to_caller_branches(queryset, scope, *, field="branch", inclusive=True,
+                              prefix=""):
     """Narrow *queryset* to the branches ``scope.user`` may see.
 
-    The single place a dataset expresses branch narrowing, so the rule cannot be
-    written five subtly different ways across five modules. It defers to
-    :func:`vs_rbac.scoping.visible_branch_ids`, which is the platform's one
-    authority on the question and is what the screens already ask, so an export
-    and the list it mirrors cannot answer differently.
+    A thin adapter, and deliberately thin: the rule itself belongs to
+    :func:`vs_rbac.scoping.branch_scope_for_user`, which is the same function
+    behind the screens these datasets mirror. An export that decided this for
+    itself would be a second answer to a question the platform already answers
+    once, and the two would drift - which is the whole failure this helper
+    exists to prevent.
 
-    ``inclusive`` decides what a NULL branch means to this dataset, and the two
-    readings are both correct for different things:
+    ``inclusive`` maps to ``BranchScope.include_shared``, and both readings of a
+    NULL branch are correct for something:
 
-    * ``True`` - a row with no branch belongs to the whole tenant and everyone
-      sees it. Right for a catalogue, where the shared rows are most of it, and
-      excluding them leaves a branch user with an almost empty file.
-    * ``False`` - a row with no branch is a scope of its own that a
-      branch-pinned caller is not in. Right for a document, where an
-      entity-wide purchase is not one site's to read. This is the reading
-      ``vs_procurement`` takes on its own screens.
+    * ``True`` - the row is shared across the tenant and stays visible. What a
+      ledger entity, master data or a catalogue means, and what
+      :mod:`vs_finance` spells out at every one of its own call sites.
+    * ``False`` - the row is a scope of its own that a branch-pinned caller is
+      not in. What a document means, and what :mod:`vs_procurement` spells out
+      at its own.
 
-    A caller with no narrowing at all sees everything, and one whose granted
-    branches have all been withdrawn sees the shared rows only under
-    ``inclusive`` - neither everything nor nothing, which is the correct answer
-    for a catalogue that is still the tenant's.
+    ``prefix`` names the route to ``branch`` for a dataset whose rows reach it
+    through a parent - an invoice line through its invoice, a posting through
+    its journal entry.
+
+    A ``scope`` with no user narrows nothing. That is not the same as a user
+    with no branches, and conflating them would silently empty a
+    system-triggered estimate, which reads as "this school has nothing" rather
+    than as a bug.
     """
-    from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
+    from vs_rbac.scoping import branch_scope_for_user
 
     user = getattr(scope, "user", None)
     if user is None:
-        # No person in context. Not the same as a person with no branches, and
-        # conflating them would silently empty a system-triggered estimate.
         return queryset
-
-    visible = visible_branch_ids(user, scope.tenant)
-    if visible is WHOLE_TENANT:
-        return queryset
-
-    ids = tuple(sorted(visible))
-    if inclusive:
-        return queryset.filter(
-            Q(**{f"{field}__isnull": True}) | Q(**{f"{field}_id__in": ids}),
-        )
-    return queryset.filter(**{f"{field}_id__in": ids})
+    return branch_scope_for_user(
+        user, include_shared=inclusive, tenant=getattr(scope, "tenant", None),
+    ).filter(queryset, prefix, field=field)
 
 
 @dataclass(frozen=True)
