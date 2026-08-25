@@ -23,6 +23,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
+from shrink_cover_art import rewrite_document
+
 
 BLUE = "355B9D"
 PALE_BLUE = "EAF0FA"
@@ -637,6 +639,7 @@ def build_mrd(reference_path: Path, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(output_path)
     update_extended_title(output_path, f"XVS Module Requirements Document v{MRD_VERSION}")
+    shrink_inherited_media(output_path)
 
 
 FR_REQUIREMENTS = [
@@ -1227,6 +1230,20 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
         output_path,
         f"School and Branch Management Functional Requirements Document v{FRD_VERSION}",
     )
+    shrink_inherited_media(output_path)
+
+
+def shrink_inherited_media(path: Path) -> None:
+    """Re-encode the cover art a freshly built document inherited from its reference.
+
+    Every document here is built from an earlier one, so its media comes along
+    for the ride. The cover photo used to arrive as a 1.28 MB JPEG, 95% of the
+    finished file, and it would keep arriving that way in every future version
+    unless the reference happened to be one that had already been shrunk. Doing
+    it on the way out means it cannot depend on which reference was passed.
+    """
+    for name, (before, after) in rewrite_document(path, dry_run=False).items():
+        print(f"{path}: {name} {before / 1024:.0f} KB -> {after / 1024:.0f} KB")
 
 
 def assert_no_em_dash(path: Path) -> None:

@@ -27,6 +27,7 @@ from generate_requirements_documents import (
     find_table_by_header,
     rebuild_table,
     set_table_widths,
+    shrink_inherited_media,
     update_extended_title,
     write_cell,
 )
@@ -194,6 +195,7 @@ def patch(source: Path, output: Path) -> None:
     update_extended_title(
         output, f"XVS Module Requirements Document v{TARGET_VERSION}"
     )
+    shrink_inherited_media(output)
     assert_no_em_dash(output)
 
 
