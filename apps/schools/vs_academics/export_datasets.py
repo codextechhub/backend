@@ -319,29 +319,60 @@ def register_datasets():
 # narrow to their branches, so their file matches their screen either way.
 
 
-def _flag(params, key):
-    """A screen's tri-state filter. "all" means the screen is not filtering."""
-    value = str(params.get(key, "")).strip().lower()
+#: What the screens send when a tri-state filter is switched off.
+_NOT_FILTERING = ("", "all", "any")
+
+
+def _flag(params, key, filters, unmapped):
+    """Carry a screen's tri-state filter, or report that it could not be.
+
+    Three outcomes, and the third is the one worth spelling out. "true"/"false"
+    is carried; "all" is the screen NOT filtering, so there is nothing to carry
+    and nothing to report; anything else is a value this translator does not
+    understand, and it is REPORTED rather than ignored.
+
+    Ignoring it is the silent widening the whole design exists to stop: the
+    param is listed in `handles`, so `resolve_screen` would count it as carried
+    and tell the reader their filter was applied when nothing was.
+    """
+    from vs_exports.catalogue import Unmapped
+
+    raw = str(params.get(key, "")).strip()
+    value = raw.lower()
     if value in ("true", "1"):
-        return True
-    if value in ("false", "0"):
-        return False
-    return None
+        filters.append({"id": key, "value": True})
+    elif value in ("false", "0"):
+        filters.append({"id": key, "value": False})
+    elif value not in _NOT_FILTERING:
+        unmapped.append(Unmapped(
+            key, raw,
+            f"The export does not understand “{raw}” for this filter, so the "
+            f"file is not limited by it.",
+        ))
+
+
+#: Why the branch lens cannot be carried, in the words the drawer shows.
+_BRANCH_REASON = (
+    "The branch you are viewing also includes everything shared by the whole "
+    "school, which an export filter cannot express. The file covers every branch "
+    "you can see."
+)
 
 
 def _common(params):
     """search, is_active and the branch lens - every catalogue screen sends these."""
+    from vs_exports.catalogue import Unmapped
+
     filters, unmapped = [], []
     search = str(params.get("search", "")).strip()
     if search:
         filters.append({"id": "search", "value": search})
 
-    active = _flag(params, "is_active")
-    if active is not None:
-        filters.append({"id": "is_active", "value": active})
+    _flag(params, "is_active", filters, unmapped)
 
-    if str(params.get("branch", "")).strip():
-        unmapped.append("branch")
+    branch = str(params.get("branch", "")).strip()
+    if branch:
+        unmapped.append(Unmapped("branch", branch, _BRANCH_REASON))
     return filters, unmapped
 
 
@@ -350,33 +381,48 @@ def _translate_catalogue(params):
 
 
 def _translate_classes(params):
+    from vs_exports.catalogue import Unmapped
+
     filters, unmapped = _common(params)
     # The screen filters by level ID; the dataset filters on the level's NAME,
     # and this translator has no tenant to resolve one into the other. Reported
     # rather than guessed.
-    if str(params.get("level", "")).strip():
-        unmapped.append("level")
+    level = str(params.get("level", "")).strip()
+    if level:
+        unmapped.append(Unmapped(
+            "level", level,
+            "The export cannot filter by the level you picked, so the file "
+            "covers every level.",
+        ))
     return filters, unmapped
 
 
 def _translate_subjects(params):
     filters, unmapped = _common(params)
-    core = _flag(params, "is_core")
-    if core is not None:
-        filters.append({"id": "is_core", "value": core})
+    _flag(params, "is_core", filters, unmapped)
     return filters, unmapped
 
 
 def _translate_sessions(params):
+    from vs_exports.catalogue import Unmapped
+
     filters, unmapped = [], []
     search = str(params.get("search", "")).strip()
     if search:
         filters.append({"id": "search", "value": search})
-    status = str(params.get("status", "")).strip().upper()
-    if status and status != "ALL":
-        filters.append({"id": "status", "value": [status]})
-    if str(params.get("branch", "")).strip():
-        unmapped.append("branch")
+    status = str(params.get("status", "")).strip()
+    if status and status.upper() not in ("ALL", "ANY"):
+        if status.upper() in _SESSION_STATUS:
+            filters.append({"id": "status", "value": [status.upper()]})
+        else:
+            unmapped.append(Unmapped(
+                "status", status,
+                f"“{status}” is not a session status the export knows, so the "
+                f"file is not limited by it.",
+            ))
+    branch = str(params.get("branch", "")).strip()
+    if branch:
+        unmapped.append(Unmapped("branch", branch, _BRANCH_REASON))
     return filters, unmapped
 
 

@@ -1,25 +1,35 @@
-"""Seed vs_exports permission keys and grant them to platform roles (idempotent).
+"""Seed vs_exports permission keys and grant them (idempotent).
 
 Registers every ``exports.<resource>.<action>`` key enforced by the Export Centre views
-into the RBAC Permission registry.
+into the RBAC Permission registry, then grants them to the platform roles AND to the
+school prebuilt roles.
 
-Two keys are deliberately *not* granted with the rest:
+**Schools export their own data.** The Export Centre was platform-only until now,
+which meant a school administrator pressing Export on their own class list was
+refused by RBAC with nothing they could act on. It is their school and their
+records; what governs the answer is the dataset's own permission - every dataset
+declares one, and ``may_export_dataset`` checks it - so a school user can only
+ever export what they can already read on screen.
 
-``exports.sensitive_field.export``
-    Including a restricted column is a separate decision from being allowed to export
-    at all. Granting it by default would make "sensitive" mean nothing.
+``exports.sensitive_field.export`` follows the same rule rather than an exception
+to it. It IS granted to school_admin, because a school administrator who may read
+a restricted column may take it with them; it is not granted to branch_admin or
+teacher, and it stays CRITICAL, so including a restricted column remains a
+separate decision from being allowed to export at all.
 
-``exports.activity.view``
-    Reading other people's export activity is an administrator's power, and the read is
-    itself audited. Only the super-admin role gets it.
+``exports.activity.view`` is still nobody's but the super-admin's. Reading other
+people's export activity is an administrator's power over other administrators,
+and the read is itself audited.
 
 Run order::
 
     python manage.py seed_actions
+    python manage.py seed_prebuilt_role_templates
     python manage.py create_superuser
     python manage.py seed_exports_permissions
 
-Safe to re-run - all operations are idempotent.
+Safe to re-run - all operations are idempotent, and ``get_or_create`` never flips
+an existing explicit deny.
 """
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -36,6 +46,41 @@ _RESTRICTED = {"SENSITIVE", "CRITICAL"}
 
 #: Keys only the super-admin role receives - see the module docstring.
 SUPER_ADMIN_ONLY = {"exports.sensitive_field.export", "exports.activity.view"}
+
+#: Prebuilt school roles the defaults attach to, and what each one gets.
+#:
+#: A branch admin and a teacher may export what they can see and take the file;
+#: they may not save, share or schedule an export for other people, and they may
+#: not include a restricted column. Those are school_admin's.
+ROLE_SCHOOL_ADMIN = "school_admin"
+ROLE_BRANCH_ADMIN = "branch_admin"
+ROLE_TEACHER = "teacher"
+
+_EXPORT_AND_TAKE = (
+    "exports.catalogue.view",
+    "exports.run.view",
+    "exports.run.create",
+    "exports.run.cancel",
+    "exports.file.download",
+)
+
+SCHOOL_ROLE_DEFAULTS: dict[str, tuple[str, ...]] = {
+    ROLE_SCHOOL_ADMIN: _EXPORT_AND_TAKE + (
+        "exports.definition.view",
+        "exports.definition.create",
+        "exports.definition.update",
+        "exports.definition.delete",
+        "exports.definition.share",
+        "exports.schedule.view",
+        "exports.schedule.create",
+        "exports.schedule.manage",
+        # The whole point of the sensitivity gate: it is held separately, by the
+        # one school role trusted with restricted columns.
+        "exports.sensitive_field.export",
+    ),
+    ROLE_BRANCH_ADMIN: _EXPORT_AND_TAKE,
+    ROLE_TEACHER: _EXPORT_AND_TAKE,
+}
 
 # (resource_name, resource_label, [(action, sensitivity), ...])
 EXPORTS_RESOURCES = [
@@ -63,6 +108,8 @@ class Command(BaseCommand):
             PermissionAction,
             PermissionModule,
             PermissionResource,
+            PrebuiltRolePermission,
+            PrebuiltRoleTemplate,
             TenantRolePermission,
             TenantRoleTemplate,
             PermissionScope,
@@ -159,7 +206,72 @@ class Command(BaseCommand):
                     else f"  {role_id}: all keys already assigned."
                 )
 
+        # ── School roles ──────────────────────────────────────────────────────
+        # Attached to the PREBUILT templates (so every school provisioned from
+        # now on has them) and backfilled into the tenant templates already
+        # provisioned from them (so schools that onboarded before this get them
+        # too). A school that onboarded last month would otherwise have an
+        # Export button its role could never satisfy.
+        self.stdout.write(self.style.MIGRATE_HEADING(
+            "\n  Granting the Export Centre to school roles...\n"
+        ))
+        self._grant_school_roles(
+            PrebuiltRolePermission, PrebuiltRoleTemplate,
+            TenantRolePermission, TenantRoleTemplate,
+        )
+
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_perms} new permission(s), {len(all_perms)} total "
             f"'{MODULE_NAME}' keys registered.\n"
         ))
+
+    def _grant_school_roles(
+        self, PrebuiltRolePermission, PrebuiltRoleTemplate,
+        TenantRolePermission, TenantRoleTemplate,
+    ):
+        import re
+
+        for role_key, keys in SCHOOL_ROLE_DEFAULTS.items():
+            prebuilt = PrebuiltRoleTemplate.objects.filter(key=role_key).first()
+            if prebuilt is None:
+                self.stdout.write(self.style.WARNING(
+                    f"  ⚠  Prebuilt role '{role_key}' not found - run "
+                    f"seed_prebuilt_role_templates first. Skipping its defaults."
+                ))
+                continue
+            attached = 0
+            for key in keys:
+                _, created = PrebuiltRolePermission.objects.get_or_create(
+                    prebuilt_role=prebuilt, permission_id=key,
+                )
+                attached += 1 if created else 0
+            self.stdout.write(
+                f"  {role_key}: +{attached} default(s) ({len(keys)} total)."
+            )
+
+        # A tenant role maps back to its prebuilt by its native key:
+        # key=<prebuilt.key> or key=<prebuilt.key>-<branch pk>.
+        native = re.compile(
+            r"^(%s)(?:-\d+)?$"
+            % "|".join(re.escape(k) for k in SCHOOL_ROLE_DEFAULTS)
+        )
+        backfilled = roles_seen = 0
+        for role in TenantRoleTemplate.objects.filter(
+            tenant__kind="SCHOOL", is_system_role=True,
+        ).only("id", "key"):
+            match = native.match(role.key)
+            if not match:
+                continue
+            roles_seen += 1
+            for key in SCHOOL_ROLE_DEFAULTS[match.group(1)]:
+                # granted=True only in `defaults`: an existing row - grant OR an
+                # administrator's explicit deny - is left exactly as it is.
+                _, created = TenantRolePermission.objects.get_or_create(
+                    role_id=role.pk, permission_id=key,
+                    defaults={"granted": True, "granted_by": None},
+                )
+                backfilled += 1 if created else 0
+        self.stdout.write(
+            f"  Backfilled {backfilled} grant(s) across {roles_seen} "
+            f"existing school role template(s)."
+        )
