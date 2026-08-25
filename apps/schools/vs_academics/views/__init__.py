@@ -15,3 +15,13 @@ from .structure import (  # noqa: F401
     ProgramDetailView,
     ProgramListCreateView,
 )
+from .classes import (  # noqa: F401
+    ClassArchiveView,
+    ClassDetailView,
+    ClassListCreateView,
+    ClassRestoreView,
+    GenerateArmsView,
+    SubjectDetailView,
+    SubjectListCreateView,
+    SubjectOfferingsView,
+)

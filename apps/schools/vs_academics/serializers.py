@@ -20,8 +20,11 @@ from .models import (
     Department,
     Level,
     Program,
+    SchoolClass,
     SessionBranch,
     SessionStatus,
+    Subject,
+    SubjectOffering,
 )
 from .services.scoping import branch_dimension_applies
 
@@ -275,3 +278,136 @@ class BulkLevelSerializer(serializers.Serializer):
         child=serializers.CharField(max_length=60), allow_empty=False,
     )
     branch = serializers.IntegerField(required=False, allow_null=True)
+
+
+# ── Classes ────────────────────────────────────────────────────────────────
+
+class SchoolClassSerializer(_ScopedSerializer):
+    level_name = serializers.CharField(source="level.name", read_only=True)
+    subject_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SchoolClass
+        fields = [
+            "id", "name", "code", "arm", "capacity", "is_active",
+            "level", "level_name",
+            "branch", "branch_name", "scope_label", "subject_count",
+        ]
+
+    def get_subject_count(self, obj) -> int:
+        """How many subjects are taught here.
+
+        Derived from the offerings at this class's level, so it is a real
+        figure for this class rather than the school's subject total wearing a
+        class's name.
+        """
+        return getattr(obj, "subject_count_annotated", 0)
+
+
+class SchoolClassWriteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SchoolClass
+        fields = [
+            "id", "name", "code", "arm", "capacity", "level", "branch",
+            "is_active",
+        ]
+        extra_kwargs = {
+            "code": {"required": False, "allow_blank": True},
+            "arm": {"required": False, "allow_blank": True},
+            "capacity": {"required": False, "allow_null": True},
+            "branch": {"required": False, "allow_null": True},
+        }
+
+
+class GenerateArmsSerializer(serializers.Serializer):
+    """One class per arm, for a level: JSS1 A, JSS1 B, JSS1 C."""
+
+    level = serializers.IntegerField()
+    arms = serializers.ListField(
+        child=serializers.CharField(max_length=30), allow_empty=False,
+    )
+    branch = serializers.IntegerField(required=False, allow_null=True)
+
+
+# ── Subjects ───────────────────────────────────────────────────────────────
+
+class SubjectOfferingSerializer(serializers.ModelSerializer):
+    level_name = serializers.CharField(source="level.name", read_only=True)
+
+    class Meta:
+        model = SubjectOffering
+        fields = ["id", "level", "level_name", "is_core"]
+
+
+class SubjectSerializer(_ScopedSerializer):
+    department_name = serializers.CharField(
+        source="department.name", read_only=True, default=None,
+    )
+    offerings = serializers.SerializerMethodField()
+    level_count = serializers.SerializerMethodField()
+    offered_label = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Subject
+        fields = [
+            "id", "name", "code", "description", "is_core", "is_active",
+            "department", "department_name",
+            "branch", "branch_name", "scope_label",
+            "offerings", "level_count", "offered_label",
+        ]
+
+    def _offerings(self, obj):
+        return getattr(obj, "visible_offerings", None) or list(
+            obj.offerings.select_related("level").all()
+        )
+
+    def get_offerings(self, obj):
+        return SubjectOfferingSerializer(self._offerings(obj), many=True).data
+
+    def get_level_count(self, obj) -> int:
+        return len(self._offerings(obj))
+
+    def get_offered_label(self, obj) -> str:
+        """A run of levels collapsed into something readable.
+
+        Eight level names on a card is not information, it is a wall. Two or
+        fewer are named; a longer run is given as its ends.
+        """
+        names = [o.level.name for o in self._offerings(obj)]
+        if not names:
+            return "Not set"
+        if len(names) <= 2:
+            return ", ".join(names)
+        return f"{names[0]}-{names[-1]}"
+
+
+class SubjectWriteSerializer(serializers.ModelSerializer):
+    level_ids = serializers.ListField(
+        child=serializers.IntegerField(), required=False, allow_empty=True,
+        help_text="The levels this subject is offered at.",
+    )
+
+    class Meta:
+        model = Subject
+        fields = [
+            "id", "name", "code", "description", "is_core", "department",
+            "branch", "is_active", "level_ids",
+        ]
+        extra_kwargs = {
+            "code": {"required": False, "allow_blank": True},
+            "department": {"required": False, "allow_null": True},
+            "branch": {"required": False, "allow_null": True},
+        }
+
+
+class OfferingsWriteSerializer(serializers.Serializer):
+    """The complete set of levels a subject is offered at.
+
+    A replacement rather than a diff, so a client never has to work out what
+    changed. One foreign level id fails the whole call and writes nothing,
+    including the valid ids in the same request.
+    """
+
+    level_ids = serializers.ListField(
+        child=serializers.IntegerField(), allow_empty=True,
+    )

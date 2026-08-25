@@ -1,10 +1,15 @@
 from django.urls import path
 
 from .views import (
+    ClassArchiveView,
+    ClassDetailView,
+    ClassListCreateView,
+    ClassRestoreView,
     DepartmentDetailView,
     DepartmentListCreateView,
     LevelBulkCreateView,
     LevelDetailView,
+    GenerateArmsView,
     LevelListCreateView,
     ProgramDetailView,
     ProgramListCreateView,
@@ -12,6 +17,9 @@ from .views import (
     SessionArchiveView,
     SessionDetailView,
     SessionListCreateView,
+    SubjectDetailView,
+    SubjectListCreateView,
+    SubjectOfferingsView,
     TermDetailView,
     TermListCreateView,
 )
@@ -34,4 +42,14 @@ urlpatterns = [
     path("programs/<int:pk>/levels/", LevelListCreateView.as_view(), name="academics-level-list"),
     path("programs/<int:pk>/levels/bulk/", LevelBulkCreateView.as_view(), name="academics-level-bulk"),
     path("levels/<int:pk>/", LevelDetailView.as_view(), name="academics-level-detail"),
+
+    path("classes/", ClassListCreateView.as_view(), name="academics-class-list"),
+    path("classes/generate-arms/", GenerateArmsView.as_view(), name="academics-class-arms"),
+    path("classes/<int:pk>/", ClassDetailView.as_view(), name="academics-class-detail"),
+    path("classes/<int:pk>/archive/", ClassArchiveView.as_view(), name="academics-class-archive"),
+    path("classes/<int:pk>/restore/", ClassRestoreView.as_view(), name="academics-class-restore"),
+
+    path("subjects/", SubjectListCreateView.as_view(), name="academics-subject-list"),
+    path("subjects/<int:pk>/", SubjectDetailView.as_view(), name="academics-subject-detail"),
+    path("subjects/<int:pk>/offerings/", SubjectOfferingsView.as_view(), name="academics-subject-offerings"),
 ]
