@@ -10,6 +10,10 @@ two shapes this module has to serve cannot both exist in one tenant:
     st-monicas          One branch. Every row shared, which is what a
                         single-branch school writes, and the case where the
                         whole branch dimension must recede from the responses.
+    holy-cross          Two branches AND LIVE. The other two are still
+                        onboarding, so neither can reach anything gated on a
+                        live tenant - the Export Centre most of all. This is the
+                        one to drive the whole module against.
 
 Everything is driven through the real services - ``activate_session``,
 ``set_branches``, the branch scope helpers - rather than by writing rows that
@@ -48,7 +52,7 @@ from schools.vs_academics.services.sessions import (
     validate_terms,
 )
 
-CAST = ("brightfield-lekki", "st-monicas")
+CAST = ("brightfield-lekki", "st-monicas", "holy-cross")
 
 #: Three years, so the list has an archived, a live and a draft one to show.
 YEARS = (

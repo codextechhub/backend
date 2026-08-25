@@ -41,7 +41,11 @@ from ...dev.fixtures import DEFAULT_PASSWORD, build_school
 CAST = {
     "brightfield-lekki": ("Brightfield Schools", ("Adaeze", "Okonkwo"), True),
     "st-monicas": ("St. Monica's Academy", ("Ikenna", "Nwachukwu"), False),
-    "holy-cross": ("Holy Cross College", ("Ngozi", "Eze"), False),
+    # Two branches AND live, which no other cast member is: brightfield runs
+    # branches but is still onboarding, and lagoon-view is live with branches
+    # but has no academic structure. Holy Cross is where the whole academics
+    # module can be exercised end to end, exports included.
+    "holy-cross": ("Holy Cross College", ("Ngozi", "Eze"), True),
     "grace-fields": ("Grace Fields Academy", ("Tunde", "Bakare"), False),
     "crescent-model": ("Crescent Model School", ("Halima", "Yusuf"), False),
     "lagoon-view": ("Lagoon View Academy", ("Emeka", "Obi"), True),
