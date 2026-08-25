@@ -49,6 +49,17 @@ class UnknownApproverSourceError(WorkflowError):
     default_message = "This stage names an approver source the engine cannot resolve."
 
 
+# Raised when the submitter does not belong to the tenant the document approves under.
+# 404 rather than 403 deliberately: the caller is asking about a document in a tenant
+# that is not theirs, and confirming that it exists is itself the disclosure. The
+# module submit endpoints answer the same way for an unknown id, so the two cases are
+# indistinguishable from outside.
+class CrossTenantDocumentError(WorkflowError):
+    error_code = "DOCUMENT_NOT_FOUND"
+    default_message = "The referenced document was not found."
+    http_status = 404
+
+
 # Raised when no document handler is registered for the submitted document type.
 class UnknownDocumentTypeError(WorkflowError):
     error_code = "UNKNOWN_DOCUMENT_TYPE"

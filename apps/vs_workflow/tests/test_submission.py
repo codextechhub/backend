@@ -1,11 +1,18 @@
-"""Tests for submit_for_approval - focusing on template cascade lookup."""
+"""Tests for submit_for_approval - template cascade lookup and tenant scope."""
+import itertools
+from io import StringIO
 from unittest.mock import patch, MagicMock
 
 from django.test import TestCase
 
-from vs_workflow.exceptions import InvalidInstanceStateError, TemplateNotFoundError
+from vs_workflow.exceptions import (
+    CrossTenantDocumentError, InvalidInstanceStateError, TemplateNotFoundError,
+)
 from vs_workflow.services.resolution import document_scope, resolve_template
 from vs_workflow.services.submission import submit_for_approval
+
+
+_counter = itertools.count(1)
 
 
 # ── Minimal fake document ─────────────────────────────────────────────────────
@@ -176,3 +183,152 @@ class PlatformUserCreationTemplateTests(TestCase):
         self.assertEqual(stage.approver_role_key, "xvs_platform_admin")
         self.assertEqual(stage.approver_scope, "PLATFORM")
         self.assertTrue(stage.skip_if_no_approvers)
+
+class CrossTenantSubmissionTests(TestCase):
+    """A submitter may only file into their own tenant.
+
+    ``document_scope`` answers from the document, so a caller that hands over a
+    document it never scoped to the requester would create the instance inside
+    the *document's* tenant. That is what the removed generic
+    ``POST /v1/workflow/instances/`` did: it loaded any content type by pk with
+    the model's ordinary manager. The endpoint is gone, but the guard lives in
+    the service because every module's submit endpoint passes through it.
+    """
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import codex_tenant, make_branch, make_school
+
+        self.bright_star = make_school(slug="bright-star-x", name="Bright Star").tenant
+        self.greenfield = make_school(slug="greenfield-x", name="Greenfield").tenant
+        make_branch(self.bright_star)
+        make_branch(self.greenfield)
+        self.platform = codex_tenant()
+
+    def _doc(self, tenant):
+        """A finance-shaped document: no tenant of its own, scoped via its entity."""
+        class _EntityDoc:
+            workflow_document_type = "TEST_DOC"
+            pk = "docpk01"
+
+        doc = _EntityDoc()
+        doc.entity = MagicMock()
+        doc.entity.tenant = tenant
+        return doc
+
+    def _user(self, tenant, **kwargs):
+        from django.contrib.auth import get_user_model
+
+        return get_user_model().objects.create_user(
+            email=f"u{next(_counter)}@test.com", password="pw", status="ACTIVE",
+            first_name="Test", last_name="User", tenant=tenant, **kwargs)
+
+    def test_another_tenant_s_document_is_refused(self):
+        """Greenfield's bursar cannot submit Bright Star's document."""
+        from vs_workflow.models import WorkflowInstance
+
+        with patch("vs_workflow.services.submission.get_handler") as get_handler:
+            get_handler.return_value.resolve_default_template_code.return_value = "standard"
+            get_handler.return_value.validate_document.return_value = None
+            with self.assertRaises(CrossTenantDocumentError):
+                submit_for_approval(self._doc(self.bright_star),
+                                    self._user(self.greenfield))
+        self.assertEqual(WorkflowInstance.objects.count(), 0)
+
+    def test_the_refusal_runs_before_the_document_handler_reacts(self):
+        """Nothing may touch the other tenant's record, not even on_submitted.
+
+        The payments handler stamps ``metadata["approval_status"]`` there, so a
+        guard that ran after it would still leave another school's payout batch
+        marked as awaiting approval.
+        """
+        with patch("vs_workflow.services.submission.get_handler") as get_handler:
+            handler = get_handler.return_value
+            handler.resolve_default_template_code.return_value = "standard"
+            handler.validate_document.return_value = None
+            with self.assertRaises(CrossTenantDocumentError):
+                submit_for_approval(self._doc(self.bright_star),
+                                    self._user(self.greenfield))
+        handler.on_submitted.assert_not_called()
+
+    def test_the_refusal_does_not_confirm_the_document_exists(self):
+        """404, not 403: a 403 on somebody else's row is itself the disclosure."""
+        self.assertEqual(CrossTenantDocumentError.http_status, 404)
+        self.assertEqual(CrossTenantDocumentError.error_code, "DOCUMENT_NOT_FOUND")
+
+    def test_the_owning_tenant_still_submits(self):
+        """The guard refuses the foreign case only; it is not a blanket refusal.
+
+        Proven by reaching TemplateNotFoundError, which is raised on the line
+        immediately after the guard.
+        """
+        with patch("vs_workflow.services.submission.get_handler") as get_handler:
+            get_handler.return_value.resolve_default_template_code.return_value = "standard"
+            get_handler.return_value.validate_document.return_value = None
+            with self.assertRaises(TemplateNotFoundError):
+                submit_for_approval(self._doc(self.bright_star),
+                                    self._user(self.bright_star))
+
+    def test_a_platform_user_creation_still_submits(self):
+        """The one flow whose document is not entity-scoped must keep working.
+
+        A pending CX staff account carries a real ``tenant`` (the codex platform
+        tenant), and the inviter is in that same tenant, so the guard passes.
+        """
+        with patch("vs_workflow.services.submission.get_handler") as get_handler:
+            get_handler.return_value.resolve_default_template_code.return_value = "no-such"
+            get_handler.return_value.validate_document.return_value = None
+            with self.assertRaises(TemplateNotFoundError):
+                submit_for_approval(self._doc(self.platform),
+                                    self._user(self.platform))
+
+    def test_a_document_whose_tenant_cannot_be_established_is_refused(self):
+        """No registered document type resolves to a null tenant today.
+
+        If one is ever added, the engine must refuse rather than resolve it
+        platform-wide, where a tenant template could capture it.
+        """
+        with patch("vs_workflow.services.submission.get_handler") as get_handler:
+            get_handler.return_value.resolve_default_template_code.return_value = "standard"
+            get_handler.return_value.validate_document.return_value = None
+            with self.assertRaises(CrossTenantDocumentError):
+                submit_for_approval(_Doc(), self._user(self.greenfield))
+
+    def test_platform_staff_may_still_submit_an_unscoped_document(self):
+        """The escape hatch mirrors ``release.may_release``: platform staff only."""
+        with patch("vs_workflow.services.submission.get_handler") as get_handler:
+            get_handler.return_value.resolve_default_template_code.return_value = "no-such"
+            get_handler.return_value.validate_document.return_value = None
+            with self.assertRaises(TemplateNotFoundError):
+                submit_for_approval(
+                    _Doc(), self._user(self.platform, is_superuser=True))
+
+
+class RetiredSubmitPermissionTests(TestCase):
+    """``workflow.instance.submit`` gated one endpoint and that endpoint is gone.
+
+    A key that grants nothing is worse than no key: it reads on a role screen as
+    though it confers the ability to submit, so an administrator who grants it
+    believes they have given something. Submission is gated per module
+    (``finance.creditnote.submit``, ``procurement.requisition.submit``), because
+    only the owning module can say which documents a caller may address.
+    """
+
+    KEY = "workflow.instance.submit"
+
+    def test_the_key_is_not_present_after_migrations(self):
+        from vs_rbac.models import Permission
+
+        self.assertFalse(Permission.objects.filter(key=self.KEY).exists())
+
+    def test_reseeding_does_not_bring_it_back(self):
+        """The seeder is idempotent and must not recreate a retired key."""
+        from django.core.management import call_command
+        from vs_rbac.models import Permission
+
+        # The seeder skips any action row that does not exist yet, so the
+        # counterweight below would pass vacuously without this.
+        call_command("seed_actions", verbosity=0, stdout=StringIO())
+        call_command("seed_workflow_permissions", verbosity=0, stdout=StringIO())
+        self.assertFalse(Permission.objects.filter(key=self.KEY).exists())
+        # The counterweight: the keys that do gate something are still seeded.
+        self.assertTrue(Permission.objects.filter(key="workflow.instance.view").exists())

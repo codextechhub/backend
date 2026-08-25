@@ -6,9 +6,10 @@ terminates. The blueprint being walked is `workflow_templates`; who is allowed
 to vote at each stop is `workflow_approvers`; the votes themselves are
 `workflow_actions_lifecycle`.
 
-This slice has no endpoints of its own. It is reached through
-`POST /v1/workflow/instances/` and through every domain module that calls
-`submit_for_approval` directly.
+This slice has no endpoints of its own. It is reached through every domain
+module that calls `submit_for_approval` directly. There is no generic submit
+endpoint: `POST /v1/workflow/instances/` existed until it was removed, because
+the engine cannot know which rows a caller may see (§8).
 
 ---
 
@@ -88,7 +89,6 @@ newest first, indexed on `(instance, occurred_at)` and `(instance, event_type)`.
 
 | Caller | Path |
 |---|---|
-| `POST /v1/workflow/instances/` | `views.py:504-526` → `submit_for_approval` |
 | Domain modules | `vs_workflow.services.submission.submit_for_approval` directly |
 | Read-side gates | `vs_workflow.services.resolution.template_requires_approval` |
 
@@ -331,10 +331,12 @@ Had the same journal been for ₦400,000, hop 2 would have activated
 
 Full evidence in **`error/workflow/workflow_code_issues.md`**.
 
-- **`POST /v1/workflow/instances/` loads the document by content type and pk with
-  no tenant scoping** (`views.py:504-514`), and `document_scope` then files the
-  instance under the *document's* tenant - so a submitter can push another
-  tenant's document into approval and become its requester
+- ~~**`POST /v1/workflow/instances/` loads the document by content type and pk
+  with no tenant scoping**~~ **- fixed.** The endpoint is removed (a generic
+  submitter cannot answer "which rows may this caller see"), and
+  `submit_for_approval` now calls `_assert_own_tenant` on the scope
+  `document_scope` returns, before the handler's `on_submitted` can touch the
+  record. Every module submits through its own scoped queryset
   (`workflow_code_issues.md` §1).
 - **A route condition can read any attribute reachable from the document**, and
   whatever it finds is stringified into the `ROUTE_EVALUATED` audit trace, which
@@ -432,8 +434,12 @@ where it matters (`views.py:603-607`, `677-682`).
 
 What the suite does not cover:
 
-1. **`POST /v1/workflow/instances/`.** Submission is tested only at the service
-   layer, so nothing exercises the document lookup that §8's first item is about.
+1. ~~**`POST /v1/workflow/instances/`.**~~ **- closed.** The endpoint is gone,
+   and its absence is asserted through the router
+   (`tests/test_tenant_scoping.py::InstanceScopingTests`). Cross-tenant refusal
+   is covered at the service layer
+   (`tests/test_submission.py::CrossTenantSubmissionTests`) and end to end on a
+   real payout batch (`vs_payments/tests.py::PayoutBatchApprovalTests`).
 2. **`template_requires_approval`** - the read-only twin the finance direct-post
    gate depends on has no test in this module: not the conditional-ladder case it
    was written for, not the fail-closed branch, not the no-stages branch.

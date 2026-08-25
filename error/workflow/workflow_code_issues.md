@@ -30,7 +30,7 @@ code.
 
 | # | Issue | Severity |
 |---|---|---|
-| 1 | Submitting a document for approval never checks it belongs to your tenant | **Critical** |
+| 1 | Submitting a document for approval never checks it belongs to your tenant | ~~**Critical**~~ **FIXED** |
 | 2 | The maker-checker bypass has no test in this module at all | **High** |
 | 3 | A route condition can read any attribute reachable from the document, and the value lands in the audit trail | **High** |
 | 4 | One typo in `notification_events` silences a template's entire notification surface | **High** |
@@ -51,7 +51,9 @@ code.
 
 ## 1. Submitting a document for approval never checks it belongs to your tenant
 
-**Critical.**
+**Critical.** **Fixed** - see *What was done* at the end of this section. The
+defect is kept in full because the shape of it is the reason the endpoint no
+longer exists.
 
 ### The defect
 
@@ -134,17 +136,42 @@ document - and `document_scope` reading the tenant off the document is correct
 for them. The REST route was added on top and inherited the assumption without
 inheriting the check.
 
-### The fix
+### What was done
 
-1. **Scope the lookup, then verify the scope.** After loading the document,
-   compare `document_scope(document)[0]` with `request.tenant` and answer the
-   same `404 DOCUMENT_NOT_FOUND` when they differ - the response already exists,
-   so a cross-tenant id becomes indistinguishable from a missing one.
-2. **Have the base handler assert it too**, so a service caller cannot skip it
-   either: `BaseWorkflowHandler.validate_document` is the natural home for
-   "requested_by must belong to the document's tenant".
-3. Add the test: a caller in tenant A submitting tenant B's document gets a
-   `404`, and no instance is written.
+The endpoint was **removed** rather than scoped, and the check went into the
+service.
+
+1. **`WorkflowInstanceViewSet.create` is gone**, with
+   `SubmitForApprovalSerializer` and the `ContentType` lookup. The collection is
+   read-only and the router asserts it
+   (`tests/test_tenant_scoping.py::InstanceScopingTests::test_there_is_no_generic_submit_endpoint`).
+   Scoping it was possible but not worth it: "which rows may this caller see" is
+   a question only the owning module can answer, and every module already
+   answers it in its own submit endpoint over its own queryset
+   (`vs_procurement/views/requisitions.py:387`, `vs_finance/views_ar.py`,
+   `vs_payments/views.py`). Nothing called the generic route - no test, and
+   neither `console-fe` nor `school-fe` referenced it.
+2. **`submit_for_approval` now calls `_assert_own_tenant`**
+   (`services/submission.py`) on the scope `document_scope` returns, immediately
+   before template resolution and therefore before `WorkflowInstance` is
+   created, before the audit row, and before `handler.on_submitted` can touch
+   the record. It raises `CrossTenantDocumentError`, which carries
+   `DOCUMENT_NOT_FOUND` and `http_status = 404` so a cross-tenant id stays
+   indistinguishable from a missing one.
+3. **Not** in `BaseWorkflowHandler.validate_document`, as originally proposed:
+   every handler overrides that method and none of them calls `super()`, so the
+   guard would have been one forgotten line away from absent in each new module.
+   The service is the only place all four submit paths must pass through.
+4. Platform staff are exempt only where the document's tenant cannot be
+   established at all (no registered document type resolves that way today). A
+   super admin submitting another *tenant's* document is refused, which is the
+   `?tenant=codex` case above.
+
+Tests: `tests/test_submission.py::CrossTenantSubmissionTests` (refusal, the
+handler never firing, the owning tenant still submitting, platform user
+creation still submitting) and `vs_payments/tests.py::PayoutBatchApprovalTests`
+(`test_another_school_cannot_submit_this_batch` and its owning-school control),
+which run the real `PayoutBatch` through the real ladder.
 
 ---
 
@@ -861,9 +888,10 @@ genuinely strong: `resolve_approvers` is exercised across all four sources with
 containment, delegation and override cases, and `test_tenant_scoping.py` walks
 every read surface from a second tenant. What that leaves:
 
-1. **No test posts to `POST /v1/workflow/instances/`.** Submission is tested at
-   the service layer only, which is exactly where §1's missing check would have
-   been caught.
+1. ~~**No test posts to `POST /v1/workflow/instances/`.**~~ **Closed with §1.**
+   The endpoint is removed and its absence is asserted through the router;
+   cross-tenant refusal is now covered at the service layer, which is where the
+   check lives and where every module's submit path passes through it.
 2. **No test touches `services/release.py`** - §2, and the reason it is graded
    High on its own.
 3. **No test asserts the content of an audit `context`**, so §3's traces are

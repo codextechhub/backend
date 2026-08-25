@@ -2,7 +2,6 @@
 
 from collections import defaultdict
 
-from django.contrib.contenttypes.models import ContentType
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status, mixins
@@ -24,7 +23,7 @@ from vs_rbac.permissions import user_has_rbac_permission
 from vs_workflow.exceptions import TemplateInvalidError
 from vs_workflow.constants import (
     PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW,
-    PERM_INSTANCE_SUBMIT, PERM_INSTANCE_VIEW, PERM_INSTANCE_CANCEL,
+    PERM_INSTANCE_VIEW, PERM_INSTANCE_CANCEL,
     PERM_ACTION_REVERSE, PERM_GROUP_MANAGE, PERM_GROUP_VIEW,
     ApproverSource, GroupMemberKind, OrganogramTarget,
 )
@@ -36,7 +35,7 @@ from vs_workflow.models import (
 from vs_workflow.serializers import (
     ApprovalDelegationSerializer, ApproverPreviewRequestSerializer,
     CancelInstanceSerializer, ReverseActionSerializer,
-    StageActionWriteSerializer, SubmitForApprovalSerializer,
+    StageActionWriteSerializer,
     WorkflowApproverGroupMemberWriteSerializer, WorkflowApproverGroupSerializer,
     WorkflowStageApproverOverrideSerializer,
     WorkflowInstanceDetailSerializer, WorkflowInstanceListSerializer,
@@ -46,7 +45,6 @@ from vs_workflow.services import actions as actions_svc
 from vs_workflow.services import comparison as comparison_svc
 from vs_workflow.services import my_queue as my_queue_svc
 from vs_workflow.services import release as release_svc
-from vs_workflow.services import submission as submission_svc
 from vs_workflow.services import templates as templates_svc
 from vs_workflow.services.approvers import (
     describe_group_members, resolve_approvers, resolve_group_users,
@@ -490,11 +488,29 @@ class WorkflowTemplateViewSet(
 class WorkflowInstanceViewSet(
     TenantScopedMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, GenericViewSet,
 ):
-    """docstring-name: Workflow instances"""
+    """Read and act on approval instances. Read-only as a collection, by design.
+
+    There is deliberately no generic ``POST /instances/``. One used to exist,
+    taking a content type id and an object id and loading the document with its
+    ordinary manager - which meant it could load any tenant's row, and
+    ``document_scope`` then filed the instance under the *document's* tenant.
+    A bursar at one school could submit another school's payout batch, read the
+    amount and the approver names back out of the 201, and leave the batch
+    marked pending approval.
+
+    A generic submitter cannot be fixed cheaply, because "which rows may this
+    caller see" is a question only the owning module can answer. So submission
+    stays where that answer already lives: each module exposes its own submit
+    endpoint over its own scoped queryset (see
+    ``vs_procurement.views.requisitions``, ``vs_finance.views_ar``,
+    ``vs_payments.views``), and they all funnel into
+    ``services.submission.submit_for_approval``, which refuses to file into a
+    tenant the submitter does not belong to.
+
+    docstring-name: Workflow instances
+    """
     def get_permissions(self):
-        if self.action == "create":
-            self.rbac_permission = PERM_INSTANCE_SUBMIT
-        elif self.action == "cancel":
+        if self.action == "cancel":
             self.rbac_permission = PERM_INSTANCE_CANCEL
         elif self.action in ("list", "retrieve"):
             self.rbac_permission = PERM_INSTANCE_VIEW
@@ -521,30 +537,6 @@ class WorkflowInstanceViewSet(
         if p.get("requested_by"):  qs = qs.filter(requested_by_id=p["requested_by"])
         if p.get("template_code"): qs = qs.filter(template__code=p["template_code"])
         return qs
-
-    def create(self, request):
-        p = SubmitForApprovalSerializer(data=request.data)
-        p.is_valid(raise_exception=True)
-        d = p.validated_data
-        try:
-            ct = ContentType.objects.get(pk=d["content_type_id"])
-            document = ct.model_class().objects.get(pk=d["object_id"])
-        except Exception:
-            return Response({
-                "success": False,
-                "message": "The referenced document was not found.",
-                "error": {"code": "DOCUMENT_NOT_FOUND", "detail": {}},
-            }, status=status.HTTP_404_NOT_FOUND)
-        # Submission service validates the document handler, template, and initial routing.
-        instance = submission_svc.submit_for_approval(
-            document=document, requested_by=request.user,
-            template_code=d.get("template_code") or None,
-        )
-        return Response(
-            WorkflowInstanceDetailSerializer(instance).data
-            | {"approval": release_svc.approval_block(instance)},
-            status=status.HTTP_201_CREATED,
-        )
 
     @action(detail=True, methods=["post"])
     def withdraw(self, request, pk=None):

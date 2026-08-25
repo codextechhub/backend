@@ -306,12 +306,6 @@ class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
         return summary
 
 
-class SubmitForApprovalSerializer(serializers.Serializer):
-    content_type_id = serializers.IntegerField()
-    object_id       = serializers.CharField(max_length=64)
-    template_code   = serializers.CharField(required=False, allow_blank=True, default="")
-
-
 class StageActionWriteSerializer(serializers.Serializer):
     action  = serializers.ChoiceField(choices=["APPROVED", "REJECTED", "RETURNED"])
     comment = serializers.CharField(required=False, allow_blank=True, default="")

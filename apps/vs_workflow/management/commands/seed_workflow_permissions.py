@@ -25,7 +25,10 @@ WORKFLOW_RESOURCES = [
         "instance",
         "Workflow approval instances",
         [
-            ("submit", "Submit a document for workflow approval",             False),
+            # No "submit" key. Submission is not a workflow-engine surface: each
+            # module gates its own submit endpoint with its own key
+            # (finance.creditnote.submit, procurement.requisition.submit), because
+            # only the owning module can say which documents a caller may address.
             ("view",   "View workflow instances and their stage history",     False),
             ("cancel", "Cancel a workflow instance (admin override)",         True),
         ],

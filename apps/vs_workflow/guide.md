@@ -670,14 +670,27 @@ from vs_workflow.services.submission import submit_for_approval
 instance = submit_for_approval(document=leave_request, requested_by=request.user)
 ```
 
-Or via the API:
+There is deliberately no generic submit endpoint. Expose your own, over your
+own scoped queryset, the way procurement and finance do:
+
+```python
+class LeaveRequestSubmitView(APIView):
+    rbac_permission = "hr.leaverequest.submit"
+
+    def post(self, request, pk):
+        # Narrow to what this caller may address BEFORE handing it to the engine.
+        leave_request = get_object_or_404(
+            LeaveRequest.objects.filter(entity=resolve_entity(request)), pk=pk)
+        instance = submit_for_approval(document=leave_request,
+                                       requested_by=request.user)
 ```
-POST /v1/workflow/instances/
-{
-  "content_type_id": 42,
-  "object_id": "uuid-of-leave-request"
-}
-```
+
+A generic `POST /v1/workflow/instances/` taking a content type id used to exist
+and was removed: the engine cannot know which rows a caller may see, so it
+loaded the document with the model's ordinary manager and any tenant's pk
+resolved. `submit_for_approval` now refuses to file into a tenant the submitter
+does not belong to, but that is a backstop - the scoped queryset above is what
+returns a clean 404 without confirming the row exists.
 
 ---
 
@@ -697,7 +710,7 @@ All endpoints are under `/v1/workflow/`.
 
 | Method | URL | Permission | Description |
 |--------|-----|------------|-------------|
-| `GET` | `/instances/` | `workflow.instance.view` | List instances. Supports `?document_type=`, `?status=`, `?requested_by=`, `?template_code=`. |
+| `GET` | `/instances/` | `workflow.instance.view` | List instances. Supports `?document_type=`, `?status=`, `?requested_by=`, `?template_code=`. Read-only: there is no generic `POST` (see Step 5). |
 | `GET` | `/instances/{id}/` | `workflow.instance.view` | Full detail including stage history and audit log. |
 | `POST` | `/instances/` | `workflow.instance.submit` | Submit a document for approval. |
 | `POST` | `/instances/{id}/withdraw/` | Authenticated | Requester withdraws their own submission. |

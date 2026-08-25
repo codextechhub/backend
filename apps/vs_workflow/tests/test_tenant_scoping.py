@@ -172,6 +172,23 @@ class InstanceScopingTests(_TwoTenants):
         resp = _call(view, "get", self.admin, self.mine.tenant, pk=foreign.pk)
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_there_is_no_generic_submit_endpoint(self):
+        """The collection is read-only, and the router must keep it that way.
+
+        ``POST /v1/workflow/instances/`` took a content type id and an object id
+        and loaded the document with its ordinary manager, so it could load any
+        tenant's row; ``document_scope`` then filed the instance under the
+        document's tenant. Submission belongs to each module's own endpoint,
+        over its own scoped queryset. Asserted through the router rather than by
+        checking the class, because re-adding a ``create`` method is exactly the
+        regression this catches.
+        """
+        from django.urls import resolve
+
+        match = resolve("/v1/workflow/instances/")
+        self.assertNotIn("post", match.func.actions)
+        self.assertEqual(set(match.func.actions), {"get"})
+
     def test_my_submissions_excludes_other_tenants(self):
         """A user acting in one tenant sees only that tenant's own submissions."""
         self._instance(self.mine.tenant, self.admin,

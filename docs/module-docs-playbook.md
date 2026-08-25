@@ -499,16 +499,14 @@ can trace endpoints → calculations → output shapes without reading the code 
   freeze-then-repair design for parked stages, and terminating a release through
   the engine's own `advance_instance` are all right, several with comments
   recording a defect already found and closed.
-  The worst item is a hard hole: `POST /v1/workflow/instances/` loads the
-  document by content type and primary key with **no tenant filter and no
-  ownership check**, and `document_scope` then files the instance under the
-  *document's* tenant - so a holder of `workflow.instance.submit` can push
-  another tenant's draft payout batch into approval, become its requester, and
-  thereby hold both withdraw and `continue-without-approval` rights over it. On a
-  newly provisioned tenant, whose `payout-approver` role is seeded held by
-  nobody, that path parks and the bypass then dispatches the money.
-  `vs_payments.PayoutBatch` has no tenant-aware manager, so nothing stops the
-  lookup. Second: `services/release.py` - the maker-checker bypass itself - has
+  The worst item was a hard hole, now **fixed** (issues file §1): `POST
+  /v1/workflow/instances/` loaded the document by content type and primary key
+  with no tenant filter, and `document_scope` then filed the instance under the
+  *document's* tenant - so a holder of `workflow.instance.submit` could push
+  another tenant's draft payout batch into approval and become its requester.
+  The endpoint is removed and `submit_for_approval` now refuses to file into a
+  tenant the submitter does not belong to, which covers every module's submit
+  path rather than that one route. Second: `services/release.py` - the maker-checker bypass itself - has
   no test in this module at all. Third: a route condition's `field` is an
   unbounded `getattr` walk whose result is stringified into the
   `ROUTE_EVALUATED` audit trace, which the instance detail returns raw, so a

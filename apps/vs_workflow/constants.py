@@ -121,7 +121,6 @@ class OrganogramTarget(models.TextChoices):
 # RBAC keys that protect workflow template and instance operations.
 PERM_TEMPLATE_MANAGE = "workflow.template.manage"
 PERM_TEMPLATE_VIEW   = "workflow.template.view"
-PERM_INSTANCE_SUBMIT = "workflow.instance.submit"
 PERM_INSTANCE_VIEW   = "workflow.instance.view"
 PERM_INSTANCE_CANCEL = "workflow.instance.cancel"
 PERM_ACTION_REVERSE  = "workflow.action.reverse"

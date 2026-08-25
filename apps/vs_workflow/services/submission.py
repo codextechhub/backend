@@ -7,7 +7,9 @@ from django.db import transaction
 from django.utils import timezone
 
 from vs_workflow.constants import AuditEventType, WorkflowInstanceStatus
-from vs_workflow.exceptions import InvalidInstanceStateError, TemplateNotFoundError
+from vs_workflow.exceptions import (
+    CrossTenantDocumentError, InvalidInstanceStateError, TemplateNotFoundError,
+)
 from vs_workflow.handlers import get_handler
 from vs_workflow.models import WorkflowInstance
 from vs_workflow.services import audit as audit_service
@@ -44,6 +46,7 @@ def submit_for_approval(document, requested_by, *,
     # gates that decide whether a document may skip approval entirely have to
     # reach the same template this does - see vs_finance.approvals.
     tenant, branch = document_scope(document, default_tenant=requested_by.tenant)
+    _assert_own_tenant(tenant, requested_by)
     template = resolve_template(document_type, tenant=tenant, branch=branch, code=code)
 
     if template is None:
@@ -75,3 +78,43 @@ def submit_for_approval(document, requested_by, *,
         handler.on_submitted(instance, {"template": template.code})
         routing_service.advance_instance(instance, current_attempt=1)
         return instance
+
+
+# Refuse a submission that would file into a tenant the submitter does not belong to.
+def _assert_own_tenant(tenant, requested_by) -> None:
+    """Guard the one invariant every submit path shares.
+
+    ``document_scope`` derives the owning tenant from the *document*, never from
+    the caller, which is exactly right for choosing the template cascade and
+    exactly wrong as an authorisation answer. Any caller that hands over a
+    document it did not scope to the requester first would otherwise create the
+    instance inside the document's tenant, notify that tenant's approvers, and
+    run the handler's ``on_submitted`` against their record.
+
+    The check lives here rather than in each caller because all four submit
+    paths (finance's direct calls, procurement's wrapper, payments, user
+    creation) funnel through this function, and the next module to be added
+    will too. A view-level guard protects only the view that remembers it.
+
+    Scope, not permission: whether the requester may submit *this kind of*
+    document is the module's own ``rbac_permission``, and whether they may see
+    this particular row is the module's own queryset. This answers only "is it
+    even their tenant's document", which no module can accidentally omit.
+
+    Branch is deliberately not checked. A tenant-level finance officer
+    legitimately submits a branch document, so branch scope belongs to the
+    module's queryset, where the caller's grants are known.
+    """
+    from vs_rbac.permissions import is_vision_super_admin
+
+    caller_tenant = getattr(requested_by, "tenant", None)
+    if tenant is not None and caller_tenant is not None and caller_tenant.pk == tenant.pk:
+        return
+    if tenant is None:
+        # No document in the registry resolves to a null tenant today: User,
+        # LedgerEntity and Tenant all carry non-nullable owners. Reaching here
+        # means a document type was added whose scope the engine cannot
+        # establish, so refuse rather than let it resolve platform-wide.
+        if getattr(requested_by, "is_superuser", False) or is_vision_super_admin(requested_by):
+            return
+    raise CrossTenantDocumentError()
