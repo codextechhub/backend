@@ -81,3 +81,36 @@ if "test" in sys.argv:
     # settings, and MD5-hashing a real developer's password would be a genuine
     # weakening of that environment, not a speed-up.
     PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
+
+
+# --- Logging: readable, and quiet by default --------------------------------
+# base.py defaults to JSON at INFO, which is right for the deployed log stream
+# and wrong for a terminal somebody is working in: a wall of one-line JSON
+# objects, most of them routine.
+#
+# Locally the format is plain text and the floor is WARNING, so ordinary
+# request chatter stays out of the way and only something worth reading
+# appears. Raise it deliberately when chasing a problem:
+#
+#     LOG_LEVEL=INFO ./cx/bin/python manage.py runserver ...
+#
+# The redaction filter is untouched and still applies - a quieter terminal is
+# not a less careful one.
+LOG_FORMAT = config("LOG_FORMAT", default="plain")
+LOG_LEVEL = config("LOG_LEVEL", default="WARNING")
+
+# base.py already drops the handler entirely under `manage.py test`; this only
+# changes the shape of what a developer sees when the server is actually running.
+LOGGING = {
+    **LOGGING,
+    "handlers": {
+        **LOGGING["handlers"],
+        "console": {**LOGGING["handlers"]["console"], "formatter": "plain"}
+        if not RUNNING_TESTS else LOGGING["handlers"]["console"],
+    },
+    "root": {**LOGGING["root"], "level": LOG_LEVEL},
+    "loggers": {
+        key: {**cfg, "level": LOG_LEVEL}
+        for key, cfg in LOGGING["loggers"].items()
+    },
+}

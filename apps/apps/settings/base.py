@@ -4,6 +4,7 @@ Django base settings for apps project.
 
 from datetime import timedelta
 import os
+import sys
 from pathlib import Path
 from decouple import config
 
@@ -468,6 +469,9 @@ SPECTACULAR_SETTINGS = {
 LOG_LEVEL = config("LOG_LEVEL", default="INFO")
 LOG_FORMAT = config("LOG_FORMAT", default="json")
 
+#: True while `manage.py test` is running, whichever settings module is in use.
+RUNNING_TESTS = "test" in sys.argv
+
 #: How long raw task failure diagnostics are kept. Longer than the 90-day
 #: BackgroundJob prune on purpose - see core.models.TaskDiagnostic.
 TASK_DIAGNOSTIC_RETENTION_DAYS = config(
@@ -494,7 +498,18 @@ LOGGING = {
         },
     },
     "handlers": {
-        "console": {
+        # Under `manage.py test` nothing is written to the terminal at all.
+        # The suite drives 401s, 403s and 404s by the dozen on purpose and
+        # django.request logs every one at WARNING, which put a line between
+        # every pair of dots and buried the one line that matters when
+        # something actually failed. It lives here rather than in
+        # settings/test.py because the suite is run on local.py and on ci.py as
+        # well - see CLAUDE.md, "Running the test suite on this machine" - so
+        # this is the only place the rule holds for all three.
+        #
+        # A test that cares what was logged should use assertLogs, which
+        # attaches its own handler and is unaffected by this.
+        "console": {"class": "logging.NullHandler"} if RUNNING_TESTS else {
             "class": "logging.StreamHandler",
             "formatter": "plain" if LOG_FORMAT == "plain" else "json",
             # Applied on the HANDLER rather than on individual loggers, so a

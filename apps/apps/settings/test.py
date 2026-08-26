@@ -60,3 +60,7 @@ HEALTH_METRICS_BACKGROUND_FLUSH = False
 # templates at all, which the suite seeds per test. Real environments keep the
 # warning; see vs_notifications/checks.py.
 SILENCED_SYSTEM_CHECKS = [*SILENCED_SYSTEM_CHECKS, "vs_notifications.W001"]
+
+
+# Logging is silent under `manage.py test`, and that is decided in base.py so
+# it holds for local.py and ci.py too - the suite is run on all three.
