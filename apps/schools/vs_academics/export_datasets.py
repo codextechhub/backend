@@ -322,22 +322,28 @@ def register_datasets():
 
 
 # ── Screen bindings ────────────────────────────────────────────────────────
-#
-# "Export what this table is showing." The translation lives here rather than in
-# vs_exports, because only this module knows that ``is_active=all`` means "do
-# not filter" and that ``status`` on the sessions screen is a session status.
-#
-# **The branch lens is reported as unmapped, not carried, and that is the honest
-# answer rather than a shortcut.** The lens means "school-wide rows PLUS this
-# branch's", which is an OR across a nullable column that no single FilterDef
-# expresses. Carrying it as ``branch__name contains X`` would silently DROP every
-# school-wide row - most of a catalogue - and hand back a file narrower than the
-# screen with nothing to say so. So it is declared in ``handles`` and returned
-# unmapped, which sets ``exact`` false and puts the fact in front of the person
-# before they run it.
-#
-# A branch-TIED caller needs none of this: the base querysets above already
-# narrow to their branches, so their file matches their screen either way.
+
+"""Export what this table is showing.
+
+The translation lives here rather than in vs_exports, because only this module
+knows that ``is_active=all`` means "do not filter" and that ``status`` on the
+sessions screen is a session status.
+
+The branch lens is reported as UNMAPPED rather than carried, and that is the
+honest answer rather than a shortcut. The lens means "school-wide rows PLUS
+this branch's", which is an OR across a nullable column that no single
+FilterDef expresses. Carrying it as ``branch__name contains X`` would silently
+drop every school-wide row - most of a catalogue - and hand back a file
+narrower than the screen with nothing to say so. Declared in ``handles`` and
+returned unmapped, it sets ``exact`` false and puts the fact in front of the
+reader before they run it.
+
+The year lens IS carried: a row belongs to exactly one year, with no
+shared-across-years case to widen it.
+
+A branch-TIED caller needs none of this - the base querysets already narrow to
+their branches, so their file matches their screen either way.
+"""
 
 
 #: What the screens send when a tri-state filter is switched off.
@@ -426,9 +432,8 @@ def _translate_classes(params):
 
     filters, unmapped = _common(params)
     _year(params, filters)
-    # The screen filters by level ID; the dataset filters on the level's NAME,
-    # and this translator has no tenant to resolve one into the other. Reported
-    # rather than guessed.
+    # The screen filters by level id, the dataset by level name, and there is
+    # no tenant here to resolve one into the other. Reported, not guessed.
     level = str(params.get("level", "")).strip()
     if level:
         unmapped.append(Unmapped(

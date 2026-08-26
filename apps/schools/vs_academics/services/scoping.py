@@ -86,10 +86,8 @@ def raised_branch(user, tenant, requested=UNSET, *, field="branch"):
 
     if branch is None:
         if explicit_school_wide:
-            # They asked for the whole school by name. A shared row is a
-            # statement about every branch, including ones they do not work in,
-            # so this is 403 rather than 422: it is about who they are, not
-            # about what they typed.
+            # 403 rather than 422: a shared row speaks for branches they do
+            # not work in, so this is about who they are, not what they typed.
             raise PermissionDenied(
                 "You work in one branch, so you cannot create something that "
                 "applies to the whole school. Ask a school administrator.",

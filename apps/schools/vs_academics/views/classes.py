@@ -121,10 +121,8 @@ class ClassListCreateView(_ClassBase, generics.ListCreateAPIView):
             SchoolClass, data.get("name") or level.name, data.get("code"),
             session=level.session,
         )
-        # Two different scopes, so two calls. A class NAME is unique inside its
-        # level at its branch - "JSS1 A" may exist at both Lekki and Ikeja, and
-        # the constraints allow exactly that - while the CODE is unique across
-        # the school. One check stating one rule would be wrong about the other.
+        # Two scopes, so two calls: a class NAME is unique inside its level at
+        # its branch, while the CODE is unique across the school and year.
         self._unique(
             SchoolClass.all_objects.filter(level=level, branch=branch),
             name=data.get("name"), within=level.name,

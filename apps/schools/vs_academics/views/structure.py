@@ -118,14 +118,8 @@ class _StructureBase(AcademicsViewMixin):
             else:
                 from vs_tenants.references import resolve_branch_reference
 
-                # INCLUSIVE, and this is the whole point of a nullable branch.
-                # A null branch does not mean "no branch" - it means EVERY
-                # branch, so a school-wide department belongs to Ikeja as much
-                # as an Ikeja-only one does. Filtering on equality alone read it
-                # as "unassigned" and emptied the screen: most of a catalogue is
-                # shared, so picking a branch hid nearly everything the branch
-                # actually has. The tree, the overview and the export datasets
-                # all already read it this way; the lists were the odd one out.
+                # Inclusive: a null branch means EVERY branch, so a
+                # school-wide row belongs to this one too. See _filtered.
                 qs = qs.filter(
                     Q(branch__isnull=True)
                     | Q(branch=resolve_branch_reference(self.tenant, branch, "branch")),
@@ -383,11 +377,8 @@ class ProgramListCreateView(_StructureBase, generics.ListCreateAPIView):
         return super().get_permissions()
 
     def get_queryset(self):
-        # The SAME annotations _levels_for carries. The accordion nests levels
-        # through this prefetch rather than through the level endpoint, so an
-        # annotation added there and not here reaches the serializer as its
-        # zero default - which is how the delete confirmation came to say a
-        # level with five subjects on it had none.
+        # The SAME annotations _levels_for carries: one missing here reaches
+        # the serializer as its zero default rather than as an error.
         levels = scope_to_visible_branches(
             Level.objects.filter(tenant=self.tenant, session=self.session)
             .select_related("branch", "program", "next_level")
@@ -490,13 +481,8 @@ class ProgramDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
     @transaction.atomic
     def destroy(self, request, *args, **kwargs):
         program = self.get_object()
-        # EVERY year, not the one being looked at. Scoping this to the lens
-        # meant a school standing on 2026/2027 - where Commercial has no levels
-        # because it was not carried forward - passed the guard and hit the
-        # database's PROTECT instead, which answers "1 level still reference
-        # it" and never says WHICH YEAR is holding it. The rows that block a
-        # delete are last year's, so the count that describes them has to be
-        # last year's too.
+        # EVERY year, not the lens: the rows that block a delete are usually
+        # last year's, so the count describing them has to be too.
         held = (
             Level.all_objects.filter(program=program)
             .values_list("session__name", flat=True)
@@ -537,15 +523,13 @@ class ProgramDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
 def _levels_for(tenant):
     return (
         Level.objects.filter(tenant=tenant)
-        # next_level joined rather than fetched per row: the promotion screen
-        # reads a whole programme at once, so a lazy relation here is a query
-        # per level on exactly the screen that lists them all.
+        # next_level joined: lazy here is one query per level on the one
+        # screen that lists every level.
         .select_related("branch", "program", "next_level")
         .annotate(
             class_count_annotated=Count("classes", distinct=True),
-            # Exposed so a screen can say what deleting this level takes with
-            # it. Offerings CASCADE now, so silence here would make the delete
-            # remove rows the reader was never told about.
+            # So the delete confirmation can say what goes with the level:
+            # offerings CASCADE, and silence would remove them unannounced.
             subject_count_annotated=Count("subject_offerings", distinct=True),
         )
         .order_by("program", "order_index")           # annotate() drops Meta.ordering
@@ -600,9 +584,8 @@ class LevelListCreateView(_StructureBase, generics.ListCreateAPIView):
         data["code"] = self._code_for(
             Level, data["name"], data.get("code"), session=self.session_required,
         )
-        # Unique inside a programme AND a year: a school may run Year 1 in both
-        # Nursery and Primary, and runs JSS1 again every September. Scoping to
-        # the year is what lets next year's structure be built beside this one.
+        # Unique inside a programme AND a year: Year 1 may exist in both
+        # Nursery and Primary, and JSS1 comes round again every September.
         self._unique(
             Level.all_objects.filter(program=program, session=self.session_required),
             name=data["name"], code=data["code"], within=program.name,
@@ -770,9 +753,8 @@ class LevelDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
                 f"{'them' if classes > 1 else 'it'} first, then delete the level.",
                 **{"SchoolClass": classes},
             )
-        # Offerings do NOT block: they CASCADE, because an offering is a
-        # statement about this level and goes with it. The screen says how many
-        # before asking, so nothing disappears unannounced.
+        # Offerings do not block - they CASCADE. The screen says how many
+        # first, so nothing disappears unannounced.
         name, pk = level.name, level.pk
         level.delete()
         emit_audit_event(

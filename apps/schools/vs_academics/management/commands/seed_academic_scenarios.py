@@ -154,10 +154,8 @@ class Command(BaseCommand):
 
         year, past = self._years(tenant)
         depts = self._departments(tenant, secondary)
-        # Structure hangs off ONE year - the live one. A school's other years
-        # are its history and its plan; seeding all three identically would
-        # make "switch the year" look like it does nothing, which is the very
-        # thing the year column exists to fix.
+        # The live year only. Seeding all three identically would make
+        # switching the year look like it does nothing.
         levels = self._programmes(tenant, secondary, depts, year)
         self._classes(tenant, levels, branches, multi, year)
         self._subjects(tenant, depts, levels, secondary, year)

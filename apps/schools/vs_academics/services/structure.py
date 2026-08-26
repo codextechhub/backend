@@ -108,9 +108,9 @@ def assert_promotion_target(level, target, *, cross_program=False):
             f"move if you meant it.",
             level=level.name, target=target.name,
         )
-    # A shared level may not promote into one branch's level: that would send
-    # every branch's pupils to one site. The other direction is fine, and is
-    # how a branch running only junior secondary hands its pupils on.
+    # A shared level promoting into one branch's would send every branch's
+    # pupils to one site. The other direction is how a junior-only branch
+    # hands its pupils on.
     if level.branch_id is None and target.branch_id is not None:
         from ..exceptions import BranchScopeConflict
 

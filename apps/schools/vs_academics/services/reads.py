@@ -54,10 +54,8 @@ def build_tree(user, tenant, *, session=None, branch=None, full=False,
     appears with its counts narrowed.
     """
     programs = _scoped(Program, user, tenant, is_active=True)
-    # Programmes are shared across years; what hangs off them is not, so the
-    # year filters the levels and everything below them. A programme with no
-    # levels this year still appears - "Vocational, no levels yet" is a true
-    # and useful thing to see when a year is being built.
+    # Programmes span years, levels do not, so the year filters from the
+    # levels down. A programme with none this year still appears, showing 0.
     levels = _scoped(Level, user, tenant, is_active=True, session=session)
     classes = _scoped(SchoolClass, user, tenant, is_active=True, session=session)
 
@@ -229,10 +227,8 @@ def build_overview(user, tenant, *, today=None, multi_branch=True, branch=None,
         .prefetch_related("terms").first()
     )
     session_block = _session_block(active)
-    # The year the READER is on, which is the one the counts below are about.
-    # Without it the screen puts 2025/2026's numbers under a 2026/2027 heading
-    # the moment somebody looks back at last year - a total sitting under a
-    # filter it does not answer to.
+    # The year the READER is on: the counts below are its, so the heading has
+    # to be too.
     viewed = session
     if viewed is not None and active is not None and viewed.pk == active.pk:
         viewed_block = session_block                     # same year, same block

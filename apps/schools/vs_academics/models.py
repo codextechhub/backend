@@ -93,12 +93,13 @@ class AcademicSession(models.Model):
     )
     activated_at = models.DateTimeField(null=True, blank=True)
     archived_at = models.DateTimeField(null=True, blank=True)
-    # True when the session names no branches. Maintained by the service in the
-    # same transaction as the SessionBranch rows and never written by a
-    # serializer. It exists because a partial unique constraint cannot ask
-    # whether a related table is empty, and without it the school-wide half of
-    # the one-active-per-branch rule could not be enforced in the database at
-    # all - only in service logic, which loses a race.
+    #: True when the session names no branches.
+    #:
+    #: Maintained by the service in the same transaction as the SessionBranch
+    #: rows, never by a serializer. It exists because a partial unique
+    #: constraint cannot ask whether a related table is empty, so without it
+    #: the school-wide half of the one-active-per-branch rule would be service
+    #: logic only - and service logic loses a race.
     is_school_wide = models.BooleanField(default=True, db_index=True)
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
@@ -115,10 +116,9 @@ class AcademicSession(models.Model):
                 Lower("name"), "tenant",
                 name="uq_academic_session_tenant_name",
             ),
-            # Half of the one-active rule. The other half is on SessionBranch,
-            # and the case neither can see - a school-wide session colliding
-            # with a branch-scoped one - is refused in the activation service
-            # under the row lock, because it is a question about two tables.
+            # Half of the one-active rule; SessionBranch carries the other.
+            # The cross-table case is refused under a row lock in
+            # services.sessions.activate_session.
             models.UniqueConstraint(
                 fields=["tenant"],
                 condition=Q(status="ACTIVE", is_school_wide=True),
@@ -149,11 +149,12 @@ class SessionBranch(models.Model):
         "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="academic_sessions",
     )
-    # Denormalised from the session, in the same transaction. A partial unique
-    # constraint cannot read the parent's status through the foreign key, and
-    # without this column the per-branch rule is service logic only. The
-    # session's own status stays the authority; a test asserts they never
-    # disagree.
+    #: The parent session's status, copied here in the same transaction.
+    #:
+    #: A partial unique constraint cannot read a parent's status through a
+    #: foreign key, so without this column the per-branch rule is service
+    #: logic only. The session's own status stays the authority; a test
+    #: asserts the two never disagree.
     session_status = models.CharField(
         max_length=10, choices=SessionStatus.choices, db_index=True,
     )
@@ -196,9 +197,7 @@ class AcademicTerm(models.Model):
     order_index = models.PositiveSmallIntegerField()
     start_date = models.DateField()
     end_date = models.DateField()
-    # Stamped only when the session is archived, and cleared only when it is
-    # activated again. A term is never archived or restored on its own: giving
-    # it a second lifecycle leads straight back to the state activation refuses.
+    # Follows the session only: a term has no lifecycle of its own.
     archived_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
@@ -277,10 +276,7 @@ class Program(_Branched):
     )
     name = models.CharField(max_length=100)
     code = models.CharField(max_length=20)
-    # Every entity the structure drawer writes carries one, so the same field
-    # means the same thing on all five. Department and Subject had it from the
-    # start; Programme, Level and Class did not, and the drawer's Description box
-    # silently dropped what was typed into it on those three.
+    # On all five, so the drawer's Description box means the same everywhere.
     description = models.TextField(blank=True, default="")
     order_index = models.PositiveSmallIntegerField(default=0)
 
@@ -312,9 +308,7 @@ class Level(_Branched):
         null=True, blank=True, related_name="levels",
         help_text="Leave blank for an item the whole school shares.",
     )
-    # PROTECT, not CASCADE: deleting a programme must not silently destroy the
-    # levels that classes hang off. The platform answers the blocked delete
-    # with 409 PROTECTED_REFERENCE and a count.
+    # PROTECT: deleting a programme must not destroy the levels under it.
     program = models.ForeignKey(
         Program, on_delete=models.PROTECT, related_name="levels",
     )
@@ -322,11 +316,12 @@ class Level(_Branched):
     #:
     #: Levels, classes and subjects are what a school rebuilds each year;
     #: departments and programmes are the spine they hang off and stay shared.
-    #: A class carries its own copy, because a constraint cannot join: "this
-    #: code is free again next September" has to be expressed as
-    #: (tenant, session, code), and Postgres will not take `level__session`
-    #: there. The two are kept in step by `assert_same_session` on every write,
-    #: which is the price of the denormalisation and is paid in one place.
+    #: A class carries its own copy of the year rather than joining through
+    #: here, because "this code is free again next September" has to be
+    #: expressed as a constraint over (tenant, session, code) and Postgres
+    #: will not take `level__session` in one. `assert_same_session` keeps the
+    #: two in step on every write - the price of the denormalisation, paid in
+    #: one place.
     session = models.ForeignKey(
         AcademicSession, on_delete=models.PROTECT, related_name="levels",
     )
@@ -334,9 +329,11 @@ class Level(_Branched):
     code = models.CharField(max_length=20)
     description = models.TextField(blank=True, default="")
     order_index = models.PositiveSmallIntegerField()
-    # The promotion target. Null means graduation to the promoting module - and
-    # also means nothing has wired promotion yet, because no screen writes this
-    # today. M11 must not read the two as the same thing (FRD v2.6 FR-005).
+    #: The promotion target.
+    #:
+    #: Null means graduation to the promoting module - and ALSO means nothing
+    #: has wired promotion yet, because no screen writes this today. M11 must
+    #: not read the two as the same thing (FRD v2.6 FR-005).
     next_level = models.ForeignKey(
         "self", on_delete=models.SET_NULL, null=True, blank=True,
         related_name="previous_levels",
@@ -389,10 +386,12 @@ class SchoolClass(_Branched):
     code = models.CharField(max_length=20)
     description = models.TextField(blank=True, default="")
     arm = models.CharField(max_length=30, blank=True, default="")
-    # Advisory here in the exact sense that nothing in this module reads it to
-    # refuse anything: there is no Student model here to count. M11 enforces it
-    # on placement. No screen writes it today either, so M11 must read a null
-    # as "no limit" rather than as a limit not yet reached.
+    #: How many pupils the class holds.
+    #:
+    #: Advisory in the exact sense that nothing here reads it to refuse
+    #: anything - there is no Student model in this module to count. M11
+    #: enforces it on placement. No screen writes it today either, so M11 must
+    #: read a null as "no limit" rather than as a limit not yet reached.
     capacity = models.PositiveSmallIntegerField(null=True, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
@@ -402,10 +401,8 @@ class SchoolClass(_Branched):
     class Meta(_Branched.Meta):
         ordering = ["level", "name"]
         constraints = [
-            # Uniqueness across a NULLABLE branch takes two constraints, not
-            # one. In PostgreSQL NULL != NULL, so a single constraint over
-            # (level, branch, name) would not stop two branch-less classes
-            # called 'JSS1 A' in the same level.
+            # Two constraints, because NULL != NULL in Postgres: one over
+            # (level, branch, name) would let two branch-less JSS1 A's exist.
             models.UniqueConstraint(
                 Lower("name"), "level", "branch",
                 condition=Q(branch__isnull=False),
@@ -488,11 +485,13 @@ class SubjectOffering(models.Model):
     subject = models.ForeignKey(
         Subject, on_delete=models.CASCADE, related_name="offerings",
     )
-    # CASCADE, not PROTECT. An offering is a statement ABOUT a level -
-    # "Mathematics is taught at JSS1" - and it is meaningless the moment JSS1
-    # is gone. Protecting it made a level with no classes undeletable until
-    # somebody opened every subject offered at it and unticked that level, none
-    # of which edits meant anything. Classes still PROTECT: those carry history.
+    #: The level the subject is taught at.
+    #:
+    #: CASCADE, not PROTECT. An offering is a statement ABOUT a level, and it
+    #: is meaningless the moment the level is gone. Protecting it made a level
+    #: with no classes undeletable until somebody opened every subject offered
+    #: at it and unticked that level, none of which edits meant anything.
+    #: Classes still PROTECT: those carry history.
     level = models.ForeignKey(
         Level, on_delete=models.CASCADE, related_name="subject_offerings",
     )

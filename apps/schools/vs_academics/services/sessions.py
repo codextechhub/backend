@@ -100,9 +100,8 @@ def activate_session(session, tenant, actor=None):
     if session.status == SessionStatus.ACTIVE:
         return []                       # 200 no-op; activated_at is not rewritten
 
-    # Lock every session of the tenant, and the links, before deciding
-    # anything: a rule evaluated outside the lock can be true when it is read
-    # and false when it commits.
+    # Lock first: a rule evaluated outside the lock can be true when read and
+    # false when it commits.
     locked = list(
         AcademicSession.all_objects
         .select_for_update()
@@ -111,9 +110,8 @@ def activate_session(session, tenant, actor=None):
     )
     session = next(s for s in locked if s.pk == session.pk)
 
-    # An archived year comes back with its terms. Without this, FR-002 rule 4
-    # below would refuse every archived session by definition - archiving a
-    # year is what archived its terms - and the route would be dead on arrival.
+    # An archived year comes back with its terms - archiving the year is what
+    # archived them, so rule 4 below would otherwise refuse every one.
     if session.status == SessionStatus.ARCHIVED:
         AcademicTerm.all_objects.filter(session=session).update(archived_at=None)
         session.archived_at = None
@@ -124,9 +122,8 @@ def activate_session(session, tenant, actor=None):
         .values_list("id", flat=True)
     )
     if archived_terms:
-        # Defence in depth since version 2.5: no route can produce this state,
-        # but a database edit or a route added later can, and an ACTIVE session
-        # holding a retired term tells a school it is in a term it archived.
+        # Defence in depth: no route produces this, but a hand edit can, and
+        # it would tell a school it is in a term it archived.
         raise SessionHasArchivedTerm(
             "This session cannot be activated while it holds an archived term.",
             terms=archived_terms,
@@ -260,10 +257,8 @@ def validate_terms(session, terms):
                 conflicts_with=earlier["name"],
             )
 
-    # Non-overlap does not imply correct ordering: two terms can be disjoint
-    # and still numbered backwards, and every consumer reads terms in
-    # order_index order, so a year numbered backwards renders out of sequence
-    # with no error anywhere.
+    # Non-overlap does not imply order: two terms can be disjoint and still
+    # numbered backwards, and every consumer reads them by order_index.
     by_index = sorted(terms, key=lambda t: t["order_index"])
     if [t["name"] for t in by_index] != [t["name"] for t in by_date]:
         raise TermOrderConflict(

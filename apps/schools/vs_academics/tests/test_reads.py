@@ -419,12 +419,9 @@ class OverviewTests(_BudgetMixin, _Base):
             {"tenant": self.tenant.slug},
             expected=20,
         )
-        # Six counts, the live session with its terms, and the stranded-branch
-        # check. Each once, none of them per row. Ten rather than eleven because
-        # a school already running a school-wide year needs no branch sweep:
-        # a year that names no branches covers all of them. The tenth is the
-        # year itself: every academics read now resolves which year it is
-        # about before it counts anything.
+        # Six counts, the live year with its terms, the stranded-branch check
+        # and the year lookup - each once, none of them per row. No branch
+        # sweep, because a school-wide year covers every branch already.
         self.assertEqual(n, 10)
 
     def test_a_caller_without_the_key_is_refused(self):

@@ -37,9 +37,8 @@ class AcademicsViewMixin:
     def tenant(self):
         tenant = getattr(self.request, "tenant", None)
         if tenant is None:
-            # Fail closed. A missing tenant context yields nothing rather than
-            # an unscoped queryset, which is the failure that looks like a
-            # working endpoint until somebody reads another school's rows.
+            # Fail closed: an unscoped queryset looks like a working endpoint
+            # until somebody reads another school's rows.
             raise NotFound("No school in context.")
         return tenant
 

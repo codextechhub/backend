@@ -214,11 +214,8 @@ class LevelSerializer(_ScopedSerializer):
     class_count = serializers.SerializerMethodField()
     subject_count = serializers.SerializerMethodField()
     program_name = serializers.CharField(source="program.name", read_only=True)
-    # The promotion target by name as well as by id, so a screen can render
-    # "JSS1 promotes to JSS2" from one response. Null means the level is
-    # terminal OR that promotion has not been wired yet, and the two are not
-    # distinguishable here - FR-005 says why, and why M11 must not read them
-    # as the same thing.
+    # By name as well as id, so a screen renders "JSS1 promotes to JSS2" from
+    # one response. Null is terminal OR not-yet-wired; see Level.next_level.
     next_level_name = serializers.CharField(
         source="next_level.name", read_only=True, default=None,
     )

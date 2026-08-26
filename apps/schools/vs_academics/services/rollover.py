@@ -57,9 +57,8 @@ def roll_forward(tenant, *, source, target):
     # write into an archived year; a copy is eleven hundred writes at once.
     assert_year_is_writable(target)
 
-    # Every kind, not just levels. A year seeded with subjects and no levels
-    # passed a levels-only check and got a second copy of each - and where the
-    # names matched, the unique constraint answered for us in SQL.
+    # Every kind, not just levels: a year holding only subjects passed a
+    # levels-only check and got a second copy of each.
     started = {
         "level": Level.all_objects.filter(tenant=tenant, session=target).count(),
         "class": SchoolClass.all_objects.filter(
@@ -93,8 +92,8 @@ def roll_forward(tenant, *, source, target):
         )
 
     # ── Levels ────────────────────────────────────────────────────────────
-    # Two passes: the rows first, then the promotion links, because a level
-    # cannot point at a sibling that does not exist yet.
+    # Two passes: rows first, then promotion links, which cannot point at a
+    # sibling that does not exist yet.
     level_map = {}
     for old in levels:
         new = Level.objects.create(

@@ -6,8 +6,7 @@ registers, which fails as a 403 nobody can act on rather than as an error.
 from __future__ import annotations
 
 # ── Permission keys ────────────────────────────────────────────────────────
-# Registered by core.management.commands.seed_school_permissions. The session
-# and classes resources predate this module; structure and subject are M13's.
+# Seeded by core.management.commands.seed_school_permissions.
 PERM_SESSION_VIEW = "academics.session.view"
 PERM_SESSION_CREATE = "academics.session.create"
 PERM_SESSION_UPDATE = "academics.session.update"

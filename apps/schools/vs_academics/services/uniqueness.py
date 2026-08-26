@@ -47,9 +47,8 @@ def _scope_of(row, multi_branch):
 
 def _name_message(value, row, *, branch_label, writing_to_branch, within):
     if within:
-        # A level inside a programme, or a class inside a level: the constraint
-        # is scoped to the parent, so the message must be too - "JSS1 already
-        # exists" is false at a school that runs JSS1 in two programmes.
+        # The constraint is scoped to the parent, so the message must be:
+        # "JSS1 already exists" is false at a school running it in two.
         where = f" at {branch_label}" if branch_label else ""
         return (
             f"{value} already exists in {within}{where}. "
