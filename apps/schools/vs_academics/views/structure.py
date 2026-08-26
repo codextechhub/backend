@@ -8,7 +8,7 @@ narrowing, and a child may be no wider than its parent.
 from __future__ import annotations
 
 from django.db import transaction
-from django.db.models import BooleanField, Count, Exists, OuterRef, Prefetch, Q, Value
+from django.db.models import Count, Prefetch, Q
 from rest_framework import generics
 from rest_framework.exceptions import NotFound
 from rest_framework.views import APIView
@@ -201,36 +201,34 @@ class _StructureBase(AcademicsViewMixin):
 # ── Departments ────────────────────────────────────────────────────────────
 
 def _departments_for(tenant, session=None):
-    """Departments, with the two counts the card shows and one flag.
+    """Departments, with the two counts the card shows.
 
     A department has no year of its own on purpose: Sciences is Sciences, and
     giving it a year would make five Sciences rows in five years that only a
     matching NAME could tie back together - which breaks the first time a
-    school renames one. What varies by year is whether the school RAN it, and
-    that is already in the data: a department is running in a year when a
-    programme with levels in that year, or a subject in that year, points at
-    it. Derived rather than stored, so it can never disagree with the levels
-    and subjects it is derived from.
+    school renames one. What varies by year is what the school RAN under it,
+    and that is already in the data.
+
+    So the counts are the year's, not all time. Unfiltered they were adding up
+    every year at once: three Sciences subjects taught in three years read as
+    "Subjects 9", a number the school has never had. `distinct=True` on both,
+    because two counts over two multi-valued joins inflate each other.
     """
-    qs = (
-        Department.objects.filter(tenant=tenant)
-        .select_related("branch")
-        .annotate(
+    qs = Department.objects.filter(tenant=tenant).select_related("branch")
+    if session is None:
+        return qs.annotate(
             program_count_annotated=Count("programs", distinct=True),
             subject_count_annotated=Count("subjects", distinct=True),
         )
-    )
-    if session is None:
-        return qs.annotate(running_this_year=Value(True, output_field=BooleanField()))
     return qs.annotate(
-        running_this_year=Exists(
-            Level.objects.filter(
-                tenant=tenant, session=session, program__department=OuterRef("pk"),
-            ),
-        ) | Exists(
-            Subject.objects.filter(
-                tenant=tenant, session=session, department=OuterRef("pk"),
-            ),
+        # A programme is running in a year when it has a level in it. The
+        # programme row itself spans every year, so it cannot answer this.
+        program_count_annotated=Count(
+            "programs", distinct=True,
+            filter=Q(programs__levels__session=session),
+        ),
+        subject_count_annotated=Count(
+            "subjects", distinct=True, filter=Q(subjects__session=session),
         ),
     )
 

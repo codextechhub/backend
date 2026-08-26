@@ -594,6 +594,30 @@ class ScrappingAProgrammeTests(_Base):
         self.assertTrue(self.departments(self.this_year)["Commercial"])
         self.assertFalse(self.departments(self.next_year)["Commercial"])
 
+    def test_a_departments_subject_count_is_one_years_not_every_years(self):
+        """The count that read "Subjects 9" for three subjects.
+
+        Subjects belong to a year, so counting them across all of them adds
+        the same three subjects up once per year the school has run. Rolling
+        forward, which duplicates them by design, made the number grow every
+        September.
+        """
+        maths_dept = Department.all_objects.create(
+            tenant=self.tenant, name="Sciences", code="SCI",
+        )
+        Subject.all_objects.filter(pk=self.maths.pk).update(department=maths_dept)
+        roll_forward(self.tenant, source=self.this_year, target=self.next_year)
+
+        for year in (self.this_year, self.next_year):
+            counts = {
+                row["name"]: row["subject_count"]
+                for row in self.get(
+                    self.admin, "academics-department-list",
+                    {"session": year.pk},
+                ).data["data"]
+            }
+            self.assertEqual(counts["Sciences"], 1, f"wrong in {year.name}")
+
     def test_deleting_it_is_refused_and_names_the_year_that_holds_it(self):
         """Standing on the year where it has no levels does not make it free."""
         url = reverse(

@@ -199,13 +199,13 @@ class DepartmentSerializer(_ScopedSerializer):
         return getattr(obj, "subject_count_annotated", 0)
 
     def get_running_this_year(self, obj) -> bool:
-        """Whether the school ran this department in the year being read.
+        """Whether the school ran anything under this department that year.
 
-        See _departments_for: derived from the levels and subjects that year
-        rather than stored, so scrapping Commercial is simply not carrying it
-        forward - the year it DID run still shows it.
+        Read off the two counts rather than asked separately: they are already
+        the year's, so a third query answering the same question could only
+        ever disagree with them.
         """
-        return bool(getattr(obj, "running_this_year", True))
+        return bool(self.get_program_count(obj) or self.get_subject_count(obj))
 
 
 class DepartmentWriteSerializer(serializers.ModelSerializer):

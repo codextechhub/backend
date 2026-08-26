@@ -221,12 +221,28 @@ class DepartmentTests(_Base):
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(response.data["data"]["code"], "SCI2")
 
-    def test_the_program_count_is_real(self):
+    def test_the_program_count_is_the_years_not_all_time(self):
+        """A department card describes the year being read, like everything else.
+
+        A programme spans every year, so what makes it part of THIS one is
+        having a level in it. Two programmes mapped to Sciences but running
+        nothing this year is a Sciences that is running nothing this year.
+        """
         dept = self.dept()
-        self.program(dept=dept)
+        jss = self.program(dept=dept)
         self.program("Senior Secondary", "SSS", dept=dept)
+
         response = self.get(self.admin, "academics-department-list")
-        self.assertEqual(response.data["data"][0]["program_count"], 2)
+        self.assertEqual(response.data["data"][0]["program_count"], 0)
+        self.assertFalse(response.data["data"][0]["running_this_year"])
+
+        Level.all_objects.create(
+            tenant=self.tenant, session=self.year, program=jss,
+            name="JSS1", code="JSS1", order_index=1,
+        )
+        response = self.get(self.admin, "academics-department-list")
+        self.assertEqual(response.data["data"][0]["program_count"], 1)
+        self.assertTrue(response.data["data"][0]["running_this_year"])
 
     def test_deleting_a_department_with_programmes_is_refused(self):
         """Reverses what FRD 2.0 to 2.5.1 promised, because the design does."""
