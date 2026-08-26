@@ -52,8 +52,8 @@ The two screens built on it are documented elsewhere:
 | `task_name`, `celery_task_id` | `celery_task_id` is **unique** - the join key |
 | `status` | `QUEUED` → `RUNNING` → `SUCCEEDED` / `FAILED` (`CANCELLED` unused) |
 | `progress` | 0-100 when the task reports it; forced to 100 on success |
-| `result` | `JSONField` - the return value, when JSON-safe |
-| `error`, `traceback` | Truncated to 2,000 and 10,000 characters |
+| `result` | `JSONField` - the return value, when JSON-safe. Stored **redacted** |
+| `error`, `traceback` | Stored **redacted**, then truncated to 2,000 and 10,000 characters |
 | `worker` | The hostname that ran it |
 | `notify_owner` | Whether the owner gets a bell on completion |
 | `created_at`, `started_at`, `finished_at` | |
@@ -61,6 +61,29 @@ The two screens built on it are documented elsewhere:
 Ordered newest first, with three indexes: `(owner, -created_at)`,
 `(status, -created_at)`, `(kind, -created_at)` - matching the three ways the two
 screens filter.
+
+### `TaskDiagnostic` (`core/models.py`)
+
+The unredacted failure record, one row per failed job, written by
+`_record_diagnostic`.
+
+| Field | Notes |
+|---|---|
+| `job` | `OneToOne` to `BackgroundJob`, `CASCADE` |
+| `tenant` | Denormalised from the job, so retention and scoped reads need no join |
+| `task_name` | Copied for the same reason |
+| `raw_error`, `raw_traceback` | The original text, untruncated by redaction |
+| `raw_result` | Only ever set for a failure; successes keep no raw copy |
+| `expires_at` | Stamped at write time from `TASK_DIAGNOSTIC_RETENTION_DAYS` (400) |
+
+**Why the split exists.** `BackgroundJob` is listable, filterable, and
+serialised to school users through `/v1/user/me/tasks/`, so anything stored on
+it is something that can appear on a screen or in a backup. The raw text still
+has to exist - an engineer at 2am needs the real exception, and an auditor
+asking about last quarter needs it long after Render has dropped its own logs -
+so it is *moved* rather than destroyed: to a table nothing lists, that
+`platform.tasks.view_sensitive` opens, and whose every read emits a
+`TASK_DIAGNOSTIC_VIEWED` audit event.
 
 ## 3. The lifecycle hooks
 
@@ -143,12 +166,17 @@ is a signal, not noise (`core/tasks.py:22-24`).
 |---|---|
 | `apply_async` | a `QUEUED` `BackgroundJob`, for attributed tasks only |
 | `before_start` | the row if absent; `RUNNING`, `started_at`, `worker` |
-| `_finish` | terminal status, `finished_at`, `progress`, `result` or `error`+`traceback` |
+| `_finish` | terminal status, `finished_at`, `progress`, and the **redacted** `result` or `error`+`traceback` |
+| `_record_diagnostic` | for failures only: the **unredacted** text to `core.TaskDiagnostic`, stamped with `expires_at` |
 | `_notify_owner` | one `task.completed` / `task.failed` notification through `vs_notifications` when the resolved importance policy enables it, with `tenant=job.tenant` |
 | `prune_background_jobs_task` | deletes terminal rows older than 90 days |
+| `prune_task_diagnostics_task` | deletes `TaskDiagnostic` rows past `expires_at` (default 400 days) |
 
-Four log lines, all `logger.warning` with `exc_info`, one per swallowed failure
-point.
+Five log lines, all `logger.warning` with `exc_info`, one per swallowed failure
+point. Every one of them passes through `RedactingLogFilter` on the way out, so
+the exception text they carry is scrubbed in the log stream as well as in the
+database - `logger.warning(..., exc_info=True)` was a second, entirely separate
+route for the same value to escape.
 
 Note the notification passes `tenant=job.tenant` explicitly - the modern
 parameter, correctly - so the row lands on the tenant whose queue the job belongs
@@ -206,11 +234,17 @@ Full evidence in **`error/core/core_code_issues.md`**.
   of system rows that no person triggered (`core_code_issues.md` §10).
 - **`CANCELLED` is a status nothing sets.** There is no cancel path in `core`,
   so the enum promises an operation that does not exist.
-- **`error` and `traceback` are stored and shown.** `job.error[:300]` goes into
-  the owner's notification (`tasks_base.py:201`), and the admin task monitor
-  exposes `result`, `error` and `traceback` for every tenant - already recorded
-  against `vs_admin_console`. A task whose exception message carries a value
-  puts that value in front of a user.
+- **Redaction is pattern-based, so it over-redacts.** A long invoice reference
+  is masked like an account number would be. The redacted `error` is a triage
+  aid rather than a faithful transcript; the transcript is in
+  `TaskDiagnostic`.
+- **Resolved:** `error` and `traceback` used to be stored raw, which put a
+  value out of a task's exception message in front of a user through two
+  separate doors - `job.error[:300]` in the owner's completion notification,
+  and the admin task monitor's list route. Both are now fed the redacted
+  column, and the notification needed no change of its own: it reads `job.error`
+  *after* `_finish` has scrubbed it, which is the point of fixing this at the
+  choke point rather than per caller.
 - **`_resolve_job_tenant_id` issues a query per unattributed task start**
   (`tasks_base.py:58-59`), looking up the `codex` tenant by slug every time.
 - **A task that is queued but never runs leaves a `QUEUED` row forever.** The

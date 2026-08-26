@@ -12,12 +12,16 @@ schedule as configured in code. Routes are at `/v1/admin/tasks/`,
   writes for every run it wraps (`views_tasks.py:1-18,62-94`).
 - The **owner-facing slice of the same table** lives elsewhere:
   `/v1/user/me/tasks/` returns the caller's own jobs and is documented in
-  `docs/user/user_security_monitoring.md`. This surface returns everyone's, in
-  every tenant, plus the fields the owner view withholds - `result`, `error`
-  and the full `traceback` (`views_tasks.py:41-48`).
+  `docs/user/user_security_monitoring.md`.
+- **The surface is split three ways by what it costs to read.** The list is
+  metadata only - no `result`, no `error`, no `traceback`. The detail route
+  adds the **redacted** `result` and `error`. The raw, unredacted text lives
+  on `<id>/diagnostics/`, behind a separate CRITICAL key, and every read of it
+  writes an audit event. Before M-sec this was one list route serving all
+  three at once to any Django staff account.
 - **Nothing here can act on a job.** There is no cancel, no retry, no requeue -
-  `TaskMonitorViewSet` is `ListModelMixin` plus two read actions
-  (`views_tasks.py:62`).
+  `TaskMonitorViewSet` is `ListModelMixin` + `RetrieveModelMixin` plus three
+  read actions.
 - `schedule/` reports the beat schedule **as configured in code**, read off
   `celery_app.conf.beat_schedule` at request time. It is not a live view of what
   beat is actually running (`views_tasks.py:133-154`).
@@ -28,7 +32,8 @@ This app owns no table for this slice. One model matters:
 
 | Model | Where | Notes |
 |---|---|---|
-| `core.BackgroundJob` | `core/models.py:31-102` | One row per tracked Celery run |
+| `core.BackgroundJob` | `core/models.py` | One row per tracked Celery run. `result`/`error`/`traceback` are stored **redacted** |
+| `core.TaskDiagnostic` | `core/models.py` | The raw failure text for one job. Never listed; 400-day retention |
 
 Fields the console reads: `owner` (the **actor** who triggered it, null for
 system runs), `tenant` (non-nullable), `kind`, `label`, `task_name`,
@@ -50,20 +55,50 @@ unconditionally, so a scheduled run with neither still gets a row - it simply
 appears as `RUNNING` and never as `QUEUED`
 (`core/tasks_base.py:108-128`). `_finish` writes the terminal state, is guarded
 against double-writing, truncates `error` at 2,000 characters and `traceback` at
-10,000 (`core/tasks_base.py:158-185`).
+10,000.
 
-**Retention.** `prune_background_jobs_task` deletes `SUCCEEDED`/`FAILED` rows
-older than 90 days at 02:30 daily. `QUEUED`/`RUNNING` rows are never pruned,
-because a stuck row is a signal rather than noise
-(`core/tasks.py:11-24`; `apps/celery.py:39-42`).
+**Redaction happens here, once, for the whole platform.** `_finish` passes the
+error, traceback and result through `core.redaction` before saving, so what
+reaches `BackgroundJob` is `Key (email)=([redacted])` rather than the address
+Postgres put there. This is the choke point every task passes through, which is
+why the scrub is here and not in the tasks: a task cannot know whether its own
+exception text carries personal data, because it did not write that text.
+
+For a failure, `_record_diagnostic` then writes the **unredacted** original to
+`core.TaskDiagnostic`. Successes keep no raw copy - a success result is already
+summary data, and storing every one would rebuild the store this design exists
+to empty.
+
+**Retention.** Two windows, deliberately different lengths.
+`prune_background_jobs_task` deletes `SUCCEEDED`/`FAILED` rows older than 90
+days at 02:30 daily; `QUEUED`/`RUNNING` rows are never pruned, because a stuck
+row is a signal rather than noise. `prune_task_diagnostics_task` runs at 02:45
+and deletes `TaskDiagnostic` rows past their own `expires_at`, stamped at write
+time from `TASK_DIAGNOSTIC_RETENTION_DAYS` (default 400).
+
+The operational queue is read in days and the audit record in quarters, so the
+diagnostic outlives the job row it describes. Stamping `expires_at` per row
+rather than computing it from the current setting means shortening the setting
+later cannot retroactively extend rows already on disk.
 
 ## 3. Endpoint map
 
+All routes require a PLATFORM-tenant caller (`vs_rbac.permissions.IsVisionStaff`)
+**and** the key below. The two are separate questions: the tenant kind says who
+may stand at the platform level at all, the key says what they may then read.
+
 | Method + path | permission key | request body / query | response |
 |---|---|---|---|
-| `GET /tasks/` | `IsVisionStaff` (Django `is_staff` flag) | `status`, `task`, `kind`, `since` | Paginated jobs, newest first (`views_tasks.py:72-94`) |
-| `GET /tasks/stats/` | same | - | `{by_status, last_24h, by_task, recent_failures, total}` (`views_tasks.py:97-130`) |
-| `GET /tasks/schedule/` | same | - | `{eager_mode, broker_configured, entries}` (`views_tasks.py:133-154`) |
+| `GET /tasks/` | `platform.tasks.view` | `status`, `task`, `kind`, `since`, `tenant` | Paginated jobs, newest first. Metadata only |
+| `GET /tasks/<id>/` | `platform.tasks.view` | - | One job + **redacted** `result` and `error` |
+| `GET /tasks/<id>/diagnostics/` | `platform.tasks.view_sensitive` | - | Raw `raw_error`, `raw_traceback`, `raw_result`. Audited |
+| `GET /tasks/stats/` | `platform.tasks.view` | same filters | `{by_status, last_24h, by_task, recent_failures, total}`, tenant-scoped |
+| `GET /tasks/schedule/` | `platform.tasks.view` | - | `{eager_mode, broker_configured, entries}` |
+
+`platform.tasks.view_all` is a fourth key and gates no route of its own: it
+widens the queryset from the caller's own tenant to every tenant. Both it and
+`view_sensitive` are CRITICAL and seeded to `xvs_super_admin` only
+(`seed_platform_permissions.py`).
 
 Filter semantics (`views_tasks.py:77-93`):
 
@@ -122,19 +157,24 @@ prune (daily 02:30) ──► SUCCEEDED/FAILED rows older than 90 days deleted
 
 ## 6. What posting does to the ledger
 
-Nothing posts and, unlike the other two slices in this module, nothing is
-written at all: three `GET`s, no audit event, no side effect
-(`views_tasks.py:62-154`). Note the asymmetry with `console_impersonation`,
-where listing sweeps rows.
+Nothing posts, and the reads that cost nothing write nothing: the list, the
+detail, `stats/` and `schedule/` are plain `GET`s with no side effect.
 
-Reading this surface leaves no trace. Every row exposed here carries another
-person's `result` payload, error text and traceback, and no audit event records
-that anyone looked (compare `vs_audit`, whose own reads are key-gated).
+**`diagnostics/` is the exception, and deliberately so.** It emits a
+`TASK_DIAGNOSTIC_VIEWED` audit event at `WARNING` severity before returning,
+naming the reader, the job and the tenant. Reading a raw traceback means
+reading whatever personal data the failing row carried, so the read is itself
+the auditable act - without it, "who looked at Corona's failed guardian
+import" has no answer.
+
+The event is filed against the **job's** tenant, not the reader's. An auditor
+at Corona Secondary School asking who read their data is asking about Corona's
+trail; filing it under Codex would put the answer where they cannot see it.
 
 ## 7. Worked example
 
 ```text
-GET /v1/admin/tasks/?tenant=codex&kind=import&status=failed
+GET /v1/admin/tasks/?tenant=corona&kind=import&status=failed
 ```
 
 ```json
@@ -149,45 +189,62 @@ GET /v1/admin/tasks/?tenant=codex&kind=import&status=failed
       "status": "FAILED", "progress": 62, "worker": "celery@web-1",
       "created_at": "2026-08-14T07:02:11Z", "started_at": "2026-08-14T07:02:13Z",
       "finished_at": "2026-08-14T07:04:48Z", "runtime_seconds": 155.219,
-      "result": null,
-      "error": "IntegrityError: duplicate key value violates unique constraint …",
-      "traceback": "Traceback (most recent call last): …" }
+      "has_diagnostic": true }
   ] }
 ```
 
+No payload fields on a list row. `has_diagnostic` says a raw record exists to
+open without being the record - one scroll of this page used to render every
+failing row's full traceback, and a Postgres duplicate-key error carries the
+duplicated value.
+
+Opening the one row that matters:
+
+```text
+GET /v1/admin/tasks/8814/
+```
+
+```json
+{ "success": true, "message": "Task run retrieved.",
+  "data": { "id": 8814, "status": "FAILED", "has_diagnostic": true,
+            "result": null,
+            "error": "duplicate key value violates unique constraint \"vs_user_user_email_key\"\nDETAIL:  Key (email)=([redacted]) already exists." } }
+```
+
+The shape of the failure survives; the person in it does not. The address is
+one key and one audit event away, at `/v1/admin/tasks/8814/diagnostics/`.
+
 The list route returns the `XVSPagination`
-`{success, message, pagination, data}` envelope
-(`views_tasks.py:70`; `core/pagination.py:12-31`), while `stats/` and
-`schedule/` return `success_response`'s `{success, message, data}` without the
-`pagination` block (`views_tasks.py:121-130,147-153`).
+`{success, message, pagination, data}` envelope (`core/pagination.py`), while
+the detail route, `stats/`, `schedule/` and `diagnostics/` return
+`success_response`'s `{success, message, data}` without the `pagination` block.
+`retrieve` is overridden to do this rather than returning DRF's bare serializer
+body, which would have made it the only endpoint in the console outside the
+envelope.
 
 ## 8. Gotchas / known limitations
 
-- **The gate is Django's `is_staff` flag, not RBAC, and every CX staff account
-  has it.** `IsVisionStaff` checks nothing but
-  `user.is_authenticated and user.is_staff` (`permissions.py:7-18`), and
-  `UserService` sets `is_staff=True` for every account created with
-  `user_type == "CX_STAFF"` (`vs_user/services/user.py:86`). So a brand new CX
-  hire holding no role and no permission whatsoever can read **every tenant's**
-  job history including each job's `result` JSON, `error` string and full
-  `traceback` (`views_tasks.py:41-48`). Those payloads are whatever the task
-  returned or blew up on: import summaries, export row counts, database error
-  text quoting the offending values. There is no `rbac_permission` on the
-  viewset at all, no tenant filter in the queryset
-  (`views_tasks.py:72-94`), and no audit row recording the read. This is the
-  same shape as the lockout list finding in
-  `docs/user/user_security_monitoring.md` §8, and it is the item to fix first
-  here: the surface needs a seeded key (the platform catalogue has no
-  `tasks`/`jobs` resource today) and, for anything but a platform actor, a
-  tenant filter.
-- **`?since=` returns a 500 on a malformed date.** The raw string goes straight
-  into `created_at__date__gte` (`views_tasks.py:90-92`); `?since=yesterday`
-  raises a Django `ValidationError`, which is not a DRF exception and so falls
-  through to the unhandled branch of the handler as
-  `500 SERVER_ERROR` (`core/exceptions.py:158-168`). The same class of defect is
-  recorded against the security views in
-  `docs/user/user_security_monitoring.md` §8; the helper that fixes it is
-  `vs_user/views/accounts.py:51-60`.
+- **Tenant scoping is coarse: platform-wide or own-tenant, with nothing in
+  between.** `visible_tenant_ids` returns every tenant for a holder of
+  `platform.tasks.view_all` and the caller's own tenant for everyone else. The
+  shape an operations team actually wants - "this support operator covers
+  Corona and Greenfield" - cannot be expressed, because `platform.tasks.*` is
+  PLATFORM-scoped and `vs_rbac.models.assert_tenant_may_hold` refuses a
+  platform-scoped key granted inside a tenant role. Building it means either
+  relaxing that guard, which exists to stop a school granting itself platform
+  powers, or adding a second "which schools does this operator cover" table
+  alongside RBAC. That is a feature, not a fix, and it is not attempted here.
+  The practical consequence today: anyone who needs one school's task rows
+  needs `view_all`, which gives them all of them.
+- **Redaction is pattern-based, so it over-redacts by design.** A 12-digit
+  invoice reference is masked alongside a bank account number, and part of a
+  UUID inside a traceback can be too. The trade is deliberate - masking a
+  reference costs an operator one click into `diagnostics/`; missing an
+  account number leaves it in a backup for a year - but it does mean the
+  redacted `error` is a triage aid rather than a faithful transcript.
+- **`schedule/` is not tenant-scoped and does not need to be**, but it is worth
+  saying out loud: it describes the platform's own internals, so it sits behind
+  `platform.tasks.view` on that basis rather than on any customer-data basis.
 - **`?status=` and `?kind=` are unvalidated free text.** `?status=BOGUS` and
   `?kind=nonsense` both return an empty page rather than a `400`
   (`views_tasks.py:77-89`), so a frontend typo reads as "no jobs" rather than as
@@ -202,10 +259,6 @@ The list route returns the `XVSPagination`
   the five are covered by the `(status, -created_at)` index; `by_task` groups on
   an unindexed `task_name` and `total` counts the table. With 90 days of
   retention that is survivable, but it is a screen built to be polled.
-- **`?tenant=` is required and then ignored.** The viewset does not opt out of
-  the tenant assertion, so every call must carry a slug
-  (`vs_rbac/authentication.py:123-126`) that the queryset never uses
-  (`views_tasks.py:72-94`). It reads as tenant scoping and provides none.
 - **`schedule/` reports intent, not reality.** It reads the in-process
   `beat_schedule` dict (`views_tasks.py:136-146`), so it answers identically
   whether or not a beat process is running, and it cannot show last-run or
@@ -220,68 +273,105 @@ The list route returns the `XVSPagination`
   row (`core/models.py:50-54`). It is the right choice for a queue view, and it
   is why `owner_name` sometimes looks unrelated to `label`.
 - **Justified by design:** `recent_failures` returns four scalar fields and not
-  the traceback (`views_tasks.py:115-120`). The dashboard card does not need it,
-  even though the list route beside it hands it over in full.
+  the traceback. The dashboard card does not need it, and the list route beside
+  it no longer hands one over either.
+- **Justified by design:** `stats/` aggregates are built from `get_queryset()`
+  rather than the bare manager, so the counts an operator reads describe the
+  rows they can list. Unscoped totals would have leaked the size of tenants
+  they cannot see.
 
 ## 9. Permissions & tenant isolation
 
-| Surface | Gate | Seeded? |
+| Surface | Gate | Seeded to |
 |---|---|---|
-| Task list | `IsVisionStaff` - Django `is_staff` only | n/a - no RBAC key exists |
-| Task stats | same | n/a |
-| Beat schedule | same | n/a |
+| Task list / detail / stats / schedule | `IsVisionStaff` (PLATFORM tenant) + `platform.tasks.view` | `xvs_super_admin`, `xvs_platform_admin` |
+| Cross-tenant widening | `platform.tasks.view_all` (CRITICAL) | `xvs_super_admin` only |
+| Raw diagnostics | `platform.tasks.view_sensitive` (CRITICAL) | `xvs_super_admin` only |
 
-**There is no tenant isolation on this slice.** `BackgroundJob` carries a
-`tenant` FK and uses the plain default manager (`core/models.py:56-59,93-99`),
-the queryset applies no tenant condition (`views_tasks.py:74`), and `tenant` is
-serialised as a bare id with no filter to match it (`views_tasks.py:41-48`).
-That is defensible for a platform operations console; it is not defensible
-behind a flag that every CX account carries by construction.
+**Tenant isolation.** `get_queryset` filters on `BackgroundJob.tenant` against
+`visible_tenant_ids(user)`, so a caller without `view_all` sees their own
+tenant only, and `?tenant=<slug|id>` narrows within whatever that leaves. An
+unknown slug narrows to nothing rather than being ignored: silently returning
+every tenant for a typo is how a filter becomes a leak.
 
-`StaffReadOnlyOrSuperuserWrite` (`permissions.py:22-37`) is defined in the same
-file and used nowhere - there is nothing to write here.
+**Why `IsVisionStaff` sits beside the key.** A permission key living in the
+`platform` module is a naming convention, not a boundary - `vs_rbac/views.py`
+already reckons with "a school role that somehow carried a platform key". Here
+the scope column closes that door first (`assert_tenant_may_hold` refuses the
+grant outright), and the tenant-kind check closes it again at the endpoint.
+
+**Historical note.** This slice was previously gated on a *shadow*
+`IsVisionStaff` defined in `vs_admin_console/permissions.py`, which checked
+Django's `is_staff` flag rather than the caller's tenant kind. It shared a name
+with `vs_rbac.permissions.IsVisionStaff` - the real gate, composed by roughly
+twenty views elsewhere - so the call site read as the platform boundary while
+asking a much weaker question. Both that class and the unused
+`StaffReadOnlyOrSuperuserWrite` beside it have been deleted rather than fixed,
+so the name resolves to one thing across the codebase.
 
 ## 10. Code map
 
 | File | Responsibility |
 |---|---|
-| `views_tasks.py` | `AdminJobSerializer`, the list queryset and its four filters, `stats`, `schedule` |
-| `permissions.py` | `IsVisionStaff` - the only gate on this slice |
-| `urls.py:16` | Router registration under the `tasks` basename |
-| `core/models.py` | `BackgroundJob` - fields, statuses, indexes, and the owner-is-the-actor rule |
-| `core/tasks_base.py` | `TrackedTask` - what actually writes and finalises every row |
-| `core/tasks.py` | `prune_background_jobs_task` - the 90-day retention sweep |
+| `views_tasks.py` | List/detail serializers, `visible_tenant_ids`, the filters, `diagnostics`, `stats`, `schedule` |
+| `permissions.py` | `IsPlatformActor` only - the gate now comes from `vs_rbac.permissions` |
+| `urls.py` | Router registration under the `tasks` basename |
+| `core/models.py` | `BackgroundJob` and `TaskDiagnostic` |
+| `core/redaction.py` | `redact_text`, `redact_payload`, `RedactingLogFilter` - the scrub both the DB and the log stream call |
+| `core/log_format.py` | `JSONFormatter` - one JSON object per log line |
+| `core/tasks_base.py` | `TrackedTask._finish` - the choke point that redacts and forks the raw copy |
+| `core/tasks.py` | `prune_background_jobs_task` (90 days), `prune_task_diagnostics_task` (400) |
+| `apps/settings/base.py` | `LOGGING`, `TASK_DIAGNOSTIC_RETENTION_DAYS` |
+| `core/management/commands/seed_platform_permissions.py` | The three `platform.tasks.*` keys and their grants |
 | `apps/celery.py` | The beat schedule `schedule/` reports |
 | `vs_user/views/jobs.py` | The owner-facing view of the same table (`/v1/user/me/tasks/`) |
 
 ## 11. Test coverage & gaps
 
-`tests_tasks.py` is four tests (`tests_tasks.py:31-78`):
+`tests_tasks.py` is five classes. The security cases come first because they
+are the ones this surface got wrong.
 
-- `test_list_and_filters` (`tests_tasks.py:36`) - the list plus the `status`,
-  `task` and `kind` filters.
-- `test_stats` (`tests_tasks.py:55`) - the `by_status` counts and the payload
-  keys.
-- `test_schedule_lists_beat_entries` (`tests_tasks.py:66`) - two known beat
-  entry names and the presence of `eager_mode`.
-- `test_non_staff_denied` (`tests_tasks.py:75`) - an **anonymous** client gets
-  `401`.
+**Access (`TaskMonitorAccessTests`)** - anonymous gets `401`; a Codex account
+with `is_staff` and no role gets `403` (the finding, as a test); `is_superuser`
+alone is not a grant; a school user is refused by tenant kind; and a school
+role *cannot even be granted* `platform.tasks.view`, which proves the scope
+column stops the grant a layer before the endpoint.
 
-This is the thinnest coverage in the module, and two of the gaps are the reason
-§8 reads the way it does:
+**Redaction (`TaskMonitorRedactionTests`)** - list rows carry no `result`,
+`error` or `traceback`; the detail route shows a redacted `error` and still no
+`traceback`.
 
-1. **"Non-staff denied" tests nobody.** It uses a bare `APIClient()` with no
-   credentials, so it asserts that anonymous requests are rejected - not that an
-   authenticated non-staff user is. There is no test that a school user, or a CX
-   user with no role, is refused.
-2. **The whole file uses `force_authenticate`** (`tests_tasks.py:34`), which
-   bypasses `TenantJWTAuthentication` entirely. The `?tenant=` requirement, the
-   ambient tenant contextvar, and therefore any tenant scoping this surface
-   might grow are all unexercised. The pattern that does drive the real auth
-   path is in this module already: `vs_admin_console/tests.py:83-88`.
-3. **No cross-tenant test.** Every job in the fixtures is created against the
-   `codex` tenant (`tests_tasks.py:23-28`), so nothing would fail if a tenant
-   filter were added, and nothing fails today for its absence.
-4. Also uncovered: `?since=` in any form including the malformed value that
-   500s, `runtime_seconds` for a running job, `owner_name` for a system-owned
-   run, `recent_failures`, and the empty-table response shape.
+**Diagnostics (`TaskDiagnosticAccessTests`)** - `platform.tasks.view` alone
+cannot read raw text; `view_sensitive` can; the read emits
+`TASK_DIAGNOSTIC_VIEWED` against the **job's** tenant naming the actor; a run
+with no diagnostic is a `404` rather than an empty body.
+
+**Tenant scope (`TaskMonitorTenantScopeTests`)** - `view_all` sees every
+tenant; without it no customer rows are visible; `?tenant=` narrows; an unknown
+slug returns nothing rather than everything; an out-of-scope row is not
+reachable by id; `stats/` counts are scoped too.
+
+**Listing (`TaskMonitorListingTests`)** - the four filters, the `by_status`
+grouping fix, the malformed and well-formed `?since=`, the empty-list response
+shape, and the beat entries including `prune-task-diagnostics`.
+
+`core/tests_redaction.py` covers the other half - the choke point itself:
+the Postgres DETAIL payload, a value no other rule matches (a guardian's
+name), the SMTP refusal, bank account numbers, that ordinary diagnostics and
+`task_name`-style keys survive, nested payloads, the log filter including
+**exception text**, what `_finish` writes to each of the two tables, that
+`/v1/user/me/tasks/` serves the redacted column, and the retention prune.
+
+Still uncovered:
+
+1. **`force_authenticate` throughout**, which bypasses
+   `TenantJWTAuthentication`. The `?tenant=` assertion and the ambient tenant
+   contextvar are unexercised; `vs_admin_console/tests.py` has the pattern that
+   drives the real auth path.
+2. **`runtime_seconds` for a running job** and **`owner_name` for a
+   system-owned run**.
+3. **No test that a *newly added* task's result is redacted** - the guarantee
+   is structural (everything routes through `_finish`) rather than asserted
+   per task.
+4. **`?status=` and `?kind=` remain unvalidated free text** - still a silent
+   empty page rather than a `400`, and still untested as such.
