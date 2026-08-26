@@ -31,6 +31,7 @@ from vs_rbac.tests.helpers import (
 from vs_user.tokens import CodeXRefreshToken
 from schools.vs_academics.models import (
     AcademicSession,
+    Department,
     Level,
     Program,
     SchoolClass,
@@ -501,3 +502,114 @@ class OverviewNamesTheYearBeingReadTests(_Base):
         drafted = self.overview({"session": self.next_year.pk})["counts"]
         self.assertEqual((live["levels"], live["classes"]), (2, 1))
         self.assertEqual((drafted["levels"], drafted["classes"]), (0, 0))
+
+
+class ScrappingAProgrammeTests(_Base):
+    """Dropping Commercial, without editing the year it ran in.
+
+    A programme has no year of its own, so "we stopped running it" cannot be a
+    delete and must not be an archive: both reach backwards. It is expressed by
+    the programme having no levels in the new year, and the screens read that.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.build_this_year()
+        cls.commerce_dept = Department.all_objects.create(
+            tenant=cls.tenant, name="Commercial", code="COM",
+        )
+        cls.commercial = Program.all_objects.create(
+            tenant=cls.tenant, name="Commercial", code="COMP",
+            department=cls.commerce_dept,
+        )
+        Level.all_objects.create(
+            tenant=cls.tenant, session=cls.this_year, program=cls.commercial,
+            name="SSS1 Commercial", code="SSS1COM", order_index=1,
+        )
+
+    def programmes(self, session):
+        response = self.get(
+            self.admin, "academics-program-list", {"session": session.pk},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return {
+            row["name"]: [lvl["name"] for lvl in row["levels"]]
+            for row in response.data["data"]
+        }
+
+    def departments(self, session):
+        response = self.get(
+            self.admin, "academics-department-list", {"session": session.pk},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return {row["name"]: row["running_this_year"] for row in response.data["data"]}
+
+    def test_a_programme_left_out_of_the_new_year_keeps_the_year_it_ran(self):
+        """The whole point: 2100/2101 drops it, 2099/2100 still has it."""
+        roll_forward(self.tenant, source=self.this_year, target=self.next_year)
+        # The school then withdraws next year's Commercial levels.
+        Level.all_objects.filter(
+            session=self.next_year, program=self.commercial,
+        ).delete()
+
+        self.assertEqual(
+            self.programmes(self.this_year)["Commercial"], ["SSS1 Commercial"],
+        )
+        self.assertEqual(self.programmes(self.next_year)["Commercial"], [])
+
+    def test_a_programme_with_none_this_year_shows_none_not_every_year(self):
+        """Narrowed to nothing is an answer, not a missing prefetch.
+
+        The serializer fell back to every year's levels when the year's list
+        came back empty, so a programme the school had stopped running showed
+        last year's levels under this year's heading - the one case the
+        narrowing exists to express was the one case that undid it. The same
+        `or` sat in front of a subject's offerings.
+        """
+        # Both programmes are listed, both with nothing in them: the list is
+        # the school's programmes, and the LEVELS are what belong to a year.
+        self.assertEqual(
+            self.programmes(self.next_year),
+            {"Commercial": [], "Junior Secondary": []},
+        )
+        Level.all_objects.create(
+            tenant=self.tenant, session=self.next_year, program=self.prog,
+            name="JSS1", code="JSS1", order_index=1,
+        )
+        shown = self.programmes(self.next_year)
+        self.assertEqual(shown["Junior Secondary"], ["JSS1"])
+        # Commercial is listed with nothing in it, NOT with last year's level.
+        self.assertEqual(shown["Commercial"], [])
+
+    def test_a_department_says_whether_it_ran_in_the_year_being_read(self):
+        roll_forward(self.tenant, source=self.this_year, target=self.next_year)
+        Level.all_objects.filter(
+            session=self.next_year, program=self.commercial,
+        ).delete()
+        Subject.all_objects.filter(
+            session=self.next_year, department=self.commerce_dept,
+        ).delete()
+
+        self.assertTrue(self.departments(self.this_year)["Commercial"])
+        self.assertFalse(self.departments(self.next_year)["Commercial"])
+
+    def test_deleting_it_is_refused_and_names_the_year_that_holds_it(self):
+        """Standing on the year where it has no levels does not make it free."""
+        url = reverse(
+            "academics-program-detail", kwargs={"pk": self.commercial.pk},
+        )
+        response = self.client_for(self.admin).delete(
+            f"{url}?tenant={self.tenant.slug}&session={self.next_year.pk}",
+        )
+        self.assertEqual(response.status_code, 409, response.data)
+        # The platform's own PROTECT code, deliberately - what this module
+        # adds is the wording. The year is the part a school can act on.
+        self.assertEqual(response.data["error"]["code"], "PROTECTED_REFERENCE")
+        self.assertIn(
+            "Commercial still has 1 level in 2099/2100", response.data["message"],
+        )
+        self.assertIn("leave it out of the new year", response.data["message"])
+        self.assertTrue(
+            Program.all_objects.filter(pk=self.commercial.pk).exists(),
+        )

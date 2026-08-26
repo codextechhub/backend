@@ -8,7 +8,7 @@ narrowing, and a child may be no wider than its parent.
 from __future__ import annotations
 
 from django.db import transaction
-from django.db.models import Count, Prefetch, Q
+from django.db.models import BooleanField, Count, Exists, OuterRef, Prefetch, Q, Value
 from rest_framework import generics
 from rest_framework.exceptions import NotFound
 from rest_framework.views import APIView
@@ -200,14 +200,38 @@ class _StructureBase(AcademicsViewMixin):
 
 # ── Departments ────────────────────────────────────────────────────────────
 
-def _departments_for(tenant):
-    return (
+def _departments_for(tenant, session=None):
+    """Departments, with the two counts the card shows and one flag.
+
+    A department has no year of its own on purpose: Sciences is Sciences, and
+    giving it a year would make five Sciences rows in five years that only a
+    matching NAME could tie back together - which breaks the first time a
+    school renames one. What varies by year is whether the school RAN it, and
+    that is already in the data: a department is running in a year when a
+    programme with levels in that year, or a subject in that year, points at
+    it. Derived rather than stored, so it can never disagree with the levels
+    and subjects it is derived from.
+    """
+    qs = (
         Department.objects.filter(tenant=tenant)
         .select_related("branch")
         .annotate(
             program_count_annotated=Count("programs", distinct=True),
             subject_count_annotated=Count("subjects", distinct=True),
         )
+    )
+    if session is None:
+        return qs.annotate(running_this_year=Value(True, output_field=BooleanField()))
+    return qs.annotate(
+        running_this_year=Exists(
+            Level.objects.filter(
+                tenant=tenant, session=session, program__department=OuterRef("pk"),
+            ),
+        ) | Exists(
+            Subject.objects.filter(
+                tenant=tenant, session=session, department=OuterRef("pk"),
+            ),
+        ),
     )
 
 
@@ -227,7 +251,7 @@ class DepartmentListCreateView(_StructureBase, generics.ListCreateAPIView):
         return super().get_permissions()
 
     def get_queryset(self):
-        return self._filtered(_departments_for(self.tenant))
+        return self._filtered(_departments_for(self.tenant, self.session))
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
@@ -462,16 +486,34 @@ class ProgramDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
     @transaction.atomic
     def destroy(self, request, *args, **kwargs):
         program = self.get_object()
-        # Guarded here rather than left to PROTECT, so the refusal is written
-        # for the person reading it - see ProgramHasLevels.
-        levels = Level.all_objects.filter(
-            program=program, session=self.session,
-        ).count()
+        # EVERY year, not the one being looked at. Scoping this to the lens
+        # meant a school standing on 2026/2027 - where Commercial has no levels
+        # because it was not carried forward - passed the guard and hit the
+        # database's PROTECT instead, which answers "1 level still reference
+        # it" and never says WHICH YEAR is holding it. The rows that block a
+        # delete are last year's, so the count that describes them has to be
+        # last year's too.
+        held = (
+            Level.all_objects.filter(program=program)
+            .values_list("session__name", flat=True)
+        )
+        levels = len(held)
         if levels:
+            years = sorted(set(held))
+            one_year = len(years) == 1
+            where = (
+                f"in {years[0]}" if one_year
+                else f"across {', '.join(years[:-1])} and {years[-1]}"
+            )
+            record = (
+                "That year is a record" if one_year
+                else "Those years are a record"
+            )
             raise ProgramHasLevels(
-                f"{levels} level{'s sit' if levels > 1 else ' sits'} inside "
-                f"{program.name}. Delete or move {'them' if levels > 1 else 'it'} "
-                f"first, then delete the programme.",
+                f"{program.name} still has {levels} "
+                f"{'levels' if levels > 1 else 'level'} {where}. {record} of "
+                f"what the school ran, so the programme cannot be deleted. To "
+                f"stop running it, leave it out of the new year instead.",
                 **{"Level": levels},
             )
         name, pk = program.name, program.pk

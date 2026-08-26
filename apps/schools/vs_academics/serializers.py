@@ -149,6 +149,23 @@ class SessionWriteSerializer(serializers.ModelSerializer):
 
 # ── Structure: departments, programmes, levels ─────────────────────────────
 
+def _narrowed(obj, attr, fallback):
+    """A prefetch narrowed to nothing is an ANSWER, not a missing prefetch.
+
+    Both of the callers below used ``getattr(obj, attr, None) or fallback()``,
+    and an empty list is falsy - so a programme with no levels in the year
+    being read fell back to EVERY year's levels, and a subject with no
+    offerings at the branch being read fell back to every branch's. The
+    narrowing that was applied on purpose was undone by the one case it exists
+    to express.
+
+    Absent means "nobody narrowed this"; empty means "narrowed, and the answer
+    is none".
+    """
+    value = getattr(obj, attr, None)
+    return fallback() if value is None else list(value)
+
+
 class _ScopedSerializer(_BranchAware):
     """A catalogue row that may belong to one branch or to the whole school."""
 
@@ -165,13 +182,14 @@ class _ScopedSerializer(_BranchAware):
 class DepartmentSerializer(_ScopedSerializer):
     program_count = serializers.SerializerMethodField()
     subject_count = serializers.SerializerMethodField()
+    running_this_year = serializers.SerializerMethodField()
 
     class Meta:
         model = Department
         fields = [
             "id", "name", "code", "description", "is_active",
             "branch", "branch_name", "scope_label",
-            "program_count", "subject_count",
+            "program_count", "subject_count", "running_this_year",
         ]
 
     def get_program_count(self, obj) -> int:
@@ -179,6 +197,15 @@ class DepartmentSerializer(_ScopedSerializer):
 
     def get_subject_count(self, obj) -> int:
         return getattr(obj, "subject_count_annotated", 0)
+
+    def get_running_this_year(self, obj) -> bool:
+        """Whether the school ran this department in the year being read.
+
+        See _departments_for: derived from the levels and subjects that year
+        rather than stored, so scrapping Commercial is simply not carrying it
+        forward - the year it DID run still shows it.
+        """
+        return bool(getattr(obj, "running_this_year", True))
 
 
 class DepartmentWriteSerializer(serializers.ModelSerializer):
@@ -265,7 +292,7 @@ class ProgramSerializer(_ScopedSerializer):
         ]
 
     def _levels(self, obj):
-        return getattr(obj, "visible_levels", None) or list(obj.levels.all())
+        return _narrowed(obj, "visible_levels", lambda: list(obj.levels.all()))
 
     def get_levels(self, obj):
         return LevelSerializer(self._levels(obj), many=True, context=self.context).data
@@ -375,8 +402,9 @@ class SubjectSerializer(_ScopedSerializer):
         ]
 
     def _offerings(self, obj):
-        return getattr(obj, "visible_offerings", None) or list(
-            obj.offerings.select_related("level").all()
+        return _narrowed(
+            obj, "visible_offerings",
+            lambda: list(obj.offerings.select_related("level").all()),
         )
 
     def get_offerings(self, obj):

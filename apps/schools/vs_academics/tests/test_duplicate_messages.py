@@ -233,7 +233,12 @@ class BlockedDeleteWordingTests(_AllAcademics):
         url = f"/v1/academics/programs/{jss.pk}/?tenant={self.tenant.slug}"
         response = self.client_for(self.admin).delete(url)
         self.assertEqual(response.status_code, 409, response.data)
-        self.assertIn("2 levels sit inside Junior Secondary", response.data["message"])
+        # It names the YEAR, because the year is what a school reading this
+        # has to act on: the blocking rows may be last year's.
+        self.assertIn(
+            "Junior Secondary still has 2 levels in 2099/2100",
+            response.data["message"],
+        )
         self.assertNotIn("reference", response.data["message"])
 
     def test_a_level_holding_classes_says_to_move_the_classes(self):
