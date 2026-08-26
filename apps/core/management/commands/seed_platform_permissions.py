@@ -146,6 +146,26 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
         ],
     ),
     (
+        "tasks",
+        "Background task monitor - the engine-room view over every Celery run",
+        [
+            # The triage surface. Status, task name, owner, timings: enough to
+            # answer "did Corona's import finish?" and nothing that names a
+            # guardian. Held by both platform roles.
+            ("view", "View the background task monitor (redacted)", False, _NORMAL),
+            # Every tenant's runs in one list. Without it the monitor is
+            # limited to the tenants the holder actually has a role in, which
+            # is what turns "browse every customer" into "browse the customer
+            # whose ticket you are on".
+            ("view_all", "View task runs across every tenant", True, _CRITICAL),
+            # The raw, unredacted failure text out of TaskDiagnostic. This is
+            # the key that reads somebody's email address out of a Postgres
+            # constraint error, so it is CRITICAL, super-admin only, and the
+            # read itself emits an audit event naming who did it.
+            ("view_sensitive", "Read raw task errors and tracebacks", True, _CRITICAL),
+        ],
+    ),
+    (
         "dashboard",
         "Platform overview dashboard",
         [
@@ -202,6 +222,17 @@ TENANT_HOLDABLE_KEYS = {
 
 # Only the Super Admin may transfer the Super Admin role.
 TRANSFER_KEY = "platform.roles.transfer"
+
+# Keys withheld from xvs_platform_admin as well, for the same reason the
+# transfer key is: they are powers over other people rather than over the
+# product. Reading a raw traceback means reading whatever personal data the
+# failing row contained, and the cross-tenant list means reading every
+# customer at once. Both are the Super Admin's, and both are grantable to a
+# named person afterwards if the platform genuinely needs a second holder.
+SUPER_ADMIN_ONLY_KEYS = {
+    "platform.tasks.view_all",
+    "platform.tasks.view_sensitive",
+}
 # Canonical codex-tenant role keys (mirror the legacy PlatformRoleTemplate ids).
 PLATFORM_ROLE_KEYS = ["xvs_super_admin", "xvs_platform_admin"]
 _PLATFORM_ROLE_NAMES = {
@@ -303,8 +334,11 @@ class Command(BaseCommand):
 
                 granted = 0
                 for perm in all_perms:
-                    # Platform Admin gets everything except the Super-Admin handoff.
-                    if role_key == "xvs_platform_admin" and perm.key == TRANSFER_KEY:
+                    # Platform Admin gets everything except the Super-Admin
+                    # handoff and the keys that read other people's data.
+                    if role_key == "xvs_platform_admin" and (
+                        perm.key == TRANSFER_KEY or perm.key in SUPER_ADMIN_ONLY_KEYS
+                    ):
                         continue
                     _, link_created = TenantRolePermission.objects.get_or_create(
                         role=role,

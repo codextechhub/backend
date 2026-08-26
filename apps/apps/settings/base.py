@@ -18,9 +18,16 @@ SECRET_KEY = config("SECRET_KEY")
 RENDER_API_KEY = config("RENDER_API_KEY")
 TEMP_PASSWORD_PEPPER = config("TEMP_PASSWORD_PEPPER")
 
-# SECRET_KEY = "django-insecure-i7@+=ild@90+jm5dew6h%1#rcpmvb0%83j^5$hqvlc2^*hihwd"
-# RENDER_API_KEY = "rnd_eA8qL7X50e5Wqtf6bFlpJMiUxMxa"
-# TEMP_PASSWORD_PEPPER = "a9f8s7d6g5h4j3k2l1q0w9e8r7t6y5u4i3o2p1z0x9c8v7b6n5m4#@hg!$%^^&*()"
+# Three live secrets sat here as commented-out fallbacks, and commenting a
+# secret out does not unpublish it: they are in the committed history of this
+# repository and in every clone of it. All three are to be rotated at their
+# source (Render dashboard for the API key and the env group for the other
+# two) rather than merely deleted here.
+#
+# Removing the lines is still worth doing. It stops the next person copying
+# them into a shell, and it stops a local run silently succeeding against a
+# production credential when the env var is missing - which is precisely how
+# a fallback secret gets used in anger.
 
 AUTH_USER_MODEL = "vs_user.User"
 
@@ -427,4 +434,96 @@ SPECTACULAR_SETTINGS = {
     # Hide noisy warnings for plain APIViews without declared serializers -
     # they are still listed, just without typed bodies (annotate over time).
     "DISABLE_ERRORS_AND_WARNINGS": False,
+}
+
+
+# --------------------------------------------------------------------------- #
+# Logging                                                                      #
+# --------------------------------------------------------------------------- #
+# There was no LOGGING block at all until now, which meant Django's implicit
+# default applied: app loggers propagated to a root with no handler, so
+# anything below WARNING vanished and everything above it reached stderr in
+# whatever shape the caller happened to write it. On Render that stderr is the
+# only log there is, it is unstructured, and it is dropped after roughly a
+# week.
+#
+# Two things are fixed here, and they are separate:
+#
+# 1. **Shape.** Records are emitted as one JSON object per line, so the stream
+#    can be searched, filtered by tenant or task, and shipped to a log service
+#    later without touching a single call site. ``LOG_FORMAT=plain`` restores
+#    human-readable output for local work.
+#
+# 2. **Content.** Every handler carries ``core.redaction.RedactingLogFilter``.
+#    The same guardian email that this change stops writing to
+#    ``BackgroundJob.error`` reaches the log stream by a completely separate
+#    route - a dozen ``logger.warning(..., exc_info=True)`` calls, plus
+#    Celery's own traceback printing - and scrubbing only the database would
+#    have moved the leak rather than closed it.
+#
+# The unredacted traceback is not lost: ``core.models.TaskDiagnostic`` holds
+# it for 400 days behind ``platform.tasks.view_sensitive``, with every read
+# audited. That table, not this stream, is where an investigation into last
+# quarter's failure goes.
+LOG_LEVEL = config("LOG_LEVEL", default="INFO")
+LOG_FORMAT = config("LOG_FORMAT", default="json")
+
+#: How long raw task failure diagnostics are kept. Longer than the 90-day
+#: BackgroundJob prune on purpose - see core.models.TaskDiagnostic.
+TASK_DIAGNOSTIC_RETENTION_DAYS = config(
+    "TASK_DIAGNOSTIC_RETENTION_DAYS", default=400, cast=int,
+)
+
+LOGGING = {
+    "version": 1,
+    # Django's own default configuration is left in place beneath this one;
+    # disabling it would silence the request logger and the security logger,
+    # which are the two we would miss first.
+    "disable_existing_loggers": False,
+    "filters": {
+        "redact_pii": {
+            "()": "core.redaction.RedactingLogFilter",
+        },
+    },
+    "formatters": {
+        "json": {
+            "()": "core.log_format.JSONFormatter",
+        },
+        "plain": {
+            "format": "%(asctime)s %(levelname)-8s %(name)s %(message)s",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "plain" if LOG_FORMAT == "plain" else "json",
+            # Applied on the HANDLER rather than on individual loggers, so a
+            # logger added anywhere in the codebase tomorrow is covered
+            # without anyone remembering to opt in.
+            "filters": ["redact_pii"],
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": LOG_LEVEL,
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console"],
+            "level": LOG_LEVEL,
+            "propagate": False,
+        },
+        # Every SQL statement at DEBUG would defeat the whole point of
+        # redacting: parameters are logged as passed.
+        "django.db.backends": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "celery": {
+            "handlers": ["console"],
+            "level": LOG_LEVEL,
+            "propagate": False,
+        },
+    },
 }

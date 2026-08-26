@@ -171,10 +171,32 @@ class TrackedTask(Task):
         super().on_failure(exc, task_id, args, kwargs, einfo)
 
     def _finish(self, task_id, *, succeeded, retval=None, error="", traceback_text=""):
+        """Record the terminal state, redacted on the job and raw on the side.
+
+        This is the one place every task on the platform writes its outcome,
+        which is why the scrub lives here rather than in the tasks themselves.
+        A task cannot be trusted to know whether its own exception message
+        carries personal data: Postgres puts a guardian's email in a duplicate
+        key error, and smtplib puts a recipient's address in a refusal, and
+        neither task wrote that text.
+
+        Two destinations, deliberately:
+
+        * ``BackgroundJob`` gets the redacted text. It is the listable,
+          filterable, school-facing surface, so what lands there is what may
+          appear on any screen or in any backup.
+        * ``TaskDiagnostic`` gets the raw text, for failures only. Nothing
+          lists it and one CRITICAL key opens it, so the engineer and the
+          auditor keep the real traceback without it being browsable.
+
+        The diagnostic write is best-effort in its own right: losing it must
+        never cost the job row, which is the record the owner is waiting on.
+        """
         try:
             from django.utils import timezone
 
             from core.models import BackgroundJob
+            from core.redaction import redact_payload, redact_text
 
             job = BackgroundJob.objects.filter(celery_task_id=task_id).first()
             if job is None:
@@ -186,19 +208,59 @@ class TrackedTask(Task):
                 BackgroundJob.Status.SUCCEEDED if succeeded else BackgroundJob.Status.FAILED
             )
             job.finished_at = timezone.now()
+            raw_result = None
             if succeeded:
                 job.progress = 100
                 if isinstance(retval, (dict, list, str, int, float, bool)):
-                    job.result = retval
+                    raw_result = retval
+                    job.result = redact_payload(retval)
             else:
-                job.error = error[:2000]
-                job.traceback = traceback_text[:10000]
+                # Truncate AFTER redacting. Slicing first can cut a mask in
+                # half or, worse, leave the tail of an address that the
+                # pattern would have matched in the whole string.
+                job.error = redact_text(error)[:2000]
+                job.traceback = redact_text(traceback_text)[:10000]
             job.save(update_fields=[
                 "status", "finished_at", "progress", "result", "error", "traceback",
             ])
+            if not succeeded:
+                self._record_diagnostic(job, error, traceback_text, raw_result)
             self._notify_owner(job, succeeded)
         except Exception:  # pragma: no cover
             logger.warning("BackgroundJob finish-record failed for %s", task_id, exc_info=True)
+
+    def _record_diagnostic(self, job, error, traceback_text, raw_result):
+        """Keep the unredacted failure text where only a named key reaches it.
+
+        Written for failures only. A successful task's result is already
+        summary data (row counts, statuses) and keeping an unredacted copy of
+        every success would rebuild the very store this change exists to
+        empty.
+        """
+        try:
+            from datetime import timedelta
+
+            from django.utils import timezone
+
+            from core.models import TaskDiagnostic
+
+            TaskDiagnostic.objects.update_or_create(
+                job=job,
+                defaults=dict(
+                    tenant_id=job.tenant_id,
+                    task_name=job.task_name or "",
+                    raw_error=error or "",
+                    raw_traceback=traceback_text or "",
+                    raw_result=raw_result,
+                    expires_at=timezone.now() + timedelta(
+                        days=TaskDiagnostic.retention_days(),
+                    ),
+                ),
+            )
+        except Exception:  # pragma: no cover - never cost the job row
+            logger.warning(
+                "TaskDiagnostic write failed for job %s", job.pk, exc_info=True,
+            )
 
     # ------------------------------------------------------------------ #
     # Completion notification (in-app, best-effort)                      #

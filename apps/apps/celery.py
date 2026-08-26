@@ -40,6 +40,12 @@ app.conf.beat_schedule = {
         "task": "core.tasks.prune_background_jobs_task",
         "schedule": crontab(hour=2, minute=30),
     },
+    # Raw failure diagnostics outlive the queue rows they describe (400 days
+    # against 90), because the auditor's window is longer than the engineer's.
+    "prune-task-diagnostics": {
+        "task": "core.tasks.prune_task_diagnostics_task",
+        "schedule": crontab(hour=2, minute=45),
+    },
 
     # --- vs_finance (dunning) --------------------------------------------
     # Daily: generate the day's overdue reminders and dispatch every PENDING

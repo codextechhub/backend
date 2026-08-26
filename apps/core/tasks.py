@@ -22,3 +22,22 @@ def prune_background_jobs_task(days: int = 90) -> dict:
         created_at__lt=cutoff,
     ).delete()
     return {"pruned": deleted, "older_than_days": days}
+
+
+@shared_task
+def prune_task_diagnostics_task() -> dict:
+    """Delete raw task diagnostics whose retention window has closed.
+
+    Separate from ``prune_background_jobs_task`` and deliberately longer: the
+    operational queue is read in days, the audit record in quarters. Each row
+    carries its own ``expires_at``, stamped when it was written, so shortening
+    the retention setting does not retroactively extend the life of rows
+    already on disk - and lengthening it does not resurrect what was already
+    due.
+    """
+    from core.models import TaskDiagnostic
+
+    deleted, _ = TaskDiagnostic.objects.filter(
+        expires_at__lt=timezone.now(),
+    ).delete()
+    return {"pruned": deleted}

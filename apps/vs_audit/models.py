@@ -181,6 +181,16 @@ class AuditActionType(models.TextChoices):
     ACADEMIC_CLASS_RESTORED = "ACADEMIC_CLASS_RESTORED", "Academic Class Restored"
     ACADEMIC_STRUCTURE_BULK_CREATED = "ACADEMIC_STRUCTURE_BULK_CREATED", "Academic Structure Bulk Created"
 
+    # Platform operations. Registered before anything emits it, because the
+    # vocabulary is closed and validated on save and emit_audit_event swallows
+    # an unregistered value silently - which would leave exactly the trail
+    # this event exists to create empty.
+    #
+    # Reading a raw task traceback means reading whatever personal data the
+    # failing row carried, so the read is itself the auditable act. Without
+    # this, "who looked at Corona's failed guardian import" has no answer.
+    TASK_DIAGNOSTIC_VIEWED = "TASK_DIAGNOSTIC_VIEWED", "Raw Task Diagnostic Viewed"
+
     CUSTOM = "CUSTOM", "Custom"
 
 

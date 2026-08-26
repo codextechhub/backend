@@ -100,3 +100,72 @@ class BackgroundJob(models.Model):
 
     def __str__(self) -> str:
         return f"{self.label or self.task_name} [{self.status}]"
+
+
+class TaskDiagnostic(models.Model):
+    """The unredacted failure record for one background task.
+
+    ``BackgroundJob`` is the operational surface: it is listed, filtered,
+    paginated and serialised to school users through ``/v1/user/me/tasks/``.
+    Its ``error``, ``traceback`` and ``result`` columns are therefore written
+    REDACTED (see ``core.redaction``), which keeps guardians' email addresses
+    out of screens, backups and the school-facing API.
+
+    The raw text still has to exist. An engineer at 2am needs the real
+    exception, and an auditor asking what happened last quarter needs it long
+    after Render has dropped its own logs. That is this table: one row per
+    failure, written by ``TrackedTask._finish``, never listed, never joined
+    into an ordinary response, readable only through
+    ``/v1/admin/tasks/<id>/diagnostics/`` behind
+    ``platform.tasks.view_sensitive``, and audited on every read.
+
+    So the raw text is not destroyed, it is *moved*: from a surface every CX
+    account can browse to one a named key opens and the audit trail records.
+
+    Retention is deliberately longer than the ``BackgroundJob`` prune (90
+    days) because the auditor's window is longer than the engineer's. It is
+    enforced by ``core.tasks.prune_task_diagnostics_task`` against
+    ``expires_at``, which is stamped once at write time so changing the
+    setting later never silently extends the life of rows already written.
+    """
+
+    #: Default retention. Overridable with ``TASK_DIAGNOSTIC_RETENTION_DAYS``.
+    DEFAULT_RETENTION_DAYS = 400
+
+    job = models.OneToOneField(
+        "core.BackgroundJob", on_delete=models.CASCADE,
+        related_name="diagnostic",
+    )
+    # Denormalised from the job so retention and tenant-scoped reads never
+    # need the join, and so the row still names its customer if the job is
+    # pruned out from under it.
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.CASCADE,
+        related_name="task_diagnostics",
+    )
+    task_name = models.CharField(max_length=255, blank=True, default="")
+    raw_error = models.TextField(blank=True, default="")
+    raw_traceback = models.TextField(blank=True, default="")
+    raw_result = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(
+        db_index=True,
+        help_text="Stamped at write time from TASK_DIAGNOSTIC_RETENTION_DAYS.",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "-created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"diagnostic for {self.task_name} ({self.job_id})"
+
+    @classmethod
+    def retention_days(cls) -> int:
+        from django.conf import settings
+
+        return int(
+            getattr(settings, "TASK_DIAGNOSTIC_RETENTION_DAYS", cls.DEFAULT_RETENTION_DAYS)
+        )

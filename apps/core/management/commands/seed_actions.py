@@ -27,6 +27,9 @@ ACTIONS: list[tuple[str, str]] = [
 
     # ── Core read / write ─────────────────────────────────────────────────────
     ("view",       "Read or list records. Required by virtually every other action as a dependency."),
+    ("view_all",   "Read records across every tenant, not only the ones the holder is scoped to. "
+                   "Distinct from 'view': a support operator scoped to one school still holds "
+                   "'view', and only a platform-wide operator holds this."),
     ("create",     "Create a new record."),
     ("update",     "Modify an existing record's fields."),
     ("delete",     "Permanently remove a record (hard-delete or irreversible soft-delete)."),
