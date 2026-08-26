@@ -61,6 +61,7 @@ def _classes_for(tenant):
         .annotate(
             subject_count_annotated=Count("level__subject_offerings", distinct=True),
         )
+        .order_by("level", "name")                    # annotate() drops Meta.ordering
     )
 
 
@@ -404,15 +405,21 @@ def _subjects_for(tenant, branch=None):
     )
 
 
-def _resolve_levels(tenant, user, level_ids):
-    """Every id must be this tenant's, or the whole call writes nothing.
+def _resolve_levels(tenant, user, level_ids, *, session):
+    """Every id must be this tenant's and this YEAR's, or nothing is written.
 
     Resolved as a set before anything is written, so one foreign id does not
     leave the valid ids in the same request half-applied.
+
+    The year matters as much as the tenant. An offering says "Mathematics is
+    taught at JSS1", and a 2027 subject pointing at the 2026 JSS1 says it
+    about a level that stopped existing when that year ended - so the class
+    lists and the timetable built on it would read a year that has closed.
     """
     levels = list(
         scope_to_visible_branches(
-            Level.objects.filter(tenant=tenant, pk__in=level_ids), user, tenant,
+            Level.objects.filter(tenant=tenant, session=session, pk__in=level_ids),
+            user, tenant,
         )
     )
     if len(levels) != len(set(level_ids)):
@@ -466,21 +473,24 @@ class SubjectListCreateView(_SubjectBase, generics.ListCreateAPIView):
         if department is not None:
             assert_within_parent(branch, department.branch, parent_label=department.name)
         data["code"] = self._code_for(
-            Subject, data["name"], data.get("code"), session=self.session,
+            Subject, data["name"], data.get("code"), session=self.session_required,
         )
         self._unique(
-            Subject.all_objects.filter(tenant=self.tenant, session=self.session),
+            Subject.all_objects.filter(tenant=self.tenant, session=self.session_required),
             name=data["name"], code=data["code"],
             writing_to_branch=branch is not None,
         )
 
         subject = Subject.objects.create(
-            tenant=self.tenant, branch=branch, session=self.session, **data,
+            tenant=self.tenant, branch=branch, session=self.session_required, **data,
         )
         if level_ids:
             _write_offerings(
                 self.tenant, subject,
-                _resolve_levels(self.tenant, request.user, level_ids),
+                _resolve_levels(
+                    self.tenant, request.user, level_ids,
+                    session=subject.session,
+                ),
             )
         self._audit(
             AuditActionType.CREATE, subject, subject.name, f"{subject.name} added.",
@@ -547,7 +557,10 @@ class SubjectDetailView(_SubjectBase, generics.RetrieveUpdateDestroyAPIView):
         if level_ids is not None:
             _write_offerings(
                 self.tenant, subject,
-                _resolve_levels(self.tenant, request.user, level_ids),
+                _resolve_levels(
+                    self.tenant, request.user, level_ids,
+                    session=subject.session,
+                ),
             )
         self._audit(
             AuditActionType.UPDATE, subject, subject.name, f"{subject.name} updated.",
@@ -595,6 +608,7 @@ class SubjectOfferingsView(_SubjectBase, APIView):
         writer.is_valid(raise_exception=True)
         levels = _resolve_levels(
             self.tenant, request.user, writer.validated_data["level_ids"],
+            session=subject.session,
         )
         _write_offerings(self.tenant, subject, levels)
 

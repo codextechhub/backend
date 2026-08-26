@@ -30,6 +30,7 @@ from __future__ import annotations
 from django.db import transaction
 
 from ..exceptions import AcademicsError
+from .years import assert_year_is_writable
 
 
 class TargetYearNotEmpty(AcademicsError):
@@ -52,12 +53,30 @@ def roll_forward(tenant, *, source, target):
     if source.pk == target.pk:
         raise NothingToCopy("Pick a different year to copy from.")
 
-    existing = Level.all_objects.filter(tenant=tenant, session=target).count()
-    if existing:
+    # Not into a year that has closed. Everything else in the module refuses a
+    # write into an archived year; a copy is eleven hundred writes at once.
+    assert_year_is_writable(target)
+
+    # Every kind, not just levels. A year seeded with subjects and no levels
+    # passed a levels-only check and got a second copy of each - and where the
+    # names matched, the unique constraint answered for us in SQL.
+    started = {
+        "level": Level.all_objects.filter(tenant=tenant, session=target).count(),
+        "class": SchoolClass.all_objects.filter(
+            tenant=tenant, session=target,
+        ).count(),
+        "subject": Subject.all_objects.filter(
+            tenant=tenant, session=target,
+        ).count(),
+    }
+    held = [(n, kind) for kind, n in started.items() if n]
+    if held:
+        what = ", ".join(
+            f"{n} {kind if n == 1 else kind + 's'}" for n, kind in held
+        )
         raise TargetYearNotEmpty(
-            f"{target.name} already has {existing} "
-            f"{'level' if existing == 1 else 'levels'}. Copying into a year that "
-            f"has been started would double what is there - clear it first, or "
+            f"{target.name} already has {what}. Copying into a year that has "
+            f"been started would double what is there - clear it first, or "
             f"pick an empty year.",
         )
 

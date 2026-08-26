@@ -46,6 +46,7 @@ def _sessions_for(tenant):
             Prefetch("terms", queryset=AcademicTerm.objects.order_by("order_index")),
             "branch_links__branch",
         )
+        .order_by("-start_date")                      # annotate() drops Meta.ordering
     )
 
 

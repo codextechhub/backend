@@ -214,7 +214,13 @@ def _departments_for(tenant, session=None):
     "Subjects 9", a number the school has never had. `distinct=True` on both,
     because two counts over two multi-valued joins inflate each other.
     """
-    qs = Department.objects.filter(tenant=tenant).select_related("branch")
+    qs = (
+        Department.objects.filter(tenant=tenant)
+        .select_related("branch")
+        # annotate() drops Meta.ordering, and an unordered queryset cannot be
+        # paged: the same row lands on two pages, or on none.
+        .order_by("name")
+    )
     if session is None:
         return qs.annotate(
             program_count_annotated=Count("programs", distinct=True),
@@ -542,6 +548,7 @@ def _levels_for(tenant):
             # remove rows the reader was never told about.
             subject_count_annotated=Count("subject_offerings", distinct=True),
         )
+        .order_by("program", "order_index")           # annotate() drops Meta.ordering
     )
 
 
@@ -576,7 +583,7 @@ class LevelListCreateView(_StructureBase, generics.ListCreateAPIView):
     def get_queryset(self):
         return self._filtered(
             _levels_for(self.tenant).filter(
-                program=self.program, session=self.session,
+                program=self.program, session=self.session_required,
             ),
         ).order_by("order_index")
 
@@ -591,18 +598,18 @@ class LevelListCreateView(_StructureBase, generics.ListCreateAPIView):
         branch = self._branch_for_write(requested)
         assert_within_parent(branch, program.branch, parent_label=program.name)
         data["code"] = self._code_for(
-            Level, data["name"], data.get("code"), session=self.session,
+            Level, data["name"], data.get("code"), session=self.session_required,
         )
         # Unique inside a programme AND a year: a school may run Year 1 in both
         # Nursery and Primary, and runs JSS1 again every September. Scoping to
         # the year is what lets next year's structure be built beside this one.
         self._unique(
-            Level.all_objects.filter(program=program, session=self.session),
+            Level.all_objects.filter(program=program, session=self.session_required),
             name=data["name"], code=data["code"], within=program.name,
         )
         if not data.get("order_index"):
             highest = (
-                Level.all_objects.filter(program=program, session=self.session)
+                Level.all_objects.filter(program=program, session=self.session_required)
                 .order_by("-order_index")
                 .values_list("order_index", flat=True).first() or 0
             )
@@ -611,7 +618,7 @@ class LevelListCreateView(_StructureBase, generics.ListCreateAPIView):
         target = data.pop("next_level", None)
         level = Level.objects.create(
             tenant=self.tenant, program=program, branch=branch,
-            session=self.session, **data,
+            session=self.session_required, **data,
         )
         if target is not None:
             assert_promotion_target(level, target)
@@ -658,14 +665,14 @@ class LevelBulkCreateView(_StructureBase, APIView):
 
         taken = {
             c.lower() for c in
-            Level.all_objects.filter(tenant=self.tenant, session=self.session)
+            Level.all_objects.filter(tenant=self.tenant, session=self.session_required)
             .values_list("code", flat=True)
         }
         plan = plan_bulk_levels(program, writer.validated_data["names"], taken)
         created = Level.objects.bulk_create([
             Level(
                 tenant=self.tenant, program=program, branch=branch,
-                session=self.session, **row,
+                session=self.session_required, **row,
             )
             for row in plan
         ])

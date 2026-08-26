@@ -79,10 +79,11 @@ def plan_bulk_levels(program, names, existing_codes):
 def assert_promotion_target(level, target, *, cross_program=False):
     """Refuse a promotion edge that cannot mean anything.
 
-    Four cases, and the last is the one version 1.0 of the FRD specified
-    nowhere. No consumer exists yet to be hurt by an infinite promotion loop,
-    which is exactly why it is closed now rather than after a school has a
-    term of data in it.
+    Five cases: promoting into itself, into another year, across a programme
+    without saying so, from the whole school into one branch, and into a loop.
+    No consumer exists yet to be hurt by an infinite promotion loop, which is
+    exactly why it is closed now rather than after a school has a term of data
+    in it.
     """
     if target is None:
         return
@@ -90,6 +91,16 @@ def assert_promotion_target(level, target, *, cross_program=False):
         raise LevelCycle(
             f"{level.name} cannot promote into itself.",
             level=level.name,
+        )
+    if target.session_id != level.session_id:
+        from ..exceptions import SessionMismatch
+
+        raise SessionMismatch(
+            f"{target.name} belongs to a different academic year, so "
+            f"{level.name} cannot promote into it. A pupil is promoted into "
+            f"the year that comes next, not into a year that has already been "
+            f"recorded.",
+            level=level.name, target=target.name,
         )
     if target.program_id != level.program_id and not cross_program:
         raise LevelCrossProgram(

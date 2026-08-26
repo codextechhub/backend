@@ -53,25 +53,26 @@ class AcademicsViewMixin:
 
     @property
     def session(self):
-        """The academic year this request is about.
+        """The academic year this request is about, or None if the school has none.
 
         `?session=<id>` when the screen names one, else the school's ACTIVE
-        year. Never "all years": levels, classes and subjects belong to exactly
-        one, so a list without a year is a list of several years' rows piled on
-        top of each other - which is what this module used to show.
+        year, else its latest. Never "all years": levels, classes and subjects
+        belong to exactly one, so a list without a year is several years' rows
+        piled on top of each other.
 
-        On a WRITE it must also be a year that may still be written to. An
-        archived year is last year's record, and the whole point of giving the
-        structure a year was that reading 2025/2026 back shows what actually
-        happened - which is not true if today's admin can still add a class to
-        it. Refused here rather than in each view, because there are eleven
-        write paths and the one that forgets is the one that rewrites history.
+        None rather than a refusal, because a school that has not created its
+        first year still has to be able to open this module - it is where the
+        year gets created. Nothing per-year can exist yet, so narrowing by None
+        correctly finds nothing, and departments and programmes still list.
+        Writes that must land in a year ask for `session_required` instead.
+
+        On a write it must also be a year that may still be written to. Checked
+        here rather than in each view: there are eleven write paths and the one
+        that forgets is the one that rewrites history.
         """
-        cached = getattr(self, "_session", None)
-        if cached is not None:
-            return cached
+        if "_session" in self.__dict__:
+            return self._session
 
-        from ..exceptions import NoSessionYet
         from ..models import AcademicSession, SessionStatus
         from ..services.years import assert_year_is_writable
 
@@ -88,11 +89,24 @@ class AcademicsViewMixin:
                 or AcademicSession.objects.filter(tenant=self.tenant)
                 .order_by("-start_date").first()
             )
-            if found is None:
-                raise NoSessionYet()
-        if self.request.method not in SAFE_METHODS:
+        if found is not None and self.request.method not in SAFE_METHODS:
             assert_year_is_writable(found)
         self._session = found
+        return found
+
+    @property
+    def session_required(self):
+        """The year, refusing when the school has not made one.
+
+        For the writes that cannot mean anything without a year - a level, a
+        class, a subject. The refusal names the next step, which is a better
+        answer than a validation error about a field the screen never showed.
+        """
+        found = self.session
+        if found is None:
+            from ..exceptions import NoSessionYet
+
+            raise NoSessionYet()
         return found
 
     def get_serializer_context(self):

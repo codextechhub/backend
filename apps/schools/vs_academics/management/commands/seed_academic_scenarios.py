@@ -152,7 +152,7 @@ class Command(BaseCommand):
             f"{len(branches)} branch{'es' if multi else ''}",
         )
 
-        year = self._years(tenant)
+        year, past = self._years(tenant)
         depts = self._departments(tenant, secondary)
         # Structure hangs off ONE year - the live one. A school's other years
         # are its history and its plan; seeding all three identically would
@@ -161,7 +161,7 @@ class Command(BaseCommand):
         levels = self._programmes(tenant, secondary, depts, year)
         self._classes(tenant, levels, branches, multi, year)
         self._subjects(tenant, depts, levels, secondary, year)
-        self._history(tenant, year)
+        self._history(tenant, year, past)
 
         self.stdout.write(self.style.SUCCESS(
             f"    done: {Program.all_objects.filter(tenant=tenant).count()} programmes, "
@@ -172,8 +172,14 @@ class Command(BaseCommand):
 
     # ── years ──────────────────────────────────────────────────────────────
     def _years(self, tenant):
-        """Builds the three years and returns the LIVE one."""
-        live = None
+        """Builds the three years and returns the live one and the past one.
+
+        The past year is left UNARCHIVED here on purpose. Archiving it is the
+        last thing `_seed` does, because an archived year refuses every write
+        including the rollover that gives it its structure - which is the rule
+        working, not a rule to route around.
+        """
+        live = past = None
         for name, start, end, state in YEARS:
             session = AcademicSession.all_objects.filter(
                 tenant=tenant, name=name,
@@ -195,45 +201,45 @@ class Command(BaseCommand):
                 if session.status != SessionStatus.ACTIVE:
                     activate_session(session, tenant)
                 live = session
-            elif state == "archived" and session.status != SessionStatus.ARCHIVED:
-                from schools.vs_academics.services.sessions import archive_session
-
-                archive_session(session, tenant)
+            elif state == "archived":
+                past = session
         self.stdout.write(f"    years: {len(YEARS)}")
-        return live
+        return live, past
 
-    def _history(self, tenant, live):
-        """Give last year a structure of its own, through the real rollover.
+    def _history(self, tenant, live, past):
+        """Give last year a structure of its own, then close it.
 
         So switching the pill to 2025/2026 shows that year's classes rather
         than an empty screen - the honest-history half of the change. Next
         year is left EMPTY on purpose: it is the state the "copy a year
         forward" flow exists for, and a seed that filled it would hide the one
         screen worth testing.
+
+        Copied first and archived after, in that order, because an archived
+        year refuses writes.
         """
         from schools.vs_academics.services.rollover import (
             NothingToCopy,
             TargetYearNotEmpty,
             roll_forward,
         )
+        from schools.vs_academics.services.sessions import archive_session
 
-        past = (
-            AcademicSession.all_objects.filter(
-                tenant=tenant, status=SessionStatus.ARCHIVED,
-            )
-            .order_by("start_date")
-            .first()
-        )
         if past is None or live is None:
+            return
+        # Already archived means a previous run did this. Re-running must not
+        # try again: the year is closed, and closed refuses writes.
+        if past.status == SessionStatus.ARCHIVED:
             return
         try:
             written = roll_forward(tenant, source=live, target=past)
+            self.stdout.write(
+                f"    {past.name}: {written['levels']} levels, "
+                f"{written['classes']} classes, {written['subjects']} subjects",
+            )
         except (TargetYearNotEmpty, NothingToCopy):
-            return                                  # already seeded, or nothing yet
-        self.stdout.write(
-            f"    {past.name}: {written['levels']} levels, "
-            f"{written['classes']} classes, {written['subjects']} subjects",
-        )
+            pass                                    # nothing to carry over yet
+        archive_session(past, tenant)
 
     # ── catalogue ──────────────────────────────────────────────────────────
     def _departments(self, tenant, secondary):
