@@ -1674,3 +1674,206 @@ class TemplateCoverageCheckTests(TestCase):
                     NotificationEventType.objects, "using", side_effect=error,
                 ):
                     self.assertEqual(self._run_check(), [])
+
+
+# ---------------------------------------------------------------------------
+# Record ownership across a tenant boundary
+#
+# A support ticket is the one flow where the tenant a message is ABOUT and the
+# tenant that READS it are different parties: vs_tickets dispatches a school's
+# ticket to platform triage staff. Ownership must follow the recipient, or the
+# platform staffer cannot see their own row and the school can read theirs.
+# ---------------------------------------------------------------------------
+
+class NotificationOwnershipTests(_NotifFixture):
+
+    INTERNAL_NOTE = (
+        "Escalating to eng. This tenant is two months behind on its "
+        "subscription - do not extend the discount again."
+    )
+
+    def _send_ticket_event(self, recipients, event_key="ticket.created", **context):
+        """Dispatch the way vs_tickets does: the school is what it is ABOUT."""
+        base = {"ticket_number": "TCK-1042", "ticket_title": "Term dates wrong",
+                "actor_name": "Ifeanyi Obi", "requester_name": "Ada Admin"}
+        base.update(context)
+        with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
+            with self.captureOnCommitCallbacks(execute=True):
+                return NotificationService.send(
+                    event_key=event_key,
+                    context=base,
+                    recipients=recipients,
+                    tenant=self.school_a.tenant,
+                )
+
+    def test_each_recipient_owns_their_own_records(self):
+        ids = self._send_ticket_event([self.cx, self.admin_a])
+        rows = Notification.all_objects.filter(id__in=ids)
+
+        for row in rows.filter(recipient=self.cx):
+            self.assertEqual(row.tenant_id, self.cx.tenant_id)
+        for row in rows.filter(recipient=self.admin_a):
+            self.assertEqual(row.tenant_id, self.school_a.tenant_id)
+        # What the message is about is kept, on every row, either side.
+        self.assertEqual(
+            {r.origin_tenant_id for r in rows}, {self.school_a.tenant_id},
+        )
+
+    def test_platform_staff_can_read_the_row_in_their_own_feed(self):
+        """The bug this half fixes: the in-app row was invisible to its recipient.
+
+        The feed goes through TenantAwareManager, which filters on the caller's
+        own tenant. A row stamped with the school never appeared, so the whole
+        in-app channel was dead for ticket events.
+        """
+        self._send_ticket_event([self.cx])
+
+        resp = self._client(self.cx).get("/v1/notify/")
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        bodies = [row["body"] for row in resp.json()["data"]]
+        self.assertTrue(any("TCK-1042" in body for body in bodies), bodies)
+
+    def test_school_admin_history_cannot_reach_a_row_sent_to_platform_staff(self):
+        """The leak: an internal ticket note rendered into a school-owned row.
+
+        ticket.commented renders comment_body straight into the notification,
+        and an INTERNAL note only ever goes to platform staff. Owned by the
+        school, it was readable by any school admin holding AUDIT_ACTIVITY.
+        """
+        _grant_school_permission(
+            self.admin_a, self.school_a, NotificationPermission.AUDIT_ACTIVITY,
+        )
+        ids = self._send_ticket_event(
+            [self.cx], event_key="ticket.commented", comment_body=self.INTERNAL_NOTE,
+        )
+
+        client = self._client(self.admin_a)
+        listing = client.get("/v1/notify/history/?event_type_key=ticket.commented")
+        self.assertEqual(listing.status_code, 200, listing.content)
+        self.assertEqual(listing.json()["data"], [])
+
+        # Not merely absent from the list: unreachable by id, and unreachable
+        # by a search for the words in it.
+        for notif_id in ids:
+            self.assertEqual(
+                client.get(f"/v1/notify/history/{notif_id}/").status_code, 404,
+            )
+        hit = client.get("/v1/notify/history/?search=subscription")
+        self.assertEqual(hit.status_code, 200, hit.content)
+        self.assertEqual(hit.json()["data"], [])
+
+    def test_the_recipients_own_settings_decide_their_channels(self):
+        """A school muting an event must not silence the platform's own staff."""
+        et = self._event("ticket.created")
+        NotificationSetting.all_objects.create(
+            tenant=self.school_a.tenant, event_type=et,
+            channel=ChannelChoices.EMAIL, is_enabled=False,
+        )
+
+        ids = self._send_ticket_event([self.cx, self.admin_a])
+        rows = Notification.all_objects.filter(id__in=ids)
+
+        self.assertTrue(
+            rows.filter(recipient=self.cx, channel=ChannelChoices.EMAIL).exists(),
+        )
+        self.assertFalse(
+            rows.filter(recipient=self.admin_a, channel=ChannelChoices.EMAIL).exists(),
+        )
+        # Both still get the in-app row: only the muted channel is dropped.
+        self.assertEqual(rows.filter(channel=ChannelChoices.IN_APP).count(), 2)
+
+    def test_unregistered_recipient_records_stay_with_the_origin_tenant(self):
+        """An address has no tenant, so its record stays where it was raised.
+
+        A vendor's purchase order email belongs in the school's history: that is
+        where the person chasing the delivery goes looking for it.
+        """
+        with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
+            with self.captureOnCommitCallbacks(execute=True):
+                ids = NotificationService.send(
+                    event_key="ticket.created",
+                    context={"ticket_number": "TCK-1", "ticket_title": "t",
+                             "requester_name": "Ada"},
+                    recipients=[],
+                    unregistered_recipients=[
+                        UnregisteredRecipient(email="vendor@example.com", name="V"),
+                    ],
+                    tenant=self.school_a.tenant,
+                )
+
+        row = Notification.all_objects.get(id__in=ids)
+        self.assertEqual(row.tenant_id, self.school_a.tenant_id)
+        self.assertEqual(row.origin_tenant_id, self.school_a.tenant_id)
+
+    def test_a_failed_record_is_owned_by_its_recipient_too(self):
+        """History includes failures, and history is read by the row's owner."""
+        no_address = User.objects.create_user(
+            email="noaddr@test.com", password="x", status="ACTIVE",
+            first_name="No", last_name="Addr", tenant=_platform_tenant(),
+        )
+        User.objects.filter(pk=no_address.pk).update(email="")
+        no_address.refresh_from_db()
+
+        ids = self._send_ticket_event([no_address])
+        failed = Notification.all_objects.get(
+            id__in=ids, status=NotificationStatus.FAILED,
+        )
+        self.assertEqual(failed.failure_reason, "NO_EMAIL_ADDRESS")
+        self.assertEqual(failed.tenant_id, no_address.tenant_id)
+        self.assertEqual(failed.origin_tenant_id, self.school_a.tenant_id)
+
+
+# ---------------------------------------------------------------------------
+# Migration 0010 - the rows already written
+#
+# The fix cannot be code-only: the internal notes shipped environments already
+# hold are sitting in schools' history logs right now.
+# ---------------------------------------------------------------------------
+
+class OwnershipMigrationTests(_NotifFixture):
+
+    def test_cross_owned_rows_move_to_their_recipient(self):
+        from django.apps import apps as app_registry
+        from importlib import import_module
+
+        # The RunPython functions take the historical model registry; the live
+        # one is call-compatible here and costs no migration replay.
+        migration = import_module(
+            "vs_notifications.migrations.0010_notification_ownership_follows_recipient"
+        )
+        et = self._event("ticket.commented")
+        # A row exactly as the old code wrote it: platform recipient, school owner.
+        leaked = Notification.all_objects.create(
+            tenant=self.school_a.tenant, recipient=self.cx, event_type=et,
+            channel=ChannelChoices.IN_APP, body="internal note",
+            status=NotificationStatus.SENT,
+        )
+        # A correctly owned row must not be touched.
+        ordinary = Notification.all_objects.create(
+            tenant=self.school_a.tenant, recipient=self.admin_a, event_type=et,
+            channel=ChannelChoices.IN_APP, body="yours", status=NotificationStatus.SENT,
+        )
+        # An address-only row has no recipient tenant to move to.
+        addressed = Notification.all_objects.create(
+            tenant=self.school_a.tenant, recipient=None,
+            unregistered_email="vendor@example.com", event_type=et,
+            channel=ChannelChoices.EMAIL, body="vendor", status=NotificationStatus.SENT,
+        )
+
+        migration.move_ownership_to_recipient(app_registry, None)
+
+        leaked.refresh_from_db()
+        ordinary.refresh_from_db()
+        addressed.refresh_from_db()
+        self.assertEqual(leaked.tenant_id, self.cx.tenant_id)
+        self.assertEqual(leaked.origin_tenant_id, self.school_a.tenant_id)
+        self.assertEqual(ordinary.tenant_id, self.school_a.tenant_id)
+        self.assertEqual(ordinary.origin_tenant_id, self.school_a.tenant_id)
+        self.assertEqual(addressed.tenant_id, self.school_a.tenant_id)
+        self.assertEqual(addressed.origin_tenant_id, self.school_a.tenant_id)
+
+        # And the reverse puts every row back where it was.
+        migration.restore_original_ownership(app_registry, None)
+        leaked.refresh_from_db()
+        self.assertEqual(leaked.tenant_id, self.school_a.tenant_id)

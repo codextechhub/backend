@@ -319,6 +319,12 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
     tenant-NULL rows never appear. Everyone must supply ≥1 filter. Pass
     ``scope=platform`` to narrow to rows owned by a PLATFORM-kind tenant.
 
+    ``Notification.tenant`` is the RECIPIENT'S tenant, which is what makes this
+    filter a real boundary: a message about this school but addressed to
+    platform staff is owned by the platform and is not in this log. Do not add
+    an ``origin_tenant`` filter here for school-tenant callers - it would hand
+    them back exactly the rows this scoping exists to keep out.
+
     Routes:
         GET /notifications/history/      - paginated log
         GET /notifications/history/{id}/ - full detail record

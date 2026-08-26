@@ -6,8 +6,18 @@
 # Called by other module services (vs_finance, vs_workflow, vs_user, etc.).
 # Never called directly from views.
 #
-# Notifications are RECIPIENT-centric. `school` is an optional scope stored on
-# each record for filtering/history; it is NOT required to dispatch. CX staff
+# Notifications are RECIPIENT-centric, and so is ownership: each record is
+# stamped with the RECIPIENT'S OWN tenant, because that is the tenant whose
+# inbox and whose history log the record shows up in. The tenant/school a
+# caller passes says what the message is ABOUT and is stored separately as
+# `origin_tenant`. The two are the same party for most events, and diverge the
+# moment one tenant's activity is reported to another's staff (a school's
+# support ticket going to platform triage). Stamping the caller's tenant on
+# every row put internal support notes inside the school's own history log.
+#
+# A single send may therefore span tenants: recipients are grouped by owner
+# tenant and each group resolves its own channel settings, so a school muting
+# an event cannot silence the platform staff reading the same event. CX staff
 # and any other school-less recipients are first-class.
 #
 # Responsibilities:
@@ -69,7 +79,8 @@ class NotificationService:
             event_key="billing.invoice_overdue",
             context={...},
             recipients=[guardian_user],
-            school=school,            # optional - omit for school-less recipients
+            school=school,   # what the message is ABOUT; recipients still
+                             # own their own records
         )
     """
 
@@ -92,10 +103,14 @@ class NotificationService:
         Args:
             event_key:               Dot-notation event key, e.g. "user.invited".
             context:                 Dict of template variables.
-            recipients:              List of User instances to notify.
-            school:                  Optional School instance. Stored on each
-                                     record for filtering/history and used to
-                                     resolve school-specific settings overrides.
+            recipients:              List of User instances to notify. Each
+                                     recipient's own tenant owns their records.
+            tenant:                  Optional Tenant the event is ABOUT. Stored
+                                     as origin_tenant, and used as the owner
+                                     only for recipients with no tenant of their
+                                     own (unregistered addresses).
+            school:                  Optional School instance, read for its
+                                     tenant when `tenant` is not given.
                                      Defaults to None (platform scope).
             suppress:                If True, return immediately without dispatching.
             unregistered_recipients: Optional list of UnregisteredRecipient - for
@@ -119,12 +134,18 @@ class NotificationService:
             logger.debug("Notification suppressed for event_key=%s", event_key)
             return []
 
-        tenant = tenant or getattr(school, "tenant", None)
-        if tenant is None:
-            tenant = next((getattr(r, "tenant", None) for r in recipients if getattr(r, "tenant_id", None)), None)
-        if tenant is None:
+        # The caller's tenant says what the message is ABOUT. It is NOT the
+        # owner of the records: a school's ticket notified to platform staff is
+        # about the school, but each row belongs to the recipient reading it.
+        origin_tenant = tenant or getattr(school, "tenant", None)
+        if origin_tenant is None:
+            origin_tenant = next(
+                (getattr(r, "tenant", None) for r in recipients if getattr(r, "tenant_id", None)),
+                None,
+            )
+        if origin_tenant is None:
             from vs_tenants.models import Tenant
-            tenant = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+            origin_tenant = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
 
         metadata = metadata or {}
         delivery_replacements = {
@@ -144,116 +165,139 @@ class NotificationService:
                 message=f"Unknown or inactive notification event key: '{event_key}'",
             )
 
-        # ── 2. Resolve which channels fire (school row → platform → default;
-        #        transactional events bypass settings). ──────────────────────
-        channel_enabled = resolve_channels(event_type, tenant=tenant)
+        # ── 2. Split the recipients by the tenant that OWNS their records ──
+        #        A single send can cross the boundary (a school's ticket goes to
+        #        platform triage staff), so ownership is decided per recipient,
+        #        never once for the batch.
+        all_targets = _build_targets(recipients, unregistered_recipients or [])
+        groups = _group_by_owner_tenant(all_targets, origin_tenant)
 
-        # ── 3. Pre-fetch templates for enabled channels ────────────────────
-        enabled_channels = [ch for ch, on in channel_enabled.items() if on]
-        if not enabled_channels:
-            logger.debug(
-                "All channels disabled for event_key=%s (school=%s) - nothing to dispatch.",
-                event_key,
-                getattr(school, "id", None),
-            )
+        # ── 3. Resolve which channels fire, per OWNER tenant (owner row →
+        #        platform → default; transactional events bypass settings). The
+        #        recipient's own settings decide what reaches the recipient: a
+        #        school muting an event must not silence platform staff.
+        plans = []
+        for owner_tenant, targets in groups:
+            enabled_channels = [
+                channel
+                for channel, on in resolve_channels(event_type, tenant=owner_tenant).items()
+                if on
+            ]
+            if not enabled_channels:
+                logger.debug(
+                    "All channels disabled for event_key=%s (owner tenant=%s) - "
+                    "nothing to dispatch to those recipients.",
+                    event_key,
+                    getattr(owner_tenant, "slug", None),
+                )
+                continue
+            plans.append((owner_tenant, targets, enabled_channels))
+
+        if not plans:
             return []
 
-        templates = _fetch_templates(event_type, enabled_channels)
+        # One template query for the union of channels any group enabled.
+        templates = _fetch_templates(
+            event_type,
+            sorted({channel for _, _, channels in plans for channel in channels}),
+        )
 
         # ── 4. Build Notification records ─────────────────────────────────
         notifications_to_create = []
 
-        all_targets = _build_targets(recipients, unregistered_recipients or [])
+        for owner_tenant, targets, enabled_channels in plans:
+            for target in targets:
+                # Each target gets one record per enabled channel.
+                for channel in enabled_channels:
+                    template = templates.get(channel)
+                    if template is None:
+                        logger.warning(
+                            "No active template for event_key=%s channel=%s - channel skipped.",
+                            event_key,
+                            channel,
+                        )
+                        continue
 
-        for target in all_targets:
-            # Each target gets one record per enabled channel.
-            for channel in enabled_channels:
-                template = templates.get(channel)
-                if template is None:
-                    logger.warning(
-                        "No active template for event_key=%s channel=%s - channel skipped.",
-                        event_key,
-                        channel,
-                    )
-                    continue
+                    # In-app delivery cannot proceed without an account to deliver to.
+                    # An UnregisteredRecipient is an email address and nothing else - a
+                    # payer, a vendor contact, an invitee - so an in-app row for one has
+                    # no inbox it can ever appear in. Several billing events declare both
+                    # channels and are only ever sent to unregistered customers, which
+                    # was silently producing one unreadable row per send.
+                    #
+                    # Skipped rather than recorded as FAILED: the no-address case below
+                    # records a failure because somebody meant to send an email and it
+                    # did not go. Here nobody meant to send anything - the event simply
+                    # supports a channel that cannot apply to this recipient - and a
+                    # FAILED row would be exactly as unreadable as the SENT one it
+                    # replaces. Registered recipients are unaffected, so an event stays
+                    # ready for a customer portal without needing its channels changed.
+                    if channel == ChannelChoices.IN_APP and isinstance(target, UnregisteredRecipient):
+                        logger.debug(
+                            "Skipping in-app notification for unregistered recipient on "
+                            "event_key=%s - no account to deliver to.",
+                            event_key,
+                        )
+                        continue
 
-                # In-app delivery cannot proceed without an account to deliver to.
-                # An UnregisteredRecipient is an email address and nothing else - a
-                # payer, a vendor contact, an invitee - so an in-app row for one has
-                # no inbox it can ever appear in. Several billing events declare both
-                # channels and are only ever sent to unregistered customers, which
-                # was silently producing one unreadable row per send.
-                #
-                # Skipped rather than recorded as FAILED: the no-address case below
-                # records a failure because somebody meant to send an email and it
-                # did not go. Here nobody meant to send anything - the event simply
-                # supports a channel that cannot apply to this recipient - and a
-                # FAILED row would be exactly as unreadable as the SENT one it
-                # replaces. Registered recipients are unaffected, so an event stays
-                # ready for a customer portal without needing its channels changed.
-                if channel == ChannelChoices.IN_APP and isinstance(target, UnregisteredRecipient):
-                    logger.debug(
-                        "Skipping in-app notification for unregistered recipient on "
-                        "event_key=%s - no account to deliver to.",
-                        event_key,
-                    )
-                    continue
+                    # Email delivery cannot proceed without an address, but history should record the failure.
+                    email_addr = _resolve_email(target)
+                    if channel == ChannelChoices.EMAIL and not email_addr:
+                        # Pre-flight FAILED - no point rendering or queuing.
+                        notifications_to_create.append(
+                            _build_failed_notification(
+                                event_type=event_type,
+                                channel=channel,
+                                tenant=owner_tenant,
+                                origin_tenant=origin_tenant,
+                                target=target,
+                                failure_reason="NO_EMAIL_ADDRESS",
+                                metadata=metadata,
+                            )
+                        )
+                        continue
 
-                # Email delivery cannot proceed without an address, but history should record the failure.
-                email_addr = _resolve_email(target)
-                if channel == ChannelChoices.EMAIL and not email_addr:
-                    # Pre-flight FAILED - no point rendering or queuing.
+                    # Render template (subject, plain body, optional HTML body).
+                    try:
+                        rendered_subject, rendered_body, rendered_html = (
+                            render_notification_template(template, context)
+                        )
+                    except TemplateRenderError as exc:
+                        logger.error(
+                            "Template render failed for event_key=%s channel=%s: %s",
+                            event_key, channel, exc,
+                        )
+                        notifications_to_create.append(
+                            _build_failed_notification(
+                                event_type=event_type,
+                                channel=channel,
+                                tenant=owner_tenant,
+                                origin_tenant=origin_tenant,
+                                target=target,
+                                failure_reason=str(exc),
+                                metadata=metadata,
+                            )
+                        )
+                        continue
+
+                    # In-app notifications are complete once stored; email waits for the delivery task.
+                    is_in_app = channel == ChannelChoices.IN_APP
                     notifications_to_create.append(
-                        _build_failed_notification(
+                        _build_notification(
                             event_type=event_type,
                             channel=channel,
-                            tenant=tenant,
+                            tenant=owner_tenant,
+                            origin_tenant=origin_tenant,
                             target=target,
-                            failure_reason="NO_EMAIL_ADDRESS",
+                            subject=rendered_subject,
+                            body=rendered_body,
+                            html_body=rendered_html if not is_in_app else "",
                             metadata=metadata,
+                            # IN_APP is immediately SENT - no async task needed
+                            status=NotificationStatus.SENT if is_in_app else NotificationStatus.PENDING,
+                            dispatched_at=timezone.now() if is_in_app else None,
                         )
                     )
-                    continue
-
-                # Render template (subject, plain body, optional HTML body).
-                try:
-                    rendered_subject, rendered_body, rendered_html = (
-                        render_notification_template(template, context)
-                    )
-                except TemplateRenderError as exc:
-                    logger.error(
-                        "Template render failed for event_key=%s channel=%s: %s",
-                        event_key, channel, exc,
-                    )
-                    notifications_to_create.append(
-                        _build_failed_notification(
-                            event_type=event_type,
-                            channel=channel,
-                            tenant=tenant,
-                            target=target,
-                            failure_reason=str(exc),
-                            metadata=metadata,
-                        )
-                    )
-                    continue
-
-                # In-app notifications are complete once stored; email waits for the delivery task.
-                is_in_app = channel == ChannelChoices.IN_APP
-                notifications_to_create.append(
-                    _build_notification(
-                        event_type=event_type,
-                        channel=channel,
-                        tenant=tenant,
-                        target=target,
-                        subject=rendered_subject,
-                        body=rendered_body,
-                        html_body=rendered_html if not is_in_app else "",
-                        metadata=metadata,
-                        # IN_APP is immediately SENT - no async task needed
-                        status=NotificationStatus.SENT if is_in_app else NotificationStatus.PENDING,
-                        dispatched_at=timezone.now() if is_in_app else None,
-                    )
-                )
 
         if not notifications_to_create:
             return []
@@ -339,6 +383,35 @@ def _build_targets(recipients: list, unregistered: list) -> list:
     return list(recipients) + list(unregistered)
 
 
+# Decide which tenant OWNS the records for each target, and group by it.
+def _group_by_owner_tenant(targets: list, origin_tenant) -> list:
+    """
+    Return [(owner_tenant, [targets])], preserving the caller's recipient order.
+
+    A registered recipient's records belong to that recipient's own tenant:
+    that is the inbox they read and the history log they appear in. An
+    UnregisteredRecipient has no account and so no tenant of its own, so its
+    records stay with the originating tenant - a vendor's purchase-order email
+    belongs in the school's history, which is where the person chasing that
+    delivery goes looking for it.
+    """
+    grouped: dict = {}
+    for target in targets:
+        owner_id = getattr(target, "tenant_id", None) or origin_tenant.pk
+        grouped.setdefault(owner_id, []).append(target)
+
+    # Resolve the owner tenants in ONE query. Reading target.tenant per
+    # recipient would be a lazy fetch each time - and a triage queue is a list
+    # of people who all share the same tenant.
+    tenants = {origin_tenant.pk: origin_tenant}
+    unresolved = [pk for pk in grouped if pk not in tenants]
+    if unresolved:
+        from vs_tenants.models import Tenant
+        tenants.update({t.pk: t for t in Tenant.objects.filter(pk__in=unresolved)})
+
+    return [(tenants[pk], members) for pk, members in grouped.items()]
+
+
 # Read an email address from either a User-like object or an invite target.
 def _resolve_email(target) -> str:
     """
@@ -352,18 +425,23 @@ def _resolve_email(target) -> str:
 
 # Build the unsaved record for a successful in-app notification or queued email.
 def _build_notification(
-    event_type, channel, tenant, target, subject, body, html_body,
+    event_type, channel, tenant, origin_tenant, target, subject, body, html_body,
     metadata, status, dispatched_at,
 ) -> Notification:
     """
     Construct an unsaved Notification instance.
     Handles both registered Users and UnregisteredRecipient targets.
+
+    ``tenant`` owns the row (the recipient's own tenant); ``origin_tenant``
+    records what it is about. Both are required, so no caller can create a row
+    that is quietly owned by the wrong side of a cross-tenant event.
     """
     is_unregistered = isinstance(target, UnregisteredRecipient)
     return Notification(
         event_type=event_type,
         channel=channel,
         tenant=tenant,
+        origin_tenant=origin_tenant,
         recipient=None if is_unregistered else target,
         unregistered_email=target.email if is_unregistered else "",
         subject=subject,
@@ -377,18 +455,23 @@ def _build_notification(
 
 # Build the unsaved record for failures detected before Celery delivery.
 def _build_failed_notification(
-    event_type, channel, tenant, target, failure_reason: str, metadata: dict,
+    event_type, channel, tenant, origin_tenant, target, failure_reason: str,
+    metadata: dict,
 ) -> Notification:
     """
     Construct an unsaved Notification instance pre-set to FAILED.
     Used for pre-flight failures (no email address, render error)
     where no Celery task should be enqueued.
+
+    A failure is history too, and history is read by whoever owns the row, so
+    it follows the same ownership rule as a delivered record.
     """
     is_unregistered = isinstance(target, UnregisteredRecipient)
     return Notification(
         event_type=event_type,
         channel=channel,
         tenant=tenant,
+        origin_tenant=origin_tenant,
         recipient=None if is_unregistered else target,
         unregistered_email=target.email if is_unregistered else "",
         subject="",

@@ -432,6 +432,20 @@ class Notification(models.Model):
     The recipient FK allows NULL to support the user.invited event type,
     where the recipient has no User account yet.  In that case,
     unregistered_email stores the target address.
+
+    Ownership:
+        ``tenant`` is the OWNER - the recipient's own tenant. Every read path
+        scopes on it: the in-app feed through TenantAwareManager, the history
+        log through an explicit filter. A row owned by a tenant is readable by
+        that tenant, so it must never be stamped with anyone else's.
+
+        ``origin_tenant`` is the SUBJECT - the tenant the message is about,
+        which for most events is the same party. They diverge when one tenant's
+        activity is reported to another's staff: a support ticket raised by a
+        school tenant and notified to platform triage staff is OWNED by the
+        platform tenant and ORIGINATED by the school. Stamping the originating
+        tenant on those rows put internal support notes inside that tenant's
+        own history log, where its administrators could read them.
     """
 
     id = models.UUIDField(
@@ -442,6 +456,23 @@ class Notification(models.Model):
     tenant = models.ForeignKey(
         "vs_tenants.Tenant", on_delete=models.PROTECT,
         related_name="notifications",
+        help_text=(
+            "OWNER of the record: whose inbox it appears in and whose history "
+            "log it belongs to. Always the recipient's own tenant. What the "
+            "message is ABOUT lives in origin_tenant."
+        ),
+    )
+    origin_tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        null=True, blank=True,
+        related_name="originated_notifications",
+        help_text=(
+            "The tenant the message is ABOUT, when the caller named one. For a "
+            "school's support ticket notified to platform staff this is the "
+            "school while tenant is codex. Internal-only: never serialized, and "
+            "never a filter a school-tenant caller can reach, or it becomes a "
+            "second route to another tenant's rows."
+        ),
     )
     recipient = models.ForeignKey(
         settings.AUTH_USER_MODEL,

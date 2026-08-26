@@ -115,6 +115,11 @@ def dispatch_ticket_event(
                 event_key=event_key,
                 context=context or context_for(ticket),
                 recipients=recipients,
+                # The ticket's tenant is what the message is ABOUT, not who
+                # owns the resulting rows. Dispatch stores it as origin_tenant
+                # and gives each record to its recipient's own tenant, so a
+                # note written for platform triage staff never lands in the
+                # school's notification history.
                 tenant=ticket.tenant,
                 metadata={"ticket_id": ticket.pk, "ticket_number": ticket.ticket_number},
             )
