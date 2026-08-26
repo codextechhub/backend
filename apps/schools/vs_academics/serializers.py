@@ -182,14 +182,13 @@ class _ScopedSerializer(_BranchAware):
 class DepartmentSerializer(_ScopedSerializer):
     program_count = serializers.SerializerMethodField()
     subject_count = serializers.SerializerMethodField()
-    running_this_year = serializers.SerializerMethodField()
 
     class Meta:
         model = Department
         fields = [
             "id", "name", "code", "description", "is_active",
             "branch", "branch_name", "scope_label",
-            "program_count", "subject_count", "running_this_year",
+            "program_count", "subject_count",
         ]
 
     def get_program_count(self, obj) -> int:
@@ -197,15 +196,6 @@ class DepartmentSerializer(_ScopedSerializer):
 
     def get_subject_count(self, obj) -> int:
         return getattr(obj, "subject_count_annotated", 0)
-
-    def get_running_this_year(self, obj) -> bool:
-        """Whether the school ran anything under this department that year.
-
-        Read off the two counts rather than asked separately: they are already
-        the year's, so a third query answering the same question could only
-        ever disagree with them.
-        """
-        return bool(self.get_program_count(obj) or self.get_subject_count(obj))
 
 
 class DepartmentWriteSerializer(serializers.ModelSerializer):

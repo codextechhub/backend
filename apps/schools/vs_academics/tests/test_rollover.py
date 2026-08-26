@@ -539,11 +539,15 @@ class ScrappingAProgrammeTests(_Base):
         }
 
     def departments(self, session):
+        """Each department's name against what it ran in `session`."""
         response = self.get(
             self.admin, "academics-department-list", {"session": session.pk},
         )
         self.assertEqual(response.status_code, 200, response.data)
-        return {row["name"]: row["running_this_year"] for row in response.data["data"]}
+        return {
+            row["name"]: row["program_count"] + row["subject_count"]
+            for row in response.data["data"]
+        }
 
     def test_a_programme_left_out_of_the_new_year_keeps_the_year_it_ran(self):
         """The whole point: 2100/2101 drops it, 2099/2100 still has it."""
@@ -582,7 +586,7 @@ class ScrappingAProgrammeTests(_Base):
         # Commercial is listed with nothing in it, NOT with last year's level.
         self.assertEqual(shown["Commercial"], [])
 
-    def test_a_department_says_whether_it_ran_in_the_year_being_read(self):
+    def test_a_departments_counts_say_it_ran_nothing_in_the_new_year(self):
         roll_forward(self.tenant, source=self.this_year, target=self.next_year)
         Level.all_objects.filter(
             session=self.next_year, program=self.commercial,
@@ -592,7 +596,7 @@ class ScrappingAProgrammeTests(_Base):
         ).delete()
 
         self.assertTrue(self.departments(self.this_year)["Commercial"])
-        self.assertFalse(self.departments(self.next_year)["Commercial"])
+        self.assertEqual(self.departments(self.next_year)["Commercial"], 0)
 
     def test_a_departments_subject_count_is_one_years_not_every_years(self):
         """The count that read "Subjects 9" for three subjects.

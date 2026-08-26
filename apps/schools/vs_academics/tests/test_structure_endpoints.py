@@ -234,7 +234,6 @@ class DepartmentTests(_Base):
 
         response = self.get(self.admin, "academics-department-list")
         self.assertEqual(response.data["data"][0]["program_count"], 0)
-        self.assertFalse(response.data["data"][0]["running_this_year"])
 
         Level.all_objects.create(
             tenant=self.tenant, session=self.year, program=jss,
@@ -242,7 +241,6 @@ class DepartmentTests(_Base):
         )
         response = self.get(self.admin, "academics-department-list")
         self.assertEqual(response.data["data"][0]["program_count"], 1)
-        self.assertTrue(response.data["data"][0]["running_this_year"])
 
     def test_deleting_a_department_with_programmes_is_refused(self):
         """Reverses what FRD 2.0 to 2.5.1 promised, because the design does."""
