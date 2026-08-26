@@ -304,14 +304,12 @@ def register_datasets():
             Field("department__name", "Department", "Subject", KIND_TEXT),
             Field("is_core", "Core", "Subject", KIND_TEXT),
             Field("description", "Description", "Subject", KIND_TEXT),
-            _YEAR_FIELD,
             _SCOPE_FIELD,
             Field("is_active", "Active", "Record", KIND_TEXT),
         ),
         filters=(
             FilterDef("created_at", "Created", FILTER_DATE_RANGE, is_primary_date=True),
             _ACTIVE_FILTER,
-            _YEAR_FILTER,
             _SCOPE_FILTER,
             FilterDef("is_core", "Core", FILTER_BOOLEAN),
             FilterDef("search", "Search", FILTER_SEARCH, searches=(
@@ -445,8 +443,12 @@ def _translate_classes(params):
 
 
 def _translate_subjects(params):
+    """A subject spans years, so the lens is not carried into its file.
+
+    Where it is TAUGHT belongs to a year, and that is a different dataset from
+    this one - which lists the catalogue.
+    """
     filters, unmapped = _common(params)
-    _year(params, filters)
     _flag(params, "is_core", filters, unmapped)
     return filters, unmapped
 
@@ -495,7 +497,7 @@ def register_screens():
         ("academics.classes", "Academics - Classes & arms", "academics.classes",
          _translate_classes, ("search", "is_active", "branch", "level", "session")),
         ("academics.subjects", "Academics - Subjects", "academics.subjects",
-         _translate_subjects, ("search", "is_active", "branch", "is_core", "session")),
+         _translate_subjects, ("search", "is_active", "branch", "is_core")),
     ):
         register_screen(ScreenBinding(
             key=key, label=label, dataset_key=dataset,

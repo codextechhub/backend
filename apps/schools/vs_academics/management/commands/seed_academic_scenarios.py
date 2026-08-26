@@ -165,7 +165,8 @@ class Command(BaseCommand):
             f"    done: {Program.all_objects.filter(tenant=tenant).count()} programmes, "
             f"{Level.all_objects.filter(tenant=tenant).count()} levels, "
             f"{SchoolClass.all_objects.filter(tenant=tenant).count()} classes, "
-            f"{Subject.all_objects.filter(tenant=tenant).count()} subjects",
+            f"{Subject.all_objects.filter(tenant=tenant).count()} subjects, "
+            f"{SubjectOffering.all_objects.filter(tenant=tenant).count()} offerings",
         ))
 
     # ── years ──────────────────────────────────────────────────────────────
@@ -323,6 +324,11 @@ class Command(BaseCommand):
         self.stdout.write(f"    classes: +{made}")
 
     def _subjects(self, tenant, depts, levels, secondary, year):
+        """The catalogue once, and an offering per level of the live year.
+
+        `year` is not written on the subject - it has no year - it is implied
+        by the levels the offerings point at.
+        """
         groups = {
             "ALL": list(levels),
             "PRI+JSS+SSS": [n for n in levels if n.startswith(("Primary", "JSS", "SSS"))],
@@ -332,30 +338,33 @@ class Command(BaseCommand):
         }
         for name, code, dept, core, group in SUBJECTS:
             subject, created = Subject.all_objects.get_or_create(
-                tenant=tenant, session=year, name=name,
+                tenant=tenant, name=name,
                 defaults={
                     "code": code, "is_core": core,
                     "department": depts.get(dept),
                 },
             )
-            if not created:
-                continue
-            SubjectOffering.all_objects.bulk_create([
-                SubjectOffering(tenant=tenant, subject=subject, level=levels[n])
-                for n in groups[group] if n in levels
-            ])
+            SubjectOffering.all_objects.bulk_create(
+                [
+                    SubjectOffering(tenant=tenant, subject=subject, level=levels[n])
+                    for n in groups[group] if n in levels
+                ],
+                ignore_conflicts=True,        # a re-run adds nothing
+            )
 
         if secondary is not None:
             # A subject one branch teaches and the other does not.
             yoruba, created = Subject.all_objects.get_or_create(
-                tenant=tenant, session=year, name="Yoruba",
+                tenant=tenant, name="Yoruba",
                 defaults={
                     "code": "YOR", "is_core": False, "branch": secondary,
                     "department": depts.get("Languages"),
                 },
             )
-            if created:
-                SubjectOffering.all_objects.bulk_create([
+            SubjectOffering.all_objects.bulk_create(
+                [
                     SubjectOffering(tenant=tenant, subject=yoruba, level=levels[n])
                     for n in groups["JSS"] if n in levels
-                ])
+                ],
+                ignore_conflicts=True,
+            )

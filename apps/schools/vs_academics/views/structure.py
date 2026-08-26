@@ -197,8 +197,11 @@ def _departments_for(tenant, session=None):
             "programs", distinct=True,
             filter=Q(programs__levels__session=session),
         ),
+        # Through the offerings, because a subject has no year of its own -
+        # what belongs to a year is where it is taught.
         subject_count_annotated=Count(
-            "subjects", distinct=True, filter=Q(subjects__session=session),
+            "subjects", distinct=True,
+            filter=Q(subjects__offerings__level__session=session),
         ),
     )
 

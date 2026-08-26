@@ -275,13 +275,13 @@ class ClassScopeTests(_Base):
     def test_the_subject_count_is_this_classs_own(self):
         """Not the school's subject total wearing a class's name."""
         maths = Subject.all_objects.create(
-            tenant=self.tenant, session=self.year, name="Mathematics", code="MTH",
+            tenant=self.tenant, name="Mathematics", code="MTH",
         )
         SubjectOffering.all_objects.create(
             tenant=self.tenant, subject=maths, level=self.jss1,
         )
         Subject.all_objects.create(
-            tenant=self.tenant, session=self.year, name="Yoruba", code="YOR",
+            tenant=self.tenant, name="Yoruba", code="YOR",
         )   # offered nowhere
         SchoolClass.all_objects.create(
             tenant=self.tenant, session=self.year, level=self.jss1, name="JSS1 A", code="JSS1-A",

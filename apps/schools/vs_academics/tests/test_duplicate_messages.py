@@ -203,7 +203,7 @@ class ArchivedRowsStillHoldTheirNameTests(_AllAcademics):
         module exists to replace.
         """
         Subject.all_objects.create(
-            tenant=self.tenant, session=self.year, name="Yoruba", code="YOR", is_active=False,
+            tenant=self.tenant, name="Yoruba", code="YOR", is_active=False,
         )
         url = f"/v1/academics/subjects/?tenant={self.tenant.slug}"
         response = self.client_for(self.admin).post(
@@ -236,7 +236,7 @@ class ArchivingRatherThanDeletingTests(_AllAcademics):
             name="JSS1 A", code="JSS1-A",
         )
         subject = Subject.all_objects.create(
-            tenant=self.tenant, session=self.year, name="Mathematics", code="MTH",
+            tenant=self.tenant, name="Mathematics", code="MTH",
         )
         SubjectOffering.all_objects.create(
             tenant=self.tenant, subject=subject, level=level,
@@ -282,7 +282,7 @@ class ArchivingRatherThanDeletingTests(_AllAcademics):
             tenant=self.tenant, session=self.year, program=jss, name="JSS1", code="JSS1", order_index=1,
         )
         subject = Subject.all_objects.create(
-            tenant=self.tenant, session=self.year, name="Mathematics", code="MTH",
+            tenant=self.tenant, name="Mathematics", code="MTH",
         )
         SubjectOffering.all_objects.create(
             tenant=self.tenant, subject=subject, level=level,

@@ -428,7 +428,15 @@ class SchoolClass(_Branched):
 
 
 class Subject(_Branched):
-    """Something taught, and (through SubjectOffering) where it is taught."""
+    """Something taught, and (through SubjectOffering) where it is taught.
+
+    Catalogue, not per-year, for the same reason Department and Programme are:
+    Mathematics is Mathematics, and a copy of it in every year could only be
+    tied back to the others by its NAME - which breaks the first time a school
+    tidies it to "Maths". What varies by year is not the subject, it is where
+    it is taught, and SubjectOffering already says that: an offering points at
+    a level, and a level belongs to exactly one year.
+    """
 
     tenant = models.ForeignKey(
         "vs_tenants.Tenant", on_delete=models.PROTECT,
@@ -442,10 +450,6 @@ class Subject(_Branched):
     department = models.ForeignKey(
         Department, on_delete=models.SET_NULL, null=True, blank=True,
         related_name="subjects",
-    )
-    #: The year this subject is taught in. See Level.session.
-    session = models.ForeignKey(
-        AcademicSession, on_delete=models.PROTECT, related_name="subjects",
     )
     name = models.CharField(max_length=100)
     code = models.CharField(max_length=20)
@@ -461,12 +465,10 @@ class Subject(_Branched):
         ordering = ["name"]
         constraints = [
             models.UniqueConstraint(
-                Lower("name"), "tenant", "session",
-                name="uq_academic_subject_name",
+                Lower("name"), "tenant", name="uq_academic_subject_name",
             ),
             models.UniqueConstraint(
-                Lower("code"), "tenant", "session",
-                name="uq_academic_subject_code",
+                Lower("code"), "tenant", name="uq_academic_subject_code",
             ),
         ]
         indexes = [models.Index(fields=["tenant", "branch", "is_active"])]

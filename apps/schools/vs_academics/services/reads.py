@@ -243,8 +243,13 @@ def build_overview(user, tenant, *, today=None, multi_branch=True, branch=None,
         qs = _scoped(model, user, tenant, is_active=True)
         # The three that belong to a year are counted within it; departments
         # and programmes are the shared spine and are counted whole.
-        if session is not None and model in (Level, SchoolClass, Subject):
-            qs = qs.filter(session=session)
+        if session is not None:
+            if model in (Level, SchoolClass):
+                qs = qs.filter(session=session)
+            elif model is Subject:
+                # A subject spans years; what it is taught at does not. So the
+                # count is "subjects taught this year", not "subjects on file".
+                qs = qs.filter(offerings__level__session=session).distinct()
         if branch is not None:
             # A shared row belongs to this branch too - that is what a null
             # branch MEANS - so it is counted, not excluded.

@@ -123,7 +123,7 @@ class _Base(TestCase):
             branch=cls.lekki, name="JSS1 A", code="JSS1-A", arm="A", capacity=35,
         )
         cls.maths = Subject.all_objects.create(
-            tenant=cls.tenant, session=cls.this_year, name="Mathematics",
+            tenant=cls.tenant, name="Mathematics",
             code="MTH", is_core=True,
         )
         SubjectOffering.all_objects.create(
@@ -164,6 +164,12 @@ class RollForwardTests(_Base):
     def in_next(self, model):
         return model.all_objects.filter(tenant=self.tenant, session=self.next_year)
 
+    def taught_in_next(self):
+        """Subjects with an offering in the new year - subjects have no year."""
+        return Subject.all_objects.filter(
+            tenant=self.tenant, offerings__level__session=self.next_year,
+        ).distinct()
+
     def test_the_structure_arrives_in_the_new_year(self):
         written = self.roll()
         self.assertEqual(written, {"levels": 2, "classes": 1, "subjects": 1})
@@ -172,7 +178,7 @@ class RollForwardTests(_Base):
             ["JSS1", "JSS2"],
         )
         self.assertEqual(self.in_next(SchoolClass).count(), 1)
-        self.assertEqual(self.in_next(Subject).count(), 1)
+        self.assertEqual(self.taught_in_next().count(), 1)
 
     def test_last_years_rows_are_left_exactly_as_they_were(self):
         """The point of the whole change: history is not edited by a rollover."""
@@ -205,14 +211,20 @@ class RollForwardTests(_Base):
         self.assertEqual(copied.capacity, 35)
         self.assertEqual(copied.level.session_id, self.next_year.pk)
 
-    def test_an_offering_follows_the_new_subject_and_the_new_level(self):
+    def test_an_offering_follows_the_SAME_subject_to_the_new_level(self):
+        """The subject row is not copied - only where it is taught.
+
+        Copying it would give Mathematics a second id, and the only thing
+        tying the two together would be the name.
+        """
         self.roll()
         offering = SubjectOffering.all_objects.get(
-            subject__session=self.next_year,
+            level__session=self.next_year,
         )
-        self.assertEqual(offering.subject.name, "Mathematics")
+        self.assertEqual(offering.subject_id, self.maths.pk)
         self.assertEqual(offering.level.session_id, self.next_year.pk)
         self.assertTrue(offering.is_core)
+        self.assertEqual(Subject.all_objects.filter(name="Mathematics").count(), 1)
 
     def test_an_archived_level_and_its_class_stay_behind(self):
         """Withdrawing a level was a decision; a copy must not undo it."""
@@ -316,9 +328,25 @@ class SessionLensTests(_Base):
             tenant=cls.tenant, session=cls.next_year, level=cls.jss9,
             branch=cls.lekki, name="JSS9 A", code="JSS9-A", arm="A",
         )
-        Subject.all_objects.create(
-            tenant=cls.tenant, session=cls.next_year, name="Astronomy",
-            code="AST",
+        # Catalogue, like every subject. What ties it to next year is the
+        # offering, not the row.
+        astronomy = Subject.all_objects.create(
+            tenant=cls.tenant, name="Astronomy", code="AST",
+        )
+        SubjectOffering.all_objects.create(
+            tenant=cls.tenant, subject=astronomy, level=cls.jss9,
+        )
+
+    def taught(self, view, params=None):
+        """The subjects with somewhere to be taught in the year being read.
+
+        A subject is catalogue and always listed; what answers to the year is
+        its offerings, so that is what this reads.
+        """
+        response = self.get(self.admin, view, params)
+        self.assertEqual(response.status_code, 200, response.data)
+        return sorted(
+            row["name"] for row in response.data["data"] if row["offerings"]
         )
 
     def names(self, view, params=None, key="name"):
@@ -332,13 +360,18 @@ class SessionLensTests(_Base):
     def test_the_live_year_is_what_a_screen_shows_by_default(self):
         self.assertEqual(self.names("academics-program-list"), ["JSS1", "JSS2"])
         self.assertEqual(self.names("academics-class-list"), ["JSS1 A"])
-        self.assertEqual(self.names("academics-subject-list"), ["Mathematics"])
+        # Both subjects are on file; only Mathematics is taught this year.
+        self.assertEqual(
+            self.taught("academics-subject-list"), ["Mathematics"],
+        )
 
     def test_naming_a_year_moves_every_list_to_it(self):
         year = {"session": self.next_year.pk}
         self.assertEqual(self.names("academics-program-list", year), ["JSS9"])
         self.assertEqual(self.names("academics-class-list", year), ["JSS9 A"])
-        self.assertEqual(self.names("academics-subject-list", year), ["Astronomy"])
+        self.assertEqual(
+            self.taught("academics-subject-list", year), ["Astronomy"],
+        )
 
     def test_another_schools_year_is_not_a_lens_this_school_can_use(self):
         response = self.get(
@@ -363,31 +396,26 @@ class SessionLensTests(_Base):
         made = SchoolClass.all_objects.get(name="JSS9 B")
         self.assertEqual(made.session_id, self.next_year.pk)
 
-    def test_a_subject_lands_in_the_year_being_looked_at(self):
-        """A subject hangs off no level, so the lens is the only answer.
+    def test_a_new_subject_is_taught_in_the_year_being_looked_at(self):
+        """The subject is catalogue; the OFFERING is what lands in a year.
 
         Otherwise a school drafting next year's curriculum would quietly add
-        subjects to the year its pupils are sitting in right now.
+        to the year its pupils are sitting in right now.
         """
-        response = self.post(
-            self.admin, "academics-subject-list",
-            {"name": "Further Maths", "code": "FMTH"},
-        )
-        self.assertEqual(response.status_code, 201, response.data)
-        self.assertEqual(
-            Subject.all_objects.get(name="Further Maths").session_id,
-            self.this_year.pk,
-        )
-
         url = reverse("academics-subject-list")
         response = self.client_for(self.admin).post(
             f"{url}?tenant={self.tenant.slug}&session={self.next_year.pk}",
-            {"name": "Geology", "code": "GEO"}, format="json",
+            {"name": "Geology", "code": "GEO", "level_ids": [self.jss9.pk]},
+            format="json",
         )
         self.assertEqual(response.status_code, 201, response.data)
+        geology = Subject.all_objects.get(name="Geology")
         self.assertEqual(
-            Subject.all_objects.get(name="Geology").session_id,
-            self.next_year.pk,
+            list(
+                SubjectOffering.all_objects.filter(subject=geology)
+                .values_list("level__session__name", flat=True)
+            ),
+            ["2100/2101"],
         )
 
 
@@ -591,8 +619,8 @@ class ScrappingAProgrammeTests(_Base):
         Level.all_objects.filter(
             session=self.next_year, program=self.commercial,
         ).delete()
-        Subject.all_objects.filter(
-            session=self.next_year, department=self.commerce_dept,
+        SubjectOffering.all_objects.filter(
+            level__session=self.next_year, subject__department=self.commerce_dept,
         ).delete()
 
         self.assertTrue(self.departments(self.this_year)["Commercial"])

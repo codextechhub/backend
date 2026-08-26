@@ -14,7 +14,9 @@ What is copied and what is not:
 * **Classes**, keeping their level, branch, arm and capacity. Not their
   ENROLMENT: who sat in JSS1 A last year is last year's fact, and is exactly
   what carrying the structure over is meant to stop overwriting.
-* **Subjects and their offerings**, so the curriculum arrives intact.
+* **Where each subject is taught**, so the curriculum arrives intact. The
+  subjects themselves are not copied: a subject is catalogue and belongs to
+  no year, so the same rows are simply offered at the new year's levels.
 * **Nothing archived.** An archived level or class was withdrawn on purpose;
   copying it forward would undo that decision silently.
 
@@ -64,8 +66,8 @@ def roll_forward(tenant, *, source, target):
         "class": SchoolClass.all_objects.filter(
             tenant=tenant, session=target,
         ).count(),
-        "subject": Subject.all_objects.filter(
-            tenant=tenant, session=target,
+        "subject offering": SubjectOffering.all_objects.filter(
+            tenant=tenant, level__session=target,
         ).count(),
     }
     held = [(n, kind) for kind, n in started.items() if n]
@@ -83,8 +85,13 @@ def roll_forward(tenant, *, source, target):
         Level.all_objects.filter(tenant=tenant, session=source, is_active=True)
         .order_by("program_id", "order_index")
     )
+    # Every subject taught in the source year. The subject rows themselves are
+    # catalogue and are not copied - only where they are taught moves.
     subjects = list(
-        Subject.all_objects.filter(tenant=tenant, session=source, is_active=True)
+        Subject.all_objects.filter(
+            tenant=tenant, is_active=True,
+            offerings__level__session=source,
+        ).distinct()
     )
     if not levels and not subjects:
         raise NothingToCopy(
@@ -125,29 +132,21 @@ def roll_forward(tenant, *, source, target):
         for old in classes if old.level_id in level_map
     ])
 
-    # ── Subjects, and where they are taught ───────────────────────────────
-    subject_map = {}
-    for old in subjects:
-        subject_map[old.pk] = Subject.objects.create(
-            tenant=tenant, session=target, branch_id=old.branch_id,
-            department_id=old.department_id, name=old.name, code=old.code,
-            description=old.description, is_core=old.is_core,
-        )
-
+    # ── Where the subjects are taught ─────────────────────────────────────
+    # The same subject rows, pointed at the new year's levels.
     offerings = SubjectOffering.all_objects.filter(
-        tenant=tenant, subject__in=[o.pk for o in subjects],
+        tenant=tenant, level__session=source,
     )
     SubjectOffering.objects.bulk_create([
         SubjectOffering(
-            tenant=tenant, subject=subject_map[o.subject_id],
+            tenant=tenant, subject_id=o.subject_id,
             level=level_map[o.level_id], is_core=o.is_core,
         )
-        for o in offerings
-        if o.subject_id in subject_map and o.level_id in level_map
+        for o in offerings if o.level_id in level_map
     ])
 
     return {
         "levels": len(level_map),
         "classes": len(classes),
-        "subjects": len(subject_map),
+        "subjects": len(subjects),
     }

@@ -377,10 +377,10 @@ def _arm_code(level_name, arm, taken):
 
 # ── Subjects ───────────────────────────────────────────────────────────────
 
-def _subjects_for(tenant, branch=None):
+def _subjects_for(tenant, branch=None, session=None):
     """Subjects, with the levels they are offered at.
 
-    ``branch`` narrows the OFFERINGS as well as nothing else - the subject rows
+    ``session`` and ``branch`` narrow the OFFERINGS, and nothing else - the subject rows
     themselves are filtered by ``_filtered``. Without it the prefetch was called
     ``visible_offerings`` and was not: it counted every level the subject is
     taught at, including levels the branch in view does not have, so under a
@@ -390,6 +390,8 @@ def _subjects_for(tenant, branch=None):
     offerings = SubjectOffering.objects.select_related("level").order_by(
         "level__program", "level__order_index",
     )
+    if session is not None:
+        offerings = offerings.filter(level__session=session)
     if branch is not None:
         # A school-wide LEVEL belongs to this branch too - the same inclusive
         # reading the row filter uses, applied one level down.
@@ -411,10 +413,10 @@ def _resolve_levels(tenant, user, level_ids, *, session):
     Resolved as a set before anything is written, so one foreign id does not
     leave the valid ids in the same request half-applied.
 
-    The year matters as much as the tenant. An offering says "Mathematics is
-    taught at JSS1", and a 2027 subject pointing at the 2026 JSS1 says it
-    about a level that stopped existing when that year ended - so the class
-    lists and the timetable built on it would read a year that has closed.
+    The year matters as much as the tenant. A subject spans years, but an
+    OFFERING does not - it says "Mathematics is taught at JSS1", and there is
+    a JSS1 in every year. Writing offerings for the year being looked at is
+    what keeps "taught at" a statement about one year rather than all of them.
     """
     levels = list(
         scope_to_visible_branches(
@@ -432,8 +434,7 @@ class _SubjectBase(_StructureBase):
 
     def get_queryset(self):
         qs = self._filtered(
-            _subjects_for(self.tenant, self._lens_branch())
-            .filter(session=self.session),
+            _subjects_for(self.tenant, self._lens_branch(), self.session),
         )
         is_core = (self.request.query_params.get("is_core") or "").strip().lower()
         if is_core in ("true", "1", "core"):
@@ -472,24 +473,22 @@ class SubjectListCreateView(_SubjectBase, generics.ListCreateAPIView):
         department = data.get("department")
         if department is not None:
             assert_within_parent(branch, department.branch, parent_label=department.name)
-        data["code"] = self._code_for(
-            Subject, data["name"], data.get("code"), session=self.session_required,
-        )
+        data["code"] = self._code_for(Subject, data["name"], data.get("code"))
         self._unique(
-            Subject.all_objects.filter(tenant=self.tenant, session=self.session_required),
+            Subject.all_objects.filter(tenant=self.tenant),
             name=data["name"], code=data["code"],
             writing_to_branch=branch is not None,
         )
 
         subject = Subject.objects.create(
-            tenant=self.tenant, branch=branch, session=self.session_required, **data,
+            tenant=self.tenant, branch=branch, **data,
         )
         if level_ids:
             _write_offerings(
                 self.tenant, subject,
                 _resolve_levels(
                     self.tenant, request.user, level_ids,
-                    session=subject.session,
+                    session=self.session_required,
                 ),
             )
         self._audit(
@@ -498,7 +497,7 @@ class SubjectListCreateView(_SubjectBase, generics.ListCreateAPIView):
         return success_response(
             f"{subject.name} added.",
             data=SubjectSerializer(
-                _subjects_for(self.tenant).get(pk=subject.pk),
+                _subjects_for(self.tenant, session=self.session).get(pk=subject.pk),
                 context=self.get_serializer_context(),
             ).data,
             status=201,
@@ -544,9 +543,7 @@ class SubjectDetailView(_SubjectBase, generics.RetrieveUpdateAPIView):
                 target_branch, department.branch, parent_label=department.name,
             )
         self._unique(
-            Subject.all_objects.filter(
-                tenant=self.tenant, session_id=subject.session_id,
-            ),
+            Subject.all_objects.filter(tenant=self.tenant),
             name=data.get("name"), code=data.get("code"), exclude_pk=subject.pk,
             writing_to_branch=target_branch is not None,
         )
@@ -559,7 +556,7 @@ class SubjectDetailView(_SubjectBase, generics.RetrieveUpdateAPIView):
                 self.tenant, subject,
                 _resolve_levels(
                     self.tenant, request.user, level_ids,
-                    session=subject.session,
+                    session=self.session_required,
                 ),
             )
         self._audit(
@@ -568,7 +565,7 @@ class SubjectDetailView(_SubjectBase, generics.RetrieveUpdateAPIView):
         return success_response(
             f"{subject.name} updated.",
             data=SubjectSerializer(
-                _subjects_for(self.tenant).get(pk=subject.pk),
+                _subjects_for(self.tenant, session=self.session).get(pk=subject.pk),
                 context=self.get_serializer_context(),
             ).data,
         )
@@ -589,14 +586,12 @@ class SubjectOfferingsView(_SubjectBase, APIView):
         ).filter(pk=pk).first()
         if subject is None:
             raise NotFound("No such subject at this school.")
-        # Resolved by pk without get_object, so the guard is explicit here too.
-        assert_year_is_writable(subject.session)
 
         writer = OfferingsWriteSerializer(data=request.data)
         writer.is_valid(raise_exception=True)
         levels = _resolve_levels(
             self.tenant, request.user, writer.validated_data["level_ids"],
-            session=subject.session,
+            session=self.session_required,
         )
         _write_offerings(self.tenant, subject, levels)
 
@@ -612,7 +607,7 @@ class SubjectOfferingsView(_SubjectBase, APIView):
         return success_response(
             f"{subject.name} updated.",
             data=SubjectSerializer(
-                _subjects_for(self.tenant).get(pk=subject.pk),
+                _subjects_for(self.tenant, session=self.session).get(pk=subject.pk),
                 context={"multi_branch": self.multi_branch},
             ).data,
         )

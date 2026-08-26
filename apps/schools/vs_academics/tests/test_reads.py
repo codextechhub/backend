@@ -109,7 +109,7 @@ class _Base(TestCase):
                     )
         for s in range(subjects):
             subject = Subject.all_objects.create(
-                tenant=self.tenant, session=self.year, name=f"{tag} Subject {s}", code=f"{tag}S{s}",
+                tenant=self.tenant, name=f"{tag} Subject {s}", code=f"{tag}S{s}",
             )
             for level in made:
                 SubjectOffering.all_objects.create(
@@ -141,7 +141,7 @@ class TreeShapeTests(_Base):
     def test_a_subject_row_says_core_or_elective(self):
         levels = self.build(programs=1, levels=1, classes=1, subjects=0)
         elective = Subject.all_objects.create(
-            tenant=self.tenant, session=self.year, name="Further Maths", code="FMT", is_core=False,
+            tenant=self.tenant, name="Further Maths", code="FMT", is_core=False,
         )
         SubjectOffering.all_objects.create(
             tenant=self.tenant, subject=elective, level=levels[0],
@@ -155,7 +155,7 @@ class TreeShapeTests(_Base):
     def test_an_offering_overrides_the_subjects_own_core_flag(self):
         levels = self.build(programs=1, levels=1, classes=1, subjects=0)
         subject = Subject.all_objects.create(
-            tenant=self.tenant, session=self.year, name="Mathematics", code="MTH", is_core=True,
+            tenant=self.tenant, name="Mathematics", code="MTH", is_core=True,
         )
         SubjectOffering.all_objects.create(
             tenant=self.tenant, subject=subject, level=levels[0], is_core=False,

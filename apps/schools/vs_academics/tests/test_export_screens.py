@@ -164,7 +164,7 @@ class TheYearTravelsIntoTheExportTests(SimpleTestCase):
         return get_screen(key)
 
     def test_each_per_year_screen_carries_its_year(self):
-        for key in ("academics.levels", "academics.classes", "academics.subjects"):
+        for key in ("academics.levels", "academics.classes"):
             binding = self.screen(key)
             self.assertIn("session", binding.handles, key)
             filters, unmapped = binding.translate({"session": "7"})
@@ -177,11 +177,17 @@ class TheYearTravelsIntoTheExportTests(SimpleTestCase):
     def test_each_per_year_dataset_can_say_which_year_a_row_is(self):
         from vs_exports.catalogue import get_dataset
 
-        for key in ("academics.levels", "academics.classes", "academics.subjects"):
+        for key in ("academics.levels", "academics.classes"):
             paths = {f.path for f in get_dataset(key).fields}
             self.assertIn("session__name", paths, key)
 
     def test_a_screen_that_is_not_per_year_does_not_claim_one(self):
-        """Departments and programmes span years; a year filter would lie."""
-        for key in ("academics.departments", "academics.programs"):
+        """Departments, programmes and SUBJECTS span years.
+
+        A subject is catalogue - what belongs to a year is where it is taught,
+        which is not in this dataset - so a year filter on it would answer a
+        question the rows cannot be asked.
+        """
+        for key in ("academics.departments", "academics.programs",
+                    "academics.subjects"):
             self.assertNotIn("session", self.screen(key).handles, key)

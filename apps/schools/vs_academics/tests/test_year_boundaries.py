@@ -79,10 +79,17 @@ class YearBoundaryTests(_Base):
         self.assertIn(response.status_code, (409, 422), response.data)
 
     # 4 ─────────────────────────────────────────────────────────────────────
-    def test_rolling_into_a_year_that_has_subjects_but_no_levels_is_refused(self):
-        Subject.all_objects.create(
-            tenant=self.tenant, session=self.next_year, name="Latin", code="LAT",
-        )
+    def test_a_year_holding_offerings_is_a_year_that_has_been_started(self):
+        """The check covers every kind, not levels alone.
+
+        A levels-only check let a year holding other rows through and gave
+        them a second copy. In practice nothing can precede a level, because
+        classes and offerings both hang off one - so the other two are belt
+        and braces rather than a case anybody reaches.
+        """
+        from schools.vs_academics.services.rollover import roll_forward
+
+        roll_forward(self.tenant, source=self.this_year, target=self.next_year)
         url = reverse(
             "academics-session-roll-forward", kwargs={"pk": self.next_year.pk},
         )
@@ -91,11 +98,7 @@ class YearBoundaryTests(_Base):
             {"from": self.this_year.pk}, format="json",
         )
         self.assertEqual(response.status_code, 409, response.data)
-        self.assertEqual(
-            Subject.all_objects.filter(
-                session=self.next_year, name="Latin",
-            ).count(), 1,
-        )
+        self.assertIn("2 levels", response.data["message"])
 
 
 class NoYearYetTests(_Base):
@@ -152,7 +155,7 @@ class ClosedYearRowsTests(_Base):
             name="JSS9", code="JSS9", order_index=9,
         )
         cls.old_subject = Subject.all_objects.create(
-            tenant=cls.tenant, session=cls.past, name="Latin", code="LAT",
+            tenant=cls.tenant, name="Latin", code="LAT",
         )
 
     def test_a_level_in_an_archived_year_cannot_be_archived(self):
@@ -164,13 +167,19 @@ class ClosedYearRowsTests(_Base):
         self.old_level.refresh_from_db()
         self.assertTrue(self.old_level.is_active)
 
-    def test_a_subject_in_an_archived_year_cannot_be_archived(self):
+    def test_a_subject_belongs_to_no_year_so_archiving_one_is_always_allowed(self):
+        """The one row here a closed year does NOT protect.
+
+        A subject is catalogue: it is not part of what 2098/2099 says the
+        school ran. What that year holds is where the subject was TAUGHT, and
+        those offerings are protected - see the two tests below.
+        """
         r = self.post(
             self.admin, "academics-subject-archive", {}, pk=self.old_subject.pk,
         )
-        self.assertIn(r.status_code, (403, 409), r.data)
+        self.assertEqual(r.status_code, 200, r.data)
         self.old_subject.refresh_from_db()
-        self.assertTrue(self.old_subject.is_active)
+        self.assertFalse(self.old_subject.is_active)
 
     def test_a_level_in_an_archived_year_cannot_be_edited(self):
         url = reverse("academics-level-detail", kwargs={"pk": self.old_level.pk})
@@ -196,6 +205,18 @@ class ClosedYearRowsTests(_Base):
         self.assertTrue(old_class.is_active)
 
     def test_offerings_cannot_be_rewritten_in_an_archived_year(self):
+        """Where a subject was taught IS part of what that year recorded."""
+        url = reverse(
+            "academics-subject-offerings", kwargs={"pk": self.old_subject.pk},
+        )
+        r = self.client_for(self.admin).put(
+            f"{url}?tenant={self.tenant.slug}&session={self.past.pk}",
+            {"level_ids": [self.old_level.pk]}, format="json",
+        )
+        self.assertIn(r.status_code, (403, 409), r.data)
+
+    def test_a_closed_years_level_cannot_be_reached_from_the_live_year(self):
+        """Not even by naming its id: it is not in the year being written to."""
         url = reverse(
             "academics-subject-offerings", kwargs={"pk": self.old_subject.pk},
         )
@@ -203,4 +224,4 @@ class ClosedYearRowsTests(_Base):
             f"{url}?tenant={self.tenant.slug}",
             {"level_ids": [self.old_level.pk]}, format="json",
         )
-        self.assertIn(r.status_code, (403, 409), r.data)
+        self.assertEqual(r.status_code, 404, r.data)

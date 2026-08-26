@@ -62,7 +62,7 @@ class InclusiveBranchFilterTests(_AllAcademics):
         SchoolClass.all_objects.create(
             tenant=self.tenant, session=self.year, level=level, name="JSS1 A", code="JSS1-A",
         )
-        Subject.all_objects.create(tenant=self.tenant, session=self.year, name="Maths", code="MTH")
+        Subject.all_objects.create(tenant=self.tenant, name="Maths", code="MTH")
 
         for route in (
             "academics-program-list",
@@ -117,7 +117,7 @@ class OfferedAtAnswersToTheFilterTests(_AllAcademics):
             code="VOC1", order_index=1, branch=self.ikeja,
         )
         self.subject = Subject.all_objects.create(
-            tenant=self.tenant, session=self.year, name="English", code="ENG",
+            tenant=self.tenant, name="English", code="ENG",
         )
         for level in (self.shared_level, self.ikeja_level):
             SubjectOffering.all_objects.create(

@@ -289,7 +289,7 @@ class OfferingTests(_Base):
             code="JSS1", order_index=1,
         )
         self.subject = Subject.all_objects.create(
-            tenant=self.tenant, session=self.year, name="Mathematics", code="MTH",
+            tenant=self.tenant, name="Mathematics", code="MTH",
         )
 
     def test_a_subject_is_offered_at_a_level_once(self):
