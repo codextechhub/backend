@@ -108,6 +108,24 @@ class AcademicsViewMixin:
             raise NoSessionYet()
         return found
 
+    def get_object(self):
+        """The row, refusing to hand it over for a write if its year has closed.
+
+        The archived-year guard on `session` reads the LENS, and a detail view
+        does not use the lens - it resolves a row by primary key. So renaming
+        or deleting a 2025/2026 level went straight through while creating one
+        was refused, and the rule only looked enforced. A row carries its own
+        year, and that is the one that decides.
+
+        Departments and programmes have no year and are unaffected.
+        """
+        obj = super().get_object()
+        if self.request.method not in SAFE_METHODS:
+            from ..services.years import assert_year_is_writable
+
+            assert_year_is_writable(getattr(obj, "session", None))
+        return obj
+
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context["multi_branch"] = self.multi_branch

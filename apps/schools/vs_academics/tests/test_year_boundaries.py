@@ -128,3 +128,74 @@ class NoYearYetTests(_Base):
             self.admin, "academics-department-list", {"name": "Sciences"},
         )
         self.assertEqual(response.status_code, 201, response.data)
+
+
+class ClosedYearRowsTests(_Base):
+    """A row in a closed year cannot be edited, deleted, or re-offered.
+
+    The archived-year guard reads the LENS, and a detail view does not use the
+    lens - it resolves a row by primary key. So creating into a closed year was
+    refused while renaming and deleting inside one went straight through, and
+    the rule only looked enforced. A row carries its own year.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.past = AcademicSession.all_objects.create(
+            tenant=cls.tenant, name="2098/2099",
+            start_date=dt.date(2098, 9, 1), end_date=dt.date(2099, 7, 31),
+            status=SessionStatus.ARCHIVED,
+        )
+        cls.old_level = Level.all_objects.create(
+            tenant=cls.tenant, session=cls.past, program=cls.prog,
+            name="JSS9", code="JSS9", order_index=9,
+        )
+        cls.old_subject = Subject.all_objects.create(
+            tenant=cls.tenant, session=cls.past, name="Latin", code="LAT",
+        )
+
+    def test_a_level_in_an_archived_year_cannot_be_deleted(self):
+        url = reverse("academics-level-detail", kwargs={"pk": self.old_level.pk})
+        r = self.client_for(self.admin).delete(f"{url}?tenant={self.tenant.slug}")
+        self.assertIn(r.status_code, (403, 409), r.data)
+        self.assertTrue(Level.all_objects.filter(pk=self.old_level.pk).exists())
+
+    def test_a_subject_in_an_archived_year_cannot_be_deleted(self):
+        url = reverse("academics-subject-detail", kwargs={"pk": self.old_subject.pk})
+        r = self.client_for(self.admin).delete(f"{url}?tenant={self.tenant.slug}")
+        self.assertIn(r.status_code, (403, 409), r.data)
+        self.assertTrue(Subject.all_objects.filter(pk=self.old_subject.pk).exists())
+
+    def test_a_level_in_an_archived_year_cannot_be_edited(self):
+        url = reverse("academics-level-detail", kwargs={"pk": self.old_level.pk})
+        r = self.client_for(self.admin).patch(
+            f"{url}?tenant={self.tenant.slug}", {"name": "Rewritten"}, format="json",
+        )
+        self.assertIn(r.status_code, (403, 409), r.data)
+        self.old_level.refresh_from_db()
+        self.assertEqual(self.old_level.name, "JSS9")
+
+    def test_a_class_in_an_archived_year_cannot_be_archived_again(self):
+        """The lifecycle routes resolve by pk too, so they need the same guard."""
+        from schools.vs_academics.models import SchoolClass
+
+        old_class = SchoolClass.all_objects.create(
+            tenant=self.tenant, session=self.past, level=self.old_level,
+            name="JSS9 A", code="JSS9-A", arm="A",
+        )
+        url = reverse("academics-class-archive", kwargs={"pk": old_class.pk})
+        r = self.client_for(self.admin).post(f"{url}?tenant={self.tenant.slug}")
+        self.assertIn(r.status_code, (403, 409), r.data)
+        old_class.refresh_from_db()
+        self.assertTrue(old_class.is_active)
+
+    def test_offerings_cannot_be_rewritten_in_an_archived_year(self):
+        url = reverse(
+            "academics-subject-offerings", kwargs={"pk": self.old_subject.pk},
+        )
+        r = self.client_for(self.admin).put(
+            f"{url}?tenant={self.tenant.slug}",
+            {"level_ids": [self.old_level.pk]}, format="json",
+        )
+        self.assertIn(r.status_code, (403, 409), r.data)

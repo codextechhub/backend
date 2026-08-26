@@ -240,6 +240,8 @@ class _ClassStateView(_ClassBase, APIView):
         ).filter(pk=pk).first()
         if klass is None:
             raise NotFound("No such class at this school.")
+        # This one resolves by pk without get_object, so the guard is explicit.
+        assert_year_is_writable(klass.session)
 
         klass.is_active = self.active
         klass.save(update_fields=["is_active", "updated_at"])
@@ -601,6 +603,8 @@ class SubjectOfferingsView(_SubjectBase, APIView):
         ).filter(pk=pk).first()
         if subject is None:
             raise NotFound("No such subject at this school.")
+        # Resolved by pk without get_object, so the guard is explicit here too.
+        assert_year_is_writable(subject.session)
 
         writer = OfferingsWriteSerializer(data=request.data)
         writer.is_valid(raise_exception=True)
