@@ -101,6 +101,21 @@ def _subjects(scope):
     )
 
 
+#: The year a per-year row belongs to.
+#:
+#: Levels, classes and subjects each belong to exactly one, so a file without
+#: this column silently stacked three years of JSS1 A on top of each other and
+#: gave the reader no way to tell them apart.
+_YEAR_FIELD = Field(
+    "session__name", "Academic year", "Year", KIND_TEXT,
+    description="The year this row belongs to.",
+)
+
+#: The screen sends a session ID, so the filter is on the id, not the name -
+#: two years may not share a name at one school, but a name is still the wrong
+#: thing to round-trip an id through.
+_YEAR_FILTER = FilterDef("session_id", "Academic year", FILTER_CHOICE)
+
 #: The scope chip every catalogue row carries, spelled once.
 _SCOPE_FIELD = Field(
     "branch__name", "Branch", "Scope", KIND_TEXT,
@@ -219,12 +234,14 @@ def register_datasets():
             Field("next_level__name", "Promotes to", "Progression", KIND_TEXT,
                   description="Blank means the level is terminal, or that "
                               "promotion has not been wired yet."),
+            _YEAR_FIELD,
             _SCOPE_FIELD,
             Field("is_active", "Active", "Record", KIND_TEXT),
         ),
         filters=(
             FilterDef("created_at", "Created", FILTER_DATE_RANGE, is_primary_date=True),
             _ACTIVE_FILTER,
+            _YEAR_FILTER,
             _SCOPE_FILTER,
             FilterDef("program__name", "Programme", FILTER_TEXT),
             FilterDef("search", "Search", FILTER_SEARCH, searches=(
@@ -250,6 +267,7 @@ def register_datasets():
             Field("arm", "Arm", "Class", KIND_TEXT),
             Field("capacity", "Capacity", "Class", KIND_NUMBER,
                   description="Advisory here; enrolment enforces it."),
+            _YEAR_FIELD,
             _SCOPE_FIELD,
             Field("is_active", "Active", "Record", KIND_TEXT),
             Field("created_at", "Created", "Record", KIND_DATETIME),
@@ -257,6 +275,7 @@ def register_datasets():
         filters=(
             FilterDef("created_at", "Created", FILTER_DATE_RANGE, is_primary_date=True),
             _ACTIVE_FILTER,
+            _YEAR_FILTER,
             _SCOPE_FILTER,
             FilterDef("level__name", "Level", FILTER_TEXT),
             FilterDef("search", "Search", FILTER_SEARCH, searches=(
@@ -285,12 +304,14 @@ def register_datasets():
             Field("department__name", "Department", "Subject", KIND_TEXT),
             Field("is_core", "Core", "Subject", KIND_TEXT),
             Field("description", "Description", "Subject", KIND_TEXT),
+            _YEAR_FIELD,
             _SCOPE_FIELD,
             Field("is_active", "Active", "Record", KIND_TEXT),
         ),
         filters=(
             FilterDef("created_at", "Created", FILTER_DATE_RANGE, is_primary_date=True),
             _ACTIVE_FILTER,
+            _YEAR_FILTER,
             _SCOPE_FILTER,
             FilterDef("is_core", "Core", FILTER_BOOLEAN),
             FilterDef("search", "Search", FILTER_SEARCH, searches=(
@@ -359,6 +380,19 @@ _BRANCH_REASON = (
 )
 
 
+def _year(params, filters):
+    """Carry the year lens into the export.
+
+    Unlike the branch lens this one CAN be expressed as a filter: a row belongs
+    to exactly one year, with no shared-across-all-years case to widen it. A
+    screen showing 2025/2026 that exported every year was handing a school a
+    file three times the size of what it was looking at.
+    """
+    session = str(params.get("session", "")).strip()
+    if session:
+        filters.append({"id": "session_id", "value": [session]})
+
+
 def _common(params):
     """search, is_active and the branch lens - every catalogue screen sends these."""
     from vs_exports.catalogue import Unmapped
@@ -380,10 +414,18 @@ def _translate_catalogue(params):
     return _common(params)
 
 
+def _translate_per_year(params):
+    """A catalogue screen whose rows belong to one year."""
+    filters, unmapped = _common(params)
+    _year(params, filters)
+    return filters, unmapped
+
+
 def _translate_classes(params):
     from vs_exports.catalogue import Unmapped
 
     filters, unmapped = _common(params)
+    _year(params, filters)
     # The screen filters by level ID; the dataset filters on the level's NAME,
     # and this translator has no tenant to resolve one into the other. Reported
     # rather than guessed.
@@ -399,6 +441,7 @@ def _translate_classes(params):
 
 def _translate_subjects(params):
     filters, unmapped = _common(params)
+    _year(params, filters)
     _flag(params, "is_core", filters, unmapped)
     return filters, unmapped
 
@@ -428,7 +471,7 @@ def _translate_sessions(params):
 
 #: Params every academics screen carries that are not filters. Listed so they
 #: are not reported as dropped: a page number is not a narrowing.
-_IGNORE = ("page", "page_size", "tenant", "view", "session")
+_IGNORE = ("page", "page_size", "tenant", "view")
 
 
 def register_screens():
@@ -443,11 +486,11 @@ def register_screens():
         ("academics.programs", "Academics - Programmes", "academics.programs",
          _translate_catalogue, ("search", "is_active", "branch")),
         ("academics.levels", "Academics - Levels", "academics.levels",
-         _translate_catalogue, ("search", "is_active", "branch")),
+         _translate_per_year, ("search", "is_active", "branch", "session")),
         ("academics.classes", "Academics - Classes & arms", "academics.classes",
-         _translate_classes, ("search", "is_active", "branch", "level")),
+         _translate_classes, ("search", "is_active", "branch", "level", "session")),
         ("academics.subjects", "Academics - Subjects", "academics.subjects",
-         _translate_subjects, ("search", "is_active", "branch", "is_core")),
+         _translate_subjects, ("search", "is_active", "branch", "is_core", "session")),
     ):
         register_screen(ScreenBinding(
             key=key, label=label, dataset_key=dataset,

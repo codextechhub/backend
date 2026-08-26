@@ -147,3 +147,41 @@ class EndToEndTests(SimpleTestCase):
         )
         self.assertTrue(resolved["exact"])
         self.assertEqual(resolved["unmapped"], [])
+
+
+class TheYearTravelsIntoTheExportTests(SimpleTestCase):
+    """A file has to cover the year the screen was showing.
+
+    Levels, classes and subjects each belong to exactly one, so an export that
+    ignored the lens handed a school three years of JSS1 A stacked on top of
+    each other - and, with no year column, no way to tell which was which.
+    "session" used to sit in the ignore list, from when the pill was a caption.
+    """
+
+    def screen(self, key):
+        from vs_exports.catalogue import get_screen
+
+        return get_screen(key)
+
+    def test_each_per_year_screen_carries_its_year(self):
+        for key in ("academics.levels", "academics.classes", "academics.subjects"):
+            binding = self.screen(key)
+            self.assertIn("session", binding.handles, key)
+            filters, unmapped = binding.translate({"session": "7"})
+            self.assertIn(
+                {"id": "session_id", "value": ["7"]}, filters,
+                f"{key} dropped the year",
+            )
+            self.assertEqual([u.param for u in unmapped], [], key)
+
+    def test_each_per_year_dataset_can_say_which_year_a_row_is(self):
+        from vs_exports.catalogue import get_dataset
+
+        for key in ("academics.levels", "academics.classes", "academics.subjects"):
+            paths = {f.path for f in get_dataset(key).fields}
+            self.assertIn("session__name", paths, key)
+
+    def test_a_screen_that_is_not_per_year_does_not_claim_one(self):
+        """Departments and programmes span years; a year filter would lie."""
+        for key in ("academics.departments", "academics.programs"):
+            self.assertNotIn("session", self.screen(key).handles, key)
