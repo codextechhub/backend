@@ -34,7 +34,7 @@ The queryset used to ignore ``BackgroundJob.tenant`` entirely, so every reader
 got every customer interleaved and a support agent working a Corona ticket had
 to page through Greenfield to find it. Now the list is limited to the tenants
 the caller actually holds ``platform.tasks.view`` in, and seeing across all of
-them takes the separate ``platform.tasks.view_all`` key. ``?tenant=<slug|id>``
+them takes the separate ``platform.tasks.view_all`` key. ``?for_tenant=<slug|id>``
 narrows within whatever that leaves.
 
 List filters:
@@ -42,7 +42,9 @@ List filters:
     ?task=<substring of the task name>     e.g. ?task=import
     ?kind=import|export|email|system
     ?since=YYYY-MM-DD                      created on/after this date
-    ?tenant=<slug or numeric id>           one customer's runs
+    ?for_tenant=<slug or numeric id>       one customer's runs. NOT ?tenant=,
+                                           which is the caller's own tenant
+                                           assertion (see core.tenant_filters)
 """
 from __future__ import annotations
 
@@ -60,6 +62,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from core.models import BackgroundJob
 from core.pagination import XVSPagination
 from core.response import success_response
+from core.tenant_filters import narrow as narrow_by_tenant
 from vs_rbac.permissions import (
     HasRBACPermission,
     IsAuthenticatedAndActive,
@@ -230,26 +233,27 @@ class TaskMonitorViewSet(
         return self._apply_filters(qs)
 
     def _scope_to_visible_tenants(self, qs):
-        """Narrow to the tenants the caller may see, then to ``?tenant=``."""
+        """Narrow to the tenants the caller may see, then to ``?for_tenant=``.
+
+        The filter is ``?for_tenant=``, never ``?tenant=``. ``?tenant=`` is the
+        assertion the authentication layer requires, naming the tenant the
+        caller is acting IN, and this viewset does not set
+        ``platform_cross_tenant_param`` - so a CodeX operator must assert
+        ``codex`` or be refused. Reading that as "whose rows do you want" meant
+        a Super Admin holding ``platform.tasks.view_all`` sent ``?tenant=codex``
+        like everybody else and had the platform-wide list they hold a CRITICAL
+        key for silently collapse to Codex's own system jobs, showing no school
+        at all. The same conflation answered 500 on ``/v1/health/tasks/``;
+        ``core.tenant_filters`` carries the full account.
+        """
         allowed = visible_tenant_ids(self.request.user)
         if allowed is not None:
             qs = qs.filter(tenant_id__in=allowed)
-
-        requested = (self.request.query_params.get("tenant") or "").strip()
-        if requested:
-            from vs_tenants.models import Tenant
-
-            lookup = (
-                {"pk": int(requested)} if requested.isdigit()
-                else {"slug": requested.lower()}
-            )
-            tenant = Tenant.objects.filter(**lookup).first()
-            # An unknown slug narrows to nothing rather than being ignored:
-            # silently returning every tenant for a typo is how a filter
-            # becomes a leak. A tenant outside `allowed` is already excluded
-            # by the clause above, so this cannot widen the scope either.
-            qs = qs.filter(tenant=tenant) if tenant else qs.none()
-        return qs
+        # An unknown slug narrows to nothing rather than being ignored:
+        # silently returning every tenant for a typo is how a filter becomes a
+        # leak. A tenant outside `allowed` is already excluded above, so this
+        # can never widen the scope either.
+        return narrow_by_tenant(qs, self.request.query_params)
 
     def _apply_filters(self, qs):
         params = self.request.query_params

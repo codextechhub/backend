@@ -89,7 +89,7 @@ may stand at the platform level at all, the key says what they may then read.
 
 | Method + path | permission key | request body / query | response |
 |---|---|---|---|
-| `GET /tasks/` | `platform.tasks.view` | `status`, `task`, `kind`, `since`, `tenant` | Paginated jobs, newest first. Metadata only |
+| `GET /tasks/` | `platform.tasks.view` | `status`, `task`, `kind`, `since`, `for_tenant` | Paginated jobs, newest first. Metadata only |
 | `GET /tasks/<id>/` | `platform.tasks.view` | - | One job + **redacted** `result` and `error` |
 | `GET /tasks/<id>/diagnostics/` | `platform.tasks.view_sensitive` | - | Raw `raw_error`, `raw_traceback`, `raw_result`. Audited |
 | `GET /tasks/stats/` | `platform.tasks.view` | same filters | `{by_status, last_24h, by_task, recent_failures, total}`, tenant-scoped |
@@ -174,7 +174,7 @@ trail; filing it under Codex would put the answer where they cannot see it.
 ## 7. Worked example
 
 ```text
-GET /v1/admin/tasks/?tenant=corona&kind=import&status=failed
+GET /v1/admin/tasks/?tenant=codex&for_tenant=corona&kind=import&status=failed
 ```
 
 ```json
@@ -236,6 +236,17 @@ envelope.
   alongside RBAC. That is a feature, not a fix, and it is not attempted here.
   The practical consequence today: anyone who needs one school's task rows
   needs `view_all`, which gives them all of them.
+- **The tenant filter is `?for_tenant=`, and it cannot be `?tenant=`.**
+  `?tenant=` is the assertion `TenantJWTAuthentication` requires, naming the
+  tenant the caller is acting *in*; this viewset does not set
+  `platform_cross_tenant_param`, so a CodeX operator must assert `codex` or be
+  refused with 404. The filter shipped reading that same parameter, which meant
+  a Super Admin holding `platform.tasks.view_all` sent `?tenant=codex` like
+  everybody else and watched the platform-wide list they hold a CRITICAL key
+  for collapse to Codex's own system jobs, showing no school at all. The same
+  conflation was a 500 on `/v1/health/tasks/`, which filtered `tenant_id` (an
+  integer) by the asserted slug and so answered 500 to every caller it ever
+  had. Both now go through `core.tenant_filters`, which owns the name.
 - **Redaction is pattern-based, so it over-redacts by design.** A 12-digit
   invoice reference is masked alongside a bank account number, and part of a
   UUID inside a traceback can be too. The trade is deliberate - masking a
@@ -290,7 +301,7 @@ envelope.
 
 **Tenant isolation.** `get_queryset` filters on `BackgroundJob.tenant` against
 `visible_tenant_ids(user)`, so a caller without `view_all` sees their own
-tenant only, and `?tenant=<slug|id>` narrows within whatever that leaves. An
+tenant only, and `?for_tenant=<slug|id>` narrows within whatever that leaves. An
 unknown slug narrows to nothing rather than being ignored: silently returning
 every tenant for a typo is how a filter becomes a leak.
 
@@ -347,7 +358,7 @@ cannot read raw text; `view_sensitive` can; the read emits
 with no diagnostic is a `404` rather than an empty body.
 
 **Tenant scope (`TaskMonitorTenantScopeTests`)** - `view_all` sees every
-tenant; without it no customer rows are visible; `?tenant=` narrows; an unknown
+tenant; without it no customer rows are visible; `?for_tenant=` narrows; an unknown
 slug returns nothing rather than everything; an out-of-scope row is not
 reachable by id; `stats/` counts are scoped too.
 

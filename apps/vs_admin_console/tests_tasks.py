@@ -275,18 +275,36 @@ class TaskMonitorTenantScopeTests(TestCase):
         )
 
     def test_tenant_filter_narrows_within_scope(self):
+        """The filter is ?for_tenant=; ?tenant= belongs to the auth layer."""
         user = _cx_user()
         _grant(user, PERM_VIEW, PERM_VIEW_ALL)
         self.client.force_authenticate(user=user)
-        resp = self.client.get(reverse("tasks-list") + "?tenant=corona")
+        resp = self.client.get(reverse("tasks-list") + "?for_tenant=corona")
         self.assertEqual(self._names(resp), {"t.corona"})
 
     def test_unknown_tenant_filter_returns_nothing_rather_than_everything(self):
         user = _cx_user()
         _grant(user, PERM_VIEW, PERM_VIEW_ALL)
         self.client.force_authenticate(user=user)
-        resp = self.client.get(reverse("tasks-list") + "?tenant=does-not-exist")
+        resp = self.client.get(reverse("tasks-list") + "?for_tenant=does-not-exist")
         self.assertEqual(resp.data["data"], [])
+
+    def test_the_assertion_param_is_not_read_as_a_filter(self):
+        """?tenant= must not narrow the list, or view_all becomes unusable.
+
+        Every caller has to send ?tenant=<their own slug> to authenticate at
+        all, and this viewset does not opt into cross-tenant assertion. If that
+        value also narrowed the rows, a Super Admin holding view_all would send
+        ?tenant=codex like everyone else and see Codex's own system jobs
+        instead of the platform-wide list the key exists to give them.
+        """
+        user = _cx_user()
+        _grant(user, PERM_VIEW, PERM_VIEW_ALL)
+        self.client.force_authenticate(user=user)
+        resp = self.client.get(reverse("tasks-list") + "?tenant=codex")
+        self.assertEqual(
+            self._names(resp), {"t.codex", "t.corona", "t.greenfield"},
+        )
 
     def test_out_of_scope_row_is_not_reachable_by_id(self):
         user = _cx_user()

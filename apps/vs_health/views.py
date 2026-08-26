@@ -231,12 +231,13 @@ class QueuesView(HealthViewMixin, APIView):
 class TaskListView(HealthViewMixin, generics.ListAPIView):
     """GET /health/tasks/ - the task table (reads core.BackgroundJob).
 
-    Filters: ?status=, ?queue=, ?tenant=, ?kind=.
+    Filters: ?status=, ?queue=, ?for_tenant=, ?kind=.
     """
     serializer_class = TaskRowSerializer
 
     def get_queryset(self):
         from core.models import BackgroundJob
+        from core.tenant_filters import narrow as narrow_by_tenant
         from .tasks import KIND_TO_QUEUE
 
         qs = BackgroundJob.objects.select_related("tenant").all()
@@ -244,9 +245,11 @@ class TaskListView(HealthViewMixin, generics.ListAPIView):
         status = params.get("status")
         if status:
             qs = qs.filter(status=status.upper())
-        tenant = params.get("tenant")
-        if tenant and tenant != "all":
-            qs = qs.filter(tenant_id=tenant)
+        # NOT ``?tenant=``: that is the tenant assertion the authentication
+        # layer requires, and it carries a slug. Filtering ``tenant_id`` by it
+        # raised on every request, so this table answered 500 to every caller
+        # it ever had. See core.tenant_filters.
+        qs = narrow_by_tenant(qs, params)
         kind = params.get("kind")
         if kind:
             qs = qs.filter(kind=kind)
