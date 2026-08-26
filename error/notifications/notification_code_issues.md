@@ -11,8 +11,9 @@ Baseline: the `vs_notifications` suite is **85 tests, all green**
 suite does not currently catch. Nothing here is speculative - every claim is
 traced to a file and line.
 
-**Status: recorded, not yet fixed.** Nothing in this file has been changed in
-the code.
+**Status: §1 and §2 are FIXED (`373a918`, 26 August 2026); everything else is
+recorded, not yet fixed.** Each fixed item keeps its original account so the
+defect stays readable, with the resolution stated at the top of the section.
 
 ---
 
@@ -20,8 +21,8 @@ the code.
 
 | # | Issue | Severity |
 |---|---|---|
-| 1 | Notifications are filed under the sender's tenant, and the feed filters by tenant, so recipients in another tenant never see them | **Critical** |
-| 2 | A school's settings decide whether CX staff get notified | **High** |
+| 1 | ~~Notifications are filed under the sender's tenant, and the feed filters by tenant, so recipients in another tenant never see them~~ | **Fixed** |
+| 2 | ~~A school's settings decide whether CX staff get notified~~ | **Fixed** |
 | 3 | `acknowledge-route` uses a different manager from every sibling route | **High** |
 | 4 | Eight active in-app events have no click destination; three route prefixes match nothing | **Medium** |
 | 5 | `metadata` is an unvalidated control surface for attachments, BCC and the From name | **Medium** |
@@ -35,6 +36,25 @@ the code.
 ---
 
 ## 1. Notifications are filed under the sender's tenant, and the feed filters by tenant
+
+**FIXED in `373a918` (26 August 2026).** Ownership now follows the recipient:
+`Notification.tenant` is the recipient's own tenant, and the tenant an event is
+about is recorded separately as `origin_tenant`
+(`vs_notifications/models.py:465`). `NotificationService.send` groups recipients
+by owner before building any record (`services/dispatch.py:173`), migration
+`0010_notification_ownership_follows_recipient` moved the rows already written
+and reverses cleanly, and `NotificationOwnershipTests` /
+`OwnershipMigrationTests` cover the feed, the history log by list, by identifier
+and by search, and both directions of the migration. `origin_tenant` is
+deliberately exposed by no serializer and accepted by no filter: a school-tenant
+caller reaching it would be this defect again by another route.
+
+The delivery task's own lookup moved to `all_objects` in the same sweep
+(`tasks.py:89`). It fetches by primary key, so ownership is already settled, and
+under `CELERY_TASK_ALWAYS_EAGER` the task runs in the dispatcher's request
+thread - which after this change is usually NOT the owner's tenant.
+
+The original account follows, unchanged. Its line references are to the code as it was before the fix; the current ones are above.
 
 **Critical. Confirmed with a concrete caller.**
 
@@ -142,6 +162,14 @@ Fix the class, not the case:
 
 ## 2. A school's settings decide whether CX staff get notified
 
+**FIXED in `373a918` (26 August 2026),** by the fix this section asked for:
+channels resolve per recipient tenant. `send` splits its recipients into groups
+by owning tenant and calls `resolve_channels` once for each
+(`services/dispatch.py:179-196`), so a school switching off `ticket.created`
+email silences it for its own people and for nobody else's.
+`NotificationOwnershipTests.test_the_recipients_own_settings_decide_their_channels`
+covers it. The original account follows, unchanged, with its line references pointing at the pre-fix code. Its line references are to the code as it was before the fix; the current ones are above.
+
 **High. Same root cause as §1, different consequence.**
 
 `resolve_channels(event_type, tenant=tenant)` (`dispatch.py:140`) resolves
@@ -247,30 +275,30 @@ they cover the registry.
 **Medium. Internal API, but the blast radius is real.**
 
 `metadata` is documented as "internal-only caller correlation data"
-(`models.py:498-505`) and is correctly never serialized. It is also, in
+(`models.py:529-536`) and is correctly never serialized. It is also, in
 practice, the delivery task's configuration channel:
 
 | Key | Read at | Effect |
 |---|---|---|
-| `from_name` | `tasks.py:94,156` | Sets the outgoing From display name |
-| `bcc` | `tasks.py:100-104` | Overrides the platform `EMAIL_BCC`, including suppressing it entirely with `[]` |
-| `attachments` | `tasks.py:105,134-150` | Reads up to 10 files from `default_storage` **by path**, 10 MB each |
+| `from_name` | `tasks.py:101,156` | Sets the outgoing From display name |
+| `bcc` | `tasks.py:107-111` | Overrides the platform `EMAIL_BCC`, including suppressing it entirely with `[]` |
+| `attachments` | `tasks.py:112,134-150` | Reads up to 10 files from `default_storage` **by path**, 10 MB each |
 
 Nothing validates any of it. Specifically:
 
 - `attachments[].storage_name` is passed straight to
-  `default_storage.open(storage_name, "rb")` (`tasks.py:142`). Any caller that
+  `default_storage.open(storage_name, "rb")` (`tasks.py:149`). Any caller that
   puts a user-influenced path there emails the contents of that file to the
   recipient. The two real callers build the path themselves
   (`vs_finance/document_email.py:300`, `vs_procurement/po_email.py:381`), so
   there is no live exploit - but the engine offers no guard, and the pattern is
   one careless caller away from an arbitrary-file read.
 - Ten attachments at 10 MB each is up to **100 MB held in memory** in one task
-  (`tasks.py:136-150`), read fully before the message is built.
+  (`tasks.py:143-157`), read fully before the message is built.
 - `bcc` accepts any address list. A caller can silently copy any mailbox on any
   notification.
 - The whole `metadata` dict is copied onto **every** row in the batch
-  (`dispatch.py:357`), so a per-recipient value cannot be expressed and a
+  (`dispatch.py:430`), so a per-recipient value cannot be expressed and a
   correlation key meant for one recipient is stored against all of them.
 
 **Fix:** give the engine a typed, validated payload for these three concerns
@@ -311,7 +339,7 @@ which is what it already does for foreign ids.
 **Medium. Same defect class as the console and user modules.**
 
 ```python
-# views.py:155-161 (feed)          and  views.py:366-369 (history)
+# views.py:155-161 (feed)          and  views.py:372-375 (history)
 qs = qs.filter(created_at__gte=created_after)
 qs = qs.filter(created_at__lte=created_before)
 ```
@@ -328,7 +356,7 @@ Related, in the same handlers:
 - `?is_read=` is `is_read.lower() == "true"` (`views.py:149`), so `?is_read=1`
   and `?is_read=yes` both silently mean "read".
 - `?channel=` and `?status=` on history are unvalidated free text
-  (`views.py:362-365`), so a typo returns an empty page rather than a `400`.
+  (`views.py:368-371`), so a typo returns an empty page rather than a `400`.
 
 **Fix:** validate all of them through one small filter serializer, the way
 `vs_audit` does with `AuditEventFilterSerializer`
@@ -342,9 +370,9 @@ Related, in the same handlers:
 
 | Endpoint | Returns | Line |
 |---|---|---|
-| `GET settings/` | Every active `(event type × channel)` - **56 rows today** | `views.py:522-529` |
-| `GET templates/` | Every template matching the filters, up to 56 | `views.py:679-702` |
-| `GET event-types/` | Every active event type - 34 today | `views.py:869-873` |
+| `GET settings/` | Every active `(event type × channel)` - **56 rows today** | `views.py:528-535` |
+| `GET templates/` | Every template matching the filters, up to 56 | `views.py:685-708` |
+| `GET event-types/` | Every active event type - 34 today | `views.py:875-879` |
 
 None sets `pagination_class`; the feed and history viewsets both do
 (`views.py:119,306`). Each row of the template list is large: a template carries
@@ -369,7 +397,7 @@ anywhere in `vs_notifications`, and no before/after snapshot, so there is no way
 to answer "who changed the invoice email, when, and what did it say before".
 
 The same applies to `PATCH settings/update/`, which turns a tenant's
-notification channel off (`views.py:622-634`).
+notification channel off (`views.py:628-640`).
 
 `vs_audit` already has the vocabulary: `CONFIG_CHANGED`
 (`vs_audit/models.py:122`) and the `AuditDiffService` helpers for building
@@ -417,7 +445,7 @@ school-ism in the engine is gone.
 
 - **Duplicate-template detection is string matching on an exception.**
   ```python
-  # views.py:719-728
+  # views.py:725-734
   except Exception as exc:
       if "unique" in str(exc).lower():
           return error_response(..., status=409, code=DUPLICATE_TEMPLATE)
@@ -428,45 +456,45 @@ school-ism in the engine is gone.
 
 - **`_resolve_scope` returns a tuple whose second element is always `None`.**
   ```python
-  # views.py:443-456
+  # views.py:449-462
   return None, None   /   return tenant, None
   ```
-  Both call sites branch on it (`views.py:524-526`, `543-545`). Dead scaffolding
+  Both call sites branch on it (`views.py:530-532`, `543-545`). Dead scaffolding
   from an earlier permission model.
 
 - **`_apply_filters` takes an `is_vision_staff` argument it never reads**
-  (`views.py:327`), computed at `views.py:375` from a `User` property
+  (`views.py:333`), computed at `views.py:381` from a `User` property
   (`vs_user/models.py:323`). Left over from when CX staff were unscoped.
 
 - **The mandatory-filter guard is decorative.** `?created_after=1970-01-01`
-  satisfies it (`views.py:342-346`), so it stops an accidental unfiltered dump
+  satisfies it (`views.py:348-352`), so it stops an accidental unfiltered dump
   and nothing else. Either bound the window (a required date range, the way
   `vs_audit`'s export dataset does) or stop describing it as protection.
 
 - **`?scope=platform` is meaningless for a school caller.** It filters
   `tenant__kind="PLATFORM"` on top of `tenant = request.tenant`
-  (`views.py:348-349`), so it always returns nothing unless the caller is
+  (`views.py:354-355`), so it always returns nothing unless the caller is
   themselves on the platform tenant.
 
-- **`retry_count` counts the successful attempt.** `tasks.py:200` increments it
+- **`retry_count` counts the successful attempt.** `tasks.py:207` increments it
   on the success path too, so a first-try delivery reads as `retry_count: 1` in
   the history log. Either rename it `attempt_count` or stop incrementing on
   success.
 
 - **The `SENT`-only idempotency guard leaves `FAILED` re-runnable.**
-  `tasks.py:82-87` exits early for `SENT` but not for `FAILED`, so a re-queued
+  `tasks.py:89-96` exits early for `SENT` but not for `FAILED`, so a re-queued
   terminal-failed row is retried and re-fires `notification_failed`.
   `NotificationStatus.TERMINAL` (`constants.py:49`) already names both states;
   the guard should use it.
 
 - **The codex fallback raises.** `Tenant.objects.get(slug="codex",
-  kind=PLATFORM)` (`dispatch.py:121-123`) is an unguarded `get`. On a database
+  kind=PLATFORM)` (`dispatch.py:146-148`) is an unguarded `get`. On a database
   without that row - a fresh test fixture, a partially seeded environment - a
   notification with no resolvable tenant raises `Tenant.DoesNotExist` into the
   caller's transaction. Several callers do not guard `send_notification` at all.
 
 - **A missing or deactivated template silently drops its channel.**
-  `dispatch.py:164-169` logs a warning and continues. An event whose email
+  `dispatch.py:206-210` logs a warning and continues. An event whose email
   template was deactivated simply stops notifying, with nothing visible in the
   history log (no row is written) and no way to notice from the console.
 
@@ -481,8 +509,8 @@ school-ism in the engine is gone.
   `No default template defined for event_key=export.run_completed channel=email`
   on every run (observed in the suite output), which reads as a defect; the
   settings matrix shows a tenant an `export.run_completed / email` toggle that
-  does nothing (`views.py:499`); and `available-events` offers the pair as
-  creatable (`views.py:793-796`), so an admin can hand-create the template and
+  does nothing (`views.py:505`); and `available-events` offers the pair as
+  creatable (`views.py:799-802`), so an admin can hand-create the template and
   switch on a channel the design excluded. **Fix:** drop `"email"` from that
   entry's `supported_channels`.
 

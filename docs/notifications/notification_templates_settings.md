@@ -15,30 +15,30 @@ catalogue). Routes are mounted at `/v1/notify/` (`apps/urls.py:29`):
 - **Settings are a three-layer resolve, exposed as a flat matrix.** `GET
   settings/` returns one row per `(active event type × supported channel)` with
   the resolved value and the layer that produced it
-  (`views.py:458-518`). `PATCH settings/update/` upserts override rows addressed
-  by `(event_type_key, channel)`, never by row id (`views.py:533-646`).
+  (`views.py:464-524`). `PATCH settings/update/` upserts override rows addressed
+  by `(event_type_key, channel)`, never by row id (`views.py:539-652`).
 - **Scope comes from the asserted tenant, not a parameter.** There is no
   `?school=`. A business tenant manages its own override rows; a `PLATFORM`-kind
   tenant (CX staff) manages the **tenant-NULL default layer** every tenant
-  inherits, not codex's own rows (`views.py:443-456`). CX staff cannot target
+  inherits, not codex's own rows (`views.py:449-462`). CX staff cannot target
   one school's settings from here.
 - **Templates are a global catalogue, not tenant data.** One
   `NotificationTemplate` per `(event_type, channel)`, enforced by
   `unique_together` (`models.py:256`). Editing one changes the message **every
   tenant** receives. `NotificationTemplateViewSet.get_queryset` applies no
-  tenant filter, correctly (`views.py:671-677`).
+  tenant filter, correctly (`views.py:677-683`).
 - **Event types are read-only through the API.** They are installed by
   migration `0008` from `EVENT_TYPE_REGISTRY` and resynced by
   `seed_notification_event_types`; nothing creates one over HTTP
   (`models.py:36-39`).
 - **Preview writes nothing.** It renders the stored template, or an unsaved
   draft, against generated sample values and returns JSON. No `Notification`
-  row, no mail (`views.py:808-845`).
+  row, no mail (`views.py:814-851`).
 - **Three things cannot be configured**, and each is refused with its own error
   code rather than silently ignored: a transactional event
   (`TRANSACTIONAL_NOT_CONFIGURABLE`), the in-app channel being switched off
   (`IN_APP_ALWAYS_ENABLED`), and a channel the event does not support
-  (`UNSUPPORTED_CHANNEL`) (`views.py:578-612`).
+  (`UNSUPPORTED_CHANNEL`) (`views.py:584-618`).
 
 ## 2. Domain model
 
@@ -53,8 +53,8 @@ registry comment is explicit: an event stays inactive until a domain module
 actually emits it, and the flag is flipped in the same change that adds the
 `send_notification` call (`constants.py:121-125`). Thirteen entries are
 currently in that state, and they are correctly absent from the settings matrix
-(`views.py:469`), the catalogue (`views.py:865`) and the creatable template set
-(`views.py:790`).
+(`views.py:475`), the catalogue (`views.py:871`) and the creatable template set
+(`views.py:796`).
 
 **Two conditional unique constraints** keep the layering honest
 (`models.py:381-394`): at most one row per `(tenant, event_type, channel)` where
@@ -76,12 +76,12 @@ it.
 `?tenant=<slug>` is required on all eight routes
 (`vs_rbac/authentication.py:123-126`).
 
-### Settings - key `communication.communication_permissions.enforce` (`views.py:438-439`)
+### Settings - key `communication.communication_permissions.enforce` (`views.py:444-445`)
 
 | Method + path | body | response |
 |---|---|---|
-| `GET settings/` | - | Flat list of matrix rows, **unpaginated** (`views.py:522-529`) |
-| `PATCH settings/update/` | `{"updates": [{"event_type_key", "channel", "is_enabled"}, …]}`, min 1 | The touched rows, freshly resolved (`views.py:533-646`) |
+| `GET settings/` | - | Flat list of matrix rows, **unpaginated** (`views.py:528-535`) |
+| `PATCH settings/update/` | `{"updates": [{"event_type_key", "channel", "is_enabled"}, …]}`, min 1 | The touched rows, freshly resolved (`views.py:539-652`) |
 
 Matrix row shape (`serializers.py:499-514`): `event_type_key`,
 `event_type_label`, `source_module`, `channel`, `is_enabled`,
@@ -90,25 +90,25 @@ Matrix row shape (`serializers.py:499-514`): `event_type_key`,
 
 The PATCH is **all-or-nothing**: every item is validated first, and any error
 returns `400` with a per-index list of `{index, error_code, message}` before a
-single row is written (`views.py:564-619`). Only then does one atomic block
-upsert them all (`views.py:622-634`).
+single row is written (`views.py:570-625`). Only then does one atomic block
+upsert them all (`views.py:628-640`).
 
-### Templates - key `communication.notification_templates.configure` (`views.py:668-669`)
+### Templates - key `communication.notification_templates.configure` (`views.py:674-675`)
 
 | Method + path | query / body | response |
 |---|---|---|
-| `GET templates/` | `event_type_key`, `channel`, `search` | All matching templates, **unpaginated** (`views.py:679-702`) |
-| `POST templates/` | `event_type`, `channel`, `subject`, `body`, `cta_label`, `cta_url`, `html_body`, `html_is_custom`, `is_active` | `201`, or `409` `DUPLICATE_TEMPLATE` (`views.py:704-734`) |
-| `GET templates/available-events/` | - | `(event type, channel)` pairs with no template yet (`views.py:777-806`) |
+| `GET templates/` | `event_type_key`, `channel`, `search` | All matching templates, **unpaginated** (`views.py:685-708`) |
+| `POST templates/` | `event_type`, `channel`, `subject`, `body`, `cta_label`, `cta_url`, `html_body`, `html_is_custom`, `is_active` | `201`, or `409` `DUPLICATE_TEMPLATE` (`views.py:710-740`) |
+| `GET templates/available-events/` | - | `(event type, channel)` pairs with no template yet (`views.py:783-812`) |
 | `GET templates/<uuid>/` | - | One template, or `404` |
 | `PATCH templates/<uuid>/` | same as POST | The updated template |
-| `GET|POST templates/<uuid>/preview/` | `{"context": {…}, "draft": {…}}` (POST only) | Rendered subject, body, HTML, source markup, variables, context used (`views.py:808-845`) |
+| `GET|POST templates/<uuid>/preview/` | `{"context": {…}, "draft": {…}}` (POST only) | Rendered subject, body, HTML, source markup, variables, context used (`views.py:814-851`) |
 
-### Event types - `IsAuthenticated` only (`views.py:862`)
+### Event types - `IsAuthenticated` only (`views.py:868`)
 
 | Method + path | response |
 |---|---|
-| `GET event-types/` | Every active event type, **unpaginated** (`views.py:869-873`) |
+| `GET event-types/` | Every active event type, **unpaginated** (`views.py:875-879`) |
 | `GET event-types/<uuid>/` | One, or `404` |
 
 ## 4. Lifecycle / state machine
@@ -145,11 +145,11 @@ that template on its previous wording forever.
 - **The matrix costs two queries.** One for active event types, one for every
   relevant settings row under `tenant IS NULL OR tenant = <tenant>`, then
   `resolve_channels_bulk` is handed the pre-fetched rows so it does not
-  re-query (`views.py:468-494`). Asserted at `tests.py:236-243`.
+  re-query (`views.py:474-500`). Asserted at `tests.py:236-243`.
 - **`source` is computed from the same rows** that produced `is_enabled`
-  (`views.py:483-508`): a transactional or inactive event reports `"default"`
+  (`views.py:489-514`): a transactional or inactive event reports `"default"`
   regardless, then a tenant row wins, then a platform row, then `"default"`.
-- **The scope resolver is two lines and one rule** (`views.py:443-456`): a
+- **The scope resolver is two lines and one rule** (`views.py:449-462`): a
   `PLATFORM`-kind tenant resolves to `None`, meaning the tenant-NULL layer.
   Writing codex-tenant rows instead would be inert for schools, because dispatch
   resolution only ever reads `tenant IS NULL OR tenant = <own>`.
@@ -176,7 +176,7 @@ that template on its previous wording forever.
   quietly bake the sample data into the template on the next save.
 - **`available-events`** subtracts the taken `(event_type_id, channel)` pairs
   from every active event type's supported channels
-  (`views.py:786-806`), so the "new template" screen only offers pairs that can
+  (`views.py:792-812`), so the "new template" screen only offers pairs that can
   actually be created.
 - **Template syntax is validated on save for every content field**
   (`serializers.py:294-306` → `services/render.py:20-38`), and a `cta_label`
@@ -187,7 +187,7 @@ that template on its previous wording forever.
 
 - **`PATCH settings/update/`** writes `NotificationSetting` rows through
   `all_objects.update_or_create` inside one atomic block, stamping
-  `updated_by` (`views.py:622-634`). It uses `all_objects` because the target
+  `updated_by` (`views.py:628-640`). It uses `all_objects` because the target
   tenant may be `None` (the platform layer), which the tenant-aware manager
   would not select.
 - **`POST`/`PATCH templates/`** writes the template and stamps `created_by` /
@@ -252,7 +252,7 @@ slice's items:
   `ticket.created` email silences the CX support queue
   (`notification_code_issues.md` §2).
 - **Three list endpoints are unpaginated**: the settings matrix, the template
-  list and the event-type catalogue (`views.py:522-529,679-702,869-873`). The
+  list and the event-type catalogue (`views.py:528-535,679-702,869-873`). The
   matrix is currently 56 rows and grows with the registry
   (`notification_code_issues.md` §8).
 - **No audit event for template or settings changes**
@@ -262,11 +262,11 @@ slice's items:
   `NotificationSetting` has no branch column. A branch admin edits the whole
   tenant's settings.
 - **Duplicate-template detection is string matching on an exception**:
-  `if "unique" in str(exc).lower()` (`views.py:719-728`). A wording change in
+  `if "unique" in str(exc).lower()` (`views.py:725-734`). A wording change in
   the driver turns a `409` into a `500`.
 - **`_resolve_scope` returns a `(tenant, denied)` tuple whose second element is
-  always `None`** (`views.py:443-456`), and both call sites branch on it
-  (`views.py:524-526,543-545`). Dead scaffolding from an earlier permission
+  always `None`** (`views.py:449-462`), and both call sites branch on it
+  (`views.py:530-532,543-545`). Dead scaffolding from an earlier permission
   model.
 - **The engine's seed command imports `vs_schools`**
   (`management/commands/seed_notification_settings.py:63`), which the platform
@@ -274,14 +274,14 @@ slice's items:
 - **`urls.py`'s header comment names the wrong prefix** - `/api/v1/notifications/`
   where the real mount is `/v1/notify/` (`notification_code_issues.md` §11).
 - **Justified by design:** templates are global and un-scoped
-  (`views.py:671-677`). Per-tenant copy would multiply the catalogue by the
+  (`views.py:677-683`). Per-tenant copy would multiply the catalogue by the
   tenant count and there is no product requirement for it; the key is seeded to
   platform roles only.
 - **Justified by design:** preview returns HTML as a JSON string rather than an
-  HTML response (`views.py:819-823`), so the console renders it inside a
+  HTML response (`views.py:825-829`), so the console renders it inside a
   sandboxed iframe and a preview can never execute against the API origin.
 - **Justified by design:** the settings PATCH validates everything before
-  writing anything (`views.py:564-634`), so a partially applied settings change
+  writing anything (`views.py:570-640`), so a partially applied settings change
   is impossible.
 
 ## 9. Permissions & tenant isolation
@@ -315,9 +315,9 @@ being attached to a school-tenant role
 
 | File | Responsibility |
 |---|---|
-| `views.py:413-646` | `NotificationSettingViewSet` - scope, matrix build, the validated bulk upsert |
-| `views.py:653-845` | `NotificationTemplateViewSet` - CRUD, `available-events`, preview |
-| `views.py:852-885` | `NotificationEventTypeViewSet` - the read-only catalogue |
+| `views.py:419-652` | `NotificationSettingViewSet` - scope, matrix build, the validated bulk upsert |
+| `views.py:659-851` | `NotificationTemplateViewSet` - CRUD, `available-events`, preview |
+| `views.py:858-891` | `NotificationEventTypeViewSet` - the read-only catalogue |
 | `serializers.py:238-364` | `NotificationTemplateSerializer` and the markup-ownership resolver |
 | `serializers.py:371-492` | Draft + preview serializers, including `_apply_draft` |
 | `serializers.py:499-549` | Matrix row shape and the bulk-update payload validator |
@@ -367,4 +367,4 @@ This is the best-covered part of the module. Gaps:
    entries stay out of the matrix, the catalogue and `available-events`.
 6. **`event-types/`** has no test at all, list or detail.
 7. **A settings PATCH mixing a valid and an invalid item** - the all-or-nothing
-   guarantee is implemented (`views.py:614-619`) but never asserted.
+   guarantee is implemented (`views.py:620-625`) but never asserted.

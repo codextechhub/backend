@@ -1877,3 +1877,47 @@ class OwnershipMigrationTests(_NotifFixture):
         migration.restore_original_ownership(app_registry, None)
         leaked.refresh_from_db()
         self.assertEqual(leaked.tenant_id, self.school_a.tenant_id)
+
+
+# ---------------------------------------------------------------------------
+# Eager delivery across the ownership boundary
+#
+# CELERY_TASK_ALWAYS_EAGER runs the delivery task inline in the request thread,
+# which still carries the dispatcher's ambient tenant. Records belong to their
+# recipient, so the task must not look them up through a tenant filter.
+# ---------------------------------------------------------------------------
+
+class EagerDeliveryAcrossTenantsTests(_NotifFixture):
+
+    def test_email_is_sent_when_the_dispatcher_is_not_the_owner(self):
+        """A school files a ticket; the mail to platform staff must still go.
+
+        The task fetches by primary key, so ownership is already settled. Under
+        the ambient tenant of the school that raised the event, a tenant-filtered
+        lookup finds nothing, logs "not found. Skipping." and leaves the row
+        PENDING forever.
+        """
+        from vs_tenants.context import set_current_tenant, reset_current_tenant
+
+        token = set_current_tenant(self.school_a.tenant)
+        try:
+            with self.captureOnCommitCallbacks(execute=True):
+                ids = NotificationService.send(
+                    event_key="ticket.created",
+                    context={"ticket_number": "TCK-9", "ticket_title": "t",
+                             "requester_name": "Ada"},
+                    recipients=[self.cx],
+                    tenant=self.school_a.tenant,
+                )
+        finally:
+            reset_current_tenant(token)
+
+        email = Notification.all_objects.get(
+            id__in=ids, channel=ChannelChoices.EMAIL,
+        )
+        self.assertEqual(email.tenant_id, self.cx.tenant_id)
+        self.assertEqual(email.status, NotificationStatus.SENT)
+        self.assertTrue(
+            any(self.cx.email in message.to for message in mail.outbox),
+            [message.to for message in mail.outbox],
+        )

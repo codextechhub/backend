@@ -22,7 +22,7 @@ History: `/history/`, `/history/<uuid>/`.
 - **The history log is per-tenant, for everyone.** `get_queryset` filters
   `tenant = request.tenant` for every caller including CX staff, using
   `all_objects` so the `include_global` manager change cannot leak tenant-NULL
-  rows in (`views.py:320-325`). There is no `?school=` parameter and no
+  rows in (`views.py:320-331`). There is no `?school=` parameter and no
   cross-tenant path: asserting another tenant's slug is refused with `404` by
   the auth layer, and this view does not opt in via
   `platform_cross_tenant_param`.
@@ -44,17 +44,21 @@ reading:
 
 | Field | Read by |
 |---|---|
-| `recipient`, `channel`, `is_read`, `read_at` | the feed, and the covering index `(recipient, channel, is_read, -created_at)` (`models.py:553`) |
-| `tenant` | the history scope filter and both tenant indexes (`models.py:555-556`) |
+| `recipient`, `channel`, `is_read`, `read_at` | the feed, and the covering index `(recipient, channel, is_read, -created_at)` (`models.py:584`) |
+| `tenant` | the history scope filter and both tenant indexes (`models.py:586-587`) |
 | `subject`, `body` | both, already rendered and frozen at dispatch |
 | `metadata` | never serialized; read only by `notification_action_url` to build a destination |
 | `status`, `retry_count`, `failure_reason` | history only |
-| `unregistered_email` | history only, through `effective_email` (`models.py:569-577`) |
+| `unregistered_email` | history only, through `effective_email` (`models.py:600-608`) |
 
-`Notification.objects` is a `TenantAwareManager` (`models.py:544`). The feed
+`Notification.objects` is a `TenantAwareManager` (`models.py:575`). The feed
 uses it; the history log deliberately does not, using `all_objects` plus an
-explicit `tenant=` filter instead. That asymmetry is the source of the module's
-worst defect (`notification_code_issues.md` §1).
+explicit `tenant=` filter instead. Both therefore key off the same column, and
+that column is now the RECIPIENT'S tenant: a row is owned by whoever reads it,
+and what the message was about is recorded separately as `origin_tenant`
+(`models.py:465`). That is what makes the two filters agree - the asymmetry used
+to be the source of the module's worst defect
+(`notification_code_issues.md` §1, fixed in `373a918`).
 
 ## 3. Endpoint map
 
@@ -76,11 +80,11 @@ worst defect (`notification_code_issues.md` §1).
 
 | Method + path | query | response |
 |---|---|---|
-| `GET /history/` | `scope=platform`, `recipient_email`, `event_type_key`, `channel`, `status`, `created_after`, `created_before`, `search` | Paginated `NotificationHistorySerializer` (`views.py:373-393`) |
-| `GET /history/<uuid>/` | - | `NotificationHistoryDetailSerializer` (adds `body`), or `404` (`views.py:395-406`) |
+| `GET /history/` | `scope=platform`, `recipient_email`, `event_type_key`, `channel`, `status`, `created_after`, `created_before`, `search` | Paginated `NotificationHistorySerializer` (`views.py:379-399`) |
+| `GET /history/<uuid>/` | - | `NotificationHistoryDetailSerializer` (adds `body`), or `404` (`views.py:401-412`) |
 
 **At least one filter is mandatory on `/history/`.** With none supplied the view
-returns `422` with code `FILTER_REQUIRED` (`views.py:342-346`,
+returns `422` with code `FILTER_REQUIRED` (`views.py:348-352`,
 `exceptions.py:85-96`), so nobody dumps a whole tenant's table in one call. A
 search term counts as a filter.
 
@@ -143,13 +147,13 @@ read and is never overwritten.
   is a free way to make the database work for nothing.
 - **Feed search covers what the reader can see**: `subject`, `body`, event label
   (`views.py:84-90`). History search adds `recipient__email` and
-  `unregistered_email` (`views.py:353-359`).
+  `unregistered_email` (`views.py:359-365`).
 - **`recipient_name`** is the user's full name, falling back to their email,
   falling back to `unregistered_email` for an invitee with no account
   (`serializers.py:186-189`); `recipient_email` is `effective_email`
-  (`models.py:569-577`).
+  (`models.py:600-608`).
 - **`?scope=platform`** filters `tenant__kind="PLATFORM"` *on top of* the
-  existing `tenant = request.tenant` scope (`views.py:348-349`), so it only ever
+  existing `tenant = request.tenant` scope (`views.py:354-355`), so it only ever
   returns rows for a caller who is themselves on the platform tenant. For a
   school admin it is a filter that always returns nothing.
 
@@ -203,14 +207,18 @@ Full evidence for each is in
 **`docs/notifications/notification_code_issues.md`**. The items belonging to
 this slice:
 
-- **The feed silently applies a second, undocumented tenant filter**, so rows
-  dispatched under the initiating tenant never reach a recipient in a different
-  one. This is the module's worst defect (`notification_code_issues.md` §1).
+- **FIXED (`373a918`): the feed's tenant filter hid rows from their own
+  recipient**, because rows were stamped with the initiating tenant. Ownership
+  now follows the recipient, so the feed's filter and the row agree
+  (`notification_code_issues.md` §1). The filter itself is still undocumented in
+  the view's docstring, which claims scoping is explicit.
 - **`acknowledge-route` uses `all_objects` while every sibling uses `objects`**
   (`views.py:273` vs `205,232,254`), so it can mark read a row the same user
   cannot see (`notification_code_issues.md` §3).
-- **A school admin's history log can show CX staff email addresses**, because
-  cross-tenant rows land under the school's tenant
+- **FIXED (`373a918`): a school admin's history log showed CX staff email
+  addresses and message bodies**, because cross-tenant rows landed under the
+  school's tenant. Those rows are now owned by the platform tenant and a
+  migration moved the ones already written
   (`notification_code_issues.md` §1).
 - **Eight active in-app event types have no destination** and three of the
   route table's prefixes match no event at all
@@ -218,7 +226,7 @@ this slice:
 - **`mark-read` leaks a fact about ids it does not own**
   (`serializers.py:128-131`, `notification_code_issues.md` §6).
 - **The mandatory-filter guard is decorative.** `?created_after=1970-01-01`
-  satisfies it (`views.py:342-346`).
+  satisfies it (`views.py:348-352`).
 - **`created_after` / `created_before` are raw strings** on both surfaces
   (`views.py:155-161,366-369`), so a malformed value is a `500`, not a `400`
   (`notification_code_issues.md` §7).
@@ -226,7 +234,7 @@ this slice:
   `"true"` means `False` (`views.py:149`), so `?is_read=1` silently returns the
   read tab.
 - **`_apply_filters` takes an `is_vision_staff` argument it never uses**
-  (`views.py:327,379`) - dead scaffolding from when CX staff were unscoped.
+  (`views.py:333,379`) - dead scaffolding from when CX staff were unscoped.
 - **Justified by design:** the feed returns `404`, never `403`, for another
   user's row (`views.py:178-194`). Existence is not leaked, and staff use the
   history endpoint. Tested at `tests.py:589-601`.
@@ -246,10 +254,11 @@ this slice:
 than fetching by pk (`views.py:186-189`), which is what makes the `404`
 correct rather than incidental.
 
-**The history log's isolation is `tenant = request.tenant`, and it also holds** -
-for the rows that carry the right tenant. What it cannot fix is a row filed
-under the wrong one: the log faithfully shows a school admin every row stamped
-with their tenant, including notifications addressed to CX staff
+**The history log's isolation is `tenant = request.tenant`, and it now means
+what it says**, because that column is the recipient's own tenant. A message
+about this school but addressed to platform staff is owned by the platform and
+is not in this log. Do not add an `origin_tenant` filter for a school-tenant
+caller: it would hand back exactly the rows this scoping exists to keep out
 (`notification_code_issues.md` §1).
 
 `branch_admin` holds the same history key as `school_admin` with no branch
@@ -260,7 +269,7 @@ narrowing, because `Notification` has no branch column at all.
 | File | Responsibility |
 |---|---|
 | `views.py:97-282` | `NotificationViewSet` - feed, counts, the three read-state writes |
-| `views.py:289-406` | `NotificationHistoryViewSet` - scope, the eight filters, the mandatory-filter guard |
+| `views.py:289-412` | `NotificationHistoryViewSet` - scope, the eight filters, the mandatory-filter guard |
 | `views.py:84-90` | `_feed_search_q` - the shared search predicate |
 | `serializers.py:39-105` | Feed list/detail plus the `subject`/`action_url` presentation mixin |
 | `serializers.py:112-150` | `MarkReadSerializer`, `AcknowledgeRouteSerializer` |
@@ -287,11 +296,10 @@ narrowing, because `Notification` has no branch column at all.
 The suite is unusually good on the boundaries it knows about. What it does not
 know about:
 
-1. **The tenant filter on the feed.** Every fixture user reads their own
-   tenant's rows, so nothing fails today for the cross-tenant case, and nothing
-   would fail if the filter were removed. A test that dispatches with
-   `tenant=<school>` to a CX recipient and then asserts the CX feed is the one
-   that turns §8's first item red.
+1. ~~**The tenant filter on the feed.**~~ Covered since `373a918`:
+   `NotificationOwnershipTests` dispatches with `tenant=<school>` to a platform
+   recipient and asserts both the platform feed and the school's history log,
+   by list, by identifier and by search.
 2. **`acknowledge-route` versus the tenant filter** - no test contrasts it with
    `mark-read` on the same row.
 3. **`mark-all-read`** has no test at all, nor does `GET /<uuid>/` for the

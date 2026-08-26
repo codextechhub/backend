@@ -159,7 +159,7 @@ ticket they can open, retroactively.
   versus `COMMENTED` (`services/tickets.py:184-188`), which is what makes
   "show me only the customer-visible history" a filter rather than a join.
 - **The comment body is copied into the notification context**
-  (`services/notifications.py:154-156`), so an emailed reply carries the text -
+  (`services/notifications.py:159-161`), so an emailed reply carries the text -
   including an internal note's text, to the assignee.
 
 ## 6. What writing writes

@@ -32,7 +32,7 @@ Every mechanism below exists because of it, and one test pins it
   (`services/notifications.py:78-82`), so a broken template cannot roll back a
   ticket. The flip side is that a lost notification is a log line, nothing more.
 - **The export is not the API in file form.** It is tenant-scoped where the API
-  is participant-scoped, which is the module's second-worst defect (§8).
+  is participant-scoped, which is the module's worst live defect (§8).
 - **The audit mirror is not the ticket's own log.** `record_ticket_audit` writes
   both, and only the local `TicketAuditLog` is shown on the ticket
   (`ticket_conversation_attachments` §2).
@@ -137,10 +137,12 @@ These behaviours apply at the shared dispatch boundary:
 `POST /tickets/<pk>/follow/` follows without commenting, while `DELETE` on the
 same route records a mute preference. A later comment follows the ticket again.
 
-**Dispatch is stamped with the ticket's tenant** (`services/notifications.py:75`)
-while the recipients of `ticket.created` are on the platform tenant. That
-mismatch is the critical inherited defect - see §8 and
-`error/notifications/notification_code_issues.md` §1.
+**Dispatch passes the ticket's tenant** (`services/notifications.py:123`) while
+the recipients of `ticket.created` are on the platform tenant. That is now the
+message's ORIGIN rather than its owner: since `373a918` the engine stamps each
+row with its recipient's own tenant and records the ticket's tenant separately,
+so the mismatch that used to be this module's critical inherited defect is
+closed - see §8 and `error/notifications/notification_code_issues.md` §1.
 
 ## 4. The Export Centre
 
@@ -202,7 +204,7 @@ pattern, and the contrast with the export in §4 is exactly the point.
 
 | Direction | Writes |
 |---|---|
-| → `vs_notifications` | one `Notification` row per recipient per enabled channel, stamped with the *ticket's* tenant |
+| → `vs_notifications` | one `Notification` row per recipient per enabled channel, owned by that *recipient's* tenant, with the ticket's tenant recorded as the message's origin |
 | → `vs_audit` | one event per ticket write, stamped with the ticket's tenant, carrying before/after and impersonation metadata |
 | → `vs_exports` | nothing at registration; an export run writes its own rows, and a run including `requester_email` is recorded as a sensitive-field event (`vs_exports/audit.py:66`) |
 | ← `vs_onboarding` | nothing persistent - two entries in a process-local dict (`context.py:84`) |
@@ -238,25 +240,28 @@ On commit, `ticket.created` dispatches to the CX triage queue with
 `metadata = {"ticket_id": 4471, "ticket_number": "TK-72608213"}`, and each in-app
 row resolves to `/support/tickets/4471`.
 
-Two things then go wrong, both documented in §8: the CX agents' in-app feed is
-filtered to their own tenant and the rows were stamped Bright Star, so the queue
-badge never moves; and Bright Star is still PENDING, so when the admin follows
-the email reply back into the app, the ticket's detail page refuses them.
+The CX agents' rows are owned by the platform tenant, so their in-app feed and
+queue badge pick them up, and Bright Star's own delivery history never returns
+them. One thing still goes wrong, documented in §8: Bright Star is still PENDING,
+so when the admin follows the email reply back into the app, the ticket's detail
+page refuses them.
 
 ## 8. Gotchas / known limitations
 
 Full evidence in **`error/tickets/ticket_code_issues.md`**.
 
-- **New tickets do not reach the CX in-app queue, and the school can read CX's
-  mail instead.** Rows are stamped with the ticket's tenant while the recipients
-  are on the platform tenant; the in-app feed filters by tenant, and the delivery
-  history log shows the school every row stamped with theirs. Root cause is in
-  `vs_notifications` (`error/notifications/notification_code_issues.md` §1); the
-  ticket-side account is `ticket_code_issues.md` §1a.
-- **A school can switch off the CX support team's notifications.** None of the
-  eight events is `is_transactional`, and channel settings resolve against the
-  *event's* tenant - the school's - while the recipients of `ticket.created` are
-  CX (`ticket_code_issues.md` §1b).
+- **FIXED (`373a918`): new tickets did not reach the CX in-app queue, and the
+  school could read CX's mail instead.** Rows were stamped with the ticket's
+  tenant while the recipients were on the platform tenant. Ownership now follows
+  the recipient and the ticket's tenant is recorded as the origin, so the queue
+  badge moves and the school's history log no longer returns those rows,
+  including the body of an internal note
+  (`error/notifications/notification_code_issues.md` §1,
+  `ticket_code_issues.md` §1a).
+- **FIXED (`373a918`): a school could switch off the CX support team's
+  notifications.** None of the eight events is `is_transactional`, but channel
+  settings now resolve per owning tenant rather than against the event's, so a
+  school's toggle reaches its own people only (`ticket_code_issues.md` §1b).
 - **The export ignores the participant boundary.** `tickets.ticket.view` is
   seeded to every teacher and gates a dataset over every ticket in the tenant
   (`ticket_code_issues.md` §3).
@@ -268,7 +273,7 @@ Full evidence in **`error/tickets/ticket_code_issues.md`**.
   misses group-granted agents, and it keeps notifying agents whose grant was
   denied or whose role was archived.
 - **An internal note written by the assignee notifies nobody**
-  (`services/notifications.py:136-137`), so a second-line note reaches no other
+  (`services/notifications.py:141-142`), so a second-line note reaches no other
   agent.
 - **`route_pattern` refuses any digit**, which also refuses every versioned or
   numbered route - `/v1/...` included (`serializers.py:171`). The intent (strip
@@ -350,9 +355,10 @@ What the suite does not cover:
 2. **`support_recipients` itself** - no test grants the triage keys through a
    group, or denies them, and then asserts who is notified. This is the test that
    turns §8's third item red.
-3. **The tenant a notification is stamped with.** Nothing asserts what
-   `NotificationService.send` receives as `tenant=`, which is why the critical
-   defect passes a green suite.
+3. **The tenant a notification is stamped with.** Nothing here asserts what
+   `NotificationService.send` receives as `tenant=`. Since `373a918` that
+   argument is only the message's origin, and ownership is covered where it is
+   decided (`vs_notifications.tests.NotificationOwnershipTests`).
 4. **The `support.tickets` dataset** - no test in this module runs it, and none
    asserts that its rows match what the API would show the same caller.
 5. **`_translate_tickets`** - neither the `state=active` expansion nor the four

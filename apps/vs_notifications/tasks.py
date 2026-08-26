@@ -76,10 +76,17 @@ def deliver_email_notification(
     from .models import Notification, NotificationStatus
 
     # ── Fetch + idempotency guard under a short lock ───────────────────────
+    # all_objects, not objects: the row is addressed by the primary key this
+    # task was handed, so ownership is already settled and a tenant filter can
+    # only lose it. A real worker has no ambient tenant and would not filter,
+    # but CELERY_TASK_ALWAYS_EAGER runs the task inline in the request thread
+    # that dispatched it - and since a record now belongs to its RECIPIENT's
+    # tenant, a school raising a support ticket would fail to find the row it
+    # just wrote for platform staff, leaving it PENDING and the mail unsent.
     try:
         with transaction.atomic():
             notif = (
-                Notification.objects.select_for_update()
+                Notification.all_objects.select_for_update()
                 .get(id=notification_id)
             )
 
@@ -126,7 +133,7 @@ def deliver_email_notification(
         # Should not normally reach here - dispatch.py catches this pre-flight.
         # Guard defensively for records created by other paths.
         with transaction.atomic():
-            notif = Notification.objects.select_for_update().get(id=notification_id)
+            notif = Notification.all_objects.select_for_update().get(id=notification_id)
             # Missing addresses are terminal failures because no retry can produce a recipient.
             notif.status = NotificationStatus.FAILED
             notif.failure_reason = "NO_EMAIL_ADDRESS"
@@ -171,7 +178,7 @@ def deliver_email_notification(
     except Exception as exc:
         # Record the failed attempt.
         with transaction.atomic():
-            notif = Notification.objects.select_for_update().get(id=notification_id)
+            notif = Notification.all_objects.select_for_update().get(id=notification_id)
             notif.retry_count += 1
             notif.failure_reason = str(exc)
             attempts = notif.retry_count
@@ -190,7 +197,7 @@ def deliver_email_notification(
 
         # Final failure - mark FAILED (terminal) and fire the signal.
         with transaction.atomic():
-            notif = Notification.objects.select_for_update().get(id=notification_id)
+            notif = Notification.all_objects.select_for_update().get(id=notification_id)
             # The retry budget is exhausted, so downstream trackers can treat this as final.
             notif.status = NotificationStatus.FAILED
             notif.save(update_fields=["status"])
@@ -204,7 +211,7 @@ def deliver_email_notification(
 
     # ── Success - mark SENT (terminal) and fire the signal ─────────────────
     with transaction.atomic():
-        notif = Notification.objects.select_for_update().get(id=notification_id)
+        notif = Notification.all_objects.select_for_update().get(id=notification_id)
         # Success is terminal; later task duplicates exit through the SENT guard above.
         notif.status = NotificationStatus.SENT
         notif.dispatched_at = timezone.now()

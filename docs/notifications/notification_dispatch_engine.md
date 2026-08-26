@@ -16,18 +16,18 @@ read APIs are in `notification_feed_history`; the admin APIs are in
 ## 1. What it is (and what it is NOT)
 
 - **A fan-out recorder, not a mail queue.** Every dispatch writes durable
-  `Notification` rows first (`dispatch.py:253`), then queues work. An in-app
+  `Notification` rows first (`dispatch.py:297`), then queues work. An in-app
   row is delivered the moment it is written; an email row is `PENDING` until a
   Celery task moves it.
 - **Recipient-centric.** There is no school requirement. `send_notification`
   takes `recipients` (User instances) and/or `unregistered_recipients`
-  (`UnregisteredRecipient(email, name)`, `dispatch.py:46`), so an invitee with
+  (`UnregisteredRecipient(email, name)`, `dispatch.py:56`), so an invitee with
   no account and a CX staff member with no school are both first-class.
 - **The event vocabulary is closed and code-owned.** `EVENT_TYPE_REGISTRY`
   (`constants.py:129`) is the only place an event is written down: 47 entries,
   34 active, 10 transactional. Migration `0008` installs it, and
   `seed_notification_event_types` resyncs (`services/seed.py:19`). An unknown
-  or inactive key raises `UnknownEventTypeError` (`dispatch.py:133-136`) - it
+  or inactive key raises `UnknownEventTypeError` (`dispatch.py:154-157`) - it
   does not silently no-op.
 - **It does NOT own the message.** Copy lives in `NotificationTemplate`, edited
   by Vision Staff. Dispatch renders whatever is stored and freezes the result
@@ -35,12 +35,12 @@ read APIs are in `notification_feed_history`; the admin APIs are in
   (`models.py:157-158`).
 - **It does NOT swallow its own failures.** Unlike `vs_audit`'s
   `emit_audit_event`, `NotificationService.send` propagates. A render failure
-  becomes a `FAILED` row rather than an exception (`dispatch.py:214-229`), but
+  becomes a `FAILED` row rather than an exception (`dispatch.py:256-271`), but
   an unknown event key, a missing codex tenant, or a database error reaches the
-  caller. Callers guard individually (`vs_todo/tasks.py:85-97`,
+  caller. Callers guard individually (`vs_todo/tasks.py:92-104`,
   `vs_tickets/services/notifications.py:78-80`); several do not.
 - **Email delivery is not transactional with the action.** The task is queued
-  through `transaction.on_commit` (`dispatch.py:286`), so a rollback never
+  through `transaction.on_commit` (`dispatch.py:330`), so a rollback never
   sends. Nothing guarantees the reverse: the row can commit and the broker
   never receive the task.
 
@@ -51,7 +51,7 @@ read APIs are in `notification_feed_history`; the admin APIs are in
 | `NotificationEventType` | `models.py:32` | The registry row: `key`, `label`, `source_module`, `supported_channels` (JSON list), `default_enabled`, `is_transactional`, `is_active` |
 | `NotificationTemplate` | `models.py:127` | One per `(event_type, channel)`: `subject`, `body`, `cta_label`, `cta_url`, `html_body`, `html_is_custom`, `is_active` |
 | `NotificationSetting` | `models.py:311` | The on/off toggle: `tenant?` (null = platform default), `event_type`, `channel`, `is_enabled` |
-| `Notification` | `models.py:414` | The dispatch record: `tenant`, `recipient?`, `unregistered_email`, `event_type`, `channel`, rendered `subject`/`body`/`html_body`, `metadata`, `status`, `failure_reason`, `retry_count`, `is_read`, `read_at`, `dispatched_at` |
+| `Notification` | `models.py:414` | The dispatch record: `tenant` (the OWNER - the recipient's own tenant), `origin_tenant?` (what the message is ABOUT), `recipient?`, `unregistered_email`, `event_type`, `channel`, rendered `subject`/`body`/`html_body`, `metadata`, `status`, `failure_reason`, `retry_count`, `is_read`, `read_at`, `dispatched_at` |
 
 **Three kill switches, in precedence order** (`services/settings.py:83-106`):
 
@@ -62,7 +62,7 @@ read APIs are in `notification_feed_history`; the admin APIs are in
 
 **Manager choice is load-bearing and inconsistent across the module.**
 `Notification.objects` is `TenantAwareManager()` with `all_objects` as the
-escape hatch (`models.py:544-545`); `NotificationSetting.objects` is
+escape hatch (`models.py:575-576`); `NotificationSetting.objects` is
 `TenantAwareManager(include_global=True)` (`models.py:375`);
 `NotificationEventType` and `NotificationTemplate` use the plain default
 manager, correctly, because both are global catalogues. The service layer reads
@@ -72,26 +72,26 @@ settings through `all_objects` on purpose - Celery has no ambient tenant
 `notification_code_issues.md` §1.
 
 `Notification.recipient` and `Notification.tenant` are both `PROTECT`
-(`models.py:442-451`), so neither a user nor a tenant can be deleted while any
+(`models.py:456-482`), so neither a user nor a tenant can be deleted while any
 notification references them.
 
-Four indexes on `Notification` (`models.py:551-559`): the feed
+Four indexes on `Notification` (`models.py:582-590`): the feed
 `(recipient, channel, is_read, -created_at)`, two history indexes keyed on
 tenant, and `(status, channel, -created_at)` for the delivery task.
 
 ## 3. The public API
 
 `send_notification` (`notify.py:52`) is a thin pass-through to
-`NotificationService.send` (`dispatch.py:77`). Arguments:
+`NotificationService.send` (`dispatch.py:88`). Arguments:
 
 | Argument | Meaning |
 |---|---|
 | `event_key` | Dot-notation key from `EVENT_TYPE_REGISTRY`. Unknown or inactive raises. |
 | `context` | Template variables. Keys are per-event and documented only in the registry entry. |
 | `recipients` | `User` instances. |
-| `tenant` | Explicit tenant for the created rows and for settings resolution. |
+| `tenant` | The tenant the event is ABOUT. Stored as `origin_tenant`; it does NOT own the rows, and owns them only for recipients that have no tenant of their own. |
 | `school` | Legacy convenience: `tenant` is taken from `school.tenant`. |
-| `suppress` | `True` returns `[]` immediately (`dispatch.py:114-116`). |
+| `suppress` | `True` returns `[]` immediately (`dispatch.py:129-131`). |
 | `unregistered_recipients` | `UnregisteredRecipient(email, name)` for people with no account. |
 | `metadata` | Internal-only dict copied onto **every** created row. Never serialized. |
 
@@ -100,9 +100,9 @@ read by the engine:
 
 | Key | Read at | Effect |
 |---|---|---|
-| `from_name` | `tasks.py:94,156` | Replaces the From display name via `build_from_email` |
-| `bcc` | `tasks.py:100-104` | An explicit list overrides the platform `EMAIL_BCC`; an empty list suppresses it; an absent key inherits the default |
-| `attachments` | `tasks.py:105,134-150` | Up to 10 files read from `default_storage` by `storage_name`, 10 MB each |
+| `from_name` | `tasks.py:101,156` | Replaces the From display name via `build_from_email` |
+| `bcc` | `tasks.py:107-111` | An explicit list overrides the platform `EMAIL_BCC`; an empty list suppresses it; an absent key inherits the default |
+| `attachments` | `tasks.py:112,134-150` | Up to 10 files read from `default_storage` by `storage_name`, 10 MB each |
 | `activation_key` | consumed by `vs_user.receivers` | Correlates an invitation with its delivery signal |
 | `ticket_id`, `workflow_instance_id`, `export_run_id` | `services/routing.py:27-38` | Resolve the in-app row's click destination |
 
@@ -114,13 +114,15 @@ None of that is validated (`notification_code_issues.md` §5).
 send_notification(event_key, context, recipients, tenant=…, metadata=…)
   │
   ├─ suppress? ───────────────────────────────► []
-  ├─ resolve tenant: arg → school.tenant → first recipient with a tenant
-  │                  → Tenant(slug="codex")            (dispatch.py:118-123)
+  ├─ resolve ORIGIN tenant: arg → school.tenant → first recipient with a tenant
+  │                  → Tenant(slug="codex")            (dispatch.py:140-148)
   ├─ NotificationEventType.get(key, is_active=True)  → UnknownEventTypeError
-  ├─ resolve_channels(event_type, tenant)            (services/settings.py:112)
-  │      is_active=False → all off | transactional → all on | tenant→platform→default
-  ├─ no enabled channel ──────────────────────► []
-  ├─ _fetch_templates(active templates only)         (dispatch.py:304-315)
+  ├─ group recipients by OWNER tenant                 (dispatch.py:173)
+  │      a user owns their own rows; an address keeps the origin tenant
+  ├─ per group: resolve_channels(event_type, owner)   (services/settings.py:112)
+  │      is_active=False → all off | transactional → all on | owner→platform→default
+  ├─ no group with an enabled channel ────────► []
+  ├─ _fetch_templates(active templates only)         (dispatch.py:348-359)
   │
   └─ for each target × each enabled channel:
         no template            ─► logged warning, channel skipped
@@ -130,8 +132,8 @@ send_notification(event_key, context, recipients, tenant=…, metadata=…)
         in_app                 ─► SENT row, dispatched_at = now       :244-245
         email                  ─► PENDING row
   │
-  ├─ bulk_create(all rows)                            (dispatch.py:253)
-  └─ transaction.on_commit:                           (dispatch.py:275-286)
+  ├─ bulk_create(all rows)                            (dispatch.py:297)
+  └─ transaction.on_commit:                           (dispatch.py:319-330)
         PENDING email ids ─► deliver_email_notification.delay(id)
         pre-flight FAILED ─► notification_failed signal
 
@@ -150,11 +152,18 @@ re-queued would be retried.
 
 ## 5. Derivations
 
-- **Tenant resolution is a three-step fallback** (`dispatch.py:118-123`):
+- **Ownership is per recipient; the caller's tenant is only the origin.** Each
+  row is stamped with the recipient's own tenant, because that is the tenant
+  whose feed and history return it, and `origin_tenant` records what the message
+  was about (`dispatch.py:140-148,173`). The two differ exactly when one tenant's
+  activity is reported to another's staff, which is what a support ticket is.
+  `origin_tenant` is returned by no serializer and accepted by no filter.
+- **Origin resolution is a four-step fallback** (`dispatch.py:140-148`):
   the explicit `tenant` argument, then `school.tenant`, then the **first**
-  recipient that has a tenant, then the codex platform tenant. The third step
-  is where multi-tenant recipient lists go wrong (`notification_code_issues.md`
-  §1); the fourth raises `Tenant.DoesNotExist` on a database with no codex row.
+  recipient that has a tenant, then the codex platform tenant. The third step no
+  longer decides ownership for a mixed recipient list - every recipient owns
+  their own rows - but the fourth still raises `Tenant.DoesNotExist` on a
+  database with no codex row.
 - **Channel resolution** (`services/settings.py:21-108`) fetches every relevant
   settings row in **one** query scoped to `tenant IS NULL OR tenant = <tenant>`,
   splits them into a platform map and a tenant map, and resolves per channel.
@@ -163,7 +172,7 @@ re-queued would be retried.
 - **The IN_APP invariant is a write-side rule only.** `resolve_channels_bulk`
   reads persisted rows verbatim and never overrides them
   (`services/settings.py:39-42`); "in-app cannot be disabled" is enforced in
-  the settings PATCH handler (`views.py:605-612`). A row written by any other
+  the settings PATCH handler (`views.py:611-618`). A row written by any other
   path stays honoured.
 - **Rendering** (`services/render.py:79-137`) produces three strings. Subject
   and plain body render with `autoescape=False` - escaping would put `&amp;` in
@@ -192,32 +201,34 @@ re-queued would be retried.
   documents are exempt because their destination is a `{{ placeholder }}`.
 - **Retry configuration is read live**, per task execution, from
   `vs_config.runtime_settings`, falling back to `NotificationConfigKey.DEFAULTS`
-  (3 retries, 60s) when that fails (`tasks.py:214-231`). Backoff is fixed, not
+  (3 retries, 60s) when that fails (`tasks.py:221-238`). Backoff is fixed, not
   exponential.
 - **Eager mode is a deliberate special case.** Under
   `CELERY_TASK_ALWAYS_EAGER` the task runs inline in the HTTP request, where
   `self.retry()` would raise `celery.exceptions.Retry` straight through the
   caller. The first failure is therefore treated as final
-  (`tasks.py:174-178`).
+  (`tasks.py:191-195`).
 
 ## 6. What dispatch actually writes
 
 Per call: **one `bulk_create`** of `len(targets) × len(enabled_channels)` rows
-minus the skipped combinations (`dispatch.py:253`). No `save()` runs, so no
-model-level validation applies to a dispatched row.
+minus the skipped combinations, summed over the owner-tenant groups
+(`dispatch.py:306`). No `save()` runs, so no model-level validation applies to a
+dispatched row. Settings resolve once per owning tenant, and templates are
+fetched once for the union of the channels any group enabled.
 
 Per successful email: three short `select_for_update` transactions in the task
 (fetch, then one write for the outcome), with the SMTP call deliberately
 **outside** the row lock so a slow network call never holds it
-(`tasks.py:76-80,195-204`).
+(`tasks.py:76-87,195-204`).
 
 Two signals are published (`signals.py:26-27`), both with a single
 `notification` kwarg and `sender=Notification`:
 
-- `notification_sent` - the email reached `SENT` (`tasks.py:210`).
+- `notification_sent` - the email reached `SENT` (`tasks.py:217`).
 - `notification_failed` - the email reached `FAILED`, whether in the task
-  (`tasks.py:127,191`) or pre-flight, fired from `on_commit` because no task
-  will run for those rows (`dispatch.py:280-284`).
+  (`tasks.py:134,191`) or pre-flight, fired from `on_commit` because no task
+  will run for those rows (`dispatch.py:324-328`).
 
 Nothing here writes an audit event. A notification that went to the wrong
 person leaves a `Notification` row and nothing in `vs_audit`.
@@ -241,7 +252,7 @@ send_notification(
 ```
 
 `user.invited` is transactional, so the settings matrix is bypassed. The
-invitee has no account, so the in-app half is skipped (`dispatch.py:185-191`)
+invitee has no account, so the in-app half is skipped (`dispatch.py:226-232`)
 and exactly one `PENDING` email row is written. After commit,
 `deliver_email_notification` renders nothing further (the body was already
 frozen), builds the From address from `from_name`, sends multipart, flips the
@@ -254,22 +265,24 @@ Every item is stated in full, with evidence, in
 **`docs/notifications/notification_code_issues.md`**. The ones that belong to
 this slice, in severity order:
 
-- **Rows are written under the initiating tenant, not the recipient's, and the
-  feed filters by tenant.** The confirmed instance is `ticket.created`. Under
-  eager mode - which staging defaults to - the delivery task cannot find the
-  row either, so the email is dropped as well and the row stays `PENDING`
-  forever (`notification_code_issues.md` §1).
-- **A school's settings decide whether CX staff get notified** for the same
-  reason (`notification_code_issues.md` §2).
+- **FIXED (`373a918`): rows were written under the initiating tenant, not the
+  recipient's, while the feed filters by tenant.** Ownership now follows the
+  recipient, `origin_tenant` records what the message was about, and a migration
+  moved the rows already written (`notification_code_issues.md` §1). The delivery
+  task fetches through `all_objects` (`tasks.py:89`), because it addresses a row
+  by primary key and eager mode runs it in the dispatcher's request thread.
+- **FIXED (`373a918`): a school's settings decided whether CX staff got
+  notified.** Channels resolve per owning tenant
+  (`notification_code_issues.md` §2).
 - **The codex fallback raises on a database without a codex tenant**
-  (`dispatch.py:121-123`).
+  (`dispatch.py:146-148`).
 - **`metadata` is an unvalidated control surface**: `attachments` will read any
   path in `default_storage`, `bcc` will mail anyone
   (`notification_code_issues.md` §5).
 - **`retry_count` counts attempts including the successful one**
-  (`tasks.py:200`), so a first-try success reads as `retry_count: 1`.
+  (`tasks.py:207`), so a first-try success reads as `retry_count: 1`.
 - **A missing template silently drops the channel** with only a log line
-  (`dispatch.py:164-169`); an event whose template was deactivated stops
+  (`dispatch.py:206-210`); an event whose template was deactivated stops
   notifying with no visible signal. `export.run_completed` is a live instance:
   it declares `email` but ships no email template, on purpose, so the seed warns
   on every run and the settings matrix offers a toggle that does nothing
@@ -277,7 +290,7 @@ this slice, in severity order:
 - **Nothing prunes `Notification`.** The table grows forever, holding every
   rendered body and HTML document ever sent.
 - **Justified by design:** in-app rows for unregistered recipients are skipped
-  rather than recorded `FAILED` (`dispatch.py:171-191`). The comment there is
+  rather than recorded `FAILED` (`dispatch.py:212-232`). The comment there is
   the right argument: nobody meant to send anything, and a `FAILED` row would
   be exactly as unreadable as the `SENT` one it replaces.
 - **Justified by design:** `autoescape=False` for text and `True` for HTML
@@ -294,9 +307,12 @@ notify anyone, on any event, with any context and any `metadata`. That is the
 correct shape for an engine, and it means the security boundary is entirely in
 the calling module.
 
-Tenant isolation is decided by one argument. `tenant=` (or `school=`) sets the
-column that the feed, the history log and the settings resolution all key off.
-Getting it wrong is not a validation error; it is a silently misfiled row.
+Tenant isolation is decided by the recipient, not by an argument. `tenant=` (or
+`school=`) records what the message is about; the column the feed, the history
+log and the settings resolution key off is the recipient's own tenant, which
+dispatch derives rather than accepts. A caller passing the wrong origin
+mislabels a row's subject; it can no longer hand another tenant's reader the
+body.
 
 ## 10. Code map
 
@@ -340,16 +356,19 @@ The module ships 85 tests in one file, all green at the time of writing
 
 Genuinely uncovered:
 
-1. **Cross-tenant dispatch.** No test sends to a recipient whose tenant differs
-   from the `tenant=` argument and then reads that recipient's feed, which is
-   why §8's first item is live.
+1. ~~**Cross-tenant dispatch.**~~ Covered since `373a918`:
+   `NotificationOwnershipTests` sends to a recipient whose tenant differs from
+   the `tenant=` argument and reads that recipient's feed, the other tenant's
+   history log, and the per-tenant channel settings;
+   `EagerDeliveryAcrossTenantsTests` covers the eager delivery path under the
+   dispatcher's ambient tenant.
 2. **The tenant fallback chain.** Neither the first-recipient step nor the
    codex step is exercised, and nothing asserts what happens when recipients
    span two tenants.
 3. **Retry behaviour outside eager mode.** `self.retry` is never driven, so the
    `max_retries` boundary, the fixed backoff and `_read_retry_config`'s
    `vs_config` branch are all untested.
-4. **The missing-template path** (`dispatch.py:164-169`) - no test asserts that
+4. **The missing-template path** (`dispatch.py:206-210`) - no test asserts that
    a deactivated template drops its channel silently.
 5. **`metadata` validation** - no test for a malformed `attachments` entry, an
    oversized file, a `storage_name` pointing somewhere unexpected, or a

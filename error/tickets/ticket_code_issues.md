@@ -12,8 +12,9 @@ vs_tickets --settings=apps.settings.local --noinput`). Every item below is
 therefore something the suite does not currently catch. Every claim is traced to
 a file and line. Nothing here is speculative.
 
-**Status: recorded, not yet fixed.** Nothing in this file has been changed in the
-code.
+**Status: §1 is FIXED (`373a918`, 26 August 2026); everything else is recorded,
+not yet fixed.** The fixed item keeps its original account so the defect stays
+readable, with the resolution stated at the top of the section.
 
 ---
 
@@ -21,7 +22,7 @@ code.
 
 | # | Issue | Severity |
 |---|---|---|
-| 1 | A new ticket never reaches the support desk's inbox, and the school can read CX's mail instead | **Critical** |
+| 1 | ~~A new ticket never reaches the support desk's inbox, and the school can read CX's mail instead~~ | **Fixed** |
 | 2 | The support desk has three different definitions, and the one that decides who gets told is the weakest | **High** |
 | 3 | The Export Centre hands a teacher every ticket in the school | **High** |
 | 4 | A school that has not gone live can raise a ticket and then cannot read the answer | **High** |
@@ -41,6 +42,20 @@ code.
 ---
 
 ## 1. A new ticket never reaches the support desk's inbox, and the school can read CX's mail instead
+
+**FIXED in `373a918` (26 August 2026),** at the engine choke point rather than
+here. A notification is now owned by its recipient's own tenant, and the tenant
+the event is about is recorded separately as `origin_tenant`
+(`vs_notifications/models.py:465`, `services/dispatch.py:173`), so the rows a
+ticket raises for platform triage staff belong to the platform: the agent's feed
+shows them, and the school's history log does not. Channels resolve per owning
+tenant, which closes §1b without marking the ticket events transactional.
+Migration `0010_notification_ownership_follows_recipient` moved the rows already
+written. `dispatch_ticket_event` still passes `tenant=ticket.tenant` and that is
+correct - it is the origin, not the owner
+(`vs_tickets/services/notifications.py:123`).
+
+The original account follows, unchanged. Its line references are to the code as it was before the fix; the current ones are above.
 
 **Critical. Root cause is in `vs_notifications`; `vs_tickets` is the proven
 instance, and this file is where the ticket-side consequences belong.** See
@@ -388,7 +403,7 @@ is set from the actor at creation (`services/tickets.py:32-33,38`) and is
 serialized as `branch` and `branch_name` (`serializers.py:62,79`).
 
 Nothing else reads it. There is no `?branch=` filter (`views.py:89-125`), no
-branch column in the dashboard (`views.py:328-341`), no branch term in
+branch column in the dashboard (`views.py:334-347`), no branch term in
 `visible_tickets_qs` (`services/visibility.py:82-106`), and no branch narrowing
 anywhere in `services/visibility.py`. `_assignment_branch_q` / `ANY_BRANCH` are
 used for the *assignee picker* and never for the rows.
@@ -597,7 +612,7 @@ attached to school prebuilts (`seed_ticket_permissions.py:18-27,30-42`).
   this module. Its only real effect is outside it: the export dataset's gate
   (§3) and the admin console card (`vs_admin_console/overview.py:514-516`).
 - **`tickets.report.view`** appears nowhere at all. The dashboard declares no
-  `rbac_permission` (`views.py:318-321`), so every authenticated account gets it
+  `rbac_permission` (`views.py:318-327`), so every authenticated account gets it
   - correctly scoped by `visible_tickets_qs`, but not by the key that was seeded
   to gate it.
 
@@ -770,8 +785,9 @@ gaps that matter most:
    `TenantAwareManager` is never active and the `?tenant=` assertion is never
    exercised. §1 lives entirely in that gap.
 2. **No test asserts what `NotificationService.send` is called with**, except the
-   recipient set in one case (`tests.py:328-353`). The `tenant=` argument - the
-   whole of §1a - is never inspected.
+   recipient set in one case (`tests.py:328-353`). The `tenant=` argument is
+   still not inspected here; §1 is covered instead on the engine side, where
+   ownership is decided (`vs_notifications.tests.NotificationOwnershipTests`).
 3. **No test grants a ticket key through a permission group or denies one through
    a personal override**, which is what §2 needs.
 4. **No test runs the `support.tickets` dataset** and compares its rows with what
