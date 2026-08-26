@@ -8,12 +8,18 @@ from .sessions import (  # noqa: F401
     TermListCreateView,
 )
 from .structure import (  # noqa: F401
+    DepartmentArchiveView,
     DepartmentDetailView,
+    DepartmentRestoreView,
     DepartmentListCreateView,
     LevelBulkCreateView,
+    LevelArchiveView,
     LevelDetailView,
+    LevelRestoreView,
     LevelListCreateView,
+    ProgramArchiveView,
     ProgramDetailView,
+    ProgramRestoreView,
     ProgramListCreateView,
 )
 from .classes import (  # noqa: F401
@@ -22,7 +28,9 @@ from .classes import (  # noqa: F401
     ClassListCreateView,
     ClassRestoreView,
     GenerateArmsView,
+    SubjectArchiveView,
     SubjectDetailView,
+    SubjectRestoreView,
     SubjectListCreateView,
     SubjectOfferingsView,
 )

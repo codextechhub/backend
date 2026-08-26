@@ -155,17 +155,22 @@ class ClosedYearRowsTests(_Base):
             tenant=cls.tenant, session=cls.past, name="Latin", code="LAT",
         )
 
-    def test_a_level_in_an_archived_year_cannot_be_deleted(self):
-        url = reverse("academics-level-detail", kwargs={"pk": self.old_level.pk})
-        r = self.client_for(self.admin).delete(f"{url}?tenant={self.tenant.slug}")
+    def test_a_level_in_an_archived_year_cannot_be_archived(self):
+        """Even the reversible change is refused: the year is closed."""
+        r = self.post(
+            self.admin, "academics-level-archive", {}, pk=self.old_level.pk,
+        )
         self.assertIn(r.status_code, (403, 409), r.data)
-        self.assertTrue(Level.all_objects.filter(pk=self.old_level.pk).exists())
+        self.old_level.refresh_from_db()
+        self.assertTrue(self.old_level.is_active)
 
-    def test_a_subject_in_an_archived_year_cannot_be_deleted(self):
-        url = reverse("academics-subject-detail", kwargs={"pk": self.old_subject.pk})
-        r = self.client_for(self.admin).delete(f"{url}?tenant={self.tenant.slug}")
+    def test_a_subject_in_an_archived_year_cannot_be_archived(self):
+        r = self.post(
+            self.admin, "academics-subject-archive", {}, pk=self.old_subject.pk,
+        )
         self.assertIn(r.status_code, (403, 409), r.data)
-        self.assertTrue(Subject.all_objects.filter(pk=self.old_subject.pk).exists())
+        self.old_subject.refresh_from_db()
+        self.assertTrue(self.old_subject.is_active)
 
     def test_a_level_in_an_archived_year_cannot_be_edited(self):
         url = reverse("academics-level-detail", kwargs={"pk": self.old_level.pk})

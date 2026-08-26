@@ -242,38 +242,45 @@ class DepartmentTests(_Base):
         response = self.get(self.admin, "academics-department-list")
         self.assertEqual(response.data["data"][0]["program_count"], 1)
 
-    def test_deleting_a_department_with_programmes_is_refused(self):
-        """Reverses what FRD 2.0 to 2.5.1 promised, because the design does."""
+    def test_there_is_no_delete_route_for_a_department(self):
         dept = self.dept()
-        self.program(dept=dept)
         url = reverse("academics-department-detail", kwargs={"pk": dept.pk})
         response = self.client_for(self.admin).delete(
             f"{url}?tenant={self.tenant.slug}",
         )
-        self.assertEqual(response.status_code, 409, response.data)
-        self.assertEqual(response.data["error"]["code"], "PROTECTED_REFERENCE")
-        self.assertEqual(response.data["error"]["detail"], {"Program": 1})
+        self.assertEqual(response.status_code, 405, response.data)
         self.assertTrue(Department.all_objects.filter(pk=dept.pk).exists())
 
-    def test_a_department_with_only_subjects_still_deletes(self):
-        """The asymmetry is deliberate, so it is asserted rather than assumed.
+    def test_archiving_a_department_leaves_its_programmes_where_they_are(self):
+        """Archiving says one thing and does one thing.
 
-        The design refuses on programmes and shows no subject count at all, so
-        subjects still detach. FRD v2.6 decision 4 keeps this half open.
+        A delete had to be refused while programmes pointed at it. Archiving
+        does not, because it is reversible and takes nothing with it - and
+        cascading it would be the school saying "retire Sciences" and the
+        platform hearing "retire everything taught under it".
         """
-        from schools.vs_academics.models import Subject
-
         dept = self.dept()
-        subject = Subject.all_objects.create(
-            tenant=self.tenant, session=self.year, name="Mathematics", code="MTH", department=dept,
-        )
-        url = reverse("academics-department-detail", kwargs={"pk": dept.pk})
-        response = self.client_for(self.admin).delete(
-            f"{url}?tenant={self.tenant.slug}",
+        program = self.program(dept=dept)
+
+        response = self.post(
+            self.admin, "academics-department-archive", {}, pk=dept.pk,
         )
         self.assertEqual(response.status_code, 200, response.data)
-        subject.refresh_from_db()
-        self.assertIsNone(subject.department_id)
+        dept.refresh_from_db()
+        program.refresh_from_db()
+        self.assertFalse(dept.is_active)
+        self.assertTrue(program.is_active)
+        self.assertEqual(program.department_id, dept.pk)
+
+    def test_an_archived_department_comes_back(self):
+        dept = self.dept()
+        self.post(self.admin, "academics-department-archive", {}, pk=dept.pk)
+        response = self.post(
+            self.admin, "academics-department-restore", {}, pk=dept.pk,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        dept.refresh_from_db()
+        self.assertTrue(dept.is_active)
 
 
 class ContainmentTests(_Base):
@@ -361,15 +368,30 @@ class LevelTests(_Base):
         self.assertEqual(response.status_code, 422, response.data)
         self.assertEqual(Level.all_objects.count(), 0)
 
-    def test_deleting_a_programme_with_levels_is_refused(self):
+    def test_there_is_no_delete_route_for_a_programme_or_a_level(self):
         self.post(self.admin, "academics-level-list", {"name": "JSS1"}, pk=self.prog.pk)
-        url = reverse("academics-program-detail", kwargs={"pk": self.prog.pk})
-        response = self.client_for(self.admin).delete(
-            f"{url}?tenant={self.tenant.slug}",
-        )
-        self.assertEqual(response.status_code, 409, response.data)
-        self.assertEqual(response.data["error"]["code"], "PROTECTED_REFERENCE")
+        level = Level.all_objects.get()
+        for name, pk in (
+            ("academics-program-detail", self.prog.pk),
+            ("academics-level-detail", level.pk),
+        ):
+            url = reverse(name, kwargs={"pk": pk})
+            response = self.client_for(self.admin).delete(
+                f"{url}?tenant={self.tenant.slug}",
+            )
+            self.assertEqual(response.status_code, 405, name)
         self.assertTrue(Program.all_objects.filter(pk=self.prog.pk).exists())
+        self.assertTrue(Level.all_objects.filter(pk=level.pk).exists())
+
+    def test_archiving_a_programme_leaves_its_levels_where_they_are(self):
+        self.post(self.admin, "academics-level-list", {"name": "JSS1"}, pk=self.prog.pk)
+        response = self.post(
+            self.admin, "academics-program-archive", {}, pk=self.prog.pk,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.prog.refresh_from_db()
+        self.assertFalse(self.prog.is_active)
+        self.assertTrue(Level.all_objects.get().is_active)
 
     def test_the_programme_list_nests_its_levels(self):
         self.post(
@@ -527,3 +549,51 @@ class PromotionScreenTests(_Base):
             response = client.get(url, params)
         # And the extra levels really are in the payload being priced.
         self.assertEqual(len(response.data["data"][0]["levels"]), 11)
+
+
+class ArchivedRowsAreReachableTests(_Base):
+    """An archive nobody can find again is a delete with extra steps.
+
+    Both halves matter: the programme has to come back under `is_active=all`,
+    and its LEVELS have to follow the same reading. They did not - the levels
+    were nested through a prefetch of their own that ignored the filter, so an
+    archived level went on showing inside an active programme while an archived
+    programme vanished with its active levels.
+    """
+
+    def setUp(self):
+        self.prog = self.program()
+        self.level = Level.all_objects.create(
+            tenant=self.tenant, session=self.year, program=self.prog,
+            name="JSS1", code="JSS1", order_index=1,
+        )
+
+    def names(self, params=None):
+        response = self.get(self.admin, "academics-program-list", params)
+        self.assertEqual(response.status_code, 200, response.data)
+        return {
+            row["name"]: [lvl["name"] for lvl in row["levels"]]
+            for row in response.data["data"]
+        }
+
+    def test_an_archived_programme_is_found_again_and_restored(self):
+        self.post(self.admin, "academics-program-archive", {}, pk=self.prog.pk)
+        self.assertNotIn("Junior Secondary", self.names())
+        self.assertIn("Junior Secondary", self.names({"is_active": "all"}))
+        self.assertIn("Junior Secondary", self.names({"is_active": "false"}))
+
+        response = self.post(
+            self.admin, "academics-program-restore", {}, pk=self.prog.pk,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIn("Junior Secondary", self.names())
+
+    def test_an_archived_level_hides_with_the_rest(self):
+        self.post(self.admin, "academics-level-archive", {}, pk=self.level.pk)
+        self.assertEqual(self.names()["Junior Secondary"], [])
+        self.assertEqual(
+            self.names({"is_active": "all"})["Junior Secondary"], ["JSS1"],
+        )
+
+        self.post(self.admin, "academics-level-restore", {}, pk=self.level.pk)
+        self.assertEqual(self.names()["Junior Secondary"], ["JSS1"])

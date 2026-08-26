@@ -622,22 +622,20 @@ class ScrappingAProgrammeTests(_Base):
             }
             self.assertEqual(counts["Sciences"], 1, f"wrong in {year.name}")
 
-    def test_deleting_it_is_refused_and_names_the_year_that_holds_it(self):
-        """Standing on the year where it has no levels does not make it free."""
+    def test_it_is_never_deleted_only_left_out_of_the_new_year(self):
+        """There is no delete to refuse any more, which is the stronger answer.
+
+        The refusal used to have to explain that last year still held levels.
+        Now the route is gone: a programme is part of what a school ran, and
+        the way to stop running it is to leave it out of the new year.
+        """
         url = reverse(
             "academics-program-detail", kwargs={"pk": self.commercial.pk},
         )
         response = self.client_for(self.admin).delete(
             f"{url}?tenant={self.tenant.slug}&session={self.next_year.pk}",
         )
-        self.assertEqual(response.status_code, 409, response.data)
-        # The platform's own PROTECT code, deliberately - what this module
-        # adds is the wording. The year is the part a school can act on.
-        self.assertEqual(response.data["error"]["code"], "PROTECTED_REFERENCE")
-        self.assertIn(
-            "Commercial still has 1 level in 2099/2100", response.data["message"],
-        )
-        self.assertIn("leave it out of the new year", response.data["message"])
+        self.assertEqual(response.status_code, 405, response.data)
         self.assertTrue(
             Program.all_objects.filter(pk=self.commercial.pk).exists(),
         )

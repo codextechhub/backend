@@ -213,75 +213,61 @@ class ArchivedRowsStillHoldTheirNameTests(_AllAcademics):
         self.assertIn("Yoruba", response.data["message"])
 
 
-class BlockedDeleteWordingTests(_AllAcademics):
-    """A blocked delete names the job, not the table.
+class ArchivingRatherThanDeletingTests(_AllAcademics):
+    """Nothing here is deleted, so nothing here needs a blocked-delete message.
 
-    PROTECT refuses these either way. What is asserted is that the sentence is
-    one a school can act on: the platform handler pluralises from MODEL names
-    and told the reader "2 school class and 5 subject offerings still reference
-    it", which names two things a school has never heard of and asks them to
-    reassign a join row they cannot see.
+    The delete routes and their refusals were removed together: a programme
+    holding levels no longer has to be refused, because archiving it is
+    reversible and leaves the levels alone. What replaced the refusal is a
+    lifecycle that says one thing and does one thing.
     """
 
-    def test_a_programme_holding_levels_names_the_levels(self):
-        jss = self.program("Junior Secondary", "JSS")
-        for n, name in enumerate(("JSS1", "JSS2"), start=1):
-            Level.all_objects.create(
-                tenant=self.tenant, session=self.year, program=jss, name=name, code=name,
-                order_index=n,
-            )
-        url = f"/v1/academics/programs/{jss.pk}/?tenant={self.tenant.slug}"
-        response = self.client_for(self.admin).delete(url)
-        self.assertEqual(response.status_code, 409, response.data)
-        # It names the YEAR, because the year is what a school reading this
-        # has to act on: the blocking rows may be last year's.
-        self.assertIn(
-            "Junior Secondary still has 2 levels in 2099/2100",
-            response.data["message"],
-        )
-        self.assertNotIn("reference", response.data["message"])
+    def test_archiving_a_level_leaves_its_classes_and_its_offerings(self):
+        """The two things a delete used to argue about, both untouched."""
+        from schools.vs_academics.models import SubjectOffering
 
-    def test_a_level_holding_classes_says_to_move_the_classes(self):
         jss = self.program("Junior Secondary", "JSS")
         level = Level.all_objects.create(
-            tenant=self.tenant, session=self.year, program=jss, name="JSS1", code="JSS1", order_index=1,
+            tenant=self.tenant, session=self.year, program=jss, name="JSS1",
+            code="JSS1", order_index=1,
         )
         SchoolClass.all_objects.create(
             tenant=self.tenant, session=self.year, level=level, branch=self.lekki,
             name="JSS1 A", code="JSS1-A",
         )
-        url = f"/v1/academics/levels/{level.pk}/?tenant={self.tenant.slug}"
-        response = self.client_for(self.admin).delete(url)
-        self.assertEqual(response.status_code, 409, response.data)
-        self.assertIn("1 class sits at JSS1", response.data["message"])
+        subject = Subject.all_objects.create(
+            tenant=self.tenant, session=self.year, name="Mathematics", code="MTH",
+        )
+        SubjectOffering.all_objects.create(
+            tenant=self.tenant, subject=subject, level=level,
+        )
 
-    def test_offerings_go_with_the_level_and_the_subjects_survive(self):
-        """An offering is a statement ABOUT the level, so it cascades.
+        url = f"/v1/academics/levels/{level.pk}/archive/?tenant={self.tenant.slug}"
+        response = self.client_for(self.admin).post(url)
+        self.assertEqual(response.status_code, 200, response.data)
 
-        It does NOT block: making a school open every subject offered at a
-        level and untick it, before deleting a level with no classes, is a
-        chore with no safety value - none of those edits mean anything once the
-        level is gone. The SUBJECTS themselves are untouched, which is the part
-        that would matter if this were wrong.
+        level.refresh_from_db()
+        self.assertFalse(level.is_active)
+        self.assertEqual(SchoolClass.all_objects.filter(level=level).count(), 1)
+        self.assertEqual(SubjectOffering.all_objects.filter(level=level).count(), 1)
+        self.assertTrue(Subject.all_objects.get(pk=subject.pk).is_active)
+
+    def test_a_level_that_ran_cannot_be_deleted_at_all(self):
+        """Not refused with an explanation - not offered.
+
+        A level belongs to a year, so deleting one edits what that year says
+        the school ran. There is no wording that makes that acceptable, which
+        is why the route is gone rather than guarded.
         """
-        from schools.vs_academics.models import SubjectOffering
-
         jss = self.program("Junior Secondary", "JSS")
         level = Level.all_objects.create(
-            tenant=self.tenant, session=self.year, program=jss, name="JSS1", code="JSS1", order_index=1,
+            tenant=self.tenant, session=self.year, program=jss, name="JSS3",
+            code="JSS3", order_index=3,
         )
-        for name, code in (("Mathematics", "MTH"), ("English", "ENG")):
-            subject = Subject.all_objects.create(
-                tenant=self.tenant, session=self.year, name=name, code=code,
-            )
-            SubjectOffering.all_objects.create(
-                tenant=self.tenant, subject=subject, level=level,
-            )
         url = f"/v1/academics/levels/{level.pk}/?tenant={self.tenant.slug}"
         response = self.client_for(self.admin).delete(url)
-        self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(SubjectOffering.all_objects.filter(level_id=level.pk).count(), 0)
-        self.assertEqual(Subject.all_objects.filter(tenant=self.tenant).count(), 2)
+        self.assertEqual(response.status_code, 405, response.data)
+        self.assertTrue(Level.all_objects.filter(pk=level.pk).exists())
 
     def test_the_level_list_says_how_many_subjects_would_go_with_it(self):
         """The delete confirmation reads this, so it has to be there.
@@ -314,11 +300,3 @@ class BlockedDeleteWordingTests(_AllAcademics):
         )
         self.assertEqual(program["levels"][0]["subject_count"], 1)
 
-    def test_an_unused_level_still_deletes(self):
-        jss = self.program("Junior Secondary", "JSS")
-        level = Level.all_objects.create(
-            tenant=self.tenant, session=self.year, program=jss, name="JSS3", code="JSS3", order_index=3,
-        )
-        url = f"/v1/academics/levels/{level.pk}/?tenant={self.tenant.slug}"
-        response = self.client_for(self.admin).delete(url)
-        self.assertEqual(response.status_code, 200, response.data)

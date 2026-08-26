@@ -402,18 +402,37 @@ class SubjectTests(_Base):
         )
         self.assertEqual([r["name"] for r in elective.data["data"]], ["Further Maths"])
 
-    def test_deleting_a_subject_takes_its_offerings_with_it(self):
+    def test_a_subject_is_archived_rather_than_deleted(self):
+        """Archiving keeps the offerings: it is reversible, so it takes nothing.
+
+        A delete used to cascade them away, which is fine for a subject nobody
+        ever taught and wrong for one that ran for two years - the offerings
+        ARE the record of where it was taught.
+        """
         created = self.post(
             self.admin, "academics-subject-list",
             {"name": "Mathematics", "level_ids": [self.jss1.pk]},
         )
         pk = created.data["data"]["id"]
+
         url = reverse("academics-subject-detail", kwargs={"pk": pk})
-        response = self.client_for(self.admin).delete(
-            f"{url}?tenant={self.tenant.slug}",
-        )
+        gone = self.client_for(self.admin).delete(f"{url}?tenant={self.tenant.slug}")
+        self.assertEqual(gone.status_code, 405, gone.data)
+
+        response = self.post(self.admin, "academics-subject-archive", {}, pk=pk)
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(SubjectOffering.all_objects.count(), 0)
+        self.assertFalse(Subject.all_objects.get(pk=pk).is_active)
+        self.assertEqual(SubjectOffering.all_objects.count(), 1)
+
+    def test_an_archived_subject_comes_back(self):
+        created = self.post(
+            self.admin, "academics-subject-list", {"name": "Mathematics"},
+        )
+        pk = created.data["data"]["id"]
+        self.post(self.admin, "academics-subject-archive", {}, pk=pk)
+        response = self.post(self.admin, "academics-subject-restore", {}, pk=pk)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(Subject.all_objects.get(pk=pk).is_active)
 
     def test_an_empty_subject_list_is_still_a_list(self):
         response = self.get(self.admin, "academics-subject-list")

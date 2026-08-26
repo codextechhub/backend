@@ -23,8 +23,7 @@ from ..constants import (
     PERM_STRUCTURE_UPDATE,
     PERM_STRUCTURE_VIEW,
 )
-from ..exceptions import AcademicsError
-from ..models import Department, Level, Program, SchoolClass, Subject
+from ..models import Department, Level, Program
 from ..serializers import (
     BulkLevelSerializer,
     DepartmentSerializer,
@@ -46,45 +45,7 @@ from ..services.structure import (
     generate_code,
     plan_bulk_levels,
 )
-from .base import AcademicsViewMixin
-
-
-class ProgramHasLevels(AcademicsError):
-    """Deleting a programme that still holds levels.
-
-    PROTECT on Level.program refuses it either way. What this adds is the
-    module's own voice: the platform handler pluralises from MODEL names, so
-    the reader was told "2 school class and 5 subject offerings still reference
-    it" - which names two things a school has never heard of and asks them to
-    "reassign" a join row they cannot see.
-    """
-
-    error_code = "PROTECTED_REFERENCE"
-    http_status = 409
-
-
-class LevelInUse(AcademicsError):
-    """Deleting a level that classes still sit at.
-
-    Only classes block. Subject offerings cascade - see SubjectOffering.level
-    for why - so this refusal names one job rather than two, and it is a job the
-    school does on the Classes screen.
-    """
-
-    error_code = "PROTECTED_REFERENCE"
-    http_status = 409
-
-
-class DepartmentHasPrograms(AcademicsError):
-    """Deleting a department that programmes point at.
-
-    Reverses what FRD versions 2.0 to 2.5.1 specified. The foreign key is still
-    SET_NULL so no race can destroy a link; this is a service guard in front of
-    it, and it names the blocker because the screen renders that verbatim.
-    """
-
-    error_code = "PROTECTED_REFERENCE"
-    http_status = 409
+from .base import AcademicsViewMixin, RecordStateView
 
 
 class _StructureBase(AcademicsViewMixin):
@@ -101,13 +62,7 @@ class _StructureBase(AcademicsViewMixin):
                 clause |= Q(**{f"{field}__icontains": search})
             qs = qs.filter(clause)
 
-        is_active = (params.get("is_active") or "").strip().lower()
-        if is_active in ("true", "1", "active"):
-            qs = qs.filter(is_active=True)
-        elif is_active in ("false", "0", "archived", "inactive"):
-            qs = qs.filter(is_active=False)
-        elif is_active not in ("all",):
-            qs = qs.filter(is_active=True)   # active only, unless asked
+        qs = self._by_state(qs)
 
         branch = (params.get("branch") or "").strip()
         if branch and self.multi_branch:
@@ -125,6 +80,21 @@ class _StructureBase(AcademicsViewMixin):
                     | Q(branch=resolve_branch_reference(self.tenant, branch, "branch")),
                 )
         return qs
+
+    def _by_state(self, qs):
+        """Active only unless `?is_active=` says otherwise.
+
+        Split out of `_filtered` because the programme accordion nests its
+        levels through a prefetch of its own: without this the archived
+        programme vanished from the list while its archived LEVELS carried on
+        showing inside the programmes that were left.
+        """
+        value = (self.request.query_params.get("is_active") or "").strip().lower()
+        if value == "all":
+            return qs
+        if value in ("false", "0", "archived", "inactive"):
+            return qs.filter(is_active=False)
+        return qs.filter(is_active=True)
 
     def _lens_branch(self):
         """The branch the screen is filtered to, or None for "everything".
@@ -280,8 +250,8 @@ class DepartmentListCreateView(_StructureBase, generics.ListCreateAPIView):
         )
 
 
-class DepartmentDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
-    """GET, PATCH, DELETE /v1/academics/departments/<id>/
+class DepartmentDetailView(_StructureBase, generics.RetrieveUpdateAPIView):
+    """GET, PATCH /v1/academics/departments/<id>/
 
     docstring-name: One department
     """
@@ -290,7 +260,7 @@ class DepartmentDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView
 
     def get_permissions(self):
         self.rbac_permission = {
-            "PATCH": PERM_STRUCTURE_UPDATE, "DELETE": PERM_STRUCTURE_MANAGE,
+            "PATCH": PERM_STRUCTURE_UPDATE,
         }.get(self.request.method, PERM_STRUCTURE_VIEW)
         return super().get_permissions()
 
@@ -329,29 +299,6 @@ class DepartmentDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView
             ).data,
         )
 
-    @transaction.atomic
-    def destroy(self, request, *args, **kwargs):
-        dept = self.get_object()
-        count = Program.all_objects.filter(department=dept).count()
-        if count:
-            raise DepartmentHasPrograms(
-                f"{count} programme{'s are' if count > 1 else ' is'} mapped to "
-                f"{dept.name}. Move {'them' if count > 1 else 'it'} to another "
-                f"department first, then delete this one.",
-                **{"Program": count},
-            )
-        name, pk = dept.name, dept.pk
-        dept.delete()
-        emit_audit_event(
-            module_key=AuditModuleKey.ACADEMICS,
-            action_type=AuditActionType.DELETE,
-            entity_type="Department", entity_id=str(pk), entity_label=name,
-            tenant=self.tenant, actor_user=request.user,
-            summary=f"{name} deleted.",
-        )
-        return success_response(f"{name} deleted.")
-
-
 # ── Programmes ─────────────────────────────────────────────────────────────
 
 def _programs_for(tenant):
@@ -380,7 +327,9 @@ class ProgramListCreateView(_StructureBase, generics.ListCreateAPIView):
         # The SAME annotations _levels_for carries: one missing here reaches
         # the serializer as its zero default rather than as an error.
         levels = scope_to_visible_branches(
-            Level.objects.filter(tenant=self.tenant, session=self.session)
+            self._by_state(
+                Level.objects.filter(tenant=self.tenant, session=self.session),
+            )
             .select_related("branch", "program", "next_level")
             .annotate(
                 class_count_annotated=Count("classes", distinct=True),
@@ -424,8 +373,8 @@ class ProgramListCreateView(_StructureBase, generics.ListCreateAPIView):
         )
 
 
-class ProgramDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
-    """GET, PATCH, DELETE /v1/academics/programs/<id>/
+class ProgramDetailView(_StructureBase, generics.RetrieveUpdateAPIView):
+    """GET, PATCH /v1/academics/programs/<id>/
 
     docstring-name: One programme
     """
@@ -434,7 +383,7 @@ class ProgramDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
 
     def get_permissions(self):
         self.rbac_permission = {
-            "PATCH": PERM_STRUCTURE_UPDATE, "DELETE": PERM_STRUCTURE_MANAGE,
+            "PATCH": PERM_STRUCTURE_UPDATE,
         }.get(self.request.method, PERM_STRUCTURE_VIEW)
         return super().get_permissions()
 
@@ -477,46 +426,6 @@ class ProgramDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
             f"{program.name} updated.",
             data=ProgramSerializer(program, context=self.get_serializer_context()).data,
         )
-
-    @transaction.atomic
-    def destroy(self, request, *args, **kwargs):
-        program = self.get_object()
-        # EVERY year, not the lens: the rows that block a delete are usually
-        # last year's, so the count describing them has to be too.
-        held = (
-            Level.all_objects.filter(program=program)
-            .values_list("session__name", flat=True)
-        )
-        levels = len(held)
-        if levels:
-            years = sorted(set(held))
-            one_year = len(years) == 1
-            where = (
-                f"in {years[0]}" if one_year
-                else f"across {', '.join(years[:-1])} and {years[-1]}"
-            )
-            record = (
-                "That year is a record" if one_year
-                else "Those years are a record"
-            )
-            raise ProgramHasLevels(
-                f"{program.name} still has {levels} "
-                f"{'levels' if levels > 1 else 'level'} {where}. {record} of "
-                f"what the school ran, so the programme cannot be deleted. To "
-                f"stop running it, leave it out of the new year instead.",
-                **{"Level": levels},
-            )
-        name, pk = program.name, program.pk
-        program.delete()
-        emit_audit_event(
-            module_key=AuditModuleKey.ACADEMICS,
-            action_type=AuditActionType.DELETE,
-            entity_type="Program", entity_id=str(pk), entity_label=name,
-            tenant=self.tenant, actor_user=request.user,
-            summary=f"{name} deleted.",
-        )
-        return success_response(f"{name} deleted.")
-
 
 # ── Levels ─────────────────────────────────────────────────────────────────
 
@@ -681,8 +590,8 @@ class LevelBulkCreateView(_StructureBase, APIView):
         )
 
 
-class LevelDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
-    """GET, PATCH, DELETE /v1/academics/levels/<id>/
+class LevelDetailView(_StructureBase, generics.RetrieveUpdateAPIView):
+    """GET, PATCH /v1/academics/levels/<id>/
 
     docstring-name: One level
     """
@@ -691,7 +600,7 @@ class LevelDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
 
     def get_permissions(self):
         self.rbac_permission = {
-            "PATCH": PERM_STRUCTURE_UPDATE, "DELETE": PERM_STRUCTURE_MANAGE,
+            "PATCH": PERM_STRUCTURE_UPDATE,
         }.get(self.request.method, PERM_STRUCTURE_VIEW)
         return super().get_permissions()
 
@@ -742,26 +651,80 @@ class LevelDetailView(_StructureBase, generics.RetrieveUpdateDestroyAPIView):
             ).data,
         )
 
-    @transaction.atomic
-    def destroy(self, request, *args, **kwargs):
-        level = self.get_object()
-        classes = SchoolClass.all_objects.filter(level=level).count()
-        if classes:
-            raise LevelInUse(
-                f"{classes} class{'es sit' if classes > 1 else ' sits'} at "
-                f"{level.name}. Archive or move "
-                f"{'them' if classes > 1 else 'it'} first, then delete the level.",
-                **{"SchoolClass": classes},
-            )
-        # Offerings do not block - they CASCADE. The screen says how many
-        # first, so nothing disappears unannounced.
-        name, pk = level.name, level.pk
-        level.delete()
-        emit_audit_event(
-            module_key=AuditModuleKey.ACADEMICS,
-            action_type=AuditActionType.DELETE,
-            entity_type="Level", entity_id=str(pk), entity_label=name,
-            tenant=self.tenant, actor_user=request.user,
-            summary=f"{name} deleted.",
-        )
-        return success_response(f"{name} deleted.")
+
+# ── Archive and restore ────────────────────────────────────────────────────
+# Nothing here is deleted; see RecordStateView for why.
+
+class _StructureStateView(RecordStateView):
+    rbac_permission = PERM_STRUCTURE_MANAGE
+
+    #: The scoped queryset the pk is looked up in.
+    source = None
+
+    def resolve(self, pk):
+        row = scope_to_visible_branches(
+            self.source(self.tenant), self.request.user, self.tenant,
+        ).filter(pk=pk).first()
+        if row is None:
+            raise NotFound("No such record at this school.")
+        return row
+
+
+class DepartmentArchiveView(_StructureStateView):
+    """POST /v1/academics/departments/<id>/archive/
+
+    docstring-name: Archive a department
+    """
+
+    source = staticmethod(lambda tenant: _departments_for(tenant))
+    active, verb = False, "archived"
+
+
+class DepartmentRestoreView(_StructureStateView):
+    """POST /v1/academics/departments/<id>/restore/
+
+    docstring-name: Restore a department
+    """
+
+    source = staticmethod(lambda tenant: _departments_for(tenant))
+    active, verb = True, "restored"
+
+
+class ProgramArchiveView(_StructureStateView):
+    """POST /v1/academics/programs/<id>/archive/
+
+    docstring-name: Archive a programme
+    """
+
+    source = staticmethod(lambda tenant: _programs_for(tenant))
+    active, verb = False, "archived"
+
+
+class ProgramRestoreView(_StructureStateView):
+    """POST /v1/academics/programs/<id>/restore/
+
+    docstring-name: Restore a programme
+    """
+
+    source = staticmethod(lambda tenant: _programs_for(tenant))
+    active, verb = True, "restored"
+
+
+class LevelArchiveView(_StructureStateView):
+    """POST /v1/academics/levels/<id>/archive/
+
+    docstring-name: Archive a level
+    """
+
+    source = staticmethod(lambda tenant: _levels_for(tenant))
+    active, verb = False, "archived"
+
+
+class LevelRestoreView(_StructureStateView):
+    """POST /v1/academics/levels/<id>/restore/
+
+    docstring-name: Restore a level
+    """
+
+    source = staticmethod(lambda tenant: _levels_for(tenant))
+    active, verb = True, "restored"

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from rest_framework.exceptions import NotFound
 from rest_framework.permissions import SAFE_METHODS
+from rest_framework.views import APIView
 
 from core.pagination import XVSPagination
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
@@ -130,3 +131,49 @@ class AcademicsViewMixin:
         context = super().get_serializer_context()
         context["multi_branch"] = self.multi_branch
         return context
+
+
+class RecordStateView(AcademicsViewMixin, APIView):
+    """Archive or restore one academic record.
+
+    Nothing in this module is deleted. A department, a programme, a level, a
+    subject and a class are all part of what a school did in a year, and the
+    year is now written on three of them - so a delete does not remove a row
+    the school no longer wants, it removes part of the record of a year that
+    has already happened.
+
+    Archiving is the whole lifecycle: it is reversible, it takes nothing with
+    it, and the row keeps its name and its code so the constraints still see
+    it. Children are deliberately left alone. Archiving Junior Secondary does
+    not archive JSS1 - the school said one thing, and the other is a decision
+    they can make separately and undo separately.
+
+    Subclasses provide `resolve()`, the model's own scoped lookup.
+    """
+
+    active: bool
+    verb: str
+
+    def resolve(self, pk):
+        raise NotImplementedError
+
+    def post(self, request, pk):
+        from vs_audit.models import AuditActionType, AuditModuleKey
+        from vs_audit.services import emit_audit_event
+        from core.response import success_response
+        from ..services.years import assert_year_is_writable
+
+        row = self.resolve(pk)
+        assert_year_is_writable(getattr(row, "session", None))
+
+        row.is_active = self.active
+        row.save(update_fields=["is_active", "updated_at"])
+        emit_audit_event(
+            module_key=AuditModuleKey.ACADEMICS,
+            action_type=AuditActionType.UPDATE,
+            entity_type=type(row).__name__, entity_id=str(row.pk),
+            entity_label=row.name,
+            tenant=self.tenant, actor_user=request.user,
+            summary=f"{row.name} {self.verb}.",
+        )
+        return success_response(f"{row.name} {self.verb}.")

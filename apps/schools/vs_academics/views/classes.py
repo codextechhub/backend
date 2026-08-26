@@ -49,7 +49,7 @@ from ..services.scoping import (
     assert_within_parent,
     scope_to_visible_branches,
 )
-from ..services.structure import generate_code
+from .base import RecordStateView
 from .structure import _StructureBase
 
 
@@ -505,15 +505,15 @@ class SubjectListCreateView(_SubjectBase, generics.ListCreateAPIView):
         )
 
 
-class SubjectDetailView(_SubjectBase, generics.RetrieveUpdateDestroyAPIView):
-    """GET, PATCH, DELETE /v1/academics/subjects/<id>/
+class SubjectDetailView(_SubjectBase, generics.RetrieveUpdateAPIView):
+    """GET, PATCH /v1/academics/subjects/<id>/
 
     docstring-name: One subject
     """
 
     def get_permissions(self):
         self.rbac_permission = {
-            "PATCH": PERM_SUBJECT_UPDATE, "DELETE": PERM_SUBJECT_MANAGE,
+            "PATCH": PERM_SUBJECT_UPDATE,
         }.get(self.request.method, PERM_SUBJECT_VIEW)
         return super().get_permissions()
 
@@ -572,20 +572,6 @@ class SubjectDetailView(_SubjectBase, generics.RetrieveUpdateDestroyAPIView):
                 context=self.get_serializer_context(),
             ).data,
         )
-
-    @transaction.atomic
-    def destroy(self, request, *args, **kwargs):
-        subject = self.get_object()
-        name, pk = subject.name, subject.pk
-        subject.delete()                # cascades its offerings
-        emit_audit_event(
-            module_key=AuditModuleKey.ACADEMICS,
-            action_type=AuditActionType.DELETE,
-            entity_type="Subject", entity_id=str(pk), entity_label=name,
-            tenant=self.tenant, actor_user=request.user,
-            summary=f"{name} deleted.",
-        )
-        return success_response(f"{name} deleted.")
 
 
 class SubjectOfferingsView(_SubjectBase, APIView):
@@ -652,3 +638,33 @@ def _write_offerings(tenant, subject, levels):
         SubjectOffering(tenant=tenant, subject=subject, level=level)
         for level in levels
     ])
+
+
+class _SubjectStateView(RecordStateView):
+    rbac_permission = PERM_SUBJECT_MANAGE
+
+    def resolve(self, pk):
+        row = scope_to_visible_branches(
+            _subjects_for(self.tenant), self.request.user, self.tenant,
+        ).filter(pk=pk).first()
+        if row is None:
+            raise NotFound("No such subject at this school.")
+        return row
+
+
+class SubjectArchiveView(_SubjectStateView):
+    """POST /v1/academics/subjects/<id>/archive/
+
+    docstring-name: Archive a subject
+    """
+
+    active, verb = False, "archived"
+
+
+class SubjectRestoreView(_SubjectStateView):
+    """POST /v1/academics/subjects/<id>/restore/
+
+    docstring-name: Restore a subject
+    """
+
+    active, verb = True, "restored"
