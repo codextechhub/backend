@@ -329,14 +329,26 @@ class Level(_Branched):
     code = models.CharField(max_length=20)
     description = models.TextField(blank=True, default="")
     order_index = models.PositiveSmallIntegerField()
-    #: The promotion target.
+    #: The promotion target, and whether there is meant to be one.
     #:
-    #: Null means graduation to the promoting module - and ALSO means nothing
-    #: has wired promotion yet, because no screen writes this today. M11 must
-    #: not read the two as the same thing (FRD v2.6 FR-005).
+    #: Two fields for three states, because a nullable FK only has two and the
+    #: third is the dangerous one:
+    #:
+    #:   next_level set                 -> pupils move up into it
+    #:   null, is_terminal True         -> pupils leave the school here
+    #:   null, is_terminal False        -> nobody has wired this yet
+    #:
+    #: Without the flag the last two are one null, so a school that wires half
+    #: its chain and is interrupted graduates every unwired year group at once
+    #: and hears about it from a parent. M11 must refuse to promote out of the
+    #: third state rather than treating it as the second (FRD v2.7 FR-005).
     next_level = models.ForeignKey(
         "self", on_delete=models.SET_NULL, null=True, blank=True,
         related_name="previous_levels",
+    )
+    is_terminal = models.BooleanField(
+        default=False,
+        help_text="Pupils leave the school after this level.",
     )
 
     class Meta(_Branched.Meta):
@@ -353,6 +365,13 @@ class Level(_Branched):
             models.UniqueConstraint(
                 fields=["program", "session", "order_index"],
                 name="uq_academic_level_order",
+            ),
+            # A level that promotes into JSS2 and also says pupils leave is
+            # two answers to one question. The service refuses it with words;
+            # this is what makes the state unreachable.
+            models.CheckConstraint(
+                condition=Q(is_terminal=False) | Q(next_level__isnull=True),
+                name="ck_academic_level_terminal_has_no_next",
             ),
         ]
         indexes = [models.Index(fields=["tenant", "branch", "is_active"])]

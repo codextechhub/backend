@@ -215,19 +215,32 @@ class LevelSerializer(_ScopedSerializer):
     subject_count = serializers.SerializerMethodField()
     program_name = serializers.CharField(source="program.name", read_only=True)
     # By name as well as id, so a screen renders "JSS1 promotes to JSS2" from
-    # one response. Null is terminal OR not-yet-wired; see Level.next_level.
+    # one response rather than a lookup per row.
     next_level_name = serializers.CharField(
         source="next_level.name", read_only=True, default=None,
     )
+    promotion = serializers.SerializerMethodField()
 
     class Meta:
         model = Level
         fields = [
             "id", "name", "code", "description", "order_index", "is_active",
             "program", "program_name", "next_level", "next_level_name",
+            "is_terminal", "promotion",
             "branch", "branch_name", "scope_label",
             "class_count", "subject_count",
         ]
+
+    def get_promotion(self, obj) -> str:
+        """The three states as one word, so no caller has to derive them.
+
+        A screen that reads `next_level` and `is_terminal` separately is a
+        screen that can get the combination wrong; this is the same answer
+        computed once, on the side that owns the rule.
+        """
+        if obj.next_level_id:
+            return "promotes"
+        return "terminal" if obj.is_terminal else "unset"
 
     def get_class_count(self, obj) -> int:
         return getattr(obj, "class_count_annotated", 0)
@@ -246,14 +259,48 @@ class LevelWriteSerializer(serializers.ModelSerializer):
         model = Level
         fields = [
             "id", "name", "code", "description", "order_index", "branch",
-            "next_level", "is_active",
+            "next_level", "is_terminal", "is_active",
         ]
         extra_kwargs = {
             "code": {"required": False, "allow_blank": True},
             "order_index": {"required": False},
             "branch": {"required": False, "allow_null": True},
             "next_level": {"required": False, "allow_null": True},
+            "is_terminal": {"required": False},
         }
+
+    def validate(self, attrs):
+        """Keep the promotion answer to one answer.
+
+        A level that promotes into JSS2 and also says pupils leave is two
+        answers to one question, and the check constraint refuses the row -
+        but a database error is not a sentence anybody can act on. Sending
+        both contradicting is refused in words; sending one adjusts the other,
+        because a caller naming a target has plainly stopped being terminal.
+        """
+        target = attrs.get(
+            "next_level",
+            self.instance.next_level if self.instance else None,
+        )
+        terminal = attrs.get(
+            "is_terminal",
+            self.instance.is_terminal if self.instance else False,
+        )
+        if target is not None and terminal:
+            both_named = "next_level" in attrs and "is_terminal" in attrs
+            if both_named:
+                raise serializers.ValidationError({
+                    "is_terminal": (
+                        "A level either promotes into another level or ends "
+                        "the school for its pupils. Pick one."
+                    ),
+                })
+            # Only one was named, so the other follows it.
+            if "next_level" in attrs:
+                attrs["is_terminal"] = False
+            else:
+                attrs["next_level"] = None
+        return attrs
 
 
 class ProgramSerializer(_ScopedSerializer):

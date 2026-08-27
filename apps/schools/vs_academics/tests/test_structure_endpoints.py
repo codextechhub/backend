@@ -597,3 +597,104 @@ class ArchivedRowsAreReachableTests(_Base):
 
         self.post(self.admin, "academics-level-restore", {}, pk=self.level.pk)
         self.assertEqual(self.names()["Junior Secondary"], ["JSS1"])
+
+
+class ALevelSaysWhetherItEndsTests(_Base):
+    """The three promotion states, and why two of them used to be one.
+
+    `next_level` alone has two states and the school needs three. A level with
+    no target is either the end of the road or a level nobody has wired yet,
+    and reading the second as the first is what graduates a year group by
+    accident - so `is_terminal` separates them and this pins all three.
+    """
+
+    def setUp(self):
+        self.prog = self.program()
+        self.jss1, self.jss2 = (
+            Level.all_objects.create(
+                tenant=self.tenant, session=self.year, program=self.prog,
+                name=name, code=name, order_index=i,
+            )
+            for i, name in enumerate(("JSS1", "JSS2"), start=1)
+        )
+
+    def patch(self, level, body):
+        url = reverse("academics-level-detail", kwargs={"pk": level.pk})
+        return self.client_for(self.admin).patch(
+            f"{url}?tenant={self.tenant.slug}", body, format="json",
+        )
+
+    def state(self, level):
+        response = self.get(
+            self.admin, "academics-level-detail", pk=level.pk,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data["data"]["promotion"]
+
+    def test_a_new_level_is_unset_not_terminal(self):
+        """The distinction the whole field exists for."""
+        self.assertEqual(self.state(self.jss1), "unset")
+        self.assertFalse(self.jss1.is_terminal)
+
+    def test_naming_a_target_reads_as_promotes(self):
+        response = self.patch(self.jss1, {"next_level": self.jss2.pk})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["promotion"], "promotes")
+        self.assertEqual(response.data["data"]["next_level_name"], "JSS2")
+
+    def test_marking_it_terminal_reads_as_terminal(self):
+        response = self.patch(self.jss2, {"is_terminal": True})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["promotion"], "terminal")
+        self.assertIsNone(response.data["data"]["next_level"])
+
+    def test_naming_a_target_stops_it_being_terminal(self):
+        """One named, so the other follows rather than being refused."""
+        self.patch(self.jss1, {"is_terminal": True})
+        response = self.patch(self.jss1, {"next_level": self.jss2.pk})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.jss1.refresh_from_db()
+        self.assertFalse(self.jss1.is_terminal)
+        self.assertEqual(self.jss1.next_level_id, self.jss2.pk)
+
+    def test_marking_it_terminal_clears_the_target(self):
+        self.patch(self.jss1, {"next_level": self.jss2.pk})
+        response = self.patch(self.jss1, {"is_terminal": True})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.jss1.refresh_from_db()
+        self.assertTrue(self.jss1.is_terminal)
+        self.assertIsNone(self.jss1.next_level_id)
+
+    def test_naming_both_at_once_is_refused_in_words(self):
+        """Sent together they contradict, and the row would fail a constraint.
+
+        A database error is not a sentence anybody can act on, so this is
+        refused before it gets there.
+        """
+        response = self.patch(
+            self.jss1, {"next_level": self.jss2.pk, "is_terminal": True},
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.jss1.refresh_from_db()
+        self.assertIsNone(self.jss1.next_level_id)
+        self.assertFalse(self.jss1.is_terminal)
+
+    def test_the_database_refuses_the_pair_too(self):
+        """The service refusal is the path; the constraint is the guarantee."""
+        from django.db import IntegrityError, transaction
+
+        self.jss1.next_level = self.jss2
+        self.jss1.is_terminal = True
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            self.jss1.save()
+
+    def test_the_programme_list_carries_the_state_for_every_level(self):
+        """The screen reads it here: one call for a whole chain."""
+        self.patch(self.jss1, {"next_level": self.jss2.pk})
+        self.patch(self.jss2, {"is_terminal": True})
+        response = self.get(self.admin, "academics-program-list")
+        levels = response.data["data"][0]["levels"]
+        self.assertEqual(
+            [(lvl["name"], lvl["promotion"]) for lvl in levels],
+            [("JSS1", "promotes"), ("JSS2", "terminal")],
+        )
