@@ -21,6 +21,13 @@ from core.views import MediaView
 
 urlpatterns = [
     path("v1/i/", include("schools.vs_schools.urls")),
+    # Mounted BEFORE "v1/academics/": Django tries patterns in list order,
+    # so the shorter prefix would match "v1/academics/timetable/rooms/",
+    # fail to resolve the remainder inside vs_academics, and answer 404
+    # rather than falling through. tests/test_urls.py asserts all three.
+    path("v1/academics/timetable/", include("schools.vs_calendar.urls_timetable")),
+    path("v1/academics/calendar/", include("schools.vs_calendar.urls_calendar")),
+    path("v1/academics/exams/", include("schools.vs_calendar.urls_exams")),
     path("v1/academics/", include("schools.vs_academics.urls")),
     path("v1/onboarding/", include("schools.vs_onboarding.urls")),
     path("v1/admin/", include("vs_admin_console.urls")),

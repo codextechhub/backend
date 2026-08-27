@@ -81,13 +81,17 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         The 48 was the 46 the catalogue shipped with plus
         school.profile.{view,update}. The eight added at M13 are two new
         resources on the academics module, four verbs each: ``structure`` for
-        departments, programs and levels, and ``subject``. They are agreed to
-        here rather than merely observed.
+        departments, programs and levels, and ``subject``. M14 adds five more:
+        one resource, ``timetable``, carrying view, create, update, manage and
+        publish - a resource of its own rather than four more uses of the
+        calendar keys, because adding a public holiday and rebuilding the
+        school's entire timetable are not one act. They are agreed to here
+        rather than merely observed.
         """
         _run_school_seed()
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            57,
+            62,
         )
 
     def test_impersonation_keys_are_critical_and_restricted(self):
@@ -146,9 +150,13 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
             .values_list("permission_id", flat=True)
         )
 
-    def test_school_admin_gets_all_56(self):
-        """A school admin holds every key in both modules, M13's eight included."""
-        self.assertEqual(len(self._defaults("school_admin")), 57)
+    def test_school_admin_gets_all_keys(self):
+        """A school admin holds every key in both modules.
+
+        62 = 57, plus M14's five: academics.timetable view, create, update,
+        manage and publish.
+        """
+        self.assertEqual(len(self._defaults("school_admin")), 62)
 
     def test_only_school_admin_gets_impersonation_by_default(self):
         # The most powerful school keys must never be a branch_admin/teacher
@@ -172,7 +180,16 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         self.assertFalse(overrides & self._defaults("teacher"))
 
     def test_branch_admin_default_count(self):
-        """27 = 23, plus four of M13's eight.
+        """31 = 27, plus four of M14's five.
+
+        A branch admin builds and publishes their own branch's grid -
+        academics.timetable.view, .create, .update and .publish - so that it
+        does not wait on the head office. Only .manage is withheld, which
+        deletes a room, a period, a slot or a whole grid, and matches
+        academics.calendar.manage exactly: a branch adds and edits its own
+        entries, and removing them is the school's call.
+
+        The 27 below was 23, plus four of M13's eight.
 
         The 23 was 22 plus reading the school profile: a branch admin reads it
         because the currency and term structure on it govern screens they work
@@ -187,14 +204,24 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         .manage stay with the school admin, and so does subject.manage, which
         deletes.
         """
-        self.assertEqual(len(self._defaults("branch_admin")), 27)
+        branch_admin = self._defaults("branch_admin")
+        self.assertEqual(len(branch_admin), 31)
+        self.assertIn("academics.timetable.publish", branch_admin)
+        self.assertNotIn("academics.timetable.manage", branch_admin)
         self.assertIn("academics.subject.create", self._defaults("branch_admin"))
         self.assertNotIn("academics.structure.create", self._defaults("branch_admin"))
         self.assertIn("school.profile.view", self._defaults("branch_admin"))
         self.assertNotIn("school.profile.update", self._defaults("branch_admin"))
 
     def test_teacher_default_count(self):
-        """9 = 7, plus the two read keys M13 gives a teacher.
+        """10 = 9, plus the one read key M14 gives a teacher.
+
+        A teacher holds academics.timetable.view because reading their own
+        timetable is the single most useful thing this platform will ever do
+        for them. They write none of it: a slot is changed on the class grid by
+        somebody who holds .update.
+
+        The 9 below was 7, plus the two read keys M13 gives a teacher.
 
         A teacher reads the structure and the subjects and writes neither.
         Note that academics.classes.update was already a teacher default before
@@ -202,7 +229,9 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         this module took.
         """
         keys = self._defaults("teacher")
-        self.assertEqual(len(keys), 9)
+        self.assertEqual(len(keys), 10)
+        self.assertIn("academics.timetable.view", keys)
+        self.assertNotIn("academics.timetable.update", keys)
         self.assertIn("academics.structure.view", keys)
         self.assertIn("academics.subject.view", keys)
         self.assertNotIn("academics.structure.create", keys)
@@ -248,8 +277,8 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        # school_admin defaults are all 57 keys.
-        self.assertEqual(len(keys), 57)
+        # school_admin defaults are all 62 keys.
+        self.assertEqual(len(keys), 62)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
         self.assertIn("school.roles.approve", keys)
@@ -301,7 +330,7 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=teacher_role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        self.assertEqual(len(keys), 9)
+        self.assertEqual(len(keys), 10)
         self.assertIn("school.students.view", keys)
         self.assertNotIn("school.students.create", keys)
 

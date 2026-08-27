@@ -124,6 +124,9 @@ INSTALLED_APPS = [
     # apps/schools/; the app label stays "vs_schools" (see its AppConfig).
     "schools.vs_schools",
     "schools.vs_academics",
+    # After vs_academics: this app points at its session, class and subject,
+    # which is the order the dependency runs in.
+    "schools.vs_calendar",
     # M9. School-specific by construction, so it sits beside vs_schools under
     # apps/schools/ and never beside the domain-neutral engines.
     "schools.vs_onboarding",

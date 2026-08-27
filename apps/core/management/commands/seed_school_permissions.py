@@ -148,6 +148,19 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("academics", "structure", "update",       _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
     ("academics", "structure", "manage",       _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
+    # M14. A resource of its own rather than four more uses of the calendar
+    # keys: adding a public holiday and rebuilding the school's entire timetable
+    # are not one act. Merging them would also hand academics.calendar.manage,
+    # which is SENSITIVE and school_admin-only, the power to delete a grid.
+    ("academics", "timetable", "view",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
+    ("academics", "timetable", "create",       _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("academics", "timetable", "update",       _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("academics", "timetable", "manage",       _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    # branch_admin holds publish so a branch's grid does not wait on the head
+    # office. A school wanting exam publication reserved to head office
+    # withholds it in a role template of its own, which is configuration.
+    ("academics", "timetable", "publish",      _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+
     ("academics", "subject", "view",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
     ("academics", "subject", "create",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("academics", "subject", "update",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
@@ -156,7 +169,7 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
 
 MODULES: dict[str, str] = {
     "school": "School administration - branches, people, fees, settings, roles.",
-    "academics": "Academic operations - sessions, calendar, classes, structure, subjects.",
+    "academics": "Academic operations - sessions, calendar, timetables, classes, structure, subjects.",
 }
 
 # Short descriptions per resource (for PermissionResource rows).
@@ -177,6 +190,7 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("academics", "classes"):     "Classes",
     ("academics", "structure"):   "Academic structure - departments, programs and levels",
     ("academics", "subject"):     "Subjects and the levels they are offered at",
+    ("academics", "timetable"):   "Rooms, the bell schedule, class timetables and exams",
 }
 
 

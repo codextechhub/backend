@@ -180,6 +180,10 @@ class AuditActionType(models.TextChoices):
     ACADEMIC_CLASS_ARCHIVED = "ACADEMIC_CLASS_ARCHIVED", "Academic Class Archived"
     ACADEMIC_CLASS_RESTORED = "ACADEMIC_CLASS_RESTORED", "Academic Class Restored"
     ACADEMIC_STRUCTURE_BULK_CREATED = "ACADEMIC_STRUCTURE_BULK_CREATED", "Academic Structure Bulk Created"
+    # M14. Publication is a lifecycle event no generic verb expresses, and
+    # it is the one a school will actually look up afterwards: "when did
+    # JSS1 A's timetable go out, and who sent it?"
+    ACADEMIC_TIMETABLE_PUBLISHED = "ACADEMIC_TIMETABLE_PUBLISHED", "Academic Timetable Published"
 
     # Platform operations. Registered before anything emits it, because the
     # vocabulary is closed and validated on save and emit_audit_event swallows

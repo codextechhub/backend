@@ -273,6 +273,19 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
         ),
     ),
     (
+        "Timetables & Rooms",
+        BRANCH_SCOPABLE,
+        "Build the bell schedule, class timetables and exam schedules, and keep "
+        "the school's rooms. A branch keeps its own periods and rooms.",
+        (
+            "academics.timetable.view",
+            "academics.timetable.create",
+            "academics.timetable.update",
+            "academics.timetable.manage",
+            "academics.timetable.publish",
+        ),
+    ),
+    (
         "Support Tickets",
         BRANCH_SCOPABLE,
         "Read, answer and manage support tickets raised from the school.",
