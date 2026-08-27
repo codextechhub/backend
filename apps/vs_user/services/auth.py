@@ -167,7 +167,9 @@ class LoginService:
             'session_id':  session.id,
             'user':        UserReadSerializer(authed).data,
             'tenant':      tenant_context_block(authed.tenant),
-            'school':      school_public_info(getattr(authed.tenant, 'school_profile', None), request),
+            'school':      school_public_info(
+                getattr(authed.tenant, 'school_profile', None), request, user=authed,
+            ),
             'permissions': permissions,
         }
 

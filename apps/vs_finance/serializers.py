@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from core.media import signed_url
 from vs_rbac.fls import FieldSecurityMixin
 
 from .models import (
@@ -944,8 +945,7 @@ class ExpenseClaimLineSerializer(serializers.ModelSerializer):
         if not obj.receipt:
             return None
         request = self.context.get("request")
-        url = obj.receipt.url
-        return request.build_absolute_uri(url) if request else url
+        return signed_url(obj.receipt.name, absolute_for=request) or None
 
 
 class ExpenseClaimSerializer(serializers.ModelSerializer):

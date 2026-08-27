@@ -10,15 +10,17 @@ document status: a supplier's formal invoice often follows the booked charge, an
 receipt *always* follows the payment, so gating uploads on DRAFT would reject exactly
 the documents worth keeping.
 
-Files are stored through ``core.storage.DatabaseStorage``, which gives each one a
-high-entropy name; the resulting ``/media/<name>`` URL is a capability URL handed only
-to callers already allowed to read the owning document (see that module's access note).
+Files are stored through ``core.storage.DatabaseStorage`` and served through
+``core.media``, which binds each one to its tenant and its owning document and
+re-asks the permission question on every read. The URL handed out here is signed
+for the caller and short-lived, so it stops working when they walk away from it.
 """
 from __future__ import annotations
 
 from django.db import transaction
 from rest_framework.exceptions import NotFound, ValidationError
 
+from core.media import signed_url
 from core.uploads import validate_upload
 
 from .models import VendorInvoiceAttachment, VendorPaymentAttachment
@@ -36,7 +38,7 @@ def _serialize(row) -> dict:
         "content_type": row.content_type,
         "size": row.size,
         "caption": row.caption,
-        "url": row.file.url,
+        "url": signed_url(row.file.name),
         "uploaded_by_name": _uploader_name(row.uploaded_by),
         "uploaded_at": row.created_at,
     }

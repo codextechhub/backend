@@ -222,7 +222,7 @@ def preview(raw_token: str) -> dict:
     quotation = _quotation(invitation)
     return {
         "issuer_name": issuer["name"],
-        "logo_url": f"/v1/procurement/public/rfqs/{raw_token}/logo/" if issuer.get("logo") else "",
+        "logo_url": f"/v1/procurement/public/rfqs/{raw_token}/logo/" if issuer.get("logo_name") else "",
         "vendor_name": invitation.vendor.name,
         "rfq_number": invitation.rfq.document_number,
         "deadline": invitation.deadline,
@@ -362,7 +362,7 @@ def form_payload(invitation: RfqInvitation) -> dict:
     return {
         "issuer": {
             **{key: issuer.get(key, "") for key in ("name", "tag", "address", "email", "phone", "website")},
-            "logo_url": f"/v1/procurement/public/rfqs/{make_invitation_token(invitation)}/logo/" if issuer.get("logo") else "",
+            "logo_url": f"/v1/procurement/public/rfqs/{make_invitation_token(invitation)}/logo/" if issuer.get("logo_name") else "",
         },
         "vendor": {"name": invitation.vendor.name, "code": invitation.vendor.code},
         "rfq": {

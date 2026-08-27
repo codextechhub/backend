@@ -9,6 +9,11 @@ class VsUserConfig(AppConfig):
         import vs_user.workflow_handlers  # noqa: F401 - registers PLATFORM_USER_CREATION handler
         import vs_user.receivers  # noqa: F401 - invitation email delivery tracking
 
+        # Declare who may read staff photos through /media/.
+        from .media_policies import register as register_media_policies
+
+        register_media_policies()
+
         # Publish this app's datasets to the Export Centre. Registration lives
         # here, not in vs_exports, so the engine never imports a domain app.
         from .export_datasets import register_datasets

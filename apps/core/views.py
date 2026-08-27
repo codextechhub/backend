@@ -1,9 +1,15 @@
 """
 Authenticated media serving for the database-backed storage (B9).
 
-GET /media/<name> streams the StoredFile row with its stored content type.
-Authentication is required - staff photos and import sheets are not public
-assets. Image responses are cacheable client-side; spreadsheets are not.
+``GET /media/<name>?t=<signature>`` streams one ``StoredFile``, and only to a
+caller who clears all four gates: a live session, a signature issued to *them*
+and not yet expired, the tenant the file belongs to, and the owning record's own
+read policy. :mod:`core.media` explains what each gate catches and why none of
+them is sufficient alone.
+
+Every refusal is a 404, including the ones that are really "not yours". A 403
+would confirm that a name exists, which is exactly the fact a stale or forwarded
+link is fishing for.
 """
 from __future__ import annotations
 
@@ -13,6 +19,7 @@ from rest_framework.views import APIView
 from core.response import error_response
 from vs_rbac.permissions import IsAuthenticatedAndActive
 
+from . import media
 from .models import StoredFile
 
 
@@ -25,14 +32,16 @@ class MediaView(APIView):
     # back to the bundled default, and the upload would look broken.
     #
     # This grants a pending tenant no reach it would not have the moment it went
-    # live: the view is already open to every authenticated user and scopes
-    # nothing by tenant, relying instead on the high-entropy suffix that
-    # DatabaseStorage gives every stored name.
+    # live: what it may read is decided by the file's own tenant and its owning
+    # record's policy, both of which are the same before and after go-live.
     pending_tenant_surface = True
 
     def get(self, request, name: str):
-        row = StoredFile.objects.filter(name=name).first()
-        if row is None:
+        # Decide before loading the bytes. ``content`` can be tens of megabytes,
+        # and a refused request has no business pulling one out of the database
+        # to throw it away - which is also what a scan of stale links would do.
+        row = StoredFile.objects.defer("content").filter(name=name).first()
+        if row is None or not media.authorize(request, row):
             return error_response(message="File not found.", status=404)
         response = HttpResponse(
             bytes(row.content),

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from django.template.loader import render_to_string
 
+from core.media import signed_url
+
 from .money import format_naira, naira_in_words
 
 
@@ -68,6 +70,11 @@ def _issuer_block(entity, *, branch=None) -> dict:
     branch_email = getattr(branch, "email", "") if branch is not None else ""  # Optional branch contact email.
     branch_address = getattr(branch, "address", "") if branch is not None else ""  # Optional branch address.
     logo = ""  # Default: no logo unless a source provides one.
+    # The storage name behind that logo, when it is one of ours. Callers that
+    # need the bytes rather than a browser URL (the public RFQ page serves the
+    # logo itself, to a vendor who has no account) take this instead of picking
+    # the name back out of the URL string.
+    logo_name = ""
     email = branch_email  # Default issuer email is the branch email (overridden below).
     phone = ""  # Default: no phone unless a source provides one.
 
@@ -75,9 +82,14 @@ def _issuer_block(entity, *, branch=None) -> dict:
         branding = getattr(school, "branding", None)  # Branding is the logo/theme relation, may be absent.
         if branding is not None and getattr(branding, "logo", None):  # Only when a logo is actually set.
             try:  # Storage backends can fail to build a URL.
-                logo = branding.logo.url  # Use the school logo URL.
+                # Signed for whoever is reading the document: the browser fetches
+                # this <img src> with their own session, so an unsigned path would
+                # simply render broken.
+                logo_name = branding.logo.name  # The storage name behind it.
+                logo = signed_url(logo_name)  # Use the school logo URL.
             except Exception:  # pragma: no cover - storage without a URL
                 logo = ""  # Fall back to no logo on URL failure.
+                logo_name = ""
         name = school.name  # Issuer name is the school name.
         tag = getattr(school, "motto", "") or ""  # Tagline is the school motto if present.
         address = branch_address or getattr(school, "address", "") or ""  # Branch address wins, else school address.
@@ -111,7 +123,8 @@ def _issuer_block(entity, *, branch=None) -> dict:
     return {  # Flat issuer structure consumed by the document templates.
         "name": name,  # Issuer display name.
         "tag": tag,  # Motto/tagline.
-        "logo": logo,  # Logo URL.
+        "logo": logo,  # Logo URL, signed for the current reader (may be blank).
+        "logo_name": logo_name,  # Storage name, for callers that serve the bytes.
         "address": address,  # Mailing address.
         "email": email,  # Contact email.
         "phone": phone,  # Contact phone.

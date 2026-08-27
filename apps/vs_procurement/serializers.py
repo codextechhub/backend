@@ -14,6 +14,7 @@ from __future__ import annotations
 from rest_framework import serializers
 from django.utils import timezone
 
+from core.media import signed_url
 from vs_finance.constants import DocumentStatus
 from vs_finance.money import format_naira
 from vs_rbac.fls import FieldSecurityMixin
@@ -918,7 +919,8 @@ class QuotationDetailSerializer(serializers.ModelSerializer):
     def get_attachments(self, obj):
         return [
             {"id": row.id, "name": row.original_name, "content_type": row.content_type,
-             "size": row.size, "revision": row.revision, "url": row.file.url}
+             "size": row.size, "revision": row.revision,
+             "url": signed_url(row.file.name)}
             for row in obj.attachments.all()
         ]
 

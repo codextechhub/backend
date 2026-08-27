@@ -13148,7 +13148,15 @@ class VendorDocumentAttachmentTests(_P2PFixtureMixin, TestCase):
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_stored_name_is_not_guessable_from_the_uploaded_name(self, _permission):
-        """The /media/ URL is the capability; a predictable path would leak the file."""
+        """A predictable path would be one more thing to get right; it is not the gate.
+
+        Authorisation is `core.media.authorize` - the file's tenant, its owning
+        document's permission, and a signature issued to this caller. The entropy
+        in the name is defence in depth behind that, and the extension survives so
+        a browser still knows what it is being handed.
+        """
+        from urllib.parse import urlparse
+
         entity, _, vendor, _, _ = self.build_p2p()
         invoice = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
 
@@ -13158,8 +13166,12 @@ class VendorDocumentAttachmentTests(_P2PFixtureMixin, TestCase):
         )
 
         url = response.data["data"]["url"]
-        self.assertNotIn("/bill.pdf", url)
-        self.assertTrue(url.endswith(".pdf"))
+        parts = urlparse(url)
+        self.assertNotIn("/bill.pdf", parts.path)
+        self.assertTrue(parts.path.endswith(".pdf"))
+        # The URL is signed and tenant-asserted, not a bare path anyone can replay.
+        self.assertIn("t=", parts.query)
+        self.assertIn("tenant=", parts.query)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_attachment_cap_is_enforced(self, _permission):

@@ -21,6 +21,12 @@ class VsFinanceConfig(AppConfig):
         # created. Finance registers its own provisioner through the same seam
         # procurement and payments use, rather than calling itself from the
         # serializer, so all three arrive by one mechanism.
+        # Declare who may read finance files through /media/. Registered here,
+        # through the same one-way seam as the export datasets, so core never
+        # imports finance to answer it.
+        from .media_policies import register as register_media_policies
+
+        register_media_policies()
         from .provisioning import register_entity_provisioner
         from .provisioning_hooks import provision_adjustment_approvals
 

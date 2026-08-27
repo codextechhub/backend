@@ -16,6 +16,7 @@ from rest_framework_simplejwt.serializers import (
     TokenRefreshSerializer as JWTTokenRefreshSerializer,
 )
 
+from core.media import signed_url
 from vs_rbac.models import TenantRoleTemplate
 from vs_rbac.fls import FieldSecurityMixin
 from vs_tenants.references import resolve_branch_reference
@@ -38,12 +39,19 @@ from .models import (
 )
 
 
-def school_public_info(school, request=None) -> dict | None:
+def school_public_info(school, request=None, *, user=None) -> dict | None:
     """Return a school's public branding identity for auth payloads.
 
     Shape: ``{"id", "name", "slug", "logo"}`` where ``logo`` is an absolute URL
     (built from ``request`` when available) or ``None``. Returns ``None`` when
     there is no school (e.g. a platform user, or a user without a school FK).
+
+    ``user`` has to be passed explicitly at login, and only at login. The logo
+    URL is signed for whoever will fetch it, and the login response is the one
+    place that person is not on the request yet - the credentials have just been
+    checked, so the identity exists, but authentication has not run on this
+    request and never will. Without it the brand comes back null on exactly the
+    screen it exists for: the first one the school sees after signing in.
 
     Null-safe at every level: a missing ``branding`` row, a missing logo upload,
     or an unreadable file URL all resolve to ``logo: None`` rather than raising.
@@ -56,11 +64,10 @@ def school_public_info(school, request=None) -> dict | None:
     logo = getattr(branding, "logo", None) if branding is not None else None
     if logo:
         try:
-            url = logo.url
+            url = signed_url(logo.name, user=user, absolute_for=request)
         except Exception:
             url = None
-        if url:
-            logo_url = request.build_absolute_uri(url) if request is not None else url
+        logo_url = url or None
 
     return {
         "id": school.id,

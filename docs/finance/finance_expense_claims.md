@@ -141,14 +141,14 @@ A receipt PDF attaches to the line via `lines/<id>/receipt/` (multipart `file`).
   left, so the reimbursement must be reversed first (guarded).
 - **Free-text claimant** - `claimant` FK is optional; `claimant_name` is unvalidated,
   so reporting "by employee" needs the FK to be set.
-- **Receipt files use capability URLs.** The media endpoint (`/media/<name>`,
-  `core.views.MediaView`) authenticates the caller but can't authorise per file - so
-  every stored file's name now carries a high-entropy token
-  (`core.storage.DatabaseStorage.get_available_name`), making receipt URLs
-  unguessable and only handed to callers already allowed to see the claim. Note this
-  is capability-based, not object-level auth - a *leaked* URL is still fetchable by
-  any authenticated user. (Files uploaded before this change keep their old,
-  guessable names.)
+- **Receipt reads are authorised per file.** `/media/<name>` binds each receipt to
+  its tenant and to its `ExpenseClaimLine`, and re-asks the question on every read:
+  the claimant may reopen her own receipt, and everybody else needs
+  `finance.expenseclaim.view` scoped to the claim's branch - the same verb the
+  claim's own detail endpoint demands. The URL is signed for one user and expires,
+  so a leaked link is dead both for whoever receives it and, shortly, for everyone.
+  Receipts uploaded before this change are bound to their claim by
+  `core` migration `0006`, so existing evidence keeps working.
 
 ## 9. Permissions & tenant isolation
 

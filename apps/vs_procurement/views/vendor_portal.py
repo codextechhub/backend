@@ -41,15 +41,25 @@ class PublicRfqPreviewView(_PublicRfqView):
 
 
 class PublicRfqLogoView(_PublicRfqView):
+    """Serve the buying school's crest to a vendor who has no account.
+
+    The vendor is authorised by holding a valid invitation token, and the file
+    is chosen by the invitation rather than named by the caller - so there is no
+    file reference here for anyone to tamper with or replay elsewhere. That is
+    why this route can be public while ``/media/`` cannot.
+
+    It takes the storage name straight from the issuer block. It used to slice
+    it back out of the logo's URL, which quietly assumed that URL would stay a
+    bare path for ever; it is signed and user-bound now, and there is no user.
+    """
+
     def get(self, request, token):
         invitation = vendor_portal.invitation_from_token(token)
         issuer = vendor_portal._issuer_block(invitation.rfq.entity)
-        raw_url = str(issuer.get("logo") or "")
-        marker = "/media/"
-        if marker not in raw_url:
+        name = str(issuer.get("logo_name") or "")
+        if not name:
             raise NotFound("Brand logo not found.")
-        name = raw_url.split(marker, 1)[1]
-        row = StoredFile.objects.filter(name=name).first()
+        row = StoredFile.objects.filter(name=name, revoked_at__isnull=True).first()
         if row is None:
             raise NotFound("Brand logo not found.")
         response = HttpResponse(bytes(row.content), content_type=row.content_type or "image/png")

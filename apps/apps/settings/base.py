@@ -389,6 +389,15 @@ STORAGES = {
 }
 # Upload ceiling for the DB-backed storage (bytes).
 MEDIA_DB_MAX_BYTES = config("MEDIA_DB_MAX_BYTES", default=25 * 1024 * 1024, cast=int)
+# The expiry window for a signed /media/ URL. Expiries are rounded to this
+# window so the same file keeps the same URL while it is open (which is what
+# lets the browser cache it), and a URL therefore lives between one and two
+# windows - 15 to 30 minutes by default. Every URL is minted for one user, so
+# this bounds how long a link that has escaped into an email or a chat thread
+# keeps working; it has nothing to do with how long a session lasts.
+MEDIA_SIGNED_URL_TTL_SECONDS = config(
+    "MEDIA_SIGNED_URL_TTL_SECONDS", default=900, cast=int,
+)
 
 STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 

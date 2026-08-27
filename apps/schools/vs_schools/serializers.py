@@ -24,6 +24,7 @@ from .models import (
     PackagePlan,
     slug_is_reserved,
 )
+from core.media import signed_url
 from vs_tenants.exceptions import BranchAlreadyInState, TenantSlugFrozen
 from vs_tenants.models import Branch, BranchLifecycle, BranchStatus, Tenant
 from vs_audit.models import AuditModuleKey, AuditActionType, AuditSeverity
@@ -1830,8 +1831,7 @@ class SchoolProfileSerializer(serializers.ModelSerializer):
         if not logo:
             return ""
         request = self.context.get("request")
-        url = logo.url
-        return request.build_absolute_uri(url) if request else url
+        return signed_url(logo.name, absolute_for=request)
 
     def get_missing_required(self, obj) -> List[Dict[str, str]]:
         return [

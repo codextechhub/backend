@@ -16,6 +16,12 @@ class VsSchoolsConfig(AppConfig):
     def ready(self):
         from . import signals  # noqa: F401
 
+        # Declare who may read the school logo through /media/. Registered
+        # here so core, an engine, never imports a school app.
+        from .media_policies import register as register_media_policies
+
+        register_media_policies()
+
         # Publish this app's datasets to the Export Centre, and bind its list
         # screen so "Export what this table is showing" can translate its
         # filters. Registration lives here, not in vs_exports, so the engine

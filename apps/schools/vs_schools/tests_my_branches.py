@@ -164,8 +164,8 @@ class PendingSchoolBranchesTests(TestCase):
         cls.school = make_school(
             slug="brightfield", name="Brightfield Schools", status="PENDING",
         )
-        cls.lekki = make_branch(cls.school, name="Lekki Campus", is_main=True)
-        cls.ikeja = make_branch(cls.school, name="Ikeja Campus", is_main=False)
+        cls.lekki = make_branch(cls.school, name="Lekki Branch", is_main=True)
+        cls.ikeja = make_branch(cls.school, name="Ikeja Branch", is_main=False)
         cls.tenant = cls.school.tenant
 
         view = make_permission("school.branches.view", scope=PermissionScope.TENANT)
@@ -194,7 +194,7 @@ class PendingSchoolBranchesTests(TestCase):
         )
         self.assertEqual(response.status_code, 200, response.data)
         names = {row["name"] for row in response.data["data"]}
-        self.assertEqual(names, {"Lekki Campus", "Ikeja Campus"})
+        self.assertEqual(names, {"Lekki Branch", "Ikeja Branch"})
 
     def test_removing_the_declaration_refuses_with_tenant_not_live(self):
         """What proves the attribute is doing the work.
@@ -254,8 +254,8 @@ class BranchClassCountTests(TestCase):
     def setUpTestData(cls):
         cls.school = make_school(slug="brightfield", name="Brightfield Schools")
         cls.tenant = cls.school.tenant
-        cls.lekki = make_branch(cls.school, name="Lekki Campus", is_main=True)
-        cls.ikeja = make_branch(cls.school, name="Ikeja Campus", is_main=False)
+        cls.lekki = make_branch(cls.school, name="Lekki Branch", is_main=True)
+        cls.ikeja = make_branch(cls.school, name="Ikeja Branch", is_main=False)
 
         view = make_permission("school.branches.view", scope=PermissionScope.TENANT)
         role = make_role(cls.school, name="School Admin", key="school_admin")
@@ -266,22 +266,36 @@ class BranchClassCountTests(TestCase):
         make_assignment(cls.school, cls.admin, role, branch=None)
 
     def setUp(self):
-        from schools.vs_academics.models import Level, Program
+        import datetime
 
+        from schools.vs_academics.models import (
+            AcademicSession, Level, Program, SessionStatus,
+        )
+
+        # The academic structure belongs to a year now, so a level cannot exist
+        # without one. A class carries its own copy of the same session rather
+        # than joining through its level, and the two are held in step on every
+        # write - so both are given the session built here.
+        self.session = AcademicSession.all_objects.create(
+            tenant=self.tenant, name="2026/2027",
+            start_date=datetime.date(2026, 9, 1),
+            end_date=datetime.date(2027, 7, 31),
+            status=SessionStatus.ACTIVE,
+        )
         self.program = Program.all_objects.create(
             tenant=self.tenant, name="Junior Secondary", code="JSS",
         )
         self.level = Level.all_objects.create(
-            tenant=self.tenant, program=self.program, name="JSS1",
-            code="JSS1", order_index=1,
+            tenant=self.tenant, program=self.program, session=self.session,
+            name="JSS1", code="JSS1", order_index=1,
         )
 
     def klass(self, name, code, branch=None, active=True):
         from schools.vs_academics.models import SchoolClass
 
         return SchoolClass.all_objects.create(
-            tenant=self.tenant, level=self.level, name=name, code=code,
-            branch=branch, is_active=active,
+            tenant=self.tenant, level=self.level, session=self.session,
+            name=name, code=code, branch=branch, is_active=active,
         )
 
     def rows(self):
@@ -299,20 +313,20 @@ class BranchClassCountTests(TestCase):
         self.klass("JSS1 B", "JSS1-B", branch=self.lekki)
         self.klass("JSS1 C", "JSS1-C", branch=self.ikeja)
         rows = self.rows()
-        self.assertEqual(rows["Lekki Campus"]["classes_count"], 2)
-        self.assertEqual(rows["Ikeja Campus"]["classes_count"], 1)
+        self.assertEqual(rows["Lekki Branch"]["classes_count"], 2)
+        self.assertEqual(rows["Ikeja Branch"]["classes_count"], 1)
 
     def test_an_archived_class_is_not_counted(self):
         """Or the branch card disagrees with the class list beside it."""
         self.klass("JSS1 A", "JSS1-A", branch=self.lekki)
         self.klass("JSS1 B", "JSS1-B", branch=self.lekki, active=False)
-        self.assertEqual(self.rows()["Lekki Campus"]["classes_count"], 1)
+        self.assertEqual(self.rows()["Lekki Branch"]["classes_count"], 1)
 
     def test_a_branch_with_no_classes_reports_zero_not_null(self):
         """Zero and null are different claims, and zero is the true one here."""
         rows = self.rows()
-        self.assertEqual(rows["Lekki Campus"]["classes_count"], 0)
-        self.assertIsNotNone(rows["Lekki Campus"]["classes_count"])
+        self.assertEqual(rows["Lekki Branch"]["classes_count"], 0)
+        self.assertIsNotNone(rows["Lekki Branch"]["classes_count"])
 
     def test_a_school_wide_class_belongs_to_no_branchs_card(self):
         """A class the school holds as a whole is not one branch's to claim.
@@ -323,11 +337,11 @@ class BranchClassCountTests(TestCase):
         """
         self.klass("JSS1 A", "JSS1-A", branch=None)
         rows = self.rows()
-        self.assertEqual(rows["Lekki Campus"]["classes_count"], 0)
-        self.assertEqual(rows["Ikeja Campus"]["classes_count"], 0)
+        self.assertEqual(rows["Lekki Branch"]["classes_count"], 0)
+        self.assertEqual(rows["Ikeja Branch"]["classes_count"], 0)
 
     def test_the_other_two_counts_are_still_null(self):
         """M11 and M12 have not landed, so a number for either would be invented."""
-        row = self.rows()["Lekki Campus"]
+        row = self.rows()["Lekki Branch"]
         self.assertIsNone(row["students_count"])
         self.assertIsNone(row["teachers_count"])

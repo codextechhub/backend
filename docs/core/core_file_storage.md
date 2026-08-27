@@ -1,11 +1,13 @@
 # core_file_storage
 
 Where every uploaded byte on this platform lives, how it gets validated on the
-way in, and how it is served back. Four pieces: the `StoredFile` table,
+way in, and how it is served back. Six pieces: the `StoredFile` table,
 `DatabaseStorage` (wired as the default Django storage), `validate_upload` (the
-shared first line of validation), and `MediaView` (the authenticated read).
+shared first line of validation), `core.binding` (which ties bytes to the record
+they belong to), `core.media` (which decides who may read them), and `MediaView`
+(the authorised read).
 
-`MediaView` is mounted at `/media/<path:name>` (`apps/urls.py:45`).
+`MediaView` is mounted at `/media/<path:name>` (`apps/urls.py:47`).
 
 ---
 
@@ -16,30 +18,35 @@ shared first line of validation), and `MediaView` (the authenticated read).
   `FileField` and `ImageField` in the repo reads and writes `StoredFile` rows.
   The reasoning is in the model docstring: uploads survive ephemeral-disk
   redeploys, ride along with normal database backups, and need no object-storage
-  account (`core/models.py:1-9`).
+  account (`core/models.py`).
 - **It is scoped to small files on purpose.** The platform accepts spreadsheets,
   images and PDFs; the storage enforces an extension allowlist and a 25 MB
-  ceiling as defence in depth (`core/storage.py:36-43`).
-- **Access is a capability URL, and the module says so.** `MediaView`
-  authenticates the caller but **cannot authorise per file** - a `StoredFile` row
-  has no owner, no tenant and no entity. What stops a logged-in user reading
-  another tenant's file is that the file's *name* carries 64 bits of entropy and
-  is only ever handed to callers already allowed to see the owning record
-  (`core/storage.py:15-21`).
+  ceiling as defence in depth (`core/storage.py:38-45`).
+- **Access is authorised per file, on every read.** A `StoredFile` knows its
+  tenant, the record it is evidence for, and whether it is still current, and
+  `core.media.authorize` refuses unless all of that agrees with the caller
+  (`core/media.py`). The URL is signed for one user and expires.
+- **The entropy token is defence in depth now, not the access control.** It still
+  stops a guessable path like `expense-receipts/receipt.pdf` from being typed in
+  (`core/storage.py:133-146`). It never stopped a name that had been handed out
+  once from working for ever, for anyone - which is the hole the binding and the
+  signature close.
 - **`validate_upload` is the first line; the storage is the second.**
   `DatabaseStorage._save` raises Django's `ValidationError` from inside `_save`,
   which surfaces as an unhandled 500 rather than a 400 - so every upload
   endpoint needs its own validation, and this is the shared one
-  (`core/uploads.py:1-20`).
+  (`core/uploads.py`).
 - **The magic-byte check is defence in depth, not a live fix.** `MediaView`
   already sets `X-Content-Type-Options: nosniff` and forces
   `Content-Disposition: attachment` on everything that is not `image/*`, so an
   HTML payload renamed `.png` is served as a broken image rather than executed.
   The check buys not depending on those two headers staying correct forever
-  (`core/uploads.py:16-24`).
-- **Nothing here deletes anything.** Django has not deleted files on model delete
-  since 1.3, and no sweeper exists, so `StoredFile` rows outlive the records that
-  point at them (§8).
+  (`core/uploads.py`).
+- **A file is retired when its record is.** Deleting the owning row, or
+  replacing the upload on it, revokes the `StoredFile`: the URL closes and the
+  bytes are emptied, while the row survives so an audit can still see the file
+  existed (`core/binding.py`). Archiving is not deletion and fires no signal, so
+  a caller that retires a record by archiving calls `core.media.revoke` itself.
 
 ## 2. Domain model
 
@@ -47,15 +54,20 @@ shared first line of validation), and `MediaView` (the authenticated read).
 
 | Field | Notes |
 |---|---|
-| `name` | The storage path, **unique** - this is the address and the capability |
-| `content` | `BinaryField` - the bytes |
+| `name` | The storage path, **unique** - the address, no longer the credential |
+| `content` | `BinaryField` - the bytes; emptied on revoke |
 | `content_type` | What `MediaView` will serve it as |
 | `size` | Byte count, used for `Content-Length` |
 | `created_at` | Indexed |
+| `tenant` | Whose file it is. Stamped by `_save` from the request's tenant context. Null means it was written with no tenant in context, and such a row is never served through `/media/` |
+| `created_by` | Who was acting when the bytes were written |
+| `owner_content_type` / `owner_object_id` / `owner_field` | The record it is evidence for, and which of that record's file fields points here |
+| `revoked_at` | Set when the file stops being current - superseded or its record deleted |
 
-No owner, no tenant, no entity, no reference back to the record that uploaded it.
-That absence is what makes the capability-URL model necessary rather than
-optional.
+The binding columns are the authorisation input, not bookkeeping. They are what
+let the read ask *whose file is this*, *what record is it evidence for*, and *is
+it still current* - three questions a bare name and some bytes could not answer,
+which is why the name had to serve as the credential before.
 
 ## 3. The upload path
 
@@ -119,7 +131,7 @@ Re-checks the extension against `ALLOWED_EXTENSIONS` and the length against
 verified map, so the stored type is derived from the path a second time rather
 than carried through from validation (§8).
 
-### `get_available_name` (`core/storage.py:107-120`)
+### `get_available_name` (`core/storage.py:133-146`)
 
 ```text
 school_logos/crest.png  →  school_logos/crest-9f3c1a70b2e84d55.png
@@ -147,18 +159,38 @@ IsAuthenticatedAndActive
         anything else → Content-Disposition: attachment; filename="<basename>"
 ```
 
-The permission class is `IsAuthenticatedAndActive` alone: authenticated, not
-SUSPENDED/LOCKED/DEACTIVATED, and on a live tenant. There is no RBAC key, no
-tenant filter and no per-file check - by design, per §1.
+`IsAuthenticatedAndActive` is only the first of four gates. `core.media.authorize`
+then requires, in order and failing closed at each step:
+
+1. the row is not revoked;
+2. the `?t=` signature is valid, unexpired, and was issued **to this caller** -
+   so a forwarded link is dead for whoever receives it, and a stale one is dead
+   for everybody;
+3. the row's `tenant` equals the caller's asserted tenant;
+4. the owning record's registered read policy says yes.
+
+**Every refusal is a 404**, including the ones that really mean "not yours". A
+403 would confirm that a name exists, which is the one fact a stale or forwarded
+link is fishing for.
+
+There is no default policy. A model that registers none is not served at all, so
+adding a `FileField` never publishes it by accident - it makes it unreadable
+until somebody decides who may read it.
 
 Note what it does **not** do: no range requests, no ETag, no streaming (the whole
 file is materialised in memory), and no rate limit.
 
 ## 5. Derivations
 
-- **The capability is the name.** `DatabaseStorage.url` returns
-  `/media/<name>` (`core/storage.py:104-105`), and that string is what a
-  serializer embeds as a `*_url`. Knowing it is the authorisation.
+- **`DatabaseStorage.url` is not the URL a caller gets.** It returns the bare
+  `/media/<name>` path and cannot sign, because Django calls it from
+  `FieldFile.url`, which has no idea who is asking. Anything handing a URL to a
+  caller goes through `core.media.signed_url`, which binds it to a user, stamps
+  an expiry, and carries the `?tenant=` assertion so an `<img src>` works without
+  the frontend splicing parameters onto it.
+- **No identity means no URL, not an open one.** `signed_url` returns `""` rather
+  than an unsigned path when it cannot resolve a user. A missing image is a bug
+  report; a bearer token is a breach.
 - **`content_type` is decided twice.** `validate_upload` returns the verified
   type from `_CONTENT_TYPES`, and `_save` independently guesses one from the
   filename. Which one a caller stores depends on the caller: `vs_tickets` keeps
@@ -170,10 +202,11 @@ file is materialised in memory), and no rate limit.
   which is exactly what the magic-byte check exists to prevent, and why the
   ticket module derives the type from the bytes rather than the multipart
   header.
-- **`Cache-Control: private, max-age=86400` on images** means a capability URL,
-  once used, sits in the browser cache for a day. Correct for a logo; worth
-  knowing for a receipt.
-- **The 404 uses `error_response`** (`core/views.py:127`), so a missing file
+- **`Cache-Control: private, max-age=86400` on images** means a fetched image
+  sits in the browser's own cache for a day, which is what keeps a short URL TTL
+  from re-fetching a logo on every render. The cached copy belongs to that
+  browser; it is not a URL anyone else can use.
+- **The 404 uses `error_response`** (`core/views.py`), so a missing file
   answers the platform envelope while a successful read answers raw bytes - the
   only sensible split, and worth noting for a client that parses by content type.
 
@@ -181,8 +214,11 @@ file is materialised in memory), and no rate limit.
 
 | Operation | Writes |
 |---|---|
-| Any `FileField.save` | one `StoredFile` row, or an update if the name collides |
-| `storage.delete(name)` | deletes the row, when something calls it |
+| Any `FileField.save` | one `StoredFile` row, stamped with the tenant and actor in context |
+| Saving the owning record | binds the row to that record; retires anything the same field pointed at before |
+| Deleting the owning record | revokes its rows - URL closed, bytes emptied |
+| `storage.delete(name)` | deletes the row outright, when something calls it |
+| `core.media.revoke(names)` | revokes explicitly, for records that archive rather than delete |
 | `MediaView.get` | nothing - no access log, no audit event, no counter |
 
 **Reads are not recorded anywhere.** Fetching a staff photo, an import
@@ -239,14 +275,22 @@ inside storage - the exact problem `core/uploads.py` was written to solve
 
 Full evidence in **`error/core/core_code_issues.md`**.
 
-- **A capability URL cannot be revoked, and nothing deletes the bytes.** Deleting
-  the owning record leaves the `StoredFile` row in place and the URL working
-  forever; there is no sweeper and no reference count
-  (`core_code_issues.md` §1).
-- **The capability model is a convention with no enforcement.** "The name is only
-  handed to callers allowed to see the owning record" is true of every serializer
-  today and is checked by nothing - a single over-broad serializer field turns
-  one record's file into a platform-wide read (`core_code_issues.md` §1).
+- **An unbound row is refused, deliberately.** "I do not know whose this is" must
+  not resolve to "everyone's". Media that predates the binding is rescued by
+  `core/migrations/0006_backfill_storedfile_bindings.py`, which walks from each
+  record that owns a file to the row holding its bytes - the only direction in
+  which the answer exists. What it cannot rescue is an orphan: a `StoredFile` no
+  record points at any more stays unbound and unreadable, which is the right
+  outcome for a file whose owner was deleted years ago. The migration prints how
+  many it bound, skipped and left orphaned.
+- **Archiving does not revoke.** Only `post_delete` fires the automatic
+  revocation, and the platform increasingly archives instead. A record that
+  retires by archiving keeps its file readable unless the caller calls
+  `core.media.revoke` itself.
+- **A signature outlives a permission by up to its TTL only for the signature.**
+  The record policy is re-evaluated on every read, so withdrawing someone's
+  access closes the file immediately; what survives the 15 minutes is the
+  signature, not the authorisation.
 - **Storage validation answers 500, not 400** (`core/storage.py:74-83`), which is
   why every upload endpoint has to remember `validate_upload` first. Two
   endpoints in the repo have historically forgotten (`core_code_issues.md` §2).
@@ -276,48 +320,83 @@ Full evidence in **`error/core/core_code_issues.md`**.
 | Surface | Gate |
 |---|---|
 | Uploading | whatever the owning endpoint requires |
-| `GET /media/<name>` | `IsAuthenticatedAndActive`, and knowing the name |
-| Deleting | nothing calls it |
+| `GET /media/<name>` | `IsAuthenticatedAndActive`, a signature issued to this caller, the file's own tenant, and the owning record's policy |
+| Deleting | nothing calls it; revocation happens on the owning record instead |
 
-**There is no tenant isolation on the read**, and that is the deliberate design
-recorded at `core/storage.py:15-21`. The boundary is the unguessability of the
-name plus the discipline of every serializer that hands one out.
+**Tenant isolation is enforced on the read.** A file belongs to a tenant and is
+served only to a caller asserting that tenant. Cross-tenant support work goes
+through impersonation, which sets the asserted tenant to the school - the
+platform's existing audited mechanism for exactly this - rather than through a
+platform exemption on the file route.
 
-Two things follow that are worth stating plainly rather than leaving implied:
+The registered policies, each owned by the app that owns the record:
 
-1. **A file's protection is only as good as the narrowest serializer that
-   exposes its URL.** `vs_tickets` avoids the issue entirely by never exposing a
-   `/media/` path - it reverses its own ticket-scoped download route and checks
-   internal-note visibility there (`vs_tickets/serializers.py:38-46`). That is
-   the pattern to copy for anything sensitive.
-2. **Once a person has seen a URL, they keep it.** Removing their access to the
-   record does not remove their access to the file.
+| Record | Who may read its file |
+|---|---|
+| `SchoolBranding.logo` | anyone in the school - it is the sidebar and the letterhead |
+| `PlatformStaffProfile.profile_photo` | anyone in the same tenant - it is the organogram |
+| `ExpenseClaimLine.receipt` | the claimant, or `finance.expenseclaim.view` scoped to the claim's branch |
+| Vendor quotation attachments | `procurement.rfq.view` on the RFQ's entity and branch |
+| Vendor invoice attachments | `procurement.vendor_invoice.view`, same scoping |
+| Vendor payment attachments | `procurement.vendor_payment.view`, same scoping |
+
+Registration happens in each app's `AppConfig.ready`, so `core` never imports a
+domain app - and never imports `apps/schools/` - to find out.
+
+Two things follow that are worth stating plainly:
+
+1. **`vs_tickets` still serves its own files, and should.** It reverses a
+   ticket-scoped download route and checks internal-note visibility there
+   (`vs_tickets/serializers.py:38-46`). It registers no media policy, so the
+   generic route refuses its attachments rather than offering a second way in
+   that checks less. Same for audit exports, which have no single owning record
+   to ask.
+2. **Losing access to the record loses access to the file**, on the next read.
+   The policy is re-evaluated every time; nothing is cached in the URL.
 
 ## 10. Code map
 
 | File | Responsibility |
 |---|---|
-| `core/models.py:15-28` | `StoredFile` |
-| `core/storage.py:36-50` | `ALLOWED_EXTENSIONS`, `MAX_BYTES_DEFAULT`, `_clean_name` |
-| `core/storage.py:62-105` | `_open`, `_save`, `exists`, `delete`, `size`, `url` |
-| `core/storage.py:107-120` | `get_available_name` - the capability token |
-| `core/uploads.py:148-182` | The two policies, `_CONTENT_TYPES`, `_UNVERIFIABLE` |
-| `core/uploads.py:185-205` | `_magic_ok` |
-| `core/uploads.py:208-257` | `validate_upload` |
-| `core/views.py:121-138` | `MediaView` |
-| `apps/settings/base.py:372-381` | `MEDIA_URL`, `STORAGES`, `MEDIA_DB_MAX_BYTES` |
-| `apps/urls.py:45` | The route |
+| `core/models.py` | `StoredFile`, including the binding and revocation columns |
+| `core/media.py` | The policy registry, signing, `authorize`, `revoke` |
+| `core/binding.py` | Ties bytes to their record; retires superseded and deleted files |
+| `core/apps.py` | `CoreConfig.ready` wires the binding onto every model with a file field |
+| `core/storage.py` | `ALLOWED_EXTENSIONS`, `_clean_name`, the storage protocol, `get_available_name` |
+| `core/uploads.py` | The two policies, `_magic_ok`, `validate_upload` |
+| `core/views.py` | `MediaView` |
+| `*/media_policies.py` | Each app's answer to "who may read my files" |
+| `apps/settings/base.py` | `MEDIA_URL`, `STORAGES`, `MEDIA_DB_MAX_BYTES` |
+| `apps/urls.py:47` | The route |
+
+`MEDIA_SIGNED_URL_TTL_SECONDS` (default 900) sets the expiry *window*. Expiries
+are rounded to it so the same file keeps the same URL while a page is open - the
+browser caches by full URL, and a per-response signature would quietly defeat the
+day-long image cache. A URL therefore lives between one and two windows.
 
 ## 11. Test coverage & gaps
 
 `core/tests.py` is the module's best-covered area:
 
-- `DatabaseStorageTests` (`tests.py:26-76`) - the default storage is
+- `DatabaseStorageTests` - the default storage is
   database-backed; save/open round-trips; a CSV is accepted and an `.exe`
   rejected; the size ceiling is enforced; delete removes the row; path traversal
   is blocked; and `test_stored_name_is_unguessable` pins the entropy token.
-- `MediaViewTests` (`tests.py:78-108`) - anonymous is 401, an authenticated user
-  gets the bytes with the right content type, and a missing name is 404.
+- `MediaBindingTests` - an upload records its tenant, owner and field; replacing
+  a logo retires the previous one; deleting the record retires its file.
+- `MediaViewTests` - one gate per test, against two real schools: anonymous is
+  401; a signed URL serves the school its own logo; a bare path without a
+  signature is refused; a forwarded link fails for the person it reaches; an
+  expired and a tampered signature are both refused; the bursar who changed
+  schools cannot replay her old links; the other school is refused even with a
+  signature minted for itself; an unbound row is refused; a model with no
+  registered policy is refused; and a revoked file is refused despite a valid
+  signature.
+- `SignedUrlTests` - the URL binds to the user in context, and no identity yields
+  no URL rather than an open one.
+- `vs_finance/tests_media_policy.py` - the claimant can reopen her own receipt, a
+  colleague in the same school cannot, and finance can. This is the case the
+  tenant check can never catch, because all three pass it.
 
 What it does not cover:
 
@@ -328,11 +407,12 @@ What it does not cover:
    `test_declared_content_type_cannot_decide_how_a_file_is_served`.
 2. **`_magic_ok`'s fail-closed default** - that an unknown extension returns
    False rather than True.
-3. **Cross-tenant read.** No test asserts what the design actually is: that a
-   user from another tenant *can* fetch a file whose name they know. Pinning it
-   would make the capability model a decision rather than an accident.
+3. **The other four registered policies** - the two logo/photo ones and the
+   three procurement ones - are covered only through their apps' own endpoint
+   tests, not directly.
 4. **The `Content-Disposition: attachment` branch** - only the image path is
    asserted, and the attachment header is half of what makes a mislabelled file
    safe.
 5. **`nosniff`**, which is the other half.
-6. **Orphaned rows** - that deleting a record leaves the file behind.
+6. **Revocation on archive** - there is no test, because there is no automatic
+   behaviour to test. It is a caller's responsibility, and that is the gap.

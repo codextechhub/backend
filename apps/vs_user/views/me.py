@@ -62,7 +62,9 @@ class CurrentUserView(APIView):
                 # Same builder as the login response: the console skips its
                 # /me sync straight after a login, so the two must not drift.
                 "tenant": tenant_context_block(tenant),
-                "school": school_public_info(getattr(tenant, "school_profile", None), request),
+                "school": school_public_info(
+                    getattr(tenant, "school_profile", None), request, user=request.user,
+                ),
                 "permissions": permissions,
             },
         )

@@ -20,8 +20,7 @@ in it is *imported* rather than called over HTTP. A defect here does not break
 one screen; it either breaks every screen or it silently fails to apply to a
 module that forgot to opt in. Most of what follows is the second kind.
 
-**Status: recorded, not yet fixed.** Nothing in this file has been changed in the
-code.
+**Status: §1 is fixed; everything else is recorded, not yet fixed.**
 
 ---
 
@@ -29,7 +28,7 @@ code.
 
 | # | Issue | Severity |
 |---|---|---|
-| 1 | A media capability URL can never be revoked, and nothing deletes the bytes | **High** |
+| 1 | ~~A media capability URL can never be revoked, and nothing deletes the bytes~~ **FIXED** | ~~High~~ |
 | 2 | Storage validation answers 500, so every upload endpoint must remember to validate first | **High** |
 | 3 | `ValueError` from an ORM filter is a 500 on every endpoint in the repo | **High** |
 | 11 | `seed_all_permissions` crashes on a Windows console, and takes `core`'s own suite red | **High** |
@@ -55,7 +54,7 @@ The numbering is by topic, not by severity; the table above is sorted by cost.
 
 ## 1. A media capability URL can never be revoked, and nothing deletes the bytes
 
-**High.**
+**High. FIXED** - see *The fix, as shipped* at the end of this item.
 
 ### The defect
 
@@ -93,20 +92,53 @@ record of it any more.
 Meanwhile the table grows. Every import spreadsheet, every superseded logo, every
 receipt on a deleted claim is still there, in the database, in every backup.
 
-### The fix
+### The fix, as shipped
 
-1. **Delete the bytes with the record.** A `post_delete` signal on the models
-   that carry a `FileField`, or a nightly sweeper that removes `StoredFile` rows
-   no `FileField` references. The second is more work and catches the rows
-   already orphaned.
-2. **Give `StoredFile` a tenant column** and filter `MediaView` on
-   `request.tenant`. It does not replace the capability model - a file is still
-   only as protected as the serializer that hands out its URL - but it turns a
-   cross-tenant read from possible into impossible, which is the boundary this
-   repo enforces everywhere else.
-3. **Follow the `vs_tickets` pattern for anything sensitive**: never expose a
-   `/media/` path, reverse a record-scoped download route and check visibility
-   there (`vs_tickets/serializers.py:38-46`).
+The capability model is gone. A read is now authorised, not merely
+authenticated, and the URL expires.
+
+1. **`StoredFile` knows whose file it is** - `tenant`, `owner_content_type` /
+   `owner_object_id` / `owner_field`, `created_by`, `revoked_at`
+   (`core/models.py`). The tenant is stamped by `DatabaseStorage._save` from the
+   request's tenant context; the owning record is stamped by `core/binding.py`
+   on the owner's `post_save`, because a new record has no primary key while its
+   file is being written.
+2. **`MediaView` refuses unless four things agree** - a live session, a
+   signature issued to *this* caller and unexpired, the file's own tenant, and
+   the owning record's registered read policy (`core/media.py`). There is no
+   default policy: a model that registers none is not served, so adding a
+   `FileField` cannot publish it by accident. Every refusal is a 404, so the
+   route never confirms that a name exists.
+3. **URLs are signed and short-lived** - `core.media.signed_url` binds each URL
+   to one user for `MEDIA_SIGNED_URL_TTL_SECONDS` (default 900). A forwarded
+   link is dead for whoever receives it, and a stale one is dead for everybody.
+   Where no identity can be resolved the helper returns `""` rather than an
+   unsigned path.
+4. **Files are retired with their record** - deleting the owner, or replacing
+   the upload on it, revokes the row: URL closed, bytes emptied, row kept so an
+   audit still sees the file existed (`core/binding.py`).
+5. **The `vs_tickets` pattern is preserved and now enforced.** Tickets and audit
+   exports still serve their own bytes through record-scoped views, register no
+   media policy, and are therefore refused by `/media/` rather than offered a
+   second way in that checks less.
+
+Ngozi's story now ends differently at every step. Her deactivated account fails
+the session check; her Greenfield account fails the tenant check; her old URL
+fails the signature check; and the deleted claim's receipt was revoked when the
+claim went.
+
+6. **Existing media is rescued, not stranded.** Migration `0006` binds every
+   `StoredFile` an existing record still points at, walking from the record to
+   the file because that is the only direction carrying the answer. Orphans -
+   rows nothing points at, the exact residue this finding was about - stay
+   unbound and unreadable.
+
+**One thing this did not fix, deliberately:**
+
+- **Archiving does not revoke.** Only `post_delete` fires the automatic
+  revocation, and this platform increasingly archives instead.
+  `core.media.revoke()` exists for callers that retire a record by archiving,
+  but nothing calls it yet.
 
 ---
 

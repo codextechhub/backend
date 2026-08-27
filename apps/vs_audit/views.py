@@ -897,16 +897,12 @@ class AuditExportJobDownloadView(APIView):
     GET /audit/exports/<uuid:id>/download/ - the CSV, if it is yours.
 
     Audit exports get their own route rather than riding ``/media/<name>``.
-    ``core.views.MediaView`` authenticates the caller and nothing more: it
-    authorises by *knowledge of the storage name*, which is the capability-URL
-    model ``core.storage`` documents. That model fits a school logo, where the
-    name is only ever handed to somebody already allowed to see the record it
-    hangs off. It does not fit an audit CSV, which carries every actor, every
-    target and every summary the filters allowed, across tenants. Under
-    ``MediaView`` any authenticated account on the platform - a parent, a
-    teacher, a suspended-but-not-deactivated staff member - reads the whole
-    trail the moment the name reaches them, and the capability can never be
-    withdrawn or expired.
+    ``core.views.MediaView`` decides by the file's tenant and by the policy its
+    owning record registers, and an audit CSV has neither: it is written by a
+    background job with no tenant in context, and it answers to the *filters*
+    that produced it rather than to any one row. A file that cannot name its
+    owner is one ``MediaView`` refuses outright, which is the correct answer
+    there and a useless one here.
 
     So this route asks two questions ``MediaView`` cannot:
 

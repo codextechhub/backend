@@ -16,6 +16,12 @@ class VsProcurementConfig(AppConfig):
         from . import workflow_handlers  # noqa: F401
         from . import receivers  # noqa: F401
 
+        # Declare who may read procurement attachments through /media/, on the
+        # same one-way seam: core never imports procurement to answer it.
+        from .media_policies import register as register_media_policies
+
+        register_media_policies()
+
         # Publish this app's datasets to the Export Centre. Registration lives
         # here, not in vs_exports, so the engine never imports a domain app.
         from .export_datasets import register_datasets

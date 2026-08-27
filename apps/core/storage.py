@@ -12,13 +12,15 @@ defense-in-depth - serializer-level validation remains the first line.
 Files are served by ``core.views.MediaView`` at ``/media/<name>`` (the URL
 this storage hands back), which requires authentication.
 
-Access model - **capability URLs.** ``MediaView`` authenticates the caller but
-cannot authorise per-file (the ``StoredFile`` row has no owner/entity). To stop a
-logged-in user from fetching another tenant's file by guessing a predictable path
-(e.g. ``expense-receipts/receipt.pdf``), every stored file's name carries a
-high-entropy token (:meth:`DatabaseStorage.get_available_name`). A name is therefore
-effectively unguessable and is only ever handed out to callers already allowed to see
-the owning record (the API embeds it in that record's serialized ``*_url``).
+Access model. Every stored file is bound to a tenant here, at write time, and to
+its owning record a moment later (:mod:`core.binding`); ``MediaView`` then refuses
+any read whose tenant, owning record or signature does not agree with the caller.
+See :mod:`core.media` for what each of those checks catches.
+
+The high-entropy name (:meth:`get_available_name`) survives as defence in depth,
+not as the access control it used to be. It stops a path like
+``expense-receipts/receipt.pdf`` from being typed into a browser; it never stopped
+a name that had been handed out once from working for ever, for anyone.
 """
 from __future__ import annotations
 
@@ -82,9 +84,26 @@ class DatabaseStorage(Storage):
                 f"File is {len(data)} bytes - the upload ceiling is {max_bytes}."
             )
         content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        # Stamp the customer while we still know it. The storage API never sees
+        # the model instance, but the request's tenant is already in context for
+        # auditing, and it is the one fact every upload path has in common.
+        from vs_tenants.context import get_current_audit_identity, get_current_tenant
+
+        tenant = get_current_tenant()
+        _actor, effective, _session = get_current_audit_identity()
+        creator = effective if getattr(effective, "pk", None) else None
         self._model.objects.update_or_create(
             name=name,
-            defaults={"content": data, "content_type": content_type, "size": len(data)},
+            defaults={
+                "content": data,
+                "content_type": content_type,
+                "size": len(data),
+                "tenant": tenant,
+                "created_by": creator,
+                # A name being written again is a live file, whatever an
+                # earlier row of the same name once was.
+                "revoked_at": None,
+            },
         )
         return name
 
@@ -102,14 +121,21 @@ class DatabaseStorage(Storage):
         return row["size"]
 
     def url(self, name):
+        """The unsigned path. Not fetchable on its own - see :func:`core.media.signed_url`.
+
+        Django calls this from ``FieldFile.url``, which has no idea who is asking,
+        so it cannot mint the per-user signature ``MediaView`` requires. It is kept
+        for templates and tooling that just need the storage path; anything handing
+        a URL to a caller must go through ``core.media.signed_url`` instead.
+        """
         return f"{settings.MEDIA_URL}{_clean_name(name)}"
 
     def get_available_name(self, name, max_length=None):
-        # Capability-URL hardening: give every stored file a high-entropy token in its
-        # name so it can't be fetched by guessing a predictable path. The media endpoint
-        # authenticates the caller but authorises by *knowing the name*, which is only
-        # ever handed to callers allowed to see the owning record. The original filename
-        # root is kept as a readable prefix; the token supplies the unguessability.
+        # Give every stored file a high-entropy token in its name so it can't be
+        # fetched by guessing a predictable path. This is defence in depth, not the
+        # access control: what decides a read is the file's tenant, its owning
+        # record's policy and the URL's signature (see core.media). The original
+        # filename root is kept as a readable prefix.
         name = _clean_name(name)
         directory, base = posixpath.split(name)
         root, ext = os.path.splitext(base)

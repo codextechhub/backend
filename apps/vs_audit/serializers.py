@@ -239,12 +239,12 @@ class EntityAuditTrailDetailSerializer(serializers.Serializer):
 class _ExportDownloadUrlMixin(serializers.Serializer):
     """Publish the authorised download path, never the storage key.
 
-    ``AuditExportJob.file_path`` holds the key ``core.storage`` chose, and under
-    that storage a key *is* the credential: anything holding it can fetch the
-    bytes from ``/media/<name>`` with nothing but a login, for ever. Publishing
-    it would hand a permanent, unrevocable copy of the audit trail to every
-    reader of the payload, so neither export serializer exposes it. What they
-    expose is the route that re-asks the permission question on every call.
+    ``AuditExportJob.file_path`` holds the key ``core.storage`` chose. Exposing
+    it would put the audit trail's location into every payload that lists a job,
+    and the key would go on naming the file long after the job expired. What
+    these serializers expose instead is the route that re-asks the permission
+    question, checks expiry, and confirms the job is the caller's own, on every
+    single call.
     """
 
     download_url = serializers.SerializerMethodField()

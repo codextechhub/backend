@@ -23,6 +23,7 @@ from vs_rbac.permissions import (
 )
 from vs_rbac.evaluator import has_permission
 from vs_tenants.models import Tenant
+from core.media import signed_url
 from core.mixins import (
     XVSModelViewSetMixin,
     RetrieveModelMixin, CreateModelMixin, UpdateModelMixin,
@@ -315,7 +316,7 @@ class PlatformStaffProfileViewSet(
             .only('user_id', 'profile_photo')
         )
         mapping = {
-            str(p.user_id): request.build_absolute_uri(p.profile_photo.url)
+            str(p.user_id): signed_url(p.profile_photo.name, absolute_for=request)
             for p in rows
         }
         return success_response(message="Staff photos retrieved successfully.", data=mapping)
