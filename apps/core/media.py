@@ -49,8 +49,25 @@ TOKEN_PARAM = "t"
 
 _SALT = "core.media.url.v1"
 
-#: model -> predicate. See :func:`register_policy`.
-_POLICIES: dict[type, Callable] = {}
+#: model -> (predicate, serve_when_retired). See :func:`register_policy`.
+_POLICIES: dict[type, tuple] = {}
+
+#: How a record says it has been retired. The platform archives rather than
+#: deletes, and it does so per model rather than through a shared base, so this
+#: reads the conventions in use instead of requiring one.
+RETIREMENT_STAMPS = ("archived_at", "retired_at", "deleted_at")
+RETIREMENT_FLAGS = ("is_archived", "is_retired", "is_deleted")
+
+
+def is_retired(owner) -> bool:
+    """Whether ``owner`` has been taken out of service without being deleted."""
+    for field in RETIREMENT_STAMPS:
+        if getattr(owner, field, None) is not None:
+            return True
+    for flag in RETIREMENT_FLAGS:
+        if getattr(owner, flag, False):
+            return True
+    return False
 
 
 def ttl_seconds() -> int:
@@ -60,7 +77,7 @@ def ttl_seconds() -> int:
 # --------------------------------------------------------------------------- #
 # Policies                                                                     #
 # --------------------------------------------------------------------------- #
-def register_policy(model, predicate: Callable) -> None:
+def register_policy(model, predicate: Callable, *, serve_when_retired=False) -> None:
     """Declare who may read files owned by ``model``.
 
     ``predicate(request, owner) -> bool`` is called only after the caller has
@@ -69,17 +86,26 @@ def register_policy(model, predicate: Callable) -> None:
     person see this record?  Corona's bursar and Corona's parents both pass the
     tenant check; only one of them should get the expense receipt.
 
+    ``serve_when_retired`` decides what happens once the owning record is
+    archived. The default is to refuse, because a record taken out of service
+    should stop handing out its evidence through a URL somebody is still
+    holding. Refusing is not destroying: the bytes stay, so an auditor reading
+    the archived record itself still has everything - which is the whole reason
+    the platform archives instead of deleting. A module whose archived records
+    are meant to keep serving their files says so here, deliberately, rather
+    than by omission.
+
     Each owning app registers its own policies from its ``AppConfig.ready()``,
     so the engines never import the school apps to find out.
     """
-    _POLICIES[model] = predicate
+    _POLICIES[model] = (predicate, bool(serve_when_retired))
 
 
 def policy_for(model):
-    """Return the registered predicate for ``model``, walking up to its bases.
+    """Return ``(predicate, serve_when_retired)`` for ``model``, or None.
 
-    Concrete inheritance (``FinanceDocument`` and friends) means the model a
-    row is bound to may be a subclass of the one that registered.
+    Walks the MRO: concrete inheritance (``FinanceDocument`` and friends) means
+    the model a row is bound to may be a subclass of the one that registered.
     """
     for candidate in model.__mro__:
         if candidate in _POLICIES:
@@ -237,18 +263,25 @@ def authorize(request, row) -> bool:
     model = ContentType.objects.get_for_id(row.owner_content_type_id).model_class()
     if model is None:
         return False
-    predicate = policy_for(model)
-    if predicate is None:
+    registered = policy_for(model)
+    if registered is None:
         logger.warning(
             "core.media: %s owns stored files but registers no read policy; "
             "refusing to serve %s", model.__name__, row.name,
         )
         return False
+    predicate, serve_when_retired = registered
     # ``_default_manager`` rather than ``objects``: a model whose default manager
     # hides archived rows should hide their evidence too, and a model that names
     # its manager something else still resolves.
     owner = model._default_manager.filter(pk=row.owner_object_id).first()
     if owner is None:
+        return False
+    # A record taken out of service stops handing out its evidence through a URL
+    # somebody already holds. The bytes are untouched - an auditor reading the
+    # archived record still has them - so this closes a door without burning
+    # what is behind it.
+    if not serve_when_retired and is_retired(owner):
         return False
     try:
         return bool(predicate(request, owner))

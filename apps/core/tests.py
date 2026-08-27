@@ -522,3 +522,104 @@ class BackfillTests(_MediaFixture):
             "to them before the binding existed will never become readable, and "
             "nothing anywhere would say so: " + repr(sorted(missing)),
         )
+
+
+class RetiredOwnerTests(_MediaFixture):
+    """What happens to a file when its record is archived rather than deleted.
+
+    Deleting a record destroys its evidence, and should. Archiving is the
+    opposite intent - the record is kept precisely so somebody can read it later
+    - so archiving must not destroy anything. What it does do is stop the file
+    answering a URL that is already loose in the world, because a record taken
+    out of service should not go on serving its evidence to whoever kept a link.
+
+    ``AcademicSession`` is used as the owner here because it is a real model
+    carrying a real ``archived_at`` column, so these exercise the field
+    detection rather than a stand-in for it.
+    """
+
+    def setUp(self):
+        super().setUp()
+        import datetime
+
+        from schools.vs_academics.models import AcademicSession
+
+        from core import media
+
+        self.year = AcademicSession.all_objects.create(
+            tenant=self.corona.tenant, name="2025/2026",
+            start_date=datetime.date(2025, 9, 1),
+            end_date=datetime.date(2026, 7, 31),
+        )
+        # Bind the fixture's file to that year, and give it a policy for the
+        # duration of the test only - the registry is process-wide.
+        from django.contrib.contenttypes.models import ContentType
+
+        StoredFile.objects.filter(name=self.name).update(
+            owner_content_type=ContentType.objects.get_for_model(AcademicSession),
+            owner_object_id=str(self.year.pk),
+            owner_field="prospectus",
+        )
+        self._saved_policies = dict(media._POLICIES)
+        self.addCleanup(lambda: media._POLICIES.clear() or
+                        media._POLICIES.update(self._saved_policies))
+
+    def _register(self, **kwargs):
+        from schools.vs_academics.models import AcademicSession
+
+        from core import media
+
+        media.register_policy(AcademicSession, lambda request, owner: True, **kwargs)
+
+    def _archive(self):
+        from django.utils import timezone as dj_tz
+
+        type(self.year).all_objects.filter(pk=self.year.pk).update(
+            archived_at=dj_tz.now(),
+        )
+
+    def test_is_retired_reads_the_conventions_actually_in_use(self):
+        """There is no shared archivable base, so this reads what modules use."""
+        from core.media import is_retired
+
+        class Live: pass
+        class Stamped: archived_at = "2026-08-27"
+        class Flagged: is_archived = True
+        class Cleared: archived_at = None
+
+        self.assertFalse(is_retired(Live()))
+        self.assertFalse(is_retired(Cleared()))
+        self.assertTrue(is_retired(Stamped()))
+        self.assertTrue(is_retired(Flagged()))
+
+    def test_a_live_record_serves_its_file(self):
+        self._register()
+        resp = self._client(self.bursar).get(self._signed(self.bursar))
+        self.assertEqual(resp.status_code, 200)
+
+    def test_archiving_the_record_closes_the_url(self):
+        self._register()
+        self._archive()
+        resp = self._client(self.bursar).get(self._signed(self.bursar))
+        self.assertEqual(resp.status_code, 404)
+
+    def test_archiving_does_not_destroy_the_bytes(self):
+        """The difference between archiving and deleting, in one assertion.
+
+        Corona archives the 2025/2026 year. An auditor asking what happened that
+        year still needs what was filed against it, and the archive exists to
+        keep exactly that. Closing the URL is a door; emptying the row would be
+        a bonfire.
+        """
+        self._register()
+        self._archive()
+        row = StoredFile.objects.get(name=self.name)
+        self.assertEqual(bytes(row.content), PNG_BYTES)
+        self.assertIsNone(row.revoked_at)
+
+    def test_a_module_can_opt_into_serving_its_archived_records(self):
+        """Refusing is the default, not the only answer - but it is said out loud."""
+        self._register(serve_when_retired=True)
+        self._archive()
+        resp = self._client(self.bursar).get(self._signed(self.bursar))
+        self.assertEqual(resp.status_code, 200)

@@ -133,12 +133,14 @@ claim went.
    rows nothing points at, the exact residue this finding was about - stay
    unbound and unreadable.
 
-**One thing this did not fix, deliberately:**
-
-- **Archiving does not revoke.** Only `post_delete` fires the automatic
-  revocation, and this platform increasingly archives instead.
-  `core.media.revoke()` exists for callers that retire a record by archiving,
-  but nothing calls it yet.
+**Archiving, handled separately and deliberately differently.** Deleting a
+record destroys its evidence; archiving must not, because a record is archived
+precisely so it can be read later. So an archived owner's file is refused at
+read time - the URL closes - while the bytes stay whole for whoever opens the
+archived record itself. A module whose archived records should keep serving
+their files declares `serve_when_retired=True` on its policy rather than getting
+it by omission. No file-owning model archives today; the rule is at the choke
+point so it holds the day one does.
 
 ---
 

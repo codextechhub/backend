@@ -42,11 +42,14 @@ they belong to), `core.media` (which decides who may read them), and `MediaView`
   HTML payload renamed `.png` is served as a broken image rather than executed.
   The check buys not depending on those two headers staying correct forever
   (`core/uploads.py`).
-- **A file is retired when its record is.** Deleting the owning row, or
-  replacing the upload on it, revokes the `StoredFile`: the URL closes and the
-  bytes are emptied, while the row survives so an audit can still see the file
-  existed (`core/binding.py`). Archiving is not deletion and fires no signal, so
-  a caller that retires a record by archiving calls `core.media.revoke` itself.
+- **A file is retired when its record is, and how depends on which.** Deleting
+  the owning row, or replacing the upload on it, revokes the `StoredFile`: the
+  URL closes and the bytes are emptied (`core/binding.py`). *Archiving closes the
+  URL and touches nothing else* - the read is refused at `authorize` time while
+  the bytes stay whole, because a record is archived precisely so somebody can
+  read it later, and emptying its evidence would destroy the thing the archive
+  exists to keep. A module whose archived records should keep serving their files
+  says so with `serve_when_retired=True` when it registers its policy.
 
 ## 2. Domain model
 
@@ -283,10 +286,11 @@ Full evidence in **`error/core/core_code_issues.md`**.
   record points at any more stays unbound and unreadable, which is the right
   outcome for a file whose owner was deleted years ago. The migration prints how
   many it bound, skipped and left orphaned.
-- **Archiving does not revoke.** Only `post_delete` fires the automatic
-  revocation, and the platform increasingly archives instead. A record that
-  retires by archiving keeps its file readable unless the caller calls
-  `core.media.revoke` itself.
+- **No file-owning model archives yet.** The retirement rule above is written
+  against the conventions in use (`archived_at`, `is_archived` and their
+  variants) rather than a shared base class, because there isn't one. It is
+  enforced the day a file-owning model adopts one, with no further work - which
+  is the point of putting it at the choke point rather than in each module.
 - **A signature outlives a permission by up to its TTL only for the signature.**
   The record policy is re-evaluated on every read, so withdrawing someone's
   access closes the file immediately; what survives the 15 minutes is the
@@ -320,7 +324,7 @@ Full evidence in **`error/core/core_code_issues.md`**.
 | Surface | Gate |
 |---|---|
 | Uploading | whatever the owning endpoint requires |
-| `GET /media/<name>` | `IsAuthenticatedAndActive`, a signature issued to this caller, the file's own tenant, and the owning record's policy |
+| `GET /media/<name>` | `IsAuthenticatedAndActive`, a signature issued to this caller, the file's own tenant, the owning record still being in service, and that record's policy |
 | Deleting | nothing calls it; revocation happens on the owning record instead |
 
 **Tenant isolation is enforced on the read.** A file belongs to a tenant and is
@@ -352,14 +356,16 @@ Two things follow that are worth stating plainly:
    that checks less. Same for audit exports, which have no single owning record
    to ask.
 2. **Losing access to the record loses access to the file**, on the next read.
-   The policy is re-evaluated every time; nothing is cached in the URL.
+   The policy is re-evaluated every time; nothing is cached in the URL. So is
+   the record's own state, so archiving it closes its files without anybody
+   having to remember to.
 
 ## 10. Code map
 
 | File | Responsibility |
 |---|---|
 | `core/models.py` | `StoredFile`, including the binding and revocation columns |
-| `core/media.py` | The policy registry, signing, `authorize`, `revoke` |
+| `core/media.py` | The policy registry, signing, `authorize`, `is_retired`, `revoke` |
 | `core/binding.py` | Ties bytes to their record; retires superseded and deleted files |
 | `core/apps.py` | `CoreConfig.ready` wires the binding onto every model with a file field |
 | `core/storage.py` | `ALLOWED_EXTENSIONS`, `_clean_name`, the storage protocol, `get_available_name` |
@@ -414,5 +420,6 @@ What it does not cover:
    asserted, and the attachment header is half of what makes a mislabelled file
    safe.
 5. **`nosniff`**, which is the other half.
-6. **Revocation on archive** - there is no test, because there is no automatic
-   behaviour to test. It is a caller's responsibility, and that is the gap.
+6. **Nothing** - the archive path is covered by `RetiredOwnerTests`, including
+   the assertion that most needed making: after archiving, the bytes still equal
+   what was uploaded and `revoked_at` is still null.
