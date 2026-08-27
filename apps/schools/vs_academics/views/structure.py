@@ -39,6 +39,7 @@ from ..services.scoping import (
     raised_branch,
     scope_to_visible_branches,
 )
+from ..exceptions import DuplicateLevelOrder
 from ..services.uniqueness import assert_unique
 from ..services.structure import (
     assert_promotion_target,
@@ -509,6 +510,22 @@ class LevelListCreateView(_StructureBase, generics.ListCreateAPIView):
                 .values_list("order_index", flat=True).first() or 0
             )
             data["order_index"] = highest + 1
+        else:
+            # A position the caller CHOSE, so it can collide. Refused by
+            # uq_academic_level_order either way; what this adds is which level
+            # already holds it. `assert_unique` knows about names and codes and
+            # not about positions, which is why this one was left answering the
+            # platform's generic duplicate message.
+            taken = Level.all_objects.filter(
+                program=program, session=self.session_required,
+                order_index=data["order_index"],
+            ).first()
+            if taken is not None:
+                raise DuplicateLevelOrder(
+                    f"{taken.name} is already number {data['order_index']} in "
+                    f"{program.name}. Give this one a different position.",
+                    conflict=taken.name, field="order_index",
+                )
 
         target = data.pop("next_level", None)
         level = Level.objects.create(

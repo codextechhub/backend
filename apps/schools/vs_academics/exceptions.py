@@ -41,6 +41,47 @@ class TermDatesOverlap(AcademicsError):
     http_status = 422
 
 
+class DuplicateTermName(AcademicsError):
+    """Two terms in one year sharing a name.
+
+    ``uq_academic_term_name`` stops it, and its IntegrityError reaches the
+    caller as the platform's generic "A record with these details already
+    exists" - which on a form holding a name, a number and two dates says
+    nothing about which of the four was wrong. Every other rule in
+    ``validate_terms`` names the term it is about; this one had not caught up.
+    """
+
+    error_code = "DUPLICATE_TERM_NAME"
+    default_message = "Two terms in a year cannot share a name."
+    http_status = 409
+
+
+class DuplicateTermOrder(AcademicsError):
+    """Two terms in one year sharing a number.
+
+    Same gap as the name, and the more confusing of the two: the numbers are
+    what every consumer reads a year by, so a collision is not cosmetic.
+    """
+
+    error_code = "DUPLICATE_TERM_ORDER"
+    default_message = "Two terms in a year cannot share a number."
+    http_status = 409
+
+
+class DuplicateLevelOrder(AcademicsError):
+    """Two levels in one programme sharing a position.
+
+    ``uq_academic_level_order`` stops it and answered the generic duplicate
+    message. The level's name and code have carried written refusals since
+    ``services/uniqueness.py`` was added; its position was left behind, because
+    that helper only knows about names and codes.
+    """
+
+    error_code = "DUPLICATE_LEVEL_ORDER"
+    default_message = "Two levels in a programme cannot share a position."
+    http_status = 409
+
+
 class TermOrderConflict(AcademicsError):
     error_code = "TERM_ORDER_CONFLICT"
     default_message = "The order of these terms disagrees with their dates."

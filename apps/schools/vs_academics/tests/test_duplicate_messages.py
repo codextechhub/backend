@@ -300,3 +300,52 @@ class ArchivingRatherThanDeletingTests(_AllAcademics):
         )
         self.assertEqual(program["levels"][0]["subject_count"], 1)
 
+
+
+class PositionAndTermDuplicateTests(_AllAcademics):
+    """The duplicates ``services/uniqueness.py`` does not cover.
+
+    That helper knows about names and codes. Three constraints are about
+    neither - a term's name and number, and a level's position - and all three
+    were left answering the platform's generic "A record with these details
+    already exists". Found by sweeping every status-only assertion and every
+    constraint in this package, after the same defect was fixed four times in
+    ``vs_calendar``.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.prog = self.program()
+
+    def test_a_level_position_already_taken_names_the_level_holding_it(self):
+        Level.all_objects.create(
+            tenant=self.tenant, program=self.prog, session=self.year,
+            name="Existing", code="EXIST", order_index=7,
+        )
+        response = self.post(
+            self.admin, "academics-level-list",
+            {"name": "Sweep", "code": "SWP", "order_index": 7},
+            pk=self.prog.pk,
+        )
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data["error"]["code"], "DUPLICATE_LEVEL_ORDER")
+        self.assertEqual(
+            response.data["error"]["detail"]["field"], "order_index",
+        )
+        # The level already holding it, so the person knows what to renumber.
+        self.assertIn("Existing", response.data["message"])
+        self.assertIn(self.prog.name, response.data["message"])
+
+    def test_an_unspecified_level_position_is_still_assigned_automatically(self):
+        """The refusal must not fire on the path that picks the number itself.
+
+        Only a position the caller CHOSE can collide; one the server appends is
+        the next free one by construction.
+        """
+        for n in range(2):
+            response = self.post(
+                self.admin, "academics-level-list",
+                {"name": f"Auto {n}", "code": f"AUTO{n}"},
+                pk=self.prog.pk,
+            )
+            self.assertEqual(response.status_code, 201, response.data)

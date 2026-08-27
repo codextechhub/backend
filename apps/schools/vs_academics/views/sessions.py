@@ -55,8 +55,22 @@ def _resolve_branches(tenant, branch_ids):
 
     An empty list is a real answer meaning the whole school, so it is not
     conflated with the field being absent by the caller of this function.
+
+    **Naming a branch twice means naming it once.** ``uq_session_branch``
+    refused the repeat with the platform's generic duplicate message, which
+    told a caller its request was invalid when it was merely redundant - the
+    same mistake the calendar's event audience made. Deduplicated on the
+    RESOLVED branch, not on the id, because a caller may name one branch by id
+    and the same branch by slug.
     """
-    return [resolve_branch_reference(tenant, bid, "branch_ids") for bid in branch_ids]
+    out, seen = [], set()
+    for bid in branch_ids:
+        branch = resolve_branch_reference(tenant, bid, "branch_ids")
+        if branch.pk in seen:
+            continue
+        seen.add(branch.pk)
+        out.append(branch)
+    return out
 
 
 class _SessionBase(AcademicsViewMixin):

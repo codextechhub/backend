@@ -15,6 +15,8 @@ from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
 
 from ..exceptions import (
+    DuplicateTermName,
+    DuplicateTermOrder,
     SessionArchivedReadOnly,
     SessionHasArchivedTerm,
     TermDatesOverlap,
@@ -256,6 +258,38 @@ def validate_terms(session, terms):
                 f"{later['name']} overlaps {earlier['name']}.",
                 conflicts_with=earlier["name"],
             )
+
+    # Checked here rather than left to uq_academic_term_name and
+    # uq_academic_term_order, whose IntegrityErrors reach the caller as the
+    # platform's generic "A record with these details already exists" - on a
+    # form holding a name, a number and two dates. Every other rule in this
+    # function names the term it is about; these two had not caught up.
+    #
+    # Not a replacement for the constraints: two concurrent writes can both
+    # pass this and the database stops the second. That is a race, and this is
+    # somebody typing "Second Term" twice.
+    seen_names: dict[str, int] = {}
+    for t in terms:
+        key = str(t["name"]).strip().lower()
+        seen_names[key] = seen_names.get(key, 0) + 1
+        if seen_names[key] > 1:
+            raise DuplicateTermName(
+                f"This year already has a term called {t['name']}. "
+                f"Give this one a different name.",
+                term=t["name"], field="name",
+            )
+
+    seen_orders: dict[int, str] = {}
+    for t in terms:
+        order = t["order_index"]
+        if order in seen_orders:
+            raise DuplicateTermOrder(
+                f"{seen_orders[order]} is already term {order} of this year. "
+                f"Give this one a different number.",
+                term=t["name"], conflicts_with=seen_orders[order],
+                field="order_index",
+            )
+        seen_orders[order] = t["name"]
 
     # Non-overlap does not imply order: two terms can be disjoint and still
     # numbered backwards, and every consumer reads them by order_index.
