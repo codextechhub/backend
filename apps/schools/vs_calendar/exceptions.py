@@ -233,3 +233,95 @@ class ExamPublishedReadOnly(CalendarError):
         "changed."
     )
     http_status = 409
+
+
+# ── Rooms ──────────────────────────────────────────────────────────────────
+#
+# The database already refuses both of these - ``uq_room_branch_name`` and
+# ``uq_room_tenant_code`` - but an ``IntegrityError`` reaches the caller as
+# ``core.exceptions``' generic "A record with these details already exists",
+# which names no field, no row and no branch. On a drawer with a Name box and a
+# Code box that is a refusal nobody can act on: the person does not know which
+# of the two was wrong, let alone what it collided with.
+#
+# ``vs_academics.services.uniqueness`` solved the same problem for the catalogue
+# and is deliberately NOT reused here, because its message states the rule it
+# enforces and the rule differs: a department name is unique across the school,
+# a room name only within its branch. Borrowing the sentence would tell a school
+# that "Block A Room 1" cannot exist at two branches, which is false and is the
+# ordinary case.
+#
+# Same error codes as the catalogue's, so a drawer puts the message under the
+# right field without parsing it.
+
+class DuplicateRoomName(CalendarError):
+    error_code = "DUPLICATE_NAME"
+    default_message = "A room with this name already exists at this branch."
+    http_status = 409
+
+
+class DuplicateRoomCode(CalendarError):
+    error_code = "DUPLICATE_CODE"
+    default_message = "That room code is already in use in this school."
+    http_status = 409
+
+
+# ── Exam papers ────────────────────────────────────────────────────────────
+
+class ClassAlreadySitting(CalendarError):
+    """The one exam refusal that is a refusal, and it had no words of its own.
+
+    ``uq_examslot_class_sitting`` already stops it, but an ``IntegrityError``
+    reaches the caller as the platform's generic "A record with these details
+    already exists" - on a drawer holding a class, a subject, a date, a sitting,
+    a room and an invigilator. Six fields, and nothing saying which of them was
+    the problem or what it collided with.
+
+    Worth stating plainly because the split here is the OPPOSITE way round from
+    the class timetable, and a school will meet both in one afternoon. A room
+    used twice and an invigilator in two places both WARN - two classes really
+    do sit in the Main Hall together, and one person really does float between
+    rooms. A class sitting two papers at once is the one thing that is
+    physically impossible, so it is the one thing refused.
+    """
+
+    error_code = "CLASS_ALREADY_SITTING"
+    default_message = (
+        "That class is already sitting a paper in this session."
+    )
+    http_status = 409
+
+
+class CellAlreadyFilled(CalendarError):
+    """This class already has a lesson in this period on this day.
+
+    ``uq_slot_class_day_period`` stops it, and its IntegrityError reaches the
+    caller as the generic "A record with these details already exists" - which
+    on a grid means a cell refuses to fill and says nothing about why.
+
+    The most reachable refusal in the module, and the least informative: two
+    people editing one class's week hit it, and so does anyone who clicks a
+    cell that was filled while they were looking at it. The message names the
+    lesson that is already there, because the next thing the person will do is
+    decide whether to replace it.
+    """
+
+    error_code = "CELL_ALREADY_FILLED"
+    default_message = (
+        "This class already has a lesson in that period."
+    )
+    http_status = 409
+
+
+class ExamTimesInvalid(CalendarError):
+    """End before start on an exam paper.
+
+    ``ck_examslot_times`` refuses it, but nothing caught the IntegrityError, so
+    the caller got a 500 and the server logged an exception for what is an
+    ordinary typo. The bell schedule has refused the same mistake with a
+    sentence since it was written; this is the exam surface catching up.
+    """
+
+    error_code = "EXAM_TIMES_INVALID"
+    default_message = "The end time must be after the start time."
+    http_status = 422

@@ -46,6 +46,63 @@ class RoomRuleTests(_Base):
         })
         self.assertIn(response.status_code, (400, 409, 422), response.data)
 
+    def test_the_name_refusal_names_the_field_the_branch_and_the_rule(self):
+        """Not just a 4xx.
+
+        This asserted only the status for a long time, and passed while the
+        refusal was the platform's generic "A record with these details already
+        exists" - which names no field, no row and no branch, and lands on a
+        drawer holding a Name box AND a Code box. The person could not tell
+        which of the two was wrong.
+
+        The message must also state the rule CORRECTLY: a room name repeats
+        freely across branches. Borrowing the catalogue's sentence would say
+        names are unique across the school, which is false and would send a
+        school hunting for a clash that is not there.
+        """
+        response = self.post(self.admin, "calendar-room-list", {
+            "name": "block a room 1", "room_type": "CLASSROOM",
+            "branch": self.lekki.pk,
+        })
+        self.assertEqual(response.data["error"]["code"], "DUPLICATE_NAME")
+        self.assertEqual(response.data["error"]["detail"]["field"], "name")
+        self.assertIn(self.lekki.name, response.data["message"])
+        self.assertIn("within a branch", response.data["message"])
+
+    def test_the_code_refusal_names_the_room_it_belongs_to(self):
+        """A code is unique across the SCHOOL, and the message says so.
+
+        The opposite scope from the name, on the same form, which is why the
+        two refusals are written separately rather than sharing a sentence.
+        """
+        Room.all_objects.create(
+            tenant=self.tenant, branch=self.lekki,
+            name="Somewhere Else", code="ZZZ", room_type=RoomType.CLASSROOM,
+        )
+        response = self.post(self.admin, "calendar-room-list", {
+            "name": "A New Room", "code": "zzz", "room_type": "CLASSROOM",
+            "branch": self.ikeja.pk,
+        })
+        self.assertEqual(response.data["error"]["code"], "DUPLICATE_CODE")
+        self.assertEqual(response.data["error"]["detail"]["field"], "code")
+        self.assertIn("Somewhere Else", response.data["message"])
+        self.assertIn("whole school", response.data["message"])
+
+    def test_renaming_a_room_to_its_own_name_is_not_a_duplicate(self):
+        """The row being edited must be excluded from its own check.
+
+        Otherwise every save of an unchanged name is refused, which makes the
+        drawer impossible to use for anything else on the form.
+        """
+        room = Room.all_objects.filter(
+            tenant=self.tenant, branch=self.lekki,
+        ).first()
+        response = self.patch(
+            self.admin, "calendar-room-detail",
+            {"name": room.name, "capacity": 31}, pk=room.pk,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
     def test_a_room_holding_lessons_cannot_be_deleted(self):
         TimetableSlot.all_objects.create(
             tenant=self.tenant, session=self.year, school_class=self.jss1a,

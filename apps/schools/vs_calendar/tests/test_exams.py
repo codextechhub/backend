@@ -100,12 +100,62 @@ class ExamPaperRefusalTests(_ExamBase):
         # constraint rather than warned about.
         self.assertIn(second.status_code, (400, 409), second.data)
 
+    def test_that_refusal_names_the_class_the_paper_and_the_sitting(self):
+        """Not just a 4xx.
+
+        This asserted only the status, and passed while the refusal was the
+        platform's generic "A record with these details already exists" - on a
+        form carrying a class, a subject, a date, a sitting, a room and an
+        invigilator. Six fields and no clue which was wrong.
+
+        The same gap existed on the room surface and was closed there first;
+        this is the sweep. ``detail.field`` is what lets the drawer put the
+        sentence under the control that caused it.
+        """
+        self.assertEqual(self.paper().status_code, 201)
+        second = self.paper(subject=self.physics.pk)
+        self.assertEqual(second.data["error"]["code"], "CLASS_ALREADY_SITTING")
+        self.assertEqual(second.data["error"]["detail"]["field"], "school_class")
+        message = second.data["message"]
+        self.assertIn(self.jss1a.name, message)
+        # The paper it collided with, not just "a paper".
+        self.assertIn(self.maths.name, message)
+        self.assertIn("morning", message.lower())
+
+    def test_editing_a_paper_without_moving_it_is_not_a_clash_with_itself(self):
+        """The row being edited must be excluded from its own check.
+
+        Otherwise changing only the room on an existing paper is refused for
+        clashing with the paper it IS, which makes the drawer unusable for
+        everything else on the form.
+        """
+        created = self.paper()
+        self.assertEqual(created.status_code, 201)
+        response = self.patch(
+            self.admin, "calendar-exam-slot-detail",
+            {"room": self.room_a2.pk},
+            exam_id=self.exam.pk, pk=created.data["data"]["id"],
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
     def test_the_same_class_may_sit_again_in_the_afternoon(self):
         self.assertEqual(self.paper().status_code, 201)
         self.assertEqual(
             self.paper(subject=self.physics.pk, sitting="AFTERNOON").status_code,
             201,
         )
+
+    def test_end_before_start_is_refused_rather_than_crashing(self):
+        """It was a 500, and a logged server exception, for a typo.
+
+        ``ck_examslot_times`` refused it and nothing caught the IntegrityError.
+        The bell schedule has answered the same mistake with a sentence since
+        it was written; this surface had not caught up. Found by the same sweep
+        as CELL_ALREADY_FILLED.
+        """
+        response = self.paper(start_time="11:00", end_time="09:00")
+        self.assertEqual(response.status_code, 422, response.data)
+        self.assertEqual(response.data["error"]["code"], "EXAM_TIMES_INVALID")
 
     def test_a_non_teacher_cannot_invigilate(self):
         from vs_rbac.tests.helpers import make_school_admin

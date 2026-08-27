@@ -30,13 +30,21 @@ from django.db import transaction
 from schools.vs_academics.exceptions import BranchScopeConflict
 
 from ..exceptions import (
+    CellAlreadyFilled,
     NoBellSchedule,
     RoomBranchConflict,
     SlotPeriodNotTeaching,
     SlotPeriodWrongDay,
     TimetableSpansBranches,
 )
-from ..models import ClassTimetable, Period, PeriodType, PublishState, TimetableSlot
+from ..models import (
+    ClassTimetable,
+    DayOfWeek,
+    Period,
+    PeriodType,
+    PublishState,
+    TimetableSlot,
+)
 from .teachers import assert_is_teacher
 
 
@@ -120,6 +128,30 @@ def validate_slot(tenant, session, *, school_class, day_of_week, period,
         school_class=school_class, period=period, room=room, session=session,
         exclude_pk=exclude_pk,
     )
+
+    # The unique constraint stops this too, but its IntegrityError reaches the
+    # caller as the platform's generic "A record with these details already
+    # exists" - and on a grid that means a cell refuses to fill and says
+    # nothing. Checked here, in the one place every write passes through, so
+    # create and update cannot answer differently.
+    #
+    # Not a replacement for the constraint: two concurrent writes can both pass
+    # this and the database stops the second, which still answers the generic
+    # message. That is a race; this is two people editing one week.
+    taken = TimetableSlot.objects.filter(
+        session=session, school_class=school_class,
+        day_of_week=day_of_week, period=period,
+    )
+    if exclude_pk:
+        taken = taken.exclude(pk=exclude_pk)
+    hit = taken.select_related("subject").first()
+    if hit is not None:
+        raise CellAlreadyFilled(
+            f"{school_class.name} already has {hit.subject.name} in "
+            f"{period.label} on {DayOfWeek(day_of_week).label}. Clear that "
+            f"lesson first, or edit it instead of adding another.",
+            field="period", conflict=hit.subject.name,
+        )
 
 
 def require_bell_schedule(tenant, session, *, branch=None):

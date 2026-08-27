@@ -38,7 +38,9 @@ from ..constants import (
     PERM_TIMETABLE_VIEW,
 )
 from ..exceptions import (
+    ClassAlreadySitting,
     ExamEventNotExamPeriod,
+    ExamTimesInvalid,
     ExamOutsideExamPeriod,
     ExamPublishedReadOnly,
     RoomBranchConflict,
@@ -250,6 +252,40 @@ class _ExamScoped(CalendarViewMixin):
                 f"{room.name} is at another branch, so it cannot be used for "
                 f"{event.name}.",
                 room=room.name,
+            )
+
+        # The unique constraint stops this too, but its IntegrityError reaches
+        # the caller as the generic "A record with these details already
+        # exists", which names neither the class nor the paper it collided with
+        # - on a form with six fields on it. Checked here, in the one place both
+        # create and update pass through, so the message cannot drift apart.
+        #
+        # Not a replacement for the constraint: two concurrent requests can both
+        # pass this and the database stops the second, which still answers the
+        # generic message. That is a race, and this is a typo.
+        # Refused by ck_examslot_times, and by nothing else - so an ordinary
+        # typo reached the caller as a 500 and logged a server exception. The
+        # bell schedule has answered this with a sentence since it was written.
+        start, end = data.get("start_time"), data.get("end_time")
+        if start and end and end <= start:
+            raise ExamTimesInvalid(field="end_time")
+
+        clash = ExamSlot.objects.filter(
+            exam=exam, school_class=school_class,
+            exam_date=data["exam_date"], sitting=data["sitting"],
+        )
+        if exclude_pk:
+            clash = clash.exclude(pk=exclude_pk)
+        sitting_hit = clash.select_related("subject").first()
+        if sitting_hit is not None:
+            raise ClassAlreadySitting(
+                f"{school_class.name} is already sitting "
+                f"{sitting_hit.subject.name} in the "
+                f"{data['exam_date']:%d %b %Y} "
+                f"{sitting_hit.get_sitting_display().lower()} sitting. A class "
+                f"can only sit one paper at a time - move one of them to "
+                f"another sitting.",
+                field="school_class", conflict=sitting_hit.subject.name,
             )
         return school_class
 

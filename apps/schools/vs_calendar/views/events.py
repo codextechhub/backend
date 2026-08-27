@@ -168,9 +168,17 @@ class _EventBase(CalendarViewMixin):
             return
 
         created = []
+        # "The whole of JSS1, and JSS1" is one narrowing, not a conflict. The
+        # unique constraint refused the repeat with the platform's generic
+        # duplicate message, which told a caller its request was invalid when
+        # it was merely redundant.
+        seen: set[tuple[str, object]] = set()
         for entry in rows:
             kind = str(entry.get("type") or "").lower()
             pk = entry.get("id")
+            if (kind, pk) in seen:
+                continue
+            seen.add((kind, pk))
             if kind == "level":
                 target = Level.objects.filter(
                     tenant=self.tenant, session=event.session, pk=pk,

@@ -139,6 +139,25 @@ class EventAudienceTests(_Base):
         self.assertEqual(len(audience), 1)
         self.assertEqual(audience[0]["name"], "Primary 4")
 
+    def test_naming_the_same_level_twice_narrows_it_once(self):
+        """Redundant, not invalid.
+
+        "The whole of JSS1, and JSS1" is one narrowing. The unique constraint
+        refused the repeat with the platform's generic duplicate message, which
+        told a caller its request was wrong when it was merely saying the same
+        thing twice. Found by the sweep for status-only assertions.
+        """
+        response = self.post(self.admin, "calendar-event-list", {
+            "name": "Primary Speech Day", "event_type": "SCHOOL_EVENT",
+            "start_date": "2025-11-14", "end_date": "2025-11-14",
+            "audience": [
+                {"type": "level", "id": self.primary4.pk},
+                {"type": "level", "id": self.primary4.pk},
+            ],
+        })
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(len(response.data["data"]["audience"]), 1)
+
     def test_an_event_can_be_narrowed_to_a_class(self):
         response = self.post(self.admin, "calendar-event-list", {
             "name": "JSS1 A trip", "event_type": "SCHOOL_EVENT",

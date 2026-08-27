@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from django.db import transaction
 from django.db.models import Count, Q
+from django.db.models.functions import Lower
 from rest_framework import generics
 
 from core.response import success_response
@@ -26,10 +27,68 @@ from ..constants import (
     PERM_TIMETABLE_UPDATE,
     PERM_TIMETABLE_VIEW,
 )
+from ..exceptions import DuplicateRoomCode, DuplicateRoomName
 from ..models import Room
 from ..serializers import RoomSerializer, RoomWriteSerializer, _usage_label
 from ..services.scoping import UNSET, room_branch, scope_to_visible_branches
 from .base import CalendarViewMixin
+
+
+def _assert_unique(tenant, *, name, code, branch, multi_branch, exclude_pk=None):
+    """Refuse a duplicate name or code before writing it.
+
+    The two constraints are scoped differently and the messages have to say so:
+    a NAME repeats freely across branches and never within one, while a CODE is
+    unique across the whole school. Stating the wrong rule would send a school
+    hunting for a clash in the wrong place.
+
+    Checks the name first, because it is the field filled in first and a drawer
+    shows one message at a time.
+
+    Not a replacement for the constraints. Two concurrent requests can both pass
+    this and the database stops the second, which still answers the generic
+    message - the right trade, because that is a race and this is a typo.
+    """
+    rows = Room.all_objects.filter(tenant=tenant).select_related("branch")
+    if exclude_pk:
+        rows = rows.exclude(pk=exclude_pk)
+
+    value = (name or "").strip()
+    if value:
+        hit = rows.filter(branch=branch).annotate(
+            _n=Lower("name"),
+        ).filter(_n=value.lower()).first()
+        if hit is not None:
+            where = (
+                f" at {hit.branch.name}"
+                if multi_branch and hit.branch_id else ""
+            )
+            rule = (
+                " Room names only have to be unique within a branch, so pick a "
+                "different one here."
+                if multi_branch else " Pick a different name."
+            )
+            raise DuplicateRoomName(
+                f"{value} already exists{where}.{rule}",
+                field="name", conflict=hit.name,
+            )
+
+    typed = (code or "").strip()
+    if typed:
+        hit = rows.annotate(_c=Lower("code")).filter(_c=typed.lower()).first()
+        if hit is not None:
+            # The branch is named even when the caller cannot see it: the
+            # alternative is a refusal they cannot resolve, because their own
+            # list does not contain the row. Same reasoning as the catalogue's.
+            where = (
+                f" at {hit.branch.name}"
+                if multi_branch and hit.branch_id else ""
+            )
+            raise DuplicateRoomCode(
+                f"That code belongs to {hit.name}{where}. Room codes are "
+                f"unique across the whole school, so pick a different one.",
+                field="code", conflict=hit.name,
+            )
 
 
 def _annotated(tenant):
@@ -105,6 +164,11 @@ class RoomListCreateView(_RoomBase, generics.ListCreateAPIView):
         writer.is_valid(raise_exception=True)
         data = writer.validated_data
         branch = self._write_branch(data)
+        _assert_unique(
+            self.tenant,
+            name=data["name"], code=data.get("code"), branch=branch,
+            multi_branch=self.multi_branch,
+        )
 
         row = Room.objects.create(
             tenant=self.tenant,
@@ -162,6 +226,16 @@ class RoomDetailView(_RoomBase, generics.RetrieveUpdateDestroyAPIView):
 
         if "branch" in data:
             row.branch = self._write_branch(data)
+        # Against the branch it will END UP at, not the one it is leaving: a
+        # room moved to another branch collides with that branch's names.
+        _assert_unique(
+            self.tenant,
+            name=data.get("name", row.name),
+            code=data.get("code", row.code),
+            branch=row.branch,
+            multi_branch=self.multi_branch,
+            exclude_pk=row.pk,
+        )
         for field in ("name", "room_type", "capacity", "is_active"):
             if field in data:
                 setattr(row, field, data[field])

@@ -36,6 +36,50 @@ class SlotRuleTests(_Base):
         # by the constraint rather than warned about.
         self.assertIn(second.status_code, (400, 409), second.data)
 
+    def test_that_refusal_names_the_lesson_already_in_the_cell(self):
+        """The most reachable refusal in the module, and it said nothing.
+
+        It answered the platform's generic "A record with these details already
+        exists", which on a grid means a cell refuses to fill and gives no
+        reason. Two people editing one class's week hit this, and so does
+        anyone who clicks a cell that was filled while they were looking at it -
+        and the next thing they need to know is what is already in it.
+
+        Found by sweeping the status-only assertions in this package after the
+        same defect was fixed on the room and exam surfaces.
+        """
+        body = {
+            "school_class": self.jss1a.pk, "day_of_week": 1,
+            "period": self.p1.pk, "subject": self.maths.pk,
+        }
+        self.assertEqual(
+            self.post(self.admin, "calendar-slot-list", body).status_code, 201,
+        )
+        second = self.post(self.admin, "calendar-slot-list", body)
+        self.assertEqual(second.data["error"]["code"], "CELL_ALREADY_FILLED")
+        message = second.data["message"]
+        self.assertIn(self.jss1a.name, message)
+        self.assertIn(self.maths.name, message)
+        self.assertIn(self.p1.label, message)
+        self.assertIn("Monday", message)
+
+    def test_editing_a_slot_in_place_is_not_a_clash_with_itself(self):
+        """The row being edited must be excluded from its own check.
+
+        Otherwise changing only the room on an existing lesson is refused for
+        occupying the cell it already occupies.
+        """
+        created = self.post(self.admin, "calendar-slot-list", {
+            "school_class": self.jss1a.pk, "day_of_week": 1,
+            "period": self.p1.pk, "subject": self.maths.pk,
+        })
+        self.assertEqual(created.status_code, 201, created.data)
+        response = self.patch(
+            self.admin, "calendar-slot-detail",
+            {"room": self.room_a1.pk}, pk=created.data["data"]["id"],
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
     def test_a_period_from_another_day_is_refused(self):
         friday_only = Period.all_objects.create(
             tenant=self.tenant, session=self.year, day_of_week=5,
