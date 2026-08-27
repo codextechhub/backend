@@ -42,7 +42,13 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
-from schools.vs_academics.models import AcademicSession, SchoolClass, SessionStatus, Subject
+from schools.vs_academics.models import (
+    AcademicSession,
+    Level,
+    SchoolClass,
+    SessionStatus,
+    Subject,
+)
 from schools.vs_calendar.models import (
     CalendarEvent,
     CalendarEventAudience,
@@ -270,9 +276,19 @@ class Command(BaseCommand):
         # An audience-narrowed closure: the case the whole audience table
         # exists for. Primary is off; the secondary school is not, and its
         # teaching-day count must not lose the day.
-        primary = SchoolClass.all_objects.filter(
+        #
+        # Read off the LEVEL, not off a class in it. An audience row targets a
+        # level, and this reached one by finding a class and following it up -
+        # which meant the state depended on a class existing that
+        # ``seed_academic_scenarios`` does not create. The Primary levels are
+        # all there and have no arms under them yet, so the seeder ran clean,
+        # printed nothing, and left the audience table empty in every tenant:
+        # the one state this file exists to make reachable was the one it never
+        # reached. A level with no classes is still a real narrowing - the whole
+        # of Primary 4 is off whether it has one arm or three.
+        primary = Level.all_objects.filter(
             tenant=tenant, session=year, name__istartswith="Primary",
-        ).first()
+        ).order_by("order_index", "pk").first()
         if primary is not None:
             row, created = CalendarEvent.all_objects.get_or_create(
                 tenant=tenant, session=year, name="Primary Speech Day",
@@ -284,13 +300,16 @@ class Command(BaseCommand):
                     "description": "The primary school only.",
                 },
             )
-            if created:
-                CalendarEventAudience.all_objects.get_or_create(
-                    tenant=tenant, event=row, level=primary.level,
-                )
+            # Outside the `created` guard on purpose. The event and its audience
+            # are two writes, so a run that made the event and then failed would
+            # leave a closure that says it covers everybody - which is exactly
+            # the wrong-data case, seeded.
+            _, narrowed = CalendarEventAudience.all_objects.get_or_create(
+                tenant=tenant, event=row, level=primary,
+            )
+            if created or narrowed:
                 self.stdout.write(
-                    f"  event    Primary Speech Day (narrowed to "
-                    f"{primary.level.name})",
+                    f"  event    Primary Speech Day (narrowed to {primary.name})",
                 )
             made["Primary Speech Day"] = row
         return made

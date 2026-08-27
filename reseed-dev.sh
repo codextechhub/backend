@@ -73,9 +73,17 @@ run seed_onboarding_scenarios
 echo "→ Academic structure for the two branch shapes..."
 run seed_academic_scenarios
 
+# The calendar and the timetable that runs inside it, for the same three shapes
+# of school. Without this the whole of Academic Calendar and Timetables answers
+# with empty lists, which reads as "the module is broken" rather than "the dev
+# world was never given one".
+echo "→ Calendars and timetables for the same three schools..."
+run seed_timetable_scenarios
+
 echo ""
 echo "✔ Done. Logins: admin@codexng.com / Admin@123456 · *.vision.edu / Vision@2025 · school users / School@2025"
 echo "  Onboarding cast (School@2025): brightfield-lekki not-ready · st-monicas ready · holy-cross pending"
 echo "                                grace-fields rejected · crescent-model failed · lagoon-view live"
 echo "                                new-dawn unprovisioned · riverbank expiring - admin@<slug>.example.com"
 echo "  Academic structure seeded for: brightfield-lekki (2 branches) · st-monicas (1 branch)"
+echo "  Calendars + timetables for the same three, holy-cross being the live one"
