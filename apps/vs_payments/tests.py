@@ -1309,8 +1309,15 @@ class PayoutBatchApprovalTests(TestCase):
             TenantRoleTemplate, TenantUserRoleAssignment, TenantRolePermission,
         )
         from vs_tenants.models import Tenant
+        from vs_workflow.models import WorkflowTemplate
 
         call_command("seed_payments_permissions", verbosity=0, stdout=io.StringIO())
+        # Most cases publish an explicit tenant policy, and two deliberately exercise
+        # the fail-closed missing-template state. Remove the migration fallback so each
+        # test controls that precondition rather than inheriting global seed data.
+        WorkflowTemplate.all_objects.filter(
+            document_type="payments.payout_batch",
+        ).delete()
 
         self.User = get_user_model()
         self.TenantRoleTemplate = TenantRoleTemplate
@@ -2486,6 +2493,57 @@ class PayoutApprovalSeedingTests(TestCase):
         with self.assertRaises(ValueError):
             ensure_tenant_approval_templates(None)
 
+    def test_the_backfill_migration_creates_the_platform_fallback_once(self):
+        """Pre-provisioning tenants gain a route without a destructive republish."""
+        import importlib
+        from django.apps import apps
+        from vs_workflow.models import WorkflowTemplate
+
+        WorkflowTemplate.all_objects.filter(
+            document_type="payments.payout_batch",
+        ).delete()
+        migration = importlib.import_module(
+            "vs_payments.migrations.0006_seed_platform_payout_approval_fallback",
+        )
+        migration.seed_platform_payout_approval_fallback(apps, None)
+        migration.seed_platform_payout_approval_fallback(apps, None)
+
+        templates = WorkflowTemplate.all_objects.filter(
+            tenant=None,
+            branch=None,
+            document_type="payments.payout_batch",
+            code="standard",
+        )
+        self.assertEqual(templates.count(), 1)
+        template = templates.get()
+        checker, senior = self._stages(template)
+        self.assertEqual(checker.approver_role_key, "payout-approver")
+        self.assertFalse(checker.skip_if_no_approvers)
+        self.assertEqual(
+            senior.inclusion_condition,
+            {"op": "gte", "field": "total_amount", "value": 50_000_000},
+        )
+
+    def test_the_backfill_migration_does_not_overwrite_platform_configuration(self):
+        """A platform policy that already exists remains administrator-owned."""
+        import importlib
+        from django.apps import apps
+        from vs_payments.approvals import ensure_default_approval_templates
+
+        template = ensure_default_approval_templates(
+            approve_role_key="custom-checker",
+            high_value_threshold=75_000_000,
+        )
+        migration = importlib.import_module(
+            "vs_payments.migrations.0006_seed_platform_payout_approval_fallback",
+        )
+        migration.seed_platform_payout_approval_fallback(apps, None)
+
+        template.refresh_from_db()
+        checker, senior = self._stages(template)
+        self.assertEqual(checker.approver_role_key, "custom-checker")
+        self.assertEqual(senior.inclusion_condition["value"], 75_000_000)
+
     # --- the command ------------------------------------------------------- #
 
     def test_the_command_refuses_to_guess_what_to_seed(self):
@@ -2512,11 +2570,117 @@ class PayoutApprovalSeedingTests(TestCase):
         from django.core.management import call_command
         from vs_workflow.models import WorkflowTemplate
 
+        WorkflowTemplate.all_objects.filter(
+            document_type="payments.payout_batch",
+        ).delete()
         call_command(
             "seed_payout_approvals", platform=True, tenants=[self.tenant.slug],
             dry_run=True, verbosity=0, stdout=io.StringIO())
         self.assertFalse(WorkflowTemplate.all_objects.filter(
             document_type="payments.payout_batch").exists())
+
+
+class PayoutApprovalHealthTests(TestCase):
+    """The deployment check names every active entity with no payout route."""
+
+    def setUp(self):
+        from vs_finance.models import LedgerEntity
+        from vs_tenants.models import Tenant
+        from vs_workflow.models import WorkflowTemplate
+
+        WorkflowTemplate.all_objects.filter(
+            document_type="payments.payout_batch",
+        ).delete()
+
+        self.tenant = Tenant.objects.create(
+            name="Health Tenant",
+            slug="payout-health",
+            kind=Tenant.Kind.ORGANIZATION,
+            status=Tenant.Status.ACTIVE,
+        )
+        self.entity = LedgerEntity.objects.create(
+            name="Health Books",
+            code="PHTH",
+            kind=LedgerEntity.Kind.TENANT,
+            tenant=self.tenant,
+        )
+
+    def test_every_unroutable_active_entity_is_listed(self):
+        from vs_finance.models import LedgerEntity
+        from vs_payments.approvals import payout_approval_template_gaps
+
+        second = LedgerEntity.objects.create(
+            name="Second Health Books",
+            code="PHT2",
+            kind=LedgerEntity.Kind.OTHER,
+            tenant=self.tenant,
+        )
+
+        gaps = payout_approval_template_gaps()
+
+        rows = {(gap["tenant_slug"], gap["entity_code"]) for gap in gaps}
+        self.assertIn((self.tenant.slug, self.entity.code), rows)
+        self.assertIn((self.tenant.slug, second.code), rows)
+
+    def test_platform_fallback_makes_every_entity_routable(self):
+        from vs_payments.approvals import (
+            ensure_default_approval_templates,
+            payout_approval_template_gaps,
+        )
+
+        ensure_default_approval_templates()
+
+        self.assertEqual(payout_approval_template_gaps(), [])
+
+    def test_inactive_entities_and_tenants_are_not_release_blockers(self):
+        from vs_finance.models import LedgerEntity
+        from vs_payments.approvals import payout_approval_template_gaps
+        from vs_tenants.models import Tenant
+
+        self.entity.is_active = False
+        self.entity.save(update_fields=["is_active"])
+        inactive_tenant = Tenant.objects.create(
+            name="Inactive Tenant",
+            slug="inactive-payout-health",
+            kind=Tenant.Kind.ORGANIZATION,
+            status=Tenant.Status.INACTIVE,
+        )
+        LedgerEntity.objects.create(
+            name="Inactive Books",
+            code="PIHB",
+            kind=LedgerEntity.Kind.TENANT,
+            tenant=inactive_tenant,
+        )
+
+        affected_codes = {
+            gap["entity_code"] for gap in payout_approval_template_gaps()
+        }
+        self.assertNotIn("PHTH", affected_codes)
+        self.assertNotIn("PIHB", affected_codes)
+
+    def test_command_fails_with_the_affected_entity_named(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        output = StringIO()
+        with self.assertRaises(CommandError):
+            call_command("payout_approval_health", stdout=output, stderr=output)
+        report = output.getvalue()
+        self.assertIn("tenant=payout-health", report)
+        self.assertIn("entity=PHTH", report)
+
+    def test_command_passes_after_the_fallback_is_published(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from vs_payments.approvals import ensure_default_approval_templates
+
+        ensure_default_approval_templates()
+        output = StringIO()
+
+        call_command("payout_approval_health", stdout=output, stderr=output)
+
+        self.assertIn("Healthy", output.getvalue())
 
 
 class PayoutApprovalDataMigrationTests(TestCase):

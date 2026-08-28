@@ -35,6 +35,55 @@ TEMPLATE_NAME = "Payout-batch approval"
 TEMPLATE_LABEL = "payout batch"
 
 
+def payout_approval_template_gaps() -> list[dict]:
+    """List active ledger entities that cannot resolve a payout template.
+
+    This asks the workflow resolver itself rather than reproducing its tenant to
+    platform cascade. The result is therefore the exact set of active entities whose
+    next payout submission would stop with ``TEMPLATE_NOT_FOUND``.
+
+    Resolution is cached per tenant because payout batches carry no branch. A tenant
+    with several active ledgers should cost the same two lookups as a tenant with one,
+    while every affected entity is still named in the result for an operator.
+    """
+    from vs_finance.models import LedgerEntity
+    from vs_tenants.models import Tenant
+    from vs_workflow.services.resolution import resolve_template
+
+    entities = (
+        LedgerEntity.objects
+        .filter(
+            is_active=True,
+            tenant__status__in=Tenant.AUTHENTICABLE_STATUSES,
+        )
+        .select_related("tenant")
+        .order_by("tenant__slug", "code", "pk")
+    )
+    resolved_by_tenant = {}
+    gaps = []
+    for entity in entities:
+        if entity.tenant_id not in resolved_by_tenant:
+            resolved_by_tenant[entity.tenant_id] = resolve_template(
+                DOCUMENT_TYPE,
+                tenant=entity.tenant,
+                branch=None,
+                code=WF_DEFAULT_TEMPLATE_CODE,
+            )
+        if resolved_by_tenant[entity.tenant_id] is None:
+            gaps.append({
+                "entity_id": entity.pk,
+                "entity_code": entity.code,
+                "entity_name": entity.name,
+                "tenant_id": entity.tenant_id,
+                "tenant_slug": entity.tenant.slug,
+                "reason": (
+                    "No active standard payout-approval template resolves at the "
+                    "tenant or platform scope."
+                ),
+            })
+    return gaps
+
+
 def _default_stages_payload(
     *, approve_role_key: str, high_value_role_key: str, high_value_threshold: int,
 ) -> list:
