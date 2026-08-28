@@ -157,6 +157,31 @@ class TimeStampedModel(models.Model):
         abstract = True
 
 
+class PermissionRegistryRevision(models.Model):
+    """Durable cache generation for permission-registry policy changes.
+
+    Effective permissions are memoised on the request's user instance.  A
+    registry deactivation is an emergency revocation, so an already-warm user
+    object must not keep the old authority.  This singleton generation lives
+    in PostgreSQL rather than process memory, which makes invalidation visible
+    to every application worker after the registry write commits.
+    """
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    revision = models.PositiveBigIntegerField(default=1)
+
+    @classmethod
+    def current(cls) -> int:
+        return (
+            cls.objects.filter(pk=1).values_list("revision", flat=True).first()
+            or 0
+        )
+
+    @classmethod
+    def bump(cls) -> None:
+        cls.objects.filter(pk=1).update(revision=models.F("revision") + 1)
+
+
 # -----------------------------------------------------------------------------
 # Permission vocabulary (Vision-owned, admin-manageable)
 # -----------------------------------------------------------------------------
@@ -758,7 +783,7 @@ class TenantUserRoleAssignment(TimeStampedModel):
     class Meta:
         constraints = [
             # Split in two on purpose. One constraint over (tenant, user, role)
-            # made the same role at two sites unstorable, so "Storekeeper at
+            # made the same role at two branches unstorable, so "Storekeeper at
             # Ikeja" *and* "Storekeeper at Lekki" - the arrangement a single
             # ``User.branch`` cannot express, and the reason branch scope is a
             # set of grants - could not be recorded at all. Splitting keeps both
@@ -832,13 +857,13 @@ class TenantUserRoleAssignment(TimeStampedModel):
         actually refused rather than the old "already has an active assignment
         for this role", which stopped being true the moment branch mattered:
         they may well hold the role elsewhere, legitimately. Where the refusal
-        is about one site, the message names it, because "at Ikeja" is the
+        is about one branch, the message names it, because "at Ikeja" is the
         difference between a mistake and a puzzle.
 
         The way out is the same sentence on both write paths deliberately.
         "Pick another branch" would read well on the assign form and be useless
         on the replace endpoint, which keeps the branch it was given and offers
-        no choice of one - and useless again to a school with a single site,
+        no choice of one - and useless again to a school with a single branch,
         where the branch control is not on screen at all.
         """
         role_name = getattr(role, "name", None) or getattr(role, "key", None) or "this"

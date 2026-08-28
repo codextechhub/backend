@@ -1,3 +1,4 @@
+from django.db.models import F, Q
 from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 
@@ -6,7 +7,9 @@ from .models import (
     Permission,
     PermissionAction,
     PermissionDependency,
+    PermissionGroup,
     PermissionModule,
+    PermissionRegistryRevision,
     PermissionResource,
     TenantRoleChangeRequest,
     TenantRoleGroup,
@@ -18,6 +21,34 @@ from .models import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _invalidate_permission_registry(*, permission_keys=(), group_ids=()):
+    """Invalidate evaluator caches and versions of every affected role."""
+    permission_keys = tuple(permission_keys)
+    group_ids = tuple(group_ids)
+
+    PermissionRegistryRevision.bump()
+
+    role_q = Q()
+    if permission_keys:
+        role_q |= Q(role_permissions__permission_id__in=permission_keys)
+        role_q |= Q(
+            role_groups__group__group_permissions__permission_id__in=permission_keys,
+        )
+    if group_ids:
+        role_q |= Q(role_groups__group_id__in=group_ids)
+    if not role_q:
+        return
+
+    role_ids = list(
+        TenantRoleTemplate.objects.filter(role_q)
+        .values_list("pk", flat=True)
+        .distinct()
+    )
+    if role_ids:
+        TenantRoleTemplate.objects.filter(pk__in=role_ids).update(
+            version=F("version") + 1,
+        )
 
 # Snapshot status before save so lifecycle receivers can audit real transitions.
 def _capture_old_status(sender, instance, **kwargs):
@@ -75,6 +106,8 @@ def audit_permission_change(sender, instance, created, **kwargs):
         return
 
     old_active = getattr(instance, "_pre_save_is_active", None)
+    if old_active is not None and old_active != instance.is_active:
+        _invalidate_permission_registry(permission_keys=[instance.pk])
     if old_active is True and instance.is_active is False:
         emit_audit_event(
             module_key=AuditModuleKey.RBAC,
@@ -188,6 +221,45 @@ def audit_group_permission_removed(sender, instance, **kwargs):
 
 
 # ---------------------------------------------------------------------------
+# PermissionGroup - active state
+# ---------------------------------------------------------------------------
+
+pre_save.connect(_capture_old_is_active, sender=PermissionGroup)
+
+
+@receiver(post_save, sender=PermissionGroup)
+def audit_permission_group_liveness(sender, instance, created, **kwargs):
+    """Audit and invalidate every role affected by a group lifecycle change."""
+    if created:
+        return
+
+    old_active = getattr(instance, "_pre_save_is_active", None)
+    if old_active is None or old_active == instance.is_active:
+        return
+
+    _invalidate_permission_registry(group_ids=[instance.pk])
+
+    from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
+
+    verb = "deactivated" if not instance.is_active else "reactivated"
+    emit_audit_event(
+        module_key=AuditModuleKey.RBAC,
+        action_type=AuditActionType.UPDATE,
+        entity_type="PermissionGroup",
+        entity_id=str(instance.pk),
+        entity_label=instance.name,
+        severity=(
+            AuditSeverity.CRITICAL if not instance.is_active
+            else AuditSeverity.WARNING
+        ),
+        summary=f"Permission group '{instance.name}' {verb}",
+        diff_data={"is_active": {"before": old_active, "after": instance.is_active}},
+        metadata={"group_id": str(instance.pk)},
+    )
+
+
+# ---------------------------------------------------------------------------
 # PermissionModule - created, updated (is_active), deleted
 # ---------------------------------------------------------------------------
 
@@ -217,6 +289,12 @@ def audit_permission_module(sender, instance, created, **kwargs):
     old_active = getattr(instance, "_pre_save_is_active", None)
     if old_active is None or old_active == instance.is_active:
         return
+
+    _invalidate_permission_registry(
+        permission_keys=Permission.objects.filter(module=instance).values_list(
+            "pk", flat=True,
+        ),
+    )
 
     severity = AuditSeverity.CRITICAL if not instance.is_active else AuditSeverity.WARNING
     verb = "deactivated" if not instance.is_active else "reactivated"
@@ -285,6 +363,12 @@ def audit_permission_resource(sender, instance, created, **kwargs):
     if old_active is None or old_active == instance.is_active:
         return
 
+    _invalidate_permission_registry(
+        permission_keys=Permission.objects.filter(resource=instance).values_list(
+            "pk", flat=True,
+        ),
+    )
+
     severity = AuditSeverity.CRITICAL if not instance.is_active else AuditSeverity.WARNING
     verb = "deactivated" if not instance.is_active else "reactivated"
     emit_audit_event(
@@ -350,6 +434,12 @@ def audit_permission_action(sender, instance, created, **kwargs):
     old_active = getattr(instance, "_pre_save_is_active", None)
     if old_active is None or old_active == instance.is_active:
         return
+
+    _invalidate_permission_registry(
+        permission_keys=Permission.objects.filter(action=instance).values_list(
+            "pk", flat=True,
+        ),
+    )
 
     severity = AuditSeverity.CRITICAL if not instance.is_active else AuditSeverity.WARNING
     verb = "deactivated" if not instance.is_active else "reactivated"

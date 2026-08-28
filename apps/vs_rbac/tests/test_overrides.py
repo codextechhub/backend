@@ -171,9 +171,9 @@ class UserPermissionOverrideTests(TestCase):
         first = get_effective_permissions(user, tenant=self.tenant)
         self.assertIn(TARGET_KEY, first)
         _override(self.target, TARGET_KEY, UserPermissionOverride.Mode.DENY)
-        # Same in-request user instance → served from the per-request cache, so
-        # override evaluation costs one query per request, not per check.
-        with self.assertNumQueries(0):
+        # The cached set is reused after one cheap registry-revision read. That
+        # read is what lets an emergency deactivation invalidate a warm user.
+        with self.assertNumQueries(1):
             self.assertIn(TARGET_KEY, get_effective_permissions(user, tenant=self.tenant))
         # A new request (fresh instance) sees the override.
         self.assertNotIn(
@@ -182,7 +182,7 @@ class UserPermissionOverrideTests(TestCase):
 
     def test_override_costs_one_extra_query_per_evaluation(self):
         user = _fresh(self.target)
-        with self.assertNumQueries(4):
+        with self.assertNumQueries(5):
             get_effective_permissions(user, tenant=self.tenant)
 
     def test_cross_tenant_override_row_is_ignored(self):

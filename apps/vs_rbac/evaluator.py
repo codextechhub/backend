@@ -31,6 +31,8 @@ from django.utils import timezone
 
 from .models import (
     GroupPermission,
+    Permission,
+    PermissionRegistryRevision,
     PermissionScope,
     TenantRoleGroup,
     TenantRolePermission,
@@ -64,7 +66,7 @@ def _assignment_branch_q(branch) -> Q:
     A whole-tenant grant (``branch IS NULL``) always counts - it is what "the
     whole tenant" means, and it is how everyone working today holds their access.
     A branch-pinned grant counts only while its branch is still in service, so a
-    suspended, deactivated or closed site withdraws the access it conferred
+    suspended, deactivated or closed branch withdraws the access it conferred
     instead of leaving it hanging.
 
     The liveness test is written as a positive ``status IN (in service)`` rather
@@ -97,14 +99,28 @@ def _holdable_filter(tenant) -> dict:
     return {"permission__scope": PermissionScope.TENANT}
 
 
+def _live_permission_q(prefix="permission__") -> Q:
+    """One predicate for whether permission vocabulary may confer authority."""
+    return Q(
+        **{
+            f"{prefix}is_active": True,
+            f"{prefix}module__is_active": True,
+            f"{prefix}resource__is_active": True,
+            f"{prefix}action__is_active": True,
+        }
+    )
+
+
 def _group_permission_keys(group_ids, tenant=None) -> Set[str]:
     if not group_ids:
         return set()
     # Restricted permissions must never travel through a group. This is the
     # runtime backstop for legacy rows until the cleanup migration removes them.
     qs = GroupPermission.objects.filter(
-        group_id__in=group_ids, permission__is_restricted=False,
-    )
+        group_id__in=group_ids,
+        group__is_active=True,
+        permission__is_restricted=False,
+    ).filter(_live_permission_q())
     if tenant is not None:
         qs = qs.filter(**_holdable_filter(tenant))
     return set(qs.values_list("permission_id", flat=True))
@@ -122,7 +138,7 @@ def _active_override_qs(tenant=None):
     """
     qs = UserPermissionOverride.objects.filter(
         Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now()),
-    )
+    ).filter(_live_permission_q())
     if tenant is not None:
         qs = qs.filter(tenant=tenant)
     return qs
@@ -178,7 +194,7 @@ def _role_permission_keys(user, tenant, branch) -> Set[str]:
     granted, denied = set(), set()
     for key, is_granted in TenantRolePermission.objects.filter(
         role_id__in=role_ids, **_holdable_filter(tenant),
-    ).values_list("permission_id", "granted"):
+    ).filter(_live_permission_q()).values_list("permission_id", "granted"):
         (granted if is_granted else denied).add(key)
 
     group_ids = TenantRoleGroup.objects.filter(role_id__in=role_ids).values_list(
@@ -217,9 +233,12 @@ def get_effective_permissions(user, tenant=None, branch=ANY_BRANCH) -> Set[str]:
         tenant.pk,
         branch if branch is ANY_BRANCH else getattr(branch, "pk", None),
     )
+    registry_revision = PermissionRegistryRevision.current()
     cache = getattr(user, "_rbac_effective_perms", None)
     if cache is not None and cache_key in cache:
-        return cache[cache_key]
+        cached_revision, cached_permissions = cache[cache_key]
+        if cached_revision == registry_revision:
+            return cached_permissions
 
     effective = _role_permission_keys(user, tenant, branch)
     allows, denies = get_user_override_keys(user, tenant)
@@ -228,7 +247,7 @@ def get_effective_permissions(user, tenant=None, branch=ANY_BRANCH) -> Set[str]:
     if cache is None:
         cache = {}
         user._rbac_effective_perms = cache
-    cache[cache_key] = effective
+    cache[cache_key] = (registry_revision, effective)
     return effective
 
 
@@ -257,7 +276,7 @@ def resolve_users_with_permission(tenant, branch, permission_key: str):
     ``branch`` here is the scope of the *work* (the document being routed), not a
     caller's context, so it is passed positionally and an explicit ``None`` keeps
     its meaning: a document belonging to the entity as a whole is approved by
-    whole-tenant grant holders, never by somebody pinned to one site. Routing
+    whole-tenant grant holders, never by somebody pinned to one branch. Routing
     shares :func:`_assignment_branch_q` with the permission gate so a person this
     function nominates as an approver cannot be someone ``has_permission`` would
     then refuse.
@@ -269,34 +288,36 @@ def resolve_users_with_permission(tenant, branch, permission_key: str):
     if tenant is None:
         return get_user_model().objects.none()
 
-    # Routing must agree with the permission gate: nobody in a tenant that may
-    # not hold this key can be nominated to act on it, however they were granted.
-    if not tenant_is_platform(tenant):
-        from .models import Permission
-
-        holdable = Permission.objects.filter(
-            key=permission_key, scope=PermissionScope.TENANT,
-        ).exists()
-        if not holdable:
-            return get_user_model().objects.none()
-
-    group_ids = GroupPermission.objects.filter(permission_id=permission_key).values_list(
-        "group_id", flat=True,
+    # Routing must agree with the permission gate: inactive vocabulary and a
+    # key the tenant may not hold must nominate nobody, however it was granted.
+    permission_qs = Permission.objects.filter(key=permission_key).filter(
+        _live_permission_q(prefix=""),
     )
+    if not tenant_is_platform(tenant):
+        permission_qs = permission_qs.filter(scope=PermissionScope.TENANT)
+    if not permission_qs.exists():
+        return get_user_model().objects.none()
+
+    group_ids = GroupPermission.objects.filter(
+        permission_id=permission_key,
+        permission__is_restricted=False,
+        group__is_active=True,
+    ).filter(_live_permission_q()).values_list("group_id", flat=True)
     direct = TenantRolePermission.objects.filter(
         permission_id=permission_key, granted=True,
-    ).values_list("role_id", flat=True)
+    ).filter(_live_permission_q()).values_list("role_id", flat=True)
     via_group = TenantRoleGroup.objects.filter(group_id__in=group_ids).values_list(
         "role_id", flat=True,
     )
     denied = TenantRolePermission.objects.filter(
         permission_id=permission_key, granted=False,
-    ).values_list("role_id", flat=True)
+    ).filter(_live_permission_q()).values_list("role_id", flat=True)
     role_ids = (set(direct) | set(via_group)) - set(denied)
 
     assignments = TenantUserRoleAssignment.objects.filter(
         tenant=tenant,
         role_id__in=role_ids,
+        role__status="ACTIVE",
         assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
     ).filter(_assignment_branch_q(branch))
     user_ids = set(assignments.values_list("user_id", flat=True))
@@ -306,7 +327,10 @@ def resolve_users_with_permission(tenant, branch, permission_key: str):
     # approver/recipient while has_permission() says no.
     overrides = _active_override_qs(tenant).filter(permission_id=permission_key)
     user_ids |= set(
-        overrides.filter(mode=UserPermissionOverride.Mode.ALLOW).values_list("user_id", flat=True)
+        overrides.filter(
+            mode=UserPermissionOverride.Mode.ALLOW,
+            permission__is_restricted=False,
+        ).values_list("user_id", flat=True)
     )
     user_ids -= set(
         overrides.filter(mode=UserPermissionOverride.Mode.DENY).values_list("user_id", flat=True)
