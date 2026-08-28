@@ -12,7 +12,6 @@ from .models import (
     PermissionRegistryRevision,
     PermissionResource,
     TenantRoleChangeRequest,
-    TenantRoleGroup,
     TenantRoleTemplate,
     TenantUserRoleAssignment,
 )
@@ -580,52 +579,9 @@ def audit_tenant_role_template(sender, instance, created, **kwargs):
         )
 
 
-# ---------------------------------------------------------------------------
-# TenantRoleGroup - group attached to / detached from a tenant role
-# ---------------------------------------------------------------------------
-
-@receiver(post_save, sender=TenantRoleGroup)
-# Audit permission groups attached to tenant roles.
-def audit_tenant_role_group_attached(sender, instance, created, **kwargs):
-    """Emit an audit event when a permission group is attached to a tenant role."""
-    if not created:
-        return
-
-    from vs_audit.models import AuditActionType, AuditModuleKey
-    from vs_rbac.audit import record_rbac_audit as emit_audit_event
-
-    role_name = getattr(getattr(instance, "role", None), "name", str(instance.role_id))
-    group_name = getattr(getattr(instance, "group", None), "name", str(instance.group_id))
-    emit_audit_event(
-        module_key=AuditModuleKey.RBAC,
-        action_type=AuditActionType.PERMISSION_CHANGED,
-        actor_user=instance.attached_by,
-        entity_type="TenantRoleTemplate",
-        entity_id=str(instance.role_id),
-        entity_label=role_name,
-        summary=f"Permission group '{group_name}' attached to role '{role_name}'",
-        metadata={"group_id": str(instance.group_id), "role_id": str(instance.role_id)},
-    )
-
-
-@receiver(post_delete, sender=TenantRoleGroup)
-# Audit permission groups detached from tenant roles.
-def audit_tenant_role_group_detached(sender, instance, **kwargs):
-    """Emit an audit event when a permission group is detached from a tenant role."""
-    from vs_audit.models import AuditActionType, AuditModuleKey
-    from vs_rbac.audit import record_rbac_audit as emit_audit_event
-
-    role_name = getattr(getattr(instance, "role", None), "name", str(instance.role_id))
-    group_name = getattr(getattr(instance, "group", None), "name", str(instance.group_id))
-    emit_audit_event(
-        module_key=AuditModuleKey.RBAC,
-        action_type=AuditActionType.PERMISSION_CHANGED,
-        entity_type="TenantRoleTemplate",
-        entity_id=str(instance.role_id),
-        entity_label=role_name,
-        summary=f"Permission group '{group_name}' detached from role '{role_name}'",
-        metadata={"group_id": str(instance.group_id), "role_id": str(instance.role_id)},
-    )
+# Role permission and group membership changes deliberately have no row-level
+# receivers. ``services.set_role_access`` owns one complete before/after audit
+# inside the mutation transaction, including the actor, reason and approval.
 
 
 # ---------------------------------------------------------------------------

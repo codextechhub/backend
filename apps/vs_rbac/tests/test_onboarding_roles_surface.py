@@ -162,7 +162,10 @@ class OnboardingRolesSurfaceTests(TestCase):
 
         response = self._client(self.admin).patch(
             f"{self._role_url('assistant-bursar')}?tenant={self.tenant.slug}",
-            {"permission_keys": ["school.students.view"]},
+            {
+                "permission_keys": ["school.students.view"],
+                "reason": "Assistant bursars need student records for billing.",
+            },
             format="json",
         )
         self.assertEqual(response.status_code, 200, response.data)
@@ -242,7 +245,10 @@ class OnboardingRolesSurfaceTests(TestCase):
 
         response = self._client(self.admin).patch(
             f"{self._role_url('assistant-bursar')}?tenant={self.tenant.slug}",
-            {"permission_keys": offered},
+            {
+                "permission_keys": offered,
+                "reason": "Confirm the permissions offered by the catalogue.",
+            },
             format="json",
         )
         self.assertEqual(response.status_code, 200, response.data)

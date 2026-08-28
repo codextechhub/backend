@@ -24,6 +24,7 @@ from vs_rbac.evaluator import get_effective_permissions, has_permission
 from vs_rbac.models import (
     Permission,
     PermissionDependency,
+    RBACAuditLog,
     TenantRoleTemplate,
     TenantRolePermission,
     TenantUserRoleAssignment,
@@ -204,6 +205,7 @@ class TenantRoleTemplateViewTests(TestCase):
             "name": "Finance Manager",
             "description": "Manages finances",
             "permission_keys": ["finance.invoice.view"],
+            "reason": "Create the finance operating role.",
         }
         resp = _token_client(self.admin).post(self._list_url(), data, format="json")
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
@@ -267,7 +269,10 @@ class TenantRoleTemplateViewTests(TestCase):
         make_permission("students.profile.update")
         resp = _token_client(self.admin).patch(
             self._detail_url(role.key),
-            {"permission_keys": ["students.profile.update"]},
+            {
+                "permission_keys": ["students.profile.update"],
+                "reason": "Teachers now maintain student profiles.",
+            },
             format="json",
         )
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
@@ -277,6 +282,34 @@ class TenantRoleTemplateViewTests(TestCase):
             {"students.profile.update"},
         )
         self.assertEqual(role.version, 2)
+        log = RBACAuditLog.objects.filter(
+            entity_type="TenantRoleTemplate", entity_id=str(role.pk),
+            action_type="PERMISSION_CHANGED",
+        ).latest("created_at")
+        self.assertEqual(log.actor, self.admin)
+        self.assertEqual(
+            log.metadata["reason"],
+            "Teachers now maintain student profiles.",
+        )
+
+    def test_update_permissions_requires_reason(self):
+        role = make_role(self.school, name="Teacher")
+        original = make_permission("students.profile.view")
+        make_role_permission(role, original)
+        make_permission("students.profile.update")
+
+        resp = _token_client(self.admin).patch(
+            self._detail_url(role.key),
+            {"permission_keys": ["students.profile.update"]},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("reason", resp.data["error"]["detail"])
+        self.assertEqual(
+            set(role.role_permissions.values_list("permission_id", flat=True)),
+            {original.key},
+        )
 
     def test_update_role_rejects_new_restricted_permission(self):
         role = make_role(self.school, name="Payments Officer")
@@ -870,7 +903,11 @@ class CodexTenantRoleViewTests(TestCase):
 
     def test_super_admin_creates_codex_role(self):
         make_permission("system.config.view")
-        data = {"name": "Support Officer", "permission_keys": ["system.config.view"]}
+        data = {
+            "name": "Support Officer",
+            "permission_keys": ["system.config.view"],
+            "reason": "Create the platform support role.",
+        }
         resp = _token_client(self.super_admin).post(self._list_url(), data, format="json")
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
         role = TenantRoleTemplate.objects.get(tenant__slug="codex", name="Support Officer")

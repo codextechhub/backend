@@ -234,7 +234,11 @@ class PlatformScopeEscalationTests(TestCase):
         role_url = reverse("rbac-role-list-create", kwargs={"tenant_slug": self.slug})
         created = _client(self.attacker).post(
             _q(role_url, self.slug),
-            {"name": "Probe Registrars", "permission_keys": [TENANT_TARGET_KEY]},
+            {
+                "name": "Probe Registrars",
+                "permission_keys": [TENANT_TARGET_KEY],
+                "reason": "Create the tenant registrar role.",
+            },
             format="json",
         )
         self.assertEqual(created.status_code, 201, created.data)

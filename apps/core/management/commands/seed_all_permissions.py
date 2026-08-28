@@ -48,7 +48,6 @@ Seed order
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
 from django.db import transaction
-from django.utils import timezone
 
 
 SEED_STEPS: list[tuple[str, list]] = [
@@ -128,6 +127,7 @@ class Command(BaseCommand):
         the effective permission-key list for navigation and action visibility.
         """
         from vs_rbac.models import Permission, TenantRolePermission, TenantRoleTemplate
+        from vs_rbac.services import set_role_access
 
         role = TenantRoleTemplate.objects.filter(
             key="xvs_super_admin",
@@ -143,23 +143,25 @@ class Command(BaseCommand):
         active_keys = set(
             Permission.objects.filter(is_active=True).values_list("key", flat=True)
         )
-        role_rows = TenantRolePermission.objects.filter(
-            role=role,
-            permission_id__in=active_keys,
+        role_rows = list(
+            TenantRolePermission.objects.filter(role=role).only(
+                "permission_id", "granted",
+            )
         )
-        existing_keys = set(role_rows.values_list("permission_id", flat=True))
-        role_rows.filter(granted=False).update(granted=True, updated_at=timezone.now())
-        TenantRolePermission.objects.bulk_create(
-            [
-                TenantRolePermission(
-                    role=role,
-                    permission_id=key,
-                    granted=True,
-                    granted_by=None,
-                )
-                for key in active_keys - existing_keys
-            ]
-        )
+        current_grants = {row.permission_id for row in role_rows if row.granted}
+        current_denies = {row.permission_id for row in role_rows if not row.granted}
+        desired_grants = current_grants | active_keys
+        desired_denies = current_denies - active_keys
+        if desired_grants != current_grants or desired_denies != current_denies:
+            set_role_access(
+                role=role,
+                actor=None,
+                reason="Reconciled the Super Admin role with the active permission registry.",
+                permission_keys=desired_grants,
+                denied_permission_keys=desired_denies,
+                allow_restricted=True,
+                source="permission_seed_reconciliation",
+            )
         self.stdout.write(
             f"\n  ✔ Super Admin reconciled with all {len(active_keys)} active permissions."
         )

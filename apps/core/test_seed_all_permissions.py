@@ -2,6 +2,7 @@ from django.test import TestCase
 
 from core.management.commands.seed_all_permissions import Command
 from vs_rbac.models import (
+    RBACAuditLog,
     TenantRolePermission,
     TenantRoleTemplate,
 )
@@ -24,9 +25,18 @@ class SuperAdminPermissionReconciliationTests(TestCase):
         )
         first = make_permission("new_module.first.generate")
         second = make_permission("new_module.second.manage")
+        inactive = make_permission(
+            "new_module.retired.manage",
+            is_active=False,
+        )
         TenantRolePermission.objects.create(
             role=super_admin,
             permission=first,
+            granted=False,
+        )
+        TenantRolePermission.objects.create(
+            role=super_admin,
+            permission=inactive,
             granted=False,
         )
 
@@ -47,3 +57,20 @@ class SuperAdminPermissionReconciliationTests(TestCase):
                 granted=True,
             ).exists()
         )
+        self.assertTrue(
+            TenantRolePermission.objects.filter(
+                role=super_admin,
+                permission=inactive,
+                granted=False,
+            ).exists()
+        )
+        log = RBACAuditLog.objects.filter(
+            entity_type="TenantRoleTemplate",
+            entity_id=str(super_admin.pk),
+        ).latest("created_at")
+        self.assertEqual(
+            log.metadata["source"],
+            "permission_seed_reconciliation",
+        )
+        self.assertIn(first.key, log.diff_data["direct_permission_keys"]["after"])
+        self.assertIn(inactive.key, log.diff_data["denied_permission_keys"]["after"])

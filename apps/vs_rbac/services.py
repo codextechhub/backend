@@ -36,6 +36,251 @@ SUPER_ADMIN_ROLE_KEY = "xvs_super_admin"
 PLATFORM_ADMIN_ROLE_KEY = "xvs_platform_admin"
 
 
+_UNSET = object()
+
+
+def _role_access_snapshot(*, permission_keys, denied_permission_keys, group_ids):
+    """Build the stable configuration snapshot stored in the durable audit."""
+    from .validators import group_permission_keys
+
+    direct_keys = set(permission_keys)
+    denied_keys = set(denied_permission_keys)
+    attached_group_ids = set(group_ids)
+    return {
+        "direct_permission_keys": sorted(direct_keys),
+        "denied_permission_keys": sorted(denied_keys),
+        "group_ids": sorted(str(group_id) for group_id in attached_group_ids),
+        "combined_permission_keys": sorted(
+            (direct_keys | group_permission_keys(attached_group_ids)) - denied_keys
+        ),
+    }
+
+
+@transaction.atomic
+def set_role_access(
+    *,
+    role,
+    actor,
+    reason: str,
+    permission_keys=_UNSET,
+    denied_permission_keys=_UNSET,
+    group_ids=_UNSET,
+    approval_reference=None,
+    allow_restricted=False,
+    source="direct_edit",
+    audit_metadata=None,
+):
+    """Replace a role's access configuration and audit it as one transaction.
+
+    ``permission_keys``, ``denied_permission_keys`` and ``group_ids`` are
+    independently optional. An omitted dimension is preserved, while an
+    explicitly empty iterable clears it. For backward compatibility, supplying
+    grants without an explicit deny set clears the denies. The durable audit
+    write is inside the same transaction, so an audit failure rolls the access
+    change back.
+    """
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValidationError({"reason": "A reason is required for a role access change."})
+
+    locked_role = (
+        TenantRoleTemplate.objects.select_for_update()
+        .select_related("tenant")
+        .get(pk=role.pk)
+    )
+
+    permission_rows = {
+        row.permission_id: row
+        for row in TenantRolePermission.objects.filter(role=locked_role)
+    }
+    current_permission_keys = {
+        key for key, row in permission_rows.items() if row.granted
+    }
+    current_denied_permission_keys = {
+        key for key, row in permission_rows.items() if not row.granted
+    }
+    current_group_ids = set(
+        TenantRoleGroup.objects.filter(role=locked_role).values_list(
+            "group_id", flat=True,
+        )
+    )
+    desired_permission_keys = (
+        current_permission_keys
+        if permission_keys is _UNSET
+        else {key for key in permission_keys if key}
+    )
+    if denied_permission_keys is _UNSET:
+        desired_denied_permission_keys = (
+            current_denied_permission_keys if permission_keys is _UNSET else set()
+        )
+    else:
+        desired_denied_permission_keys = {
+            key for key in denied_permission_keys if key
+        }
+    conflicting_permission_keys = (
+        desired_permission_keys & desired_denied_permission_keys
+    )
+    if conflicting_permission_keys:
+        raise ValidationError({
+            "permission_keys": (
+                "Permissions cannot be both granted and denied: "
+                f"{', '.join(sorted(conflicting_permission_keys))}."
+            ),
+        })
+    desired_group_ids = (
+        current_group_ids
+        if group_ids is _UNSET
+        else {group_id for group_id in group_ids if group_id}
+    )
+
+    desired_direct_keys = desired_permission_keys | desired_denied_permission_keys
+    existing_permission_keys = set(
+        Permission.objects.filter(key__in=desired_direct_keys).values_list(
+            "key", flat=True,
+        )
+    )
+    missing_permission_keys = desired_direct_keys - existing_permission_keys
+    if missing_permission_keys:
+        raise ValidationError({
+            "permission_keys": (
+                "Unknown permission keys: "
+                f"{', '.join(sorted(missing_permission_keys))}"
+            ),
+        })
+
+    from .models import PermissionGroup
+
+    existing_group_ids = set(
+        PermissionGroup.objects.filter(id__in=desired_group_ids).values_list(
+            "id", flat=True,
+        )
+    )
+    missing_group_ids = desired_group_ids - existing_group_ids
+    if missing_group_ids:
+        raise ValidationError({
+            "group_ids": (
+                "Unknown permission group ids: "
+                f"{', '.join(sorted(str(group_id) for group_id in missing_group_ids))}"
+            ),
+        })
+
+    before = _role_access_snapshot(
+        permission_keys=current_permission_keys,
+        denied_permission_keys=current_denied_permission_keys,
+        group_ids=current_group_ids,
+    )
+    after = _role_access_snapshot(
+        permission_keys=desired_permission_keys,
+        denied_permission_keys=desired_denied_permission_keys,
+        group_ids=desired_group_ids,
+    )
+
+    if not allow_restricted:
+        from .validators import restricted_permission_keys
+
+        added_restricted = restricted_permission_keys(
+            set(after["combined_permission_keys"])
+            - set(before["combined_permission_keys"])
+        )
+        if added_restricted:
+            raise ValidationError({
+                "permission_keys": (
+                    "Restricted permissions require an approved role change request: "
+                    f"{', '.join(sorted(added_restricted))}."
+                ),
+            })
+
+    validate_role_permissions(permission_keys=after["combined_permission_keys"])
+
+    TenantRolePermission.objects.filter(role=locked_role).exclude(
+        permission_id__in=desired_direct_keys,
+    ).delete()
+
+    rows_to_reactivate = [
+        row
+        for key, row in permission_rows.items()
+        if key in desired_permission_keys and not row.granted
+    ]
+    if rows_to_reactivate:
+        now = timezone.now()
+        for row in rows_to_reactivate:
+            row.granted = True
+            row.granted_by = actor
+            row.granted_at = now
+            row.updated_at = now
+        TenantRolePermission.objects.bulk_update(
+            rows_to_reactivate,
+            ["granted", "granted_by", "granted_at", "updated_at"],
+        )
+
+    rows_to_deny = [
+        row
+        for key, row in permission_rows.items()
+        if key in desired_denied_permission_keys and row.granted
+    ]
+    if rows_to_deny:
+        now = timezone.now()
+        for row in rows_to_deny:
+            row.granted = False
+            row.granted_by = actor
+            row.granted_at = now
+            row.updated_at = now
+        TenantRolePermission.objects.bulk_update(
+            rows_to_deny,
+            ["granted", "granted_by", "granted_at", "updated_at"],
+        )
+
+    TenantRolePermission.objects.bulk_create([
+        TenantRolePermission(
+            role=locked_role,
+            permission_id=key,
+            granted=True,
+            granted_by=actor,
+        )
+        for key in desired_permission_keys - set(permission_rows)
+    ])
+
+    TenantRoleGroup.objects.filter(role=locked_role).exclude(
+        group_id__in=desired_group_ids,
+    ).delete()
+    TenantRoleGroup.objects.bulk_create([
+        TenantRoleGroup(role=locked_role, group_id=group_id, attached_by=actor)
+        for group_id in desired_group_ids - current_group_ids
+    ])
+
+    access_changed = before != after
+    if access_changed:
+        locked_role.version = (locked_role.version or 1) + 1
+        locked_role.save(update_fields=["version", "updated_at"])
+
+    metadata = {
+        "tenant_id": str(locked_role.tenant_id),
+        "reason": reason,
+        "approval_reference": (
+            str(approval_reference) if approval_reference is not None else None
+        ),
+        "source": source,
+        "access_changed": access_changed,
+    }
+    metadata.update(audit_metadata or {})
+    emit_audit_event(
+        module_key=AuditModuleKey.RBAC,
+        action_type=AuditActionType.PERMISSION_CHANGED,
+        actor_user=actor,
+        entity_type="TenantRoleTemplate",
+        entity_id=str(locked_role.pk),
+        entity_label=locked_role.name,
+        summary=f"Role '{locked_role.name}' access configuration updated",
+        before_data=before,
+        diff_data={
+            field: {"before": before[field], "after": after[field]}
+            for field in before
+        },
+        metadata=metadata,
+    )
+    return locked_role
+
+
 # Build a slug key unique within a tenant (roles are addressed by key).
 def _unique_tenant_role_key(tenant, name, exclude_pk=None) -> str:
     base = slugify(name) or "role"
@@ -52,6 +297,7 @@ def _unique_tenant_role_key(tenant, name, exclude_pk=None) -> str:
 
 
 # Provision a locked tenant role from Vision's prebuilt role library.
+@transaction.atomic
 def provision_role_from_prebuilt(*, tenant, branch=None, prebuilt_key: str, created_by=None):
     """
     Get or create a TenantRoleTemplate from a PrebuiltRoleTemplate, copying its
@@ -93,20 +339,17 @@ def provision_role_from_prebuilt(*, tenant, branch=None, prebuilt_key: str, crea
     )
 
     if created:
-        prebuilt_perms = PrebuiltRolePermission.objects.filter(
+        permission_keys = list(PrebuiltRolePermission.objects.filter(
             prebuilt_role=prebuilt
-        ).select_related("permission")
-        TenantRolePermission.objects.bulk_create(
-            [
-                TenantRolePermission(
-                    role=role,
-                    permission=p.permission,
-                    granted=True,
-                    granted_by=created_by,
-                )
-                for p in prebuilt_perms
-            ],
-            ignore_conflicts=True,
+        ).values_list("permission_id", flat=True))
+        role = set_role_access(
+            role=role,
+            actor=created_by,
+            reason=f"Provisioned from prebuilt role '{prebuilt.key}'.",
+            permission_keys=permission_keys,
+            group_ids=[],
+            allow_restricted=True,
+            source="prebuilt_role_provisioning",
         )
 
     return role
@@ -170,58 +413,32 @@ def apply_role_change_request(obj: TenantRoleChangeRequest, reviewer, notes: str
                 f"authority: {', '.join(sorted(missing))}."
             )
 
-        # Validate final permission set - include group-derived permissions so
-        # dependency checks pass for permissions provided via groups.
+        # Include group-derived permissions when the shared service validates
+        # the final set.
         final_keys = sorted(current_keys)
         attached_group_ids = list(
             TenantRoleGroup.objects.filter(role=target_role).values_list("group_id", flat=True)
         )
-        validate_role_permissions(
+        target_role = set_role_access(
+            role=target_role,
+            actor=reviewer,
+            reason=obj.justification,
             permission_keys=final_keys,
             group_ids=attached_group_ids,
-        )  # Raises ValidationError if invalid
-
-        # Replace direct grants atomically so removed permissions cannot linger.
-        TenantRolePermission.objects.filter(role=target_role).delete()
-
-        perms = Permission.objects.filter(key__in=final_keys)
-        TenantRolePermission.objects.bulk_create([
-            TenantRolePermission(
-                role=target_role,
-                permission=perm,
-                granted=True,
-                granted_by=reviewer,
-                granted_at=timezone.now(),
-            )
-            for perm in perms
-        ])
-
-        # Version bump invalidates downstream effective-permission caches.
-        target_role.version = (target_role.version or 1) + 1
-        target_role.save(update_fields=["version", "updated_at"])
+            approval_reference=obj.pk,
+            allow_restricted=True,
+            source="approved_change_request",
+            audit_metadata={
+                "change_request_id": str(obj.pk),
+                "reviewer_notes": notes,
+            },
+        )
 
         # Mark the approval only after validation and grant replacement succeed.
         obj.mark_approved(reviewer=reviewer, notes=notes)
         obj.save(update_fields=[
             "status", "reviewer", "reviewer_notes", "decided_at", "updated_at",
         ])
-
-        emit_audit_event(
-            module_key=AuditModuleKey.RBAC,
-            action_type=AuditActionType.PERMISSION_CHANGED,
-            actor_user=reviewer,
-            entity_type="TenantRoleTemplate",
-            entity_id=str(target_role.pk),
-            entity_label=getattr(target_role, "name", str(target_role.pk)),
-            summary=f"Role '{getattr(target_role, 'name', target_role.pk)}' permissions updated via approved change request",
-            before_data={"permission_keys": before_keys},
-            diff_data={"permission_keys": {"before": before_keys, "after": final_keys}},
-            metadata={
-                "change_request_id": str(obj.pk),
-                "tenant_id": str(target_role.tenant_id),
-                "reviewer_notes": notes,
-            },
-        )
 
 
 # Transfer the single Vision super-admin assignment and demote the previous holder.
@@ -359,10 +576,17 @@ def create_role_from_suggestion(suggestion_key: str, tenant, created_by) -> Tena
     )
 
     # Copy grants, not the template row, so the tenant can own later role edits.
-    default_permissions = suggestion.default_permissions.select_related("permission").all()
-    TenantRolePermission.objects.bulk_create([
-        TenantRolePermission(role=role, permission=dp.permission)
-        for dp in default_permissions
-    ], ignore_conflicts=True)
+    permission_keys = list(
+        suggestion.default_permissions.values_list("permission_id", flat=True)
+    )
+    role = set_role_access(
+        role=role,
+        actor=created_by,
+        reason=f"Created from role suggestion '{suggestion.key}'.",
+        permission_keys=permission_keys,
+        group_ids=[],
+        allow_restricted=True,
+        source="role_suggestion",
+    )
 
     return role

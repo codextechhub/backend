@@ -279,6 +279,12 @@ class TenantRoleTemplateDetailSerializer(
         required=False,
         help_text="List of permission group ids to attach to this role.",
     )
+    reason = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_blank=False,
+        help_text="Required explanation when permissions or groups are changed.",
+    )
 
     class Meta:
         model = TenantRoleTemplate
@@ -298,6 +304,7 @@ class TenantRoleTemplateDetailSerializer(
             "role_groups",
             "permission_keys",
             "group_ids",
+            "reason",
             "created_at",
             "updated_at",
         ]
@@ -344,6 +351,13 @@ class TenantRoleTemplateDetailSerializer(
                 )
         self._reject_out_of_scope_keys(attrs, tenant)
         self._reject_restricted_additions(attrs)
+        if "permission_keys" in attrs or "group_ids" in attrs:
+            reason = (attrs.get("reason") or "").strip()
+            if not reason:
+                raise serializers.ValidationError({
+                    "reason": "A reason is required for a role access change.",
+                })
+            attrs["reason"] = reason
         return attrs
 
     def _reject_restricted_additions(self, attrs):
@@ -443,6 +457,7 @@ class TenantRoleTemplateDetailSerializer(
     def create(self, validated_data):
         permission_keys = validated_data.pop("permission_keys", [])
         group_ids = validated_data.pop("group_ids", [])
+        reason = validated_data.pop("reason", "")
 
         if permission_keys or group_ids:
             from ..validators import validate_role_permissions
@@ -460,24 +475,15 @@ class TenantRoleTemplateDetailSerializer(
         validated_data["key"] = _unique_tenant_role_key(tenant, validated_data["name"])
         role = TenantRoleTemplate.objects.create(**validated_data)
 
-        if permission_keys:
-            perms = Permission.objects.filter(key__in=permission_keys)
-            TenantRolePermission.objects.bulk_create(
-                [
-                    TenantRolePermission(
-                        role=role, permission=perm, granted=True, granted_by=actor,
-                    )
-                    for perm in perms
-                ]
-            )
+        if permission_keys or group_ids:
+            from ..services import set_role_access
 
-        if group_ids:
-            groups = PermissionGroup.objects.filter(id__in=group_ids)
-            TenantRoleGroup.objects.bulk_create(
-                [
-                    TenantRoleGroup(role=role, group=group, attached_by=actor)
-                    for group in groups
-                ]
+            role = set_role_access(
+                role=role,
+                actor=actor,
+                reason=reason,
+                permission_keys=permission_keys,
+                group_ids=group_ids,
             )
 
         return role
@@ -486,6 +492,7 @@ class TenantRoleTemplateDetailSerializer(
     def update(self, instance, validated_data):
         permission_keys = validated_data.pop("permission_keys", None)
         group_ids = validated_data.pop("group_ids", None)
+        reason = validated_data.pop("reason", "")
 
         if permission_keys is not None or group_ids is not None:
             effective_permission_keys = (
@@ -517,35 +524,24 @@ class TenantRoleTemplateDetailSerializer(
         for field, value in validated_data.items():
             setattr(instance, field, value)
 
-        if permission_keys is not None or group_ids is not None:
-            instance.version = (instance.version or 1) + 1
-
         instance.save()
 
         request = self.context.get("request")
         actor = request.user if request and request.user.is_authenticated else None
 
-        if permission_keys is not None:
-            TenantRolePermission.objects.filter(role=instance).delete()
-            perms = Permission.objects.filter(key__in=permission_keys)
-            TenantRolePermission.objects.bulk_create(
-                [
-                    TenantRolePermission(
-                        role=instance, permission=perm, granted=True, granted_by=actor,
-                    )
-                    for perm in perms
-                ]
-            )
+        if permission_keys is not None or group_ids is not None:
+            from ..services import set_role_access
 
-        if group_ids is not None:
-            TenantRoleGroup.objects.filter(role=instance).delete()
-            groups = PermissionGroup.objects.filter(id__in=group_ids)
-            TenantRoleGroup.objects.bulk_create(
-                [
-                    TenantRoleGroup(role=instance, group=group, attached_by=actor)
-                    for group in groups
-                ]
-            )
+            kwargs = {
+                "role": instance,
+                "actor": actor,
+                "reason": reason,
+            }
+            if permission_keys is not None:
+                kwargs["permission_keys"] = permission_keys
+            if group_ids is not None:
+                kwargs["group_ids"] = group_ids
+            instance = set_role_access(**kwargs)
 
         return instance
 
