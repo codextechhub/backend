@@ -14,6 +14,7 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
+from core.test_utils import TenantAPIClient
 from vs_health import collectors, services
 from vs_health.constants import HISTOGRAM_SIZE, LATENCY_BUCKETS_MS, MIN_P95_SAMPLE, HealthStatus
 from vs_health.models import (
@@ -444,3 +445,94 @@ class RBACGatingTests(APITestCase):
         self.assertTrue(body["success"])
         for key in ("posture", "kpis", "services", "request_series", "queues"):
             self.assertIn(key, body["data"])
+
+
+class HealthTenantAnalyticsFilterTests(APITestCase):
+    """The auth tenant assertion and analytics row filter stay independent."""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from vs_tenants.models import Tenant
+
+        User = get_user_model()
+        self.user = User.objects.create_user(
+            tenant=_platform_tenant(),
+            email="health-scope@codexng.com",
+            first_name="Health",
+            last_name="Operator",
+            status=User.Status.ACTIVE,
+        )
+        self.client = TenantAPIClient(user=self.user)
+        self.alpha = Tenant.objects.create(
+            name="Alpha Organization",
+            slug="alpha-organization",
+            kind=Tenant.Kind.ORGANIZATION,
+            status=Tenant.Status.ACTIVE,
+        )
+        self.beta = Tenant.objects.create(
+            name="Beta Organization",
+            slug="beta-organization",
+            kind=Tenant.Kind.ORGANIZATION,
+            status=Tenant.Status.ACTIVE,
+        )
+        now = timezone.now().replace(second=0, microsecond=0)
+        RequestMetric.objects.create(
+            bucket_start=now,
+            route="/v1/alpha/",
+            method="GET",
+            tenant=self.alpha,
+            request_count=40,
+            status_2xx=40,
+            latency_sum_ms=4000,
+            latency_hist=_hist_from([100] * 40),
+        )
+        RequestMetric.objects.create(
+            bucket_start=now,
+            route="/v1/beta/",
+            method="GET",
+            tenant=self.beta,
+            request_count=80,
+            status_2xx=80,
+            latency_sum_ms=8000,
+            latency_hist=_hist_from([100] * 80),
+        )
+
+    def _get(self, name, params):
+        with patch("vs_rbac.permissions.has_permission", return_value=True):
+            return self.client.get(reverse(name), params)
+
+    def test_overview_filters_by_slug_while_authentication_uses_own_slug(self):
+        response = self._get(
+            "health-overview",
+            {"range": "1h", "for_tenant": self.alpha.slug},
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        series = response.json()["data"]["request_series"]
+        self.assertEqual(sum(point["requests"] for point in series), 40)
+
+    def test_api_endpoints_filter_accepts_numeric_tenant_id(self):
+        response = self._get(
+            "health-api-endpoints",
+            {"range": "1h", "for_tenant": str(self.beta.pk)},
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        rows = response.json()["data"]["endpoints"]
+        self.assertEqual([row["route"] for row in rows], ["/v1/beta/"])
+
+    def test_unknown_filter_is_rejected_instead_of_returning_global_data(self):
+        response = self._get(
+            "health-api-endpoints",
+            {"range": "1h", "for_tenant": "does-not-exist"},
+        )
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("for_tenant", response.json()["error"]["detail"])
+
+    def test_authentication_assertion_is_not_used_as_the_analytics_filter(self):
+        response = self._get("health-api-endpoints", {"range": "1h"})
+
+        self.assertEqual(response.status_code, 200, response.content)
+        routes = {row["route"] for row in response.json()["data"]["endpoints"]}
+        self.assertEqual(routes, {"/v1/alpha/", "/v1/beta/"})

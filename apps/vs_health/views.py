@@ -14,11 +14,13 @@ from __future__ import annotations
 
 from django.db.models import Q
 from rest_framework import generics
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import SAFE_METHODS
 from rest_framework.views import APIView
 
 from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin
 from core.response import success_response, error_response
+from core.tenant_filters import requested_tenant
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 
 from . import services
@@ -68,15 +70,16 @@ def _range(request):
     return services.parse_range(request.query_params.get("range"), request.query_params.get("start"), request.query_params.get("end"))
 
 
-# Optional tenant filter; invalid values intentionally fall back to global scope.
+# Resolve the optional analytics scope without reusing the authentication assertion.
 def _tenant_id(request):
-    raw = request.query_params.get("tenant")
-    if raw in (None, "", "all"):
+    asked, tenant = requested_tenant(request.query_params)
+    if not asked:
         return None
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
+    if tenant is None:
+        raise ValidationError({
+            "for_tenant": "No tenant matches the requested analytics scope.",
+        })
+    return tenant.pk
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +89,9 @@ def _tenant_id(request):
 # Command Center payload combining posture, KPIs, queues, deployments, and incidents.
 class OverviewView(HealthViewMixin, APIView):
     """GET /health/overview/ - the single-pane-of-glass Command Center payload.
+
+    ``?tenant=`` asserts the authenticated context. ``?for_tenant=`` optionally
+    narrows tenant-attributed request metrics by slug or numeric id.
 
     docstring-name: Command Center overview
     """
@@ -184,11 +190,16 @@ class UptimeMonitorDetailView(HealthViewMixin, APIView):
 
 # Return endpoint health rows and top offenders for the selected range.
 class ApiEndpointsView(HealthViewMixin, APIView):
-    """GET /health/api-endpoints/ - endpoint table + top-5 cards + code series."""
+    """GET /health/api-endpoints/ - endpoint table + top-5 cards + code series.
+
+    ``?tenant=`` asserts the authenticated context. ``?for_tenant=`` optionally
+    narrows tenant-attributed request metrics by slug or numeric id.
+    """
 
     def get(self, request):
         tr = _range(request)
-        rows = services.endpoint_stats(tr, _tenant_id(request))
+        tenant_id = _tenant_id(request)
+        rows = services.endpoint_stats(tr, tenant_id)
         # Top cards are derived from the same rows as the table to keep numbers consistent.
         slowest = sorted(rows, key=lambda r: r["p95"], reverse=True)[:5]
         errored = sorted(rows, key=lambda r: r["error_rate"], reverse=True)[:5]
@@ -197,7 +208,7 @@ class ApiEndpointsView(HealthViewMixin, APIView):
             "endpoints": rows,
             "top_slowest": slowest,
             "top_errors": errored,
-            "status_code_series": services.request_series(tr, _tenant_id(request)),
+            "status_code_series": services.request_series(tr, tenant_id),
         }
         return success_response("Endpoints retrieved successfully.", data)
 
