@@ -7,11 +7,21 @@ created before, which is why every school now gets them at creation regardless o
 whether the finance capability is entitled.
 
 This module is the school side of that bridge, and it is deliberately thin: it
-translates school facts (name, slug, currency) into the tenant and entity terms
-:mod:`vs_finance` understands, and calls
-:func:`vs_finance.provisioning.provision_books`. Nothing school-shaped crosses
-into finance. When the finance abstraction layer arrives this is the kind of
-translation that will move into it.
+picks a free entity code for the school and asks the **Finance Abstraction
+Layer** for its books. The translation from school facts (name, slug, currency)
+into the tenant and entity terms :mod:`vs_finance` understands now happens inside
+the FAL, which is where this module's previous docstring said it belonged.
+
+What that buys, concretely: this module no longer knows that a school's books are
+keyed by its tenant, that ``LedgerEntity.save`` falls back to the Codex platform
+tenant when nobody passes one, or that a usable set of books needs a chart of
+accounts and open fiscal periods as well as a row. It asks for books; the FAL
+knows what books are made of, and it is the only place that has to be corrected
+when finance changes its mind again.
+
+The one-primary-per-school rule is also the FAL's now: it refuses to guess when a
+tenant somehow holds two candidate sets of books, rather than quietly returning
+the older one.
 
 **Provisioning is best effort.** A school, its tenant, its first administrator,
 its branches and its entitlements are worth far more than its books, and books
@@ -90,21 +100,24 @@ def provision_books_for_school(school):
     statement instead, which is what the savepoint is actually for.
     """
     from vs_finance.models import LedgerEntity
-    from vs_finance.provisioning import provision_books
+
+    from schools.core.fal import get_entity_resolver
 
     try:
         with transaction.atomic():
-            return provision_books(
-                tenant=school.tenant,
-                name=school.name,
+            handle = get_entity_resolver().provision_entity(
+                school.pk,
                 code=derive_entity_code(school),
-                base_currency=school.currency or None,
-                kind=LedgerEntity.Kind.TENANT,
-                # A school that somehow already has books keeps them untouched:
-                # this call must be safe to reach twice (creation, then the
-                # backfill command) without ever minting a second entity.
-                reuse_existing=True,
-            )
+                name=school.name,
+                # A school that named no currency gets the platform default,
+                # which is what the finance model would have applied anyway.
+                base_currency=school.currency or "NGN",
+            ).unwrap()
+            # The FAL returns a handle, deliberately: a DTO cannot be used to
+            # reach back into finance state. The operator command and the tests
+            # want the row itself, so it is read back here. This lookup is the
+            # only finance model reference left in this module, and it is a read.
+            return LedgerEntity.objects.get(pk=handle.entity_ref)
     except Exception:
         logger.exception(
             "Could not provision a set of books for school %s (tenant %s). "

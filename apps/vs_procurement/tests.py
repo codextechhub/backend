@@ -33,6 +33,7 @@ from vs_finance.models import (
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies
 
 from vs_procurement.constants import (
+    PROCUREMENT_APPROVAL_TYPES,
     ContractStatus,
     MatchStatus,
     MilestoneStatus,
@@ -6847,10 +6848,18 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         first = ensure_default_approval_templates()
         self.assertEqual(len(first), 4)
         # One platform-wide template per approvable document type.
+        #
+        # Narrowed by document type, and it has to be: WorkflowTemplate is the
+        # shared engine table, and vs_finance, vs_payments and vs_procurement all
+        # define WF_DEFAULT_TEMPLATE_CODE as "standard". Counting platform rows
+        # by code alone therefore counts the payout ladder vs_payments publishes
+        # as well, and answers five. PROCUREMENT_APPROVAL_TYPES is the allow-list
+        # that exists for exactly this - see its comment in constants.py.
         self.assertEqual(
             WorkflowTemplate.objects.filter(
                 tenant__isnull=True, branch__isnull=True,
                 code=WF_DEFAULT_TEMPLATE_CODE,
+                document_type__in=PROCUREMENT_APPROVAL_TYPES,
             ).count(),
             4,
         )
@@ -6867,7 +6876,11 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         # Re-running upserts in place - still exactly four templates / two stages.
         ensure_default_approval_templates()
         self.assertEqual(
-            WorkflowTemplate.objects.filter(code=WF_DEFAULT_TEMPLATE_CODE).count(), 4,
+            WorkflowTemplate.objects.filter(
+                code=WF_DEFAULT_TEMPLATE_CODE,
+                document_type__in=PROCUREMENT_APPROVAL_TYPES,
+            ).count(),
+            4,
         )
         self.assertEqual(WorkflowStage.objects.filter(template=req_tmpl).count(), 2)
 
@@ -10913,7 +10926,26 @@ class ProcurementTenantApprovalRulesTests(_BranchTenantsFixture, TestCase):
         self.WorkflowTemplate = WorkflowTemplate
 
     def tenant_templates(self, tenant):
-        return self.WorkflowTemplate.objects.filter(tenant=tenant, branch__isnull=True)
+        """This tenant's *procurement* ladders, and nobody else's.
+
+        ``WorkflowTemplate`` belongs to ``vs_workflow`` and three apps publish
+        into it - finance's adjustment and expense-claim ladders, payments'
+        payout ladder, and procurement's four. All three also happen to name
+        their code ``"standard"``, so a query that does not say which document
+        types it means will quietly count another app's rules as procurement's.
+        Every count in this class goes through here or
+        :meth:`platform_templates` for that reason.
+        """
+        return self.WorkflowTemplate.objects.filter(
+            tenant=tenant, branch__isnull=True,
+            document_type__in=PROCUREMENT_APPROVAL_TYPES,
+        )
+
+    def platform_templates(self):
+        """The platform-wide procurement fallback ladders. Same reasoning."""
+        return self.WorkflowTemplate.objects.filter(
+            tenant__isnull=True, document_type__in=PROCUREMENT_APPROVAL_TYPES,
+        )
 
     def test_seeding_a_tenant_creates_its_own_rules_and_is_idempotent(self):
         from vs_procurement.approvals import ensure_tenant_approval_templates
@@ -11037,9 +11069,7 @@ class ProcurementTenantApprovalRulesTests(_BranchTenantsFixture, TestCase):
         self.assertEqual(response.json()["data"]["created_count"], 4)
         self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
         # The shared platform row is not one tenant administrator's to publish.
-        self.assertEqual(
-            self.WorkflowTemplate.objects.filter(tenant__isnull=True).count(), 0,
-        )
+        self.assertEqual(self.platform_templates().count(), 0)
         # No other tenant gained rules from this call.
         self.assertEqual(self.tenant_templates(self.foreign_tenant).count(), 0)
 
@@ -11076,13 +11106,9 @@ class ProcurementTenantApprovalRulesTests(_BranchTenantsFixture, TestCase):
         self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
 
         # The platform fallback is published deliberately, not as a side effect.
-        self.assertEqual(
-            self.WorkflowTemplate.objects.filter(tenant__isnull=True).count(), 0,
-        )
+        self.assertEqual(self.platform_templates().count(), 0)
         call_command("seed_procurement_approvals", "--platform", stdout=StringIO())
-        self.assertEqual(
-            self.WorkflowTemplate.objects.filter(tenant__isnull=True).count(), 4,
-        )
+        self.assertEqual(self.platform_templates().count(), 4)
 
 
 class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
@@ -11204,7 +11230,10 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
 
         stages = [
             stage
-            for template in WorkflowTemplate.objects.filter(tenant=self.multi_tenant)
+            for template in WorkflowTemplate.objects.filter(
+                tenant=self.multi_tenant,
+                document_type__in=PROCUREMENT_APPROVAL_TYPES,
+            )
             for stage in template.stages.all()
         ]
         self.assertTrue(stages)
@@ -11218,7 +11247,6 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
 
         from django.apps import apps as global_apps
 
-        from vs_procurement.constants import PROCUREMENT_APPROVAL_TYPES
         from vs_workflow.models import WorkflowStage
 
         migration = importlib.import_module(
@@ -12595,7 +12623,6 @@ class ProcurementOnboardingSeedTests(TestCase):
         from schools.vs_schools.models import School
         from vs_workflow.models import WorkflowTemplate
 
-        from vs_procurement.constants import PROCUREMENT_APPROVAL_TYPES
 
         school = School.objects.create(
             name="Rowan", slug="rowan-onboard", code="RWNON", status="ACTIVE")

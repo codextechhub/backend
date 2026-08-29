@@ -123,7 +123,7 @@ without naming *what* makes it so.
 4. **What tests do we need before we ship it?**
    - Security-critical first: permission-denied (403) and cross-tenant isolation.
    - Then happy path + every filter/branch + the empty-list response shape
-     (`success_response` coerces `[]` → `{}`).
+     (`success_response` keeps `[]` a list; only an absent payload becomes `{}`).
    - Name the tests; if you added some, say which cases are still uncovered.
 
 Finish with a one-line **verdict**: ship / fix-first, and the single most

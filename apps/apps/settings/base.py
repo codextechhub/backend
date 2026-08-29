@@ -130,6 +130,11 @@ INSTALLED_APPS = [
     # M9. School-specific by construction, so it sits beside vs_schools under
     # apps/schools/ and never beside the domain-neutral engines.
     "schools.vs_onboarding",
+    # The Finance Abstraction Layer. School-specific by construction too: it is
+    # the boundary where school words meet the neutral finance engines, so it
+    # belongs on this side of the line and never inside apps/core/. It is a
+    # Django app only because it owns one table, the fee-structure-to-term link.
+    "schools.core.fal.apps.FalConfig",
     "vs_admin_console",
     "vs_user",
     "vs_rbac",
