@@ -142,7 +142,7 @@ def set_entitlement(
 def bulk_schedule_entitlements(
     *, targets, actor, reason, starts_at=UNSET, ends_at=UNSET,
 ):
-    """Apply one schedule change to up to 100 pre-authorized entitlement targets."""
+    """Apply dates without changing an existing entitlement decision or source."""
     target_keys = [
         (capability.pk, f"tenant:{tenant.pk}" if tenant else "platform")
         for capability, tenant in targets
@@ -156,6 +156,17 @@ def bulk_schedule_entitlements(
             scope_key__in=scope_keys,
         )
     }
+    for capability, tenant in targets:
+        scope_key = f"tenant:{tenant.pk}" if tenant else "platform"
+        row = current_rows.get((capability.pk, scope_key))
+        if row and row.state == CapabilityEntitlement.State.DENIED:
+            raise ValidationError({
+                "items": (
+                    f"Cannot schedule {capability.label} at "
+                    f"{tenant.name if tenant else 'platform'} scope because it is "
+                    "explicitly denied. Grant the entitlement first."
+                )
+            })
     results = []
     for capability, tenant in targets:
         scope_key = f"tenant:{tenant.pk}" if tenant else "platform"
@@ -186,9 +197,9 @@ def bulk_schedule_entitlements(
                 capability=capability,
                 tenant=tenant,
                 scope_key=scope_key,
+                state=CapabilityEntitlement.State.GRANTED,
+                source=CapabilityEntitlement.Source.MANUAL,
             )
-        row.state = CapabilityEntitlement.State.GRANTED
-        row.source = CapabilityEntitlement.Source.MANUAL
         row.starts_at = effective_starts
         row.ends_at = effective_ends
         row.updated_by = actor

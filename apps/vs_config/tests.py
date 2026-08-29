@@ -1151,6 +1151,111 @@ class EntitlementOperationsAPITests(TestCase):
             2,
         )
 
+    def test_bulk_schedule_preserves_existing_grant_source(self):
+        set_entitlement(
+            capability=self.capability,
+            tenant=self.first.tenant,
+            state=CapabilityEntitlement.State.GRANTED,
+            source=CapabilityEntitlement.Source.PACKAGE,
+            actor=self.user,
+            ends_at=timezone.now() + timedelta(days=5),
+            reason="Provisioned by package setup",
+        )
+        expiry = timezone.now() + timedelta(days=75)
+
+        response = self.client.post(
+            "/v1/config/entitlements/bulk-schedule/",
+            {
+                "items": [
+                    {"capability": self.capability.key, "tenant": self.first.slug},
+                ],
+                "ends_at": expiry.isoformat(),
+                "reason": "Renew package entitlement",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        row = CapabilityEntitlement.all_objects.get(
+            capability=self.capability,
+            tenant=self.first.tenant,
+        )
+        self.assertEqual(row.state, CapabilityEntitlement.State.GRANTED)
+        self.assertEqual(row.source, CapabilityEntitlement.Source.PACKAGE)
+        self.assertLess(abs((row.ends_at - expiry).total_seconds()), 1)
+
+    def test_bulk_schedule_rejects_denial_without_updating_other_targets(self):
+        first_row = CapabilityEntitlement.all_objects.get(
+            capability=self.capability,
+            tenant=self.first.tenant,
+        )
+        original_first_expiry = first_row.ends_at
+        set_entitlement(
+            capability=self.capability,
+            tenant=self.second.tenant,
+            state=CapabilityEntitlement.State.DENIED,
+            source=CapabilityEntitlement.Source.PLATFORM,
+            actor=self.user,
+            reason="Suspend the entitlement",
+        )
+
+        response = self.client.post(
+            "/v1/config/entitlements/bulk-schedule/",
+            {
+                "items": [
+                    {"capability": self.capability.key, "tenant": self.first.slug},
+                    {"capability": self.capability.key, "tenant": self.second.slug},
+                ],
+                "ends_at": (timezone.now() + timedelta(days=75)).isoformat(),
+                "reason": "Renew selected entitlements",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("explicitly denied", str(response.data))
+        first_row.refresh_from_db()
+        denied_row = CapabilityEntitlement.all_objects.get(
+            capability=self.capability,
+            tenant=self.second.tenant,
+        )
+        self.assertEqual(first_row.ends_at, original_first_expiry)
+        self.assertEqual(denied_row.state, CapabilityEntitlement.State.DENIED)
+        self.assertEqual(denied_row.source, CapabilityEntitlement.Source.PLATFORM)
+        self.assertFalse(
+            ConfigurationAuditEvent.all_objects.filter(
+                action="config.entitlement.updated",
+                metadata__bulk_schedule=True,
+            ).exists()
+        )
+
+    def test_bulk_schedule_gives_new_rows_manual_grant_defaults(self):
+        new_capability = Capability.objects.create(
+            key="new-renewal-feature",
+            label="New renewal feature",
+            requires_entitlement=True,
+        )
+
+        response = self.client.post(
+            "/v1/config/entitlements/bulk-schedule/",
+            {
+                "items": [
+                    {"capability": new_capability.key, "tenant": self.first.slug},
+                ],
+                "ends_at": (timezone.now() + timedelta(days=75)).isoformat(),
+                "reason": "Create a scheduled manual grant",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        row = CapabilityEntitlement.all_objects.get(
+            capability=new_capability,
+            tenant=self.first.tenant,
+        )
+        self.assertEqual(row.state, CapabilityEntitlement.State.GRANTED)
+        self.assertEqual(row.source, CapabilityEntitlement.Source.MANUAL)
+
     def test_school_operator_cannot_bulk_schedule_other_schools(self):
         branch = make_branch(self.first)
         admin = make_school_admin(branch, email="school-renewal@example.com")
