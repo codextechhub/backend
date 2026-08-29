@@ -169,6 +169,43 @@ class ExamLensTests(_LensBase):
             self.assertIn("Whole School Mocks", found, branch.name)
 
 
+class BellScheduleLensTests(_LensBase):
+    """The one surface that read the lens and half-applied it.
+
+    `_lens_branch` fed the "school day" strip from the day the screen shipped
+    and never reached the list of periods underneath it, so the same request
+    narrowed the top of the screen and not the bottom.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        from ..models import Period, PeriodType
+
+        cls.ikeja_period = Period.all_objects.create(
+            tenant=cls.tenant, session=cls.year, branch=cls.ikeja,
+            order_index=1, label="Ikeja Early Period",
+            period_type=PeriodType.LESSON,
+            start_time=dt.time(7, 30), end_time=dt.time(8, 0),
+        )
+
+    def periods(self, params=None):
+        data = self.get(self.admin, "calendar-period-list", params).json()["data"]
+        return {row["label"] for row in data["periods"]}
+
+    def test_the_list_narrows_to_the_branch(self):
+        self.assertIn("Ikeja Early Period", self.periods())
+        self.assertNotIn(
+            "Ikeja Early Period", self.periods({"branch": self.lekki.pk}),
+        )
+
+    def test_the_school_wide_schedule_stays(self):
+        """The everyday bell schedule has no branch, and every branch runs it."""
+        found = self.periods({"branch": self.lekki.pk})
+        self.assertIn("Period 1", found)
+        self.assertIn("Break", found)
+
+
 class TeacherLensTests(_LensBase):
     """The list narrows. The week never does."""
 

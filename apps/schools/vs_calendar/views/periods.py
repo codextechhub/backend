@@ -32,7 +32,12 @@ from ..services.bells import (
     periods_in_force,
     renumber_day,
 )
-from ..services.scoping import UNSET, raised_branch, scope_to_visible_branches
+from ..services.scoping import (
+    UNSET,
+    narrow_to_lens,
+    raised_branch,
+    scope_to_visible_branches,
+)
 from .base import CalendarViewMixin
 
 
@@ -79,6 +84,11 @@ class PeriodListCreateView(_PeriodBase, generics.ListCreateAPIView):
 
     def get_queryset(self):
         qs = scope_to_visible_branches(self._base(), self.request.user, self.tenant)
+        # The lens was read here from the day the screen shipped and applied
+        # only to the "school day" strip below, never to the list of periods.
+        # So the strip narrowed and the table under it did not, on the same
+        # screen, from the same request.
+        qs = narrow_to_lens(qs, self._lens_branch())
         state = (self.request.query_params.get("is_active") or "").strip().lower()
         if state not in ("all", "false", "0"):
             qs = qs.filter(is_active=True)
