@@ -264,6 +264,31 @@ def _build_default_templates() -> dict:
 
     return {
 
+        # Platform health alert delivery
+        ("health.alert_fired", C.IN_APP): {
+            "subject": "{{ severity_label }} health alert: {{ rule_name }}",
+            "body": (
+                "Incident: {{ incident_code }}\n"
+                "Service: {{ service_name }}\n"
+                "Observed: {{ observed_value }} {{ comparator }} {{ threshold }}\n"
+                "Fired at: {{ fired_at }}"
+            ),
+        },
+        ("health.alert_fired", C.EMAIL): {
+            "subject": "[{{ severity_label }}] {{ rule_name }} ({{ incident_code }})",
+            "body": (
+                "PLATFORM HEALTH ALERT\n\n"
+                "A sustained health rule breach opened an incident.\n\n"
+                "Incident: {{ incident_code }}\n"
+                "Rule: {{ rule_name }}\n"
+                "Severity: {{ severity_label }}\n"
+                "Service: {{ service_name }}\n"
+                "Observed: {{ observed_value }} {{ comparator }} {{ threshold }}\n"
+                "Fired at: {{ fired_at }}\n\n"
+                "Open the Health console to investigate and acknowledge the incident."
+            ),
+        },
+
         # Procurement external vendor portal
         ("procurement.purchase_order_issued", C.EMAIL): {
             "subject": "Purchase order {{ po_number }} from {{ issuer_name }}",

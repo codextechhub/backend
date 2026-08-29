@@ -92,6 +92,16 @@ ROUTE_PREFIX_SERVICES = {
     "reports": ("/v1/finance/reports/",),
 }
 
+# Request-derived alert rules need an explicit service boundary. ``api`` owns
+# the whole API surface; narrower services own only their resolved route groups.
+# A service absent from this map cannot honestly support error-rate or latency
+# rules because RequestMetric has no signal for it.
+REQUEST_METRIC_SERVICE_PREFIXES = {
+    "api": ("/v1/",),
+    "auth": ("/v1/user/",),
+    **ROUTE_PREFIX_SERVICES,
+}
+
 
 # ---------------------------------------------------------------------------
 # RBAC permission keys (registered as module.resource.action rows by seed)

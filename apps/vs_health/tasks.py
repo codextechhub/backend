@@ -9,10 +9,17 @@ import logging
 from datetime import timedelta
 
 from celery import shared_task
+from django.db import transaction
 from django.db.models import Avg, Count, Q
 from django.utils import timezone
 
-from .constants import HealthStatus, KNOWN_QUEUES, ROUTE_PREFIX_SERVICES, worst_status
+from .constants import (
+    HealthStatus,
+    KNOWN_QUEUES,
+    REQUEST_METRIC_SERVICE_PREFIXES,
+    ROUTE_PREFIX_SERVICES,
+    worst_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -217,19 +224,6 @@ def capture_queue_snapshot_task() -> dict:
 # Alert evaluation + auto-incidents
 # ---------------------------------------------------------------------------
 
-# Allocate the next human-readable auto-incident code.
-def _next_incident_code() -> str:
-    from .models import Incident
-    last = Incident.objects.filter(code__startswith="INC-").order_by("-code").first()
-    n = 2000
-    if last:
-        try:
-            n = int(last.code.split("-")[1])
-        except (IndexError, ValueError):
-            pass
-    return f"INC-{n + 1}"
-
-
 # Resolve the current observed value for an alert rule metric.
 def _current_metric_value(rule):
     """Resolve the live value a rule is evaluated against, or None.
@@ -242,10 +236,6 @@ def _current_metric_value(rule):
     from .constants import MIN_P95_SAMPLE
 
     tr = services.parse_range("15m")
-    # Widen the window to the rule's sustained-for duration when it's longer.
-    if rule.duration_sec > 900:
-        # Sustained rules evaluate over their configured duration when it exceeds 15m.
-        tr.start = tr.end - timedelta(seconds=rule.duration_sec)
 
     # Both request-derived metrics are ratio/percentile estimates: on a window
     # of a handful of requests one slow (or one failed) request swings them past
@@ -253,6 +243,14 @@ def _current_metric_value(rule):
     # to evaluate.
     if rule.metric in (AlertRule.Metric.ERROR_RATE, AlertRule.Metric.P95_LATENCY):
         qs = services._base_qs(tr.start, tr.end)
+        if rule.target_service_id:
+            prefixes = REQUEST_METRIC_SERVICE_PREFIXES.get(rule.target_service.key)
+            if not prefixes:
+                return None
+            route_q = Q()
+            for prefix in prefixes:
+                route_q |= Q(route__startswith=prefix)
+            qs = qs.filter(route_q)
         totals = services._totals(qs)
         if totals["requests"] < MIN_P95_SAMPLE:
             return None
@@ -283,41 +281,81 @@ def _current_metric_value(rule):
 # Fire and resolve alerts, opening or closing auto-incidents as needed.
 @shared_task
 def evaluate_alert_rules_task() -> dict:
-    """Fire/resolve alerts from rule breaches and auto-manage their incidents."""
-    from .models import AlertRule, Alert, Incident
+    """Evaluate enabled rules serially and notify operators after sustained breaches."""
+    from .models import AlertRule, Alert
 
-    fired = resolved = 0
-    for rule in AlertRule.objects.filter(is_enabled=True).select_related("target_service"):
-        value = _current_metric_value(rule)
-        breaching = rule.breaches(value)
-        open_alert = Alert.objects.filter(rule=rule, status=Alert.Status.FIRING).first()
-
-        if breaching and not open_alert:
-            # First breach opens exactly one firing alert and one linked auto-incident.
-            title = f"{rule.name}: {value} {rule.get_comparator_display()} {rule.threshold}"
-            incident = _open_auto_incident(rule, title, value)
-            Alert.objects.create(
-                rule=rule, severity=rule.severity, title=title,
-                service=rule.target_service, value=value, threshold=rule.threshold,
-                status=Alert.Status.FIRING, incident=incident,
+    fired = resolved = notification_records = 0
+    rule_ids = list(
+        AlertRule.objects.filter(is_enabled=True).values_list("id", flat=True)
+    )
+    for rule_id in rule_ids:
+        with transaction.atomic():
+            # The rule row is the mutex for its evaluation state, firing alert,
+            # incident, and notification records. Overlapping beat runs therefore
+            # cannot both observe a first breach and open duplicate incidents.
+            rule = (
+                AlertRule.objects.select_for_update()
+                .filter(id=rule_id, is_enabled=True)
+                .first()
             )
-            fired += 1
-        elif not breaching and open_alert:
-            # Clearing the metric resolves the alert and may resolve the linked incident.
-            open_alert.status = Alert.Status.RESOLVED
-            open_alert.resolved_at = timezone.now()
-            open_alert.value = value
-            open_alert.save(update_fields=["status", "resolved_at", "value"])
-            _maybe_resolve_auto_incident(open_alert.incident)
-            resolved += 1
-    return {"fired": fired, "resolved": resolved}
+            if rule is None:
+                continue
+            value = _current_metric_value(rule)
+            breaching = rule.breaches(value)
+            open_alert = (
+                Alert.objects.filter(rule=rule, status=Alert.Status.FIRING)
+                .select_related("incident")
+                .first()
+            )
+            now = timezone.now()
+
+            if breaching:
+                if rule.breach_started_at is None:
+                    rule.breach_started_at = now
+                    rule.save(update_fields=["breach_started_at", "updated_at"])
+                sustained_for = (now - rule.breach_started_at).total_seconds()
+                ready = rule.duration_sec == 0 or sustained_for >= rule.duration_sec
+                if ready and not open_alert:
+                    title = (
+                        f"{rule.name}: {value} "
+                        f"{rule.get_comparator_display()} {rule.threshold}"
+                    )
+                    incident = _open_auto_incident(rule, title, value)
+                    alert = Alert.objects.create(
+                        rule=rule,
+                        severity=rule.severity,
+                        title=title,
+                        service=rule.target_service,
+                        value=value,
+                        threshold=rule.threshold,
+                        status=Alert.Status.FIRING,
+                        incident=incident,
+                    )
+                    notification_records += _dispatch_alert_notification(alert)
+                    fired += 1
+            else:
+                if rule.breach_started_at is not None:
+                    rule.breach_started_at = None
+                    rule.save(update_fields=["breach_started_at", "updated_at"])
+                if open_alert:
+                    # Clearing the metric resolves the alert and may resolve its incident.
+                    open_alert.status = Alert.Status.RESOLVED
+                    open_alert.resolved_at = now
+                    open_alert.value = value
+                    open_alert.save(update_fields=["status", "resolved_at", "value"])
+                    _maybe_resolve_auto_incident(open_alert.incident)
+                    resolved += 1
+    return {
+        "fired": fired,
+        "resolved": resolved,
+        "notification_records": notification_records,
+    }
 
 
 # Create the incident record attached to a newly firing alert.
 def _open_auto_incident(rule, title, value):
     from .models import Incident
     incident = Incident.objects.create(
-        code=_next_incident_code(),
         title=title,
         severity=rule.severity,
         status=Incident.Status.INVESTIGATING,
@@ -331,6 +369,108 @@ def _open_auto_incident(rule, title, value):
     incident.add_event(kind="opened", who="Alertmanager",
                        text=f"{rule.name} breached: {value} {rule.get_comparator_display()} {rule.threshold}.")
     return incident
+
+
+# Deliver a firing alert to every platform operator who can manage health incidents.
+def _dispatch_alert_notification(alert) -> int:
+    from vs_rbac.evaluator import resolve_users_with_permission
+    from vs_tenants.models import Tenant
+
+    from .constants import PERM_MANAGE
+    from .models import AlertRule
+
+    if alert.rule.channel != AlertRule.Channel.EMAIL_AND_IN_APP:
+        logger.error(
+            "Health alert %s has unsupported channel %s.",
+            alert.id,
+            alert.rule.channel,
+        )
+        alert.incident.add_event(
+            kind="update",
+            who="Alertmanager",
+            text="Notification delivery failed because the rule channel is unsupported.",
+        )
+        return 0
+
+    try:
+        platform_tenant = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+        recipients = list(resolve_users_with_permission(
+            tenant=platform_tenant,
+            branch=None,
+            permission_key=PERM_MANAGE,
+        ))
+        if not recipients:
+            logger.error(
+                "Health alert %s has no active platform.health.manage recipients.",
+                alert.id,
+            )
+            alert.incident.add_event(
+                kind="update",
+                who="Alertmanager",
+                text=(
+                    "Notification delivery failed because no active platform operator "
+                    "holds platform.health.manage."
+                ),
+            )
+            return 0
+
+        from vs_notifications.notify import send_notification
+
+        notification_ids = send_notification(
+            event_key="health.alert_fired",
+            context={
+                "incident_code": alert.incident.code,
+                "rule_name": alert.rule.name,
+                "severity_label": alert.get_severity_display(),
+                "service_name": (
+                    alert.service.name if alert.service_id else "Platform-wide"
+                ),
+                "observed_value": alert.value,
+                "comparator": alert.rule.get_comparator_display(),
+                "threshold": alert.threshold,
+                "fired_at": alert.fired_at.isoformat(),
+            },
+            recipients=recipients,
+            tenant=platform_tenant,
+            metadata={
+                "health_alert_id": str(alert.id),
+                "incident_id": str(alert.incident_id),
+                "incident_code": alert.incident.code,
+            },
+        )
+        expected_records = len(recipients) * 2
+        if len(notification_ids) == expected_records:
+            delivery_text = (
+                "Created email and in-app notifications for "
+                f"{len(recipients)} platform operator(s)."
+            )
+        else:
+            delivery_text = (
+                f"Created {len(notification_ids)} of {expected_records} expected "
+                "notification records. Review the health alert event and templates."
+            )
+            logger.error(
+                "Health alert %s created %d of %d expected notification records.",
+                alert.id,
+                len(notification_ids),
+                expected_records,
+            )
+        alert.incident.add_event(
+            kind="update",
+            who="Alertmanager",
+            text=delivery_text,
+        )
+        return len(notification_ids)
+    except Exception:
+        # The incident must survive a routing or template failure so the health
+        # console exposes both the outage and why nobody was contacted.
+        logger.exception("Health alert %s notification dispatch failed.", alert.id)
+        alert.incident.add_event(
+            kind="update",
+            who="Alertmanager",
+            text="Notification dispatch failed. Review notification delivery logs.",
+        )
+        return 0
 
 
 # Resolve auto-incidents only after all linked alerts have cleared.

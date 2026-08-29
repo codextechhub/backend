@@ -77,9 +77,6 @@ class IncidentCreateUpdateSerializer(serializers.ModelSerializer):
         extra_kwargs = {"code": {"required": False}}
 
     def create(self, validated_data):
-        from .tasks import _next_incident_code
-        if not validated_data.get("code"):
-            validated_data["code"] = _next_incident_code()
         services = validated_data.pop("services", [])
         incident = Incident.objects.create(source=Incident.Source.MANUAL, **validated_data)
         if services:
@@ -112,6 +109,29 @@ class AlertRuleSerializer(serializers.ModelSerializer):
         model = AlertRule
         fields = ["id", "name", "metric", "comparator", "threshold", "duration_sec",
                   "severity", "target_service_key", "target_queue", "channel", "is_enabled"]
+
+    def validate(self, attrs):
+        from .constants import REQUEST_METRIC_SERVICE_PREFIXES
+
+        metric = attrs.get("metric", getattr(self.instance, "metric", None))
+        target_service = attrs.get(
+            "target_service", getattr(self.instance, "target_service", None),
+        )
+        request_metrics = {
+            AlertRule.Metric.ERROR_RATE,
+            AlertRule.Metric.P95_LATENCY,
+        }
+        if (
+            metric in request_metrics
+            and target_service is not None
+            and target_service.key not in REQUEST_METRIC_SERVICE_PREFIXES
+        ):
+            raise serializers.ValidationError({
+                "target_service_key": (
+                    f"{target_service.key} does not expose request metrics for {metric}."
+                ),
+            })
+        return attrs
 
 
 class AlertSerializer(serializers.ModelSerializer):
@@ -158,4 +178,3 @@ class TaskRowSerializer(serializers.Serializer):
         if obj.started_at and obj.finished_at:
             return round((obj.finished_at - obj.started_at).total_seconds(), 1)
         return None
-

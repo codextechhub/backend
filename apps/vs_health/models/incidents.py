@@ -18,6 +18,11 @@ from .base import TimeStampedModel
 from .registry import MonitoredService
 
 
+def generate_incident_code() -> str:
+    """Return a concurrency-safe, UUID-backed human incident reference."""
+    return f"INC-{uuid.uuid4().hex[:16].upper()}"
+
+
 class Severity(models.IntegerChoices):
     SEV1 = 1, "SEV1 - Critical"
     SEV2 = 2, "SEV2 - Major"
@@ -39,7 +44,12 @@ class Incident(TimeStampedModel):
         AUTO = "auto", "Auto"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    code = models.CharField(max_length=20, unique=True, help_text="Human ref, e.g. 'INC-2041'.")
+    code = models.CharField(
+        max_length=20,
+        unique=True,
+        default=generate_incident_code,
+        help_text="UUID-backed human reference, e.g. 'INC-7B92D0B515F24D1C'.",
+    )
     title = models.CharField(max_length=255)
     severity = models.IntegerField(choices=Severity.choices, default=Severity.SEV3, db_index=True)
     status = models.CharField(
@@ -109,6 +119,9 @@ class IncidentEvent(models.Model):
 class AlertRule(TimeStampedModel):
     """A threshold condition evaluated against recent metrics by the beat task."""
 
+    class Channel(models.TextChoices):
+        EMAIL_AND_IN_APP = "email_and_in_app", "Email and in-app"
+
     class Metric(models.TextChoices):
         ERROR_RATE = "error_rate", "Error rate (%)"
         P95_LATENCY = "p95_latency", "p95 latency (ms)"
@@ -135,7 +148,17 @@ class AlertRule(TimeStampedModel):
         related_name="alert_rules", help_text="Null = applies platform-wide.",
     )
     target_queue = models.CharField(max_length=64, blank=True, default="", help_text="For queue_depth rules.")
-    channel = models.CharField(max_length=60, blank=True, default="", help_text="e.g. 'PagerDuty', 'Slack #sre'.")
+    channel = models.CharField(
+        max_length=20,
+        choices=Channel.choices,
+        default=Channel.EMAIL_AND_IN_APP,
+        help_text="Destinations used when this rule starts firing.",
+    )
+    breach_started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="First consecutive breaching evaluation in the current run.",
+    )
     is_enabled = models.BooleanField(default=True, db_index=True)
 
     class Meta:
@@ -186,6 +209,13 @@ class Alert(models.Model):
     class Meta:
         ordering = ["-fired_at"]
         indexes = [models.Index(fields=["status", "-fired_at"])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["rule"],
+                condition=models.Q(status="firing"),
+                name="uq_health_rule_firing_alert",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.title} [{self.status}]"

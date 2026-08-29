@@ -137,15 +137,17 @@ def seed_alert_rules(stdout=None):
     M, C, S = AlertRule.Metric, AlertRule.Comparator, None
     from .models import Severity
 
+    notify = AlertRule.Channel.EMAIL_AND_IN_APP
+
     rules = [
-        ("API error rate", M.ERROR_RATE, C.GT, 5, 300, Severity.SEV1, "api", "", "PagerDuty", True),
+        ("API error rate", M.ERROR_RATE, C.GT, 5, 300, Severity.SEV1, "api", "", notify, True),
         # 800ms matches services._status_for_latency's warning band, sized for
         # the Render starter (0.5 CPU) this runs on; the old 400 was tuned for a
         # bigger instance and fired on ordinary billing/report aggregates.
-        ("p95 latency SLO", M.P95_LATENCY, C.GT, 800, 600, Severity.SEV2, None, "", "Slack #sre", True),
-        ("Notifications backlog", M.QUEUE_DEPTH, C.GT, 2000, 0, Severity.SEV2, None, "notifications", "Zoho Cliq", True),
-        ("SSL expiry", M.SSL_DAYS_LEFT, C.LT, 14, 0, Severity.SEV3, "dns", "", "Email", True),
-        ("API uptime SLO", M.UPTIME_PCT, C.LT, 99.5, 0, Severity.SEV2, "api", "", "PagerDuty", True),
+        ("p95 latency SLO", M.P95_LATENCY, C.GT, 800, 600, Severity.SEV2, None, "", notify, True),
+        ("Notifications backlog", M.QUEUE_DEPTH, C.GT, 2000, 0, Severity.SEV2, None, "notifications", notify, True),
+        ("SSL expiry", M.SSL_DAYS_LEFT, C.LT, 14, 0, Severity.SEV3, "dns", "", notify, True),
+        ("API uptime SLO", M.UPTIME_PCT, C.LT, 99.5, 0, Severity.SEV2, "api", "", notify, True),
     ]
     repaired = 0
     for name, metric, comp, thresh, dur, sev, skey, queue, channel, on in rules:

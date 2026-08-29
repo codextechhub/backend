@@ -139,7 +139,7 @@ class AlertEvaluationTests(TestCase):
         )
         self.rule = AlertRule.objects.create(
             name="API error rate", metric=AlertRule.Metric.ERROR_RATE,
-            comparator=AlertRule.Comparator.GT, threshold=5, duration_sec=300,
+            comparator=AlertRule.Comparator.GT, threshold=5, duration_sec=0,
             severity=Severity.SEV1, target_service=self.svc,
         )
 
@@ -164,6 +164,220 @@ class AlertEvaluationTests(TestCase):
         self.assertEqual(alert.status, Alert.Status.RESOLVED)
         alert.incident.refresh_from_db()
         self.assertEqual(alert.incident.status, Incident.Status.RESOLVED)
+
+
+class SustainedAlertEvaluationTests(TestCase):
+    def setUp(self):
+        self.svc = MonitoredService.objects.create(
+            key="api", name="API · DRF", sort_order=1,
+        )
+        bucket = timezone.now().replace(second=0, microsecond=0) - timedelta(minutes=1)
+        RequestMetric.objects.create(
+            bucket_start=bucket,
+            route="/v1/i/students/",
+            method="GET",
+            tenant_id=None,
+            request_count=100,
+            status_2xx=90,
+            status_5xx=10,
+            latency_sum_ms=9000,
+            latency_max_ms=300,
+            latency_hist=_hist_from([90] * 100),
+        )
+        self.rule = AlertRule.objects.create(
+            name="Sustained API errors",
+            metric=AlertRule.Metric.ERROR_RATE,
+            comparator=AlertRule.Comparator.GT,
+            threshold=5,
+            duration_sec=300,
+            severity=Severity.SEV1,
+            target_service=self.svc,
+        )
+
+    def test_rule_fires_only_after_full_sustained_duration(self):
+        from vs_health.tasks import evaluate_alert_rules_task
+
+        started = timezone.now()
+        with patch("vs_health.tasks.timezone.now", return_value=started):
+            self.assertEqual(evaluate_alert_rules_task()["fired"], 0)
+        with patch(
+            "vs_health.tasks.timezone.now",
+            return_value=started + timedelta(seconds=299),
+        ):
+            self.assertEqual(evaluate_alert_rules_task()["fired"], 0)
+        with patch(
+            "vs_health.tasks.timezone.now",
+            return_value=started + timedelta(seconds=300),
+        ):
+            self.assertEqual(evaluate_alert_rules_task()["fired"], 1)
+
+        self.rule.refresh_from_db()
+        self.assertEqual(self.rule.breach_started_at, started)
+        self.assertEqual(Alert.objects.filter(rule=self.rule).count(), 1)
+
+    def test_clearing_before_duration_resets_the_clock(self):
+        from vs_health.tasks import evaluate_alert_rules_task
+
+        started = timezone.now()
+        with patch("vs_health.tasks.timezone.now", return_value=started):
+            evaluate_alert_rules_task()
+        RequestMetric.objects.all().delete()
+        with patch(
+            "vs_health.tasks.timezone.now",
+            return_value=started + timedelta(seconds=120),
+        ):
+            self.assertEqual(evaluate_alert_rules_task()["fired"], 0)
+
+        self.rule.refresh_from_db()
+        self.assertIsNone(self.rule.breach_started_at)
+        self.assertFalse(Alert.objects.filter(rule=self.rule).exists())
+
+
+class ServiceScopedAlertTests(TestCase):
+    def test_error_rate_uses_only_the_selected_service_routes(self):
+        from vs_health.tasks import evaluate_alert_rules_task
+
+        schools = MonitoredService.objects.create(
+            key="schools", name="Schools & Onboarding", sort_order=1,
+        )
+        bucket = timezone.now().replace(second=0, microsecond=0) - timedelta(minutes=1)
+        RequestMetric.objects.create(
+            bucket_start=bucket,
+            route="/v1/i/students/",
+            method="GET",
+            request_count=100,
+            status_2xx=90,
+            status_5xx=10,
+            latency_hist=_hist_from([90] * 100),
+        )
+        RequestMetric.objects.create(
+            bucket_start=bucket,
+            route="/v1/finance/invoices/",
+            method="GET",
+            request_count=2000,
+            status_2xx=2000,
+            latency_hist=_hist_from([90] * 2000),
+        )
+        rule = AlertRule.objects.create(
+            name="Schools error rate",
+            metric=AlertRule.Metric.ERROR_RATE,
+            comparator=AlertRule.Comparator.GT,
+            threshold=5,
+            duration_sec=0,
+            severity=Severity.SEV1,
+            target_service=schools,
+        )
+
+        self.assertEqual(evaluate_alert_rules_task()["fired"], 1)
+
+        alert = Alert.objects.get(rule=rule)
+        self.assertEqual(alert.value, 10.0)
+
+    def test_request_metric_rule_rejects_a_service_without_request_signals(self):
+        from vs_health.serializers import AlertRuleSerializer
+
+        postgres = MonitoredService.objects.create(
+            key="postgres", name="PostgreSQL", sort_order=2,
+        )
+        serializer = AlertRuleSerializer(data={
+            "name": "Postgres request errors",
+            "metric": AlertRule.Metric.ERROR_RATE,
+            "comparator": AlertRule.Comparator.GT,
+            "threshold": 5,
+            "duration_sec": 300,
+            "severity": Severity.SEV1,
+            "target_service_key": postgres.key,
+            "target_queue": "",
+            "channel": AlertRule.Channel.EMAIL_AND_IN_APP,
+            "is_enabled": True,
+        })
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("target_service_key", serializer.errors)
+
+
+class AlertNotificationDeliveryTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from vs_notifications.services.seed import seed_notification_templates
+
+        self.platform_tenant = _platform_tenant()
+        self.operator = get_user_model().objects.create_user(
+            tenant=self.platform_tenant,
+            email="on-call@codexng.com",
+            first_name="Ada",
+            last_name="Okoye",
+            status=get_user_model().Status.ACTIVE,
+        )
+        seed_notification_templates()
+
+        self.svc = MonitoredService.objects.create(
+            key="api", name="API · DRF", sort_order=1,
+        )
+        bucket = timezone.now().replace(second=0, microsecond=0) - timedelta(minutes=1)
+        RequestMetric.objects.create(
+            bucket_start=bucket,
+            route="/v1/i/students/",
+            method="GET",
+            request_count=100,
+            status_2xx=90,
+            status_5xx=10,
+            latency_hist=_hist_from([90] * 100),
+        )
+        self.rule = AlertRule.objects.create(
+            name="API error rate",
+            metric=AlertRule.Metric.ERROR_RATE,
+            comparator=AlertRule.Comparator.GT,
+            threshold=5,
+            duration_sec=0,
+            severity=Severity.SEV1,
+            target_service=self.svc,
+        )
+
+    def test_firing_alert_creates_email_and_in_app_delivery_records(self):
+        from vs_health.tasks import evaluate_alert_rules_task
+        from vs_notifications.constants import ChannelChoices, NotificationStatus
+        from vs_notifications.models import Notification
+
+        with patch(
+            "vs_rbac.evaluator.resolve_users_with_permission",
+            return_value=[self.operator],
+        ), patch(
+            "vs_notifications.tasks.deliver_email_notification.delay",
+        ) as delay, self.captureOnCommitCallbacks(execute=True):
+            result = evaluate_alert_rules_task()
+            repeated = evaluate_alert_rules_task()
+
+        rows = Notification.all_objects.filter(
+            recipient=self.operator,
+            event_type__key="health.alert_fired",
+        )
+        self.assertEqual(result["notification_records"], 2)
+        self.assertEqual(repeated["notification_records"], 0)
+        self.assertEqual(rows.count(), 2)
+        self.assertEqual(
+            set(rows.values_list("channel", flat=True)),
+            {ChannelChoices.EMAIL, ChannelChoices.IN_APP},
+        )
+        self.assertEqual(
+            rows.get(channel=ChannelChoices.IN_APP).status,
+            NotificationStatus.SENT,
+        )
+        self.assertEqual(
+            rows.get(channel=ChannelChoices.EMAIL).status,
+            NotificationStatus.PENDING,
+        )
+        delay.assert_called_once()
+
+
+class IncidentCodeTests(TestCase):
+    def test_omitted_codes_are_uuid_backed_and_unique(self):
+        first = Incident.objects.create(title="First incident")
+        second = Incident.objects.create(title="Second incident")
+
+        self.assertRegex(first.code, r"^INC-[0-9A-F]{16}$")
+        self.assertRegex(second.code, r"^INC-[0-9A-F]{16}$")
+        self.assertNotEqual(first.code, second.code)
 
 
 class SmallSampleGuardTests(TestCase):
@@ -273,7 +487,7 @@ class SmallSampleGuardTests(TestCase):
 
         rule = AlertRule.objects.create(
             name="p95 latency SLO", metric=AlertRule.Metric.P95_LATENCY,
-            comparator=AlertRule.Comparator.GT, threshold=800, duration_sec=600,
+            comparator=AlertRule.Comparator.GT, threshold=800, duration_sec=0,
             severity=Severity.SEV2,
         )
         self._metric(requests=60, latencies=[2000] * 60)
@@ -291,7 +505,7 @@ class SmallSampleGuardTests(TestCase):
 
         AlertRule.objects.create(
             name="p95 latency SLO", metric=AlertRule.Metric.P95_LATENCY,
-            comparator=AlertRule.Comparator.GT, threshold=800, duration_sec=600,
+            comparator=AlertRule.Comparator.GT, threshold=800, duration_sec=0,
             severity=Severity.SEV2,
         )
         self._metric(requests=60, latencies=[420] * 60)
@@ -305,7 +519,7 @@ class SmallSampleGuardTests(TestCase):
         self._metric(requests=60, latencies=[2000] * 60)
         AlertRule.objects.create(
             name="p95 latency SLO", metric=AlertRule.Metric.P95_LATENCY,
-            comparator=AlertRule.Comparator.GT, threshold=800, duration_sec=600,
+            comparator=AlertRule.Comparator.GT, threshold=800, duration_sec=0,
             severity=Severity.SEV2,
         )
         evaluate_alert_rules_task()
@@ -418,7 +632,12 @@ class HealthSeedTests(TestCase):
 
         seed_alert_rules()
 
-        self.assertEqual(AlertRule.objects.get(name="p95 latency SLO").threshold, 800)
+        latency_rule = AlertRule.objects.get(name="p95 latency SLO")
+        self.assertEqual(latency_rule.threshold, 800)
+        self.assertEqual(
+            latency_rule.channel,
+            AlertRule.Channel.EMAIL_AND_IN_APP,
+        )
         self.assertEqual(AlertRule.objects.get(name="API error rate").threshold, 5)
 
 

@@ -456,6 +456,21 @@ EVENT_TYPE_REGISTRY = [
         "is_active": False,  # refund flow does not emit yet
     },
 
+    # Platform health alerts are operational alarms, not configurable product
+    # updates. Both destinations must be created whenever a rule starts firing.
+    {
+        "key": "health.alert_fired",
+        "label": "Platform health alert",
+        "description": (
+            "Notifies platform health operators when a sustained alert rule breach "
+            "opens an incident."
+        ),
+        "source_module": "vs_health",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "is_transactional": True,
+    },
+
     # ── Onboarding & System (vs_onboarding / vs_import / vs_users) ─────────
 
     {
