@@ -38,6 +38,7 @@ from ..constants import (
     PERM_TIMETABLE_VIEW,
 )
 from ..exceptions import (
+    CalendarError,
     ClassAlreadySitting,
     ExamEventNotExamPeriod,
     ExamTimesInvalid,
@@ -365,6 +366,77 @@ class ExamSlotListCreateView(_ExamScoped, generics.ListCreateAPIView):
             f"{school_class.name} {data['subject'].name} scheduled.",
             payload, status=201,
         )
+
+
+class ExamSlotPreviewView(_ExamScoped, APIView):
+    """POST /v1/academics/exams/<exam_id>/slots/preview/
+
+    The clashes a paper WOULD have, without writing it.
+
+    The lesson preview's twin, for the same reason: the moment a room and an
+    invigilator are chosen, the school can be told the Main Hall is already
+    taken for that sitting. It builds the same unsaved row the create path
+    builds and hands it to the same `exam_slot_warnings`, so what is shown
+    before saving and what is reported after are one function and cannot
+    disagree.
+
+    **The class refusal is previewed too, and it is not a warning.** A class
+    sitting two papers in one sitting is refused outright - it is physically
+    impossible and no school means it - so a form that offered "add anyway"
+    for it would offer something the server will not do. It comes back as
+    `refusal`, separately from the warnings a school may accept.
+
+    docstring-name: Exam paper preview
+    """
+
+    rbac_permission = PERM_TIMETABLE_CREATE
+    pagination_class = None
+
+    def post(self, request, exam_id):
+        exam = self._exam(exam_id)
+        writer = ExamSlotWriteSerializer(data=request.data)
+        writer.is_valid(raise_exception=True)
+        data = writer.validated_data
+
+        exclude = str(request.data.get("exclude") or "").strip()
+        exclude_pk = int(exclude) if exclude.isdigit() else None
+
+        try:
+            school_class = self._validate(exam, data, exclude_pk=exclude_pk)
+        except CalendarError as exc:
+            # Only the module's OWN refusals are previewed. A DRF NotFound from
+            # a class that does not exist is a bad request, not a draft the
+            # school can look at and fix, so it is left to propagate.
+            # Reported rather than raised: this is a question about a draft,
+            # so the answer to "would this be refused?" is yes-and-here-is-why,
+            # not a 4xx on a form nobody submitted.
+            return success_response(data={
+                "refusal": exc.message,
+                "warnings": [],
+            })
+
+        draft = ExamSlot(
+            tenant=self.tenant, exam=exam, school_class=school_class,
+            subject=data["subject"], exam_date=data["exam_date"],
+            sitting=data["sitting"],
+            start_time=data.get("start_time"), end_time=data.get("end_time"),
+            room=data.get("room"), invigilator=data.get("invigilator"),
+        )
+        queryset = None
+        if exclude_pk is not None:
+            queryset = [
+                row for row in ExamSlot.objects.filter(
+                    tenant=self.tenant, exam=exam,
+                    exam_date=draft.exam_date, sitting=draft.sitting,
+                ).select_related("school_class", "room", "invigilator")
+                if row.pk != exclude_pk
+            ]
+
+        warnings = exam_slot_warnings(draft, visible=self.visible, queryset=queryset)
+        return success_response(data={
+            "refusal": None,
+            "warnings": [w.as_dict() for w in warnings],
+        })
 
 
 class ExamSlotDetailView(_ExamScoped, generics.RetrieveUpdateDestroyAPIView):

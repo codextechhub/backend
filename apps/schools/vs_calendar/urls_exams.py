@@ -6,6 +6,7 @@ from .views.exams import (
     ExamPublishView,
     ExamSlotDetailView,
     ExamSlotListCreateView,
+    ExamSlotPreviewView,
 )
 
 urlpatterns = [
@@ -14,6 +15,10 @@ urlpatterns = [
     path(
         "<int:exam_id>/slots/",
         ExamSlotListCreateView.as_view(), name="calendar-exam-slot-list",
+    ),
+    path(
+        "<int:exam_id>/slots/preview/",
+        ExamSlotPreviewView.as_view(), name="calendar-exam-slot-preview",
     ),
     path(
         "<int:exam_id>/slots/<int:pk>/",

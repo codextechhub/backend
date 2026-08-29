@@ -13,6 +13,7 @@ from .views.timetable import (
     ClassTimetableListView,
     SlotDetailView,
     SlotListCreateView,
+    SlotPreviewView,
 )
 
 urlpatterns = [
@@ -41,6 +42,9 @@ urlpatterns = [
     ),
 
     path("slots/", SlotListCreateView.as_view(), name="calendar-slot-list"),
+    # Before the detail route: "preview" is not an <int:pk>, but keeping the
+    # literal first is the habit that stops the next literal being swallowed.
+    path("slots/preview/", SlotPreviewView.as_view(), name="calendar-slot-preview"),
     path("slots/<int:pk>/", SlotDetailView.as_view(), name="calendar-slot-detail"),
 
     path("teachers/", TeacherListView.as_view(), name="calendar-teacher-list"),

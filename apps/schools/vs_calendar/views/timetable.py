@@ -438,6 +438,78 @@ class SlotListCreateView(CalendarViewMixin, generics.ListCreateAPIView):
         )
 
 
+class SlotPreviewView(CalendarViewMixin, APIView):
+    """POST /v1/academics/timetable/slots/preview/
+
+    The clashes a slot WOULD have, without writing it.
+
+    **Why this exists rather than the client working it out.** The lesson form
+    asks for a teacher and a room, and the moment both are chosen the school can
+    already be told that Mr Eze is teaching JSS2 A at that hour. Answering that
+    on the client means a second implementation of the clash rules - and the
+    rules are not simple. They span the whole tenant on purpose (a person cannot
+    be at two branches at once), and they redact the other side of a clash the
+    caller may not see, naming neither the class nor the room. A client copy
+    would get the width wrong, the redaction wrong, or both, and it would drift
+    from the real engine the first time either changed.
+
+    So this is not a second implementation. It builds the same unsaved row the
+    create path builds and hands it to the same `slot_warnings`, which reads
+    only the fields it is given and excludes nothing for a row with no primary
+    key. What the school is shown before saving and what it is told after cannot
+    disagree, because they are one function.
+
+    Nothing is written and nothing is audited: it answers a question.
+
+    docstring-name: Timetable slot preview
+    """
+
+    rbac_permission = PERM_TIMETABLE_CREATE
+    pagination_class = None
+
+    def post(self, request):
+        session = self.session_required
+        writer = TimetableSlotWriteSerializer(data=request.data)
+        writer.is_valid(raise_exception=True)
+        data = writer.validated_data
+
+        school_class = _visible_classes(self).filter(
+            pk=data["school_class"].pk,
+        ).first()
+        if school_class is None:
+            raise NotFound("No such class at this school.")
+
+        period = data["period"]
+        if period.tenant_id != self.tenant.id or period.session_id != session.pk:
+            raise NotFound("No such period in this year.")
+
+        # Unsaved, and never saved. `pk` is None, which is exactly what makes
+        # the sibling query exclude nothing - a new cell clashes with every
+        # other row at that hour, including the one it would replace.
+        draft = TimetableSlot(
+            tenant=self.tenant, session=session, school_class=school_class,
+            day_of_week=data["day_of_week"], period=period,
+            subject=data["subject"], teacher=data.get("teacher"),
+            room=data.get("room"),
+        )
+        # Editing a cell must not be told it clashes with itself.
+        exclude = str(request.data.get("exclude") or "").strip()
+        queryset = None
+        if exclude.isdigit():
+            queryset = [
+                row for row in TimetableSlot.objects.filter(
+                    tenant=self.tenant, session=session,
+                    day_of_week=draft.day_of_week, period=period,
+                ).select_related("school_class", "room", "teacher")
+                if row.pk != int(exclude)
+            ]
+
+        warnings = slot_warnings(draft, visible=self.visible, queryset=queryset)
+        return success_response(data={
+            "warnings": [w.as_dict() for w in warnings],
+        })
+
+
 class SlotDetailView(CalendarViewMixin, generics.RetrieveUpdateDestroyAPIView):
     """GET, PATCH, DELETE /v1/academics/timetable/slots/<id>/
 
