@@ -328,21 +328,6 @@ class PermissionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMix
             )
 
         try:
-            validated = serializer.validated_data
-
-            # Auto-compute new key from whatever module/resource/action ended up in
-            # validated_data (new value if sent, existing instance value otherwise).
-            # key is read-only in the serializer so we handle the PK update here.
-            new_module = validated.get("module", instance.module)
-            new_resource = validated.get("resource", instance.resource)
-            new_action = validated.get("action", instance.action)
-            new_key = f"{new_module.pk}.{new_resource.name}.{new_action.pk}"
-
-            if new_key != instance.key:
-                # Updating module/resource/action changes the natural key used by role grants.
-                Permission.objects.filter(key=instance.key).update(key=new_key)
-                instance.key = new_key
-
             self.perform_update(serializer)
         except Exception as exc:
             return error_response(

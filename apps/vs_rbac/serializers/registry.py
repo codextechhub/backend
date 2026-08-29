@@ -75,6 +75,14 @@ class PermissionModuleSerializer(serializers.ModelSerializer):
         fields = ["name", "description", "is_active", "created_at", "updated_at"]
         read_only_fields = ["created_at", "updated_at"]
 
+    def validate_name(self, value):
+        if self.instance and value != self.instance.name:
+            raise serializers.ValidationError(
+                "Module name cannot be changed after creation. Create new vocabulary, "
+                "migrate its permissions explicitly, and deactivate the old module."
+            )
+        return value
+
 
 class PermissionResourceSerializer(serializers.ModelSerializer):
     module = serializers.SlugRelatedField(
@@ -91,6 +99,22 @@ class PermissionResourceSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         module = attrs.get("module") or getattr(self.instance, "module", None)
         name = attrs.get("name") or getattr(self.instance, "name", None)
+        if self.instance:
+            immutable_errors = {}
+            if "module" in attrs and module.pk != self.instance.module_id:
+                immutable_errors["module"] = (
+                    "Resource module cannot be changed after creation. Create new "
+                    "vocabulary, migrate its permissions explicitly, and deactivate "
+                    "the old resource."
+                )
+            if "name" in attrs and name != self.instance.name:
+                immutable_errors["name"] = (
+                    "Resource name cannot be changed after creation. Create new "
+                    "vocabulary, migrate its permissions explicitly, and deactivate "
+                    "the old resource."
+                )
+            if immutable_errors:
+                raise serializers.ValidationError(immutable_errors)
         qs = PermissionResource.objects.filter(module=module, name=name)
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
@@ -106,6 +130,14 @@ class PermissionActionSerializer(serializers.ModelSerializer):
         model = PermissionAction
         fields = ["name", "description", "is_active", "permissions_count", "created_at", "updated_at"]
         read_only_fields = ["permissions_count", "created_at", "updated_at"]
+
+    def validate_name(self, value):
+        if self.instance and value != self.instance.name:
+            raise serializers.ValidationError(
+                "Action name cannot be changed after creation. Create new vocabulary, "
+                "migrate its permissions explicitly, and deactivate the old action."
+            )
+        return value
 
 
 # -----------------------------------------------------------------------------
@@ -128,6 +160,11 @@ class PermissionSerializer(serializers.ModelSerializer):
     action = serializers.SlugRelatedField(
         slug_field="name",
         queryset=PermissionAction.objects.filter(is_active=True),
+    )
+    scope = serializers.ChoiceField(
+        choices=PermissionScope.choices,
+        required=True,
+        help_text="Who may hold this key: TENANT (any tenant) or PLATFORM (CX only).",
     )
 
     resource_key = serializers.SerializerMethodField(read_only=True)
@@ -155,6 +192,7 @@ class PermissionSerializer(serializers.ModelSerializer):
             "action_key",
             "description",
             "sensitivity_level",
+            "scope",
             "is_restricted",
             "is_active",
             "created_at",
@@ -198,6 +236,26 @@ class PermissionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 "resource": f"Resource '{resource.name}' does not belong to module '{module.name}'."
             })
+
+        if self.instance:
+            immutable_errors = {}
+            if "module" in attrs and module.pk != self.instance.module_id:
+                immutable_errors["module"] = (
+                    "Module cannot be changed after creation. Create a new permission, "
+                    "migrate its grants explicitly, and deactivate the old permission."
+                )
+            if "resource" in attrs and resource.pk != self.instance.resource_id:
+                immutable_errors["resource"] = (
+                    "Resource cannot be changed after creation. Create a new permission, "
+                    "migrate its grants explicitly, and deactivate the old permission."
+                )
+            if "action" in attrs and action.pk != self.instance.action_id:
+                immutable_errors["action"] = (
+                    "Action cannot be changed after creation. Create a new permission, "
+                    "migrate its grants explicitly, and deactivate the old permission."
+                )
+            if immutable_errors:
+                raise serializers.ValidationError(immutable_errors)
 
         # Duplicate key guard - checks the composed key before hitting the DB unique constraint
         if module and isinstance(resource, PermissionResource) and action:
@@ -424,4 +482,3 @@ class PermissionGroupDetailSerializer(
                 role.save(update_fields=["version", "updated_at"])
 
         return instance
-

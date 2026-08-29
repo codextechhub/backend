@@ -24,6 +24,7 @@ from vs_rbac.evaluator import get_effective_permissions, has_permission
 from vs_rbac.models import (
     Permission,
     PermissionDependency,
+    PermissionScope,
     RBACAuditLog,
     TenantRoleTemplate,
     TenantRolePermission,
@@ -114,10 +115,34 @@ class PermissionListCreateViewTests(_AuthMixin, TestCase):
         module, _ = PermissionModule.objects.get_or_create(name="hr")
         PermissionResource.objects.get_or_create(module=module, name="leave")
         PermissionAction.objects.get_or_create(name="view")
-        data = {"module": "hr", "resource": "leave", "action": "view", "description": "View"}
+        data = {
+            "module": "hr",
+            "resource": "leave",
+            "action": "view",
+            "scope": PermissionScope.TENANT,
+            "description": "View",
+        }
         resp = self._vision_client().post(self.url, data, format="json")
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
-        self.assertTrue(Permission.objects.filter(key="hr.leave.view").exists())
+        permission = Permission.objects.get(key="hr.leave.view")
+        self.assertEqual(permission.scope, PermissionScope.TENANT)
+        self.assertEqual(resp.data["data"]["scope"], PermissionScope.TENANT)
+
+    def test_create_permission_requires_scope(self):
+        from vs_rbac.models import PermissionAction, PermissionModule, PermissionResource
+        module, _ = PermissionModule.objects.get_or_create(name="hr")
+        PermissionResource.objects.get_or_create(module=module, name="leave")
+        PermissionAction.objects.get_or_create(name="view")
+
+        resp = self._vision_client().post(
+            self.url,
+            {"module": "hr", "resource": "leave", "action": "view"},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("scope", resp.data["error"]["detail"])
+        self.assertFalse(Permission.objects.filter(key="hr.leave.view").exists())
 
     def test_search_permissions_across_related_fields(self):
         make_permission("zdummy.health.view")
@@ -133,6 +158,98 @@ class PermissionListCreateViewTests(_AuthMixin, TestCase):
     def test_anon_denied(self):
         resp = self._anon_client().get(self.url)
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class PermissionDetailViewTests(_AuthMixin, TestCase):
+    def setUp(self):
+        self.vision_user = make_vision_user(super_admin=True)
+        self.permission = make_permission("finance.invoice.approve")
+        self.url = reverse(
+            "rbac-permission-detail", kwargs={"key": self.permission.key},
+        )
+
+    def test_update_rejects_identity_changes_without_breaking_grants(self):
+        from vs_rbac.models import PermissionAction, PermissionModule, PermissionResource
+
+        school = make_school()
+        role = make_role(school, name="Invoice Approver")
+        grant = make_role_permission(role, self.permission)
+        module, _ = PermissionModule.objects.get_or_create(name="payments")
+        PermissionResource.objects.get_or_create(module=module, name="payout")
+        PermissionAction.objects.get_or_create(name="authorize")
+
+        resp = self._vision_client().patch(
+            self.url,
+            {"module": "payments", "resource": "payout", "action": "authorize"},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        errors = resp.data["error"]["errors"]
+        self.assertEqual(set(errors), {"module", "resource", "action"})
+        self.assertTrue(
+            Permission.objects.filter(key="finance.invoice.approve").exists()
+        )
+        grant.refresh_from_db()
+        self.assertEqual(grant.permission_id, "finance.invoice.approve")
+
+    def test_update_allows_non_identity_changes(self):
+        resp = self._vision_client().patch(
+            self.url,
+            {
+                "description": "Approve a finance invoice.",
+                "scope": PermissionScope.PLATFORM,
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.permission.refresh_from_db()
+        self.assertEqual(self.permission.key, "finance.invoice.approve")
+        self.assertEqual(self.permission.description, "Approve a finance invoice.")
+        self.assertEqual(self.permission.scope, PermissionScope.PLATFORM)
+
+
+class PermissionVocabularyIdentityTests(_AuthMixin, TestCase):
+    def setUp(self):
+        self.vision_user = make_vision_user(super_admin=True)
+        self.permission = make_permission("finance.invoice.approve")
+
+    def test_update_rejects_module_resource_and_action_renames(self):
+        module_url = reverse(
+            "rbac-permission-module-detail",
+            kwargs={"name": self.permission.module_id},
+        )
+        resource_url = reverse(
+            "rbac-permission-resource-detail",
+            kwargs={"pk": self.permission.resource_id},
+        )
+        action_url = reverse(
+            "rbac-permission-action-detail",
+            kwargs={"name": self.permission.action_id},
+        )
+
+        responses = (
+            self._vision_client().patch(
+                module_url, {"name": "accounting"}, format="json",
+            ),
+            self._vision_client().patch(
+                resource_url, {"name": "bill"}, format="json",
+            ),
+            self._vision_client().patch(
+                action_url, {"name": "authorize"}, format="json",
+            ),
+        )
+
+        for response in responses:
+            with self.subTest(response=response.data):
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.permission.refresh_from_db()
+        self.assertEqual(self.permission.module_id, "finance")
+        self.assertEqual(self.permission.resource.name, "invoice")
+        self.assertEqual(self.permission.action_id, "approve")
+        self.assertEqual(self.permission.key, "finance.invoice.approve")
 
 
 class PermissionDependencyViewTests(_AuthMixin, TestCase):
