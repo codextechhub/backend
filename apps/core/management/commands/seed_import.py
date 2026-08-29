@@ -987,6 +987,173 @@ TEMPLATES: list[dict] = [
             },
         ],
     },
+    {
+        # -----------------------------------------------------------------------
+        # Calendar events
+        # -----------------------------------------------------------------------
+        # One row = one dated entry on the school's own calendar, for the school
+        # year it is currently running. THE FIRST TEMPLATE ON THIS LIST A SCHOOL
+        # MAY USE - the other four act on CodeX's records, and vs_import_data/
+        # datasets.py carries the argument for why this one is different.
+        #
+        # There is no school column, deliberately. The handler takes its tenant
+        # from the batch, so there is nothing for a crafted file to name.
+        # -----------------------------------------------------------------------
+        "template": {
+            "code": "calendar_events_v1",
+            "name": "School Calendar Import",
+            "dataset_type": DatasetTypeChoices.CALENDAR_EVENTS,
+            "status": TemplateStatusChoices.ACTIVE,
+            "default_file_format": FileFormatChoices.CSV,
+            "description": (
+                "Template for loading a school year's calendar in one go: "
+                "holidays, mid-term breaks, exam periods, PTA meetings, sports "
+                "days and school events."
+            ),
+            "instructions": (
+                "One entry per row. Entries go into the school year you are "
+                "currently running, so every date must fall inside it. "
+                "Event Type must be one of: Public holiday, Mid-term break, "
+                "Exam period, School event, PTA, Sports day. "
+                "Dates are YYYY-MM-DD; for a one-day entry write the same date "
+                "in both date columns. "
+                "Leave Branch blank for an entry that covers the whole school, "
+                "or write the branch name exactly as it appears in Branches. A "
+                "school that runs a single branch leaves it blank on every row. "
+                "Closes School is Yes when the school is shut on those days; "
+                "it marks them non-teaching and does not delete any lessons. "
+                "Applies To is for an entry that covers only part of the "
+                "school: write level or class names separated by semicolons, "
+                "for example 'Primary 4; JSS1 A'. Leave it blank for an entry "
+                "that covers everybody, which is the usual case. "
+                "An entry that already exists on the calendar with the same "
+                "name and start date is skipped rather than added twice."
+            ),
+            "allow_sample_row": True,
+            "sample_row_data": {
+                "Event Name": "Mid-Term Break",
+                "Event Type": "Mid-term break",
+                "Start Date": "2026-11-02",
+                "End Date": "2026-11-06",
+                "Branch": "",
+                "Closes School": "Yes",
+                "Description": "School closed; resumes Monday 9 November.",
+                "Applies To": "",
+            },
+            "validation_rules": {
+                "min_rows": 1,
+                # A school year holds thirty to sixty dated entries. A thousand
+                # is far past anything real and still cheap to validate.
+                "max_rows": 1_000,
+                "allowed_file_formats": ["csv", "xlsx"],
+            },
+            "is_download_enabled": True,
+        },
+        "columns": [
+            {
+                "column_name": "Event Name",
+                "target_field": "name",
+                "display_name": "Event Name",
+                "help_text": "What the entry is called on the calendar.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True,
+                "max_length": 120,
+                "sample_value": "Founder's Day",
+                "column_order": 1,
+            },
+            {
+                "column_name": "Event Type",
+                "target_field": "event_type",
+                "display_name": "Event Type",
+                "help_text": (
+                    "One of: Public holiday, Mid-term break, Exam period, "
+                    "School event, PTA, Sports day."
+                ),
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True,
+                "max_length": 32,
+                "sample_value": "School event",
+                "column_order": 2,
+            },
+            {
+                "column_name": "Start Date",
+                "target_field": "start_date",
+                "display_name": "Start Date",
+                "help_text": "First day of the entry. Must fall inside the school year.",
+                "data_type": TemplateColumnDataTypeChoices.DATE,
+                "is_required": True,
+                "sample_value": "2026-11-02",
+                "column_order": 3,
+            },
+            {
+                "column_name": "End Date",
+                "target_field": "end_date",
+                "display_name": "End Date",
+                "help_text": (
+                    "Last day of the entry. Repeat the start date for a "
+                    "one-day entry; never leave this blank."
+                ),
+                "data_type": TemplateColumnDataTypeChoices.DATE,
+                "is_required": True,
+                "sample_value": "2026-11-06",
+                "column_order": 4,
+            },
+            {
+                "column_name": "Branch",
+                "target_field": "branch",
+                "display_name": "Branch",
+                "help_text": (
+                    "Branch name for an entry that covers one branch only. "
+                    "Blank means the whole school."
+                ),
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "max_length": 120,
+                "sample_value": "Ikeja Branch",
+                "column_order": 5,
+            },
+            {
+                "column_name": "Closes School",
+                "target_field": "closes_school",
+                "display_name": "Closes School",
+                "help_text": (
+                    "Yes when the school is shut on these days. Marks them "
+                    "non-teaching; does not delete lessons."
+                ),
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "max_length": 8,
+                "sample_value": "Yes",
+                "column_order": 6,
+            },
+            {
+                "column_name": "Description",
+                "target_field": "description",
+                "display_name": "Description",
+                "help_text": "Anything the school wants shown with the entry.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "max_length": 500,
+                "sample_value": "Resumes Monday 9 November.",
+                "column_order": 7,
+            },
+            {
+                "column_name": "Applies To",
+                "target_field": "applies_to",
+                "display_name": "Applies To",
+                "help_text": (
+                    "Level or class names separated by semicolons, for an "
+                    "entry that covers part of the school. Blank means "
+                    "everybody."
+                ),
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "max_length": 255,
+                "sample_value": "Primary 4; JSS1 A",
+                "column_order": 8,
+            },
+        ],
+    },
 ]
 
 

@@ -567,6 +567,78 @@ def reverse_user(row_result, *, initiated_by=None) -> str:
 
 
 # =========================================================
+# Calendar events
+# =========================================================
+def reverse_calendar_event(row_result, *, initiated_by=None) -> str:
+    """Delete one imported calendar entry, with the audience rows under it.
+
+    One delete, not a teardown: audience rows CASCADE from the event by design,
+    because an audience row has no meaning without the event it narrows. So
+    unlike a school or a branch there is no census to take here - there is
+    nothing an event owns that a school could have put there afterwards.
+
+    What there IS, and what this refuses on, is a thing pointing the other way.
+    An exam period that has had an exam timetable built against it is no longer
+    just a date: deleting it would take the timetable with it. The events API
+    refuses that same delete for the same reason, so a rollback that went ahead
+    would be a way round a rule the API holds.
+    """
+    from schools.vs_calendar.models import CalendarEvent
+
+    pk = _numeric_pk(row_result)
+
+    event = CalendarEvent.all_objects.select_for_update().filter(pk=pk).first()
+    if event is None:
+        raise RollbackRefused(
+            f"No calendar entry with id {pk} exists; nothing was deleted."
+        )
+
+    name = _field(row_result, "name")
+    if not name:
+        raise RollbackRefused(
+            "The row recorded no event name, so the entry it created cannot be "
+            "identified."
+        )
+    if event.name.casefold() != name.casefold():
+        raise RollbackRefused(
+            f"Calendar entry id {pk} is named '{event.name}', not '{name}' as "
+            "the row recorded, so it is not the entry this row created."
+        )
+
+    # Ownership is checked against the batch here, and that is correct for this
+    # dataset and wrong for the three above it. Those are platform-only, so
+    # their batch belongs to CodeX and never to the school the row created.
+    # This one is a school importing into itself, so the batch's tenant IS the
+    # owner, and checking it is what stops a rollback reaching across schools.
+    batch_tenant_id = getattr(
+        getattr(getattr(row_result, "job", None), "import_batch", None),
+        "tenant_id", None,
+    )
+    if batch_tenant_id is not None and event.tenant_id != batch_tenant_id:
+        raise RollbackRefused(
+            f"Calendar entry id {pk} belongs to a different school than the "
+            "import that recorded it, so it was left alone."
+        )
+
+    if event.exams.exists():
+        raise RollbackRefused(
+            f"'{event.name}' now holds an exam timetable, so deleting it would "
+            "destroy the timetable with it."
+        )
+
+    try:
+        event.delete()
+    except ProtectedError as exc:
+        protected = {obj._meta.label for obj in exc.protected_objects}
+        raise RollbackRefused(
+            f"'{event.name}' could not be removed because other records depend "
+            f"on it ({', '.join(sorted(protected))})."
+        ) from exc
+
+    return f"'{event.name}' was removed from the calendar."
+
+
+# =========================================================
 # Dispatch
 # =========================================================
 #: The whole dispatch table. A ``target_model`` absent from here is refused.
@@ -574,6 +646,7 @@ _REVERSERS = {
     "School": reverse_school,
     "Branch": reverse_branch,
     "User": reverse_user,
+    "CalendarEvent": reverse_calendar_event,
 }
 
 

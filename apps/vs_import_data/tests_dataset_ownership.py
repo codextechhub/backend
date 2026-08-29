@@ -49,25 +49,49 @@ class DatasetOwnershipRuleTests(TestCase):
         self.assertFalse(may_import(SCHOOL, DatasetTypeChoices.SCHOOLS))
         self.assertFalse(may_import(SCHOOL, DatasetTypeChoices.CX_USERS))
 
-    def test_no_dataset_is_a_school_import_today(self):
-        """The honest state of this step, asserted rather than assumed.
+    def test_the_calendar_is_the_school_dataset(self):
+        """The first dataset a school may import, and the only one so far.
 
-        The three datasets it exists for - students, staff, parents - have no
-        template and no model to import into. Every dataset that DOES exist
-        belongs to CodeX: schools and cx_users are its records, branches are its
-        to create, and bank statements are ledger reconciliation rather than
-        onboarding.
+        Written the day ``calendar_events`` was added, replacing a test that
+        asserted no school dataset existed at all. The rule it guards has not
+        changed: a dataset is a school's only when somebody has argued that it
+        is, one at a time. Students, staff and parents still have no template
+        and no model to import into, and every other dataset here is CodeX's.
 
-        This test is meant to fail the day a students template lands. That is
-        the point: adding it to TENANT_DATASETS is the only change needed, and
-        this is what says so.
+        This is meant to fail the day the next one lands. That is the point.
         """
-        for dataset in DatasetTypeChoices.values:
-            self.assertFalse(
-                may_import(SCHOOL, dataset),
-                f"{dataset} is now a school import - add it to TENANT_DATASETS "
-                f"and update this test",
-            )
+        self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.CALENDAR_EVENTS))
+
+        school_datasets = {
+            dataset for dataset in DatasetTypeChoices.values
+            if may_import(SCHOOL, dataset)
+        }
+        self.assertEqual(
+            school_datasets, {DatasetTypeChoices.CALENDAR_EVENTS},
+            "A dataset became a school import. Argue for it in datasets.py the "
+            "way calendar_events is argued for, then update this test.",
+        )
+
+    def test_the_calendar_import_creates_nothing_but_school_rows(self):
+        """Why the calendar is allowed where branches are not.
+
+        The branches import created a branch, a branch administrator and a
+        branch-scoped role, none of which a school may create by asking. The
+        calendar handler creates a CalendarEvent and its audience rows and
+        nothing else, inside the uploading school's own tenant, through a
+        permission (``academics.calendar.create``) that school roles already
+        hold.
+
+        Asserted on the source rather than trusted, because the guarantee is
+        "no school column for a caller to name another tenant with" and a
+        column added later would quietly break it.
+        """
+        from schools.vs_calendar.imports import COLUMNS
+
+        self.assertNotIn("school", COLUMNS)
+        self.assertNotIn("school_slug", COLUMNS)
+        self.assertNotIn("school_code", COLUMNS)
+        self.assertNotIn("tenant", COLUMNS)
 
     def test_codex_keeps_every_dataset(self):
         for dataset in DatasetTypeChoices.values:

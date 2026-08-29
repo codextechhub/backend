@@ -66,15 +66,26 @@ PLATFORM_ONLY_DATASETS: frozenset[str] = frozenset({
 
 #: Datasets a school may import for itself.
 #:
-#: **Empty today, and that is the honest answer.** The three datasets this step
-#: exists for - students, staff and parents - have no template and no model to
-#: import into. Nothing else on the list is a school's to load: schools and CX
-#: users are CodeX's records, bank statements are ledger reconciliation rather
-#: than onboarding, and branches are CodeX's to create (below).
+#: **``calendar_events`` is the first entry this set has ever held**, so it is
+#: the first time the answer to "may a school import this?" is yes. It earns
+#: that on three counts, and a future dataset should be argued the same way:
 #:
-#: The import screen reads this through the API and shows an empty templates
-#: table, which is what the design draws for the case. When a students template
-#: lands, adding it here is the only change needed.
+#: 1. *The school already creates these by hand, through an API that is its
+#:    own.* ``academics.calendar.create`` is a school key held by school roles,
+#:    and the events endpoint accepts exactly what this file carries. Contrast
+#:    ``branches``, where the equivalent endpoint refuses a school outright -
+#:    that gap between the file and the API is what made the branches import a
+#:    way around a permission.
+#: 2. *The handler creates nothing but the school's own rows.* One
+#:    ``CalendarEvent`` inside the uploading tenant's own year, plus its
+#:    audience rows. No tenant, no account, no role, no permission grant.
+#: 3. *There is a real reason to do it in bulk.* A year's calendar is thirty to
+#:    sixty dated entries that a school already keeps in a spreadsheet, and
+#:    typing them one at a time into a drawer is the whole of a morning.
+#:
+#: The remaining onboarding datasets - students, staff and parents - still have
+#: no template and no model to import into. When one lands, adding it here is
+#: the only change needed, and the same three questions are the ones to ask.
 #:
 #: ``branches`` is NOT here, and the reason is the sharpest argument for
 #: classifying datasets rather than assuming. A branch looks like a school's own
@@ -94,7 +105,9 @@ PLATFORM_ONLY_DATASETS: frozenset[str] = frozenset({
 #: A school still administers the branches it HAS - ``school.branches.view``
 #: and ``.manage`` are its own. It is opening and editing them that is not, and
 #: those two keys have been dropped from the school permission group.
-TENANT_DATASETS: frozenset[str] = frozenset()
+TENANT_DATASETS: frozenset[str] = frozenset({
+    DatasetTypeChoices.CALENDAR_EVENTS,
+})
 
 
 def platform_only(dataset_type: str | None) -> bool:

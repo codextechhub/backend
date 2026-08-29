@@ -104,6 +104,9 @@ def execute_dataset_handler(import_batch, payload: dict, queued_by) -> ImportExe
     if dataset_type == "cx_users":
         return import_cx_users_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
 
+    if dataset_type == "calendar_events":
+        return import_calendar_events_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
+
     raise ValueError(f"Unsupported dataset type: {dataset_type}")
 
 
@@ -499,6 +502,87 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
         payload=branch_payload,
         context=context,
         target_model="Branch",
+    )
+
+
+# =========================================================
+# Calendar events handler
+# =========================================================
+def import_calendar_events_row(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
+    """Import one calendar entry into the uploading school's own year.
+
+    **The first handler here that must scope to the batch's own tenant, and the
+    reason the other three are no guide.** ``import_cx_users_row`` deliberately
+    forces the CodeX platform tenant as its target and ``import_schools_row``
+    creates a tenant outright: both are right for a CodeX operator running a
+    provisioning file and catastrophic for anyone else. This one takes its
+    tenant from the batch and nowhere else, and the template carries no school
+    column for a caller to name a different one with.
+
+    Interpretation lives in ``vs_calendar.imports``, not here. Validation and
+    execution are separate passes over the same file, and the way an import goes
+    wrong quietly is the two of them reading a row differently, so both call the
+    same resolver and this handler writes only what that resolver read.
+
+    Template columns (target_field) this handler reads:
+        name            required
+        event_type      required - one of the six labels, or the stored code
+        start_date      required - YYYY-MM-DD
+        end_date        required - same as start for a one-day entry
+        branch          optional - branch name; blank means the whole school
+        closes_school   optional - yes/no, default no
+        description     optional
+        applies_to      optional - "Primary 4; JSS1", semicolon separated
+    """
+    from schools.vs_calendar.imports import (
+        create_event_from_row,
+        import_session,
+        resolve_row,
+    )
+    from schools.vs_calendar.services.scoping import branch_dimension_applies
+
+    tenant = import_batch.tenant
+    session = import_session(tenant)
+    if session is None:
+        raise ValueError(
+            "This school has no academic year, and every calendar entry "
+            "belongs to one."
+        )
+
+    row = resolve_row(
+        payload,
+        tenant=tenant,
+        session=session,
+        batch_branch=import_batch.branch,
+        multi_branch=branch_dimension_applies(tenant),
+    )
+    if not row.ok:
+        # Validation should have caught these and refused the batch. Reaching
+        # here means the file changed, the year changed, or a row slipped past,
+        # and the row fails with its own reasons rather than a stack trace.
+        raise ValueError(
+            " ".join(i.message for i in row.issues if i.severity == "error")
+        )
+
+    if row.duplicate is not None:
+        return ImportExecutionResult(
+            action=ImportRowActionChoices.SKIP,
+            instance=None,
+            target_model="CalendarEvent",
+            message=(
+                f"'{row.name}' is already on this calendar on that date - "
+                f"skipped."
+            ),
+        )
+
+    event = create_event_from_row(
+        row, tenant=tenant, session=session, created_by=queued_by,
+    )
+    return ImportExecutionResult(
+        action=ImportRowActionChoices.CREATE,
+        instance=event,
+        target_model="CalendarEvent",
+        message=f"{event.name} added to the calendar.",
     )
 
 
