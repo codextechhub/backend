@@ -63,13 +63,24 @@ GRID_DAYS = [
 
 
 def _visible_classes(view):
-    from schools.vs_academics.models import SchoolClass
+    """The classes this caller may see, through the branch they are looking at.
 
-    return scope_to_visible_branches(
-        SchoolClass.objects.filter(
-            tenant=view.tenant, session=view.session, is_active=True,
-        ).select_related("branch"),
-        view.request.user, view.tenant,
+    Two filters and they are not the same one. `scope_to_visible_branches` is
+    security and always applies; the lens is the switcher at the top of the
+    screen and applies when it is set. Leaving the second one off is what had a
+    Lekki administrator picking Ikeja's classes out of a list headed Lekki.
+    """
+    from schools.vs_academics.models import SchoolClass
+    from ..services.scoping import lens_branch, narrow_to_lens
+
+    return narrow_to_lens(
+        scope_to_visible_branches(
+            SchoolClass.objects.filter(
+                tenant=view.tenant, session=view.session, is_active=True,
+            ).select_related("branch"),
+            view.request.user, view.tenant,
+        ),
+        lens_branch(view),
     )
 
 

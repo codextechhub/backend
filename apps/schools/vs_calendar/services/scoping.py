@@ -85,3 +85,58 @@ def can_see_branch(visible, branch_id) -> bool:
     if visible is WHOLE_TENANT:
         return True
     return branch_id in visible
+
+
+# ── The lens ─────────────────────────────────────────────────────────────────
+#
+# `scope_to_visible_branches` above answers "which rows MAY this caller see".
+# This answers a different question: "which branch is the caller LOOKING AT".
+# The first is security and is never optional; the second is a control at the
+# top of the screen and applies only when the caller has set it.
+#
+# They were confused, and the cost was not small. Every screen in this module
+# sends `?branch=<id>` from the switcher, and only rooms and the bell schedule
+# ever read it. An unrecognised query parameter is not an error in DRF, so the
+# other five surfaces accepted the parameter, ignored it, and answered with
+# every branch: a Lekki administrator switched to Lekki was shown Ikeja's
+# events, Ikeja's class timetables and Ikeja's exam papers, with the switcher
+# on screen saying Lekki the whole time.
+#
+# So the lens lives here, once, and every list read calls it. A surface added
+# later that forgets to is a surface that does not filter, which is why the
+# module's tests now assert the lens on each of them by name.
+
+def lens_branch(view):
+    """The branch this request is looking THROUGH, or None for all of them.
+
+    None means "every branch I may see", which is the honest default and what a
+    school administrator wants. A single-branch school never sends the
+    parameter and would mean nothing by it if it did, so the lens is ignored
+    there rather than being made to do nothing in a more expensive way.
+    """
+    raw = str(view.request.query_params.get("branch") or "").strip()
+    if not raw or raw.lower() == "all" or not view.multi_branch:
+        return None
+    return resolve_branch_reference(view.tenant, raw, "branch")
+
+
+def narrow_to_lens(qs, branch, *, field="branch"):
+    """Narrow to one branch's rows AND the school's shared ones.
+
+    **Inclusive, and that is the whole point.** A null branch means "shared
+    across the whole school" and never "no branch was chosen", so a school-wide
+    public holiday belongs on Lekki's calendar as much as on Ikeja's. An
+    exclusive read would empty the screen of exactly the rows most schools
+    create, which is the same mistake as not filtering at all, made in the
+    opposite direction.
+
+    Rooms are the exception and do not use this: a room is a physical place
+    with a non-null branch, so there is no shared row to include.
+    """
+    if branch is None:
+        return qs
+    from django.db.models import Q as _Q
+
+    return qs.filter(
+        _Q(**{field: branch}) | _Q(**{f"{field}__isnull": True}),
+    )

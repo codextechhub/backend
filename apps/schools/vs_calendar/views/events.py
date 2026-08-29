@@ -44,7 +44,13 @@ from ..exceptions import EventAudienceOutOfScope, EventOutsideSession
 from ..models import CalendarEvent, CalendarEventAudience
 from ..serializers import CalendarEventSerializer, CalendarEventWriteSerializer
 from ..services.calendar import term_of
-from ..services.scoping import UNSET, raised_branch, scope_to_visible_branches
+from ..services.scoping import (
+    UNSET,
+    lens_branch,
+    narrow_to_lens,
+    raised_branch,
+    scope_to_visible_branches,
+)
 from .base import CalendarViewMixin
 
 
@@ -77,6 +83,12 @@ class _EventBase(CalendarViewMixin):
     def _filtered(self, qs):
         params = self.request.query_params
         qs = scope_to_visible_branches(qs, self.request.user, self.tenant)
+        # The switcher at the top of the screen. Separate from `scope` below,
+        # which is the on-screen facet: the lens says WHICH BRANCH I am looking
+        # at (and includes the school-wide entries, which are most of them),
+        # and the facet then says school-wide only, or this one branch only,
+        # inside that. They compose; neither replaces the other.
+        qs = narrow_to_lens(qs, lens_branch(self))
 
         search = (params.get("search") or "").strip()
         if search:

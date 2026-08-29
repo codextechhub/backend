@@ -51,7 +51,11 @@ from ..services.calendar import (
     teaching_days_elapsed,
     term_of,
 )
-from ..services.scoping import scope_to_visible_branches
+from ..services.scoping import (
+    lens_branch,
+    narrow_to_lens,
+    scope_to_visible_branches,
+)
 from .base import CalendarViewMixin
 
 
@@ -163,11 +167,20 @@ class OverviewView(CalendarViewMixin, APIView):
         terms = list(session.terms.all())
         term = term_of(session, today, terms=terms)
 
+        # The hub counts what the screens below it list, so it reads through
+        # the same lens they do. A hub saying "12 events, 4 classes" over
+        # screens showing 5 and 2 is worse than a hub with no counts on it.
+        lens = lens_branch(self)
+
         events = list(
-            scope_to_visible_branches(
-                CalendarEvent.objects.filter(tenant=self.tenant, session=session)
-                .select_related("branch"),
-                request.user, self.tenant,
+            narrow_to_lens(
+                scope_to_visible_branches(
+                    CalendarEvent.objects.filter(
+                        tenant=self.tenant, session=session,
+                    ).select_related("branch"),
+                    request.user, self.tenant,
+                ),
+                lens,
             ),
         )
 
@@ -181,13 +194,16 @@ class OverviewView(CalendarViewMixin, APIView):
         )[:4]
 
         classes = list(
-            scope_to_visible_branches(
-                __import__(
-                    "schools.vs_academics.models", fromlist=["SchoolClass"],
-                ).SchoolClass.objects.filter(
-                    tenant=self.tenant, session=session, is_active=True,
+            narrow_to_lens(
+                scope_to_visible_branches(
+                    __import__(
+                        "schools.vs_academics.models", fromlist=["SchoolClass"],
+                    ).SchoolClass.objects.filter(
+                        tenant=self.tenant, session=session, is_active=True,
+                    ),
+                    request.user, self.tenant,
                 ),
-                request.user, self.tenant,
+                lens,
             ),
         )
         timetabled_ids = set(
@@ -195,9 +211,14 @@ class OverviewView(CalendarViewMixin, APIView):
             .values_list("school_class_id", flat=True)
             .distinct(),
         )
+        # Rooms are the exception the lens documents: a room's branch is never
+        # null, so there is no shared row to include and the read is exclusive.
         rooms = scope_to_visible_branches(
             Room.objects.filter(tenant=self.tenant), request.user, self.tenant,
-        ).count()
+        )
+        if lens is not None:
+            rooms = rooms.filter(branch=lens)
+        rooms = rooms.count()
 
         data = {
             "session": {

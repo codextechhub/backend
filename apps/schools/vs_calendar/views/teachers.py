@@ -29,6 +29,7 @@ from ..models import DayOfWeek, PeriodType, Period, TimetableSlot
 from ..serializers import TimetableSlotSerializer
 from ..services.bells import periods_in_force
 from ..services.clashes import slot_warnings
+from ..services.scoping import lens_branch
 from ..services.teachers import display_name, teaching_user_ids, teaching_users
 from .base import CalendarViewMixin
 from .timetable import GRID_DAYS
@@ -41,12 +42,22 @@ class TeacherListView(CalendarViewMixin, APIView):
     two facts the design shows beside the name - how many lessons they hold this
     year, and whether any of them clashes.
 
-    **Not narrowed by branch, deliberately.** Mr Eze teaches Physics at Lekki on
-    Monday to Wednesday and at Ikeja on Thursday and Friday; a picker filtered
-    by the branch being edited would make him unschedulable at the second. What
-    makes the wide picker safe is that the clash query is wide too. Narrowing it
-    looks like tightening security and protects nothing: whether this caller may
-    write this timetable at all was answered before the picker was rendered.
+    **The list narrows to a branch; a teacher's WEEK never does.** That split is
+    the whole rule, and both halves of it matter.
+
+    Narrowing the list is what a branch administrator asked for: Lekki should
+    not scroll past two hundred Ikeja staff to find its own. Narrowing the GRID
+    would be a different and much worse thing. Mr Eze teaches Physics at Lekki
+    on Monday to Wednesday and at Ikeja on Thursday and Friday. Filter his week
+    to Lekki and it shows three lessons and two empty days; Lekki books him for
+    Thursday, and Ikeja loses him. So the list answers "who is mine", and the
+    grid always answers "what is his", with the cross-branch note on the screen
+    saying so.
+
+    A teacher is at branch B when they teach at least one lesson there, or their
+    account is tied to it. A teacher with neither - newly added, no lessons yet,
+    not pinned anywhere - appears under every branch, because a picker that hid
+    them would make a new teacher unreachable from any of them.
 
     **Nothing beyond those two facts.** No specialism, no availability, no
     qualification, no maximum load and no suggestion. Nothing in the platform
@@ -64,6 +75,13 @@ class TeacherListView(CalendarViewMixin, APIView):
     def get(self, request):
         session = self.session
         people = list(teaching_users(self.tenant))
+
+        lens = lens_branch(self)
+        if lens is not None:
+            mine = _teachers_at(
+                self.tenant, session, lens, [p.pk for p in people],
+            )
+            people = [p for p in people if p.pk in mine]
         if session is None:
             return success_response(data=[
                 {
@@ -95,6 +113,48 @@ class TeacherListView(CalendarViewMixin, APIView):
                 "has_clash": person.pk in clashed,
             })
         return success_response(data=out)
+
+
+def _teachers_at(tenant, session, branch, candidates):
+    """The teacher ids belonging to one branch, by the rule in the docstring.
+
+    Three sources. The classes they teach, the branch their account is tied to,
+    and - the one that is not a loophole - everyone tied to nothing and teaching
+    nowhere. That last set is the newly added teacher, who has to be findable
+    before anybody can give them a first lesson.
+
+    Two queries, both id-only, because this runs on every render of the picker.
+    """
+    from vs_rbac.models import TenantUserRoleAssignment
+
+    from ..models import TimetableSlot
+
+    teaches_here: set[int] = set()
+    placed: set[int] = set()
+    if session is not None:
+        for teacher_id, branch_id in (
+            TimetableSlot.objects.filter(tenant=tenant, session=session)
+            .exclude(teacher__isnull=True)
+            .values_list("teacher_id", "school_class__branch_id")
+        ):
+            placed.add(teacher_id)
+            # A class with no branch belongs to the whole school, so whoever
+            # teaches it belongs to every branch reading this list.
+            if branch_id is None or branch_id == branch.pk:
+                teaches_here.add(teacher_id)
+
+    tied_here: set[int] = set()
+    for user_id, branch_id in (
+        TenantUserRoleAssignment.objects.filter(tenant=tenant)
+        .exclude(branch__isnull=True)
+        .values_list("user_id", "branch_id")
+    ):
+        placed.add(user_id)
+        if branch_id == branch.pk:
+            tied_here.add(user_id)
+
+    unplaced = {pk for pk in candidates if pk not in placed}
+    return teaches_here | tied_here | unplaced
 
 
 def _teachers_with_clashes(tenant, session):

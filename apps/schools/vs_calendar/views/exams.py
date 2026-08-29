@@ -80,11 +80,18 @@ class ExamListCreateView(CalendarViewMixin, generics.ListCreateAPIView):
     def get_queryset(self):
         if self.session is None:
             return Exam.objects.none()
-        return (
+        from ..services.scoping import lens_branch, narrow_to_lens
+
+        # An exam has no branch of its own: it hangs off the exam period on the
+        # calendar, and THAT carries the scope. So Ikeja's mock exams are the
+        # ones whose period is Ikeja's, and a school-wide exam period shows for
+        # every branch, which is what a school running one exam means.
+        return narrow_to_lens(
             Exam.objects.filter(
                 tenant=self.tenant, calendar_event__session=self.session,
-            )
-            .select_related("calendar_event")
+            ).select_related("calendar_event"),
+            lens_branch(self),
+            field="calendar_event__branch",
         )
 
     def list(self, request, *args, **kwargs):
