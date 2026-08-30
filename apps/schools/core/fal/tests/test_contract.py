@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import subprocess
 import sys
+from pathlib import Path
 
 from django.test import SimpleTestCase, TestCase, override_settings
 
@@ -107,9 +108,17 @@ class ContractShapeTests(SimpleTestCase):
             "assert 'django.db.models' not in sys.modules;"
             "print('clean')"
         )
+        # The repository root, derived rather than written down. This was an
+        # absolute path to one developer's machine, so the test passed there
+        # and raised FileNotFoundError on every CI runner - green locally and
+        # red in the only place that checks every branch.
+        #
+        # tests -> fal -> core -> schools -> apps -> the root, which is the
+        # directory `sys.path.insert(0, "apps")` above is relative to.
+        repo_root = Path(__file__).resolve().parents[5]
         result = subprocess.run(
             [sys.executable, "-c", code], capture_output=True, text=True,
-            cwd="/Users/mac/Documents/Dev-Projects/GitHub/backend",
+            cwd=repo_root,
         )
         self.assertEqual(result.stdout.strip(), "clean", result.stderr)
 

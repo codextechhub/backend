@@ -99,7 +99,15 @@ class FieldSecurityMixinBehaviourTest(TestCase):
 
 
 class SensitiveSerializerWiringTest(TestCase):
-    """The PII-bearing serialisers must keep their FLS wiring intact."""
+    """The PII-bearing serialisers must keep their FLS wiring intact.
+
+    The comparisons below are exhaustive on purpose, so they fail in both
+    directions: a field dropping out of the gate is the failure that matters,
+    and a field being added fails too. The second is noise-shaped but is the
+    price of catching the first, so a newly gated field is added here in the
+    same change that gates it - which is what did not happen when bank_code
+    and beneficiary_bank_code were.
+    """
 
     def test_payments_serializers_wired(self):
         from vs_payments.serializers import (
@@ -121,6 +129,7 @@ class SensitiveSerializerWiringTest(TestCase):
             {
                 "beneficiary_name": "payments.payout.view_sensitive",
                 "beneficiary_account_number": "payments.payout.view_sensitive",
+                "beneficiary_bank_code": "payments.payout.view_sensitive",
             },
         )
 
@@ -137,6 +146,7 @@ class SensitiveSerializerWiringTest(TestCase):
                 "address": "procurement.vendor.view_sensitive",
                 "tax_id": "procurement.vendor.view_sensitive",
                 "bank_name": "procurement.vendor.view_sensitive",
+                "bank_code": "procurement.vendor.view_sensitive",
                 "bank_account_number": "procurement.vendor.view_sensitive",
                 "bank_account_name": "procurement.vendor.view_sensitive",
             },
