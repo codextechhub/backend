@@ -49,27 +49,31 @@ class DatasetOwnershipRuleTests(TestCase):
         self.assertFalse(may_import(SCHOOL, DatasetTypeChoices.SCHOOLS))
         self.assertFalse(may_import(SCHOOL, DatasetTypeChoices.CX_USERS))
 
-    def test_the_calendar_is_the_school_dataset(self):
-        """The first dataset a school may import, and the only one so far.
+    def test_the_school_datasets_are_the_calendar_and_the_student_roll(self):
+        """The two datasets a school may import, and no others.
 
         Written the day ``calendar_events`` was added, replacing a test that
-        asserted no school dataset existed at all. The rule it guards has not
-        changed: a dataset is a school's only when somebody has argued that it
-        is, one at a time. Students, staff and parents still have no template
-        and no model to import into, and every other dataset here is CodeX's.
+        asserted no school dataset existed at all, and updated the day
+        ``students`` joined it. The rule it guards has not changed: a dataset is
+        a school's only when somebody has argued that it is, one at a time.
+        Staff and parents still have no template and no model to import into,
+        and every other dataset here is CodeX's.
 
         This is meant to fail the day the next one lands. That is the point.
         """
         self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.CALENDAR_EVENTS))
+        self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.STUDENTS))
 
         school_datasets = {
             dataset for dataset in DatasetTypeChoices.values
             if may_import(SCHOOL, dataset)
         }
         self.assertEqual(
-            school_datasets, {DatasetTypeChoices.CALENDAR_EVENTS},
+            school_datasets,
+            {DatasetTypeChoices.CALENDAR_EVENTS, DatasetTypeChoices.STUDENTS},
             "A dataset became a school import. Argue for it in datasets.py the "
-            "way calendar_events is argued for, then update this test.",
+            "way calendar_events and students are argued for, then update this "
+            "test.",
         )
 
     def test_the_calendar_import_creates_nothing_but_school_rows(self):

@@ -30,6 +30,11 @@ urlpatterns = [
     path("v1/academics/exams/", include("schools.vs_calendar.urls_exams")),
     path("v1/academics/", include("schools.vs_academics.urls")),
     path("v1/onboarding/", include("schools.vs_onboarding.urls")),
+    # M11. Guardians get their own prefix because a guardian is reachable from
+    # more than one student, so the tenant check on those routes cannot be
+    # inherited from a student in the URL.
+    path("v1/students/", include("schools.vs_students.urls")),
+    path("v1/guardians/", include("schools.vs_students.urls_guardians")),
     path("v1/admin/", include("vs_admin_console.urls")),
     path("v1/user/", include("vs_user.urls")),
     path("v1/rbac/", include("vs_rbac.urls")),

@@ -83,8 +83,8 @@ PLATFORM_ONLY_DATASETS: frozenset[str] = frozenset({
 #:    sixty dated entries that a school already keeps in a spreadsheet, and
 #:    typing them one at a time into a drawer is the whole of a morning.
 #:
-#: The remaining onboarding datasets - students, staff and parents - still have
-#: no template and no model to import into. When one lands, adding it here is
+#: The remaining onboarding datasets - staff and parents - still have no
+#: template and no model to import into. When one lands, adding it here is
 #: the only change needed, and the same three questions are the ones to ask.
 #:
 #: ``branches`` is NOT here, and the reason is the sharpest argument for
@@ -107,6 +107,18 @@ PLATFORM_ONLY_DATASETS: frozenset[str] = frozenset({
 #: those two keys have been dropped from the school permission group.
 TENANT_DATASETS: frozenset[str] = frozenset({
     DatasetTypeChoices.CALENDAR_EVENTS,
+    # M11. The second entry, and it earns it on the same three counts:
+    #
+    # 1. The school already creates these by hand through an API that is its
+    #    own - school.students.create is a school key held by school roles, and
+    #    POST /v1/students/ accepts exactly what this file carries.
+    # 2. The handler creates nothing but the school's own rows: a Student, a
+    #    Guardian and their link, inside the uploading tenant. No tenant, no
+    #    account, no role, no permission grant.
+    # 3. There is a real reason to do it in bulk - a school arriving on the
+    #    platform brings hundreds of children it already holds in a
+    #    spreadsheet, and typing them one at a time is not a migration path.
+    DatasetTypeChoices.STUDENTS,
 })
 
 

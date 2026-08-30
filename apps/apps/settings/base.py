@@ -130,6 +130,9 @@ INSTALLED_APPS = [
     # M9. School-specific by construction, so it sits beside vs_schools under
     # apps/schools/ and never beside the domain-neutral engines.
     "schools.vs_onboarding",
+    # M11. After vs_academics: every ClassEnrolment row carries two non-null
+    # foreign keys into it, so that is the order the dependency runs in.
+    "schools.vs_students",
     # The Finance Abstraction Layer. School-specific by construction too: it is
     # the boundary where school words meet the neutral finance engines, so it
     # belongs on this side of the line and never inside apps/core/. It is a

@@ -107,7 +107,80 @@ def execute_dataset_handler(import_batch, payload: dict, queued_by) -> ImportExe
     if dataset_type == "calendar_events":
         return import_calendar_events_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
 
+    if dataset_type == "students":
+        return import_students_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
+
     raise ValueError(f"Unsupported dataset type: {dataset_type}")
+
+
+# =========================================================
+# Students handler
+# =========================================================
+def import_students_row(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
+    """Import one child onto the uploading school's own roll.
+
+    Takes its tenant from the batch and nowhere else, and the template carries
+    no school column, so a row cannot name a different school. That is the same
+    rule ``import_calendar_events_row`` follows, and the reason the schools,
+    branches and cx_users handlers are no guide: those three act on CodeX's own
+    records.
+
+    Interpretation lives in ``vs_students.imports``, not here. Validation and
+    execution are separate passes over the same file, and the way an import goes
+    wrong quietly is the two of them reading a row differently, so both call the
+    same resolver and this handler writes only what that resolver read.
+
+    Template columns (target_field) this handler reads:
+        first_name             required
+        middle_name            optional
+        last_name              required
+        date_of_birth          required - YYYY-MM-DD
+        gender                 required - Female or Male
+        student_number         optional unless the school's policy requires one
+        admission_date         optional - YYYY-MM-DD, defaults to today
+        branch                 required of a school with more than one branch
+        class                  optional - blank enrols the student unplaced
+        guardian_full_name     required
+        guardian_phone         required
+        guardian_email         optional - matches an existing guardian
+        guardian_relationship  optional - defaults to Other
+        address                optional
+        previous_school        optional
+    """
+    from schools.vs_students.imports import (
+        create_student_from_row,
+        import_session,
+        resolve_row,
+    )
+    from schools.vs_students.services.scoping import branch_dimension_applies
+
+    tenant = import_batch.tenant
+    session = import_session(tenant)
+
+    row = resolve_row(
+        payload,
+        tenant=tenant,
+        session=session,
+        batch_branch=import_batch.branch,
+        multi_branch=branch_dimension_applies(tenant),
+    )
+    if not row.ok:
+        # Validation should have caught these and refused the batch. Reaching
+        # here means the file changed, the structure changed, or a row slipped
+        # past, and the row fails with its own reasons rather than a traceback.
+        raise ValueError(
+            " ".join(i.message for i in row.issues if i.severity == "error"),
+        )
+
+    student = create_student_from_row(
+        row, tenant=tenant, session=session, created_by=queued_by,
+    )
+    return ImportExecutionResult(
+        action=ImportRowActionChoices.CREATE,
+        instance=student,
+        target_model="Student",
+        message=f"{student.full_name} enrolled.",
+    )
 
 
 # =========================================================

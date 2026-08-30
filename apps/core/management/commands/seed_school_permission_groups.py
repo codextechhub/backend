@@ -213,6 +213,22 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
         ),
     ),
     (
+        "Student Bulk Data",
+        # Deliberately its own bundle rather than two more keys on Student
+        # Records. Loading a roll from a spreadsheet and taking one out of the
+        # building are the two operations in this module that act on every
+        # child at once, and a school that wants a registrar to enrol students
+        # one at a time does not thereby want them able to replace the whole
+        # roll or export it. SCHOOL_WIDE for the same reason: neither act is
+        # meaningfully narrowed to a branch.
+        SCHOOL_WIDE,
+        "Load students in bulk from a spreadsheet, and export the roll.",
+        (
+            "school.students.import",
+            "school.students.export",
+        ),
+    ),
+    (
         "Teaching Staff Records",
         BRANCH_SCOPABLE,
         "Add, edit and manage teaching staff.",

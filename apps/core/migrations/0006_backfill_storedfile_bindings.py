@@ -51,6 +51,27 @@ BINDINGS = [
     ("vs_tickets", "TicketAttachment", "file", "ticket__tenant"),
 ]
 
+#: File fields added after this migration ran.
+#:
+#: A binding cannot simply be appended to :data:`BINDINGS` above: that list is
+#: resolved against THIS migration's own historical project state, where a
+#: later app does not exist, and a model missing from that state is skipped by
+#: the loop rather than backfilled - which is the silent failure the whole
+#: exercise exists to prevent.
+#:
+#: So a later field is declared here instead, and its own app carries the
+#: migration that runs the backfill for it. The exhaustiveness test reads the
+#: union, so a FileField still cannot be added without somebody deciding which
+#: of the two lists it belongs in.
+LATER_BINDINGS = [
+    # M11. Both carry their own tenant, and both models are created in the
+    # release that introduced the binding, so there is nothing to rescue - the
+    # backfill is a no-op by construction and is run anyway, because "there
+    # cannot be any rows" is exactly the assumption that turns out to be wrong.
+    ("vs_students", "Student", "photo", "tenant"),
+    ("vs_students", "StudentDocument", "file", "tenant"),
+]
+
 
 def backfill(apps, schema_editor):
     ContentType = apps.get_model("contenttypes", "ContentType")

@@ -224,6 +224,14 @@ def _validate_dataset_specific_rules(import_batch) -> list[dict]:
         from schools.vs_calendar.imports import validate_calendar_events_import_batch
 
         return validate_calendar_events_import_batch(import_batch)
+    if dataset_type == "students":
+        # Owned by the students module, like the calendar rules above and the
+        # bank-statement rules below. What a row means is the module's
+        # business, and the same resolver runs again at execution so the two
+        # passes cannot disagree.
+        from schools.vs_students.imports import validate_students_import_batch
+
+        return validate_students_import_batch(import_batch)
     if dataset_type == "bank_statements":
         from vs_finance.statement_imports import validate_bank_statement_import_batch
 

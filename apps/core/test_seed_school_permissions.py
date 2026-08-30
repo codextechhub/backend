@@ -87,11 +87,16 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         calendar keys, because adding a public holiday and rebuilding the
         school's entire timetable are not one act. They are agreed to here
         rather than merely observed.
+
+        M11 adds two more, on the existing ``school.students`` resource and no
+        new one: ``.import`` and ``.export``. Both verbs were already seeded, so
+        no new action was invented - a key whose action is not in the canonical
+        list cannot be created at all.
         """
         _run_school_seed()
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            62,
+            64,
         )
 
     def test_impersonation_keys_are_critical_and_restricted(self):
@@ -153,10 +158,11 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
     def test_school_admin_gets_all_keys(self):
         """A school admin holds every key in both modules.
 
-        62 = 57, plus M14's five: academics.timetable view, create, update,
-        manage and publish.
+        64 = 62, plus M11's two: school.students.import and .export.
+        The 62 was 57 plus M14's five: academics.timetable view, create,
+        update, manage and publish.
         """
-        self.assertEqual(len(self._defaults("school_admin")), 62)
+        self.assertEqual(len(self._defaults("school_admin")), 64)
 
     def test_only_school_admin_gets_impersonation_by_default(self):
         # The most powerful school keys must never be a branch_admin/teacher
@@ -180,7 +186,16 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         self.assertFalse(overrides & self._defaults("teacher"))
 
     def test_branch_admin_default_count(self):
-        """31 = 27, plus four of M14's five.
+        """32 = 31, plus M11's school.students.export.
+
+        A branch admin exports their own branch's roll, and the dataset is
+        narrowed to the branches they can see, so the file can never be wider
+        than the screen they started from. school.students.import is withheld:
+        a bad import is the fastest way to damage a school's records and is
+        reversible only through the engine's rollback, so it stays with the
+        school admin.
+
+        The 31 was 27, plus four of M14's five.
 
         A branch admin builds and publishes their own branch's grid -
         academics.timetable.view, .create, .update and .publish - so that it
@@ -205,7 +220,9 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         deletes.
         """
         branch_admin = self._defaults("branch_admin")
-        self.assertEqual(len(branch_admin), 31)
+        self.assertEqual(len(branch_admin), 32)
+        self.assertIn("school.students.export", branch_admin)
+        self.assertNotIn("school.students.import", branch_admin)
         self.assertIn("academics.timetable.publish", branch_admin)
         self.assertNotIn("academics.timetable.manage", branch_admin)
         self.assertIn("academics.subject.create", self._defaults("branch_admin"))
@@ -277,8 +294,8 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        # school_admin defaults are all 62 keys.
-        self.assertEqual(len(keys), 62)
+        # school_admin defaults are all 64 keys.
+        self.assertEqual(len(keys), 64)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
         self.assertIn("school.roles.approve", keys)

@@ -464,6 +464,9 @@ class BackfillTests(_MediaFixture):
         historical = loader.project_state(nodes=[node]).apps
 
         problems = []
+        # LATER_BINDINGS is deliberately not checked here: by definition those
+        # models do not exist at this migration's state, which is why they are
+        # in a second list and run from their own app's migration.
         for app_label, model_name, field_name, tenant_lookup in module.BINDINGS:
             try:
                 model = historical.get_model(app_label, model_name)
@@ -496,7 +499,9 @@ class BackfillTests(_MediaFixture):
         module = self._module()
         covered = {
             (app_label.lower(), model.lower(), field)
-            for app_label, model, field, _ in module.BINDINGS
+            for app_label, model, field, _ in (
+                list(module.BINDINGS) + list(module.LATER_BINDINGS)
+            )
         }
         # Nothing is exempt. Export and audit artefacts do not appear here at all
         # because they keep their storage key in a plain CharField rather than a

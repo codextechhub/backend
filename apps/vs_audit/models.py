@@ -66,6 +66,7 @@ class AuditModuleKey(models.TextChoices):
     PROCUREMENT = "PROCUREMENT", "Procurement"
     SCHOOL = "SCHOOL", "School Management"
     ACADEMICS = "ACADEMICS", "Academic Structure"
+    STUDENT = "STUDENT", "Student Management"
     BRANCH = "BRANCH", "Branch Management"
     EXPORTS = "EXPORTS", "Export Centre"
     SYSTEM = "SYSTEM", "System"
@@ -194,6 +195,29 @@ class AuditActionType(models.TextChoices):
     # failing row carried, so the read is itself the auditable act. Without
     # this, "who looked at Corona's failed guardian import" has no answer.
     TASK_DIAGNOSTIC_VIEWED = "TASK_DIAGNOSTIC_VIEWED", "Raw Task Diagnostic Viewed"
+
+    # M11 Student Management. Registered before anything emits them, because
+    # the vocabulary is closed and validated on save and emit_audit_event
+    # swallows an unregistered value silently - which would leave exactly the
+    # trail these events exist to create empty.
+    STUDENT_ENROLLED = "STUDENT_ENROLLED", "Student Enrolled"
+    STUDENT_CLASS_ASSIGNED = "STUDENT_CLASS_ASSIGNED", "Student Class Assigned"
+    STUDENT_CLASS_TRANSFERRED = "STUDENT_CLASS_TRANSFERRED", "Student Class Transferred"
+    STUDENT_WITHDRAWN = "STUDENT_WITHDRAWN", "Student Withdrawn"
+    STUDENT_SUSPENDED = "STUDENT_SUSPENDED", "Student Suspended"
+    STUDENT_REACTIVATED = "STUDENT_REACTIVATED", "Student Reactivated"
+    STUDENT_GRADUATED = "STUDENT_GRADUATED", "Student Graduated"
+    STUDENT_PROMOTION_RUN = "STUDENT_PROMOTION_RUN", "Student Promotion Run"
+    STUDENT_GUARDIAN_LINKED = "STUDENT_GUARDIAN_LINKED", "Student Guardian Linked"
+    STUDENT_GUARDIAN_UNLINKED = "STUDENT_GUARDIAN_UNLINKED", "Student Guardian Unlinked"
+    # Rejection is not a withdrawal: the applicant was never on the roll, and
+    # a school looking up why a family did not join needs the two apart.
+    STUDENT_REJECTED = "STUDENT_REJECTED", "Student Rejected"
+    STUDENT_TRANSFERRED_OUT = "STUDENT_TRANSFERRED_OUT", "Student Transferred Out"
+    STUDENT_DOCUMENT_ATTACHED = "STUDENT_DOCUMENT_ATTACHED", "Student Document Attached"
+    # Audited separately from the attach: removal is the direction that loses
+    # evidence.
+    STUDENT_DOCUMENT_REMOVED = "STUDENT_DOCUMENT_REMOVED", "Student Document Removed"
 
     CUSTOM = "CUSTOM", "Custom"
 

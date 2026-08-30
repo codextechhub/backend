@@ -64,6 +64,12 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "students", "update",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "students", "manage",           _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "students", "view_sensitive",   _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    # M11. school_admin only for import: a bad import is the fastest way to
+    # damage a school's records and is reversible only through the engine's
+    # rollback. Export reaches branch_admin because a branch admin exports
+    # their own branch's roll and cannot reach anybody else's.
+    ("school", "students", "import",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("school", "students", "export",           _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
 
     ("school", "teachers", "view",             _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
     ("school", "teachers", "create",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),

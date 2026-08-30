@@ -41,9 +41,10 @@ class SeedImportConfigurationTests(TestCase):
     def test_master_seed_includes_required_bulk_templates(self):
         """Every template a deploy is supposed to leave behind, and no others.
 
-        ``calendar_events`` is the only one on this list a SCHOOL can use. If it
-        stops being seeded, the school import screen goes back to showing an
-        empty table and nothing else in the suite would notice.
+        ``calendar_events`` and ``students`` are the two on this list a SCHOOL
+        can use. If either stops being seeded, the school import screen goes
+        back to showing an empty table and nothing else in the suite would
+        notice.
         """
         _call("seed_all_permissions")
 
@@ -60,6 +61,7 @@ class SeedImportConfigurationTests(TestCase):
                 DatasetTypeChoices.CX_USERS,
                 DatasetTypeChoices.BANK_STATEMENTS,
                 DatasetTypeChoices.CALENDAR_EVENTS,
+                DatasetTypeChoices.STUDENTS,
             },
         )
 

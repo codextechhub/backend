@@ -113,6 +113,34 @@ DEFINITIONS = [
     ),
 ]
 
+# (key, label, description, value_type, default_value, validation_rules)
+#
+# Settings a SCHOOL may override, not only the platform. Kept in their own
+# table rather than given a seventh tuple element, so the platform-only list
+# above cannot acquire a school scope by a typo in a column nobody reads.
+SCHOOL_SCOPED_DEFINITIONS = [
+    (
+        "students.admission_number.required", "Admission Number Required",
+        "Whether every student at this school must be given an admission "
+        "number when they are enrolled.",
+        "BOOLEAN", False, {},
+    ),
+    (
+        "students.admission_number.pattern", "Admission Number Pattern",
+        "A regular expression every admission number at this school must "
+        "match. Anchored by the server, so it cannot match part of a longer "
+        "number. Empty means any shape is accepted.",
+        "STRING", "", {},
+    ),
+    (
+        "students.admission_number.hint", "Admission Number Hint",
+        "The sentence shown under the admission number field, and quoted "
+        "verbatim when a number is refused. This is the only one of the three "
+        "a person reads, which is why a refusal never quotes the pattern.",
+        "STRING", "", {},
+    ),
+]
+
 CAPABILITIES = [
     ("students", "Students Management", "MODULE", True),
     ("teachers", "Teachers Management", "MODULE", True),
@@ -150,6 +178,23 @@ class Command(BaseCommand):
                     "validation_rules": rules, "allowed_scopes": ["platform"],
                 },
             )
+        for key, label, description, value_type, default, rules in SCHOOL_SCOPED_DEFINITIONS:
+            row, created = ConfigurationDefinition.objects.get_or_create(
+                key=key,
+                defaults={
+                    "label": label, "description": description,
+                    "value_type": value_type, "default_value": default,
+                    "validation_rules": rules,
+                    "allowed_scopes": ["platform", "school"],
+                },
+            )
+            # get_or_create leaves an existing row alone, so a definition
+            # seeded before it gained the school scope would stay
+            # platform-only and every school write would answer "cannot be
+            # configured at school scope". Widen it in place.
+            if not created and "school" not in (row.allowed_scopes or []):
+                row.allowed_scopes = sorted({*(row.allowed_scopes or []), "platform", "school"})
+                row.save(update_fields=["allowed_scopes"])
         rows = {}
         for key, label, kind, requires_entitlement in CAPABILITIES:
             rows[key], _ = Capability.objects.update_or_create(
