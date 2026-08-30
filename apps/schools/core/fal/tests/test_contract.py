@@ -47,7 +47,7 @@ LINES = (BillLine(description="Books", quantity=10, unit_price=1_000),)
 
 class ContractShapeTests(SimpleTestCase):
     def test_the_version_is_declared(self):
-        self.assertEqual(FAL_CONTRACT_VERSION, "1.1.2")
+        self.assertEqual(FAL_CONTRACT_VERSION, "1.1.3")
 
     def test_every_dto_is_frozen(self):
         """A consumer holds a snapshot, and cannot mutate finance through it."""
@@ -137,14 +137,31 @@ class RegistryTests(TestCase):
         self.assertIsInstance(registry.get_entity_resolver(),
                               DjangoEntityResolverAdapter)
 
-    def test_the_guardian_link_defaults_to_denying(self):
-        """Fail closed: the portal is shut until somebody wires a real resolver."""
+    def test_the_guardian_link_now_resolves_from_the_student_roll(self):
+        """The one setting that opened the parent portal.
+
+        It defaulted to a resolver that refused every question while no student
+        roll existed. Module 11 landed and this is the change that turned the
+        payment bridge from shut to live.
+        """
         from schools.core.fal.adapters.django_finance import (
-            DenyAllGuardianLinkAdapter,
+            DjangoGuardianLinkAdapter,
         )
 
         self.assertIsInstance(registry.get_guardian_link(),
-                              DenyAllGuardianLinkAdapter)
+                              DjangoGuardianLinkAdapter)
+
+    @override_settings(
+        FAL_GUARDIAN_LINK=(
+            "schools.core.fal.adapters.django_finance.DenyAllGuardianLinkAdapter"
+        ),
+    )
+    def test_a_deployment_without_a_roll_can_still_fail_closed(self):
+        """The old resolver is kept, and still refuses rather than saying no."""
+        from schools.core.fal.exceptions import GuardianLinkNotConfigured
+
+        with self.assertRaises(GuardianLinkNotConfigured):
+            registry.get_guardian_link().owns("g-1", "s-1")
 
     def test_a_fake_can_be_injected_and_taken_back_out(self):
         fake = FakeFinanceReader(outstanding=120_000)

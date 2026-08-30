@@ -107,9 +107,16 @@ GuardianRef = LooseRef    # a future parent/guardian record
 #: The ``Customer.source_type`` value the FAL writes for a student. Defined once,
 #: here, because it is the FAL's own value: ``Customer``'s docstring deliberately
 #: names no product model ("this app must not know which products exist"), so
-#: there is nothing upstream to agree with and exactly one line changes when the
-#: student app settles its label.
-SOURCE_TYPE_STUDENT = "vs_schools.Student"
+#: there is nothing upstream to agree with.
+#:
+#: CORRECTED IN 1.1.3. This read ``"vs_schools.Student"`` while the student app
+#: was unwritten and the label was a guess. Module 11 landed as
+#: ``schools.vs_students`` with the app label ``vs_students``, so the guess was
+#: wrong and every AR account the FAL opened would have been filed against a
+#: model that does not exist. It cost one line, which is what defining it in one
+#: place was for. No data was written under the old value: nothing outside the
+#: FAL's own tests had called ``ensure_customer``.
+SOURCE_TYPE_STUDENT = "vs_students.Student"
 
 T = TypeVar("T")
 

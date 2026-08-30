@@ -135,17 +135,22 @@ from .registry import (
     get_student_customer,
 )
 
-#: Correction release, on the same grounds v1.1.1 used: the contract has no
-#: consumers yet, so a correction beats a major bump. 1.1.2 reconciles the
-#: contract with the backend as it actually stands in August 2026 - Branch lives
-#: in vs_tenants, apps/schools/ exists, the academic calendar app exists (so
-#: session and term refs are integers and the link table carries real foreign
-#: keys), success_response no longer flattens an empty list, and the RBAC
-#: evaluator's branch default is the ANY_BRANCH sentinel rather than None. It
-#: also adds the GuardianLinkPort seam, because decision 5's ownership check has
-#: nothing in the repository to consult. No capability and no decision changes
-#: meaning.
-FAL_CONTRACT_VERSION = "1.1.2"
+#: 1.1.3 is the release where the school layer stopped being hypothetical.
+#: Module 11 landed, and with it the two models this contract had been written
+#: around the absence of. Four things follow. The student source type was a
+#: guess at an app label and the guess was wrong, so it is corrected from
+#: ``vs_schools.Student`` to ``vs_students.Student``. The guardian ownership
+#: check has a real source and is now the default, which is what opens the
+#: parent portal's payment bridge. ``ensure_customer`` fills a child's name and
+#: branch from the roll, so the account is opened in the child's own name
+#: (decided 2026-08-30). And cohort billing opens an account for a child who has
+#: none, which is what it was always specified to do and could not.
+#:
+#: Still a correction release rather than a major bump, on the grounds v1.1.1
+#: set: the contract has one caller and no consuming module. Making a required
+#: argument optional is additive; nothing that compiled against 1.1.2 stops
+#: compiling.
+FAL_CONTRACT_VERSION = "1.1.3"
 
 default_app_config = "schools.core.fal.apps.FalConfig"
 

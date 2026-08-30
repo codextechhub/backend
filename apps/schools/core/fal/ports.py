@@ -250,11 +250,15 @@ class FeeTermBridgePort(ABC):
         ``fees.generate_invoices``. Idempotent: already-billed students are
         returned in ``students_skipped``. Runs in a single transaction.
 
+        A student with no AR account gets one, opened in their own name from the
+        roll. Until Module 11 landed this refused instead, because there was no
+        source for a child's name; the refusal survives only for a reference that
+        names nobody.
+
         :raises TermNotLinkedError: the structure has no linked term.
-        :raises CustomerNotProvisioned: a student has no AR customer in this
-            entity. The FAL cannot create one here because it has no source for
-            the child's name; call ``ensure_customer`` first.
-        :raises CrossTenantError: a student's customer belongs to another school.
+        :raises CustomerNotProvisioned: a reference names no child on the roll,
+            so no account can be opened for it.
+        :raises CrossTenantError: a student attends another school.
         """
 
 
@@ -279,7 +283,7 @@ class StudentCustomerPort(ABC):
     @abstractmethod
     def ensure_customer(
         self, student_ref: StudentRef, *, entity_ref: EntityRef,
-        name: str, code: Optional[str] = None,
+        name: Optional[str] = None, code: Optional[str] = None,
         branch_ref: Optional[BranchRef] = None,
     ) -> FinanceResult[CustomerHandle]:
         """Return the student's Customer, creating it on first billing.
@@ -287,11 +291,24 @@ class StudentCustomerPort(ABC):
         **Idempotent.** A second call returns the existing customer with
         ``was_created=False``. The check-then-create is serialised on the entity
         row, and a unique-constraint race on the allocated code is recovered by
-        re-reading the winning row. ``branch_ref`` is optional because
-        ``Customer.branch`` is nullable; a school-wide customer is first-class.
+        re-reading the winning row.
 
-        :raises CrossTenantError: ``entity_ref``/``branch_ref`` are not the
-            student's school's.
+        ``name`` became optional in 1.1.3, when Module 11 gave the FAL a roll to
+        read one from. Left out, the account is opened in the **child's** name,
+        decided 2026-08-30: a child has several guardians and keeps one name,
+        while a payer can change mid-year, and a billing identity that changes
+        under a family is worse than a receipt naming the pupil.
+
+        ``branch_ref`` is likewise filled from the child's own branch when the
+        caller omits it, because the engine's rule is that the customer decides
+        where a receivable is filed. It stays optional because
+        ``Customer.branch`` is nullable and a school-wide account is
+        first-class.
+
+        :raises CrossTenantError: the child attends another school, or
+            ``branch_ref`` belongs to another tenant.
+        :raises CustomerNotProvisioned: no name was given and the reference
+            names no child on the roll.
         :raises CustomerCreationRace: an unrecoverable concurrent create.
         """
 

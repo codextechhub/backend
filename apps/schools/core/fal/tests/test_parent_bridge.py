@@ -58,16 +58,60 @@ class ParentPaymentBridgeTests(FALFixture):
             ),
         )
 
-    # ----- the shipped default -------------------------------------------- #
-    def test_without_a_guardian_resolver_the_portal_is_shut(self):
-        """No guardian model exists, so nothing can answer the ownership question.
+    # ----- the shipped default, now that there is a roll ------------------- #
+    def test_the_shipped_default_reads_the_real_student_roll(self):
+        """The bridge is open, and it is open on the real link.
 
-        Returning False would assert that Mrs Adeyemi is *not* Ada's parent,
-        which nobody has established. It raises instead, and the portal stays
-        closed until M11 wires a real resolver.
+        This used to assert the opposite: with no student roll, nothing could
+        answer the ownership question and the shipped resolver refused. Module
+        11 landed, the default now reads StudentGuardian, and a mother linked to
+        her own child is admitted with no resolver injected by the test.
         """
-        with self.assertRaises(GuardianLinkNotConfigured):
+        student = self.student(self.corona, self.ikeja)
+        guardian = self.guardian_of(self.corona, student)
+        billed = self.student_customer(
+            self.corona_books, str(student.pk), branch=self.ikeja,
+        )
+
+        result = DjangoParentPaymentBridgeAdapter().start_payment_session(
+            guardian_ref=str(guardian.pk),
+            entity_ref=self.corona_books.entity_ref,
+            amount=50_000, customer_ref=billed.customer_ref,
+        )
+
+        self.assertTrue(result.is_available)
+        self.assertTrue(result.value)
+
+    def test_the_shipped_default_refuses_somebody_elses_child(self):
+        student = self.student(self.corona, self.ikeja)
+        self.guardian_of(self.corona, student)
+        stranger = self.guardian_of(
+            self.corona, self.student(self.corona, self.ikeja, first="Bola"),
+            full_name="Mr Okafor", is_primary=True,
+        )
+        billed = self.student_customer(
+            self.corona_books, str(student.pk), branch=self.ikeja,
+        )
+
+        with self.assertRaises(CrossTenantError):
             DjangoParentPaymentBridgeAdapter().start_payment_session(
+                guardian_ref=str(stranger.pk),
+                entity_ref=self.corona_books.entity_ref,
+                amount=50_000, customer_ref=billed.customer_ref,
+            )
+
+    def test_a_deployment_with_no_roll_still_fails_closed(self):
+        """The refusing resolver is kept for a deployment without Module 11."""
+        from schools.core.fal.adapters.django_finance import (
+            DenyAllGuardianLinkAdapter,
+        )
+
+        bridge = DjangoParentPaymentBridgeAdapter(
+            guardian_link=DenyAllGuardianLinkAdapter(),
+        )
+
+        with self.assertRaises(GuardianLinkNotConfigured):
+            bridge.start_payment_session(
                 guardian_ref="g-adeyemi",
                 entity_ref=self.corona_books.entity_ref,
                 amount=100_000, invoice_ref=self.ada_invoice.pk,

@@ -211,7 +211,7 @@ class FakeStudentCustomer(StudentCustomerPort):
         self.customers: dict = {}
         self._fail_race_once = fail_race_once
 
-    def ensure_customer(self, student_ref, *, entity_ref, name, code=None,
+    def ensure_customer(self, student_ref, *, entity_ref, name=None, code=None,
                         branch_ref=None):
         key = (entity_ref, student_ref)
         existing = self.customers.get(key)

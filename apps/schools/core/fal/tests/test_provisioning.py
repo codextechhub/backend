@@ -146,7 +146,7 @@ class StudentCustomerTests(FALFixture):
         ).unwrap()
 
         customer = Customer.objects.get(pk=handle.customer_ref)
-        self.assertEqual(customer.source_type, "vs_schools.Student")
+        self.assertEqual(customer.source_type, "vs_students.Student")
         self.assertEqual(customer.source_id, "stu-2")
 
     def test_a_school_wide_customer_needs_no_branch(self):
@@ -175,6 +175,89 @@ class StudentCustomerTests(FALFixture):
             self.port.ensure_customer(
                 "stu-5", entity_ref=self.corona_books.entity_ref, name="Mrs Eze",
             )
+
+    def test_a_child_who_attends_another_school_cannot_be_billed_here(self):
+        """The check the specification always wanted, and could not have.
+
+        Before Module 11 the FAL could only notice a child who was *already*
+        billed elsewhere. It can now ask the roll directly, so Corona is refused
+        the moment it tries to open an account for a Greenfield pupil, rather
+        than at the second school to try.
+        """
+        greenfield_pupil = self.student(
+            self.greenfield, self.greenfield_main, first="Chidi",
+        )
+
+        with self.assertRaises(CrossTenantError):
+            self.port.ensure_customer(
+                str(greenfield_pupil.pk),
+                entity_ref=self.corona_books.entity_ref, name="Mrs Okonkwo",
+            )
+
+    def test_the_school_a_child_actually_attends_may_bill_them(self):
+        pupil = self.student(self.corona, self.ikeja)
+
+        handle = self.port.ensure_customer(
+            str(pupil.pk), entity_ref=self.corona_books.entity_ref,
+            name="Mrs Adeyemi", branch_ref=self.ikeja.pk,
+        ).unwrap()
+
+        self.assertTrue(handle.was_created)
+
+    def test_a_reference_that_names_no_student_is_still_accepted(self):
+        """A school that imported receivables before its roll keeps them.
+
+        The refs are opaque strings because the ledger stores them as strings,
+        and refusing one that resolves to nothing would strand every AR account
+        opened before Module 11 existed.
+        """
+        handle = self.port.ensure_customer(
+            "legacy-0042", entity_ref=self.corona_books.entity_ref,
+            name="Mrs Legacy",
+        ).unwrap()
+
+        self.assertTrue(handle.was_created)
+
+    def test_an_account_is_opened_in_the_childs_own_name(self):
+        """Decided 2026-08-30: the account is the child's, not the payer's."""
+        from vs_finance.models import Customer
+
+        pupil = self.student(self.corona, self.ikeja, first="Tunde", last="Adeyemi")
+        self.guardian_of(self.corona, pupil, full_name="Mrs Adeyemi")
+
+        handle = self.port.ensure_customer(
+            str(pupil.pk), entity_ref=self.corona_books.entity_ref,
+        ).unwrap()
+
+        self.assertEqual(Customer.objects.get(pk=handle.customer_ref).name,
+                         "Tunde Adeyemi")
+
+    def test_an_account_lands_in_the_childs_own_branch(self):
+        """The customer decides where a receivable is filed, and the child
+        decides the customer."""
+        from vs_finance.models import Customer
+
+        pupil = self.student(self.corona, self.lekki, first="Ada")
+
+        handle = self.port.ensure_customer(
+            str(pupil.pk), entity_ref=self.corona_books.entity_ref,
+        ).unwrap()
+
+        self.assertEqual(Customer.objects.get(pk=handle.customer_ref).branch_id,
+                         self.lekki.pk)
+
+    def test_a_caller_may_still_name_the_account_itself(self):
+        from vs_finance.models import Customer
+
+        pupil = self.student(self.corona, self.ikeja)
+
+        handle = self.port.ensure_customer(
+            str(pupil.pk), entity_ref=self.corona_books.entity_ref,
+            name="The Adeyemi Family",
+        ).unwrap()
+
+        self.assertEqual(Customer.objects.get(pk=handle.customer_ref).name,
+                         "The Adeyemi Family")
 
     def test_customer_for_never_creates(self):
         from vs_finance.models import Customer
@@ -252,6 +335,29 @@ class FeeTermBridgeTests(FALFixture):
         self.assertEqual(first.total_billed, 600_000)
         self.assertEqual(second.invoices_created, ())
         self.assertEqual(set(second.students_skipped), {"stu-1", "stu-2"})
+
+    def test_a_cohort_run_opens_an_account_for_a_child_who_has_none(self):
+        """What this method was always specified to do, and finally can.
+
+        It refused before Module 11 because opening an account needs a name and
+        there was no roll to read one from.
+        """
+        from vs_finance.models import Customer
+
+        self.bridge.link_term(self.structure.pk, self.session.pk, self.term.pk)
+        pupil = self.student(self.corona, self.ikeja, first="Ngozi")
+
+        result = self.bridge.generate_cohort_invoices(
+            self.structure.pk, (str(pupil.pk),),
+        ).unwrap()
+
+        self.assertEqual(len(result.invoices_created), 1)
+        self.assertTrue(
+            Customer.objects.filter(
+                entity_id=self.corona_books.entity_ref,
+                source_id=str(pupil.pk), name="Ngozi Adeyemi",
+            ).exists()
+        )
 
     def test_a_child_with_no_ar_account_stops_the_run_rather_than_vanishing(self):
         """Silently dropping the child is how a school under-bills and never knows."""

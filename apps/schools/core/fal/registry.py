@@ -34,10 +34,12 @@ Note: there is deliberately **no** ``FAL_PAYMENT_PORT`` key.
 ``PaymentPort``/``apply_payment`` is deferred to v1.2 (decision 2026-07-04);
 settlement stays inside ``vs_payments``.
 
-``FAL_GUARDIAN_LINK`` defaults to a resolver that denies everything, because no
-guardian-to-student link exists in the repository yet. That is the fail-closed
-answer, and it is the one setting a consuming module must change before the
-parent portal can do anything.
+``FAL_GUARDIAN_LINK`` resolves the guardian-to-student link from the student
+roll. It used to default to a resolver that refused every question, because no
+such link existed; Module 11 landed and it now points at the real one, which is
+what opened the parent portal's payment bridge. A deployment without the student
+module points it back at ``DenyAllGuardianLinkAdapter`` so the bridge fails
+closed instead of failing to import.
 
 Usage at a call site::
 
@@ -80,7 +82,7 @@ _DEFAULTS = {
     "FAL_STUDENT_CUSTOMER": f"{_ADAPTER_MODULE}.DjangoStudentCustomerAdapter",
     "FAL_FINANCE_RBAC": f"{_ADAPTER_MODULE}.DjangoFinanceRbacAdapter",
     "FAL_FINANCE_READER": f"{_ADAPTER_MODULE}.DjangoFinanceReadAdapter",
-    "FAL_GUARDIAN_LINK": f"{_ADAPTER_MODULE}.DenyAllGuardianLinkAdapter",
+    "FAL_GUARDIAN_LINK": f"{_ADAPTER_MODULE}.DjangoGuardianLinkAdapter",
     "FAL_PARENT_PAYMENT": f"{_ADAPTER_MODULE}.DjangoParentPaymentBridgeAdapter",
     "FAL_PROCUREMENT_READER": f"{_ADAPTER_MODULE}.DjangoProcurementReadAdapter",
     "FAL_PROCUREMENT_ACTIONS": f"{_ADAPTER_MODULE}.DjangoProcurementActionAdapter",

@@ -145,6 +145,43 @@ class FALFixture(TestCase):
         ).unwrap()
 
     @classmethod
+    def student(cls, school, branch, *, first="Tunde", last="Adeyemi"):
+        """A real child on a real roll.
+
+        Module 11 landed, so the FAL's student references are the roll's own
+        primary keys and the tests use them rather than the opaque strings that
+        stood in while no roll existed.
+        """
+        import datetime as _dt
+
+        from schools.vs_students.constants import Gender, StudentStatus
+        from schools.vs_students.models import Student
+
+        return Student.all_objects.create(
+            tenant=school.tenant, branch=branch,
+            first_name=first, last_name=last,
+            date_of_birth=_dt.date(2014, 3, 1), gender=Gender.MALE,
+            status=StudentStatus.ACTIVE,
+        )
+
+    @classmethod
+    def guardian_of(cls, school, student, *, full_name="Mrs Adeyemi",
+                    relationship=None, is_primary=True):
+        """A guardian, and the link that is the parent portal's whole authority."""
+        from schools.vs_students.constants import Relationship
+        from schools.vs_students.models import Guardian, StudentGuardian
+
+        guardian = Guardian.all_objects.create(
+            tenant=school.tenant, full_name=full_name, phone="+2348000000000",
+        )
+        StudentGuardian.all_objects.create(
+            tenant=school.tenant, student=student, guardian=guardian,
+            relationship=relationship or Relationship.MOTHER,
+            is_primary=is_primary,
+        )
+        return guardian
+
+    @classmethod
     def pay(cls, books, customer_ref, amount, *, invoice=None,
             when=datetime.date(2026, 10, 1)):
         """A real posted receipt, through the finance service, not a hand-built row.

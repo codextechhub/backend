@@ -431,15 +431,60 @@ def _cash_account(entity):
     return _mapped_account(entity, AccountMappingKey.CASH_BANK, "cash or bank")
 
 
-def _refuse_foreign_student(entity, student_ref):
-    """Refuse a student who is already somebody else's pupil.
+def _student_row(student_ref):
+    """The child this reference names, as the three facts the FAL needs, or None.
 
-    This is the strongest cross-tenant check the FAL can make for a student:
-    there is no student model to ask which school a child attends, but if the
-    child already has an AR account under a different tenant, billing them here
-    would be billing another school's pupil, and that is exactly the mistake
-    ``CrossTenantError`` exists to catch.
+    ``None`` covers two different cases on purpose: a reference that is not a
+    student's primary key, and one that names no student. Neither is refused
+    here. The refs are opaque strings by contract because the ledger stores them
+    as strings, and a school that imported receivables before it imported its
+    roll has AR accounts whose source predates any student row. Reads stay
+    scoped by entity either way, so an unresolvable reference reaches nothing.
     """
+    from schools.vs_students.models import Student
+
+    try:
+        student_id = int(student_ref)
+    except (TypeError, ValueError):
+        return None
+    return (
+        Student.all_objects.filter(pk=student_id)
+        .values("tenant_id", "branch_id", "first_name", "last_name")
+        .first()
+    )
+
+
+def _student_display_name(row):
+    """What the child is called on their own invoice.
+
+    The customer is named for the child rather than for whoever pays, decided
+    2026-08-30. A child has several guardians and keeps the same one name; a
+    payer can change mid-year, and a billing identity that changes under a
+    family is worse than a receipt that names the pupil.
+    """
+    return " ".join(part for part in (row["first_name"], row["last_name"]) if part)
+
+
+def _refuse_foreign_student(entity, student_ref):
+    """Refuse a child who is another school's pupil.
+
+    Two checks, and the first one is new. Module 11 landed, so the FAL can now
+    ask the question the specification always wanted asked: does this child
+    attend the school whose books are about to bill them? Before there was a
+    student roll this could only be approximated, and the approximation is the
+    second check.
+
+    The second is still worth keeping. It catches a child whose reference does
+    not resolve to a student row but who already has an AR account under another
+    tenant, which is the shape a part-migrated school arrives in.
+    """
+    row = _student_row(student_ref)
+    if row is not None and row["tenant_id"] != entity.tenant_id:
+        raise CrossTenantError(
+            f"Student {student_ref!r} attends another school, so this school's "
+            f"books may not bill them."
+        )
+
     foreign = (
         _customers_for_student(student_ref)
         .exclude(entity__tenant_id=entity.tenant_id)
@@ -455,12 +500,29 @@ class DjangoStudentCustomerAdapter(StudentCustomerPort):
     """Component 3 over ``vs_finance.Customer``'s loose source reference."""
 
     @envelope
-    def ensure_customer(self, student_ref, *, entity_ref, name, code=None,
+    def ensure_customer(self, student_ref, *, entity_ref, name=None, code=None,
                         branch_ref=None):
         from vs_finance.models import Customer, LedgerEntity
 
         entity = _entity(entity_ref)
         _refuse_foreign_student(entity, student_ref)
+
+        # Both defaults come from the roll, and both are corrections rather than
+        # conveniences. The name is the child's because the child is who the
+        # account is for. The branch is the child's because the engine's own rule
+        # is that the customer decides where a receivable is filed, so a Lekki
+        # pupil's fees must land in Lekki's books rather than school-wide.
+        row = _student_row(student_ref)
+        if not name:
+            if row is None:
+                raise CustomerNotProvisioned(
+                    f"Student {student_ref!r} names no child on the roll, so the "
+                    f"FAL has no name to open an account under. Pass one."
+                )
+            name = _student_display_name(row)
+        if branch_ref is None and row is not None:
+            branch_ref = row["branch_id"]
+
         branch = _branch(branch_ref, entity.tenant) if branch_ref is not None else None
 
         with transaction.atomic():
@@ -584,7 +646,7 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
     @envelope
     def generate_cohort_invoices(self, fee_structure_ref, student_refs, *, period=None):
         from vs_finance import fees
-        from vs_finance.models import Invoice
+        from vs_finance.models import Customer, Invoice
 
         from ..models import FeeStructureTermLink
 
@@ -614,12 +676,15 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
             for ref in student_refs:
                 customer = _existing_customer(structure.entity, ref)
                 if customer is None:
-                    _refuse_foreign_student(structure.entity, ref)
-                    raise CustomerNotProvisioned(
-                        f"Student {ref!r} has no AR customer in entity "
-                        f"{structure.entity.code!r}. Call ensure_customer with the "
-                        f"child's name first: nothing here knows what to call them."
-                    )
+                    # Create on first billing, which is what this method was
+                    # always specified to do. It could not, while no roll
+                    # existed to read a child's name from, so it refused instead.
+                    # Module 11 landed and the refusal is no longer the honest
+                    # answer; it is kept only for a reference that names nobody.
+                    handle = DjangoStudentCustomerAdapter().ensure_customer(
+                        ref, entity_ref=structure.entity_id,
+                    ).unwrap()
+                    customer = Customer.objects.get(pk=handle.customer_ref)
                 pairs.append((ref, customer))
 
             reference = f"FEE:{structure.code}"
@@ -1157,15 +1222,54 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
 # --------------------------------------------------------------------------- #
 # Component 6 - Parent portal payment bridge
 # --------------------------------------------------------------------------- #
-class DenyAllGuardianLinkAdapter(GuardianLinkPort):
-    """The default ownership resolver: it cannot answer, and says so.
+class DjangoGuardianLinkAdapter(GuardianLinkPort):
+    """The ownership check, answered from the student roll.
 
-    Decision 5 authorises the parent portal by the guardian-to-student link.
-    There is no guardian model and no student model in this repository, so there
-    is nothing to consult. Returning ``False`` would be a lie of a different kind
-    - it would say "this guardian is not the parent", which nobody has
-    established - so this raises instead, and the portal stays shut until M11
-    wires a real resolver through ``FAL_GUARDIAN_LINK``.
+    Module 11 landed, so the question decision 5 turns on has a source at last:
+    ``StudentGuardian`` is the link between a child and the people responsible
+    for them, and a row's existence is the whole answer.
+
+    Two details matter. The pair carries its own tenant and both sides carry
+    theirs, so a matching row cannot span two schools and the pair lookup is
+    already the isolation check; there is nothing to add. And the read goes
+    through ``all_objects`` rather than the tenant-aware manager, for the reason
+    every other read in this adapter does: the FAL is called with explicit
+    references, sometimes from a task with no request behind it, and a check
+    that quietly answered "no" because no ambient tenant was set would fail
+    closed in the most confusing way available.
+
+    A reference that is not a number is a real no, not an error. The refs are
+    opaque strings by contract, and a caller that hands over a name or a blank
+    is asking about a child that does not exist.
+    """
+
+    def owns(self, guardian_ref, student_ref):
+        from schools.vs_students.models import StudentGuardian
+
+        try:
+            guardian_id = int(guardian_ref)
+            student_id = int(student_ref)
+        except (TypeError, ValueError):
+            return False
+        return StudentGuardian.all_objects.filter(
+            guardian_id=guardian_id, student_id=student_id,
+        ).exists()
+
+
+class DenyAllGuardianLinkAdapter(GuardianLinkPort):
+    """The resolver for a deployment with no student roll: it refuses to answer.
+
+    No longer the default. Module 11 landed and
+    :class:`DjangoGuardianLinkAdapter` took its place, which is what opened the
+    parent portal's payment bridge.
+
+    It is kept, and kept exported, for two reasons. A deployment that has not
+    installed the student module still needs the bridge to fail closed rather
+    than crash on a missing import, and pointing ``FAL_GUARDIAN_LINK`` here is
+    how it does that. And it remains the honest answer to "we cannot establish
+    this relationship": raising rather than returning ``False``, because "this
+    guardian is not the parent" is a claim, and a claim nobody has checked must
+    not be made on a school's behalf.
     """
 
     def owns(self, guardian_ref, student_ref):
@@ -1841,6 +1945,7 @@ __all__ = [
     "DjangoStudentCustomerAdapter",
     "DjangoFinanceRbacAdapter",
     "DjangoFinanceReadAdapter",
+    "DjangoGuardianLinkAdapter",
     "DenyAllGuardianLinkAdapter",
     "DjangoParentPaymentBridgeAdapter",
     "DjangoProcurementActionAdapter",
