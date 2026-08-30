@@ -389,24 +389,6 @@ class School(TimeStampedModel):
                 SchoolStatus.INACTIVE: Tenant.Status.INACTIVE,
                 SchoolStatus.SUSPENDED: Tenant.Status.SUSPENDED,
             }.get(self.status, Tenant.Status.PENDING)
-            # This update is the only place a school's tenant changes status, so
-            # it is also the only place that can tell "became pending" from
-            # "was already pending". Reading the row first is what keeps an
-            # ordinary save (a rename, a metadata fix) from restarting the
-            # 90-day clock the onboarding expiry sweep reads.
-            previous = (
-                Tenant.objects
-                .filter(pk=self.tenant_id)
-                .values("status", "pending_since", "expiry_warned_at")
-                .first()
-                or {}
-            )
-            pending_since, expiry_warned_at = Tenant.pending_stamps_for(
-                new_status=tenant_status,
-                previous_status=previous.get("status"),
-                pending_since=previous.get("pending_since"),
-                warned_at=previous.get("expiry_warned_at"),
-            )
             # The slug is mirrored now, where it used to be seeded at creation
             # and then left alone. Correcting a typo before go-live has to
             # reach the tenant or it does not reach the sign-in address at all,
@@ -421,15 +403,21 @@ class School(TimeStampedModel):
             # live school's sign-in address.
             mirrored = {
                 "name": self.name,
-                "status": tenant_status,
-                "activated_at": self.activated_at,
-                "deactivated_at": self.deactivated_at,
-                "pending_since": pending_since,
-                "expiry_warned_at": expiry_warned_at,
             }
             if not slug_is_frozen:
                 mirrored["slug"] = self.slug
             Tenant.objects.filter(pk=self.tenant_id).update(**mirrored)
+            # The lifecycle service owns the status write and the security
+            # consequence. Both this outer transaction and the service's
+            # nested transaction must commit before either row is visible.
+            from vs_admin_console.services import transition_tenant_status
+
+            transition_tenant_status(
+                self.tenant,
+                to_status=tenant_status,
+                activated_at=self.activated_at,
+                deactivated_at=self.deactivated_at,
+            )
             return result
 
     # --- Branch helpers ---

@@ -303,7 +303,26 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         )
 
         with transaction.atomic():
-            tenant = request.tenant
+            from vs_tenants.models import Tenant
+
+            # Share the tenant-row lock with ``transition_tenant_status``. If
+            # a start wins the lock, a following shutdown ends the new session;
+            # if shutdown wins, this recheck sees the new status and refuses to
+            # create a session after the shutdown query has already run.
+            tenant = (
+                Tenant.objects
+                .select_for_update()
+                .filter(
+                    pk=request.tenant.pk,
+                    status__in=Tenant.AUTHENTICABLE_STATUSES,
+                )
+                .first()
+            )
+            if tenant is None:
+                return error_response(
+                    message="Target user was not found in this tenant.",
+                    status=status.HTTP_404_NOT_FOUND,
+                )
             actor = getattr(request, "actor_user", request.user)
             # A school actor may only proxy inside their OWN tenant. The auth
             # layer already 404s a foreign ?tenant= for non-platform actors, but

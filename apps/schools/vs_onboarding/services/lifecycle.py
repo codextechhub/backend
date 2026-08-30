@@ -183,8 +183,6 @@ def _row(tenant, now) -> dict:
 
 def _suspend(tenant, now) -> bool:
     """Suspend one tenant. Returns True when it was written through its school."""
-    from vs_tenants.models import Tenant
-
     school = effects.school_of(tenant)
     if school is not None:
         from schools.vs_schools.models import SchoolStatus
@@ -196,14 +194,13 @@ def _suspend(tenant, now) -> bool:
         school.save()
         return True
 
-    Tenant.objects.filter(pk=tenant.pk).update(
-        status=Tenant.Status.SUSPENDED,
+    from vs_admin_console.services import transition_tenant_status
+    from vs_tenants.models import Tenant
+
+    transition_tenant_status(
+        tenant,
+        to_status=Tenant.Status.SUSPENDED,
         deactivated_at=now,
-        # The spell it was in has ended, so neither column that describes that
-        # spell describes anything any more. Exactly what the mirror does for a
-        # tenant that has a school to be written through.
-        pending_since=None,
-        expiry_warned_at=None,
         updated_at=now,
     )
     return False
@@ -213,9 +210,9 @@ def expire_stale_onboarding(*, now=None, dry_run: bool = False, actor=None) -> d
     """Suspend every school that has been onboarding for the expiry window.
 
     Idempotent by construction: a suspended tenant is no longer PENDING, so it
-    is not selected again. Authentication already refuses a SUSPENDED tenant,
-    so the school's sign-in dies with the status change and nothing else has to
-    be revoked.
+    is not selected again. The shared tenant transition closes impersonation
+    sessions in the same transaction, and authentication refuses the suspended
+    tenant after that transaction commits.
     """
     now = now or timezone.now()
     cutoff = now - timezone.timedelta(days=ONBOARDING_EXPIRY_DAYS)
@@ -476,12 +473,12 @@ def reinstate_school(tenant, *, actor=None):
             # tenant entering PENDING (see Tenant.pending_since_for).
             school.save()
         else:
-            Tenant.objects.filter(pk=tenant.pk).update(
-                status=Tenant.Status.PENDING,
+            from vs_admin_console.services import transition_tenant_status
+
+            transition_tenant_status(
+                tenant,
+                to_status=Tenant.Status.PENDING,
                 deactivated_at=None,
-                pending_since=now,
-                # A new spell, so the school is warned again in it.
-                expiry_warned_at=None,
                 updated_at=now,
             )
 

@@ -4,7 +4,7 @@ Covers: start permission gate, target/tenant validation, single-active-session
 rule, effective-user substitution with target-only permissions (no union with
 the actor's platform grants), header forgery, actor mismatch, expiry,
 tenant-mismatch assertion, Codex-on-Codex sessions, lifecycle termination
-(logout service + tenant deactivation receiver), and dual-identity audit
+(logout service + transactional tenant transition), and dual-identity audit
 attribution on impersonated requests.
 
 All API calls go through the real JWT layer (CodeXRefreshToken + ?tenant=),
@@ -31,7 +31,11 @@ from vs_user.models import User
 from vs_user.tokens import CodeXRefreshToken
 
 from .models import ImpersonationSession
-from .services import end_impersonations_for_tenant, end_impersonations_for_user
+from .services import (
+    end_impersonations_for_tenant,
+    end_impersonations_for_user,
+    transition_tenant_status,
+)
 
 
 # start_all covers every target kind; end/view are scope-agnostic.
@@ -445,6 +449,25 @@ class ImpersonatedRequestTests(ImpersonationTestBase):
             f"/v1/user/auth/me/?tenant={self.school.tenant.slug}"
         )
         self.assertEqual(resp.status_code, 401)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, "ENDED")
+
+    def test_school_suspension_ends_session_so_reactivation_cannot_revive_it(self):
+        from schools.vs_schools.models import SchoolStatus
+
+        self.school.status = SchoolStatus.SUSPENDED
+        self.school.save()
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, "ENDED")
+        self.assertIsNotNone(self.session.ended_at)
+
+        self.school.status = SchoolStatus.ACTIVE
+        self.school.save()
+        response = self.impersonated_client().get(
+            f"/v1/user/auth/me/?tenant={self.school.tenant.slug}"
+        )
+
+        self.assertEqual(response.status_code, 401)
         self.session.refresh_from_db()
         self.assertEqual(self.session.status, "ENDED")
 
@@ -944,13 +967,36 @@ class ImpersonationLifecycleTests(ImpersonationTestBase):
         end_impersonations_for_user(self.admin)
         self.assertEqual(self._active(), 0)
 
-    def test_tenant_deactivation_ends_sessions(self):
+    def test_tenant_status_transition_ends_sessions(self):
         self.start_session()
         self.assertEqual(self._active(), 1)
         tenant = self.school.tenant
-        tenant.status = Tenant.Status.SUSPENDED
-        tenant.save()
+        transition_tenant_status(
+            tenant,
+            to_status=Tenant.Status.SUSPENDED,
+            deactivated_at=timezone.now(),
+        )
         self.assertEqual(self._active(), 0)
+
+    def test_tenant_status_and_session_shutdown_roll_back_together(self):
+        from unittest.mock import patch
+
+        self.start_session()
+        tenant = self.school.tenant
+        with patch(
+            "vs_admin_console.services.end_impersonations_for_tenant",
+            side_effect=RuntimeError("shutdown failed"),
+        ):
+            with self.assertRaises(RuntimeError):
+                transition_tenant_status(
+                    tenant,
+                    to_status=Tenant.Status.SUSPENDED,
+                    deactivated_at=timezone.now(),
+                )
+
+        tenant.refresh_from_db()
+        self.assertEqual(tenant.status, Tenant.Status.ACTIVE)
+        self.assertEqual(self._active(), 1)
 
     def test_service_end_for_tenant(self):
         self.start_session()
