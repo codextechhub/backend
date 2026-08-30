@@ -52,6 +52,15 @@ def _seed_every_module():
     _call("seed_onboarding_permissions")
     _call("seed_notification_permissions")
     _call("seed_ticket_permissions")
+    # The catalogue now names finance keys, because a school's bursar works in
+    # the finance engine rather than in a school-only shadow of it. Without
+    # this the fee, collections and ledger bundles would name keys no seeder
+    # registers, and the group would seed empty and silently confer nothing.
+    _call("seed_finance_permissions")
+    # And procurement keys, for the same reason: the supplier bills bundle
+    # names the money end of the buying chain. seed_all_permissions runs this
+    # in production at step 8, so the list here was simply behind it.
+    _call("seed_procurement_permissions")
 
 
 class SchoolPermissionGroupTableTests(TestCase):

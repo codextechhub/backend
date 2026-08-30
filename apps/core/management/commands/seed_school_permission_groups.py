@@ -161,12 +161,162 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
     (
         "Fee Configuration",
         SCHOOL_WIDE,
-        "Read and set the school's fee structure.",
+        "Read the school's fee structures, concessions and payment plans. A fee "
+        "structure prices a term for the whole school, so this does not narrow "
+        "to a branch.",
         (
+            # The real gate. ``finance.feestructure.view`` is what
+            # ``vs_finance.views_ar`` actually checks (views_ar.py:1103); the
+            # two ``school.fees.*`` keys below are enforced by NOTHING on the
+            # server. This group used to contain only those two, so granting it
+            # gave a bursar the appearance of fee access and none of the
+            # substance: every finance endpoint still refused her, because she
+            # held no ``finance.*`` key at all.
+            "finance.feestructure.view",
+            "finance.concession.view",
+            "finance.paymentplan.view",
+            "finance.paymentplan.create",
+            # Kept deliberately. school-fe maps permission codes 100601 and
+            # 100608 to these two keys (src/permissions/index.ts), so dropping
+            # them here would hide the frontend's fee navigation from the very
+            # people this fix is meant to enable. They are inert on the server
+            # and should be retired once the frontend reads the finance keys.
             "school.fees.view",
             "school.fees.manage",
         ),
     ),
+    (
+        "Fee Collections",
+        BRANCH_SCOPABLE,
+        "Read the bills raised, the money received against them, and what is "
+        "still owed. A bursar granted this at one branch sees that branch's "
+        "families and no others.",
+        (
+            "finance.invoice.view",
+            "finance.payment.view",
+            "finance.customer.view",
+            "finance.creditnote.view",
+            "finance.refund.view",
+            "finance.writeoff.view",
+            "finance.dunning.view",
+        ),
+    ),
+    (
+        "Finance Reports",
+        BRANCH_SCOPABLE,
+        "Read the finance reports. Narrows to a branch for somebody who runs "
+        "one, and is held whole-school by the person who closes the books.",
+        (
+            "finance.report.view",
+        ),
+    ),
+    (
+        "Banking",
+        SCHOOL_WIDE,
+        "Read the school's bank accounts and their balances. The accounts "
+        "belong to the school rather than to any one branch.",
+        (
+            "finance.bankaccount.view",
+        ),
+    ),
+    (
+        "Expenses and Petty Cash",
+        BRANCH_SCOPABLE,
+        "Raise and read expense claims, and read the petty cash float and its "
+        "vouchers. Each branch runs its own float.",
+        (
+            "finance.expenseclaim.view",
+            "finance.expenseclaim.create",
+            "finance.pettycash.view",
+            "finance.pettycashvoucher.view",
+        ),
+    ),
+    (
+        "Fixed Assets",
+        BRANCH_SCOPABLE,
+        "Read the school's capitalised assets: the bus, the generator, the "
+        "buildings. An asset sits at a branch, so this narrows.",
+        (
+            "finance.fixedasset.view",
+        ),
+    ),
+    (
+        "Budgets and Cost Centres",
+        SCHOOL_WIDE,
+        "Read the budget and maintain the cost centres it is spent against. "
+        "One budget covers the school.",
+        (
+            "finance.budget.view",
+            "finance.costcenter.view",
+            "finance.costcenter.create",
+        ),
+    ),
+    (
+        "The Ledger",
+        SCHOOL_WIDE,
+        "Read-only access to the books themselves: the chart of accounts, the "
+        "journals, the direct entries and the accounting periods. Posting to "
+        "any of them is restricted and travels through a role change.",
+        (
+            "finance.entity.view",
+            "finance.account.view",
+            "finance.journal.view",
+            "finance.directentry.view",
+            "finance.period.view",
+            "finance.settings.view",
+        ),
+    ),
+    (
+        "Tax",
+        SCHOOL_WIDE,
+        "Read the school's tax position and maintain its tax codes. Tax is "
+        "filed for the school, not per branch.",
+        (
+            "finance.tax.view",
+            "finance.taxcode.view",
+            "finance.taxcode.create",
+        ),
+    ),
+    (
+        "Supplier Bills and Payments",
+        BRANCH_SCOPABLE,
+        "Read what the school has been billed by its suppliers and what has "
+        "been paid against those bills. A bill is raised at a branch or "
+        "school-wide, so this narrows.",
+        (
+            # The money end of procurement only. Requisitions, approvals, RFQs
+            # and goods receipts are deliberately absent: a vice principal
+            # ordering textbooks is doing procurement, not finance, and must
+            # not need a finance bundle to do it.
+            #
+            # Every verb here is ``view`` or ``attach``. Creating a supplier
+            # payment is CRITICAL and posting a bill is CRITICAL, so neither is
+            # groupable - see the payroll note below for why that matters.
+            "procurement.vendor_invoice.view",
+            "procurement.vendor_invoice.attach",
+            "procurement.vendor_payment.view",
+            "procurement.vendor_payment.attach",
+            "procurement.vendor.view",
+            "procurement.report.view",
+        ),
+    ),
+    # There is deliberately NO "Payroll" group, and there cannot be one.
+    #
+    # Every payroll key is SENSITIVE or CRITICAL - ``payrollrun`` view and
+    # create are SENSITIVE, post and pay are CRITICAL, and all four ``salary``
+    # verbs are SENSITIVE (vs_finance seed_finance_permissions.py:88-95). This
+    # command refuses restricted keys, so a payroll group would seed empty and
+    # read as an access bug rather than as the rule it is.
+    #
+    # The rule is the right one. Attaching a group takes effect immediately,
+    # while a role change is reviewed, and what a payroll key exposes is every
+    # teacher's pay. Mrs Adeyemi being handed "Payroll" from a dropdown at
+    # 4pm on a Friday is exactly the grant that should require somebody to
+    # stop and think. Payroll travels through a named role, or not at all.
+    #
+    # The same is true of the paying half of the group above: reading supplier
+    # bills is a bundle, paying suppliers is a role.
+
     (
         "Academic Sessions",
         SCHOOL_WIDE,

@@ -19,6 +19,20 @@ PREBUILT_ROLES = [
         "description": "Administrative manager of a single branch.",
     },
     {
+        "key": "bursar",
+        "name": "Bursar",
+        "scope": "branch",
+        "tier": "B",
+        "description": "Runs the money that involves families: sets what a term costs, raises the bills, takes payment and chases what is late. Scoped to a branch, so a bursar at one branch sees that branch's families and no others. Carries no payroll and no supplier payments.",
+    },
+    {
+        "key": "finance_manager",
+        "name": "Finance Manager",
+        "scope": "institution",
+        "tier": "A",
+        "description": "Closes the school's books: reconciles the bank, watches the budget, reviews expense claims and reads the ledger across every branch. Payroll and supplier payments are NOT carried by this template and must be granted deliberately to a named person, because both are restricted.",
+    },
+    {
         "key": "teacher",
         "name": "Teacher",
         "scope": "branch",
