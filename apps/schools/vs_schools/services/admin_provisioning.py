@@ -6,8 +6,9 @@ Converts ContactInfo + BranchPrimaryAdmin / SchoolPrimaryAdmin records
 the invitation email.
 
 Call provision_admin_user() immediately after creating either admin link
-record inside the school/branch creation transaction.  Failures are isolated
-via a savepoint so they never abort the parent school or branch creation.
+record inside the school/branch creation transaction. A failure rolls back the
+service savepoint and then escapes so the parent school or branch transaction
+also rolls back. A creation response must never outlive its required admin.
 """
 from __future__ import annotations
 
@@ -15,6 +16,8 @@ import logging
 
 from django.db import transaction
 from django.utils import timezone
+
+from ..exceptions import AdminProvisioningError
 
 logger = logging.getLogger("vs_schools.admin_provisioning")
 
@@ -41,8 +44,9 @@ def provision_admin_user(
     """
     Create a User + UserInvitation and send the invite email for a queued admin.
 
-    Wrapped in its own savepoint so a failure here (e.g. duplicate email from a
-    concurrent request) is isolated and never rolls back the parent transaction.
+    Wrapped in its own savepoint so partial user, grant and invitation writes
+    are removed together. A failure is then raised to the caller so the parent
+    school or branch creation transaction is rolled back as well.
 
     The account is an ordinary user of the school's tenant - there is no
     persona to set. It used to take a ``user_type`` of 'SCHOOL_ADMIN' or
@@ -211,12 +215,16 @@ def provision_admin_user(
             return user
 
     except Exception as exc:  # noqa: BLE001
-        # Log but do not re-raise - admin provisioning failure must never
-        # abort the school/branch creation that triggered it.
+        # The inner atomic block has already removed any partial user, grant or
+        # invitation writes. Raise a typed refusal so the parent creation
+        # transaction also rolls back and the API cannot return a misleading
+        # 201 for a school or branch nobody can administer.
         logger.error(
             "provision_admin_user: failed for %s - %s",
             email,
             exc,
             exc_info=True,
         )
-        return None
+        if isinstance(exc, AdminProvisioningError):
+            raise
+        raise AdminProvisioningError() from exc

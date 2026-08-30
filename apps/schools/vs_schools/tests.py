@@ -1228,7 +1228,7 @@ class PrimaryAdminHasNoRoleLabelTests(TestCase):
 
         branch_link = BranchPrimaryAdmin.objects.get(branch=school.main_branch)
         self.assertEqual(branch_link.branch_role, "Head Teacher")
-        self.assertEqual(branch_link.invite_status, InviteStatus.QUEUED)
+        self.assertEqual(branch_link.invite_status, InviteStatus.SENT)
         self.assertFalse(hasattr(branch_link, "role_label"))
 
     def test_a_multi_branch_school_gets_a_link_per_branch(self):

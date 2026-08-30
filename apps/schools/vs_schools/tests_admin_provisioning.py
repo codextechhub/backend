@@ -36,7 +36,15 @@ from vs_rbac.models import (
 from vs_rbac.tests.helpers import make_branch, make_school, make_vision_user
 from vs_user.models import User
 
-from .models import BranchPrimaryAdmin, InviteStatus, School
+from .exceptions import AdminProvisioningError
+from .models import (
+    BranchPrimaryAdmin,
+    ContactInfo,
+    InviteStatus,
+    School,
+    SchoolPrimaryAdmin,
+)
+from vs_tenants.models import Branch, Tenant
 
 
 def _seed_prebuilt_roles():
@@ -328,10 +336,177 @@ class ExistingAccountIsGrantedAtItsNewPostingTests(TestCase):
         """
         school, ikeja, _, _ = self._corona_with_an_incumbent()
 
-        returned, link, _ = self._post_an_existing_admin_to(
-            ikeja, school=school, role_key="no-such-role",
-        )
+        with self.assertRaises(AdminProvisioningError):
+            _, link, _ = self._post_an_existing_admin_to(
+                ikeja, school=school, role_key="no-such-role",
+            )
 
-        self.assertIsNone(returned)
+        link = BranchPrimaryAdmin.objects.get(branch=ikeja)
         link.refresh_from_db()
         self.assertEqual(link.invite_status, InviteStatus.QUEUED)
+
+
+class RequiredAdminProvisioningIsAtomicTests(TestCase):
+    """Creation never commits a school or branch without its required admin."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="atomic-admin-provisioning@example.com", super_admin=True,
+        )
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        return client
+
+    @staticmethod
+    def _branch(name, email, *, is_main=True):
+        return {
+            "name": name,
+            "state": "Lagos",
+            "is_main": is_main,
+            "primary_admin_data": {
+                "full_name": f"{name} Head",
+                "email": email,
+            },
+        }
+
+    def test_school_create_returns_503_and_rolls_back_when_role_is_missing(self):
+        PrebuiltRoleTemplate.objects.filter(key="branch_admin").delete()
+
+        with self.assertLogs("vs_schools.admin_provisioning", level="ERROR"):
+            response = self._client().post(
+                reverse("school-create"),
+                {
+                    "name": "Bright Star School",
+                    "slug": "bright-star-atomic",
+                    "branches": [self._branch(
+                        "Main Branch", "head@bright-star-atomic.test",
+                    )],
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 503, response.data)
+        self.assertEqual(
+            response.data["error"]["code"], "ADMIN_PROVISIONING_FAILED",
+        )
+        self.assertFalse(School.objects.filter(slug="bright-star-atomic").exists())
+        self.assertFalse(Tenant.objects.filter(slug="bright-star-atomic").exists())
+        self.assertFalse(Branch.all_objects.filter(
+            tenant__slug="bright-star-atomic",
+        ).exists())
+        self.assertFalse(ContactInfo.objects.filter(
+            email="head@bright-star-atomic.test",
+        ).exists())
+        self.assertFalse(User.objects.filter(
+            email="head@bright-star-atomic.test",
+        ).exists())
+
+    def test_second_branch_failure_rolls_back_the_first_admin_too(self):
+        _seed_prebuilt_roles()
+        from .services.admin_provisioning import provision_admin_user
+
+        calls = 0
+
+        def fail_the_second_admin(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise AdminProvisioningError()
+            return provision_admin_user(**kwargs)
+
+        with mock.patch(
+            "schools.vs_schools.services.admin_provisioning.provision_admin_user",
+            side_effect=fail_the_second_admin,
+        ), mock.patch("vs_user.tasks.send_invitation_email_task.delay"):
+            response = self._client().post(
+                reverse("school-create"),
+                {
+                    "name": "Two Branch School",
+                    "slug": "two-branch-atomic",
+                    "branches": [
+                        self._branch(
+                            "Main Branch", "main@two-branch-atomic.test",
+                            is_main=True,
+                        ),
+                        self._branch(
+                            "Ikeja Branch", "ikeja@two-branch-atomic.test",
+                            is_main=False,
+                        ),
+                    ],
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 503, response.data)
+        self.assertFalse(School.objects.filter(slug="two-branch-atomic").exists())
+        self.assertFalse(Tenant.objects.filter(slug="two-branch-atomic").exists())
+        self.assertFalse(User.objects.filter(
+            email__in=[
+                "main@two-branch-atomic.test",
+                "ikeja@two-branch-atomic.test",
+            ],
+        ).exists())
+        self.assertFalse(BranchPrimaryAdmin.objects.filter(
+            contact__email__in=[
+                "main@two-branch-atomic.test",
+                "ikeja@two-branch-atomic.test",
+            ],
+        ).exists())
+
+    def test_failed_school_admin_cannot_leave_same_email_branch_marked_sent(self):
+        _seed_prebuilt_roles()
+        PrebuiltRoleTemplate.objects.filter(key="school_admin").delete()
+        email = "ada@same-admin-atomic.test"
+
+        with self.assertLogs("vs_schools.admin_provisioning", level="ERROR"):
+            response = self._client().post(
+                reverse("school-create"),
+                {
+                    "name": "Same Admin School",
+                    "slug": "same-admin-atomic",
+                    "primary_admin_data": {
+                        "full_name": "Ada Okoye",
+                        "email": email,
+                    },
+                    "branches": [self._branch("Main Branch", email)],
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 503, response.data)
+        self.assertFalse(School.objects.filter(slug="same-admin-atomic").exists())
+        self.assertFalse(SchoolPrimaryAdmin.objects.filter(
+            contact__email=email,
+        ).exists())
+        self.assertFalse(BranchPrimaryAdmin.objects.filter(
+            contact__email=email,
+        ).exists())
+
+    def test_standalone_branch_create_rolls_back_only_the_new_branch(self):
+        school = make_school(
+            slug="existing-school-atomic", name="Existing School Atomic",
+        )
+        school.status = "ACTIVE"
+        school.save(update_fields=["status"])
+        PrebuiltRoleTemplate.objects.filter(key="branch_admin").delete()
+
+        with self.assertLogs("vs_schools.admin_provisioning", level="ERROR"):
+            response = self._client().post(
+                reverse("branch-create", kwargs={"slug": school.slug}),
+                self._branch(
+                    "New Branch", "head@new-branch-atomic.test", is_main=False,
+                ),
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 503, response.data)
+        self.assertTrue(School.objects.filter(pk=school.pk).exists())
+        self.assertFalse(Branch.all_objects.filter(
+            tenant=school.tenant, name="New Branch",
+        ).exists())
+        self.assertFalse(User.objects.filter(
+            email="head@new-branch-atomic.test", tenant=school.tenant,
+        ).exists())

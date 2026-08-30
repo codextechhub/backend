@@ -1328,8 +1328,9 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         # Every school gets books, entitled to finance or not: adding them later
         # means going back to repair every school created before this point. The
         # service opens its own savepoint and swallows its own failures, so a
-        # finance problem cannot cost us the school, the tenant, the admin user,
-        # the branches or the entitlements above.
+        # finance problem cannot cost us the school, the tenant, the required
+        # admin users, the branches or the entitlements above. Admin provisioning
+        # is deliberately not best effort: a failure there aborts creation.
         from .services.books import provision_books_for_school
 
         provision_books_for_school(school)
