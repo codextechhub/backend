@@ -242,13 +242,22 @@ class FeeTermBridgePort(ABC):
     @abstractmethod
     def generate_cohort_invoices(
         self, fee_structure_ref: FeeStructureRef, student_refs: tuple[StudentRef, ...],
-        *, period: Optional[Period] = None,
+        *, period: Optional[Period] = None, dry_run: bool = False,
     ) -> FinanceResult[InvoiceGenerationResult]:
         """Generate one posted invoice per student in the cohort.
 
         Resolves each student to its AR Customer, then calls
         ``fees.generate_invoices``. Idempotent: already-billed students are
         returned in ``students_skipped``. Runs in a single transaction.
+
+        ``dry_run`` answers "what would this bill?" without billing it. The
+        preview is produced by running the real generation inside a transaction
+        that is then rolled back, NOT by re-deriving the amounts: fee items are
+        priced and taxed by ``post_invoice``, so any second implementation would
+        quote a pre-tax figure and be wrong in exactly the case a bursar most
+        needs it right. Every refusal a real run would raise is raised here too,
+        for the same reason - a preview that hides the cross-tenant error tells
+        the school its run will succeed, and then it does not.
 
         A student with no AR account gets one, opened in their own name from the
         roll. Until Module 11 landed this refused instead, because there was no

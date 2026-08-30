@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import datetime
 import functools
+from dataclasses import replace
 from typing import Optional
 
 from django.db import IntegrityError, InterfaceError, OperationalError, transaction
@@ -465,6 +466,63 @@ def _student_display_name(row):
     return " ".join(part for part in (row["first_name"], row["last_name"]) if part)
 
 
+class _PreviewComplete(Exception):
+    """Carries a finished preview out of the transaction that must not survive.
+
+    An exception rather than a flag because rolling the transaction back is the
+    whole mechanism: leaving the atomic block by raising is what discards the
+    writes. It is module-private and caught one frame up, so it never reaches a
+    caller and is never confused with a FAL error.
+    """
+
+    def __init__(self, result):
+        super().__init__("dry run complete")
+        self.result = result
+
+
+def _class_labels(student_refs, tenant_id):
+    """Map each student reference to the class that child is in now.
+
+    SCOPED BY TENANT, and that is not decoration. ``Customer.source_id`` is a
+    loose string, not a foreign key, so a school that imported receivables
+    before it imported its roll can hold a reference like "42" that means
+    nothing here - while some OTHER school's pupil genuinely has primary key 42.
+    Filtering on the id alone would print that child's class on this school's
+    debtor list. The entity scoping upstream cannot catch it, because the leak
+    enters through a value the ledger merely stores.
+
+    One query for the whole page, deliberately: these rows are built inside a
+    paginated list, so a per-row lookup would be an N+1 on every fee report the
+    product has. ``setdefault`` over an ordering of student then newest session
+    picks the current placement without a subquery.
+
+    A reference that resolves to nobody, and a child with no active placement,
+    both fall out as absent and the row is left blank. That is the one case the
+    old hardcoded ``""`` was right about.
+    """
+    from schools.vs_students.models import ClassEnrolment
+
+    by_id = {}
+    for ref in student_refs:
+        try:
+            by_id[int(ref)] = ref
+        except (TypeError, ValueError):
+            continue
+    if not by_id:
+        return {}
+
+    labels = {}
+    rows = (
+        ClassEnrolment.all_objects
+        .filter(student_id__in=by_id, is_active=True, tenant_id=tenant_id)
+        .order_by("student_id", "-session__start_date")
+        .values_list("student_id", "school_class__name")
+    )
+    for student_id, name in rows:
+        labels.setdefault(by_id[student_id], name or "")
+    return labels
+
+
 def _refuse_foreign_student(entity, student_ref):
     """Refuse a child who is another school's pupil.
 
@@ -644,7 +702,8 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
         return _available(_link_dto(link))
 
     @envelope
-    def generate_cohort_invoices(self, fee_structure_ref, student_refs, *, period=None):
+    def generate_cohort_invoices(self, fee_structure_ref, student_refs, *, period=None,
+                                 dry_run=False):
         from vs_finance import fees
         from vs_finance.models import Customer, Invoice
 
@@ -671,7 +730,8 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
             )
         link_period = Period(session_ref=link.session_id, term_ref=link.term_id)
 
-        with transaction.atomic():
+        def _run():
+            """The billing run itself, identical whether or not it is kept."""
             pairs = []
             for ref in student_refs:
                 customer = _existing_customer(structure.entity, ref)
@@ -697,17 +757,42 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
                 ).values_list("customer_id", flat=True)
             )
             skipped = tuple(ref for ref, c in pairs if c.pk in already)
+            billable = tuple(ref for ref, c in pairs if c.pk not in already)
             to_bill = [c for _ref, c in pairs if c.pk not in already]
 
             invoices = fees.generate_invoices(structure, to_bill) if to_bill else []
 
-        return _available(InvoiceGenerationResult(
-            fee_structure_ref=structure.pk,
-            period=link_period,
-            invoices_created=tuple(inv.pk for inv in invoices),
-            students_skipped=skipped,
-            total_billed=sum(inv.total for inv in invoices),
-        ))
+            return InvoiceGenerationResult(
+                fee_structure_ref=structure.pk,
+                period=link_period,
+                invoices_created=tuple(inv.pk for inv in invoices),
+                students_skipped=skipped,
+                total_billed=sum(inv.total for inv in invoices),
+                students_to_bill=billable,
+                dry_run=dry_run,
+            )
+
+        if not dry_run:
+            with transaction.atomic():
+                return _available(_run())
+
+        # A preview runs the real thing and throws the writes away. That is
+        # deliberate rather than lazy: fee items are priced and taxed inside
+        # post_invoice, so a second implementation that summed the item amounts
+        # would quote a pre-tax figure and be wrong in exactly the case a bursar
+        # most needs it right. Running the real code also means every refusal a
+        # real run would raise is raised here - a preview that hid the
+        # cross-tenant error would promise a run that then fails.
+        #
+        # The invoice pks are dropped rather than returned. They stop existing
+        # when this block exits, and handing back identifiers for rows nobody can
+        # fetch is the kind of honest-looking answer that costs an afternoon.
+        try:
+            with transaction.atomic():
+                raise _PreviewComplete(_run())
+        except _PreviewComplete as preview:
+            return _available(replace(preview.result, invoices_created=()))
+
 
 
 # --------------------------------------------------------------------------- #
@@ -823,6 +908,27 @@ def _page(queryset_or_list, page: int, page_size: int, build):
         items=rows, page=page, page_size=page_size,
         total_items=total, total_pages=max(total_pages, 1),
     )
+
+
+def _labelled(page, tenant_id):
+    """Fill ``class_label`` on a built page of rows, in one query for the page.
+
+    Applied after ``_page`` rather than inside the row builder because the class
+    lookup wants every student on the page at once. Doing it per row would issue
+    one query per debtor, on a list whose whole purpose is to be long.
+
+    Rows are frozen, so this rebuilds them. That is cheap at a page's size and
+    keeps the contract immutable, which is what the rest of the FAL relies on.
+    """
+    if not page.items:
+        return page
+    labels = _class_labels((row.student_ref for row in page.items), tenant_id)
+    if not labels:
+        return page
+    return replace(page, items=tuple(
+        replace(row, class_label=labels.get(row.student_ref, ""))
+        for row in page.items
+    ))
 
 
 def _period_references(entity, period: Optional[Period]):
@@ -1085,15 +1191,13 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
             return DebtorRow(
                 student_ref=row["customer__source_id"] or "",
                 student_name=row["customer__name"],
-                # Empty on purpose: there is no student app to ask which class a
-                # child is in, and the FAL does not invent one.
-                class_label="",
+                class_label="",   # filled below, once the page is known
                 outstanding=row["outstanding"] or 0,
                 ageing=_ageing_bucket(row["oldest_due"], today),
                 branch_ref=row["customer__branch_id"],
             )
 
-        return _available(_page(qs, page, page_size, build))
+        return _available(_labelled(_page(qs, page, page_size, build), entity.tenant_id))
 
     @envelope
     def fee_invoices(self, school_ref, branch_ref=None, filters=(), page=1, page_size=20):
@@ -1111,7 +1215,7 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
                 invoice_ref=invoice.pk,
                 student_ref=invoice.customer.source_id or "",
                 student_name=invoice.customer.name,
-                class_label="",
+                class_label="",   # filled below, once the page is known
                 term_label=labels.get(invoice.reference, ""),
                 amount_due=invoice.total,
                 amount_paid=invoice.amount_paid,
@@ -1119,7 +1223,7 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
                 status=InvoiceStatus(invoice.payment_status),
             )
 
-        return _available(_page(qs, page, page_size, build))
+        return _available(_labelled(_page(qs, page, page_size, build), entity.tenant_id))
 
     @envelope
     def payments(self, school_ref, branch_ref=None, filters=(), page=1, page_size=20):

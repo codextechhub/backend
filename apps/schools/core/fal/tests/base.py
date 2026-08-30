@@ -164,6 +164,47 @@ class FALFixture(TestCase):
             status=StudentStatus.ACTIVE,
         )
 
+    _order_index = 0
+
+    @classmethod
+    def _next_order_index(cls):
+        FALFixture._order_index += 1
+        return FALFixture._order_index
+
+    @classmethod
+    def place_in_class(cls, school, student, session, *, name="JSS1 A", branch=None):
+        """Put a child in a class, which is what a fee report's class column reads.
+
+        Builds the whole chain the roll needs - programme, level, class, then the
+        enrolment - because a class cannot exist without a level and a level
+        cannot exist without a programme.
+        """
+        from schools.vs_academics.models import Level, Program, SchoolClass
+        from schools.vs_students.models import ClassEnrolment
+
+        # (program, session, order_index) is unique, so each call needs its own.
+
+        # Names and codes are unique per tenant, and a fixture that builds two
+        # classes builds two of each, so every one of them is numbered.
+        seq = cls._next_order_index()
+        program = Program.all_objects.create(
+            tenant=school.tenant, branch=branch, name=f"Junior Secondary {seq}",
+            code=f"JS-{seq}",
+        )
+        level = Level.all_objects.create(
+            tenant=school.tenant, branch=branch, program=program, session=session,
+            name=f"JSS1-{seq}", code=f"L-{seq}", order_index=seq,
+        )
+        school_class = SchoolClass.all_objects.create(
+            tenant=school.tenant, branch=branch, level=level, session=session,
+            name=name, code=f"C-{seq}",
+        )
+        ClassEnrolment.all_objects.create(
+            tenant=school.tenant, student=student, school_class=school_class,
+            session=session,
+        )
+        return school_class
+
     @classmethod
     def guardian_of(cls, school, student, *, full_name="Mrs Adeyemi",
                     relationship=None, is_primary=True):

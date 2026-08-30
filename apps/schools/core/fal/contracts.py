@@ -326,10 +326,11 @@ class DebtorRow:
     ``branch_ref`` is optional because a customer's branch is nullable and a
     school-wide receivable is a first-class case.
 
-    ``student_name`` is the AR customer's name and ``class_label`` is empty until
-    a student app exists to be asked: the FAL will not invent a class it cannot
-    read. Both are documented as such rather than omitted, because M25/M26 have
-    columns for them.
+    ``student_name`` is the AR customer's name. ``class_label`` is the child's
+    current class, read from the roll: their active enrolment in the most recent
+    session. It is empty only where there is genuinely nothing to say - a
+    reference that names no child, or a child with no active placement - because
+    the FAL still will not invent a class it cannot read.
     """
 
     student_ref: StudentRef
@@ -539,13 +540,23 @@ class FeeTermLink:
 
 @dataclass(frozen=True)
 class InvoiceGenerationResult:
-    """Outcome of generating invoices for a student cohort from a fee structure."""
+    """Outcome of generating invoices for a student cohort from a fee structure.
+
+    ``dry_run`` says whether anything was actually written. On a preview
+    ``invoices_created`` is empty and ``total_billed`` is what the run WOULD
+    bill, priced by the same code that posts, so the number a bursar is shown
+    before they commit is the number they get after. ``students_to_bill`` is
+    filled either way, so a preview and the posting that follows it can be
+    compared rather than trusted.
+    """
 
     fee_structure_ref: FeeStructureRef
     period: Period
     invoices_created: tuple[InvoiceRef, ...]
     students_skipped: tuple[StudentRef, ...]   # already billed (idempotent skip)
     total_billed: Kobo
+    students_to_bill: tuple[StudentRef, ...] = ()
+    dry_run: bool = False
 
 
 # --------------------------------------------------------------------------- #

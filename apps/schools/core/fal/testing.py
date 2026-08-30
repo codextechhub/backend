@@ -180,24 +180,32 @@ class FakeFeeTermBridge(FeeTermBridgePort):
         self.links[fee_structure_ref] = link
         return _ok(link)
 
-    def generate_cohort_invoices(self, fee_structure_ref, student_refs, *, period=None):
+    def generate_cohort_invoices(self, fee_structure_ref, student_refs, *, period=None,
+                                 dry_run=False):
         link = self.links.get(fee_structure_ref)
         if link is None:
             raise TermNotLinkedError(f"Structure {fee_structure_ref!r} has no term.")
         already = self.billed.setdefault(fee_structure_ref, set())
-        created, skipped = [], []
+        created, skipped, billable = [], [], []
         for ref in student_refs:
             if ref in already:
                 skipped.append(ref)
                 continue
-            already.add(ref)
-            created.append(_next_id())
+            billable.append(ref)
+            # A preview must leave the fake exactly as it found it, or a test
+            # that previews and then bills would see its own preview come back
+            # as an idempotent skip.
+            if not dry_run:
+                already.add(ref)
+                created.append(_next_id())
         return _ok(InvoiceGenerationResult(
             fee_structure_ref=fee_structure_ref,
             period=period or Period(session_ref=link.session_ref, term_ref=link.term_ref),
             invoices_created=tuple(created),
             students_skipped=tuple(skipped),
-            total_billed=len(created) * 100000,
+            total_billed=len(billable) * 100000,
+            students_to_bill=tuple(billable),
+            dry_run=dry_run,
         ))
 
 
