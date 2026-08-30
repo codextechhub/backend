@@ -234,8 +234,14 @@ class ClassRosterView(StudentsViewMixin, generics.ListAPIView):
             self.tenant, self.request.user, self.kwargs["class_id"],
         )
         self._class = school_class
-        return roster(
-            self.tenant, self.request.user, school_class, self.active_session,
+        # The ROWS narrow. The seat count below deliberately does not - see
+        # list(). A branch-bound caller already sees only their own children
+        # here; ``?branch=`` lets a school-wide caller ask the same question.
+        return self.narrow_to_branch(
+            roster(
+                self.tenant, self.request.user, school_class,
+                self.active_session,
+            ),
         ).select_related("branch").prefetch_related(
             "enrolments__school_class", "guardian_links__guardian",
         )

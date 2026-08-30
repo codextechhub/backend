@@ -200,13 +200,20 @@ def roster(tenant, user, school_class, session):
     return scope_students(qs, user, tenant).distinct()
 
 
-def fullest_classes(tenant, user, session, *, limit=3):
+def fullest_classes(tenant, user, session, *, limit=3, branch=None):
     """The classes nearest their capacity, for the directory's capacity panel.
 
     Computed with one aggregate rather than by counting each class's roster,
     because a school with sixty classes would otherwise cost sixty queries to
     draw one card.
+
+    *branch* narrows to classes at that site PLUS the school-wide ones, which
+    is what a class with no branch means. Without it the panel warned a Main
+    Branch registrar about a full class at the Annex, which is neither hers to
+    fill nor hers to fix.
     """
+    from django.db.models import Q as _Q
+
     from schools.vs_academics.models import SchoolClass
 
     qs = scope_classes(
@@ -214,7 +221,10 @@ def fullest_classes(tenant, user, session, *, limit=3):
             tenant=tenant, is_active=True, capacity__isnull=False,
         ),
         user, tenant,
-    ).annotate(
+    )
+    if branch is not None:
+        qs = qs.filter(_Q(branch=branch) | _Q(branch__isnull=True))
+    qs = qs.annotate(
         used=Count(
             "enrolments",
             filter=Q(enrolments__session=session, enrolments__is_active=True),

@@ -137,6 +137,43 @@ class StudentsViewMixin:
         context["multi_branch"] = self.multi_branch
         return context
 
+    # ── the branch lens ────────────────────────────────────────────────────
+
+    @property
+    def branch_filter(self):
+        """The branch this request asked to be narrowed to, or None.
+
+        Resolved ONCE per request and cached, and read by every list and every
+        aggregate in the module. It used to live inline in the student list and
+        nowhere else, which meant the directory's table narrowed to a branch
+        while the summary above it kept answering for the whole school - 87
+        students printed over 49 rows, with nothing on screen saying which was
+        which. A registrar reporting a branch's roll read the wrong number.
+
+        Ignored at a single-branch school: the dimension has receded from every
+        response there, so a branch parameter is meaningless rather than wrong.
+        An unknown branch is a validation error, not a silent whole-school
+        answer - a filter that quietly does nothing is worse than one that
+        refuses.
+        """
+        if "_branch_filter" in self.__dict__:
+            return self._branch_filter
+        raw = (self.request.query_params.get("branch") or "").strip()
+        if not raw or not self.multi_branch:
+            self._branch_filter = None
+            return None
+        from vs_tenants.references import resolve_branch_reference
+
+        self._branch_filter = resolve_branch_reference(self.tenant, raw, "branch")
+        return self._branch_filter
+
+    def narrow_to_branch(self, queryset, field="branch"):
+        """Apply :attr:`branch_filter` to *queryset*, or hand it back whole."""
+        branch = self.branch_filter
+        if branch is None:
+            return queryset
+        return queryset.filter(**{field: branch})
+
     # ── shared resolvers ───────────────────────────────────────────────────
 
     def student(self, pk):

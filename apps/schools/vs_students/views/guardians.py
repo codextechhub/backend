@@ -191,6 +191,7 @@ class GuardianDirectoryView(StudentsViewMixin, generics.ListAPIView):
             self.tenant, self.request.user,
             search=params.get("search", ""),
             include_unlinked=(params.get("unlinked") or "").lower() == "true",
+            branch=self.branch_filter,
         ).annotate(ward_count=Count("student_links", distinct=True))
 
     def get_serializer_context(self):

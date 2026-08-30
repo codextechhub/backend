@@ -231,12 +231,18 @@ def primary_for(student):
     return link_row.guardian if link_row else None
 
 
-def guardian_directory(tenant, user, *, search="", include_unlinked=False):
+def guardian_directory(tenant, user, *, search="", include_unlinked=False,
+                       branch=None):
     """The guardian list, with ward counts. Branch narrowing is on the wards.
 
     Guardian carries no branch, so the row itself is never narrowed. What is
     narrowed is which children appear against it, which is why a branch-bound
     caller sees a guardian with one of their two children beside them.
+
+    *branch* applies that same narrowing on request rather than by the caller's
+    own binding, so a school-wide administrator reading the directory under a
+    branch lens sees the guardians of that branch's children - and not the
+    parents of a site she is not looking at.
     """
     from .scoping import scope_students
     from ..models import Student
@@ -252,5 +258,7 @@ def guardian_directory(tenant, user, *, search="", include_unlinked=False):
         visible_students = scope_students(
             Student.objects.filter(tenant=tenant), user, tenant,
         )
+        if branch is not None:
+            visible_students = visible_students.filter(branch=branch)
         qs = qs.filter(student_links__student__in=visible_students).distinct()
     return qs

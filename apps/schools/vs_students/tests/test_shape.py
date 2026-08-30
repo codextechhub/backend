@@ -363,3 +363,91 @@ class HistoryTabTests(StudentsFixture):
         response = self.get(self.admin, "student-history", pk=self.row.pk)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["data"], [])
+
+
+class BranchLensAgreementTests(StudentsFixture):
+    """Every read narrows to the same branch, or the screen contradicts itself.
+
+    ``?branch=`` lived in the student list and nowhere else. The directory's
+    table narrowed while the four tiles above it kept answering for the whole
+    school, so a registrar looking at one site read the other's totals - and
+    nothing on the page said which number was which.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.here = self.student(branch=self.lekki, first="Ada", last="Here")
+        self.place(self.here, self.shared_class)
+        self.there = self.student(branch=self.ikeja, first="Obi", last="There")
+        self.place(self.there, self.ikeja_class)
+        # On the roll with no class, so `unplaced` has something at ONE branch.
+        self.stray = self.student(
+            branch=self.lekki, first="Ngozi", last="Stray",
+            status=StudentStatus.ENROLLED,
+        )
+        for row in (self.here, self.there, self.stray):
+            self.link(row, self.guardian(
+                name=f"Guardian of {row.first_name}",
+                phone=f"0803555{row.pk:04d}",
+                email=f"{row.first_name.lower()}@example.ng",
+            ))
+
+    def totals(self, branch):
+        params = {"branch": branch.pk} if branch else None
+        listed = self.get(self.admin, "student-list", params=params)
+        summary = self.get(self.admin, "student-summary", params=params)
+        unplaced = self.get(self.admin, "student-unplaced", params=params)
+        guardians = self.get(self.admin, "guardian-list", params=params)
+        return {
+            "list": listed.data["pagination"]["totalItems"],
+            "summary": summary.data["data"]["total"],
+            "unplaced": unplaced.data["pagination"]["totalItems"],
+            "guardians": guardians.data["pagination"]["totalItems"],
+        }
+
+    def test_the_summary_narrows_with_the_list(self):
+        """The defect itself: the table moved and the tiles did not."""
+        lekki = self.totals(self.lekki)
+        ikeja = self.totals(self.ikeja)
+        self.assertNotEqual(lekki["summary"], ikeja["summary"])
+        self.assertEqual(lekki["summary"], lekki["list"])
+        self.assertEqual(ikeja["summary"], ikeja["list"])
+
+    def test_the_branches_sum_to_the_whole_school(self):
+        whole = self.totals(None)
+        parts = self.totals(self.lekki), self.totals(self.ikeja)
+        for key in ("list", "summary", "unplaced"):
+            with self.subTest(endpoint=key):
+                self.assertEqual(
+                    parts[0][key] + parts[1][key], whole[key],
+                    f"{key} does not split cleanly across the two branches",
+                )
+
+    def test_the_nav_badge_narrows_too(self):
+        """A whole-school count beside one branch's roll sends somebody hunting."""
+        self.assertEqual(self.totals(self.lekki)["unplaced"], 1)
+        self.assertEqual(self.totals(self.ikeja)["unplaced"], 0)
+
+    def test_guardians_narrow_by_the_children_they_stand_for(self):
+        """A guardian carries no branch, so the wards are what narrows."""
+        self.assertNotEqual(
+            self.totals(self.lekki)["guardians"],
+            self.totals(self.ikeja)["guardians"],
+        )
+
+    def test_a_single_branch_school_ignores_the_parameter(self):
+        """The dimension has receded there; a branch filter is meaningless."""
+        plain = self.get(self.solo_admin, "student-summary")
+        asked = self.get(
+            self.solo_admin, "student-summary",
+            params={"branch": self.solo_branch.pk},
+        )
+        self.assertEqual(asked.status_code, 200)
+        self.assertEqual(asked.data["data"]["total"], plain.data["data"]["total"])
+
+    def test_an_unknown_branch_is_refused_rather_than_ignored(self):
+        """A filter that quietly does nothing is worse than one that refuses."""
+        response = self.get(
+            self.admin, "student-summary", params={"branch": 999999},
+        )
+        self.assertEqual(response.status_code, 400)

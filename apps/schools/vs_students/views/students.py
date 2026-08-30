@@ -126,14 +126,7 @@ class StudentListCreateView(StudentsViewMixin, generics.ListCreateAPIView):
                 enrolments__school_class__level_id=level,
             )
 
-        branch = (params.get("branch") or "").strip()
-        if branch and self.multi_branch:
-            from vs_tenants.references import resolve_branch_reference
-
-            qs = qs.filter(
-                branch=resolve_branch_reference(self.tenant, branch, "branch"),
-            )
-        return qs.distinct()
+        return self.narrow_to_branch(qs).distinct()
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
@@ -283,11 +276,16 @@ class UnplacedStudentsView(StudentsViewMixin, generics.ListAPIView):
         return super().get_permissions()
 
     def get_queryset(self):
-        return scope_students(
-            _list_queryset(self.tenant).filter(status__in=ON_ROLL).exclude(
-                enrolments__is_active=True,
+        # Narrowed like the directory it feeds: this count is a badge in the
+        # navigation, and a whole-school figure beside a branch's roll sends
+        # somebody looking for children who are not theirs to place.
+        return self.narrow_to_branch(
+            scope_students(
+                _list_queryset(self.tenant).filter(status__in=ON_ROLL).exclude(
+                    enrolments__is_active=True,
+                ),
+                self.request.user, self.tenant,
             ),
-            self.request.user, self.tenant,
         ).distinct()
 
 
@@ -336,8 +334,11 @@ class StudentSummaryView(StudentsViewMixin, APIView):
         return super().get_permissions()
 
     def get(self, request):
-        scoped = scope_students(
-            Student.objects.filter(tenant=self.tenant), request.user, self.tenant,
+        scoped = self.narrow_to_branch(
+            scope_students(
+                Student.objects.filter(tenant=self.tenant),
+                request.user, self.tenant,
+            ),
         )
         by_status = {
             row["status"]: row["n"]
@@ -349,7 +350,10 @@ class StudentSummaryView(StudentsViewMixin, APIView):
 
         session = self.session_or_none
         capacity = (
-            fullest_classes(self.tenant, request.user, session) if session else []
+            fullest_classes(
+                self.tenant, request.user, session, branch=self.branch_filter,
+            )
+            if session else []
         )
         return success_response(data={
             "total": sum(by_status.values()),
