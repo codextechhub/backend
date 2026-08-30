@@ -198,6 +198,40 @@ class Command(BaseCommand):
                     made.append(student)
         return made
 
+    @staticmethod
+    def _household(last):
+        """Every fact about a household, derived from the household's own key.
+
+        A guardian here is SHARED by every student with this surname - that
+        sharing is the relationship the Guardians screen exists to show. But
+        three of the guardian's fields used to be derived from the child who
+        happened to be enrolled first, or not deterministically at all:
+
+          * the honorific and the initial came from that child's seed, while
+            the RELATIONSHIP on each link came from each child's own seed. So
+            the Adeleke household's "Mrs. T. Adeleke" was linked as the FATHER
+            of her second child - exactly the "Mrs. James Eze" defect the
+            first-name pools at the top of this file were split to prevent,
+            arriving by a different route.
+          * the phone came from ``hash(last)``, which Python randomises per
+            process, so a command that advertises idempotence gave the
+            household a different number on every run.
+
+        Deriving all four from the surname alone makes the household one
+        consistent person, and the same person tomorrow.
+        """
+        slot = sum(ord(c) for c in last)
+        female = slot % 2 == 0
+        pool = FEMALE_FIRSTS if female else MALE_FIRSTS
+        return {
+            "honorific": "Mrs." if female else "Mr.",
+            "initial": pool[slot % len(pool)][0],
+            "relationship": (
+                Relationship.MOTHER if female else Relationship.FATHER
+            ),
+            "phone": f"0806555{slot % 10000:04d}",
+        }
+
     def _one(self, tenant, actor, branch, school_class, year, seed):
         female = seed % 2 == 0
         first = (FEMALE_FIRSTS if female else MALE_FIRSTS)[
@@ -212,7 +246,8 @@ class Command(BaseCommand):
         ).exists():
             return None
 
-        honorific = "Mrs." if seed % 2 else "Mr."
+        # Household facts, keyed on the surname the household is keyed on.
+        home = self._household(last)
         return enrolment_service.enrol(
             tenant=tenant, actor=actor, branch=branch,
             data={
@@ -224,7 +259,7 @@ class Command(BaseCommand):
                 "address": f"{seed % 90 + 1} Admiralty Way, Lekki, Lagos",
                 "phone": "", "email": "", "previous_school": "",
                 "blood_group": "", "allergies": "", "conditions": "",
-                "emergency_contact_name": f"{honorific} {last}",
+                "emergency_contact_name": f"{home['honorific']} {last}",
                 "emergency_contact_phone": f"0803555{seed % 10000:04d}",
                 "student_number": "",
             },
@@ -233,12 +268,10 @@ class Command(BaseCommand):
                 # sharing a surname share a guardian rather than each minting
                 # their own, which is the relationship the Guardians screen
                 # exists to show.
-                "full_name": f"{honorific} {first[0]}. {last}",
-                "phone": f"0806555{abs(hash(last)) % 10000:04d}",
+                "full_name": f"{home['honorific']} {home['initial']}. {last}",
+                "phone": home["phone"],
                 "email": f"{last.lower()}.household@example.ng",
-                "relationship": (
-                    Relationship.MOTHER if seed % 2 else Relationship.FATHER
-                ),
+                "relationship": home["relationship"],
                 "is_primary": True,
             }],
             school_class=school_class,

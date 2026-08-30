@@ -16,6 +16,9 @@ from django.test import TestCase
 from schools.vs_academics.models import AcademicSession
 from schools.vs_students.constants import StudentStatus
 from schools.vs_students.models import ClassEnrolment, Guardian, Student
+from schools.vs_students.management.commands.seed_student_scenarios import (
+    SURNAMES,
+)
 from vs_rbac.tests.helpers import make_branch, make_school, make_school_admin
 
 
@@ -193,3 +196,56 @@ class RefusalTests(_Base):
         with self.assertRaises(CommandError) as caught:
             self.seed(only="nowhere")
         self.assertIn("brightfield-lekki", str(caught.exception))
+
+
+class HouseholdConsistencyTests(_Base):
+    """A shared guardian must be ONE person, and the same one tomorrow.
+
+    The seeder keys a household on the surname, so several students share a
+    guardian. Three of that guardian's fields were derived from whichever child
+    was enrolled first, or from a per-process hash, which is how "Mrs. T.
+    Adeleke" came to be linked as the FATHER of her second child.
+    """
+
+    def test_a_guardians_honorific_agrees_with_every_relationship(self):
+        self.seed()
+        titled = Guardian.all_objects.prefetch_related("student_links").filter(
+            full_name__startswith="Mr",
+        )
+        self.assertTrue(titled.exists(), "no titled guardians were seeded")
+        for guardian in titled:
+            expected = (
+                "MOTHER" if guardian.full_name.startswith("Mrs.") else "FATHER"
+            )
+            for link in guardian.student_links.all():
+                # Aunt and the applicant guardians are their own thing; this
+                # asserts only the household pairing the bug lived in.
+                if link.relationship not in ("MOTHER", "FATHER"):
+                    continue
+                self.assertEqual(
+                    link.relationship, expected,
+                    f"{guardian.full_name} is linked as {link.relationship}",
+                )
+
+    def test_a_households_phone_is_derived_from_its_surname(self):
+        """And so is the same on the next run, in the next process.
+
+        Asserted against an independently computed value rather than by seeding
+        twice: ``hash()`` is randomised per PROCESS and stable within one, so a
+        seed-twice test passes happily against the very bug it is meant to
+        catch. This fails the moment the derivation stops being a pure function
+        of the surname.
+        """
+        self.seed()
+        rows = Guardian.all_objects.filter(
+            email__endswith=".household@example.ng",
+        ).values_list("email", "phone")
+        self.assertTrue(rows, "no household guardians were seeded")
+        for email, phone in rows:
+            surname = email.split(".household@")[0]
+            expected_from = [
+                s for s in SURNAMES if s.lower() == surname
+            ]
+            self.assertTrue(expected_from, f"unknown surname in {email}")
+            slot = sum(ord(c) for c in expected_from[0])
+            self.assertEqual(phone, f"0806555{slot % 10000:04d}")
