@@ -534,9 +534,12 @@ class PromotionScreenTests(_Base):
         params = {"tenant": self.tenant.slug}
         client.get(url, params)                         # warm the auth caches
 
-        # Fourteen, not thirteen: resolving which year the screen is about is
-        # one query, paid once per request rather than once per level.
-        with self.assertNumQueries(14) as small:
+        # Fifteen: thirteen, plus one to resolve which year the screen is
+        # about - paid once per request rather than once per level - plus the
+        # RBAC registry-revision read that guards the permission memo. Both are
+        # per request and neither grows with the programme, which is what the
+        # second assertion below proves.
+        with self.assertNumQueries(15) as small:
             client.get(url, params)
         baseline = len(small.captured_queries)
 

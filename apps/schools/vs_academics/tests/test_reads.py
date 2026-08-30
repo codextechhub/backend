@@ -244,6 +244,16 @@ class _BudgetMixin:
 
     The second assertion is the one that would catch a regression: grow the
     school six-fold and the count must not move at all.
+
+    **The whole-request numbers include the RBAC baseline, and it moves.** They
+    went up by one when ``PermissionRegistryRevision`` landed: one primary-key
+    read of a single-row table, per request, buying an emergency permission
+    revocation that reaches every worker. That is a real and deliberate cost, so
+    the budgets were raised to meet it rather than the safety property dropped
+    to meet the budgets. When one of these fails by a small amount, read the
+    captured queries before changing the number - the per-module count below is
+    the claim this file actually makes, and it is unaffected by anything the
+    platform does around it.
     """
 
     def academics_queries(self, ctx):
@@ -275,7 +285,7 @@ class TreeQueryBudgetTests(_BudgetMixin, _Base):
             self.client_for(self.admin),
             reverse("academics-structure-tree"),
             {"tenant": self.tenant.slug},
-            expected=15,
+            expected=16,
         )
         # The session, the programmes, the levels, and the two count
         # aggregates. Not one per programme.
@@ -287,7 +297,7 @@ class TreeQueryBudgetTests(_BudgetMixin, _Base):
             self.client_for(self.admin),
             reverse("academics-structure-tree"),
             {"tenant": self.tenant.slug, "depth": "full"},
-            expected=17,
+            expected=18,
         )
         # The five above, plus the classes and the offerings - each fetched
         # once for the whole tree rather than once per level.
@@ -417,7 +427,7 @@ class OverviewTests(_BudgetMixin, _Base):
             self.client_for(self.admin),
             reverse("academics-overview"),
             {"tenant": self.tenant.slug},
-            expected=20,
+            expected=21,
         )
         # Six counts, the live year with its terms, the stranded-branch check
         # and the year lookup - each once, none of them per row. No branch
