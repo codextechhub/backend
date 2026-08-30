@@ -33,6 +33,12 @@ DATABASES = {
     }
 }
 
+RESET_DB_ALLOWED_DATABASES = {
+    name.strip()
+    for name in config("RESET_DB_ALLOWED_DATABASES", default="cx_db").split(",")
+    if name.strip()
+}
+
 # Fast hashing - these are throwaway test users.
 PASSWORD_HASHERS = [
     "django.contrib.auth.hashers.MD5PasswordHasher",

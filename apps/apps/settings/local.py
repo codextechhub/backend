@@ -49,6 +49,15 @@ DATABASES = {
     }
 }
 
+# reset_db refuses every target not named here. Add a disposable developer
+# database explicitly rather than deriving this list from DB_NAME, because the
+# independent name check is what catches a shell still pointing at live data.
+RESET_DB_ALLOWED_DATABASES = {
+    name.strip()
+    for name in config("RESET_DB_ALLOWED_DATABASES", default="cx_db").split(",")
+    if name.strip()
+}
+
 # ---------------------------------------------------------------------------
 # System checks
 # ---------------------------------------------------------------------------

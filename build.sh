@@ -6,6 +6,14 @@ pip install -r requirements.txt
 
 cd apps
 
+# reset_db is local development and test tooling. Render builds in an
+# ephemeral checkout, so remove the command from the deployed artifact before
+# Django discovers management commands. Runtime guards remain the backstop for
+# source checkouts and any non-Render packaging path.
+if [[ "${RENDER:-}" == "true" ]]; then
+  rm -f core/management/commands/reset_db.py
+fi
+
 python manage.py collectstatic --no-input
 
 # ╔══════════════════════════════════════════════════════════════════════════╗

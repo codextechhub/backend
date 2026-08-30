@@ -20,6 +20,8 @@ DATABASES = {
     }
 }
 
+RESET_DB_ALLOWED_DATABASES = {"cx_ci"}
+
 # Fast hashing - these are throwaway test users.
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 

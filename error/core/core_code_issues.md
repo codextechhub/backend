@@ -20,7 +20,7 @@ in it is *imported* rather than called over HTTP. A defect here does not break
 one screen; it either breaks every screen or it silently fails to apply to a
 module that forgot to opt in. Most of what follows is the second kind.
 
-**Status: §1 is fixed; everything else is recorded, not yet fixed.**
+**Status: §1 and §16 are fixed; everything else is recorded, not yet fixed.**
 
 ---
 
@@ -33,7 +33,7 @@ module that forgot to opt in. Most of what follows is the second kind.
 | 3 | `ValueError` from an ORM filter is a 500 on every endpoint in the repo | **High** |
 | 11 | `seed_all_permissions` crashes on a Windows console, and takes `core`'s own suite red | **High** |
 | 12 | `create_superuser` has a committed default password | **High** |
-| 16 | `reset_db` will drop any database it is pointed at, with one flag and no environment guard | **High** |
+| 16 | ~~`reset_db` will drop any database it is pointed at, with one flag and no environment guard~~ **FIXED** | ~~High~~ |
 | 4 | The response envelope is a convention nothing enforces, and one module ignores it | **Medium** |
 | 10 | Beat floods the user-facing job queue with system rows | **Medium** |
 | 13 | `create_superuser` is commented out of `build.sh`, so a fresh deploy has no account | **Medium** |
@@ -680,57 +680,34 @@ the list speak. A comment per entry inside `SEED_STEPS` cannot drift.
 
 ---
 
-## 16. `reset_db` will drop any database it is pointed at, with one flag and no environment guard
+## 16. RESOLVED: `reset_db` could drop any selected database with one flag
 
-**High.**
+**Formerly High. Fixed 30 August 2026.**
 
-Compare the two commands that exist for the same job:
+**Original failure.** `--yes` suppressed every prompt, the selected Django alias
+was used without checking its resolved target, and every table returned by that
+connection was dropped. A developer whose shell still carried staging database
+credentials could therefore run what they believed was a local reset and erase
+every tenant's data. The same file could delete migration source files if its
+empty app list was populated, and a connection failure could be hidden by an
+`UnboundLocalError` while closing a cursor that had never been assigned.
 
-| | `rebuild_database` | `reset_db` |
-|---|---|---|
-| Flag | `--yes` required | `--yes` **or** an interactive `y` |
-| Environment guard | `RESET_DB=true` required | **none** |
-| Vendor guard | PostgreSQL only | any |
-| Names the target | yes, in the warning | only the alias |
-| Deletes source files | no | step 1, if its app list is populated |
-| Runs seeds afterwards | no | five, including `create_superuser` |
+**Resolution.** The command now refuses every settings module except local,
+test, and CI; refuses `DEBUG=False` outside the approved test modules; resolves
+the selected alias and requires its database name to appear in
+`RESET_DB_ALLOWED_DATABASES`; prints the resolved name and host; and always
+requires the operator to type that exact name. `--yes` skips only the later step
+prompts. It cannot bypass target confirmation.
 
-`rebuild_database`'s docstring explains its two guards: "so a stray invocation in
-a build pipeline can never wipe an environment by accident"
-(`rebuild_database.py:1-7`). `reset_db` has neither guard, and its own docstring
-advertises the unattended form:
+The migration-file deletion and `makemigrations` steps were removed, so a reset
+can no longer rewrite committed schema history. Cursor ownership now uses a
+context manager, preserving the real connection error. Render builds remove
+`reset_db.py` from the deployed artifact before Django command discovery.
 
-```text
-- command: python manage.py reset_db --yes --post-commands seed_actions …
-```
-
-**What actually happens.** A developer with `DATABASE_URL` exported in their
-shell - pointed at staging, because they were checking something an hour ago -
-runs `python manage.py reset_db --yes` intending to reset their local database.
-Every table in staging is dropped, migrations run, and `create_superuser` mints
-`admin@codexng.com` / `Admin@123456` (§12). There is no confirmation naming the
-host, no `DEBUG` check, and no audit record of any of it.
-
-Two smaller defects in the same file, worth fixing while it is open:
-
-- **Step 1 is one uncommented list away from deleting tracked migration files.**
-  `installed_apps` (`reset_db.py:147-156`) is entirely commented out, so the loop
-  deletes nothing today. Step 3 then runs `makemigrations`, which would
-  regenerate a fresh chain from the models - discarding the repo's history.
-- **`finally: cursor.close()` over a possibly-unbound name**
-  (`reset_db.py:264-266`): if `connections[alias]` raises, `cursor` was never
-  assigned and the `finally` raises `UnboundLocalError`, hiding the real error.
-
-**The fix.**
-
-1. **Give `reset_db` `rebuild_database`'s guards**, or delete `reset_db`
-   entirely and keep the one careful command. Two commands for one destructive
-   job, guarded differently, is the problem.
-2. **Refuse when `DEBUG` is False**, and print the database `NAME` and `HOST`
-   before acting.
-3. **Delete step 1.** Deleting migration files is not a database reset, and this
-   repo's migrations are squashed and committed.
-4. Bind `cursor = None` before the `try`.
+Eight focused tests cover both environment refusals, the approved CI path, the
+database allowlist, mandatory exact confirmation under `--yes`, target display,
+connection-error preservation, and production-artifact exclusion. They passed
+on 30 August 2026.
 
 ---
 

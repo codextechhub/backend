@@ -11,11 +11,11 @@ Nothing here is reachable over HTTP. The gate on all of it is shell access.
 
 ## 1. What it is (and what it is NOT)
 
-- **Four commands destroy data, and they are guarded four different ways.**
-  `rebuild_database` needs two independent confirmations; `reset_db` needs one
-  flag; `delete_user` needs a typed `YES` or `--force`; `clear_permissions` needs
-  a typed `yes` or `--yes`. None of the four checks `DEBUG`, the settings module,
-  or the database it is pointed at (§8).
+- **Four commands destroy data, and they are guarded differently.**
+  `rebuild_database` needs two independent confirmations. `reset_db` is confined
+  to approved development and test settings, requires an allowlisted database
+  name, and always requires the resolved name to be typed. `delete_user` needs a
+  typed `YES` or `--force`; `clear_permissions` needs a typed `yes` or `--yes`.
 - **`send_email` is the only outbound mail path.** Every module calls it rather
   than Django's `send_mail`, which is what makes the BCC policy and the From-name
   policy apply uniformly.
@@ -41,7 +41,7 @@ None. These are commands and helpers.
 | Command | What it does | Guards |
 |---|---|---|
 | `rebuild_database` | `DROP SCHEMA public CASCADE; CREATE SCHEMA public;` | `--yes` **and** `RESET_DB=true` in the environment; PostgreSQL only |
-| `reset_db` | deletes migration files, drops every table, `makemigrations`, `migrate`, then runs five seed commands | `--yes` **or** an interactive `y`; nothing else |
+| `reset_db` | drops every table, applies committed migrations, then runs five seed commands | approved dev/test settings, `DEBUG` or approved test settings, allowlisted database name, and exact typed-name confirmation; removed from Render artifacts |
 | `delete_user` | hard-deletes users and every row they touched | a typed `YES`, or `--force` |
 | `clear_permissions` | wipes the whole RBAC registry, preserving `PrebuiltRoleTemplate` | a typed `yes`, or `--yes`; `--dry-run` available |
 
@@ -56,24 +56,27 @@ in its warning line before acting.
 `build.sh` still carries a commented invocation of it inside a banner that says
 to delete the block after the first deploy (§8).
 
-### `reset_db` - the dangerous one
+### `reset_db` - the local reset
 
-Four steps, each individually skippable, each individually confirmed unless
-`--yes`:
+The command resolves the selected database alias before doing any work and
+refuses unless all of these conditions hold:
 
-1. **Delete migration files.** The app list it iterates
-   (`reset_db.py:147-156`) is **entirely commented out**, so today this step
-   deletes nothing and reports "No migration files found to delete". The loop
-   underneath it is live.
-2. **Drop all tables**, vendor-aware: PostgreSQL `DROP TABLE … CASCADE` per
-   table, MySQL with foreign-key checks disabled, SQLite plain.
-3. **`makemigrations` then `migrate`.**
-4. **Run post-migration commands**, defaulting to
-   `seed_actions, seed_all_permissions, create_superuser, seed_package,
-   seed_config_catalogue` (`reset_db.py:67-72`).
+1. `DJANGO_SETTINGS_MODULE` is `apps.settings.local`, `apps.settings.test`, or
+   `apps.settings.ci`.
+2. `DEBUG` is true, unless the settings module is an approved test module.
+3. The resolved database `NAME` appears in `RESET_DB_ALLOWED_DATABASES`.
+4. The operator types that exact resolved name. `--yes` cannot bypass this
+   confirmation.
 
-Step 4's default includes `create_superuser` with no arguments, which is the
-committed-credential path (`core_bootstrap_seeds` §4).
+The warning prints the alias, resolved name, and host. After confirmation the
+command can drop every table, apply the committed migration chain, and run seed
+commands. Migration source deletion and `makemigrations` are no longer part of
+the workflow. Render's build removes the command file from the deployed
+artifact before Django discovers management commands.
+
+The default seed list still includes `create_superuser` with no arguments,
+which is the committed-credential path (`core_bootstrap_seeds` §4). The reset
+guards confine that behavior to an explicitly disposable database.
 
 ### `delete_user`
 
@@ -156,7 +159,7 @@ injected into `data` when `data` is used and into the path otherwise
 | Command | Writes |
 |---|---|
 | `rebuild_database` | drops and recreates the `public` schema |
-| `reset_db` | deletes files from disk, drops tables, writes migrations, runs seeds |
+| `reset_db` | drops tables, applies committed migrations, runs seeds |
 | `delete_user` | deletes user rows and their dependent rows, per-user transaction |
 | `clear_permissions` | deletes eleven RBAC tables |
 | `seed_dev_data` | tenants, branches, users, students, parents and their links |
@@ -183,17 +186,20 @@ $ python manage.py seed_dev_data
   School-user password: School@2025
 ```
 
-And the same intent, expressed with the other command:
+The guarded equivalent through `reset_db`:
 
 ```text
 $ python manage.py reset_db --yes
+Database alias: default
+Database name: cx_db
+Database host: localhost
+Type the resolved database name 'cx_db' to continue: cx_db
 ```
 
-which drops every table in `--database default`, regenerates migrations, and
-runs `create_superuser` with its committed defaults - with no environment guard
-and no check on which database `default` currently points at. If
-`DATABASE_URL` is set to a deployed database in that shell, that is the database
-it drops (`core_code_issues.md` §16).
+`--yes` skips the later step prompts, not the target-name confirmation. A shell
+still pointing at `xvs_staging` is refused because that resolved name is not in
+the development allowlist. The staging settings module is refused before the
+connection is used.
 
 An email, from anywhere in the platform:
 
@@ -214,15 +220,9 @@ it.
 
 Full evidence in **`error/core/core_code_issues.md`**.
 
-- **`reset_db` will drop any database it is pointed at, with one flag.** No
-  environment guard, no `DEBUG` check, no vendor restriction, and its own
-  docstring advertises the `--yes` form (`core_code_issues.md` §16).
-- **`reset_db`'s migration-deletion step is one uncommented list away from
-  deleting tracked source files** (`reset_db.py:147-156`), and step 3 would then
-  regenerate a fresh chain from the models.
-- **`reset_db` has a `finally: cursor.close()` over a `cursor` that may never
-  have been bound** (`reset_db.py:264-266`), so a connection failure raises
-  `UnboundLocalError` and hides the real error.
+- **`reset_db` remains intentionally destructive in development.** The target
+  confirmation prevents confusion; it does not create a backup. Use it only on
+  a disposable database whose name has been explicitly allowlisted.
 - **`delete_user`'s docstring contradicts itself** - "Local testing only" in the
   header, and instructions for running it against the live Render database in
   the usage section (`core_code_issues.md` §17).
@@ -242,9 +242,9 @@ Full evidence in **`error/core/core_code_issues.md`**.
 
 ## 9. Permissions & tenant isolation
 
-Neither applies: these are shell commands. The security boundary is who can run
-`manage.py` in an environment, and for the four destructive ones that is the
-**only** boundary.
+Neither applies: these are shell commands. Shell access remains the first
+boundary. `reset_db` adds environment, settings, target-name, and deployment
+boundaries because shell access alone was not enough for a database-wide wipe.
 
 `delete_user` and `clear_permissions` cross tenant boundaries by nature -
 `delete_user` refuses an ambiguous address until you name the tenant, which is
@@ -259,7 +259,7 @@ mailbox.
 | File | Responsibility |
 |---|---|
 | `core/management/commands/rebuild_database.py` | the guarded schema drop |
-| `core/management/commands/reset_db.py` | the four-step reset |
+| `core/management/commands/reset_db.py` | the guarded local database reset |
 | `core/management/commands/delete_user.py` | hard user deletion with per-model counts |
 | `core/management/commands/clear_permissions.py` | the RBAC wipe, with `--dry-run` |
 | `core/management/commands/seed_dev_data.py` | the connected dev dataset |
@@ -271,9 +271,15 @@ mailbox.
 
 ## 11. Test coverage & gaps
 
-**Nothing in this slice has a test.** There is no test for any of the four
-destructive commands, for `seed_dev_data`, for `send_email`, for
-`build_from_email`, or for `TenantAPIClient` itself.
+`core.test_reset_db_command` covers the settings refusal, the `DEBUG=False`
+refusal, the CI test exception, the database-name allowlist, the mandatory exact
+typed confirmation under `--yes`, resolved name and host output, connection
+error preservation, and Render artifact exclusion. It mocks the destructive
+operations rather than dropping a real schema.
+
+There is still no test for `rebuild_database`, `delete_user`,
+`clear_permissions`, `seed_dev_data`, `send_email`, `build_from_email`, or
+`TenantAPIClient` itself.
 
 That is defensible for the destructive commands - a test that exercises
 `DROP SCHEMA` is its own hazard - but three of the gaps are worth closing:
