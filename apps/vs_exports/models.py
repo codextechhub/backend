@@ -24,10 +24,9 @@ Four things, in the order a person meets them:
 from __future__ import annotations
 
 import datetime
-import secrets
 
 from django.conf import settings
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from .constants import (
@@ -324,8 +323,8 @@ class ExportRun(TimeStampedModel):
     """
 
     reference = models.CharField(
-        max_length=24, unique=True,
-        help_text="Human-quotable run reference, e.g. RUN-7F31C2.",
+        max_length=48, unique=True,
+        help_text="Tenant-level daily run reference, e.g. XR-12608291.",
     )
     tenant = models.ForeignKey(
         "vs_tenants.Tenant", on_delete=models.PROTECT, related_name="export_runs",
@@ -412,14 +411,22 @@ class ExportRun(TimeStampedModel):
     def __str__(self) -> str:
         return f"{self.reference} [{self.status}]"
 
-    # Allocate a unique, quotable run reference.
+    # Allocate a short, quotable reference from the platform's locked tenant sequence.
     @staticmethod
-    def new_reference() -> str:
-        return f"RUN-{secrets.token_hex(3).upper()}"
+    def new_reference(tenant) -> str:
+        from vs_tenants.numbering import next_tenant_document_number
+
+        return next_tenant_document_number(tenant=tenant, document_code="XR")
 
     def save(self, *args, **kwargs):
-        if not self.reference:
-            self.reference = self.new_reference()
+        if not self.reference and self.tenant_id:
+            # Keep the counter advance and the run insert in one transaction. If the
+            # run is rejected, its number remains available rather than leaving a gap.
+            with transaction.atomic():
+                self.reference = self.new_reference(self.tenant)
+                if kwargs.get("update_fields") is not None:
+                    kwargs["update_fields"] = set(kwargs["update_fields"]) | {"reference"}
+                return super().save(*args, **kwargs)
         return super().save(*args, **kwargs)
 
     @property

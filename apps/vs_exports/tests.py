@@ -19,6 +19,7 @@ from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.core.management import call_command
+from django.db import IntegrityError
 from django.test import TestCase
 from django.utils import timezone
 
@@ -386,6 +387,77 @@ class ExportRunTests(_ExportFixture, TestCase):
     def setUp(self):
         self.build()
         self.client = TenantAPIClient(user=self.admin)
+
+    def test_run_references_use_the_tenant_daily_sequence(self):
+        definition = self.make_definition()
+        first = ExportRun.objects.create(
+            tenant=self.tenant,
+            entity=self.entity,
+            definition=definition,
+            frozen_config=services.freeze(definition),
+            requested_by=self.admin,
+        )
+        second = ExportRun.objects.create(
+            tenant=self.tenant,
+            entity=self.entity,
+            definition=definition,
+            frozen_config=services.freeze(definition),
+            requested_by=self.admin,
+        )
+
+        prefix = f"XR-{self.tenant.pk}{timezone.localdate():%y%m%d}"
+        self.assertEqual(first.reference, f"{prefix}1")
+        self.assertEqual(second.reference, f"{prefix}2")
+
+    def test_run_reference_counter_is_independent_per_tenant(self):
+        definition = self.make_definition()
+        mine = ExportRun.objects.create(
+            tenant=self.tenant,
+            entity=self.entity,
+            definition=definition,
+            frozen_config=services.freeze(definition),
+            requested_by=self.admin,
+        )
+        theirs = ExportRun.objects.create(
+            tenant=self.outsider.tenant,
+            frozen_config={"name": "Other tenant export"},
+            requested_by=self.outsider,
+        )
+
+        today = f"{timezone.localdate():%y%m%d}"
+        self.assertEqual(mine.reference, f"XR-{self.tenant.pk}{today}1")
+        self.assertEqual(theirs.reference, f"XR-{self.outsider.tenant_id}{today}1")
+        self.assertNotEqual(mine.reference, theirs.reference)
+
+    def test_existing_run_reference_is_preserved(self):
+        definition = self.make_definition()
+        run = ExportRun.objects.create(
+            reference="RUN-7F31C2",
+            tenant=self.tenant,
+            entity=self.entity,
+            definition=definition,
+            frozen_config=services.freeze(definition),
+            requested_by=self.admin,
+        )
+
+        self.assertEqual(run.reference, "RUN-7F31C2")
+
+    def test_rejected_run_does_not_consume_a_reference(self):
+        with self.assertRaises(IntegrityError):
+            ExportRun.objects.create(
+                tenant=self.tenant,
+                frozen_config={"name": "Missing requester"},
+            )
+
+        run = ExportRun.objects.create(
+            tenant=self.tenant,
+            frozen_config={"name": "Valid export"},
+            requested_by=self.admin,
+        )
+        self.assertEqual(
+            run.reference,
+            f"XR-{self.tenant.pk}{timezone.localdate():%y%m%d}1",
+        )
 
     def test_csv_run_produces_a_file_with_every_row(self):
         definition = self.make_definition()
