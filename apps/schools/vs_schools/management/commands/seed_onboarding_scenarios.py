@@ -5,7 +5,7 @@ rejected and live and never-provisioned - by using several mock tenants. This
 command does the same thing with real rows, so every one of those states can be
 opened in the running app rather than imagined.
 
-Eight schools, each parked somewhere different:
+Nine schools, each parked somewhere different:
 
     brightfield-lekki  Not ready, mid-progress, one step skipped
     st-monicas         Ready, go-live form open
@@ -15,6 +15,7 @@ Eight schools, each parked somewhere different:
     lagoon-view        Live, control room read-only
     new-dawn           Never provisioned, no checklist at all
     riverbank          Not ready, inside the 14-day expiry warning
+    sunrise-academy    Live, and the only cast member with ONE branch
 
 Every state is driven through the real services wherever a service exists, so
 what you see is what a school gets. Two are fixtures and say so below.
@@ -41,16 +42,25 @@ from ...dev.fixtures import DEFAULT_PASSWORD, build_school
 CAST = {
     "brightfield-lekki": ("Brightfield Schools", ("Adaeze", "Okonkwo"), True),
     "st-monicas": ("St. Monica's Academy", ("Ikenna", "Nwachukwu"), False),
-    # Two branches AND live, which no other cast member is: brightfield runs
-    # branches but is still onboarding, and lagoon-view is live with branches
-    # but has no academic structure. Holy Cross is where the whole academics
-    # module can be exercised end to end, exports included.
+    # Two branches with a full academic structure and a full roll behind it,
+    # but parked at "pending approval" below - it is the only school in that
+    # state, which is what gives the admin console a request to review. For a
+    # LIVE multi-branch school, see lagoon-view; for a live single-branch one,
+    # sunrise-academy. Both carry structure and children too.
     "holy-cross": ("Holy Cross College", ("Ngozi", "Eze"), True),
     "grace-fields": ("Grace Fields Academy", ("Tunde", "Bakare"), False),
     "crescent-model": ("Crescent Model School", ("Halima", "Yusuf"), False),
     "lagoon-view": ("Lagoon View Academy", ("Emeka", "Obi"), True),
     "new-dawn": ("New Dawn Academy", ("Bisi", "Adeyemi"), False),
     "riverbank": ("Riverbank Schools", ("Chidi", "Nwosu"), True),
+    # ONE branch and LIVE, which no other cast member is. Every other
+    # single-branch school here is mid-onboarding, so before this existed the
+    # rule that the branch dimension must RECEDE at a one-branch school could
+    # not be exercised against the API at all: the only schools that answered
+    # were multi-branch, and the only single-branch ones answered 403
+    # TENANT_NOT_LIVE. A recede rule that cannot be seen is a recede rule
+    # nobody can check.
+    "sunrise-academy": ("Sunrise Academy", ("Folake", "Adeyemi"), False),
 }
 
 #: The required steps a school must close before the gate opens. Read from the
@@ -120,7 +130,8 @@ class Command(BaseCommand):
         # started yet", which is a full checklist of Not started steps.
         provisioned = slug != "new-dawn"
         # A live school is created active; the rest are pending.
-        live = slug == "lagoon-view"
+        LIVE_SLUGS = ("lagoon-view", "sunrise-academy")
+        live = slug in LIVE_SLUGS
 
         built = build_school(
             slug=slug, name=name, password=password, live=live,
@@ -176,7 +187,7 @@ class Command(BaseCommand):
             return self._reject(built, request, reviewer)
         if slug == "crescent-model":
             return self._fail(built, request)
-        if slug == "lagoon-view":
+        if slug in ("lagoon-view", "sunrise-academy"):
             return self._activate(built, request, reviewer)
 
         return ReadinessState(
@@ -212,7 +223,10 @@ class Command(BaseCommand):
                 .first()
             )
 
-        if slug == "lagoon-view" and progress.readiness_state == ReadinessState.LIVE:
+        if (
+            slug in ("lagoon-view", "sunrise-academy")
+            and progress.readiness_state == ReadinessState.LIVE
+        ):
             return "already live - the control room is read-only"
 
         if slug == "crescent-model":

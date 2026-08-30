@@ -81,6 +81,46 @@ class StudentsViewMixin:
         except NoActiveSession:
             return None
 
+    # ── paginating from a plain APIView ────────────────────────────────────
+
+    def paginate_queryset(self, queryset):
+        """Page a list on an ``APIView``, which has no paginator of its own.
+
+        ``pagination_class`` is set on this mixin, so all twenty-two views in
+        the module *look* paginated - including the twelve that are plain
+        ``APIView``s, where the attribute does nothing because DRF only builds
+        a paginator on ``GenericAPIView``. Calling ``paginate_queryset`` there
+        raises AttributeError and DRF turns it into a bare 500, which is how
+        the profile's History tab answered 500 for every student on every
+        school.
+
+        Exactly the trap ``get_serializer_context`` below already documents:
+        an APIView reaching for generic machinery it does not have. Fixed here
+        rather than in the one view that hit it, so the next list served from
+        an APIView pages instead of failing.
+
+        Generic views are untouched - the mixin is first in every MRO, so
+        ``super()`` finds DRF's own implementation and defers to it.
+        """
+        parent = getattr(super(), "paginate_queryset", None)
+        if parent is not None:
+            return parent(queryset)
+        if getattr(self, "_apiview_paginator", None) is None:
+            self._apiview_paginator = (
+                self.pagination_class() if self.pagination_class else None
+            )
+        if self._apiview_paginator is None:
+            return None
+        return self._apiview_paginator.paginate_queryset(
+            queryset, self.request, view=self,
+        )
+
+    def get_paginated_response(self, data):
+        parent = getattr(super(), "get_paginated_response", None)
+        if parent is not None:
+            return parent(data)
+        return self._apiview_paginator.get_paginated_response(data)
+
     def get_serializer_context(self):
         """The context every serializer here needs, on generic views AND APIView.
 

@@ -80,10 +80,27 @@ run seed_academic_scenarios
 echo "→ Calendars and timetables for the same three schools..."
 run seed_timetable_scenarios
 
+# Children on the roll, for the same three shapes. Must run AFTER the academic
+# seeder: a student is placed into a class in a year, and the command refuses
+# rather than inventing either. Without this every screen in Student Management
+# answers with an empty list, and a screen cannot be checked against an endpoint
+# that returns nothing.
+echo "→ Students, guardians and the applicant pipeline for all five..."
+run seed_student_scenarios
+
 echo ""
 echo "✔ Done. Logins: admin@codexng.com / Admin@123456 · *.vision.edu / Vision@2025 · school users / School@2025"
 echo "  Onboarding cast (School@2025): brightfield-lekki not-ready · st-monicas ready · holy-cross pending"
 echo "                                grace-fields rejected · crescent-model failed · lagoon-view live"
-echo "                                new-dawn unprovisioned · riverbank expiring - admin@<slug>.example.com"
-echo "  Academic structure seeded for: brightfield-lekki (2 branches) · st-monicas (1 branch)"
-echo "  Calendars + timetables for the same three, holy-cross being the live one"
+echo "                                new-dawn unprovisioned · riverbank expiring"
+echo "                                sunrise-academy live, ONE branch - admin@<slug>.example.com"
+echo "  Academic structure + students for: brightfield-lekki (2 br) · st-monicas (1 br)"
+echo "                                holy-cross (2) · sunrise-academy (1) · lagoon-view (2)"
+echo "  Calendars + timetables for brightfield-lekki, st-monicas and holy-cross"
+echo "  Student Management is gated on a LIVE school, so drive it against:"
+echo "                                sunrise-academy  1 branch, live - the branch"
+echo "                                                 dimension must RECEDE here"
+echo "                                lagoon-view      2 branches, live - the branch"
+echo "                                                 filter has real rows here"
+echo "                                The other three answer 403 TENANT_NOT_LIVE:"
+echo "                                the cast parks them mid-onboarding on purpose."

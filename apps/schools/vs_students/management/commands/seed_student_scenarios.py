@@ -9,12 +9,21 @@ states this module has to show cannot all exist in one school:
                         suspension, a withdrawal, a transfer out and a
                         rejection - so every status chip, every filter and
                         every exception path has a real row behind it.
-    st-monicas          One branch. The case where the branch dimension must
-                        recede from every response, and the only way to see
-                        that it does.
-    holy-cross          Two branches AND LIVE. The other two are still
-                        onboarding, so neither reaches anything gated on a live
-                        tenant. This is the one to drive the module against.
+    st-monicas          One branch, still onboarding. The single-branch shape
+                        on a school that has NOT gone live.
+    holy-cross          Two branches, pending approval. The multi-branch shape
+                        with a full roll behind it.
+    sunrise-academy     One branch AND LIVE. The recede case: the only place
+                        the rule that the branch dimension disappears at a
+                        one-branch school can actually be seen, because every
+                        student route answers 403 TENANT_NOT_LIVE to a school
+                        that is still onboarding.
+    lagoon-view         Two branches AND LIVE. The branch-filter case. The
+                        onboarding cast parks holy-cross at "pending approval"
+                        rather than live, so without this pair a clean reseed
+                        left NOTHING in this module reachable at all - the two
+                        rolls with children were both closed. These two are the
+                        schools to drive the module against.
 
 **Everything goes through the real services.** Enrolment, placement, every
 status change and the promotion run are all called the way the API calls them,
@@ -50,7 +59,10 @@ from schools.vs_students.services import guardians as guardian_service
 from schools.vs_students.services.placement import place
 from schools.vs_students.services.status import transition
 
-CAST = ("brightfield-lekki", "st-monicas", "holy-cross")
+CAST = (
+    "brightfield-lekki", "st-monicas", "holy-cross",
+    "sunrise-academy", "lagoon-view",
+)
 
 #: Split by gender so an honorific is never derived independently of the name.
 #: Picking a title and a name from two lists produced "Mrs. James Eze".

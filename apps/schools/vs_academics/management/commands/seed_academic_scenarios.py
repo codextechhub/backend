@@ -1,7 +1,8 @@
-"""Build academic structure for two shapes of school, so it can be looked at.
+"""Build academic structure for the shapes of school this module has to serve.
 
 A screen cannot be checked against an endpoint that returns nothing, and the
-two shapes this module has to serve cannot both exist in one tenant:
+shapes cannot all exist in one tenant - branch count and liveness are both
+per-school, and every combination of the two has to be reachable:
 
     brightfield-lekki   Two branches. A shared curriculum, plus a department, a
                         programme and a subject that belong to one branch only,
@@ -10,10 +11,15 @@ two shapes this module has to serve cannot both exist in one tenant:
     st-monicas          One branch. Every row shared, which is what a
                         single-branch school writes, and the case where the
                         whole branch dimension must recede from the responses.
-    holy-cross          Two branches AND LIVE. The other two are still
-                        onboarding, so neither can reach anything gated on a
-                        live tenant - the Export Centre most of all. This is the
-                        one to drive the whole module against.
+    holy-cross          Two branches, parked at "pending approval" by the
+                        onboarding cast. A full structure behind a school that
+                        has not gone live.
+    sunrise-academy     One branch AND LIVE. The recede case, on a school the
+                        API will actually answer for.
+    lagoon-view         Two branches AND LIVE. The branch-filter case. These
+                        two are the only cast members that reach anything gated
+                        on a live tenant - the Export Centre most of all - so
+                        they are the ones to drive the module against.
 
 Everything is driven through the real services - ``activate_session``,
 ``set_branches``, the branch scope helpers - rather than by writing rows that
@@ -52,7 +58,10 @@ from schools.vs_academics.services.sessions import (
     validate_terms,
 )
 
-CAST = ("brightfield-lekki", "st-monicas", "holy-cross")
+CAST = (
+    "brightfield-lekki", "st-monicas", "holy-cross",
+    "sunrise-academy", "lagoon-view",
+)
 
 #: Three years, so the list has an archived, a live and a draft one to show.
 YEARS = (

@@ -54,6 +54,17 @@ class _Base(TestCase):
         make_branch(cls.live, name="Holy Cross Main Branch", is_main=True)
         make_branch(cls.live, name="Holy Cross Annex", is_main=False)
 
+        # One branch AND live. The single-branch shape on a school the API will
+        # actually answer for.
+        cls.solo_live = make_school(slug="sunrise-academy", name="Sunrise Academy")
+        make_branch(cls.solo_live, name="Main Branch", is_main=True)
+
+        # Two branches AND live: the branch-filter case on a school the API
+        # answers for.
+        cls.multi_live = make_school(slug="lagoon-view", name="Lagoon View Academy")
+        make_branch(cls.multi_live, name="Lagoon View Main", is_main=True)
+        make_branch(cls.multi_live, name="Lagoon View Annex", is_main=False)
+
     def test_the_cast_and_this_fixture_name_the_same_schools(self):
         """A school added to CAST and not here fails EVERY test in this file.
 

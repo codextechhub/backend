@@ -306,3 +306,60 @@ class MultiShapeTenancyTests(StudentsFixture):
         self.assertFalse(
             Student.all_objects.filter(branch__isnull=True).exists(),
         )
+
+
+class HistoryTabTests(StudentsFixture):
+    """The profile's History tab, which answered 500 for every student.
+
+    Two faults, one wrong assumption each, and the 403 test that already
+    covered this route never reached either of them because permission is
+    checked before the handler runs.
+
+    1. ``AuditEvent`` stamps ``event_at``; the view ordered and read
+       ``created_at``, the name the other models in this repo use.
+    2. ``StudentHistoryView`` is a plain ``APIView`` and called
+       ``paginate_queryset``, which only exists on ``GenericAPIView`` - the
+       same trap ``base.get_serializer_context`` already documents.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.row = self.student()
+
+    def _emit(self, summary="Home address updated.", action_type="UPDATE"):
+        from vs_audit.models import AuditModuleKey
+        from vs_audit.services import emit_audit_event
+
+        emit_audit_event(
+            module_key=AuditModuleKey.STUDENT, action_type=action_type,
+            entity_type="Student", entity_id=str(self.row.pk),
+            entity_label=self.row.full_name, tenant=self.tenant,
+            actor_user=self.admin, summary=summary,
+        )
+
+    def test_the_history_tab_answers_with_an_audit_event_present(self):
+        self._emit()
+        response = self.get(self.admin, "student-history", pk=self.row.pk)
+        self.assertEqual(response.status_code, 200)
+        texts = [e["text"] for e in response.data["data"]]
+        self.assertIn("Home address updated.", texts)
+
+    def test_the_history_tab_paginates_from_a_plain_apiview(self):
+        for i in range(3):
+            self._emit(summary=f"Edit {i}.")
+        response = self.get(self.admin, "student-history", pk=self.row.pk)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("pagination", response.data)
+        self.assertIn("totalItems", response.data["pagination"])
+
+    def test_entries_are_newest_first(self):
+        self._emit(summary="Older.")
+        self._emit(summary="Newer.")
+        response = self.get(self.admin, "student-history", pk=self.row.pk)
+        whens = [e["when"] for e in response.data["data"]]
+        self.assertEqual(whens, sorted(whens, reverse=True))
+
+    def test_a_student_with_no_history_gets_an_empty_list_not_a_500(self):
+        response = self.get(self.admin, "student-history", pk=self.row.pk)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"], [])

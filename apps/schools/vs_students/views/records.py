@@ -152,12 +152,17 @@ class StudentHistoryView(StudentsViewMixin, APIView):
         ]
         events = AuditEvent.objects.filter(
             tenant=self.tenant, entity_type="Student", entity_id=str(student.pk),
-        ).select_related("actor_user").order_by("-created_at")[:200]
+        # AuditEvent stamps ``event_at``, not ``created_at`` - it records when
+        # the action happened, which is not always when the row was written.
+        # Both names below were guessed from the convention the other models in
+        # this repo follow, and the tab answered 500 for every student because
+        # of it.
+        ).select_related("actor_user").order_by("-event_at")[:200]
         for event in events:
             entries.append({
                 "kind": self._kind(event.action_type),
                 "text": event.summary,
-                "when": event.created_at,
+                "when": event.event_at,
                 "actor": self._actor(event.actor_user),
             })
         entries.sort(key=lambda e: e["when"], reverse=True)

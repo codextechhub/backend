@@ -41,9 +41,22 @@ class _Base(TestCase):
         make_branch(cls.live, name="Holy Cross Main", is_main=True)
         make_branch(cls.live, name="Holy Cross Annex", is_main=False)
 
+        # One branch AND live: the school this module is actually driven
+        # against, and the only place the recede rule can be seen.
+        cls.solo_live = make_school(slug="sunrise-academy", name="Sunrise Academy")
+        make_branch(cls.solo_live, name="Main", is_main=True)
+
+        # Two branches AND live: the branch-filter case on a school the API
+        # answers for.
+        cls.multi_live = make_school(slug="lagoon-view", name="Lagoon View Academy")
+        make_branch(cls.multi_live, name="Lagoon View Main", is_main=True)
+        make_branch(cls.multi_live, name="Lagoon View Annex", is_main=False)
+
         # The seeder attributes every enrolment to somebody, because the
         # services it drives write an actor onto every row they create.
-        for index, school in enumerate((cls.multi, cls.solo, cls.live)):
+        for index, school in enumerate(
+            (cls.multi, cls.solo, cls.live, cls.solo_live, cls.multi_live),
+        ):
             make_school_admin(
                 None, email=f"seeder{index}@example.test", tenant=school.tenant,
             )
