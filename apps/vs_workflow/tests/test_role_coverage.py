@@ -14,6 +14,7 @@ from io import StringIO
 
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
 from vs_rbac.tests.helpers import codex_tenant, make_assignment, make_role, make_vision_user
 from vs_workflow.models import WorkflowStage, WorkflowTemplate
@@ -32,6 +33,21 @@ class RoleCoverageTests(TestCase):
 
     def setUp(self):
         self.tenant = codex_tenant()
+
+        # The command reports on EVERY central stage, which is the right shape
+        # for it and the wrong shape for a test that wants to know what verdict
+        # one stage produces. These cases used to be the only central template
+        # in the database and quietly depended on it; vs_payments migration
+        # 0006 then seeded a real platform fallback naming two more role keys,
+        # so the summary line could never be reached again.
+        #
+        # Retired rather than deleted: retired_at is the field the command
+        # already filters on, so this narrows the report using the model's own
+        # vocabulary instead of destroying seeded rows.
+        WorkflowStage.objects.filter(
+            template__tenant__isnull=True, retired_at__isnull=True,
+        ).update(retired_at=timezone.now())
+
         # A central template: no tenant of its own, so its role key is resolved
         # inside whichever tenant raises the document. That indirection is the
         # whole reason this command has to exist.

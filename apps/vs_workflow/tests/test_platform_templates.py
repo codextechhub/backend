@@ -53,6 +53,28 @@ def _body(resp):
     return data
 
 
+#: The document type these tests publish under. Every query below is narrowed
+#: to it, because the platform template space is NOT this test's to own: the
+#: platform carries real seeded fallbacks - vs_payments migration 0006 seeds
+#: one for payments.payout_batch under the code "standard", the same code these
+#: tests use - and a bare filter on tenant__isnull=True picks it up. That is
+#: what turned three assertions false and made two get() calls return two rows.
+DOC = "probe.request"
+
+
+def _platform(**kwargs):
+    """Platform-scoped templates belonging to THIS test, never the seeded ones."""
+    return WorkflowTemplate.all_objects.filter(tenant__isnull=True, **kwargs)
+
+
+def _row(rows, *, platform):
+    """The one row for this test's document type, from a page that has others."""
+    return next(
+        r for r in rows
+        if r["document_type"] == DOC and bool(r["is_platform"]) is platform
+    )
+
+
 def _stages(role_key="approver"):
     return [{
         "code": "sign-off", "label": "Sign off", "kind": "APPROVAL", "order": 1,
@@ -80,7 +102,7 @@ class PlatformTemplateTests(TestCase):
 
     def _publish(self, user, tenant, *, scope=None, name="Spend Approval",
                  code="standard", role_key="approver"):
-        payload = {"document_type": "probe.request", "code": code, "name": name,
+        payload = {"document_type": DOC, "code": code, "name": name,
                    "stages": _stages(role_key)}
         if scope:
             payload["scope"] = scope
@@ -91,13 +113,12 @@ class PlatformTemplateTests(TestCase):
     def test_tenant_cannot_publish_a_platform_template(self):
         resp = self._publish(self.tenant_admin, self.tenant, scope="PLATFORM")
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertFalse(WorkflowTemplate.all_objects.filter(tenant__isnull=True).exists())
+        self.assertFalse(_platform(document_type=DOC).exists())
 
     def test_platform_actor_can_publish_a_platform_template(self):
         resp = self._publish(self.platform_admin, self.codex, scope="PLATFORM")
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
-        template = WorkflowTemplate.all_objects.get(document_type="probe.request",
-                                                    code="standard", tenant__isnull=True)
+        template = _platform(document_type=DOC, code="standard").get()
         self.assertIsNone(template.branch_id)
         self.assertTrue(_body(resp)["is_platform"])
 
@@ -105,7 +126,7 @@ class PlatformTemplateTests(TestCase):
         """Omitting scope must not silently publish the shared definition."""
         resp = self._publish(self.platform_admin, self.codex)
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
-        self.assertFalse(WorkflowTemplate.all_objects.filter(tenant__isnull=True).exists())
+        self.assertFalse(_platform(document_type=DOC).exists())
 
     def test_other_tenant_cannot_reset_this_tenants_template(self):
         self._publish(self.platform_admin, self.codex, scope="PLATFORM")
@@ -128,7 +149,7 @@ class PlatformTemplateTests(TestCase):
         self._publish(self.platform_admin, self.codex, scope="PLATFORM", name="Platform")
         self._publish(self.tenant_admin, self.tenant, name="Ours")
 
-        platform = Model.all_objects.get(tenant__isnull=True, code="standard")
+        platform = _platform(document_type=DOC, code="standard").get()
         mine = Model.all_objects.get(tenant=self.tenant, code="standard")
         self.assertNotEqual(platform.pk, mine.pk)
 
@@ -150,7 +171,7 @@ class PlatformTemplateTests(TestCase):
 
     def test_reset_refuses_on_the_platform_template_itself(self):
         self._publish(self.platform_admin, self.codex, scope="PLATFORM")
-        platform = WorkflowTemplate.all_objects.get(tenant__isnull=True)
+        platform = _platform(document_type=DOC).get()
         resp = _call(USE_PLATFORM, "post", self.platform_admin, self.codex, pk=platform.pk)
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
@@ -170,15 +191,14 @@ class PlatformTemplateTests(TestCase):
     def test_list_says_which_version_this_tenant_is_running(self):
         self._publish(self.platform_admin, self.codex, scope="PLATFORM", name="Platform")
         resp = _call(LIST, "get", self.tenant_admin, self.tenant)
-        rows = {r["id"]: r for r in _body(resp)}
-        platform_row = next(r for r in rows.values() if r["is_platform"])
+        platform_row = _row(_body(resp), platform=True)
         self.assertFalse(platform_row["tenant_has_own"])
 
         self._publish(self.tenant_admin, self.tenant, name="Ours")
         resp = _call(LIST, "get", self.tenant_admin, self.tenant)
         rows = list(_body(resp))
-        platform_row = next(r for r in rows if r["is_platform"])
-        own_row = next(r for r in rows if not r["is_platform"])
+        platform_row = _row(rows, platform=True)
+        own_row = _row(rows, platform=False)
         self.assertTrue(platform_row["tenant_has_own"])
         self.assertIsNotNone(own_row["platform_updated_at"])
         self.assertFalse(own_row["platform_changed_since"])
@@ -190,7 +210,7 @@ class PlatformTemplateTests(TestCase):
         self._publish(self.platform_admin, self.codex, scope="PLATFORM", name="Platform v2")
 
         resp = _call(LIST, "get", self.tenant_admin, self.tenant)
-        own_row = next(r for r in _body(resp) if not r["is_platform"])
+        own_row = _row(_body(resp), platform=False)
         self.assertTrue(own_row["platform_changed_since"])
 
     def test_switched_off_version_is_not_reported_as_their_own(self):
