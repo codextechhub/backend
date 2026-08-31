@@ -116,3 +116,87 @@ def register_datasets():
             ), description="Matches any one of these, the way the search box does."),
         ),
     ))
+
+
+# ── the directory's Export button ──────────────────────────────────────────
+#
+# The screen sends `search`, `class`, `level`, `status` and the branch lens.
+# Two of those the dataset can express and two it cannot, and saying which is
+# the whole point of the binding: a filter dropped in silence produces a file
+# WIDER than the table somebody was looking at, and nothing on screen would say
+# so.
+
+#: What the screen carries that is not a narrowing. A page is not a filter.
+_IGNORE = ("page", "page_size", "tenant", "view", "branch")
+
+_CLASS_REASON = (
+    "A class is a placement in a year rather than a column on the student, so "
+    "the export cannot filter by it. The file covers every class."
+)
+_LEVEL_REASON = (
+    "A level is reached through the class, which the export does not carry, so "
+    "the file covers every level."
+)
+_BRANCH_ID_REASON = (
+    "The export filters by branch name and the screen sent an id, so the file "
+    "covers every branch you can see."
+)
+
+
+def _translate_directory(params):
+    """The student directory's filters, as export filters.
+
+    **The branch lens IS carried here**, unlike the academics catalogue screens
+    that report it as unmapped. The difference is real rather than an
+    inconsistency: a catalogue row can belong to one branch OR to the whole
+    school, and no single filter expresses "this branch plus the shared ones".
+    A student belongs to exactly one branch and never to the school at large,
+    so the lens narrows the file exactly as it narrows the table.
+
+    It is carried by NAME, because that is what the dataset filters on and the
+    screen already knows it - resolving an id would need a tenant, which a
+    translator does not have.
+    """
+    from vs_exports.catalogue import Unmapped
+
+    filters, unmapped = [], []
+
+    search = str(params.get("search", "")).strip()
+    if search:
+        filters.append({"id": "search", "value": search})
+
+    # "all" is the screen's word for no filter, and the screen strips it before
+    # sending. Handled anyway: a value the dataset would read literally is the
+    # kind of thing that silently returns nothing.
+    status = str(params.get("status", "")).strip()
+    if status and status.lower() != "all":
+        filters.append({"id": "status", "value": [status]})
+
+    branch_name = str(params.get("branch_name", "")).strip()
+    if branch_name:
+        filters.append({"id": "branch__name", "value": branch_name})
+    elif str(params.get("branch", "")).strip():
+        unmapped.append(Unmapped(
+            "branch", params.get("branch"), _BRANCH_ID_REASON,
+        ))
+
+    for key, reason in (("class", _CLASS_REASON), ("level", _LEVEL_REASON)):
+        value = str(params.get(key, "")).strip()
+        if value and value.lower() != "all":
+            unmapped.append(Unmapped(key, value, reason))
+
+    return filters, unmapped
+
+
+def register_screens():
+    """Called from AppConfig.ready(), after register_datasets()."""
+    from vs_exports.catalogue import ScreenBinding, register_screen
+
+    register_screen(ScreenBinding(
+        key="students.directory",
+        label="Students - Directory",
+        dataset_key="school.students",
+        translate=_translate_directory,
+        handles=("search", "status", "branch_name", "class", "level"),
+        ignore=_IGNORE,
+    ))

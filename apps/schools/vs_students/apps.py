@@ -22,4 +22,6 @@ class VsStudentsConfig(AppConfig):
         # the domain app registers itself with them. Same direction as
         # vs_schools and vs_academics.
         export_datasets.register_datasets()
+        # After the datasets, because a screen binding names one.
+        export_datasets.register_screens()
         import_registry.register()
