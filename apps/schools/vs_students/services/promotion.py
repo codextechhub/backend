@@ -28,6 +28,7 @@ from vs_audit.services import emit_audit_event
 from ..constants import (
     EXC_NO_CLASS_AT_NEXT_LEVEL,
     EXC_NO_CLASS_ASSIGNED,
+    EXC_NO_CLASS_TO_REPEAT,
     EXC_STUDENT_SUSPENDED,
     EXC_TERMINAL_LEVEL,
     EnrolmentOutcome,
@@ -35,6 +36,7 @@ from ..constants import (
     StudentStatus,
 )
 from ..models import ClassEnrolment, Student, StudentPromotionBatch
+from .placement import assert_class_is_in_session
 from .scoping import scope_classes, scope_students
 
 #: The sentences the exception list prints. Written for the person reading
@@ -55,6 +57,11 @@ EXCEPTION_TEXT = {
         "{name} has no class, so there is nothing to promote from. Assign a "
         "class first."
     ),
+    EXC_NO_CLASS_TO_REPEAT: (
+        "This class does not exist in the new year, so these students cannot "
+        "repeat it. Roll the year forward, or add the class in Academic "
+        "Structure first."
+    ),
 }
 
 
@@ -62,7 +69,12 @@ EXCEPTION_TEXT = {
 class Candidate:
     student: Student
     enrolment: ClassEnrolment
+    #: Where a PROMOTE lands, in the target year.
     target_class: object | None
+    #: Where a REPEAT lands, in the target year. Not the class the student is
+    #: in: that one belongs to the year being left, and a placement whose year
+    #: and class disagree puts a child on a register nobody opens.
+    repeat_class: object | None
     outcome: str
 
 
@@ -104,15 +116,41 @@ def _target_class(source_class, target_classes_by_level_code):
     if getattr(level, "is_terminal", False) or level.next_level_id is None:
         return None, EXC_TERMINAL_LEVEL
 
-    nxt = level.next_level
-    candidates = target_classes_by_level_code.get((nxt.code or "").lower(), [])
+    found = _class_at(source_class, level.next_level, target_classes_by_level_code)
+    return (found, None) if found else (None, EXC_NO_CLASS_AT_NEXT_LEVEL)
+
+
+def _class_at(source_class, level, target_classes_by_level_code):
+    """The target year's class at *level*, same arm first.
+
+    Same arm because JSS1 B should become JSS2 B; any class at the level as a
+    fallback, because a school that renamed its arms should not have its
+    cohort blocked.
+    """
+    if level is None:
+        return None
+    candidates = target_classes_by_level_code.get((level.code or "").lower(), [])
     if not candidates:
-        return None, EXC_NO_CLASS_AT_NEXT_LEVEL
+        return None
     arm = (getattr(source_class, "arm", "") or "").lower()
     same_arm = next(
         (c for c in candidates if (c.arm or "").lower() == arm), None,
     )
-    return (same_arm or candidates[0]), None
+    return same_arm or candidates[0]
+
+
+def _repeat_class(source_class, target_classes_by_level_code):
+    """Where a repeating student lands: the SAME level, in the target year.
+
+    Not the class they are already in. That row belongs to the year being
+    left, and writing it against the new year produces an enrolment whose two
+    halves name different years - which every screen renders as normal,
+    because both years call the class JSS1 A, and which the new year's
+    register simply does not include.
+    """
+    return _class_at(
+        source_class, source_class.level, target_classes_by_level_code,
+    )
 
 
 def classify(tenant, user, *, from_session, to_session, overrides=None):
@@ -189,6 +227,7 @@ def classify(tenant, user, *, from_session, to_session, overrides=None):
         source = enrolment.school_class
         per_class_counts[source.pk] = per_class_counts.get(source.pk, 0) + 1
         target, cause = _target_class(source, by_level_code)
+        repeat_target = _repeat_class(source, by_level_code)
 
         if cause is not None and (source.pk, cause) not in seen_class_cause:
             seen_class_cause.add((source.pk, cause))
@@ -212,7 +251,26 @@ def classify(tenant, user, *, from_session, to_session, overrides=None):
         outcome = overrides.get(str(student.pk), overrides.get(student.pk, default))
         if outcome not in PromotionOutcome.values:
             outcome = default
-        plan.candidates.append(Candidate(student, enrolment, target, outcome))
+
+        # A repeat with nowhere to land is named too, and only when it is the
+        # chosen outcome: every class is missing from a year nobody has rolled
+        # forward, and saying so about classes nobody is repeating is noise.
+        if (
+            outcome == PromotionOutcome.REPEAT
+            and repeat_target is None
+            and (source.pk, EXC_NO_CLASS_TO_REPEAT) not in seen_class_cause
+        ):
+            seen_class_cause.add((source.pk, EXC_NO_CLASS_TO_REPEAT))
+            plan.class_exceptions.append({
+                "class": source.pk, "class_name": source.name,
+                "cause": EXC_NO_CLASS_TO_REPEAT,
+                "reason": EXCEPTION_TEXT[EXC_NO_CLASS_TO_REPEAT],
+                "students": 0,
+            })
+
+        plan.candidates.append(
+            Candidate(student, enrolment, target, repeat_target, outcome),
+        )
 
     for entry in plan.class_exceptions:
         entry["students"] = per_class_counts.get(entry["class"], 0)
@@ -266,7 +324,7 @@ def _apply_one(cand, *, to_session, actor):
         return PromotionOutcome.HOLD
 
     target = (
-        cand.enrolment.school_class if cand.outcome == PromotionOutcome.REPEAT
+        cand.repeat_class if cand.outcome == PromotionOutcome.REPEAT
         else cand.target_class
     )
     if target is None:
@@ -283,6 +341,10 @@ def _apply_one(cand, *, to_session, actor):
     cand.enrolment.save(
         update_fields=["is_active", "ended_at", "outcome", "updated_at"],
     )
+    # The same rule the ordinary placement obeys. _target_class picks from the
+    # target year by design, so this should never fire - which is exactly when
+    # a guard is worth having, because nothing else would notice if it changed.
+    assert_class_is_in_session(target, to_session)
     ClassEnrolment.objects.create(
         tenant=student.tenant, student=student, school_class=target,
         session=to_session, is_active=True,

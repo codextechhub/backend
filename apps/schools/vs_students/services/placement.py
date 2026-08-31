@@ -20,6 +20,7 @@ from vs_audit.services import emit_audit_event
 from ..constants import EnrolmentOutcome, StudentStatus
 from ..exceptions import (
     ClassAtCapacity,
+    ClassBelongsToAnotherYear,
     NoActiveSession,
     ReasonRequired,
 )
@@ -59,6 +60,31 @@ def resolve_class(tenant, user, class_id):
     if row is None:
         raise NotFound("No such class at this school.")
     return row
+
+
+def assert_class_is_in_session(school_class, session):
+    """A placement's class and its year must be the same year.
+
+    An enrolment records both, and since M13 gave classes a year the two can
+    disagree: the row then says a child is on this year's roll in a class that
+    belongs to a year that has ended. Nothing looks wrong anywhere, because
+    every year's JSS1 A is called JSS1 A - the register for this year simply
+    does not have them on it.
+
+    Called at both places an enrolment is written, which is here and the
+    promotion run. There is no lower choke point: ClassEnrolment is created
+    directly in both, and a database check constraint cannot reach across to
+    SchoolClass to compare the two.
+    """
+    if school_class.session_id == session.pk:
+        return
+    raise ClassBelongsToAnotherYear(
+        f"{school_class.name} belongs to {school_class.session.name}, and this "
+        f"placement is for {session.name}. Pick the {session.name} class.",
+        school_class=school_class.pk,
+        class_year=school_class.session.name,
+        placement_year=session.name,
+    )
 
 
 def seats_used(school_class, session) -> int:
@@ -105,6 +131,7 @@ def place(
     Returns ``(enrolment, was_transfer, over_capacity)``.
     """
     session = session or active_session(student.tenant)
+    assert_class_is_in_session(school_class, session)
     assert_class_reachable(student.branch, school_class)
 
     previous = (
@@ -200,42 +227,75 @@ def roster(tenant, user, school_class, session):
     return scope_students(qs, user, tenant).distinct()
 
 
+def class_seats(tenant, user, session, *, branch=None, only_with_capacity=False):
+    """Every class the caller can see, with its live seat count.
+
+    **One aggregate, not one query per class.** Three pickers render
+    "JSS1 A - 26/30" for every class at once - the enrolment form's entry
+    class, the transfer drawer's destination and the assign bar - and before
+    this existed each of them either went without the numbers or would have
+    cost a roster request per option, growing with the school.
+
+    It lives here rather than on the academics class list because the enrolment
+    row is this module's: putting it there would make an M13 view import a
+    school app it must not know about. Same reasoning as the roster.
+
+    *branch* narrows to that site's classes plus the school-wide ones, which is
+    what a null branch means. A class with no capacity set is returned with
+    ``capacity: None`` - "no limit recorded" is a different fact from "full",
+    and a picker that dropped those rows would hide real classes.
+    """
+    from django.db.models import Q as _Q
+
+    from schools.vs_academics.models import SchoolClass
+
+    qs = SchoolClass.objects.filter(tenant=tenant, is_active=True)
+    if only_with_capacity:
+        qs = qs.filter(capacity__isnull=False)
+    qs = scope_classes(qs, user, tenant)
+    if branch is not None:
+        qs = qs.filter(_Q(branch=branch) | _Q(branch__isnull=True))
+    qs = qs.select_related("branch", "level").annotate(
+        used=Count(
+            "enrolments",
+            filter=Q(enrolments__session=session, enrolments__is_active=True),
+        ),
+    )
+    return [
+        {
+            "id": c.pk,
+            "name": c.name,
+            "branch": c.branch_id,
+            "branch_name": c.branch.name if c.branch_id else None,
+            "level": c.level_id,
+            "level_name": c.level.name if c.level_id else "",
+            "capacity": c.capacity,
+            "used": c.used,
+            "remaining": None if c.capacity is None else c.capacity - c.used,
+        }
+        for c in qs.order_by("name")
+    ]
+
+
 def fullest_classes(tenant, user, session, *, limit=3, branch=None):
     """The classes nearest their capacity, for the directory's capacity panel.
-
-    Computed with one aggregate rather than by counting each class's roster,
-    because a school with sixty classes would otherwise cost sixty queries to
-    draw one card.
 
     *branch* narrows to classes at that site PLUS the school-wide ones, which
     is what a class with no branch means. Without it the panel warned a Main
     Branch registrar about a full class at the Annex, which is neither hers to
     fill nor hers to fix.
     """
-    from django.db.models import Q as _Q
-
-    from schools.vs_academics.models import SchoolClass
-
-    qs = scope_classes(
-        SchoolClass.objects.filter(
-            tenant=tenant, is_active=True, capacity__isnull=False,
-        ),
-        user, tenant,
+    # The same aggregate the pickers use, so one class cannot read 26/30 on the
+    # directory and 25/30 on the enrolment form.
+    rows = class_seats(
+        tenant, user, session, branch=branch, only_with_capacity=True,
     )
-    if branch is not None:
-        qs = qs.filter(_Q(branch=branch) | _Q(branch__isnull=True))
-    qs = qs.annotate(
-        used=Count(
-            "enrolments",
-            filter=Q(enrolments__session=session, enrolments__is_active=True),
-        ),
-    )
-    rows = [
-        {
-            "id": c.pk, "name": c.name, "used": c.used, "capacity": c.capacity,
-            "remaining": c.capacity - c.used,
-        }
-        for c in qs
-    ]
     rows.sort(key=lambda r: (r["remaining"], -r["used"]))
-    return [r for r in rows if r["remaining"] <= 5][:limit]
+    return [
+        {
+            "id": r["id"], "name": r["name"], "used": r["used"],
+            "capacity": r["capacity"], "remaining": r["remaining"],
+        }
+        for r in rows
+        if r["remaining"] <= 5
+    ][:limit]

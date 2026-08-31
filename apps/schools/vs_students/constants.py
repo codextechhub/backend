@@ -164,6 +164,7 @@ EXC_TERMINAL_LEVEL = "TERMINAL_LEVEL"
 EXC_NO_CLASS_AT_NEXT_LEVEL = "NO_CLASS_AT_NEXT_LEVEL"
 EXC_STUDENT_SUSPENDED = "STUDENT_SUSPENDED"
 EXC_NO_CLASS_ASSIGNED = "NO_CLASS_ASSIGNED"
+EXC_NO_CLASS_TO_REPEAT = "NO_CLASS_TO_REPEAT"
 
 #: The palette's result cap and its minimum query length. A palette that
 #: paginates is a list, and this is not one.

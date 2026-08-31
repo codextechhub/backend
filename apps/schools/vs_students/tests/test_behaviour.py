@@ -8,7 +8,12 @@ import datetime as dt
 
 from django.db import IntegrityError, transaction
 
-from schools.vs_academics.models import AcademicSession, Level, SchoolClass
+from schools.vs_academics.models import (
+    AcademicSession,
+    Level,
+    SchoolClass,
+    SessionStatus,
+)
 from schools.vs_students.constants import (
     ALLOWED_TRANSITIONS,
     EnrolmentOutcome,
@@ -517,6 +522,54 @@ class PlacementTests(StudentsFixture):
                 school_class=self.lekki_class, session=self.year, is_active=True,
             )
 
+    def test_a_class_from_another_year_is_refused(self):
+        """The register bug: both halves of the row look right on their own.
+
+        Every year's JSS1 A is called JSS1 A, so an id from the wrong year
+        renders identically on the student's profile and on the class card.
+        What differs is the register, which the child is simply not on.
+        """
+        past = AcademicSession.all_objects.create(
+            tenant=self.tenant, name="2019/2020",
+            start_date=dt.date(2019, 9, 1), end_date=dt.date(2020, 7, 31),
+            status=SessionStatus.ARCHIVED,
+        )
+        # A class sits at a level of its OWN year - M13 keeps those in step -
+        # so the old year needs its own JSS1 for the old class to hang off.
+        old_jss1 = Level.all_objects.create(
+            tenant=self.tenant, program=self.program, session=past,
+            name="JSS1", code="JSS1", order_index=1,
+        )
+        stale = SchoolClass.all_objects.create(
+            tenant=self.tenant, level=old_jss1, session=past,
+            name="JSS1 A", code="JSS1A", arm="A", branch=None, capacity=30,
+        )
+        response = self.post(
+            self.admin, "student-assign-class",
+            {"school_class": stale.pk}, pk=self.row.pk,
+        )
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(
+            response.data["error"]["code"], "CLASS_BELONGS_TO_ANOTHER_YEAR",
+        )
+        self.assertIn("2019/2020", response.data["message"])
+        self.assertEqual(self.row.enrolments.count(), 0)
+
+    def test_every_placement_written_agrees_with_its_class(self):
+        """The invariant the refusal exists to keep, asserted on the rows.
+
+        A test that only checks the refusal proves the door is shut; this
+        proves nothing already walked through it by another route.
+        """
+        self.place(self.row, self.shared_class)
+        for enrolment in ClassEnrolment.all_objects.select_related(
+            "school_class",
+        ):
+            self.assertEqual(
+                enrolment.session_id, enrolment.school_class.session_id,
+                f"{enrolment.school_class.name} is not in the placement's year",
+            )
+
     def test_moving_a_graduated_student_says_so_rather_than_offering_a_form(self):
         graduated = self.student(status=StudentStatus.GRADUATED, first="Ahmed")
         response = self.post(
@@ -704,6 +757,12 @@ class PromotionTests(StudentsFixture):
             tenant=self.tenant, level=self.next_jss2, session=self.next_year,
             name="JSS2 A", code="N-JSS2A", arm="A", capacity=30,
         )
+        # Next year's JSS1 A, which is where a REPEAT lands. A different row
+        # from this year's JSS1 A and identical on screen.
+        self.next_jss1_a = SchoolClass.all_objects.create(
+            tenant=self.tenant, level=self.next_jss1, session=self.next_year,
+            name="JSS1 A", code="N-JSS1A", arm="A", capacity=30,
+        )
 
         self.mover = self.student(first="Chiamaka", last="Nwosu")
         self.place(self.mover, self.shared_class)
@@ -744,7 +803,13 @@ class PromotionTests(StudentsFixture):
             ClassEnrolment.all_objects.filter(session=self.next_year).count(), 0,
         )
 
-    def test_a_repeat_writes_a_placement_in_the_same_class_next_year(self):
+    def test_a_repeat_lands_in_next_years_copy_of_the_same_class(self):
+        """Not the class they are in - next year's row of the same name.
+
+        The two are indistinguishable on every screen, because both are called
+        JSS1 A. What differs is which year's register has the child on it, and
+        writing the old row against the new year puts them on neither.
+        """
         response = self.post(self.admin, "student-promotion-run", {
             "to_session": self.next_year.pk,
             "overrides": {str(self.mover.pk): PromotionOutcome.REPEAT},
@@ -754,11 +819,42 @@ class PromotionTests(StudentsFixture):
         new = ClassEnrolment.all_objects.get(
             student=self.mover, session=self.next_year,
         )
-        self.assertEqual(new.school_class_id, self.shared_class.pk)
+        self.assertEqual(new.school_class_id, self.next_jss1_a.pk)
+        self.assertNotEqual(new.school_class_id, self.shared_class.pk)
+        self.assertEqual(new.school_class.session_id, new.session_id)
         old = ClassEnrolment.all_objects.get(
             student=self.mover, session=self.year,
         )
         self.assertEqual(old.outcome, EnrolmentOutcome.REPEATED)
+
+    def test_a_repeat_with_no_class_in_the_new_year_is_held_and_named(self):
+        """Held, not silently placed into last year's room."""
+        self.next_jss1_a.delete()
+        response = self.post(self.admin, "student-promotion-run", {
+            "to_session": self.next_year.pk,
+            "overrides": {str(self.mover.pk): PromotionOutcome.REPEAT},
+        })
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["data"]["held"], 1)
+        self.assertEqual(response.data["data"]["repeated"], 0)
+        self.assertFalse(
+            ClassEnrolment.all_objects.filter(
+                student=self.mover, session=self.next_year,
+            ).exists(),
+        )
+
+    def test_the_preview_names_a_repeat_that_has_nowhere_to_land(self):
+        """The run holds it; the preview has to say so before the run."""
+        self.next_jss1_a.delete()
+        response = self._preview(
+            overrides={str(self.mover.pk): PromotionOutcome.REPEAT},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        causes = [
+            e["cause"]
+            for e in response.data["data"]["exceptions"]["by_class"]
+        ]
+        self.assertIn("NO_CLASS_TO_REPEAT", causes)
 
     def test_a_hold_writes_no_enrolment_and_leaves_the_placement_active(self):
         before = ClassEnrolment.all_objects.count()

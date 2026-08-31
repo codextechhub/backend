@@ -35,6 +35,23 @@ class DuplicateStudent(StudentsError):
     http_status = 409
 
 
+class ClassBelongsToAnotherYear(StudentsError):
+    """The class named is a different year's class of the same name.
+
+    Only reachable since M13 gave classes a year. Before that a school had one
+    JSS1 A and there was nothing to get wrong; now it has one per year, all
+    called JSS1 A, and an id from the wrong one looks entirely normal on every
+    screen that renders the name.
+    """
+
+    error_code = "CLASS_BELONGS_TO_ANOTHER_YEAR"
+    default_message = (
+        "That class belongs to a different school year. Pick the class for "
+        "the year this placement is in."
+    )
+    http_status = 409
+
+
 class DuplicateStudentNumber(StudentsError):
     error_code = "DUPLICATE_STUDENT_NUMBER"
     default_message = "Another student at this school already holds that number."
