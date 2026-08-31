@@ -26,7 +26,6 @@ from ..exceptions import (
 )
 from ..models import ClassEnrolment
 from .scoping import assert_class_reachable, scope_classes
-from .years import assert_year_is_open
 
 
 def active_session(tenant):
@@ -88,6 +87,27 @@ def assert_class_is_in_session(school_class, session):
     )
 
 
+def write_enrolment(*, student, school_class, intended_year, actor, **fields):
+    """The one place a ClassEnrolment row is created.
+
+    ``session`` is stored on the row rather than joined through the class,
+    because the "one active placement per year" constraint needs the column in
+    the table and Postgres cannot write a unique constraint over a joined one.
+    That leaves the year recorded twice, so it is DERIVED here and taken from
+    no caller: the class is the single source, and the two cannot be set apart
+    by anyone.
+
+    ``intended_year`` is what the caller meant to write into. It is checked
+    against the class and never stored, which is what turns a silent
+    disagreement into a refusal.
+    """
+    assert_class_is_in_session(school_class, intended_year)
+    return ClassEnrolment.objects.create(
+        tenant=student.tenant, student=student, school_class=school_class,
+        session_id=school_class.session_id, **fields,
+    )
+
+
 def seats_used(school_class, session) -> int:
     return ClassEnrolment.objects.filter(
         school_class=school_class, session=session, is_active=True,
@@ -124,17 +144,18 @@ def assert_capacity(school_class, session, *, adding=1, acknowledged=False):
 
 @transaction.atomic
 def place(
-    student, school_class, *, actor, session=None, reason="", effective_date=None,
+    student, school_class, *, actor, reason="", effective_date=None,
     allow_over_capacity=False,
 ):
     """Place or move *student*, closing any previous placement in one go.
 
     Returns ``(enrolment, was_transfer, over_capacity)``.
     """
-    session = session or active_session(student.tenant)
-    # A no-op on the default path, where the year is the ACTIVE one by
-    # definition. It is here for the callers that name a year themselves.
-    assert_year_is_open(session, what="place")
+    # The year a placement lands in is the one the school is running. It is
+    # not a parameter: a caller that could name a year could name one the
+    # class does not belong to, which is the disagreement write_enrolment
+    # exists to make impossible.
+    session = active_session(student.tenant)
     assert_class_is_in_session(school_class, session)
     assert_class_reachable(student.branch, school_class)
 
@@ -164,9 +185,9 @@ def place(
         previous.outcome = EnrolmentOutcome.ENDED
         previous.save(update_fields=["is_active", "ended_at", "outcome", "updated_at"])
 
-    enrolment = ClassEnrolment.objects.create(
-        tenant=student.tenant, student=student, school_class=school_class,
-        session=session, is_active=True,
+    enrolment = write_enrolment(
+        student=student, school_class=school_class, intended_year=session,
+        actor=actor, is_active=True,
         effective_date=effective_date or timezone.localdate(),
         reason=(reason or "") if is_transfer else "",
         outcome=EnrolmentOutcome.CURRENT,

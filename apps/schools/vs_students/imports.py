@@ -404,8 +404,11 @@ def create_student_from_row(row: ResolvedRow, *, tenant, session, created_by):
         effective_date=student.enrolment_date,
     )
     if row.school_class is not None and session is not None:
+        # No year passed: place() takes the school's running year and checks
+        # the class against it. import_session resolved the same ACTIVE year,
+        # so this drops a duplicate rather than changing what is written.
         place(
-            student, row.school_class, actor=created_by, session=session,
+            student, row.school_class, actor=created_by,
             effective_date=student.enrolment_date, allow_over_capacity=True,
         )
     return student

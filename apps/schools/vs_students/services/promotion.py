@@ -36,7 +36,7 @@ from ..constants import (
     StudentStatus,
 )
 from ..models import ClassEnrolment, Student, StudentPromotionBatch
-from .placement import assert_class_is_in_session
+from .placement import write_enrolment
 from .scoping import scope_classes, scope_students
 from .years import assert_year_is_open
 
@@ -349,13 +349,12 @@ def _apply_one(cand, *, to_session, actor):
     cand.enrolment.save(
         update_fields=["is_active", "ended_at", "outcome", "updated_at"],
     )
-    # The same rule the ordinary placement obeys. _target_class picks from the
-    # target year by design, so this should never fire - which is exactly when
-    # a guard is worth having, because nothing else would notice if it changed.
-    assert_class_is_in_session(target, to_session)
-    ClassEnrolment.objects.create(
-        tenant=student.tenant, student=student, school_class=target,
-        session=to_session, is_active=True,
+    # Through the same writer as an ordinary placement, so the year on the row
+    # is derived from the class here too. to_session is what the run meant to
+    # write into and is checked against the class, never stored from.
+    write_enrolment(
+        student=student, school_class=target, intended_year=to_session,
+        actor=actor, is_active=True,
         effective_date=timezone.localdate(),
         outcome=EnrolmentOutcome.CURRENT, assigned_by=actor,
     )

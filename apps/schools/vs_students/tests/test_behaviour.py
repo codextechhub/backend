@@ -22,7 +22,7 @@ from schools.vs_students.constants import (
     Relationship,
     StudentStatus,
 )
-from schools.vs_students.exceptions import YearIsClosed
+from schools.vs_students.exceptions import ClassBelongsToAnotherYear
 from schools.vs_students.services.placement import place
 from schools.vs_students.models import (
     ClassEnrolment,
@@ -524,8 +524,25 @@ class PlacementTests(StudentsFixture):
                 school_class=self.lekki_class, session=self.year, is_active=True,
             )
 
-    def test_a_placement_into_a_closed_year_is_refused(self):
-        """The ordinary placement path, for a caller that names the year."""
+    def test_the_year_on_a_row_is_the_classs_and_cannot_be_passed_in(self):
+        """place() takes no year at all, which is what makes them agree.
+
+        A caller that could name one could name a year the class does not
+        belong to. The class is the single source and the row is written from
+        it, so the two cannot be set apart by anybody.
+        """
+        import inspect
+
+        from schools.vs_students.services.placement import place as place_fn
+
+        self.assertNotIn("session", inspect.signature(place_fn).parameters)
+
+        self.place(self.row, self.shared_class)
+        row = self.row.enrolments.get()
+        self.assertEqual(row.session_id, row.school_class.session_id)
+
+    def test_a_placement_into_a_closed_years_class_is_refused(self):
+        """The closed year is now reached through its class, not a parameter."""
         past = AcademicSession.all_objects.create(
             tenant=self.tenant, name="2019/2020",
             start_date=dt.date(2019, 9, 1), end_date=dt.date(2020, 7, 31),
@@ -539,8 +556,8 @@ class PlacementTests(StudentsFixture):
             tenant=self.tenant, level=old_jss1, session=past,
             name="JSS1 A", code="JSS1A", arm="A", branch=None, capacity=30,
         )
-        with self.assertRaises(YearIsClosed):
-            place(self.row, stale, actor=self.admin, session=past)
+        with self.assertRaises(ClassBelongsToAnotherYear):
+            place(self.row, stale, actor=self.admin)
         self.assertEqual(self.row.enrolments.count(), 0)
 
     def test_a_class_from_another_year_is_refused(self):
