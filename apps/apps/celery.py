@@ -71,6 +71,14 @@ app.conf.beat_schedule = {
         "task": "vs_payments.alert_unbooked_surge",
         "schedule": crontab(minute=5),
     },
+    # A payout batch is approved inside a transaction and dispatched after it commits,
+    # so there is a gap where the hand-off can be lost (broker down, worker restarted).
+    # This sweep is what makes that gap recoverable rather than a payout nobody sent.
+    # Idempotent: each instruction claims itself, so a re-run cannot pay twice.
+    "payments-dispatch-undispatched-payouts": {
+        "task": "vs_payments.dispatch_undispatched_payout_batches",
+        "schedule": crontab(minute="*/10"),
+    },
 
     # --- vs_exports (Export Centre) --------------------------------------
     # Nightly: hard-delete storage for produced files past their 30-day

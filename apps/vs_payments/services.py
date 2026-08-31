@@ -16,6 +16,8 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import logging
+from typing import NamedTuple
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -41,9 +43,63 @@ from .exceptions import (
     IdempotencyConflictError,
     PaymentStateError,
     PayoutApprovalRequiredError,
+    ProviderDispatchInTransactionError,
 )
 from .models import CollectionIntent, PayoutBatch, PayoutInstruction, VirtualAccount
 from .providers.registry import get_provider
+
+_logger = logging.getLogger("vs_payments.services")  # Diagnostics for off-request dispatch work.
+
+
+# --------------------------------------------------------------------------- #
+# Irreversible-side-effect guards                                             #
+# --------------------------------------------------------------------------- #
+
+#: Provider failures that say nothing about whether the money moved. A timeout, a
+#: dropped connection or a 5xx means the request may well have been accepted and only
+#: the answer was lost; 429/408/425 are the same story with a name on it. Only a clean
+#: 4xx rejection is proof that nothing was sent.
+_INDETERMINATE_PROVIDER_STATUSES = frozenset({408, 425, 429})
+
+
+# Support the outbound transaction guard.
+def _assert_no_open_transaction(what: str) -> None:
+    """Refuse an irreversible provider call while a database transaction is open.
+
+    A transaction can roll back; a bank transfer cannot. If the provider is called
+    inside ``transaction.atomic`` and the enclosing block later rolls back, the money
+    has moved while every local trace of it disappears: the instruction reverts to
+    PENDING, the batch reverts to DRAFT, and the next run sends the same money again.
+    The guard sits at the choke point every dispatch passes through, so the mistake
+    cannot be reintroduced by a new caller further up.
+
+    Django's own ``atomic(durable=True)`` check is the model here: the atomic block
+    ``django.test.TestCase`` opens to wrap a test carries ``_from_testcase`` and is not
+    an application transaction, so it does not trip the guard.
+    """
+    blocks = transaction.get_connection().atomic_blocks
+    if blocks and not getattr(blocks[-1], "_from_testcase", False):
+        raise ProviderDispatchInTransactionError(
+            f"{what} must run outside a database transaction: a rollback would erase "
+            "the local record of money that has already left the account.",
+        )
+
+
+# Support the provider failure classification workflow.
+def _provider_failure_is_final(exc) -> bool:
+    """True only when the provider definitely rejected the request without moving money.
+
+    Marking an indeterminate failure FAILED is how transferred money gets recorded as
+    a failure, so anything short of a clean rejection leaves the instruction PROCESSING
+    for verification (webhook or ``confirm_payout``) to settle.
+    """
+    code = getattr(exc, "provider_code", None)
+    if not code or not str(code).isdigit():  # Transport failure or unparseable body.
+        return False
+    status = int(code)
+    if status in _INDETERMINATE_PROVIDER_STATUSES or status >= 500:
+        return False
+    return 400 <= status < 500
 
 
 # Support the new reference workflow.
@@ -595,9 +651,20 @@ def _dispatch_transfer(
     """Ask the provider to transfer funds for an already-created ``PENDING`` payout.
 
     This private boundary still validates the exact approved batch so a direct caller
-    cannot turn it back into a standalone cash-out route. On provider rejection the
-    payout is marked FAILED; on success it moves to PROCESSING.
+    cannot turn it back into a standalone cash-out route.
+
+    The instruction is **claimed** - moved PENDING -> PROCESSING in its own committed
+    transaction - *before* the provider is called, and the call itself is made with no
+    transaction open. That ordering is what makes the send safe to crash through: a
+    process that dies mid-flight leaves a PROCESSING row that no retry will send again,
+    and that the webhook or :func:`confirm_payout` settles from the provider's own
+    record. Only a clean provider rejection turns the row FAILED; an indeterminate
+    failure (timeout, 5xx, unreachable host) leaves it PROCESSING, because the money
+    may well have moved.
     """
+    from vs_procurement.models import Vendor
+
+    _assert_no_open_transaction("Dispatching a payout instruction to the provider")
     if payout.batch_id is None or batch is None or payout.batch_id != batch.pk:
         raise PayoutApprovalRequiredError(
             "A payout instruction can be dispatched only through its approved batch.",
@@ -606,10 +673,25 @@ def _dispatch_transfer(
     if vendor is None:
         if not payout.vendor_source_id:
             raise PaymentStateError("The payout instruction has no vendor master reference.")
-        from vs_procurement.models import Vendor
         vendor = Vendor.objects.filter(pk=int(payout.vendor_source_id)).first()
     _validate_instruction_snapshot(payout, vendor)
     client = client or get_provider(payout.provider)  # Allow callers to reuse or lazily resolve the PSP client.
+
+    # Claim the row and re-check the destination in one committed transaction. The
+    # re-read is not belt-and-braces: the caller validated against a vendor row it read
+    # before the locks were released, and the destination that matters is the one that
+    # is true at the moment of the send.
+    with transaction.atomic():
+        payout = PayoutInstruction.objects.select_for_update().get(pk=payout.pk)
+        if payout.status != PayoutStatus.PENDING:
+            # Another dispatch already claimed it. Never send twice.
+            return payout
+        _validate_instruction_snapshot(
+            payout, Vendor.objects.select_for_update().get(pk=vendor.pk),
+        )
+        payout.status = PayoutStatus.PROCESSING  # In flight from here on, whatever happens.
+        payout.save(update_fields=["status", "updated_at"])
+
     currency = payout.currency  # Store the payout currency once for the request.
 
     try:  # Transfer creation can fail independently from local persistence.
@@ -622,9 +704,21 @@ def _dispatch_transfer(
             metadata=metadata or {},
         )
     except FinanceError as exc:  # Keep the local payout row in sync with the provider failure.
-        payout.status = PayoutStatus.FAILED  # Mark the payout as failed locally.
-        payout.failure_reason = str(getattr(exc, "message", exc))[:255]  # Store a short human-readable failure reason.
-        payout.save(update_fields=["status", "failure_reason", "updated_at"])
+        reason = str(getattr(exc, "message", exc))[:255]  # Store a short human-readable failure reason.
+        payout.failure_reason = reason
+        fields = ["failure_reason", "updated_at"]
+        if _provider_failure_is_final(exc):  # A clean rejection: nothing was sent.
+            payout.status = PayoutStatus.FAILED
+            fields.append("status")
+        else:
+            # The provider may have accepted this transfer and failed to tell us. Leaving
+            # it PROCESSING keeps it out of every retry path and on the reconciliation
+            # report until the provider's own record settles it either way.
+            payout.metadata = {
+                **(payout.metadata or {}), "dispatch_outcome_unknown": True,
+            }
+            fields.append("metadata")
+        payout.save(update_fields=fields)
         audit.record_rejection(  # Emit a rejection event for the failed payout request.
             action=PaymentAuditAction.PAYOUT_INITIATED, exc=exc, entity=payout.entity,
             provider=payout.provider, reference=payout.reference, actor_user=actor_user,
@@ -779,17 +873,29 @@ def submit_payout_batch_for_approval(batch, *, requested_by):
     return submit_for_approval(locked, requested_by=requested_by)
 
 
-# Handle the submit payout batch workflow.
-@transaction.atomic
-def submit_payout_batch(batch, *, approved_instance=None, actor_user=None):
-    """Submit every ``PENDING`` instruction in ``batch`` to the provider, one by one.
+class _PreparedDispatch(NamedTuple):
+    """The locked, validated state a batch dispatch runs against."""
 
-    Each item rides the shared :func:`_dispatch_transfer`; a per-item provider rejection
-    marks that instruction FAILED but does not abort the run. The batch's aggregate status
-    is recomputed from its children afterwards. Idempotent: already-dispatched items
-    (non-PENDING) are skipped, so re-submitting a partially-failed batch only retries the
-    stragglers.
+    batch: PayoutBatch  # Re-read under ``select_for_update``.
+    approved_instance: object  # The terminal workflow instance that authorised the batch.
+    pending: list  # Instructions still to send, in pk order.
+    vendor_ids: list  # Vendor master pk per pending instruction, positionally aligned.
+    vendors: dict  # Vendor pk -> locked vendor row.
+    client: object  # Configured PSP adapter; resolving it sends nothing.
+
+
+# Support the pre-dispatch validation workflow.
+def _prepare_batch_dispatch(batch, approved_instance) -> _PreparedDispatch:
+    """Re-check everything that must hold before a single naira leaves the account.
+
+    Deliberately safe to call *inside* a transaction: it performs no provider I/O
+    (:func:`get_provider` only reads configuration). That is what lets the approval
+    handler run these checks in the approval transaction, so a batch that could never
+    be sent - stale vendor bank details, drifted totals, missing human votes - fails the
+    approval instead of being approved into a dispatch that can only ever fail.
     """
+    from vs_procurement.models import Vendor
+
     batch = PayoutBatch.objects.select_for_update().get(pk=batch.pk)
     approved_instance = _validate_approved_instance(batch, approved_instance)
     instructions = list(batch.instructions.select_for_update().order_by("pk"))
@@ -807,12 +913,6 @@ def submit_payout_batch(batch, *, approved_instance=None, actor_user=None):
         raise PaymentStateError("A payout instruction does not match its owning batch.")
 
     pending = [payout for payout in instructions if payout.status == PayoutStatus.PENDING]
-    if not pending:
-        _recompute_batch_status(batch)
-        return batch
-
-    from vs_procurement.models import Vendor
-
     vendor_ids = []
     for payout in pending:
         if payout.vendor_source_type != "vs_procurement.Vendor" or not payout.vendor_source_id:
@@ -831,8 +931,57 @@ def submit_payout_batch(batch, *, approved_instance=None, actor_user=None):
             raise PaymentStateError("A payout instruction's vendor master no longer exists.")
         _validate_instruction_snapshot(payout, vendor)
 
+    return _PreparedDispatch(
+        batch=batch, approved_instance=approved_instance, pending=pending,
+        vendor_ids=vendor_ids, vendors=vendors,
+        client=get_provider(batch.provider),  # Configuration check, not a send.
+    )
+
+
+# Handle the pre-dispatch validation workflow.
+def validate_payout_batch_dispatch(batch, *, approved_instance) -> None:
+    """Raise if this batch could not be dispatched right now. Sends nothing.
+
+    The approval handler calls this inside the approval transaction so an unsendable
+    batch is refused at the point a human clicks Approve, where the message can still
+    reach them, rather than after the approval has committed.
+    """
+    _prepare_batch_dispatch(batch, approved_instance)
+
+
+# Handle the submit payout batch workflow.
+def submit_payout_batch(batch, *, approved_instance=None, actor_user=None):
+    """Submit every ``PENDING`` instruction in ``batch`` to the provider, one by one.
+
+    Deliberately **not** ``@transaction.atomic``. The run has three phases, and the
+    boundary between the first two is the whole point:
+
+    1. validate and lock in one transaction - approval, totals, ownership, vendor
+       destinations, provider configuration - and **commit** it;
+    2. send, with no transaction open, one instruction at a time. Each item claims
+       itself before its own send (see :func:`_dispatch_transfer`), which is what makes
+       double-sending impossible without holding locks across a network call;
+    3. recompute the batch aggregate in a fresh transaction.
+
+    A per-item provider rejection marks that instruction FAILED but does not abort the
+    run. Idempotent: already-dispatched items (non-PENDING) are skipped, so re-running a
+    partially-failed batch only retries the stragglers.
+    """
+    _assert_no_open_transaction("Submitting a payout batch to the provider")
+
+    with transaction.atomic():  # Phase 1: everything that must be true before any money moves.
+        prepared = _prepare_batch_dispatch(batch, approved_instance)
+        batch = prepared.batch
+        if not prepared.pending:
+            _recompute_batch_status(batch)
+            return batch
+
+    # Phase 2: locks released, transaction committed. Money moves only from here.
+    approved_instance = prepared.approved_instance
+    pending, vendor_ids, vendors, client = (
+        prepared.pending, prepared.vendor_ids, prepared.vendors, prepared.client,
+    )
     submitted = failed = 0  # Track how many instructions were accepted or rejected.
-    client = get_provider(batch.provider)
     for payout, vendor_id in zip(pending, vendor_ids):
         try:  # One failed instruction should not abort the whole batch.
             _dispatch_transfer(
@@ -844,8 +993,10 @@ def submit_payout_batch(batch, *, approved_instance=None, actor_user=None):
         except FinanceError:  # Keep going so later rows still have a chance to submit.
             failed += 1  # Count provider rejections.
 
-    batch.submitted_at = batch.submitted_at or timezone.now()
-    _recompute_batch_status(batch)  # Recalculate the batch status from its children.
+    with transaction.atomic():  # Phase 3: the aggregate, derived from what the children now say.
+        batch = PayoutBatch.objects.select_for_update().get(pk=batch.pk)
+        batch.submitted_at = batch.submitted_at or timezone.now()
+        _recompute_batch_status(batch)  # Recalculate the batch status from its children.
     audit.record(  # Emit the batch submission audit event with the outcome counts.
         action=PaymentAuditAction.PAYOUT_BATCH_SUBMITTED, entity=batch.entity,
         provider=batch.provider, reference=batch.reference, actor_user=actor_user,
@@ -853,6 +1004,74 @@ def submit_payout_batch(batch, *, approved_instance=None, actor_user=None):
         metadata={"submitted": submitted, "failed": failed},
     )
     return batch  # Return the batch after aggregate status refresh.
+
+
+# Handle the post-approval dispatch workflow.
+def dispatch_approved_payout_batch(*, batch_id, instance_id, actor_user_id=None):
+    """Dispatch one approved batch, off the back of the approval that authorised it.
+
+    This is what the workflow handler schedules for after its transaction commits, and
+    what the sweep re-runs for anything the schedule lost. It re-reads everything from
+    the database rather than trusting arguments carried across a queue, and it is safe
+    to run twice: the approval is re-validated and each instruction claims itself.
+    """
+    from django.contrib.auth import get_user_model
+    from vs_workflow.models import WorkflowInstance
+
+    batch = PayoutBatch.objects.filter(pk=batch_id).first()
+    if batch is None:  # Deleted between approval and dispatch; nothing to send.
+        return None
+    instance = WorkflowInstance.all_objects.filter(pk=instance_id).first()
+    actor = (
+        get_user_model().objects.filter(pk=actor_user_id).first()
+        if actor_user_id else None
+    )
+    return submit_payout_batch(batch, approved_instance=instance, actor_user=actor)
+
+
+# Handle the undispatched payout batch sweep workflow.
+def sweep_undispatched_payout_batches():
+    """Dispatch approved batches whose dispatch never ran.
+
+    Moving the provider call out of the approval transaction buys correctness at the
+    price of a gap: the approval commits, and then something has to happen. A broker
+    outage, a worker restart between commit and consume, or a crash partway through the
+    loop all leave an approved batch sitting on undispatched instructions with nothing
+    driving it. This is what closes that gap, and it is why the handler is allowed to
+    treat a failed enqueue as a logged warning rather than a lost payout.
+    """
+    from vs_workflow.constants import WorkflowInstanceStatus
+    from vs_workflow.models import WorkflowInstance
+
+    stale = (
+        PayoutBatch.objects
+        .filter(status=PayoutBatchStatus.DRAFT,
+                metadata__approval_status="APPROVED",
+                instructions__status=PayoutStatus.PENDING)
+        .distinct()
+        .order_by("pk")
+    )
+    dispatched = skipped = failures = 0
+    for batch in stale:
+        instance = (
+            WorkflowInstance.all_objects.for_document(batch)
+            .filter(status=WorkflowInstanceStatus.APPROVED)
+            .order_by("-created_at", "-id")
+            .first()
+        )
+        if instance is None:  # Metadata says approved but the instance does not; refuse to send.
+            skipped += 1
+            continue
+        try:
+            dispatch_approved_payout_batch(batch_id=batch.pk, instance_id=instance.pk)
+            dispatched += 1
+        except Exception:  # One unsendable batch must not stop the rest of the sweep.
+            _logger.exception(
+                "sweep_undispatched_payout_batches: batch %s could not be dispatched.",
+                batch.pk,
+            )
+            failures += 1
+    return {"dispatched": dispatched, "skipped": skipped, "failures": failures}
 
 
 # Support the recompute batch status workflow.

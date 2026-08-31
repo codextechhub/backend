@@ -1849,7 +1849,10 @@ class PayoutBatchApprovalTests(TestCase):
         self._submit_for_approval(batch)
         instance = self._instance_for(batch)
 
-        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+        # Dispatch is deferred to on_commit so the provider is never called inside
+        # the approval transaction; TestCase never commits, so run the callbacks.
+        with self.captureOnCommitCallbacks(execute=True):
+            wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
 
         batch.refresh_from_db()
         self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
@@ -1968,7 +1971,10 @@ class PayoutBatchApprovalTests(TestCase):
         batch = self._draft_batch(10_000)
         self._submit_for_approval(batch)
 
-        wf_actions.record_action(self._instance_for(batch).id, approver, ActionEnum.APPROVED)
+        # Dispatch is deferred to on_commit so the provider is never called inside
+        # the approval transaction; TestCase never commits, so run the callbacks.
+        with self.captureOnCommitCallbacks(execute=True):
+            wf_actions.record_action(self._instance_for(batch).id, approver, ActionEnum.APPROVED)
 
         batch.refresh_from_db()
         self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
@@ -1987,7 +1993,10 @@ class PayoutBatchApprovalTests(TestCase):
         batch.refresh_from_db()
         self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
 
-        wf_actions.record_action(self._instance_for(batch).id, senior, ActionEnum.APPROVED)
+        # Dispatch is deferred to on_commit so the provider is never called inside
+        # the approval transaction; TestCase never commits, so run the callbacks.
+        with self.captureOnCommitCallbacks(execute=True):
+            wf_actions.record_action(self._instance_for(batch).id, senior, ActionEnum.APPROVED)
 
         batch.refresh_from_db()
         self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
@@ -2340,7 +2349,10 @@ class PayoutBatchApprovalTests(TestCase):
         snaps = my_queue.pending_approval_snapshots(approver, self.tenant)
         self.assertEqual(len(snaps), 1)
 
-        wf_actions.record_action(self._instance_for(batch).id, approver, ActionEnum.APPROVED)
+        # Dispatch is deferred to on_commit so the provider is never called inside
+        # the approval transaction; TestCase never commits, so run the callbacks.
+        with self.captureOnCommitCallbacks(execute=True):
+            wf_actions.record_action(self._instance_for(batch).id, approver, ActionEnum.APPROVED)
         batch.refresh_from_db()
         self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
 
@@ -2382,6 +2394,210 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
         self.assertEqual((batch.metadata or {}).get("approval_status"), "DRAFT")
         self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
+
+    # --- 11. money never moves inside the approval transaction ------------- #
+
+    def _approved_batch(self, *amounts):
+        """A batch carrying terminal approval, with the dispatch hand-off suppressed."""
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.services import actions as wf_actions
+
+        self._publish_template()
+        approver = self._make_approver()
+        batch = self._draft_batch(*(amounts or (10000,)))
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        # No captureOnCommitCallbacks: the approval commits, the dispatch never runs.
+        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+        batch.refresh_from_db()
+        return batch, self._instance_for(batch)
+
+    def test_the_approval_transaction_makes_no_provider_call(self):
+        """The transfer happens after the approval commits, never inside it.
+
+        This is the defect itself: a transfer sent inside the approval transaction is
+        irreversible, but the transaction around it is not. A deadlock rolling that
+        transaction back would leave the money gone and the batch back in DRAFT, ready
+        to be sent a second time.
+        """
+        from django.db import transaction as db_transaction
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.services import actions as wf_actions
+
+        self._publish_template()
+        approver = self._make_approver()
+        batch = self._draft_batch(10000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+
+        open_blocks = []
+        original = self.fake.create_transfer
+
+        def _spy(**kwargs):
+            blocks = db_transaction.get_connection().atomic_blocks
+            # Ignore the block django.test.TestCase wraps every test in.
+            open_blocks.append([
+                b for b in blocks if not getattr(b, "_from_testcase", False)
+            ])
+            return original(**kwargs)
+
+        with patch.object(self.fake, "create_transfer", side_effect=_spy):
+            with self.captureOnCommitCallbacks() as callbacks:
+                wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+            # The approval is recorded and nothing has been sent: the dispatch is
+            # sitting on the commit hook.
+            self.assertEqual(open_blocks, [], "provider called inside the approval")
+            batch.refresh_from_db()
+            self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+            self.assertTrue(callbacks, "no dispatch was scheduled for after the commit")
+
+            for callback in callbacks:  # Now play the commit hook, as a real commit would.
+                callback()
+
+        self.assertEqual(len(open_blocks), 1)
+        self.assertEqual(open_blocks[0], [], "provider called inside a transaction")
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
+
+    def test_a_rolled_back_approval_never_reaches_the_provider(self):
+        """Nothing is sent for an approval that did not survive its own transaction."""
+        from django.db import transaction as db_transaction
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.services import actions as wf_actions
+
+        self._publish_template()
+        approver = self._make_approver()
+        batch = self._draft_batch(10000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+
+        class _Boom(RuntimeError):
+            pass
+
+        with patch.object(self.fake, "create_transfer") as sent:
+            with self.captureOnCommitCallbacks(execute=True):
+                with self.assertRaises(_Boom):
+                    with db_transaction.atomic():
+                        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+                        raise _Boom()  # Stand-in for the deadlock that loses the approval.
+
+        sent.assert_not_called()
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+        self.assertNotEqual((batch.metadata or {}).get("approval_status"), "APPROVED")
+        self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
+
+    def test_dispatching_inside_a_transaction_is_refused(self):
+        """The guard at the choke point, so no future caller can reintroduce this."""
+        from django.db import transaction as db_transaction
+
+        from .exceptions import ProviderDispatchInTransactionError
+
+        batch, instance = self._approved_batch()
+        with patch.object(self.fake, "create_transfer") as sent:
+            with self.assertRaises(ProviderDispatchInTransactionError):
+                with db_transaction.atomic():
+                    services.submit_payout_batch(batch, approved_instance=instance)
+        sent.assert_not_called()
+
+    def test_the_instruction_is_claimed_before_the_transfer_is_sent(self):
+        """A crash mid-send leaves a PROCESSING row, never a PENDING one to re-send."""
+        batch, instance = self._approved_batch()
+        seen = []
+        original = self.fake.create_transfer
+
+        def _spy(**kwargs):
+            seen.append(
+                PayoutInstruction.objects.get(reference=kwargs["reference"]).status,
+            )
+            return original(**kwargs)
+
+        with patch.object(self.fake, "create_transfer", side_effect=_spy):
+            services.submit_payout_batch(batch, approved_instance=instance)
+
+        self.assertEqual(seen, [PayoutStatus.PROCESSING])
+
+    def test_an_already_processing_instruction_is_never_sent_twice(self):
+        """Re-running a batch retries the stragglers and nothing else."""
+        batch, instance = self._approved_batch(10000, 20000)
+        first = batch.instructions.order_by("pk").first()
+        first.status = PayoutStatus.PROCESSING  # Sent by a run that died before recording it.
+        first.save(update_fields=["status", "updated_at"])
+
+        with patch.object(
+            self.fake, "create_transfer", side_effect=self.fake.create_transfer,
+        ) as sent:
+            services.submit_payout_batch(batch, approved_instance=instance)
+
+        self.assertEqual(
+            [call.kwargs["amount"] for call in sent.call_args_list], [20000],
+        )
+
+    def test_an_uncertain_provider_failure_leaves_the_payout_in_flight(self):
+        """A timeout is not a rejection: the bank may well have taken the instruction.
+
+        Cedar sends Supplier Ltd 100 naira, Paystack accepts it and the connection drops
+        before the answer arrives. Recording that as FAILED would tell Cedar the money
+        never left, while it did.
+        """
+        batch, instance = self._approved_batch()
+        # No provider_code: a transport failure, so the outcome is genuinely unknown.
+        unreachable = ProviderError("Could not reach paystack: timed out", provider="PAYSTACK")
+
+        with patch.object(self.fake, "create_transfer", side_effect=unreachable):
+            services.submit_payout_batch(batch, approved_instance=instance)
+
+        payout = batch.instructions.get()
+        self.assertEqual(payout.status, PayoutStatus.PROCESSING)
+        self.assertTrue((payout.metadata or {}).get("dispatch_outcome_unknown"))
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
+
+    def test_a_clean_provider_rejection_marks_the_payout_failed(self):
+        """A 4xx is proof nothing was sent, so the instruction is terminally failed."""
+        batch, instance = self._approved_batch()
+        rejected = ProviderError(
+            "PAYSTACK returned HTTP 400: invalid bank code",
+            provider="PAYSTACK", provider_code="400",
+        )
+
+        with patch.object(self.fake, "create_transfer", side_effect=rejected):
+            services.submit_payout_batch(batch, approved_instance=instance)
+
+        payout = batch.instructions.get()
+        self.assertEqual(payout.status, PayoutStatus.FAILED)
+        self.assertFalse((payout.metadata or {}).get("dispatch_outcome_unknown"))
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.FAILED)
+
+    def test_the_sweep_dispatches_a_batch_whose_handoff_was_lost(self):
+        """The broker was down when the approval committed; nothing is left unsent."""
+        batch, _ = self._approved_batch()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)  # Approved, never dispatched.
+
+        summary = services.sweep_undispatched_payout_batches()
+
+        self.assertEqual(summary["dispatched"], 1)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
+        self.assertTrue(
+            all(p.status == PayoutStatus.PROCESSING for p in batch.instructions.all())
+        )
+
+    def test_the_sweep_leaves_an_unapproved_batch_alone(self):
+        """The sweep dispatches approvals; it does not become a way to skip one."""
+        self._publish_template()
+        batch = self._draft_batch(10000)
+        self._submit_for_approval(batch)  # Submitted, but nobody has voted.
+
+        with patch.object(self.fake, "create_transfer") as sent:
+            summary = services.sweep_undispatched_payout_batches()
+
+        sent.assert_not_called()
+        self.assertEqual(summary["dispatched"], 0)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+
 
 
 # Group tests for the seeded payout-approval ladder (turning the gate ON).

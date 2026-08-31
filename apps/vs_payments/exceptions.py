@@ -79,3 +79,14 @@ class PayoutApprovalRequiredError(PaymentStateError):
 
     error_code = "PAYOUT_APPROVAL_REQUIRED"
     default_message = "This payout batch does not have the required human approval."
+
+
+class ProviderDispatchInTransactionError(RuntimeError):
+    """A money-moving provider call was attempted inside a database transaction.
+
+    Deliberately **not** a :class:`PaymentError`. The batch dispatch loop treats a
+    ``FinanceError`` as "this one instruction was rejected, carry on with the rest";
+    this is not that. It is a programming error in the calling code, it must abort the
+    whole run, and it must never be recorded against an instruction as a payment
+    failure.
+    """
