@@ -290,6 +290,15 @@ class Command(BaseCommand):
                 )
                 levels[level_name] = level
 
+        # Wire each programme's ladder, and mark its last rung terminal.
+        #
+        # Without this every level sat in Level.next_level's THIRD state - no
+        # target and no terminal flag, meaning "nobody has wired this yet" -
+        # and a promotion preview reported the entire roll as graduating. The
+        # module now refuses that rather than acting on it, but a dev world
+        # where nothing can be promoted cannot exercise the screen either.
+        self._wire(levels, [n for _, _, _, names in PROGRAMMES for n in names])
+
         if secondary is not None:
             # A whole programme one branch runs and the other does not - the
             # arrangement the nullable branch column exists for.
@@ -306,7 +315,31 @@ class Command(BaseCommand):
                     },
                 )
                 levels[level_name] = level
+            self._wire(levels, ["Vocational 1", "Vocational 2"])
         return levels
+
+    @staticmethod
+    def _wire(levels, ladder):
+        """Point each level at the next, and mark the last one terminal.
+
+        Idempotent, and it tops up a level seeded before this existed: a
+        re-run repairs an existing dev database rather than only a fresh one.
+        The two fields are set together because the model forbids holding both
+        at once - a level that promotes into JSS2 and also says pupils leave is
+        two answers to one question.
+        """
+        rungs = [levels[n] for n in ladder if n in levels]
+        for current, following in zip(rungs, rungs[1:]):
+            if current.next_level_id == following.pk and not current.is_terminal:
+                continue
+            current.next_level = following
+            current.is_terminal = False
+            current.save(update_fields=["next_level", "is_terminal", "updated_at"])
+        if rungs and not rungs[-1].is_terminal:
+            last = rungs[-1]
+            last.next_level = None
+            last.is_terminal = True
+            last.save(update_fields=["next_level", "is_terminal", "updated_at"])
 
     def _classes(self, tenant, levels, branches, multi, year):
         """Arms for the secondary levels, spread across the branches."""

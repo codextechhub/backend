@@ -161,6 +161,10 @@ class PromotionOutcome(models.TextChoices):
 #: Why a student is on the promotion exception list. A fixed vocabulary,
 #: because the screen prints the sentence and a free-text reason drifts.
 EXC_TERMINAL_LEVEL = "TERMINAL_LEVEL"
+#: A level with no promotion target AND no terminal flag - nobody has wired it.
+#: Distinct from TERMINAL_LEVEL on purpose: see Level.next_level's comment and
+#: FRD v2.7 FR-005. Treating the two alike graduates a year group by accident.
+EXC_LEVEL_NOT_WIRED = "LEVEL_NOT_WIRED"
 EXC_NO_CLASS_AT_NEXT_LEVEL = "NO_CLASS_AT_NEXT_LEVEL"
 EXC_STUDENT_SUSPENDED = "STUDENT_SUSPENDED"
 EXC_NO_CLASS_ASSIGNED = "NO_CLASS_ASSIGNED"

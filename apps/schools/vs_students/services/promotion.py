@@ -26,6 +26,7 @@ from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
 
 from ..constants import (
+    EXC_LEVEL_NOT_WIRED,
     EXC_NO_CLASS_AT_NEXT_LEVEL,
     EXC_NO_CLASS_ASSIGNED,
     EXC_NO_CLASS_TO_REPEAT,
@@ -49,6 +50,11 @@ EXCEPTION_TEXT = {
     EXC_NO_CLASS_AT_NEXT_LEVEL: (
         "There is no class at the next level yet, so these students cannot be "
         "promoted. Add one in Academic Structure first."
+    ),
+    EXC_LEVEL_NOT_WIRED: (
+        "Nobody has set what this level promotes into, so these students are "
+        "held rather than moved. Set its promotion target in Academic "
+        "Structure, or mark the level as one pupils leave after."
     ),
     EXC_STUDENT_SUSPENDED: (
         "{name} is suspended, so they are not promoted with the cohort. Lift "
@@ -114,8 +120,14 @@ def _target_class(source_class, target_classes_by_level_code):
     level = source_class.level
     if level is None:
         return None, EXC_NO_CLASS_ASSIGNED
-    if getattr(level, "is_terminal", False) or level.next_level_id is None:
+    # THREE states, not two. A null next_level means "leave the school" only
+    # when the level says so; on its own it means nobody has wired the chain
+    # yet, and the two must not be treated alike - Level.next_level's own
+    # comment says so, and FRD v2.7 FR-005 requires the refusal.
+    if getattr(level, "is_terminal", False):
         return None, EXC_TERMINAL_LEVEL
+    if level.next_level_id is None:
+        return None, EXC_LEVEL_NOT_WIRED
 
     found = _class_at(source_class, level.next_level, target_classes_by_level_code)
     return (found, None) if found else (None, EXC_NO_CLASS_AT_NEXT_LEVEL)
@@ -247,7 +259,10 @@ def classify(tenant, user, *, from_session, to_session, overrides=None):
 
         if cause == EXC_TERMINAL_LEVEL:
             default = PromotionOutcome.GRADUATE
-        elif cause == EXC_NO_CLASS_AT_NEXT_LEVEL:
+        elif cause in (EXC_NO_CLASS_AT_NEXT_LEVEL, EXC_LEVEL_NOT_WIRED):
+            # Held, never graduated. An unwired level is a gap in the school's
+            # setup, and the safe reading of a gap is "do nothing", not "these
+            # children have finished school".
             default = PromotionOutcome.HOLD
         elif student.status == StudentStatus.ENROLLED:
             # Confirmed but never placed into attendance. Moving them up a
@@ -289,10 +304,11 @@ def classify(tenant, user, *, from_session, to_session, overrides=None):
         if source.pk in seen_map:
             continue
         seen_map.add(source.pk)
-        terminal = (
-            source.level is None
-            or getattr(source.level, "is_terminal", False)
-            or source.level.next_level_id is None
+        # Only a level that SAYS pupils leave is terminal here. An unwired one
+        # renders as "not set" rather than "Graduates", so the map cannot tell
+        # a registrar a cohort is leaving when nobody has said that.
+        terminal = source.level is not None and getattr(
+            source.level, "is_terminal", False,
         )
         plan.level_map.append({
             "from": source.name, "from_id": source.pk,

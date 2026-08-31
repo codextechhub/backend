@@ -1038,3 +1038,79 @@ class PromotionTests(StudentsFixture):
                       {"to_session": self.next_year.pk}).status_code,
             403,
         )
+
+
+class UnwiredLevelTests(StudentsFixture):
+    """A level nobody has wired must hold its students, never graduate them.
+
+    ``Level.next_level`` carries three states and only two are safe to merge.
+    ``is_terminal`` says pupils leave; a bare null says nobody has set the
+    target yet. Reading the second as the first empties a year group, and the
+    school hears about it from a parent - which is what Level's own comment and
+    FRD v2.7 FR-005 both say must not happen.
+    """
+
+    def setUp(self):
+        # Next year exists with a class to land in, so nothing here is held
+        # for want of a target - the only variable is how JSS1 is wired.
+        self.next_jss1 = Level.all_objects.create(
+            tenant=self.tenant, program=self.program, session=self.next_year,
+            name="JSS1", code="JSS1", order_index=1,
+        )
+        self.next_jss2 = Level.all_objects.create(
+            tenant=self.tenant, program=self.program, session=self.next_year,
+            name="JSS2", code="JSS2", order_index=2,
+        )
+        SchoolClass.all_objects.create(
+            tenant=self.tenant, level=self.next_jss2, session=self.next_year,
+            name="JSS2 A", code="N-JSS2A", arm="A", capacity=30,
+        )
+        self.pupil = self.student(first="Ada", last="Unwired")
+        self.place(self.pupil, self.shared_class)
+
+    def preview(self):
+        return self.post(
+            self.admin, "student-promotion-preview",
+            {"to_session": self.next_year.pk},
+        ).data["data"]
+
+    def test_an_unwired_level_holds_rather_than_graduating(self):
+        """The defect itself: 82 children left the roll on a mis-click."""
+        self.jss1.next_level = None
+        self.jss1.is_terminal = False
+        self.jss1.save(update_fields=["next_level", "is_terminal"])
+
+        data = self.preview()
+        self.assertEqual(data["counts"]["graduate"], 0)
+        self.assertEqual(data["counts"]["hold"], 1)
+
+    def test_it_is_named_as_unwired_and_not_as_terminal(self):
+        """The registrar needs to know it is THEIR setup, not the pupils'."""
+        self.jss1.next_level = None
+        self.jss1.is_terminal = False
+        self.jss1.save(update_fields=["next_level", "is_terminal"])
+
+        causes = [e["cause"] for e in self.preview()["exceptions"]["by_class"]]
+        self.assertIn("LEVEL_NOT_WIRED", causes)
+        self.assertNotIn("TERMINAL_LEVEL", causes)
+
+    def test_a_level_that_says_pupils_leave_still_graduates_them(self):
+        """The other side: the real terminal case must keep working."""
+        self.jss1.next_level = None
+        self.jss1.is_terminal = True
+        self.jss1.save(update_fields=["next_level", "is_terminal"])
+
+        data = self.preview()
+        self.assertEqual(data["counts"]["graduate"], 1)
+        self.assertEqual(data["counts"]["hold"], 0)
+
+    def test_the_map_does_not_claim_an_unwired_cohort_is_leaving(self):
+        self.jss1.next_level = None
+        self.jss1.is_terminal = False
+        self.jss1.save(update_fields=["next_level", "is_terminal"])
+
+        row = next(
+            r for r in self.preview()["level_map"]
+            if r["from_id"] == self.shared_class.pk
+        )
+        self.assertFalse(row["terminal"])
