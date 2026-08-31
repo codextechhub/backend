@@ -35,6 +35,22 @@ class DuplicateStudent(StudentsError):
     http_status = 409
 
 
+class YearIsClosed(StudentsError):
+    """A write aimed at a school year that has been archived.
+
+    Carries M13's error code rather than one of its own. It is the same
+    refusal about the same year, and a client that already knows how to render
+    it should not have to learn a second name for it because the row being
+    written belongs to a different module.
+    """
+
+    error_code = "SESSION_ARCHIVED_READ_ONLY"
+    default_message = (
+        "That school year is closed, so its roll can no longer be changed."
+    )
+    http_status = 409
+
+
 class ClassBelongsToAnotherYear(StudentsError):
     """The class named is a different year's class of the same name.
 

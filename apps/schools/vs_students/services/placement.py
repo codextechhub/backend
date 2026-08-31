@@ -26,6 +26,7 @@ from ..exceptions import (
 )
 from ..models import ClassEnrolment
 from .scoping import assert_class_reachable, scope_classes
+from .years import assert_year_is_open
 
 
 def active_session(tenant):
@@ -131,6 +132,9 @@ def place(
     Returns ``(enrolment, was_transfer, over_capacity)``.
     """
     session = session or active_session(student.tenant)
+    # A no-op on the default path, where the year is the ACTIVE one by
+    # definition. It is here for the callers that name a year themselves.
+    assert_year_is_open(session, what="place")
     assert_class_is_in_session(school_class, session)
     assert_class_reachable(student.branch, school_class)
 

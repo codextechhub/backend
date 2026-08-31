@@ -38,6 +38,7 @@ from ..constants import (
 from ..models import ClassEnrolment, Student, StudentPromotionBatch
 from .placement import assert_class_is_in_session
 from .scoping import scope_classes, scope_students
+from .years import assert_year_is_open
 
 #: The sentences the exception list prints. Written for the person reading
 #: them, because the screen shows them verbatim under the student's name.
@@ -160,6 +161,13 @@ def classify(tenant, user, *, from_session, to_session, overrides=None):
     on top of the defaults.
     """
     from schools.vs_academics.models import SchoolClass
+
+    # Here rather than in run(), so the preview refuses exactly what the run
+    # would - and before run()'s per-student except, which would otherwise
+    # swallow this into a "failed" tally instead of answering the caller.
+    # from_session is deliberately not checked: promoting OUT of last year is
+    # the whole point of the run.
+    assert_year_is_open(to_session, what="promote")
 
     overrides = overrides or {}
     plan = Plan()

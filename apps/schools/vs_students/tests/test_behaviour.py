@@ -22,6 +22,8 @@ from schools.vs_students.constants import (
     Relationship,
     StudentStatus,
 )
+from schools.vs_students.exceptions import YearIsClosed
+from schools.vs_students.services.placement import place
 from schools.vs_students.models import (
     ClassEnrolment,
     Guardian,
@@ -522,6 +524,25 @@ class PlacementTests(StudentsFixture):
                 school_class=self.lekki_class, session=self.year, is_active=True,
             )
 
+    def test_a_placement_into_a_closed_year_is_refused(self):
+        """The ordinary placement path, for a caller that names the year."""
+        past = AcademicSession.all_objects.create(
+            tenant=self.tenant, name="2019/2020",
+            start_date=dt.date(2019, 9, 1), end_date=dt.date(2020, 7, 31),
+            status=SessionStatus.ARCHIVED,
+        )
+        old_jss1 = Level.all_objects.create(
+            tenant=self.tenant, program=self.program, session=past,
+            name="JSS1", code="JSS1", order_index=1,
+        )
+        stale = SchoolClass.all_objects.create(
+            tenant=self.tenant, level=old_jss1, session=past,
+            name="JSS1 A", code="JSS1A", arm="A", branch=None, capacity=30,
+        )
+        with self.assertRaises(YearIsClosed):
+            place(self.row, stale, actor=self.admin, session=past)
+        self.assertEqual(self.row.enrolments.count(), 0)
+
     def test_a_class_from_another_year_is_refused(self):
         """The register bug: both halves of the row look right on their own.
 
@@ -855,6 +876,57 @@ class PromotionTests(StudentsFixture):
             for e in response.data["data"]["exceptions"]["by_class"]
         ]
         self.assertIn("NO_CLASS_TO_REPEAT", causes)
+
+    def test_a_closed_year_cannot_be_promoted_into(self):
+        """The register of a finished year is a fact, not a working document.
+
+        Reachable by a mis-click rather than an exploit: the run takes a year
+        from a picker, and last year is archived at every school that has run
+        one, sitting in that list with real classes in it.
+        """
+        AcademicSession.all_objects.filter(pk=self.next_year.pk).update(
+            status=SessionStatus.ARCHIVED,
+        )
+        response = self.post(self.admin, "student-promotion-run", {
+            "to_session": self.next_year.pk,
+            "overrides": {str(self.mover.pk): PromotionOutcome.PROMOTE},
+        })
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(
+            response.data["error"]["code"], "SESSION_ARCHIVED_READ_ONLY",
+        )
+        self.assertFalse(
+            ClassEnrolment.all_objects.filter(session=self.next_year).exists(),
+        )
+
+    def test_the_preview_refuses_a_closed_year_too(self):
+        """A preview that succeeds where the run refuses is not a preview."""
+        AcademicSession.all_objects.filter(pk=self.next_year.pk).update(
+            status=SessionStatus.ARCHIVED,
+        )
+        response = self._preview()
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(
+            response.data["error"]["code"], "SESSION_ARCHIVED_READ_ONLY",
+        )
+
+    def test_promoting_OUT_of_a_closed_year_is_the_normal_case(self):
+        """The guard reads to_session only, and this is why.
+
+        At the end of a year the school archives it and promotes out of it.
+        A guard on from_session would refuse the one run this module exists
+        for.
+        """
+        AcademicSession.all_objects.filter(pk=self.year.pk).update(
+            status=SessionStatus.ARCHIVED,
+        )
+        response = self.post(self.admin, "student-promotion-run", {
+            "from_session": self.year.pk,
+            "to_session": self.next_year.pk,
+            "overrides": {str(self.mover.pk): PromotionOutcome.PROMOTE},
+        })
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["data"]["promoted"], 1)
 
     def test_a_hold_writes_no_enrolment_and_leaves_the_placement_active(self):
         before = ClassEnrolment.all_objects.count()
