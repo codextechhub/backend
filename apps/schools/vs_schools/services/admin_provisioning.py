@@ -59,7 +59,7 @@ def provision_admin_user(
     from vs_user.email_normalization import normalize_email
     from vs_user.models import User
     from vs_user.services.invitation import InvitationService
-    from vs_user.tasks import send_invitation_email_task
+    from vs_user.tasks import queue_invitation_email
     from ..models import InviteStatus
 
     email = normalize_email(contact.email)
@@ -188,16 +188,17 @@ def provision_admin_user(
                 user=user, invited_by=invited_by or user,
             )
 
-            send_invitation_email_task.delay(
+            # Queued for after the outermost transaction commits, not from
+            # inside this savepoint: the worker gets only the invitation id,
+            # and it must not be able to read for it before the commit that
+            # publishes the row. See ``queue_invitation_email``.
+            # Owner is whoever provisioned the school admin; a provisioning
+            # run with no actor stays a system row (owner=None).
+            queue_invitation_email(
                 invitation_id=invitation.pk,
                 token=token,
-                # Owner is whoever provisioned the school admin; a provisioning
-                # run with no actor stays a system row (owner=None).
-                _job_owner_id=str(invited_by.id) if invited_by else None,
-                _job_label=f"Invitation email to {user.email}",
-                _job_kind="email",
-                # Fan-out plumbing: one bell notification per invited row is spam.
-                _job_notify=False,
+                owner_id=str(invited_by.id) if invited_by else None,
+                label=f"Invitation email to {user.email}",
             )
 
             # Mark the admin link record so it is not re-processed.

@@ -250,26 +250,18 @@ class InvitationService:
                 invited_by=requested_by,
             )
 
-        from ..tasks import send_invitation_email_task
-        try:
-            send_invitation_email_task.delay(
-                invitation_id=invitation.pk,
-                token=token,
-                # Owner is the admin doing the resend - not the invitee.
-                _job_owner_id=str(requested_by.id) if requested_by else None,
-                _job_label=f"Invitation email to {user.email}",
-                _job_kind="email",
-                # Fan-out plumbing: one bell notification per invited row is spam.
-                _job_notify=False,
-            )
-        except Exception:
-            # The invitation record is already reset - an email dispatch
-            # failure must not fail the resend request. The failure is
-            # visible via the invitation's email_status tracking.
-            logger.error(
-                'Failed to dispatch invitation email for user %s - email will need to be resent manually.',
-                user.pk, exc_info=True,
-            )
+        # Queued for after this transaction commits. A resend rotates the
+        # token hash on the row, so a worker that reads it early sees the old
+        # hash, decides the token it was handed is stale, and sends nothing -
+        # while the admin is told the link was resent. Owner is the admin
+        # doing the resend, not the invitee.
+        from ..tasks import queue_invitation_email
+        queue_invitation_email(
+            invitation_id=invitation.pk,
+            token=token,
+            owner_id=str(requested_by.id) if requested_by else None,
+            label=f"Invitation email to {user.email}",
+        )
 
         log_auth_event(
             actor=requested_by,

@@ -24,6 +24,7 @@ event type to survive - see ENV-10 in the README's Getting started notes.
 """
 from unittest import mock
 
+from django.db import transaction
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
@@ -82,34 +83,35 @@ class SharedAdminAcrossBranchesTests(TestCase):
     def _create_corona(self):
         """Corona, with Lekki and Ikeja both administered by the same person."""
         with mock.patch("vs_user.tasks.send_invitation_email_task.delay") as delay:
-            response = self._client().post(
-                reverse("school-create"),
-                {
-                    "name": "Corona Secondary",
-                    "slug": "corona-secondary",
-                    "branches": [
-                        {
-                            "name": "Lekki",
-                            "state": "Lagos",
-                            "is_main": True,
-                            "primary_admin_data": {
-                                "full_name": "Bola Adeniyi",
-                                "email": "head@corona.ng",
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self._client().post(
+                    reverse("school-create"),
+                    {
+                        "name": "Corona Secondary",
+                        "slug": "corona-secondary",
+                        "branches": [
+                            {
+                                "name": "Lekki",
+                                "state": "Lagos",
+                                "is_main": True,
+                                "primary_admin_data": {
+                                    "full_name": "Bola Adeniyi",
+                                    "email": "head@corona.ng",
+                                },
                             },
-                        },
-                        {
-                            "name": "Ikeja",
-                            "state": "Lagos",
-                            "is_main": False,
-                            "primary_admin_data": {
-                                "full_name": "Bola Adeniyi",
-                                "email": "head@corona.ng",
+                            {
+                                "name": "Ikeja",
+                                "state": "Lagos",
+                                "is_main": False,
+                                "primary_admin_data": {
+                                    "full_name": "Bola Adeniyi",
+                                    "email": "head@corona.ng",
+                                },
                             },
-                        },
-                    ],
-                },
-                format="json",
-            )
+                        ],
+                    },
+                    format="json",
+                )
         self.assertEqual(response.status_code, 201, response.data)
         return School.objects.get(slug="corona-secondary"), delay
 
@@ -231,10 +233,11 @@ class ExistingAccountIsGrantedAtItsNewPostingTests(TestCase):
         else:
             contact = link.contact
         with mock.patch("vs_user.tasks.send_invitation_email_task.delay") as delay:
-            returned = provision_admin_user(
-                contact=contact, admin_link=link, school=school, branch=branch,
-                role=role_key, actor=self.vision_user,
-            )
+            with self.captureOnCommitCallbacks(execute=True):
+                returned = provision_admin_user(
+                    contact=contact, admin_link=link, school=school, branch=branch,
+                    role=role_key, actor=self.vision_user,
+                )
         return returned, link, delay
 
     def _corona_with_an_incumbent(self):
@@ -510,3 +513,80 @@ class RequiredAdminProvisioningIsAtomicTests(TestCase):
         self.assertFalse(User.objects.filter(
             email="head@new-branch-atomic.test", tenant=school.tenant,
         ).exists())
+
+
+class ProvisioningInviteWaitsForCommitTests(TestCase):
+    """The invite is queued after the commit that publishes the invitation row.
+
+    ``provision_admin_user`` runs inside a savepoint of the creation request's
+    transaction. Queued from in there, the job carries an invitation id the
+    database has not published yet: a worker that starts first finds no row and
+    returns, and the head teacher whose link says SENT never gets an email.
+    Worse, the savepoint can still roll back afterwards - an email advertising
+    an account that no longer exists.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.actor = make_vision_user(email="commit-provision@example.com",
+                                     super_admin=True)
+        _seed_prebuilt_roles()
+
+    def _posting(self):
+        school = make_school(slug="commit-school", name="Commit School")
+        branch = make_branch(school, name="Ikeja")
+        role = TenantRoleTemplate.objects.create(
+            tenant=school.tenant, key=f"branch_admin-{branch.pk}",
+            name="Branch Admin - Ikeja", branch=branch, status="ACTIVE",
+        )
+        contact = ContactInfo.objects.create(
+            full_name="Bola Adeniyi", email="head@commit-school.test",
+        )
+        link = BranchPrimaryAdmin.objects.create(
+            branch=branch, contact=contact, branch_role="Head Teacher",
+            invite_status=InviteStatus.QUEUED,
+        )
+        return school, branch, role, contact, link
+
+    def test_the_invite_is_not_queued_until_the_invitation_row_commits(self):
+        from vs_user.models import UserInvitation
+
+        from .services.admin_provisioning import provision_admin_user
+
+        school, branch, role, contact, link = self._posting()
+        with mock.patch("vs_user.tasks.send_invitation_email_task.delay") as delay:
+            with self.captureOnCommitCallbacks() as callbacks:
+                provision_admin_user(
+                    contact=contact, admin_link=link, school=school,
+                    branch=branch, role=role.key, actor=self.actor,
+                )
+            self.assertFalse(
+                delay.called,
+                "the invite must not be queued while its row is uncommitted",
+            )
+            self.assertEqual(len(callbacks), 1)
+            callbacks[0]()
+
+        invitation = UserInvitation.objects.get(
+            user__email="head@commit-school.test",
+        )
+        self.assertEqual(delay.call_args.kwargs["invitation_id"], invitation.pk)
+
+    def test_a_rolled_back_provisioning_queues_no_invite(self):
+        from .services.admin_provisioning import provision_admin_user
+
+        school, branch, role, contact, link = self._posting()
+        with mock.patch("vs_user.tasks.send_invitation_email_task.delay") as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                with self.assertRaises(RuntimeError):
+                    with transaction.atomic():
+                        provision_admin_user(
+                            contact=contact, admin_link=link, school=school,
+                            branch=branch, role=role.key, actor=self.actor,
+                        )
+                        raise RuntimeError("the rest of the creation failed")
+
+        self.assertFalse(delay.called)
+        self.assertFalse(
+            User.objects.filter(email="head@commit-school.test").exists(),
+        )

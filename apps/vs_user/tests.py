@@ -247,9 +247,10 @@ class JobAttributionTests(TestCase):
         from vs_user.services.user import UserCreationService
 
         with mock.patch("vs_user.tasks.send_invitation_email_task.delay") as delay:
-            UserCreationService.finalize_invitation(
-                user=self.subject, requested_by=self.actor,
-            )
+            with self.captureOnCommitCallbacks(execute=True):
+                UserCreationService.finalize_invitation(
+                    user=self.subject, requested_by=self.actor,
+                )
         kwargs = self._queued_kwargs(delay)
         self.assertEqual(kwargs["_job_owner_id"], str(self.actor.id))
         self.assertNotEqual(kwargs["_job_owner_id"], str(self.subject.id))
@@ -262,7 +263,8 @@ class JobAttributionTests(TestCase):
 
         InvitationService.create(user=self.subject, invited_by=self.actor)
         with mock.patch("vs_user.tasks.send_invitation_email_task.delay") as delay:
-            InvitationService.resend(user=self.subject, requested_by=self.actor)
+            with self.captureOnCommitCallbacks(execute=True):
+                InvitationService.resend(user=self.subject, requested_by=self.actor)
         kwargs = self._queued_kwargs(delay)
         self.assertEqual(kwargs["_job_owner_id"], str(self.actor.id))
 
@@ -270,9 +272,10 @@ class JobAttributionTests(TestCase):
         from vs_user.services.password import PasswordService
 
         with mock.patch("vs_user.tasks.send_password_reset_email_task.delay") as delay:
-            PasswordService.admin_reset(
-                target_user=self.subject, requesting_user=self.actor,
-            )
+            with self.captureOnCommitCallbacks(execute=True):
+                PasswordService.admin_reset(
+                    target_user=self.subject, requesting_user=self.actor,
+                )
         kwargs = self._queued_kwargs(delay)
         self.assertEqual(kwargs["_job_owner_id"], str(self.actor.id))
         self.assertEqual(kwargs["_job_kind"], "email")
@@ -281,12 +284,130 @@ class JobAttributionTests(TestCase):
         from vs_user.services.password import PasswordService
 
         with mock.patch("vs_user.tasks.send_password_reset_email_task.delay") as delay:
-            PasswordService.request_reset(
-                email=self.subject.email, tenant=self.subject.tenant.slug,
-            )
+            with self.captureOnCommitCallbacks(execute=True):
+                PasswordService.request_reset(
+                    email=self.subject.email, tenant=self.subject.tenant.slug,
+                )
         kwargs = self._queued_kwargs(delay)
         # SELF origin: the subject *is* the actor, so the row is theirs.
         self.assertEqual(kwargs["_job_owner_id"], str(self.subject.id))
+
+
+class EmailQueuedOnlyAfterCommitTests(TestCase):
+    """Account emails are enqueued after the transaction commits, never inside it.
+
+    Regression: the reset row and the invitation row are written inside a
+    transaction, and the task was queued from inside it carrying only the row's
+    id. A worker that started before the commit landed read no row, logged
+    "no request with id=...", and returned. Ada asked for a reset link, got a
+    200, and no email was ever created.
+    """
+
+    def setUp(self):
+        self.actor = make_cx_user(email="commit.actor@codex.test")
+        self.subject = make_cx_user(email="commit.subject@codex.test")
+
+    def test_reset_email_waits_for_the_commit_that_publishes_the_row(self):
+        from vs_user.models import PasswordResetRequest
+        from vs_user.services.password import PasswordService
+
+        with mock.patch("vs_user.tasks.send_password_reset_email_task.delay") as delay:
+            with self.captureOnCommitCallbacks() as callbacks:
+                PasswordService.request_reset(
+                    email=self.subject.email, tenant=self.subject.tenant.slug,
+                )
+            self.assertFalse(
+                delay.called,
+                "the reset email must not be queued while its row is uncommitted",
+            )
+            self.assertEqual(len(callbacks), 1)
+            callbacks[0]()
+
+        self.assertTrue(delay.called)
+        self.assertEqual(
+            delay.call_args.kwargs["reset_request_id"],
+            PasswordResetRequest.objects.get(user=self.subject).pk,
+        )
+
+    def test_no_reset_email_is_queued_when_the_caller_rolls_back(self):
+        from vs_user.models import PasswordResetRequest
+        from vs_user.services.password import PasswordService
+
+        with mock.patch("vs_user.tasks.send_password_reset_email_task.delay") as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                with self.assertRaises(RuntimeError):
+                    with transaction.atomic():
+                        PasswordService.request_reset(
+                            email=self.subject.email,
+                            tenant=self.subject.tenant.slug,
+                        )
+                        raise RuntimeError("caller failed after the reset row")
+
+        self.assertFalse(
+            delay.called,
+            "a rolled-back reset must not email a link to a row that does not exist",
+        )
+        self.assertFalse(PasswordResetRequest.objects.filter(user=self.subject).exists())
+
+    def test_invitation_email_waits_for_the_commit_that_publishes_the_row(self):
+        from vs_user.services.user import UserCreationService
+
+        with mock.patch("vs_user.tasks.send_invitation_email_task.delay") as delay:
+            with self.captureOnCommitCallbacks() as callbacks:
+                UserCreationService.finalize_invitation(
+                    user=self.subject, requested_by=self.actor,
+                )
+            self.assertFalse(delay.called)
+            self.assertEqual(len(callbacks), 1)
+            callbacks[0]()
+
+        self.assertTrue(delay.called)
+
+    def test_invitation_resend_email_waits_for_the_rotated_token_to_commit(self):
+        from vs_user.action_tokens import invitation_token_digest
+        from vs_user.models import UserInvitation
+        from vs_user.services.invitation import InvitationService
+
+        InvitationService.create(user=self.subject, invited_by=self.actor)
+        with mock.patch("vs_user.tasks.send_invitation_email_task.delay") as delay:
+            with self.captureOnCommitCallbacks() as callbacks:
+                InvitationService.resend(user=self.subject, requested_by=self.actor)
+            self.assertFalse(
+                delay.called,
+                "a resend queued mid-transaction lets the worker read the "
+                "pre-rotation hash and drop the email as stale",
+            )
+            callbacks[0]()
+
+        invitation = UserInvitation.objects.get(user=self.subject)
+        self.assertEqual(delay.call_args.kwargs["invitation_id"], invitation.pk)
+        self.assertEqual(
+            invitation_token_digest(delay.call_args.kwargs["token"]),
+            invitation.token_hash,
+        )
+
+    def test_a_broker_outage_after_commit_does_not_break_the_request(self):
+        from vs_user.models import PasswordResetRequest
+        from vs_user.services.password import PasswordService
+
+        with mock.patch(
+            "vs_user.tasks.send_password_reset_email_task.delay",
+            side_effect=Exception("broker connection refused"),
+        ), mock.patch(
+            "vs_user.tasks.send_password_reset_email_task.apply",
+            side_effect=Exception("smtp unreachable"),
+        ):
+            with self.captureOnCommitCallbacks(execute=True):
+                PasswordService.request_reset(
+                    email=self.subject.email, tenant=self.subject.tenant.slug,
+                )
+
+        self.assertTrue(
+            PasswordResetRequest.objects.filter(
+                user=self.subject, used_at__isnull=True,
+            ).exists(),
+            "the reset row must survive an email failure - the user can ask again",
+        )
 
 
 class UserListScopeTests(TestCase):
@@ -1153,11 +1274,15 @@ class EmailFailureResilienceTests(TestCase):
 
         user = make_cx_user(email="reset-smtp@codex.test")
         with mock.patch("vs_notifications.tasks.send_email", side_effect=self._smtp_down):
-            resp = self.client.post(
-                self.RESET_URL,
-                {"email": user.email, "tenant": user.tenant.slug},
-                format="json",
-            )
+            # The email is queued on commit, so the eager send happens when the
+            # callbacks run - here, rather than mid-request. A failure there must
+            # still not surface to the caller.
+            with self.captureOnCommitCallbacks(execute=True):
+                resp = self.client.post(
+                    self.RESET_URL,
+                    {"email": user.email, "tenant": user.tenant.slug},
+                    format="json",
+                )
 
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(
@@ -1178,11 +1303,12 @@ class EmailFailureResilienceTests(TestCase):
             tasks.send_password_reset_email_task, "delay",
             side_effect=Exception("broker connection refused"),
         ), mock.patch("vs_notifications.tasks.send_email", side_effect=self._smtp_down):
-            resp = self.client.post(
-                self.RESET_URL,
-                {"email": user.email, "tenant": user.tenant.slug},
-                format="json",
-            )
+            with self.captureOnCommitCallbacks(execute=True):
+                resp = self.client.post(
+                    self.RESET_URL,
+                    {"email": user.email, "tenant": user.tenant.slug},
+                    format="json",
+                )
 
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(

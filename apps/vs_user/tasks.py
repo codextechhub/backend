@@ -8,6 +8,10 @@
 #     core.tasks_base.TrackedTask records a BackgroundJob row for each email;
 #   * the async hop keeps the (cheap, synchronous) dispatch off the request.
 #
+# Nothing enqueues these tasks directly. Callers go through the queue_* helpers
+# below, which hold the enqueue until the caller's transaction commits - see
+# queue_invitation_email for why enqueuing any earlier silently loses emails.
+#
 # The engine renders DB templates, creates the Notification record, and sends
 # the email inside vs_notifications.deliver_email_notification. Invitation email
 # delivery tracking (UserInvitation.email_*) is updated by the delivery-signal
@@ -32,6 +36,7 @@ import logging
 from celery import shared_task
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from django.db import transaction
 
 logger = logging.getLogger('vs_user.tasks')
 
@@ -113,6 +118,49 @@ def send_invitation_email_task(self, invitation_id: int, token: str):
     logger.info('Invitation email dispatched for %s', user.email)
 
 
+def queue_invitation_email(*, invitation_id, token, owner_id=None, label):
+    """Queue the invitation email for after the caller's transaction commits.
+
+    Every caller writes the invitation row inside a transaction and then asks
+    for the email. Enqueuing from inside that transaction hands the worker a
+    primary key the database has not published yet, and the two race: a worker
+    that picks the job up before the commit lands finds no row, logs
+    "no invitation with id=...", and returns. The admin who clicked Resend is
+    told the invitation went out, and it never did.
+
+    ``on_commit`` runs the enqueue once the row is durable, so the worker can
+    always see what it was sent to fetch - and drops the email entirely if the
+    caller rolls back, which is right too: the invitation it advertises does
+    not exist.
+
+    A broker failure is logged and swallowed. The row is already committed by
+    the time this runs, so raising could not undo it; the invitation stands and
+    can be resent.
+    """
+    def _dispatch():
+        try:
+            send_invitation_email_task.delay(
+                invitation_id=invitation_id,
+                token=token,
+                # The job belongs to whoever asked for the invite, not the
+                # invitee: a bulk approval must not drop queue rows and
+                # completion notifications into 200 strangers' inboxes.
+                _job_owner_id=owner_id,
+                _job_label=label,
+                _job_kind="email",
+                # Fan-out plumbing: one bell notification per invited row is spam.
+                _job_notify=False,
+            )
+        except Exception:
+            logger.error(
+                'Failed to dispatch invitation email for invitation %s - it will '
+                'need to be resent manually.',
+                invitation_id, exc_info=True,
+            )
+
+    transaction.on_commit(_dispatch)
+
+
 # =============================================================================
 # SECTION 2 - PASSWORD RESET EMAIL
 # =============================================================================
@@ -180,3 +228,46 @@ def send_password_reset_email_task(
         delivery_replacements={_PASSWORD_RESET_TOKEN_MARKER: token},
     )
     logger.info('Password reset email dispatched for %s (origin=%s)', user.email, origin)
+
+
+def queue_password_reset_email(*, reset_request_id, token, origin,
+                               sender_name='CodeX System', owner_id=None):
+    """Queue the reset email for after the caller's transaction commits.
+
+    Same race as :func:`queue_invitation_email`, with a worse ending: the
+    caller is a user who asked for a reset link, got a successful response,
+    and would simply never receive an email - the worker looked for the reset
+    row before the commit that created it was visible, found nothing, and
+    returned. ``on_commit`` is what makes the row older than the job.
+    """
+    def _dispatch():
+        try:
+            try:
+                send_password_reset_email_task.delay(
+                    reset_request_id=reset_request_id,
+                    token=token,
+                    origin=origin,
+                    sender_name=sender_name,
+                    _job_owner_id=owner_id,
+                    _job_label="Password reset email",
+                    _job_kind="email",
+                )
+            except Exception:
+                # Broker unavailable - run synchronously so the email still goes out.
+                send_password_reset_email_task.apply(
+                    kwargs=dict(
+                        reset_request_id=reset_request_id,
+                        token=token,
+                        origin=origin,
+                        sender_name=sender_name,
+                    )
+                )
+        except Exception:
+            # The reset row is already committed - an email failure must never
+            # break the reset request itself. The user can request again.
+            logger.exception(
+                'Password reset email dispatch failed for reset request %s',
+                reset_request_id,
+            )
+
+    transaction.on_commit(_dispatch)

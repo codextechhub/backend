@@ -38,10 +38,11 @@ class ActionTokenIsolationTests(TestCase):
 
     def _request_reset(self):
         with mock.patch("vs_user.tasks.send_password_reset_email_task.delay") as delay:
-            PasswordService.request_reset(
-                email=self.user.email,
-                tenant=self.school.tenant.slug,
-            )
+            with self.captureOnCommitCallbacks(execute=True):
+                PasswordService.request_reset(
+                    email=self.user.email,
+                    tenant=self.school.tenant.slug,
+                )
         token = delay.call_args.kwargs["token"]
         request_id = delay.call_args.kwargs["reset_request_id"]
         return PasswordResetRequest.objects.get(pk=request_id), token
@@ -108,10 +109,11 @@ class ActionTokenIsolationTests(TestCase):
             invited_by=self.user,
         )
         with mock.patch("vs_user.tasks.send_password_reset_email_task.delay") as delay:
-            PasswordService.request_reset(
-                email=pending.email,
-                tenant=self.school.tenant.slug,
-            )
+            with self.captureOnCommitCallbacks(execute=True):
+                PasswordService.request_reset(
+                    email=pending.email,
+                    tenant=self.school.tenant.slug,
+                )
         reset_token = delay.call_args.kwargs["token"]
 
         self.assertEqual(
@@ -156,10 +158,11 @@ class ActionTokenIsolationTests(TestCase):
         )
 
         with mock.patch("vs_user.tasks.send_invitation_email_task.delay") as delay:
-            InvitationService.resend(
-                user=pending,
-                requested_by=self.user,
-            )
+            with self.captureOnCommitCallbacks(execute=True):
+                InvitationService.resend(
+                    user=pending,
+                    requested_by=self.user,
+                )
         new_token = delay.call_args.kwargs["token"]
 
         invitation.refresh_from_db()

@@ -421,9 +421,10 @@ class SelfServiceResetStatusTests(_Fixture):
 
     def _admin_reset_token(self, user):
         with mock.patch("vs_user.tasks.send_password_reset_email_task.delay") as delay:
-            PasswordService.admin_reset(
-                target_user=user, requesting_user=self.admin(),
-            )
+            with self.captureOnCommitCallbacks(execute=True):
+                PasswordService.admin_reset(
+                    target_user=user, requesting_user=self.admin(),
+                )
         return delay.call_args.kwargs["token"]
 
     def test_request_is_silent_but_sends_nothing_to_an_ineligible_account(self):

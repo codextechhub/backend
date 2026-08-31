@@ -221,7 +221,7 @@ class UserCreationService:
         the invitation email. Safe to call only once per user.
         """
         from .invitation import InvitationService
-        from ..tasks import send_invitation_email_task
+        from ..tasks import queue_invitation_email
 
         user.status = User.Status.PENDING
         user.save(update_fields=["status", "updated_at"])
@@ -229,24 +229,15 @@ class UserCreationService:
         invitation, token = InvitationService.create(
             user=user, invited_by=requested_by,
         )
-        try:
-            send_invitation_email_task.delay(
-                invitation_id=invitation.pk,
-                token=token,
-                # The job belongs to whoever asked for the invite, not the invitee:
-                # a bulk approval must not drop queue rows and completion
-                # notifications into 200 strangers' inboxes.
-                _job_owner_id=str(requested_by.id) if requested_by else None,
-                _job_label=f"Invitation email to {user.email}",
-                _job_kind="email",
-                # Fan-out plumbing: one bell notification per invited row is spam.
-                _job_notify=False,
-            )
-        except Exception:
-            logger.error(
-                'Failed to dispatch invitation email for user %s - email will need to be resent manually.',
-                user.pk, exc_info=True,
-            )
+        # Queued for after this transaction commits: the worker is given the
+        # invitation's id, and it must not be able to look for it before the
+        # commit publishes the row. See ``queue_invitation_email``.
+        queue_invitation_email(
+            invitation_id=invitation.pk,
+            token=token,
+            owner_id=str(requested_by.id) if requested_by else None,
+            label=f"Invitation email to {user.email}",
+        )
 
 
 class EmailChangeService:

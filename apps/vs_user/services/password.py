@@ -289,29 +289,14 @@ class PasswordService:
             requested_ip=get_client_ip(request) if request else None,
             requested_user_agent=request.META.get("HTTP_USER_AGENT", "") if request else "",
         )
-        from ..tasks import send_password_reset_email_task
-        try:
-            try:
-                send_password_reset_email_task.delay(
-                    reset_request_id=reset_request.pk,
-                    token=token,
-                    origin=origin,
-                    sender_name=sender_name,
-                    _job_owner_id=str(actor.id) if actor else None,
-                    _job_label="Password reset email",
-                    _job_kind="email",
-                )
-            except Exception:
-                # Broker unavailable - run synchronously so the email still goes out
-                send_password_reset_email_task.apply(
-                    kwargs=dict(
-                        reset_request_id=reset_request.pk,
-                        token=token,
-                        origin=origin,
-                        sender_name=sender_name,
-                    )
-                )
-        except Exception:
-            # The reset row already exists - an email failure must never
-            # break the reset request itself. The user can request again.
-            logger.exception("Password reset email dispatch failed for user %s", user.pk)
+        # Queued for after this transaction commits, never from inside it: the
+        # worker only has the row's id, and it can outrun the commit that makes
+        # the row readable. See ``queue_password_reset_email``.
+        from ..tasks import queue_password_reset_email
+        queue_password_reset_email(
+            reset_request_id=reset_request.pk,
+            token=token,
+            origin=origin,
+            sender_name=sender_name,
+            owner_id=str(actor.id) if actor else None,
+        )
