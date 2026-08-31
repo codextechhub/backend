@@ -451,3 +451,158 @@ class BranchLensAgreementTests(StudentsFixture):
             self.admin, "student-summary", params={"branch": 999999},
         )
         self.assertEqual(response.status_code, 400)
+
+
+class ClassSeatsTests(StudentsFixture):
+    """One aggregate for every class, so three pickers cannot disagree."""
+
+    def test_every_visible_class_is_listed_with_its_load(self):
+        student = self.student(branch=self.lekki, first="Ada", last="Seat")
+        self.place(student, self.shared_class)
+
+        rows = self.get(self.admin, "student-class-seats").data["data"]
+        by_id = {r["id"]: r for r in rows}
+        self.assertIn(self.shared_class.pk, by_id)
+        self.assertEqual(by_id[self.shared_class.pk]["used"], 1)
+        self.assertEqual(
+            by_id[self.shared_class.pk]["capacity"], self.shared_class.capacity,
+        )
+
+    def test_a_class_with_no_capacity_is_listed_rather_than_dropped(self):
+        """A class with no limit recorded is not the same as a full one."""
+        from schools.vs_academics.models import SchoolClass
+
+        loose = SchoolClass.all_objects.create(
+            tenant=self.tenant, level=self.jss1, session=self.year,
+            name="JSS1 Open", code="JSS1OPEN", arm="Open", capacity=None,
+            branch=None,
+        )
+        rows = self.get(self.admin, "student-class-seats").data["data"]
+        row = next(r for r in rows if r["id"] == loose.pk)
+        self.assertIsNone(row["capacity"])
+        self.assertIsNone(row["remaining"])
+
+    def test_it_agrees_with_the_roster_it_is_meant_to_replace(self):
+        """The whole point: the picker and the register cannot drift."""
+        student = self.student(branch=self.lekki, first="Obi", last="Agree")
+        self.place(student, self.shared_class)
+
+        seats = next(
+            r for r in self.get(self.admin, "student-class-seats").data["data"]
+            if r["id"] == self.shared_class.pk
+        )
+        roster = self.get(
+            self.admin, "student-class-roster", class_id=self.shared_class.pk,
+        )
+        self.assertEqual(seats["used"], roster.data["seats_used"])
+        self.assertEqual(seats["capacity"], roster.data["capacity"])
+
+    def test_another_year_s_classes_are_not_offered(self):
+        """A school has one JSS1 A per year, and they are all called JSS1 A.
+
+        Listing them together hands a picker two identical options, and the one
+        from the year that ended is refused on save by
+        assert_class_is_in_session - a name the registrar recognises and a
+        refusal they cannot explain.
+        """
+        from schools.vs_academics.models import (
+            AcademicSession,
+            Level,
+            SchoolClass,
+            SessionStatus,
+        )
+
+        last_year = AcademicSession.all_objects.create(
+            tenant=self.tenant, name="2024/2025",
+            start_date=dt.date(2024, 9, 1), end_date=dt.date(2025, 7, 31),
+            status=SessionStatus.ARCHIVED,
+        )
+        # Its own level, because a level belongs to a year as well and the
+        # class name is unique per level - which is precisely what makes the
+        # two JSS1 As indistinguishable on screen.
+        stale_level = Level.all_objects.create(
+            tenant=self.tenant, program=self.jss1.program, session=last_year,
+            name="JSS1", code="JSS1-OLD", order_index=1,
+        )
+        stale = SchoolClass.all_objects.create(
+            tenant=self.tenant, level=stale_level, session=last_year,
+            name="JSS1 A", code="JSS1A-OLD", arm="A", capacity=30, branch=None,
+        )
+
+        ids = [r["id"] for r in self.get(self.admin, "student-class-seats").data["data"]]
+        self.assertIn(self.shared_class.pk, ids)
+        self.assertNotIn(stale.pk, ids)
+
+    def test_it_narrows_with_the_branch_lens(self):
+        rows = self.get(
+            self.admin, "student-class-seats", params={"branch": self.ikeja.pk},
+        ).data["data"]
+        for row in rows:
+            with self.subTest(cls=row["name"]):
+                # That branch's classes, plus the school-wide ones.
+                self.assertIn(row["branch"], (self.ikeja.pk, None))
+
+
+class AdmissionSuggestionTests(StudentsFixture):
+    """The next number, read from what the school already issues."""
+
+    def suggestion(self):
+        return self.get(
+            self.admin, "student-admission-policy",
+        ).data["data"]["suggestion"]
+
+    def test_nothing_is_suggested_before_the_school_has_issued_anything(self):
+        """There is no series to continue, and a guess would be invented."""
+        self.assertEqual(self.suggestion(), "")
+
+    def test_it_continues_the_school_s_own_format(self):
+        self.student(
+            branch=self.lekki, first="A", last="One", number="BFS/2025/0142",
+        )
+        self.assertEqual(self.suggestion(), "BFS/2025/0143")
+
+    def test_it_continues_a_format_that_is_not_brightfield_s(self):
+        """A regular expression cannot be inverted; the school's own rows can."""
+        self.student(
+            branch=self.lekki, first="B", last="Two", number="CSS-24-0117",
+        )
+        self.assertEqual(self.suggestion(), "CSS-24-0118")
+
+    def test_zero_padding_survives_and_only_grows_on_a_real_overflow(self):
+        self.student(
+            branch=self.lekki, first="C", last="Three", number="BFS/2025/0099",
+        )
+        self.assertEqual(self.suggestion(), "BFS/2025/0100")
+
+    def test_a_taken_successor_is_skipped(self):
+        self.student(
+            branch=self.lekki, first="D", last="Four", number="BFS/2025/0007",
+        )
+        self.student(
+            branch=self.lekki, first="E", last="Five", number="BFS/2025/0008",
+        )
+        # The most recent is 0008, so the next free one is 0009.
+        self.assertEqual(self.suggestion(), "BFS/2025/0009")
+
+    def test_nothing_is_suggested_when_the_successor_breaks_the_school_s_rule(self):
+        """A year inside the number is why this matters at a session boundary.
+
+        Offering BFS/2025/0143 in the 2026 session would be a confident wrong
+        answer, and an empty box beats a plausible one nobody checks.
+        """
+        from ..services.policy import write_policy
+
+        write_policy(
+            self.tenant, self.admin,
+            required=False, pattern=r"BFS/2026/\d{4}", hint="BFS/2026/NNNN",
+        )
+        self.student(
+            branch=self.lekki, first="F", last="Six", number="BFS/2025/0142",
+        )
+        self.assertEqual(self.suggestion(), "")
+
+    def test_a_number_ending_in_no_digits_suggests_nothing(self):
+        self.student(
+            branch=self.lekki, first="G", last="Seven", number="BFS/2025/A",
+        )
+        self.assertEqual(self.suggestion(), "")

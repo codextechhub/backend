@@ -269,12 +269,23 @@ def class_seats(tenant, user, session, *, branch=None, only_with_capacity=False)
     what a null branch means. A class with no capacity set is returned with
     ``capacity: None`` - "no limit recorded" is a different fact from "full",
     and a picker that dropped those rows would hide real classes.
+
+    Only *session*'s classes are returned. A class belongs to a year, and a
+    placement whose class and year disagree is refused, so listing another
+    year's rows would be offering options that cannot be chosen.
     """
     from django.db.models import Q as _Q
 
     from schools.vs_academics.models import SchoolClass
 
-    qs = SchoolClass.objects.filter(tenant=tenant, is_active=True)
+    # Scoped to the YEAR, not just the tenant. Since M13 gave classes a year a
+    # school has one JSS1 A per session, all named JSS1 A - so an unscoped list
+    # offers a picker two identical options, and the one from a year that ended
+    # is refused by assert_class_is_in_session on save. The registrar sees a
+    # name they recognise and a refusal they cannot explain.
+    qs = SchoolClass.objects.filter(
+        tenant=tenant, is_active=True, session=session,
+    )
     if only_with_capacity:
         qs = qs.filter(capacity__isnull=False)
     qs = scope_classes(qs, user, tenant)

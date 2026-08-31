@@ -147,3 +147,82 @@ def write_policy(tenant, actor, *, required=None, pattern=None, hint=None):
             reason="Admission number policy set from Student Management.",
         )
     return read_policy(tenant)
+
+
+#: Bounded so a pathological roll cannot spin: if twenty consecutive successors
+#: are all taken, the school is not numbering the way this reads it and no
+#: suggestion is better than a wrong one.
+_SUGGEST_TRIES = 20
+
+
+def suggest_number(tenant, *, policy: AdmissionPolicy | None = None) -> str:
+    """The next admission number, derived from the ones this school already issues.
+
+    **Read from the school's own numbers, never from the pattern.** The design
+    pre-fills ``BFS/YYYY/NNNN`` by counting up inside it, which is right for
+    Brightfield and wrong for the platform: Corona numbers its students
+    ``CSS-24-0117``, and a regular expression cannot be inverted into "the next
+    one" in the general case anyway. So this takes the number the registrar
+    most recently issued and increments its trailing run of digits, which works
+    for both without knowing either format:
+
+        BFS/2025/0142  ->  BFS/2025/0143
+        CSS-24-0117    ->  CSS-24-0118
+
+    Zero padding is preserved, so 0099 becomes 0100 rather than 100, and the
+    width only grows when the digits genuinely overflow it.
+
+    Returns ``""`` - meaning "no suggestion" - rather than guessing when:
+
+    * the school has issued nothing yet, so there is no series to continue;
+    * the most recent number does not END in digits, so there is no successor to
+      read - note the anchor: "BFS/2025/A" must not become "BFS/2026/A";
+    * the successor does not satisfy the school's own pattern, which is what
+      happens at a year boundary when the year is inside the number. Offering
+      ``BFS/2025/0143`` in the 2026 session would be a confident wrong answer,
+      and an empty box the registrar fills in is better than a plausible one
+      they do not check.
+
+    The caller must still validate: this suggests, it does not reserve, and two
+    registrars enrolling at once can be handed the same number. The unique
+    constraint is what actually prevents the collision.
+    """
+    from ..models import Student
+
+    policy = policy or read_policy(tenant)
+    latest = (
+        Student.objects.filter(tenant=tenant)
+        .exclude(student_number="")
+        .order_by("-created_at")
+        .values_list("student_number", flat=True)
+        .first()
+    )
+    if not latest:
+        return ""
+
+    # Anchored to the END, not merely the last run of digits anywhere. Without
+    # the anchor "BFS/2025/A" matched the YEAR and suggested "BFS/2026/A" - a
+    # confident wrong answer of exactly the kind this function exists to avoid.
+    # A number that does not end in digits has no successor we can read.
+    match = re.search(r"(\d+)$", latest)
+    if match is None:
+        return ""
+
+    head, digits = latest[: match.start(1)], match.group(1)
+    compiled = compile_pattern(policy.pattern)
+    taken = set(
+        Student.objects.filter(tenant=tenant, student_number__startswith=head)
+        .values_list("student_number", flat=True),
+    )
+
+    value = int(digits)
+    for _ in range(_SUGGEST_TRIES):
+        value += 1
+        # Grow the width only on a real overflow: 0099 -> 0100, not 100.
+        candidate = f"{head}{str(value).zfill(len(digits))}"
+        if candidate in taken:
+            continue
+        if compiled is not None and not compiled.match(candidate):
+            return ""
+        return candidate
+    return ""

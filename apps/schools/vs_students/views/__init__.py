@@ -28,6 +28,7 @@ from .promotion import (
 from .records import (
     AdmissionPolicyView,
     ClassRosterView,
+    ClassSeatsView,
     StudentDocumentDetailView,
     StudentDocumentsView,
     StudentHistoryView,

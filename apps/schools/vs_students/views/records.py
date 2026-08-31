@@ -22,7 +22,12 @@ from ..serializers import (
     StudentListSerializer,
 )
 from ..services import documents as document_service
-from ..services.placement import capacity_state, resolve_class, roster
+from ..services.placement import (
+    capacity_state,
+    class_seats,
+    resolve_class,
+    roster,
+)
 from .base import StudentsViewMixin
 
 
@@ -266,6 +271,40 @@ class ClassRosterView(StudentsViewMixin, generics.ListAPIView):
         return response
 
 
+class ClassSeatsView(StudentsViewMixin, APIView):
+    """GET /v1/students/classes/seats/
+
+    Every class with its live seat count, in one request.
+
+    The pickers that place a child - the enrolment form, the transfer drawer
+    and the assign bar - all render "JSS1 A - 26/30" for every class at once.
+    Without this each of them either showed no numbers or would have needed a
+    roster request per class, which grows with the school.
+
+    Not paginated: this is a dropdown's contents, and a school runs tens of
+    classes rather than thousands. Answers with an empty list rather than
+    NO_ACTIVE_SESSION when the school is between years, so a form can still be
+    opened and say what it does not know.
+
+    docstring-name: Class seat counts
+    """
+
+    def get_permissions(self):
+        # Two keys: it is a fact about classes as much as about placement, and
+        # a caller who cannot see classes has no business reading their loads.
+        self.rbac_permission = PERM_VIEW
+        return super().get_permissions()
+
+    def get(self, request):
+        self.assert_holds(PERM_VIEW, PERM_CLASS_VIEW)
+        session = self.session_or_none
+        if session is None:
+            return success_response(data=[])
+        return success_response(data=class_seats(
+            self.tenant, request.user, session, branch=self.branch_filter,
+        ))
+
+
 class AdmissionPolicyView(StudentsViewMixin, APIView):
     """GET, PUT /v1/students/admission-number-policy/
 
@@ -283,9 +322,17 @@ class AdmissionPolicyView(StudentsViewMixin, APIView):
         return super().get_permissions()
 
     def get(self, request):
-        from ..services.policy import read_policy
+        from ..services.policy import read_policy, suggest_number
 
-        return success_response(data=read_policy(self.tenant).as_dict())
+        policy = read_policy(self.tenant)
+        # A suggestion, not a reservation: two registrars enrolling at once can
+        # be handed the same number, and the unique constraint is what actually
+        # stops the collision. "" means the school's series cannot be continued
+        # honestly - see suggest_number for when that happens.
+        return success_response(data={
+            **policy.as_dict(),
+            "suggestion": suggest_number(self.tenant, policy=policy),
+        })
 
     def put(self, request):
         from ..services.policy import write_policy
