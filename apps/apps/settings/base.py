@@ -82,6 +82,15 @@ REST_FRAMEWORK = {
         "activation":     "10/minute",
         "rfq_portal":     "120/hour",
         "rfq_verification": "10/hour",
+        # Public pay-an-invoice page. These two are keyed by IP, and a whole
+        # school's parents can share one address, so they are set to bound abuse
+        # rather than to pace a payer: the per-link limit below is what actually
+        # stops one pay link being worked, without one payer's attempts counting
+        # against the next payer's.
+        "invoice_pay":       "240/hour",
+        "invoice_pay_start": "60/hour",
+        # Keyed by the pay token, so it bounds a single invoice's link.
+        "invoice_pay_link":  "12/hour",
         "guide_analytics": "120/minute",
         # Public barcode-login preview - throttled hard because it confirms
         # whether an email belongs to a known account (enumeration surface).
@@ -341,9 +350,15 @@ HEALTH_SSL_DOMAIN = config("HEALTH_SSL_DOMAIN", default="api.codexng.com")
 # ``PAYMENTS_DEFAULT_PROVIDER`` selects the provider when a caller doesn't.
 PAYMENTS_DEFAULT_PROVIDER = config("PAYMENTS_DEFAULT_PROVIDER", default="PAYSTACK")
 # A callback URL the hosted checkout returns the payer to after paying.
-PAYMENTS_CALLBACK_URL = config(
-    "PAYMENTS_CALLBACK_URL", default=f"{FRONTEND_BASE_URL}/payments/return"
-)
+#
+# Deliberately NOT defaulted to f"{FRONTEND_BASE_URL}/payments/return" here. An
+# environment module (staging.py, local.py) sets FRONTEND_BASE_URL *after* it has
+# done ``from .base import *``, so an f-string evaluated at this line would freeze
+# the base default - http://localhost:3000 - and keep it for ever. Staging shipped
+# a localhost pay link to real customers that way. Leave it empty and let
+# ``vs_payments.services.default_callback_url()`` derive it at call time, when
+# FRONTEND_BASE_URL is whatever the running environment actually set.
+PAYMENTS_CALLBACK_URL = config("PAYMENTS_CALLBACK_URL", default="")
 
 # Platform (CodeX) issuer identity - the letterhead printed on invoices/receipts the
 # CodeX *platform* entity raises for its own customers (the schools). School-owned

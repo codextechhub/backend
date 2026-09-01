@@ -121,6 +121,25 @@ def _entity_currency(entity):
 # Collections (money in)                                                       #
 # --------------------------------------------------------------------------- #
 
+# Resolve the post-payment return URL.
+def default_callback_url() -> str:
+    """Where a hosted checkout returns the payer once they are done paying.
+
+    Resolved on every call, never at import. ``settings.PAYMENTS_CALLBACK_URL`` used
+    to carry an f-string default built from ``FRONTEND_BASE_URL`` inside base.py, but
+    the environment modules set FRONTEND_BASE_URL only *after* importing base, so the
+    default froze at ``http://localhost:3000`` and staging returned payers there.
+    Deriving it here means the answer always reflects the environment that is running.
+    """
+    from django.conf import settings
+
+    explicit = str(getattr(settings, "PAYMENTS_CALLBACK_URL", "") or "").strip()
+    if explicit:  # An environment that names the return URL outright wins.
+        return explicit
+    base = str(getattr(settings, "FRONTEND_BASE_URL", "") or "").strip().rstrip("/")
+    return f"{base}/payments/return" if base else ""  # No frontend configured means no return URL.
+
+
 # Handle the initiate collection workflow.
 def initiate_collection(*, entity, amount, customer=None, invoice=None,
                         deposit_account=None, channel=None, provider=None,
@@ -138,7 +157,7 @@ def initiate_collection(*, entity, amount, customer=None, invoice=None,
     provider_name = provider or getattr(settings, "PAYMENTS_DEFAULT_PROVIDER", "PAYSTACK")  # Fall back to the configured PSP.
     client = get_provider(provider_name)  # Resolve the PSP client once for this request.
     reference = _new_reference(entity)  # Generate a unique reference for the provider and our ledger.
-    callback_url = callback_url or getattr(settings, "PAYMENTS_CALLBACK_URL", "")  # Use the configured callback URL if none is provided.
+    callback_url = callback_url or default_callback_url()  # Use the environment's return URL if none is provided.
     currency = currency or _entity_currency(entity)  # Keep the collection in the entity's currency by default.
 
     if invoice is not None and customer is None:  # Allow invoice-driven collections to infer the customer.

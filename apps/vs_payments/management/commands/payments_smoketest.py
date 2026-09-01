@@ -33,7 +33,7 @@ from django.core.management.base import BaseCommand, CommandError
 from vs_payments.constants import DEFAULT_CURRENCY
 from vs_payments.exceptions import ProviderError, ProviderNotConfiguredError
 from vs_payments.providers import registry
-from vs_payments.services import _new_reference
+from vs_payments.services import _new_reference, default_callback_url
 
 
 class Command(BaseCommand):
@@ -122,7 +122,7 @@ class Command(BaseCommand):
         except LedgerEntity.DoesNotExist as exc:
             raise CommandError(f"Ledger entity {options['entity']} does not exist.") from exc
         reference = _new_reference(entity)
-        callback_url = getattr(settings, "PAYMENTS_CALLBACK_URL", "")
+        callback_url = default_callback_url()
 
         self.stdout.write(f"Initializing checkout for reference {reference} …")
         try:

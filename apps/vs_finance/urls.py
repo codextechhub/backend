@@ -41,6 +41,10 @@ from .views import (
     StatutoryPackView,
     TrialBalanceView,
 )
+from .views_public import (
+    PublicInvoiceCheckoutView,
+    PublicInvoicePayView,
+)
 from .views_document_email import (
     CustomerStatementEmailView,
     FinanceDeliveryRetryView,
@@ -189,6 +193,14 @@ from .views_ops import (
 )
 
 urlpatterns = [
+    # Public pay-an-invoice page. No session: the signed token in the URL names
+    # the invoice, and the amount is read when the payer clicks, not when the
+    # invoice email was written.
+    path("public/invoices/<str:token>/", PublicInvoicePayView.as_view(),
+         name="public-invoice-pay"),
+    path("public/invoices/<str:token>/checkout/", PublicInvoiceCheckoutView.as_view(),
+         name="public-invoice-checkout"),
+
     # Master data + documents
     path("entities/", EntityListCreateView.as_view(), name="finance-entity-list"),
     path("settings/account-mappings/", FinanceAccountSettingsView.as_view(),

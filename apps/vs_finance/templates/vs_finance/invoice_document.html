@@ -119,7 +119,7 @@
   .paystack{ font-size:11.5px; color:var(--ink); line-height:1.6; }
   .paystack .chip{ display:inline-block; margin-top:6px; padding:6px 12px; border:1px solid var(--accent);
     color:var(--accent); border-radius:2px; font-family:var(--label); font-size:10.5px;
-    letter-spacing:1px; text-transform:uppercase; }
+    letter-spacing:1px; text-transform:uppercase; text-decoration:none; }
 
   /* ---------- FOOTER ---------- */
   .footer{ margin-top:auto; padding-top:16px; border-top:2px solid var(--navy);
@@ -240,9 +240,11 @@
       <div class="pb-row"><span class="pb-k">Use reference</span><span class="pb-v">{{ invoice.document_number }}</span></div>
     </div>
     <div class="paystack">
+      {% if invoice.pay_url %}
       <div class="block-title">Or pay online</div>
       Settle instantly with card, transfer or USSD.
-      <br><span class="chip">Pay online</span>
+      <br><a class="chip" href="{{ invoice.pay_url }}">Pay online</a>
+      {% endif %}
       <div style="margin-top:8px;color:var(--muted);font-size:10.5px;">
         Please pay on or before the due date, <strong>{{ invoice.due_date }}</strong>.
       </div>
