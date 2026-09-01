@@ -226,6 +226,24 @@ class ClassRosterView(StudentsViewMixin, generics.ListAPIView):
 
     serializer_class = StudentListSerializer
 
+    @property
+    def class_session(self):
+        """The year this register belongs to: the CLASS's, not the school's.
+
+        M13 gave classes a year, so a school has one JSS1 A per session and an
+        enrolment names the same year its class does. Reading the roster against
+        the ACTIVE year therefore answered for the wrong one the moment the
+        class was not this year's: SSS2 B holding twenty-five children reported
+        "0 of 30 seats used" and an empty register, with nothing on the page
+        saying which year it had looked in.
+
+        Taking it from the class also means this route needs no ``?session=``.
+        The class already names the year, so a parameter could only ever
+        disagree with it - and the module has a rule for that disagreement,
+        which is to refuse it.
+        """
+        return self._class.session
+
     def get_permissions(self):
         # Two keys: it is a fact about a class as much as about its students,
         # and a caller who cannot see classes has no business reading one's
@@ -245,7 +263,7 @@ class ClassRosterView(StudentsViewMixin, generics.ListAPIView):
         return self.narrow_to_branch(
             roster(
                 self.tenant, self.request.user, school_class,
-                self.active_session,
+                self.class_session,
             ),
         ).select_related("branch").prefetch_related(
             "enrolments__school_class", "guardian_links__guardian",
@@ -264,7 +282,7 @@ class ClassRosterView(StudentsViewMixin, generics.ListAPIView):
         was shown 12 of 30 would fill a class that is already full.
         """
         response = super().list(request, *args, **kwargs)
-        used, cap, _ = capacity_state(self._class, self.active_session, adding=0)
+        used, cap, _ = capacity_state(self._class, self.class_session, adding=0)
         response.data["seats_used"] = used
         response.data["capacity"] = cap
         response.data["class_name"] = self._class.name

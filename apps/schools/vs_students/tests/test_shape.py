@@ -606,3 +606,69 @@ class AdmissionSuggestionTests(StudentsFixture):
             branch=self.lekki, first="G", last="Seven", number="BFS/2025/A",
         )
         self.assertEqual(self.suggestion(), "")
+
+
+class RosterReadsItsOwnYearTests(StudentsFixture):
+    """A register belongs to its class's year, not to whichever year is active.
+
+    M13 gave classes a year, so a school has one JSS1 A per session. Reading the
+    roster against the ACTIVE year answered for the wrong one the moment the
+    class was not this year's - an empty register and "0 of 30", with nothing
+    saying which year had been looked in.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from schools.vs_academics.models import (
+            AcademicSession,
+            Level,
+            SchoolClass,
+            SessionStatus,
+        )
+
+        self.next_year = AcademicSession.all_objects.create(
+            tenant=self.tenant, name="2031/2032",
+            start_date=dt.date(2031, 9, 1), end_date=dt.date(2032, 7, 31),
+            status=SessionStatus.DRAFT,
+        )
+        # Levels are per-year too, which is what makes the class constraint on
+        # (name, level) hold across years: next year's JSS1 A hangs off next
+        # year's JSS1, not this one's.
+        next_jss1 = Level.all_objects.create(
+            tenant=self.tenant, program=self.program, session=self.next_year,
+            name="JSS1", code="JSS1", order_index=1,
+        )
+        # Next year's JSS1 A: same name, a different year.
+        self.next_class = SchoolClass.all_objects.create(
+            tenant=self.tenant, level=next_jss1, session=self.next_year,
+            name="JSS1 A", code="JSS1A32", arm="A", capacity=30, branch=None,
+        )
+        self.student_here = self.student(first="Ada", last="Thisyear")
+        self.place(self.student_here, self.shared_class)
+        self.student_next = self.student(first="Obi", last="Nextyear")
+        self.place(
+            self.student_next, self.next_class, session=self.next_year,
+        )
+
+    def roster(self, school_class):
+        return self.get(
+            self.admin, "student-class-roster", class_id=school_class.pk,
+        )
+
+    def test_next_years_class_reports_its_own_roll(self):
+        """The defect: this answered 0 rows and 0 seats for a class of one."""
+        response = self.roster(self.next_class)
+        self.assertEqual(response.data["pagination"]["totalItems"], 1)
+        self.assertEqual(response.data["seats_used"], 1)
+
+    def test_this_years_class_is_unchanged(self):
+        response = self.roster(self.shared_class)
+        self.assertEqual(response.data["pagination"]["totalItems"], 1)
+        self.assertEqual(response.data["seats_used"], 1)
+
+    def test_two_years_of_the_same_class_do_not_bleed_into_each_other(self):
+        """Both are called JSS1 A, which is exactly why this went unnoticed."""
+        here = {r["full_name"] for r in self.roster(self.shared_class).data["data"]}
+        nxt = {r["full_name"] for r in self.roster(self.next_class).data["data"]}
+        self.assertEqual(here, {"Ada Thisyear"})
+        self.assertEqual(nxt, {"Obi Nextyear"})
