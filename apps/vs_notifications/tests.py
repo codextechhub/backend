@@ -1839,8 +1839,13 @@ class OwnershipMigrationTests(_NotifFixture):
 
         # The RunPython functions take the historical model registry; the live
         # one is call-compatible here and costs no migration replay.
+        # The rewrite lives in 0011; 0010 is the schema half. They are split
+        # because Django defers the new column's index to the end of its
+        # migration, and Postgres will not build an index on a table whose rows
+        # the same transaction has just updated.
         migration = import_module(
-            "vs_notifications.migrations.0010_notification_ownership_follows_recipient"
+            "vs_notifications.migrations."
+            "0011_move_notification_ownership_to_recipient"
         )
         et = self._event("ticket.commented")
         # A row exactly as the old code wrote it: platform recipient, school owner.

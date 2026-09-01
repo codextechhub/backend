@@ -15,48 +15,29 @@ Two things followed from that, both live in shipped data:
     could read those rows in the history log, including the rendered body of an
     INTERNAL ticket note, because the log filters on the same column.
 
-So this migration moves ownership to the recipient's own tenant and records the
-subject separately in ``origin_tenant``. It rewrites shipped rows, which is the
+So ownership moves to the recipient's own tenant and the subject is recorded
+separately in ``origin_tenant``. Shipped rows have to be rewritten, which is the
 point: the internal notes already sitting in schools' history logs are the
 reason the fix cannot be code-only.
 
-Reversible: the reverse restores each row's original owner from origin_tenant
-before the column is dropped.
+**The rewrite is 0011, not this migration, and the split is required rather than
+tidy.** Django defers a new column's index to the end of the migration's
+transaction. With the ``RunPython`` in here, that ordering became:
+
+    ADD COLUMN origin_tenant  ->  UPDATE every row  ->  CREATE INDEX
+
+and Postgres refuses the third step outright - ``cannot CREATE INDEX ... because
+it has pending trigger events`` - because the UPDATE queued deferred foreign-key
+trigger events against the same table. The migration failed on every database
+that had a single notification row in it.
+
+Splitting keeps both halves atomic on their own, which is what actually matters
+here: the data rewrite is still all-or-nothing, so a school's history log cannot
+be left half-corrected. Making this migration non-atomic would have bought the
+same ordering at the cost of that guarantee.
 """
 from django.db import migrations, models
 import django.db.models.deletion
-
-
-def move_ownership_to_recipient(apps, schema_editor):
-    Notification = apps.get_model("vs_notifications", "Notification")
-
-    # Every existing row was stamped with the tenant it is about, so that value
-    # is exactly what origin_tenant is meant to hold.
-    Notification.objects.all().update(origin_tenant=models.F("tenant"))
-
-    # Hand the mis-owned rows to their recipient. Grouped by the recipient's
-    # tenant because a queryset update cannot assign from a joined column;
-    # in practice this is one pass per tenant that has ever received a record
-    # about somebody else, which today means the platform tenant alone.
-    mis_owned = (
-        Notification.objects
-        .filter(recipient__isnull=False)
-        .exclude(recipient__tenant=models.F("tenant"))
-    )
-    owner_ids = list(
-        mis_owned.values_list("recipient__tenant_id", flat=True).distinct()
-    )
-    for owner_id in owner_ids:
-        Notification.objects.filter(recipient__tenant_id=owner_id).exclude(
-            tenant_id=owner_id
-        ).update(tenant_id=owner_id)
-
-
-def restore_original_ownership(apps, schema_editor):
-    Notification = apps.get_model("vs_notifications", "Notification")
-    Notification.objects.filter(origin_tenant__isnull=False).update(
-        tenant=models.F("origin_tenant")
-    )
 
 
 class Migration(migrations.Migration):
@@ -98,9 +79,5 @@ class Migration(migrations.Migration):
                 related_name="notifications",
                 to="vs_tenants.tenant",
             ),
-        ),
-        migrations.RunPython(
-            move_ownership_to_recipient,
-            restore_original_ownership,
         ),
     ]
