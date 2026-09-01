@@ -35,6 +35,11 @@ urlpatterns = [
     # inherited from a student in the URL.
     path("v1/students/", include("schools.vs_students.urls")),
     path("v1/guardians/", include("schools.vs_students.urls_guardians")),
+    # The FAL's front door. It bridges the school's academic structure to the
+    # finance engine, so it is mounted under its own prefix rather than inside
+    # v1/finance/: those routes are domain-neutral and know nothing of terms
+    # or students, which is precisely the separation the FAL exists to keep.
+    path("v1/school-finance/", include("schools.core.fal.urls")),
     path("v1/admin/", include("vs_admin_console.urls")),
     path("v1/user/", include("vs_user.urls")),
     path("v1/rbac/", include("vs_rbac.urls")),
