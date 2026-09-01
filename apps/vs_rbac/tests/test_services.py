@@ -5,6 +5,7 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 from rest_framework.exceptions import ValidationError as APIValidationError
 
+from vs_rbac.evaluator import get_effective_permissions
 from vs_rbac.models import (
     GroupPermission,
     PermissionGroup,
@@ -24,6 +25,7 @@ from .helpers import (
     make_permission,
     make_dependency,
     make_role,
+    make_assignment,
     make_role_permission,
     make_role_change_request,
     make_platform_role,
@@ -166,6 +168,33 @@ class SetRoleAccessTests(TestCase):
             [self.view_permission.key],
         )
         self.assertEqual(log.diff_data["combined_permission_keys"]["after"], [])
+
+    def test_new_direct_deny_overrides_a_group_derived_grant(self):
+        make_assignment(self.school, self.actor, self.role)
+
+        set_role_access(
+            role=self.role,
+            actor=self.actor,
+            reason="Reporting is explicitly denied for this role.",
+            permission_keys=[self.view_permission.key],
+            denied_permission_keys=[self.report_permission.key],
+            group_ids=[self.group.pk],
+        )
+
+        row = TenantRolePermission.objects.get(
+            role=self.role,
+            permission=self.report_permission,
+        )
+        self.assertFalse(row.granted)
+        self.assertNotIn(
+            self.report_permission.key,
+            get_effective_permissions(self.actor, tenant=self.school.tenant),
+        )
+        log = RBACAuditLog.objects.latest("created_at")
+        self.assertEqual(
+            log.diff_data["denied_permission_keys"]["after"],
+            [self.report_permission.key],
+        )
 
     def test_audit_failure_rolls_back_permissions_groups_and_version(self):
         original_version = self.role.version

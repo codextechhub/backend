@@ -234,10 +234,10 @@ def set_role_access(
         TenantRolePermission(
             role=locked_role,
             permission_id=key,
-            granted=True,
+            granted=key in desired_permission_keys,
             granted_by=actor,
         )
-        for key in desired_permission_keys - set(permission_rows)
+        for key in desired_direct_keys - set(permission_rows)
     ])
 
     TenantRoleGroup.objects.filter(role=locked_role).exclude(
