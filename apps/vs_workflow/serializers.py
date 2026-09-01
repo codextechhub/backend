@@ -498,7 +498,7 @@ class WorkflowApproverGroupSerializer(serializers.ModelSerializer):
 
     def validate_branch(self, value):
         tenant = self.context.get("tenant")
-        if value is not None and tenant is not None and value.school.tenant_id != tenant.pk:
+        if value is not None and tenant is not None and value.tenant_id != tenant.pk:
             raise serializers.ValidationError("Branch must belong to your tenant.")
         return value
 

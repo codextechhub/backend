@@ -209,6 +209,31 @@ class ApproverGroupApiTests(TestCase):
         self.assertEqual(group.tenant_id, self.tenant.pk)
         self.assertEqual(group.created_by_id, self.manager.pk)
 
+    def test_create_group_for_own_branch(self):
+        resp = _call(LIST, "post", BASE, self.manager, self.tenant, {
+            "code": "ikeja-approvers",
+            "name": "Ikeja Approvers",
+            "branch": self.branch.pk,
+        })
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        group = WorkflowApproverGroup.all_objects.get(code="ikeja-approvers")
+        self.assertEqual(group.branch_id, self.branch.pk)
+
+    def test_create_group_rejects_another_tenants_branch(self):
+        other = make_school(slug="grp-foreign-branch", name="Other Branch Tenant")
+        foreign_branch = make_branch(other)
+
+        resp = _call(LIST, "post", BASE, self.manager, self.tenant, {
+            "code": "foreign-branch",
+            "name": "Foreign Branch",
+            "branch": foreign_branch.pk,
+        })
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(
+            WorkflowApproverGroup.all_objects.filter(code="foreign-branch").exists()
+        )
+
     def test_create_ignores_tenant_in_payload(self):
         """Mass-assignment guard: tenant comes from the request, never the body."""
         other = make_school(slug="grp-mass-assign", name="Mass")
