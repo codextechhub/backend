@@ -20,6 +20,7 @@ from .views.branch import (
     BranchUpdateView
 )
 from .views.lifecycle import BranchTransitionView
+from .views.public_brand import PublicSchoolLogoView
 from .views.ops import (
     SchoolResetConfigView,
     SchoolServiceStateView,
@@ -42,6 +43,9 @@ urlpatterns = [
     # the reserved list.
     path("me/profile/", SchoolProfileView.as_view(), name="school-profile"),
     path("me/profile/logo/", SchoolLogoView.as_view(), name="school-profile-logo"),
+    # Readable with no session: the sign-in page needs it before anyone has one.
+    path("public/schools/<str:slug>/logo/", PublicSchoolLogoView.as_view(),
+         name="public-school-logo"),
     # A school's own campuses, read-only. See views/my_branches.py for why this
     # exists rather than opening the platform's branch views.
     path("me/branches/", MyBranchListView.as_view(), name="my-branch-list"),

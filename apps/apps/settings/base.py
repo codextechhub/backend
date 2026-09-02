@@ -96,6 +96,10 @@ REST_FRAMEWORK = {
         # a link being worked would refuse somebody mid-payment.
         "invoice_pay_link":  "12/hour",
         "invoice_pay_link_read": "60/hour",
+        # A school's crest on its own sign-in page. Cacheable and shared by a
+        # whole staff room on one address, so it is set to bound scraping rather
+        # than to pace a browser.
+        "school_brand":      "240/hour",
         "guide_analytics": "120/minute",
         # Public barcode-login preview - throttled hard because it confirms
         # whether an email belongs to a known account (enumeration surface).
