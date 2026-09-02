@@ -61,6 +61,10 @@ def _seed_every_module():
     # names the money end of the buying chain. seed_all_permissions runs this
     # in production at step 8, so the list here was simply behind it.
     _call("seed_procurement_permissions")
+    # And payments keys, for the same reason again: the Money In bundle names
+    # the gateway side of a school's cash. seed_all_permissions runs this in
+    # production at step 9.
+    _call("seed_payments_permissions")
 
 
 class SchoolPermissionGroupTableTests(TestCase):

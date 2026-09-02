@@ -300,6 +300,32 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
             "procurement.report.view",
         ),
     ),
+    (
+        "Money In",
+        SCHOOL_WIDE,
+        "Read the money arriving from parents: gateway checkouts, what settled "
+        "against them, and the school's dedicated funding accounts. Reading "
+        "only - starting a checkout or opening an account is restricted.",
+        (
+            # Collections are the school's own cash-in, and a bursar cannot do
+            # the job without them. They were reachable on the Collections
+            # screen and grantable nowhere, so the screen answered 403 to
+            # everybody: the payments module is separate from finance, and no
+            # amount of finance grants carries a payments key with it.
+            #
+            # School-wide rather than branch-scopable: a payment arrives
+            # against an invoice, and the invoice carries the branch. The
+            # gateway record has no branch of its own to narrow by.
+            #
+            # Every verb here is ``view``. Creating a collection, opening or
+            # managing a virtual account, and the two ``view_sensitive`` keys
+            # that expose the payer's own account details are all restricted,
+            # so none of them is groupable - which is the intended shape.
+            "payments.collection.view",
+            "payments.virtual_account.view",
+            "payments.report.view",
+        ),
+    ),
     # There is deliberately NO "Payroll" group, and there cannot be one.
     #
     # Every payroll key is SENSITIVE or CRITICAL - ``payrollrun`` view and
