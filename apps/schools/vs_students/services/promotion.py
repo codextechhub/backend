@@ -166,12 +166,19 @@ def _repeat_class(source_class, target_classes_by_level_code):
     )
 
 
-def classify(tenant, user, *, from_session, to_session, overrides=None):
+def classify(tenant, user, *, from_session, to_session, overrides=None,
+             branch=None):
     """Work out what would happen. Writes nothing.
 
     ``overrides`` is ``{student_id: outcome}`` from the review screen, applied
     on top of the defaults.
+
+    *branch* narrows the run to one site: its students, and its classes plus
+    the school-wide ones as targets. It is read by the preview AND the run
+    through this one function, which is the point - a preview computed by
+    different code from the run is not a preview, it is a second opinion.
     """
+    from django.db.models import Q as _Q
     from schools.vs_academics.models import SchoolClass
 
     # Here rather than in run(), so the preview refuses exactly what the run
@@ -186,25 +193,36 @@ def classify(tenant, user, *, from_session, to_session, overrides=None):
 
     # Only the TARGET year's classes are promotion targets. Keyed by their
     # level's code, which is the identifier that survives the roll-forward.
-    target_classes = scope_classes(
+    target_class_rows = scope_classes(
         SchoolClass.objects.filter(
             tenant=tenant, is_active=True, session=to_session,
         ),
         user, tenant,
-    ).select_related("level", "branch")
+    )
+    if branch is not None:
+        # That site's classes plus the school-wide ones, which is what a null
+        # branch means. A class at another site is not somewhere these students
+        # can go.
+        target_class_rows = target_class_rows.filter(
+            _Q(branch=branch) | _Q(branch__isnull=True),
+        )
+    target_classes = target_class_rows.select_related("level", "branch")
     by_level_code: dict[str, list] = {}
     for row in target_classes:
         if row.level_id and row.level.code:
             by_level_code.setdefault(row.level.code.lower(), []).append(row)
 
-    on_roll = scope_students(
+    on_roll_rows = scope_students(
         Student.objects.filter(
             tenant=tenant,
             status__in=[StudentStatus.ACTIVE, StudentStatus.ENROLLED,
                         StudentStatus.SUSPENDED],
         ),
         user, tenant,
-    ).select_related("branch")
+    )
+    if branch is not None:
+        on_roll_rows = on_roll_rows.filter(branch=branch)
+    on_roll = on_roll_rows.select_related("branch")
 
     enrolments = {
         e.student_id: e
@@ -383,9 +401,13 @@ def run(tenant, user, *, from_session, to_session, overrides=None, branch=None):
     Each student is its own transaction, so one failure does not undo the
     students already moved - which is what makes the batch restartable.
     """
+    # The branch travels INTO the classification, not just onto the batch row.
+    # It used to be stamped on the record and nowhere else, so a run labelled
+    # "Main Branch" promoted every branch's students and the label was the only
+    # thing that said otherwise.
     plan = classify(
         tenant, user, from_session=from_session, to_session=to_session,
-        overrides=overrides,
+        overrides=overrides, branch=branch,
     )
     batch = StudentPromotionBatch.objects.create(
         tenant=tenant, branch=branch, from_session=from_session,

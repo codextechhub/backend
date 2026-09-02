@@ -99,7 +99,7 @@ class PromotionPreviewView(_PromotionBase):
         plan = promotion_service.classify(
             self.tenant, request.user,
             from_session=from_session, to_session=to_session,
-            overrides=data.get("overrides"),
+            overrides=data.get("overrides"), branch=self.branch_filter,
         )
         return success_response(data={
             "from_session": str(from_session), "to_session": str(to_session),
@@ -126,7 +126,7 @@ class PromotionRunView(_PromotionBase):
         batch, _ = promotion_service.run(
             self.tenant, request.user,
             from_session=from_session, to_session=to_session,
-            overrides=data.get("overrides"),
+            overrides=data.get("overrides"), branch=self.branch_filter,
         )
         return success_response(
             f"{batch.promoted} promoted, {batch.graduated} graduated, "
