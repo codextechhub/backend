@@ -12,6 +12,7 @@ from .views_documents import (
     RequirementsDocumentDownloadView,
     RequirementsDocumentListView,
 )
+from .views_finance_inventory import FinanceEntityInventoryView
 from .views_tasks import TaskMonitorViewSet
 
 router = DefaultRouter()
@@ -23,6 +24,13 @@ urlpatterns = [
     # Declared ahead of the router: `dashboard/` is a registered basename, and a
     # router lookup would otherwise read "overview" as a detail pk.
     path("dashboard/overview/", ConsoleOverviewView.as_view(), name="console-overview"),
+    # Who has books, not what is in them. Reading a school's figures still goes
+    # through proxying, so it stays attributable to somebody entitled to them.
+    path(
+        "finance/entities/",
+        FinanceEntityInventoryView.as_view(),
+        name="console-finance-entity-inventory",
+    ),
     # The requirements-document library. Not a router registration: it is backed
     # by the filesystem rather than a queryset, and only ever reads.
     path(
