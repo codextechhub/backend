@@ -293,13 +293,14 @@ class NotificationTemplate(models.Model):
         is a reusable template document: {{ variable }} survives into the stored
         markup and is substituted per recipient at dispatch time.
         """
-        from .services.layout import compose_email_html
+        from .services.layout import EMAIL_BRAND_PLACEHOLDER, compose_email_html
 
         return compose_email_html(
             subject=self.subject,
             body=self.body,
             cta_label=self.cta_label,
             cta_url=self.cta_url,
+            brand=EMAIL_BRAND_PLACEHOLDER,
             as_template=True,
         )
 

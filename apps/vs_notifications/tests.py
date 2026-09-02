@@ -1041,6 +1041,30 @@ class EmailLayoutTests(_NotifFixture):
         self.assertIn("TCK-0001", html)
         self.assertIn("Ticket TCK-0001 raised", html)  # headline
 
+    def test_standard_document_uses_the_current_design_system(self):
+        html = self._render(
+            subject="Ticket raised",
+            body="Hello Ada,\n\nReference: TCK-0001\nPriority: High",
+        )
+        self.assertIn("Secure notification", html)
+        self.assertIn("Powered by CodeX Vision", html)
+        self.assertIn("Notification</div>", html)
+        self.assertIn("border-radius:16px", html)
+        self.assertIn("background-color:#f9fafb", html)
+
+    def test_standard_document_uses_dynamic_tenant_branding(self):
+        html = self._render(
+            subject="Ticket raised",
+            body="Body text.",
+            context={"tenant_name": "Bright Star School"},
+        )
+        self.assertIn("Bright Star School", html)
+        self.assertNotIn("{{ email_brand }}", html)
+
+    def test_standard_document_falls_back_to_platform_branding(self):
+        html = self._render(subject="Ticket raised", body="Body text.")
+        self.assertIn("CodeX Vision", html)
+
     def test_rendered_values_cannot_inject_markup(self):
         """A value substituted into the stored markup is escaped, every time."""
         html = self._render(
@@ -1160,6 +1184,7 @@ class StoredEmailHtmlTests(_NotifFixture):
 
     def test_stored_markup_keeps_its_placeholders(self):
         self.assertIn("{{ ticket_number }}", self.template.html_body)
+        self.assertIn("{{ email_brand }}", self.template.html_body)
         self.assertNotIn("{{ ticket_number }}", self.template.html_body.replace(
             "{{ ticket_number }}", "", 1,
         ).split("</head>")[0])  # not only in the <title>

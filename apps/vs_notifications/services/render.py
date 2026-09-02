@@ -13,7 +13,7 @@ from django.template.exceptions import TemplateSyntaxError, TemplateDoesNotExist
 
 from ..constants import ChannelChoices
 from ..exceptions import InvalidTemplateSyntaxError, TemplateRenderError
-from .layout import brand_from_context, compose_email_html
+from .layout import BRAND_FALLBACK, brand_from_context, compose_email_html
 
 
 # Validate template text before admins can save it.
@@ -103,6 +103,12 @@ def render_notification_template(notification_template, context: dict) -> tuple[
         notification_template:  A NotificationTemplate model instance.
         context:                The caller-supplied context dict.
     """
+    # Standard stored HTML carries {{ email_brand }} so tenant or issuer
+    # branding remains dynamic instead of being frozen when the row is saved.
+    # Copying keeps the caller's dict untouched.
+    context = dict(context or {})
+    context.setdefault("email_brand", brand_from_context(context) or BRAND_FALLBACK)
+
     rendered_subject = (
         render_template(notification_template.subject, context)
         if notification_template.subject

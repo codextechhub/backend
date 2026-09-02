@@ -24,7 +24,7 @@
 # render.py deliberately renders templates with autoescape OFF because admins
 # author the copy, so escaping has to happen HERE, at the boundary).
 #
-# Layout rules for email clients: tables, inline styles, one 600px column,
+# Layout rules for email clients: tables, inline styles, one 640px column,
 # no external assets, no <style> block (Gmail strips much of it anyway).
 # =============================================================================
 
@@ -48,9 +48,14 @@ _MUTED    = "#667085"
 _FAINT    = "#98a2b3"
 _LINE     = "#eaecf0"
 _PANEL    = "#f9fafb"
-_PAGE     = "#f4f6f8"
-_ACCENT   = "#2f6fed"
+_PAGE     = "#f2f5f9"
+_ACCENT   = "#2563eb"
+_ACCENT_DARK = "#1d4ed8"
 _HEADER   = "#0f2747"
+
+# Stored standard templates use this domain-neutral key. The render service
+# derives it from the issuer, entity, or tenant context before substituting it.
+EMAIL_BRAND_PLACEHOLDER = "{{ email_brand }}"
 
 _FONT = (
     "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, "
@@ -58,7 +63,7 @@ _FONT = (
 )
 
 # A line made only of rule characters, e.g. the ━━━ separators in the seeds.
-_RULE_RE = re.compile(r"^[\s\-=_~━─—]{3,}$")
+_RULE_RE = re.compile(r"^[\s\-=_~━─]{3,}$")
 # "Label: value" - the label is short, single-clause, and carries no URL scheme.
 _DETAIL_RE = re.compile(r"^ {0,3}([^:/<>]{1,40}?) *: +(\S.*?) *$")
 _BULLET_RE = re.compile(r"^ *[-*•] +(\S.*?) *$")
@@ -183,38 +188,73 @@ def compose_email_html(
     headline = _clean(subject) or brand
     content = _blocks_to_html(body or "", skip_url=cta_url)
     button = _button_html(cta_label, cta_url) if cta_url else ""
-    sent_by = (
-        "This message was sent automatically by CodeX Vision."
-        if brand == BRAND_FALLBACK
-        else f"This message was sent by {_text(brand)} through CodeX Vision."
-    )
+    brand_text = _text(brand)
+    headline_text = _text(headline)
 
     return guard.unmask(f"""<!doctype html>
-<html lang="en">
+<html lang="en" dir="ltr">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
-<title>{_text(headline)}</title>
+<meta name="supported-color-schemes" content="light">
+<title>{headline_text}</title>
 </head>
 <body style="margin:0;padding:0;background-color:{_PAGE};font-family:{_FONT};color:{_INK};">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">
+{headline_text}
+</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" \
-style="width:100%;border-collapse:collapse;background-color:{_PAGE};">
-<tr><td align="center" style="padding:32px 12px;">
-<table role="presentation" width="600" cellpadding="0" cellspacing="0" \
-style="width:100%;max-width:600px;border-collapse:separate;background-color:#ffffff;\
-border:1px solid #e4e7ec;border-radius:12px;overflow:hidden;">
-<tr><td style="padding:22px 32px;background-color:{_HEADER};">
-<div style="color:#ffffff;font-size:13px;font-weight:600;opacity:.85;">{_text(brand)}</div>
-<div style="color:#ffffff;font-size:21px;line-height:1.35;font-weight:700;padding-top:6px;">\
-{_text(headline)}</div>
+style="width:100%;border-collapse:collapse;background-color:{_PAGE};mso-table-lspace:0pt;\
+mso-table-rspace:0pt;">
+<tr><td align="center" style="padding:36px 12px 28px;">
+<table role="presentation" width="640" cellpadding="0" cellspacing="0" \
+style="width:100%;max-width:640px;border-collapse:collapse;mso-table-lspace:0pt;\
+mso-table-rspace:0pt;">
+<tr><td style="padding:0 4px 18px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" \
+style="width:100%;border-collapse:collapse;">
+<tr>
+<td width="42" valign="middle">
+<table role="presentation" width="42" cellpadding="0" cellspacing="0" \
+style="width:42px;border-collapse:separate;">
+<tr><td width="42" height="42" align="center" valign="middle" \
+style="width:42px;height:42px;background-color:{_HEADER};border-radius:11px;\
+color:#ffffff;font-size:13px;font-weight:800;letter-spacing:.5px;">CV</td></tr>
+</table>
+</td>
+<td valign="middle" style="padding-left:12px;">
+<div style="color:{_INK};font-size:16px;line-height:1.35;font-weight:700;">{brand_text}</div>
+<div style="padding-top:2px;color:{_MUTED};font-size:12px;line-height:1.4;">Secure notification</div>
+</td>
+</tr>
+</table>
 </td></tr>
-<tr><td style="padding:28px 32px;">
+<tr><td style="background-color:#ffffff;border:1px solid #dfe5ec;border-radius:16px;\
+overflow:hidden;box-shadow:0 8px 28px rgba(15,39,71,.08);">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" \
+style="width:100%;border-collapse:collapse;">
+<tr><td height="5" style="height:5px;background-color:{_ACCENT};font-size:0;\
+line-height:0;">&nbsp;</td></tr>
+<tr><td style="padding:32px 32px 12px;">
+<div style="margin:0 0 8px;color:{_ACCENT_DARK};font-size:12px;line-height:1.4;\
+font-weight:700;letter-spacing:1px;text-transform:uppercase;">Notification</div>
+<h1 style="margin:0;color:{_INK};font-size:24px;line-height:1.35;font-weight:750;\
+letter-spacing:-.2px;">{headline_text}</h1>
+</td></tr>
+<tr><td style="padding:16px 32px 32px;">
 {content}{button}
 </td></tr>
-<tr><td style="padding:18px 32px;background-color:{_PANEL};border-top:1px solid {_LINE};">
-<p style="margin:0;color:{_FAINT};font-size:12px;line-height:1.5;">\
-{sent_by} Please do not reply to this email.</p>
+<tr><td style="padding:20px 32px;background-color:{_PANEL};border-top:1px solid {_LINE};">
+<p style="margin:0;color:{_MUTED};font-size:12px;line-height:1.6;">\
+This automated notification was delivered securely through CodeX Vision. \
+Please do not reply to this email.</p>
+</td></tr>
+</table>
+</td></tr>
+<tr><td align="center" style="padding:18px 20px 0;">
+<p style="margin:0;color:{_FAINT};font-size:11px;line-height:1.5;">\
+Powered by CodeX Vision</p>
 </td></tr>
 </table>
 </td></tr>
@@ -334,21 +374,21 @@ def _is_heading(line: str) -> bool:
 def _paragraph_html(lines: list[str]) -> str:
     text = "<br>".join(_text(line) for line in lines)
     return (
-        f'<p style="margin:0 0 16px;color:{_BODY};font-size:15px;line-height:1.65;">'
+        f'<p style="margin:0 0 18px;color:{_BODY};font-size:15px;line-height:1.7;">'
         f"{text}</p>"
     )
 
 
 def _heading_html(line: str) -> str:
     return (
-        f'<h2 style="margin:24px 0 10px;color:{_INK};font-size:14px;font-weight:700;'
-        f'letter-spacing:.6px;text-transform:uppercase;">{_text(line)}</h2>'
+        f'<h2 style="margin:26px 0 10px;color:{_HEADER};font-size:13px;font-weight:750;'
+        f'letter-spacing:.8px;text-transform:uppercase;">{_text(line)}</h2>'
     )
 
 
 def _rule_html() -> str:
     return (
-        f'<div style="height:1px;background-color:{_LINE};margin:20px 0;'
+        f'<div style="height:1px;background-color:{_LINE};margin:24px 0;'
         f'font-size:0;line-height:0;">&nbsp;</div>'
     )
 
@@ -366,15 +406,18 @@ def _list_html(items: list[str]) -> str:
 # Render a run of "Label: value" lines as a two-column details table.
 def _details_html(pairs: list[tuple[str, str]], skip_url: str = "") -> str:
     rows = []
-    for label, value in pairs:
-        if skip_url and value.strip() == skip_url:
-            continue
+    visible_pairs = [
+        (label, value) for label, value in pairs
+        if not (skip_url and value.strip() == skip_url)
+    ]
+    for index, (label, value) in enumerate(visible_pairs):
+        border = "none" if index == len(visible_pairs) - 1 else f"1px solid {_LINE}"
         rows.append(
             f'<tr>'
-            f'<td style="padding:9px 0;color:{_MUTED};font-size:14px;'
-            f'border-bottom:1px solid {_LINE};vertical-align:top;">{_text(label)}</td>'
-            f'<td align="right" style="padding:9px 0 9px 20px;color:{_INK};font-size:14px;'
-            f'font-weight:600;border-bottom:1px solid {_LINE};vertical-align:top;">'
+            f'<td width="42%" style="padding:11px 14px;color:{_MUTED};font-size:13px;'
+            f'line-height:1.5;border-bottom:{border};vertical-align:top;">{_text(label)}</td>'
+            f'<td align="right" style="padding:11px 14px;color:{_INK};font-size:14px;'
+            f'line-height:1.5;font-weight:650;border-bottom:{border};vertical-align:top;">'
             f'{_text(value)}</td>'
             f'</tr>'
         )
@@ -382,7 +425,8 @@ def _details_html(pairs: list[tuple[str, str]], skip_url: str = "") -> str:
         return ""
     return (
         '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
-        'style="width:100%;border-collapse:collapse;margin:4px 0 20px;">'
+        f'style="width:100%;border-collapse:separate;border-spacing:0;margin:6px 0 22px;'
+        f'background-color:{_PANEL};border:1px solid {_LINE};border-radius:10px;overflow:hidden;">'
         + "".join(rows)
         + "</table>"
     )
@@ -391,14 +435,14 @@ def _details_html(pairs: list[tuple[str, str]], skip_url: str = "") -> str:
 def _button_html(label: str, url: str) -> str:
     return (
         '<table role="presentation" cellpadding="0" cellspacing="0" '
-        'style="margin:22px 0 4px;border-collapse:collapse;">'
-        f'<tr><td style="border-radius:8px;background-color:{_ACCENT};">'
-        f'<a href="{_attr(url)}" style="display:inline-block;padding:13px 28px;'
-        f'color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;'
-        f'border-radius:8px;">{_text(label)}</a>'
+        'style="margin:24px 0 4px;border-collapse:separate;">'
+        f'<tr><td style="border-radius:10px;background-color:{_ACCENT};">'
+        f'<a href="{_attr(url)}" style="display:inline-block;padding:14px 24px;'
+        f'color:#ffffff;font-size:15px;line-height:1.35;font-weight:700;text-decoration:none;'
+        f'border:1px solid {_ACCENT};border-radius:10px;">{_text(label)}</a>'
         "</td></tr></table>"
-        f'<p style="margin:14px 0 0;color:{_FAINT};font-size:12px;line-height:1.5;'
-        'word-break:break-all;">Or paste this link into your browser: '
+        f'<p style="margin:14px 0 0;color:{_FAINT};font-size:11px;line-height:1.6;'
+        'word-break:break-all;">Button not working? Paste this link into your browser: '
         f'{_text(url)}</p>'
     )
 
