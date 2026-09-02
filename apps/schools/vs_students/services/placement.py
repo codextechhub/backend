@@ -291,12 +291,30 @@ def class_seats(tenant, user, session, *, branch=None, only_with_capacity=False)
     qs = scope_classes(qs, user, tenant)
     if branch is not None:
         qs = qs.filter(_Q(branch=branch) | _Q(branch__isnull=True))
-    qs = qs.select_related("branch", "level").annotate(
-        used=Count(
-            "enrolments",
-            filter=Q(enrolments__session=session, enrolments__is_active=True),
-        ),
+    # Who counts as "in" a class that year.
+    #
+    # is_active marks a student's CURRENT placement, so it is right for the
+    # running year and wrong for every other one: a promotion turns every row
+    # of the year it leaves to False, and the class that held thirty children
+    # reports nought. So the count is over each student's LAST row in the year
+    # asked about, which is their current one while the year is running and
+    # their final one once it is not. It also settles a mid-year transfer, where
+    # the child has two rows that year and belongs to the later class.
+    from django.db.models import F, OuterRef, Subquery
+    from ..models import ClassEnrolment
+
+    final_row = ClassEnrolment.objects.filter(
+        student=OuterRef("student"), session=OuterRef("session"),
+    ).order_by("-id").values("id")[:1]
+    counted = (
+        ClassEnrolment.objects.filter(session=session)
+        .annotate(final_id=Subquery(final_row))
+        .filter(id=F("final_id"))
+        .values("school_class")
+        .annotate(n=Count("student", distinct=True))
     )
+    held = {row["school_class"]: row["n"] for row in counted}
+    qs = qs.select_related("branch", "level")
     return [
         {
             "id": c.pk,
@@ -306,8 +324,10 @@ def class_seats(tenant, user, session, *, branch=None, only_with_capacity=False)
             "level": c.level_id,
             "level_name": c.level.name if c.level_id else "",
             "capacity": c.capacity,
-            "used": c.used,
-            "remaining": None if c.capacity is None else c.capacity - c.used,
+            "used": held.get(c.pk, 0),
+            "remaining": (
+                None if c.capacity is None else c.capacity - held.get(c.pk, 0)
+            ),
         }
         for c in qs.order_by("name")
     ]

@@ -765,3 +765,55 @@ class SessionLensTests(StudentsFixture):
     def test_an_unknown_year_is_refused_rather_than_ignored(self):
         response = self.get(self.admin, "student-list", params={"session": 999999})
         self.assertEqual(response.status_code, 400)
+
+
+class SessionLensReachesEveryListTests(SessionLensTests):
+    """The year narrows the whole section, not the directory alone.
+
+    A section where the directory answers about one year and the guardian list
+    beside it answers about another is the same screen contradicting itself one
+    click apart - the defect the branch lens already had once.
+    """
+
+    def test_the_guardian_directory_follows_the_year(self):
+        """A guardian carries no year, so the narrowing is on their wards."""
+        self.link(self.newcomer, self.guardian(
+            name="Mrs. Only Next Year", phone="08035550999",
+            email="nextyear@example.ng",
+        ))
+        def names(session):
+            return {
+                g["full_name"]
+                for g in self.get(
+                    self.admin, "guardian-list", params={"session": session.pk},
+                ).data["data"]
+            }
+
+        self.assertNotIn("Mrs. Only Next Year", names(self.year))
+        self.assertIn("Mrs. Only Next Year", names(self.next_year))
+
+    def test_class_seats_follow_the_year(self):
+        """A class belongs to a year, so last year's had last year's loads."""
+        def used(session, class_id):
+            rows = self.get(
+                self.admin, "student-class-seats", params={"session": session.pk},
+            ).data["data"]
+            return next((r["used"] for r in rows if r["id"] == class_id), None)
+
+        # The mover sits in this year's JSS1 A and next year's JSS2 A.
+        self.assertEqual(used(self.year, self.shared_class.pk), 1)
+        self.assertEqual(used(self.next_year, self.next_class.pk), 2)
+
+    def test_the_unplaced_worklist_stays_on_the_running_year(self):
+        """Deliberate: placing happens now, and a closed year refuses writes."""
+        plain = self.get(self.admin, "student-unplaced").data["pagination"]["totalItems"]
+        asked = self.get(
+            self.admin, "student-unplaced", params={"session": self.next_year.pk},
+        ).data["pagination"]["totalItems"]
+        self.assertEqual(plain, asked)
+
+    def test_the_guardian_directory_is_ordered_so_pages_are_stable(self):
+        """Postgres gives an unordered query no stable order between pages."""
+        rows = self.get(self.admin, "guardian-list").data["data"]
+        names = [g["full_name"] for g in rows]
+        self.assertEqual(names, sorted(names))

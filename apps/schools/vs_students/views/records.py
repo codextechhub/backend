@@ -315,7 +315,9 @@ class ClassSeatsView(StudentsViewMixin, APIView):
 
     def get(self, request):
         self.assert_holds(PERM_VIEW, PERM_CLASS_VIEW)
-        session = self.session_or_none
+        # The year being READ, not the school's current one: a class belongs to
+        # a year, so last year's classes had last year's loads.
+        session = self.session_filter or self.session_or_none
         if session is None:
             return success_response(data=[])
         return success_response(data=class_seats(

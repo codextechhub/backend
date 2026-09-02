@@ -284,6 +284,14 @@ class UnplacedStudentsView(StudentsViewMixin, generics.ListAPIView):
     and the count drives a badge in the navigation, so a wrong definition is a
     wrong number in front of the registrar all day.
 
+    **This one does NOT take ``?session=``, and that is the answer rather than
+    an omission.** It is a worklist: every row is a child somebody is being
+    asked to place, and placing happens in the year the school is running.
+    Asking it about 2026/2027 would return everyone who has since left - none
+    of whom can be placed, because the module refuses writes against a closed
+    year - so the list would fill with work nobody can do. The nav badge reads
+    from here, and a badge counting impossible work is worse than no badge.
+
     docstring-name: Students with no class
     """
 

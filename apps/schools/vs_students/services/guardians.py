@@ -232,7 +232,7 @@ def primary_for(student):
 
 
 def guardian_directory(tenant, user, *, search="", include_unlinked=False,
-                       branch=None):
+                       branch=None, session=None):
     """The guardian list, with ward counts. Branch narrowing is on the wards.
 
     Guardian carries no branch, so the row itself is never narrowed. What is
@@ -260,5 +260,17 @@ def guardian_directory(tenant, user, *, search="", include_unlinked=False,
         )
         if branch is not None:
             visible_students = visible_students.filter(branch=branch)
+        if session is not None:
+            # Same narrowing as the branch, on the other axis: the guardians of
+            # the children who were on THAT year's roll. A guardian carries no
+            # year any more than they carry a branch.
+            visible_students = visible_students.filter(
+                enrolments__session=session,
+            )
         qs = qs.filter(student_links__student__in=visible_students).distinct()
-    return qs
+    # Ordered, because this is paginated. Postgres gives no stable order to an
+    # unordered query, so page 2 could repeat a guardian from page 1 and drop
+    # another entirely - and the reader has no way to tell. Name then pk: the
+    # name is what the list is read by, the pk breaks ties between the several
+    # households that share a surname.
+    return qs.order_by("full_name", "pk")
