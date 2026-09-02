@@ -639,6 +639,15 @@ def _apply_vendor_payment_subledger(payment, plan, *, remaining, strict=False):
     applied = 0  # Total gross settled by this run.
     latest = None  # Newest bill date this run actually settled.
 
+    # The same read-modify-write race the AR side has, on the money-out leg: two
+    # payments settling one bill both read its pre-update ``amount_paid``, both
+    # write their own total back, and the bill records one settlement while AP is
+    # debited twice. Locked through the shared helper so the two ledgers cannot
+    # drift apart in how they answer it. See
+    # :func:`vs_finance.receivables.lock_settlement_targets`.
+    from vs_finance.receivables import lock_settlement_targets
+    plan = lock_settlement_targets(plan)
+
     seen_invoice_ids = set()
     if strict:
         planned_total = 0

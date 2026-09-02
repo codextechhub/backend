@@ -158,6 +158,15 @@ class Invoice(FinanceDocument):
         null=True, blank=True, help_text="The AR journal raised when this invoice posted.",
     )
 
+    pay_token_version = models.PositiveIntegerField(
+        default=1,
+        help_text=(
+            "Bumped to invalidate every public pay link already issued for this "
+            "invoice. The version is signed into the token, so raising it kills "
+            "the links in circulation for this invoice and no other."
+        ),
+    )
+
     class Meta(FinanceDocument.Meta):
         indexes = [
             models.Index(fields=["entity", "status"]),

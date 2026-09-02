@@ -179,6 +179,24 @@ def settle_expense_claim(claim, *, bank_account, pay_date, amount=None, actor_us
 def _settle_expense_claim_atomic(claim, *, bank_account, pay_date, amount=None, actor_user=None):
     from .models import JournalEntry, JournalLine
 
+    # Re-read the claim under a row lock before reading its balance. Reimbursement
+    # is the same read-modify-write as invoice settlement - ``balance_due`` is
+    # derived from the stored ``amount_paid``, and the new total is written back -
+    # so two clicks on Reimburse arriving together would each pay the full
+    # outstanding amount, each credit the bank, and leave the claim recording a
+    # single reimbursement. Unlike an over-settled invoice this one moves real
+    # cash twice, so the lock comes before the status guard rather than after it:
+    # the guard has to be answered by the row as it stands now, not as it stood
+    # when the caller loaded it.
+    #
+    # ``refresh_from_db(from_queryset=...)`` rather than rebinding ``claim`` to a
+    # freshly fetched row: it takes the same lock in the same one query, but it
+    # updates the instance the *caller* is still holding. Rebinding would leave
+    # that caller looking at a pre-settlement copy, and the next thing it does
+    # with it - ``void_expense_claim``, which refuses once ``amount_paid > 0`` -
+    # would then be deciding on a balance that is no longer true.
+    claim.refresh_from_db(from_queryset=type(claim).objects.select_for_update())
+
     if claim.status != DocumentStatus.POSTED:  # Only posted liabilities can be settled.
         raise ExpenseClaimError("Only a posted expense claim can be settled.")
 

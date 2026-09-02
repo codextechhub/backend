@@ -7,10 +7,21 @@
 #      the "xvs-worker" Background Worker and "xvs-redis" Key Value instance in
 #      the dashboard with the same commands/values shown here.
 #
-# After the worker and Redis are live, set on BOTH web and worker:
-#   REDIS_URL     = <the Key Value internal connection string>
-#   CELERY_EAGER  = false
-# Until then the web service keeps running tasks eagerly (safe default).
+# Both services below now set CELERY_EAGER=false and take REDIS_URL from the
+# Key Value instance, so a blueprint apply brings up a working scheduler.
+#
+# IF YOUR WEB SERVICE WAS CREATED BY HAND rather than from this blueprint, this
+# file changes nothing on its own: set CELERY_EAGER=false and REDIS_URL in the
+# Render dashboard for it, and create the worker below. Do the worker and the
+# Key Value instance FIRST - flipping the web service to non-eager while there
+# is no broker to reach turns every .delay() into a connection error, where
+# today it merely runs inline.
+#
+# Why this matters: eager mode has no beat scheduler, so while it is on, NO
+# periodic task runs at all - not late, never. That includes overdue-fee
+# dunning, the undispatched-payout recovery sweep, and the unbooked-gateway-
+# money alarms. core.checks (core.W001) reports the condition on every
+# management command in a DEBUG=False deployment.
 
 services:
   - type: web
@@ -25,7 +36,7 @@ services:
       - key: PYTHON_VERSION
         value: "3.11.9"
       - key: CELERY_EAGER
-        value: "true"   # flip to "false" once the worker is live
+        value: "false"  # requires the worker + Key Value instance below
       - key: REDIS_URL
         fromService:
           type: keyvalue

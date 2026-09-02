@@ -1,4 +1,15 @@
-"""Tests for routing, approvers, and templates services."""
+"""Tests for routing, approvers, and templates services.
+
+Every ``make_role`` here passes ``is_system_role=True``, and it is not noise.
+``_users_for_role_key`` resolves only flagged roles, because a tenant role's key
+is slugified from the name its creator typed - so without that gate, naming a
+role "Payout Approver" was enough to join the approver list for every payout the
+school raised. In production the flag is set by ``ensure_approver_role``, which
+is how any role a stage resolves comes into being; these fixtures build their
+roles directly, so they have to say so themselves. A role built without it is a
+look-alike, and the engine is supposed to ignore it - see
+``test_approver_role_reservation``.
+"""
 from unittest.mock import MagicMock, patch
 from django.contrib.contenttypes.models import ContentType
 from django.test import SimpleTestCase, TestCase
@@ -322,7 +333,7 @@ class RoleSourceResolveApproversTests(TestCase):
         self.requester = _make_active_user("role-req@test.com")
         self.tenant = self.requester.tenant
         self.template = _make_template(doc_type="ROLE_DOC")
-        self.role = make_role(self.tenant, name="Bursar")
+        self.role = make_role(self.tenant, name="Bursar", is_system_role=True)
         self.instance = _make_instance(self.template, self.requester)
 
     def _role_stage(self, role=None, scope="SCHOOL", code="role-stage"):
@@ -389,7 +400,7 @@ class RoleSourceResolveApproversTests(TestCase):
         # Another tenant has a same-keyed role with a different holder.
         from vs_rbac.tests.helpers import make_branch, make_school
         other_school = make_school(slug="key-other")
-        other_role = make_role(other_school.tenant, name="Bursar", key=self.role.key)
+        other_role = make_role(other_school.tenant, name="Bursar", key=self.role.key, is_system_role=True)
         theirs = _make_user_in_branch("key-theirs@test.com", make_branch(other_school))
         make_assignment(other_school.tenant, theirs, other_role)
 
@@ -408,7 +419,7 @@ class RoleSourceResolveApproversTests(TestCase):
         school = make_school(slug="other-school")
         branch = make_branch(school)
         other_user = _make_user_in_branch("other-tenant@test.com", branch)
-        other_role = make_role(school.tenant, name="Bursar")
+        other_role = make_role(school.tenant, name="Bursar", is_system_role=True)
         make_assignment(school.tenant, other_user, other_role)
         # The stage points at OUR tenant's role; the other tenant's rows are invisible.
         result = resolve_approvers(self._role_stage(), self.instance)
@@ -424,7 +435,7 @@ class RoleSourceResolveApproversTests(TestCase):
         wide = _make_user_in_branch("wide@test.com", branch)
         narrow = _make_user_in_branch("narrow@test.com", branch)
         from vs_rbac.tests.helpers import make_assignment, make_role
-        role = make_role(school.tenant, name="Branch Head")
+        role = make_role(school.tenant, name="Branch Head", is_system_role=True)
         from vs_rbac.models import TenantUserRoleAssignment
         make_assignment(school.tenant, wide, role)  # tenant-wide
         TenantUserRoleAssignment.objects.create(   # branch-limited
@@ -483,7 +494,7 @@ class PublishRoleStageTests(TestCase):
         from vs_rbac.tests.helpers import make_role
         self.user = _make_user("publisher@test.com")
         self.tenant = self.user.tenant
-        self.role = make_role(self.tenant, name="Finance Officer", key="finance-officer")
+        self.role = make_role(self.tenant, name="Finance Officer", key="finance-officer", is_system_role=True)
 
     def _publish(self, stage_overrides=None, tenant="default"):
         stage = {
@@ -617,7 +628,7 @@ class GroupSourceResolveApproversTests(TestCase):
 
     def test_role_member_resolves_all_assignees(self):
         from vs_rbac.tests.helpers import make_assignment, make_role
-        role = make_role(self.tenant, name="Bursar")
+        role = make_role(self.tenant, name="Bursar", is_system_role=True)
         a, b = self._user("bursar1@test.com"), self._user("bursar2@test.com")
         make_assignment(self.tenant, a, role)
         make_assignment(self.tenant, b, role)
@@ -641,7 +652,7 @@ class GroupSourceResolveApproversTests(TestCase):
         both = self._user("both@test.com")
         only_user = self._user("only-user@test.com")
         holder = self._user("only-position@test.com")
-        role = make_role(self.tenant, name="Bursar")
+        role = make_role(self.tenant, name="Bursar", is_system_role=True)
         make_assignment(self.tenant, both, role)
 
         self._add(kind="USER", user=both)
@@ -678,7 +689,7 @@ class GroupSourceResolveApproversTests(TestCase):
     def test_branch_scope_narrows_role_members_only(self):
         from vs_rbac.models import TenantUserRoleAssignment
         from vs_rbac.tests.helpers import make_assignment, make_role
-        role = make_role(self.tenant, name="Branch Approver")
+        role = make_role(self.tenant, name="Branch Approver", is_system_role=True)
         wide = self._user("wide-grp@test.com")
         narrow = self._user("narrow-grp@test.com")
         person = self._user("named-person@test.com")
@@ -718,7 +729,7 @@ class GroupSourceResolveApproversTests(TestCase):
         from vs_rbac.tests.helpers import make_assignment, make_role
         from vs_workflow.services.approvers import describe_group_members
         person = self._user("described@test.com")
-        role = make_role(self.tenant, name="Bursar")
+        role = make_role(self.tenant, name="Bursar", is_system_role=True)
         make_assignment(self.tenant, self._user("bursar-x@test.com"), role)
         self._add(kind="USER", user=person)
         self._add(kind="ROLE", role=role)
@@ -826,8 +837,8 @@ class DynamicRoleResolveTests(TestCase):
         self.requester = _make_user_in_branch("dyn-req@test.com", self.branch)
         self.template = _make_template(doc_type="DYN_DOC")
 
-        self.officer_role = make_role(self.tenant, name="Finance Officer", key="finance-officer")
-        self.bursar_role = make_role(self.tenant, name="Bursar", key="bursar")
+        self.officer_role = make_role(self.tenant, name="Finance Officer", key="finance-officer", is_system_role=True)
+        self.bursar_role = make_role(self.tenant, name="Bursar", key="bursar", is_system_role=True)
         self.officer = _make_user_in_branch("officer@test.com", self.branch)
         self.bursar = _make_user_in_branch("bursar-dyn@test.com", self.branch)
         make_assignment(self.tenant, self.officer, self.officer_role)
@@ -958,8 +969,8 @@ class PublishDynamicRoleTests(TestCase):
         from vs_rbac.tests.helpers import make_role, make_school
         self.school = make_school(slug="dyn-pub-school")
         self.tenant = self.school.tenant
-        make_role(self.tenant, name="Bursar", key="bursar")
-        make_role(self.tenant, name="Finance Officer", key="finance-officer")
+        make_role(self.tenant, name="Bursar", key="bursar", is_system_role=True)
+        make_role(self.tenant, name="Finance Officer", key="finance-officer", is_system_role=True)
 
     def _publish(self, rules, tenant="default", extra=None):
         stage = {
@@ -1088,7 +1099,7 @@ class StageApproverOverrideTests(TestCase):
         self.stage.save(update_fields=["approver_source", "approver_role_key"])
 
         self.central_role = make_role(self.tenant, name="Central Approver",
-                                      key="central-approver")
+                                      key="central-approver", is_system_role=True)
         self.default_approver = _make_user_in_branch("ovr-default@test.com", self.branch)
         make_assignment(self.tenant, self.default_approver, self.central_role)
 
@@ -1107,7 +1118,7 @@ class StageApproverOverrideTests(TestCase):
 
     def test_override_to_another_role_wins(self):
         from vs_rbac.tests.helpers import make_assignment, make_role
-        ours = make_role(self.tenant, name="Our Approver", key="our-approver")
+        ours = make_role(self.tenant, name="Our Approver", key="our-approver", is_system_role=True)
         chosen = _make_user_in_branch("ovr-chosen@test.com", self.branch)
         make_assignment(self.tenant, chosen, ours)
         self._override(approver_source="ROLE", approver_role_key="our-approver")
@@ -1137,7 +1148,7 @@ class StageApproverOverrideTests(TestCase):
         other_branch = make_branch(other)
         other_requester = _make_user_in_branch("ovr-other-req@test.com", other_branch)
         other_role = make_role(other.tenant, name="Central Approver",
-                               key="central-approver")
+                               key="central-approver", is_system_role=True)
         other_approver = _make_user_in_branch("ovr-other-apr@test.com", other_branch)
         make_assignment(other.tenant, other_approver, other_role)
 
@@ -1147,7 +1158,7 @@ class StageApproverOverrideTests(TestCase):
 
     def test_override_still_excludes_the_requester(self):
         from vs_rbac.tests.helpers import make_assignment, make_role
-        ours = make_role(self.tenant, name="Our Approver", key="our-approver")
+        ours = make_role(self.tenant, name="Our Approver", key="our-approver", is_system_role=True)
         make_assignment(self.tenant, self.requester, ours)
         self._override(approver_source="ROLE", approver_role_key="our-approver")
         self.assertEqual(resolve_approvers(self.stage, self.instance), [])
@@ -1155,7 +1166,7 @@ class StageApproverOverrideTests(TestCase):
     def test_override_still_expands_delegation(self):
         from vs_rbac.tests.helpers import make_assignment, make_role
         from vs_workflow.models import ApprovalDelegation
-        ours = make_role(self.tenant, name="Our Approver", key="our-approver")
+        ours = make_role(self.tenant, name="Our Approver", key="our-approver", is_system_role=True)
         approver = _make_user_in_branch("ovr-delegator@test.com", self.branch)
         delegate = _make_user_in_branch("ovr-delegate@test.com", self.branch)
         make_assignment(self.tenant, approver, ours)
@@ -1608,7 +1619,7 @@ class DelegationTenantContainmentTests(TestCase):
         self.template = _make_template(doc_type="DELEG_DOC")
         self.instance = _make_instance(self.template, self.requester)
 
-        self.role = make_role(self.tenant, name="Delegating Bursar")
+        self.role = make_role(self.tenant, name="Delegating Bursar", is_system_role=True)
         self.approver = _make_user_in_branch("deleg-approver@test.com", self.branch)
         make_assignment(self.tenant, self.approver, self.role)
 

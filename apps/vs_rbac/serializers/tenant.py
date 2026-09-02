@@ -144,8 +144,35 @@ class TenantScopedRelatedField(serializers.PrimaryKeyRelatedField):
 # Helpers
 # -----------------------------------------------------------------------------
 def _unique_tenant_role_key(tenant, name, exclude_pk=None) -> str:
-    """Build a slug key unique within *tenant* (roles are addressed by key)."""
+    """Build a slug key unique within *tenant* (roles are addressed by key).
+
+    Refuses outright when the name slugifies onto a key the approval engine
+    resolves approvers through. That is not a uniqueness problem and must not be
+    solved like one: quietly returning ``payout-approver-1`` would let somebody
+    who meant to mint approval authority try again with a different spelling
+    until one landed, and would tell the honest administrator nothing about why
+    her role did not behave like the one she was copying.
+
+    The refusal is the front door. :func:`vs_workflow.services.approvers._users_for_role_key`
+    is the back one - it resolves only roles flagged ``is_system_role``, so a
+    look-alike created before this check existed confers nothing either.
+    """
     base = slugify(name) or "role"
+
+    # Lazy import: vs_workflow imports vs_rbac.models, so a module-level import
+    # here would close the cycle. The question is genuinely the workflow engine's
+    # to answer, so it is asked rather than duplicated as a list.
+    from vs_workflow.services.roles import reserved_role_keys
+
+    if base in reserved_role_keys():
+        raise serializers.ValidationError({
+            "name": [
+                f"'{name}' is reserved: it names an approval role the workflow "
+                f"engine resolves. Assign the existing '{base}' role instead of "
+                f"creating another, or choose a different name."
+            ],
+        })
+
     slug = base
     n = 1
     while True:

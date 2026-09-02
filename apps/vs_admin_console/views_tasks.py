@@ -51,7 +51,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from django.conf import settings
-from django.db.models import Count
+from django.db.models import Count, Max
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import mixins, serializers, viewsets
@@ -394,13 +394,34 @@ class TaskMonitorViewSet(
     # Expose scheduler configuration so support can confirm beat wiring.
     @action(detail=False, methods=["get"])
     def schedule(self, request):
-        """The beat schedule as configured in code, plus the execution mode.
+        """The beat schedule as configured in code, what mode it runs in, and
+        when each entry last actually ran.
 
         Configuration rather than customer data, so it is not tenant-scoped -
         but it still sits behind ``platform.tasks.view`` because it describes
         the platform's internals.
+
+        ``last_run`` is the point of this endpoint rather than a decoration.
+        Listing the schedule proves only that somebody wrote it down; a
+        deployment in eager mode has a full, correct-looking schedule and has
+        never executed one line of it. The two fields that answer whether the
+        scheduler is alive are ``last_run`` per entry and ``scheduler_alive``
+        below - and because ``TrackedTask`` is the base of every task, the
+        answer is already in ``BackgroundJob`` and needs no heartbeat of its own.
         """
         from apps.celery import app as celery_app
+
+        schedule = celery_app.conf.beat_schedule or {}
+
+        # One grouped query for the whole schedule rather than one per entry.
+        # ``created_at`` rather than ``finished_at``: a task that started and
+        # died still proves the scheduler fired, which is the question here.
+        last_by_task = dict(
+            BackgroundJob.objects
+            .filter(task_name__in={e["task"] for e in schedule.values()})
+            .values_list("task_name")
+            .annotate(last=Max("created_at"))
+        )
 
         entries = [
             # Stringify schedule objects because beat schedules are not JSON-native.
@@ -408,14 +429,27 @@ class TaskMonitorViewSet(
                 "name": name,
                 "task": entry["task"],
                 "schedule": str(entry["schedule"]),
+                "last_run": last_by_task.get(entry["task"]),
             }
-            for name, entry in (celery_app.conf.beat_schedule or {}).items()
+            for name, entry in schedule.items()
         ]
+
+        eager = bool(getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False))
         return success_response(
             message="Beat schedule retrieved.",
             data={
-                "eager_mode": bool(getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False)),
+                "eager_mode": eager,
                 "broker_configured": bool(getattr(settings, "CELERY_BROKER_URL", "")),
+                # False whenever nothing on the schedule has ever run. In eager
+                # mode that is guaranteed, because eager mode has no beat at all -
+                # stated as a fact about observed runs rather than inferred from
+                # the mode, so a worker that is configured but wedged reads the
+                # same as one that was never started.
+                "scheduler_alive": bool(last_by_task),
+                "never_run": sorted(
+                    entry["task"] for entry in schedule.values()
+                    if entry["task"] not in last_by_task
+                ),
                 "entries": entries,
             },
         )

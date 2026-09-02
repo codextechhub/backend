@@ -34,7 +34,11 @@ CELERY_TASK_ALWAYS_EAGER     = True
 CELERY_TASK_EAGER_PROPAGATES = True
 
 # Frontend URL - must point to the React dev server, not the Django backend
-FRONTEND_BASE_URL = 'http://localhost:5173'  # Vite default
+FRONTEND_BASE_URL = 'http://localhost:5173'  # Console (console-fe)
+# The school app, where a paying parent goes. Its slug is inserted as a
+# subdomain at call time: corona.localhost:5174 resolves to 127.0.0.1 without
+# any hosts-file entry, which is the same shape the onboarding seeder prints.
+SCHOOL_APP_BASE_URL = 'http://localhost:5174'  # school-fe
 
 # PostgreSQL - the only engine, same as staging and CI. The MariaDB
 # fallback was retired 2026-06-12; final dump: ~/cx_db_mariadb_final_backup.sql.gz
@@ -75,7 +79,12 @@ RESET_DB_ALLOWED_DATABASES = {
 # documented to run with --settings=apps.settings.local (see CLAUDE.md), so
 # silencing it in test.py or ci.py alone would silence nothing here.
 if "test" in sys.argv:
-    SILENCED_SYSTEM_CHECKS = [*SILENCED_SYSTEM_CHECKS, "vs_notifications.W001"]
+    # core.W001 too: Django forces DEBUG=False for a test run, which is exactly
+    # the condition the scheduler check fires on, so leaving it would print the
+    # same paragraph above every suite in the repo.
+    SILENCED_SYSTEM_CHECKS = [
+        *SILENCED_SYSTEM_CHECKS, "vs_notifications.W001", "core.W001",
+    ]
 
     # Hash test fixtures cheaply. PBKDF2 is deliberately slow, and the suite
     # creates users constantly, so the default cost dominates the run:

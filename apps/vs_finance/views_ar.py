@@ -90,14 +90,54 @@ from .views_ops import (
 )
 
 
+# --------------------------------------------------------------------------- #
+# Resolving one row by the reference a caller typed                            #
+# --------------------------------------------------------------------------- #
+#
+# Every resolver below takes the ``request``, not just the entity, and that is
+# the whole point of them. Entity scoping alone leaves a branch-bound caller able
+# to read and act on a neighbouring branch's row by naming its code or id, and
+# doing the branch check per-endpoint guarantees the next endpoint forgets it -
+# which is exactly what happened here: the lists were narrowed with ``branch_q``
+# in thirty-one places while the four resolvers they share were narrowed in none,
+# so a Lekki family's statement, record and fee structure were all one guessed
+# code away from an Ikeja bursar.
+#
+# ``include_shared=True`` throughout, because that is what a null branch means in
+# finance: a customer or fee template the school publishes once for every branch
+# stays reachable by a branch-pinned caller. The exclusive reading belongs to
+# procurement's spend documents and would hide the school's own shared rows here.
+#
+# A row in another branch answers with exactly the same "no ... matches" message
+# as one that does not exist, so a code cannot be used to discover that another
+# branch holds it. That mirrors ``get_student_or_404`` and procurement's
+# ``_document_or_404``; it is why these raise NotFound rather than
+# PermissionDenied even where a 403 would read more naturally.
+#
+# The write-side rule (:func:`_inherited_branch_id`, which refuses to let a
+# pinned caller continue another branch's chain) stays exactly as it was. It
+# still guards the case these cannot: a *shared* customer is legitimately
+# resolvable by everyone, and it is that rule which decides the branch of the
+# document raised against them.
+
+
+def _branch_visible(request, qs):
+    """Narrow *qs* to the branches this caller may work in, sharing what is shared.
+
+    One expression of the rule for every resolver, so a list and the resolver
+    behind its detail route cannot drift apart.
+    """
+    return qs.filter(branch_q(request, include_shared=True))
+
+
 # Support the resolve customer workflow.
-def _resolve_customer(entity, ref, field="customer", *, required=True):
-    """Resolve a customer by **code** or id within ``entity``."""
+def _resolve_customer(request, entity, ref, field="customer", *, required=True):
+    """Resolve a customer by **code** or id within ``entity`` and the caller's branches."""
     if ref in (None, ""):
         if required:
             raise ValidationError({field: "A customer (code or id) is required."})
         return None
-    qs = Customer.objects.filter(entity=entity)
+    qs = _branch_visible(request, Customer.objects.filter(entity=entity))
     customer = (
         qs.filter(code=str(ref).upper()).first()
         or (qs.filter(pk=int(ref)).first() if str(ref).isdigit() else None)
@@ -108,13 +148,13 @@ def _resolve_customer(entity, ref, field="customer", *, required=True):
 
 
 # Support the resolve invoice workflow.
-def _resolve_invoice(entity, ref, field="invoice", *, required=True):
-    """Resolve an invoice by document number or id within ``entity``."""
+def _resolve_invoice(request, entity, ref, field="invoice", *, required=True):
+    """Resolve an invoice by document number or id within ``entity`` and the caller's branches."""
     if ref in (None, ""):
         if required:
             raise ValidationError({field: "An invoice (document number or id) is required."})
         return None
-    qs = Invoice.objects.filter(entity=entity)
+    qs = _branch_visible(request, Invoice.objects.filter(entity=entity))
     invoice = (
         qs.filter(pk=int(ref)).first() if str(ref).isdigit()
         else qs.filter(document_number=str(ref)).first()
@@ -125,13 +165,13 @@ def _resolve_invoice(entity, ref, field="invoice", *, required=True):
 
 
 # Support the resolve debit note workflow.
-def _resolve_debit_note(entity, ref, field="debit_note"):
+def _resolve_debit_note(request, entity, ref, field="debit_note"):
     """Resolve a posted DEBIT note by document number or id within ``entity``."""
     from .constants import CreditNoteKind, DocumentStatus
     from .models import CreditNote
 
-    qs = CreditNote.objects.filter(
-        entity=entity, kind=CreditNoteKind.DEBIT, status=DocumentStatus.POSTED)
+    qs = _branch_visible(request, CreditNote.objects.filter(
+        entity=entity, kind=CreditNoteKind.DEBIT, status=DocumentStatus.POSTED))
     note = (
         qs.filter(pk=int(ref)).first() if str(ref).isdigit()
         else qs.filter(document_number=str(ref)).first()
@@ -142,20 +182,24 @@ def _resolve_debit_note(entity, ref, field="debit_note"):
 
 
 # Support the allocation plan workflow.
-def _allocation_plan(entity, raw_allocations):
+def _allocation_plan(request, entity, raw_allocations):
     """Coerce a request ``allocations`` list into ``[(target, amount_kobo), ...]``.
 
     Each item settles an invoice (``{"invoice": ref, "amount": …}``) or a DEBIT note
     (``{"debit_note": ref, "amount": …}``) - both debit AR and are settled by receipts.
+
+    Takes the ``request`` because the two resolvers it calls do: an allocation
+    names its target by reference, so this is one of the doors a caller could
+    otherwise settle a neighbouring branch's invoice through.
     """
     if not raw_allocations:
         return None
     plan = []
     for i, item in enumerate(raw_allocations):
         if item.get("debit_note") not in (None, ""):
-            target = _resolve_debit_note(entity, item.get("debit_note"), f"allocations[{i}].debit_note")
+            target = _resolve_debit_note(request, entity, item.get("debit_note"), f"allocations[{i}].debit_note")
         else:
-            target = _resolve_invoice(entity, item.get("invoice"), f"allocations[{i}].invoice")
+            target = _resolve_invoice(request, entity, item.get("invoice"), f"allocations[{i}].invoice")
         plan.append((target, _money(item.get("amount"), f"allocations[{i}].amount")))
     return plan
 
@@ -423,7 +467,7 @@ class CustomerDetailView(_FinanceBase):
         from .reports import VOID_MOVEMENT_TYPE, customer_account_movements
 
         entity = resolve_entity(request)
-        customer = _resolve_customer(entity, pk)
+        customer = _resolve_customer(request, entity, pk)
         led = _customer_ledger(entity, [customer.id]).get(customer.id, {})
         net = led.get("outstanding", 0) - led.get("credit", 0)
         today = datetime.date.today()
@@ -573,7 +617,7 @@ class CustomerDetailView(_FinanceBase):
     # Handle PATCH requests for this endpoint.
     def patch(self, request, pk):
         entity = resolve_entity(request)
-        customer = _resolve_customer(entity, pk)
+        customer = _resolve_customer(request, entity, pk)
         body = request.data or {}
         for field in ("name", "billing_email", "billing_phone", "billing_address",
                       "source_type", "source_id"):
@@ -619,7 +663,7 @@ class CustomerReceiptView(_FinanceBase):
         from .receivables import post_payment
 
         entity = resolve_entity(request)
-        customer = _resolve_customer(entity, pk)
+        customer = _resolve_customer(request, entity, pk)
         body = request.data or {}
         amount = _money(body.get("amount"), "amount")
         if amount <= 0:
@@ -737,7 +781,7 @@ class PaymentListView(_FinanceBase):
         if (method := request.query_params.get("method")):
             qs = qs.filter(method=method)
         if (customer := request.query_params.get("customer")):
-            qs = qs.filter(customer=_resolve_customer(entity, customer))
+            qs = qs.filter(customer=_resolve_customer(request, entity, customer))
         if (search := request.query_params.get("search")):
             qs = qs.filter(
                 Q(document_number__icontains=search) | Q(customer__name__icontains=search)
@@ -791,7 +835,7 @@ class PaymentSummaryView(_FinanceBase):
         if (method := request.query_params.get("method")):
             qs = qs.filter(method=method)
         if (customer := request.query_params.get("customer")):
-            qs = qs.filter(customer=_resolve_customer(entity, customer))
+            qs = qs.filter(customer=_resolve_customer(request, entity, customer))
         if (search := request.query_params.get("search")):
             qs = qs.filter(
                 Q(document_number__icontains=search) | Q(customer__name__icontains=search)
@@ -962,7 +1006,7 @@ class PaymentAllocateView(_FinanceBase):
         if p is None:
             raise NotFound("Receipt not found for this entity.")
         body = request.data or {}
-        plan = _allocation_plan(entity, body.get("allocations"))
+        plan = _allocation_plan(request, entity, body.get("allocations"))
         if plan:
             allocate_payment(p, allocations=plan, actor_user=request.user)
         elif body.get("auto_allocate"):
@@ -1073,8 +1117,15 @@ def _resolve_applies_to(raw):
 
 
 # Support the resolve fee structure workflow.
-def _resolve_fee_structure(entity, ref):
-    qs = FeeStructure.objects.filter(entity=entity)
+def _resolve_fee_structure(request, entity, ref):
+    """One fee structure, inside ``entity`` and the caller's branches.
+
+    The narrowing matters most here: this resolver backs the detail read, the
+    PATCH, the clone and the invoice run, so without it a pinned bursar could
+    rename, deactivate and bill from a template belonging to a branch she does
+    not work in - and the template is the price list.
+    """
+    qs = _branch_visible(request, FeeStructure.objects.filter(entity=entity))
     structure = (
         qs.filter(pk=int(ref)).first() if str(ref).isdigit()
         else qs.filter(code=str(ref).upper()).first()
@@ -1172,7 +1223,7 @@ class FeeStructureDetailView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request, pk):
         entity = resolve_entity(request)
-        structure = _resolve_fee_structure(entity, pk)
+        structure = _resolve_fee_structure(request, entity, pk)
         return success_response(
             "Fee structure retrieved.",
             data=FeeStructureSerializer(structure, context={"with_usage": True}).data,
@@ -1182,7 +1233,7 @@ class FeeStructureDetailView(_FinanceBase):
     # Handle PATCH requests for this endpoint.
     def patch(self, request, pk):
         entity = resolve_entity(request)
-        structure = _resolve_fee_structure(entity, pk)
+        structure = _resolve_fee_structure(request, entity, pk)
         body = request.data or {}
         for field in ("name", "description"):
             if field in body:
@@ -1219,7 +1270,7 @@ class FeeStructureDuplicateView(_FinanceBase):
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
         entity = resolve_entity(request)
-        source = _resolve_fee_structure(entity, pk)
+        source = _resolve_fee_structure(request, entity, pk)
         body = request.data or {}
         new_code = str(body.get("code", "")).strip().upper()
         if not new_code:
@@ -1267,7 +1318,7 @@ class FeeStructureGenerateView(_FinanceBase):
         from .fees import generate_invoices
 
         entity = resolve_entity(request)
-        structure = _resolve_fee_structure(entity, pk)
+        structure = _resolve_fee_structure(request, entity, pk)
         if structure.applies_to != FeeAppliesTo.CUSTOMER:
             raise ValidationError({"applies_to":
                 "Only customer fee structures can generate AR invoices."})
@@ -1287,7 +1338,7 @@ class FeeStructureGenerateView(_FinanceBase):
             if not refs:
                 raise ValidationError(
                     {"customers": "Provide a customers list or all_active=true."})
-            customers = [_resolve_customer(entity, r, "customers") for r in refs]
+            customers = [_resolve_customer(request, entity, r, "customers") for r in refs]
         invoices = generate_invoices(
             structure, customers,
             invoice_date=invoice_date,
@@ -1334,7 +1385,7 @@ class CreditNoteListCreateView(_FinanceBase):
         if (kind := request.query_params.get("kind")):
             qs = qs.filter(kind=kind)
         if (customer := request.query_params.get("customer")):
-            qs = qs.filter(customer=_resolve_customer(entity, customer))
+            qs = qs.filter(customer=_resolve_customer(request, entity, customer))
         if (search := (request.query_params.get("search") or "").strip()):
             qs = qs.filter(
                 Q(document_number__icontains=search) | Q(reason__icontains=search)
@@ -1360,8 +1411,8 @@ class CreditNoteListCreateView(_FinanceBase):
         entity = resolve_entity(request)
         body = request.data or {}
         lines = _require_lines(body)
-        customer = _resolve_customer(entity, body.get("customer"))
-        invoice = _resolve_invoice(entity, body.get("invoice"), required=False)
+        customer = _resolve_customer(request, entity, body.get("customer"))
+        invoice = _resolve_invoice(request, entity, body.get("invoice"), required=False)
         note = CreditNote.objects.create(
             entity=entity,
             customer=customer,
@@ -1457,7 +1508,7 @@ class CreditNotePostView(_CreditNoteActionBase):
                           "instead of posting directly.",
             })
         body = request.data or {}
-        plan = _allocation_plan(entity, body.get("allocations"))
+        plan = _allocation_plan(request, entity, body.get("allocations"))
         auto = bool(body.get("auto_allocate", plan is None))
         post_credit_note(
             note, actor_user=request.user,
@@ -1486,7 +1537,7 @@ class CreditNoteAllocateView(_CreditNoteActionBase):
 
         entity, note = self._note(request, pk)
         body = request.data or {}
-        plan = _allocation_plan(entity, body.get("allocations"))
+        plan = _allocation_plan(request, entity, body.get("allocations"))
         allocate_credit_note(note, allocations=plan, actor_user=request.user)
         note.refresh_from_db()
         return success_response(
@@ -1625,7 +1676,7 @@ class RefundListCreateView(_FinanceBase):
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
         if (customer := request.query_params.get("customer")):
-            qs = qs.filter(customer=_resolve_customer(entity, customer))
+            qs = qs.filter(customer=_resolve_customer(request, entity, customer))
         return _paginate(
             request, qs.order_by("-refund_date", "-id"), RefundSerializer, self)
 
@@ -1650,7 +1701,7 @@ def _build_refund(request, entity, body):
     from .receivables import customer_refund_available_balance
 
     actor_user = request.user
-    customer = _resolve_customer(entity, body.get("customer"))
+    customer = _resolve_customer(request, entity, body.get("customer"))
     customer = Customer.objects.select_for_update().get(pk=customer.pk)
     refund_date = _date(body.get("refund_date"), "refund_date", required=True)
     # Measure the credit on the refund's own date, so a doomed backdated draft is
@@ -1839,7 +1890,7 @@ def _build_write_off_request(request, entity, body):
     branch is decided from the caller's grants as well as the invoice it continues.
     """
     actor_user = request.user
-    invoice = _resolve_invoice(entity, body.get("invoice"))
+    invoice = _resolve_invoice(request, entity, body.get("invoice"))
     amount = _money(body["amount"], "amount") if body.get("amount") not in (None, "") \
         else invoice.balance_due
     return WriteOffRequest.objects.create(
@@ -1888,7 +1939,7 @@ class WriteOffRequestListCreateView(_FinanceBase):
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
         if (invoice := request.query_params.get("invoice")):
-            qs = qs.filter(invoice=_resolve_invoice(entity, invoice))
+            qs = qs.filter(invoice=_resolve_invoice(request, entity, invoice))
         return _paginate(
             request, qs.order_by("-id"), WriteOffRequestSerializer, self)
 
@@ -2647,6 +2698,55 @@ class InvoiceRemindView(_FinanceBase):
         )
 
 
+class InvoiceRevokePayLinkView(_FinanceBase):
+    """POST /invoices/<pk>/revoke-pay-link/ - kill the links already sent out.
+
+    For the case the invoice's own state cannot answer: an invoice that is still
+    open, whose pay link has been forwarded somewhere it should not have been. The
+    page it opens shows the payer's name, the invoice number and what is still
+    owed, and until this existed the only lever was rotating the signing salt,
+    which would have invalidated every pay link the school had ever sent.
+
+    Bumping the version invalidates this invoice's links and no other's. The
+    invoice stays payable: re-sending it (``/email/`` or the next dunning notice)
+    mints a fresh link, because the URL is rendered at send time.
+
+    ``finance.invoice.update`` rather than a key of its own - it changes how this
+    invoice may be reached, which is the same authority as editing it, and a new
+    permission key nobody has been granted would make the control unreachable on
+    the day it shipped.
+
+    docstring-name: Revoke an invoice pay link
+    """
+
+    rbac_permission = "finance.invoice.update"
+
+    def post(self, request, pk):
+        from .pay_links import revoke_pay_links
+
+        entity = resolve_entity(request)
+        invoice = Invoice.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk).first()
+        if invoice is None:
+            raise NotFound("Invoice not found for this entity.")
+
+        from .audit import record
+
+        version = revoke_pay_links(invoice)
+        record(
+            entity=entity, action=FinanceAuditAction.INVOICE_PAY_LINK_REVOKED,
+            actor_user=request.user, target=invoice,
+            message=(
+                f"Revoked the public pay links for {invoice.document_number}."
+            ),
+            pay_token_version=version,
+        )
+        return success_response(
+            f"Existing payment links for {invoice.document_number} no longer work.",
+            data={"invoice": invoice.document_number, "pay_token_version": version},
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Concessions - discounts / waivers / scholarships                            #
 # --------------------------------------------------------------------------- #
@@ -2679,7 +2779,7 @@ class ConcessionListCreateView(_FinanceBase):
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
         if (customer := request.query_params.get("customer")):
-            qs = qs.filter(customer=_resolve_customer(entity, customer))
+            qs = qs.filter(customer=_resolve_customer(request, entity, customer))
         if (search := (request.query_params.get("search") or "").strip()):
             qs = qs.filter(
                 Q(document_number__icontains=search) | Q(reason__icontains=search)
@@ -2694,8 +2794,8 @@ class ConcessionListCreateView(_FinanceBase):
     def post(self, request):
         entity = resolve_entity(request)
         body = request.data or {}
-        customer = _resolve_customer(entity, body.get("customer"))
-        invoice = _resolve_invoice(entity, body.get("invoice"))
+        customer = _resolve_customer(request, entity, body.get("customer"))
+        invoice = _resolve_invoice(request, entity, body.get("invoice"))
         concession = Concession.objects.create(
             entity=entity,
             customer=customer,
@@ -2890,7 +2990,7 @@ class PaymentPlanListCreateView(_FinanceBase):
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(plan_status=status_val)
         if (customer := request.query_params.get("customer")):
-            qs = qs.filter(customer=_resolve_customer(entity, customer))
+            qs = qs.filter(customer=_resolve_customer(request, entity, customer))
         if (search := (request.query_params.get("search") or "").strip()):
             qs = qs.filter(
                 Q(document_number__icontains=search) | Q(invoice__document_number__icontains=search)
@@ -2907,7 +3007,7 @@ class PaymentPlanListCreateView(_FinanceBase):
 
         entity = resolve_entity(request)
         body = request.data or {}
-        invoice = _resolve_invoice(entity, body.get("invoice"), required=False)
+        invoice = _resolve_invoice(request, entity, body.get("invoice"), required=False)
         # Default the spread total to the invoice's outstanding balance when omitted.
         raw_total = body.get("total_amount")
         if raw_total in (None, "") and invoice is not None:
@@ -2915,7 +3015,7 @@ class PaymentPlanListCreateView(_FinanceBase):
         else:
             total = _money(raw_total, "total_amount")
         count = int(body.get("installment_count", 1) or 1)
-        customer = _resolve_customer(entity, body.get("customer"))
+        customer = _resolve_customer(request, entity, body.get("customer"))
         plan = PaymentPlan.objects.create(
             entity=entity,
             customer=customer,
@@ -3064,7 +3164,7 @@ class CustomerStatementView(_FinanceBase):
         from .views import _maybe_export, _money as _money_pair
 
         entity = resolve_entity(request)
-        customer = _resolve_customer(entity, request.query_params.get("customer"))
+        customer = _resolve_customer(request, entity, request.query_params.get("customer"))
         start = _date(request.query_params.get("start"), "start")
         end = _date(request.query_params.get("end"), "end")
         stmt = customer_statement(customer, start_date=start, end_date=end)
@@ -3285,7 +3385,7 @@ class DunningGenerateView(_FinanceBase):
                 DunningPolicy.objects.filter(entity=entity, name=body["policy"]).first()
             if policy is None:
                 raise NotFound(f"No dunning policy matches '{body['policy']}'.")
-        customer = _resolve_customer(entity, body.get("customer"), required=False)
+        customer = _resolve_customer(request, entity, body.get("customer"), required=False)
 
         notices = generate_dunning(
             entity, as_of=as_of, policy=policy, customer=customer,
@@ -3366,9 +3466,9 @@ class DunningNoticeListCreateView(_FinanceBase):
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(notice_status=status_val)
         if (customer := request.query_params.get("customer")):
-            qs = qs.filter(customer=_resolve_customer(entity, customer))
+            qs = qs.filter(customer=_resolve_customer(request, entity, customer))
         if (invoice := request.query_params.get("invoice")):
-            qs = qs.filter(invoice=_resolve_invoice(entity, invoice))
+            qs = qs.filter(invoice=_resolve_invoice(request, entity, invoice))
         return _paginate(
             request, qs.order_by("-notice_date", "-id"), DunningNoticeSerializer, self)
 

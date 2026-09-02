@@ -471,6 +471,9 @@ class FinanceAuditAction(models.TextChoices):
     INVOICE_CANCELLED = "INVOICE_CANCELLED", "Invoice cancelled"
     INVOICE_REVERSED = "INVOICE_REVERSED", "Invoice reversed"
     INVOICE_WRITTEN_OFF = "INVOICE_WRITTEN_OFF", "Invoice written off (bad debt)"
+    INVOICE_PAY_LINK_REVOKED = (
+        "INVOICE_PAY_LINK_REVOKED", "Invoice pay link revoked",
+    )
     PAYMENT_POSTED = "PAYMENT_POSTED", "Payment posted"
     PAYMENT_ALLOCATED = "PAYMENT_ALLOCATED", "Payment allocated"
     PAYMENT_REVERSED = "PAYMENT_REVERSED", "Payment reversed"

@@ -151,7 +151,7 @@ class CustomerStatementEmailView(_DocumentEmailBase):
         from .views_ar import _resolve_customer
 
         entity = resolve_entity(request)
-        customer = _resolve_customer(entity, pk)
+        customer = _resolve_customer(request, entity, pk)
         return entity, customer, customer
 
     def deliveries(self, entity, subject):

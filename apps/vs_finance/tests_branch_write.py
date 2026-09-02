@@ -416,18 +416,27 @@ class InheritedBranchTests(_WriteFixture):
     def test_a_pinned_caller_may_not_continue_another_branchs_chain(self):
         """The write-side half of the isolation the read half already gives.
 
-        ``_resolve_customer`` is deliberately not branch-filtered - it resolves by
-        code inside the entity - so without this check the Ikeja bursar could post
-        a receipt onto a Lekki family's account by typing their code. The
-        inheritance rule is the choke point that closes it for every AR document
-        at once rather than one endpoint at a time.
+        The Ikeja bursar types a Lekki family's code at the receipt endpoint. She
+        is refused, and the refusal now arrives one step earlier than it used to:
+        ``_resolve_customer`` is branch-filtered, so the customer does not resolve
+        for her at all and the answer is **404, not 403**.
+
+        The change of code is deliberate and is the stricter of the two. A 403
+        confirms the row exists, which turns a customer code into an oracle for
+        which families another branch bills; a 404 is the same answer an unknown
+        code gets. It matches ``get_student_or_404`` and procurement's
+        ``_document_or_404``, which both refuse this way for this reason.
+
+        The inheritance rule is untouched and still matters - see the test above,
+        where a *shared* customer resolves for everybody and it is that rule which
+        decides the receipt's branch.
         """
         response = self.post(
             self.ikeja_only, f"customers/{self.cust_lekki.code}/receipt/",
             self.books, self.receipt_body(),
         )
 
-        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(response.status_code, 404, response.data)
         self.assertFalse(
             Payment.objects.filter(entity=self.books, customer=self.cust_lekki).exists(),
         )

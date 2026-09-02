@@ -43,6 +43,7 @@ from .views import (
 )
 from .views_public import (
     PublicInvoiceCheckoutView,
+    PublicInvoiceLogoView,
     PublicInvoicePayView,
 )
 from .views_document_email import (
@@ -90,6 +91,7 @@ from .views_ar import (
     DunningPolicyListCreateView,
     InvoicePayView,
     InvoiceRemindView,
+    InvoiceRevokePayLinkView,
     InvoiceVoidView,
     InvoiceWriteOffView,
     ARAdjustmentListView,
@@ -200,6 +202,8 @@ urlpatterns = [
          name="public-invoice-pay"),
     path("public/invoices/<str:token>/checkout/", PublicInvoiceCheckoutView.as_view(),
          name="public-invoice-checkout"),
+    path("public/invoices/<str:token>/logo/", PublicInvoiceLogoView.as_view(),
+         name="public-invoice-logo"),
 
     # Master data + documents
     path("entities/", EntityListCreateView.as_view(), name="finance-entity-list"),
@@ -239,6 +243,8 @@ urlpatterns = [
     path("invoices/<int:pk>/document/", InvoiceDocumentView.as_view(), name="finance-invoice-document"),
     path("invoices/<int:pk>/pay/", InvoicePayView.as_view(), name="finance-invoice-pay"),
     path("invoices/<int:pk>/remind/", InvoiceRemindView.as_view(), name="finance-invoice-remind"),
+    path("invoices/<int:pk>/revoke-pay-link/", InvoiceRevokePayLinkView.as_view(),
+         name="finance-invoice-revoke-pay-link"),
     # Customer document email: GET previews recipients and lists history, POST sends.
     path("invoices/<int:pk>/email/", InvoiceEmailView.as_view(), name="finance-invoice-email"),
     path("payments/<int:pk>/email/", PaymentEmailView.as_view(), name="finance-payment-email"),

@@ -7063,6 +7063,13 @@ class _ParkingFixtureMixin(_P2PFixtureMixin):
 
     @staticmethod
     def _grant(user, permission_key, *, tenant, role_key="proc-approver"):
+        # Roles built here carry ``is_system_role=True`` because they are
+        # approver roles. ``_users_for_role_key`` nominates only flagged roles -
+        # a role key is slugified from a user-supplied name, so an unflagged one
+        # is indistinguishable from somebody naming a role "Procurement
+        # Approver" to appoint themselves. Provisioning sets the flag in
+        # production (``ensure_approver_role``); a fixture that builds the role
+        # by hand has to assert it itself.
         """Give ``user`` a real RBAC grant for ``permission_key`` in ``tenant``.
 
         Goes through the registry the way ``seed_procurement_permissions`` does, so
@@ -7088,9 +7095,14 @@ class _ParkingFixtureMixin(_P2PFixtureMixin):
                 "scope": scope_for_key(permission_key),
             },
         )
-        role, _ = TenantRoleTemplate.objects.get_or_create(
-            tenant=tenant, key=role_key, defaults={"name": role_key, "status": "ACTIVE"},
+        role, created = TenantRoleTemplate.objects.get_or_create(
+            tenant=tenant, key=role_key,
+            defaults={"name": role_key, "status": "ACTIVE", "is_system_role": True},
         )
+        if not created and not role.is_system_role:
+            # ``defaults`` never applies to a row another helper already made.
+            role.is_system_role = True
+            role.save(update_fields=["is_system_role"])
         TenantRolePermission.objects.get_or_create(
             role=role, permission=permission, defaults={"granted": True},
         )
@@ -7110,10 +7122,13 @@ class _ParkingFixtureMixin(_P2PFixtureMixin):
         """
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
 
-        role, _ = TenantRoleTemplate.objects.get_or_create(
+        role, created = TenantRoleTemplate.objects.get_or_create(
             tenant=tenant, key=role_key,
-            defaults={"name": role_key, "status": "ACTIVE"},
+            defaults={"name": role_key, "status": "ACTIVE", "is_system_role": True},
         )
+        if not created and not role.is_system_role:
+            role.is_system_role = True
+            role.save(update_fields=["is_system_role"])
         TenantUserRoleAssignment.objects.get_or_create(
             tenant=tenant, user=user, role=role,
             defaults={"assignment_status": "ACTIVE"},
@@ -10672,9 +10687,14 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
                 "scope": scope_for_key(permission_key),
             },
         )
-        role, _ = TenantRoleTemplate.objects.get_or_create(
-            tenant=tenant, key=role_key, defaults={"name": role_key, "status": "ACTIVE"},
+        role, created = TenantRoleTemplate.objects.get_or_create(
+            tenant=tenant, key=role_key,
+            defaults={"name": role_key, "status": "ACTIVE", "is_system_role": True},
         )
+        if not created and not role.is_system_role:
+            # ``defaults`` never applies to a row another helper already made.
+            role.is_system_role = True
+            role.save(update_fields=["is_system_role"])
         TenantRolePermission.objects.get_or_create(
             role=role, permission=permission, defaults={"granted": True},
         )
@@ -10693,9 +10713,14 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
         """
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
 
-        role, _ = TenantRoleTemplate.objects.get_or_create(
-            tenant=tenant, key=role_key, defaults={"name": role_key, "status": "ACTIVE"},
+        role, created = TenantRoleTemplate.objects.get_or_create(
+            tenant=tenant, key=role_key,
+            defaults={"name": role_key, "status": "ACTIVE", "is_system_role": True},
         )
+        if not created and not role.is_system_role:
+            # ``defaults`` never applies to a row another helper already made.
+            role.is_system_role = True
+            role.save(update_fields=["is_system_role"])
         TenantUserRoleAssignment.objects.get_or_create(
             tenant=tenant, user=user, role=role, branch=branch,
             defaults={"assignment_status": "ACTIVE"},
@@ -13310,9 +13335,14 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
                 "scope": scope_for_key(permission_key),
             },
         )
-        role, _ = TenantRoleTemplate.objects.get_or_create(
-            tenant=tenant, key=role_key, defaults={"name": role_key, "status": "ACTIVE"},
+        role, created = TenantRoleTemplate.objects.get_or_create(
+            tenant=tenant, key=role_key,
+            defaults={"name": role_key, "status": "ACTIVE", "is_system_role": True},
         )
+        if not created and not role.is_system_role:
+            # ``defaults`` never applies to a row another helper already made.
+            role.is_system_role = True
+            role.save(update_fields=["is_system_role"])
         TenantRolePermission.objects.get_or_create(
             role=role, permission=permission, defaults={"granted": True},
         )

@@ -406,3 +406,46 @@ class TaskMonitorListingTests(TestCase):
         self.assertIn("prune-background-jobs", names)
         self.assertIn("prune-task-diagnostics", names)
         self.assertIn("eager_mode", data)
+
+    def test_schedule_reports_a_scheduler_that_has_never_run(self):
+        """Listing the schedule proves somebody wrote it down, nothing more.
+
+        A deployment in eager mode has a full, correct-looking schedule and has
+        never executed one line of it, because eager mode has no beat at all.
+        These two fields are what tell the two apart.
+        """
+        resp = self.client.get(reverse("tasks-schedule"))
+        data = resp.data["data"]
+
+        self.assertFalse(data["scheduler_alive"])
+        self.assertIn("vs_finance.run_daily_dunning", data["never_run"])
+        dunning = next(
+            e for e in data["entries"] if e["task"] == "vs_finance.run_daily_dunning"
+        )
+        self.assertIsNone(dunning["last_run"])
+
+    def test_schedule_reports_a_scheduler_that_is_running(self):
+        """One recorded run of a scheduled task is the evidence beat is alive."""
+        _job("vs_finance.run_daily_dunning")
+
+        resp = self.client.get(reverse("tasks-schedule"))
+        data = resp.data["data"]
+
+        self.assertTrue(data["scheduler_alive"])
+        self.assertNotIn("vs_finance.run_daily_dunning", data["never_run"])
+        dunning = next(
+            e for e in data["entries"] if e["task"] == "vs_finance.run_daily_dunning"
+        )
+        self.assertIsNotNone(dunning["last_run"])
+
+    def test_a_task_that_started_and_died_still_proves_beat_fired(self):
+        """``created_at``, not ``finished_at``.
+
+        A run that crashed is a failure to investigate, but it is not evidence
+        that the scheduler is down - and conflating the two would report a
+        healthy scheduler as dead every time a task threw.
+        """
+        _job("vs_finance.run_daily_dunning", job_status="FAILED", finished_at=None)
+
+        data = self.client.get(reverse("tasks-schedule")).data["data"]
+        self.assertTrue(data["scheduler_alive"])

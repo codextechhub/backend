@@ -12,13 +12,32 @@ and whether the invoice is payable at all are decided when the payer clicks, aga
 the invoice as it stands right then.
 
 The token is an HMAC-signed payload (``django.core.signing``), so nothing guessable or
-enumerable is exposed and no revocation column is needed: the invoice's own state is
-the gate. A cancelled or fully settled invoice stops being payable the moment it
-changes, however many copies of the link are in circulation.
+enumerable is exposed. The invoice's own state is the first gate: a cancelled or fully
+settled invoice stops being payable the moment it changes, however many copies of the
+link are in circulation.
+
+That gate was once the only one, on the reasoning that no revocation column was needed.
+It is not enough for the case it does not cover - an invoice that stays *open*. A link
+mailed to Mrs Nwosu, forwarded to her husband and on into a family group, kept working
+for as long as the balance did, showing the school, her name, the invoice number and
+what she still owed to everyone it reached. Nothing could kill that one link: rotating
+``SECRET_KEY`` or ``TOKEN_SALT`` kills every link the school has ever sent.
+
+So the token now carries two more things, and both are checked on the way back in:
+
+* ``v``, the invoice's :attr:`~vs_finance.models.Invoice.pay_token_version`. Bumping it
+  (:func:`revoke_pay_links`) invalidates the links for that invoice and no other -
+  which is what the RFQ vendor portal has always done with ``token_version``, and the
+  right answer here for the same reason;
+* an age. :data:`TOKEN_MAX_AGE` bounds how long a copy stays live, so a link nobody
+  revoked still dies on its own. It is deliberately generous, and it costs a slow payer
+  nothing: every dunning email renders a fresh URL through :func:`invoice_pay_url`, so
+  the newest reminder always works even when the first one has expired.
 """
 from __future__ import annotations
 
 from datetime import timedelta
+from urllib.parse import urlsplit, urlunsplit
 
 from django.conf import settings
 from django.core import signing
@@ -32,6 +51,23 @@ from .money import format_naira
 
 #: Salt for the invoice pay token. Changing it invalidates every link in circulation.
 TOKEN_SALT = "vs_finance.invoice_pay"
+
+#: How long one issued link stays usable.
+#:
+#: The backstop for a link nobody thought to revoke, so it is measured against how long
+#: a copy should be able to sit in a forwarded mailbox rather than how long a debt takes
+#: to collect. Two terms is generous for the first and short enough for the second.
+#:
+#: It cannot lock out a genuine late payer: dunning renders the URL at send time, so the
+#: reminder chasing a nine-month-old debt carries a nine-month-old debt's fresh token.
+#: What expires is the *copy*, which is the thing being bounded.
+TOKEN_MAX_AGE = timedelta(days=180)
+
+#: The host a platform invoice's payer lands on, as a subdomain of the school app.
+#: Reserved in :data:`vs_tenants.models.RESERVED_TENANT_SLUGS`, so it cannot collide
+#: with a school, and covered by the same wildcard DNS and certificate every school
+#: subdomain uses, so it needs no new infrastructure.
+PLATFORM_PAY_SUBDOMAIN = "pay"
 
 #: A checkout started within this window is handed back instead of minting another.
 #: It absorbs the ordinary double-click / back-button / refresh, which would otherwise
@@ -53,8 +89,98 @@ class InvoiceNotPayableError(FinanceError):
 # --------------------------------------------------------------------------- #
 
 def make_invoice_pay_token(invoice) -> str:
-    """Sign a link that identifies one invoice and carries no other authority."""
-    return signing.dumps({"invoice": invoice.pk}, salt=TOKEN_SALT, compress=True)
+    """Sign a link that identifies one invoice and carries no other authority.
+
+    ``v`` is the invoice's current pay-token version, so a token minted before a
+    revocation is distinguishable from one minted after it.
+    """
+    return signing.dumps(
+        {"invoice": invoice.pk, "v": int(invoice.pay_token_version)},
+        salt=TOKEN_SALT, compress=True,
+    )
+
+
+def revoke_pay_links(invoice) -> int:
+    """Kill every pay link already issued for *invoice*. Returns the new version.
+
+    One invoice's links and no other's - which is the whole point, and the reason
+    this is a column rather than a rotated salt. A school that learns one link has
+    been forwarded somewhere it should not have been can stop that link without
+    invalidating the ones sitting in every other parent's inbox.
+
+    Written with ``F`` and re-read rather than incremented in Python: two operators
+    revoking the same invoice at once must produce two bumps, not one, or the
+    second would hand back a version the first had already invalidated.
+    """
+    from django.db.models import F
+
+    Invoice.objects.filter(pk=invoice.pk).update(
+        pay_token_version=F("pay_token_version") + 1,
+    )
+    invoice.refresh_from_db(fields=["pay_token_version"])
+    return invoice.pay_token_version
+
+
+def _school_slug(invoice) -> str:
+    """The slug of the school whose books raised this invoice, or "".
+
+    Empty for the platform's own books and for any other school-less tenant.
+    ``getattr`` with a default is safe on the reverse one-to-one: Django makes
+    ``RelatedObjectDoesNotExist`` subclass ``AttributeError`` precisely so this
+    reads as "no school" rather than raising.
+    """
+    tenant = getattr(invoice.entity, "tenant", None)
+    if tenant is None or getattr(tenant, "school_profile", None) is None:
+        return ""
+    return str(getattr(tenant, "slug", "") or "")
+
+
+def payer_base_url(invoice) -> str:
+    """Scheme and host the *payer* of this invoice belongs on.
+
+    A school's own customer goes to that school's app, at its own subdomain. The
+    slug is inserted into the configured host rather than stored per school, so
+    one setting covers every tenant and a new school needs no configuration at
+    all: ``https://xvs.codexng.com`` becomes ``https://corona.xvs.codexng.com``,
+    and ``http://localhost:5174`` becomes ``http://corona.localhost:5174``.
+
+    An invoice from the platform's own books has no school to derive from, so it
+    falls back to whatever ``PLATFORM_PAY_BASE_URL`` names, and to the bare
+    product host when that is unset.
+
+    Read on every call, never at import: see the note on PAYMENTS_CALLBACK_URL
+    in settings/base.py for what the other way costs.
+    """
+    base = str(getattr(settings, "SCHOOL_APP_BASE_URL", "") or "").strip().rstrip("/")
+    slug = _school_slug(invoice)
+    if not slug:
+        platform = str(getattr(settings, "PLATFORM_PAY_BASE_URL", "") or "").strip()
+        if platform:
+            return platform.rstrip("/")
+        # No school to name, so use the reserved label instead of one. It goes
+        # through the same subdomain insertion below, which matters: the bare
+        # product host does NOT serve the app, so falling back to it would have
+        # sent these payers to a marketing page. A subdomain does serve it, and
+        # "pay" is in RESERVED_TENANT_SLUGS ("commercial surfaces that will want
+        # their own host"), so no school can ever take it out from under this.
+        slug = PLATFORM_PAY_SUBDOMAIN
+    if not base:
+        return ""
+    parts = urlsplit(base)
+    if not parts.netloc:  # A host with no scheme cannot be given a subdomain safely.
+        return base
+    return urlunsplit((parts.scheme, f"{slug}.{parts.netloc}", parts.path, "", ""))
+
+
+def payer_return_url(invoice) -> str:
+    """Where the gateway sends this payer back to once they are done.
+
+    The same host they paid from. Returning a Corona parent to the Console, or
+    to another school's address, would look like the payment went somewhere it
+    did not.
+    """
+    base = payer_base_url(invoice)
+    return f"{base}/payments/return" if base else ""
 
 
 def invoice_pay_url(invoice) -> str:
@@ -63,7 +189,7 @@ def invoice_pay_url(invoice) -> str:
     Read at call time, never cached at import: the deployment that renders the email
     is the one that knows its own domain.
     """
-    base = str(getattr(settings, "FRONTEND_BASE_URL", "") or "").strip().rstrip("/")
+    base = payer_base_url(invoice)
     if not base:
         return ""
     return f"{base}/pay/{make_invoice_pay_token(invoice)}"
@@ -79,15 +205,27 @@ def invoice_from_token(raw_token: str) -> Invoice:
     if not raw_token:
         raise NotFound("This payment link is invalid.")
     try:
-        payload = signing.loads(raw_token, salt=TOKEN_SALT)
+        # ``max_age`` turns an expired copy into a BadSignature, which is caught
+        # below and answered exactly like a forged one. A payer whose link has
+        # aged out is told the link is no good, not how old it is.
+        payload = signing.loads(
+            raw_token, salt=TOKEN_SALT, max_age=TOKEN_MAX_AGE,
+        )
         invoice_id = int(payload["invoice"])
+        # A token minted before this field existed carries no ``v``. Reading it as
+        # version 1 keeps every link already in circulation working, which is what
+        # makes this change safe to deploy without a flag day.
+        token_version = int(payload.get("v", 1))
     except (signing.BadSignature, KeyError, TypeError, ValueError):
         raise NotFound("This payment link is invalid.")
     invoice = Invoice.objects.select_related(
         "customer", "entity__tenant__school_profile", "entity__base_currency",
         "branch", "currency",
-    ).filter(pk=invoice_id).first()
+    ).filter(pk=invoice_id, pay_token_version=token_version).first()
     if invoice is None:
+        # Covers all three: no such invoice, and a token whose version the invoice
+        # has moved past. Reported identically, because a revoked link telling its
+        # holder "this was revoked" confirms the invoice exists.
         raise NotFound("This payment link is invalid.")
     return invoice
 
@@ -124,7 +262,21 @@ def is_payable(invoice) -> bool:
 # Page payload                                                                 #
 # --------------------------------------------------------------------------- #
 
-def summary(raw_token: str) -> dict:
+def logo_storage_name(invoice) -> str:
+    """The storage name of the issuer's brand logo, or "" when there is none.
+
+    Only a school's own uploaded logo has one. The platform identity carries a
+    plain ``logo_url`` string configured in Platform Settings rather than a file
+    this system holds, so it has no storage name and the pay page falls back to
+    the XVS mark for it.
+    """
+    from .documents import _issuer_block
+
+    issuer = _issuer_block(invoice.entity, branch=invoice.branch)
+    return str(issuer.get("logo_name") or "")
+
+
+def summary(raw_token: str, *, request=None) -> dict:
     """What the pay page shows before the payer commits to anything.
 
     Deliberately narrow. The invoice PDF already went to this address, so the
@@ -137,9 +289,26 @@ def summary(raw_token: str) -> dict:
 
     issuer = _issuer_block(invoice.entity, branch=invoice.branch)
     reason = _unpayable_reason(invoice)
+    # An ABSOLUTE url, not a path. The school app and the API are on different
+    # hosts (a school sits at <slug>.xvs.codexng.com, the API at api.codexng.com),
+    # so a bare "/finance/public/..." would resolve against the app's own origin
+    # and 404. Built from the request so each environment names itself.
+    logo_path = f"/v1/finance/public/invoices/{raw_token}/logo/"
+    logo_url = ""
+    if logo_storage_name(invoice):
+        logo_url = request.build_absolute_uri(logo_path) if request is not None else logo_path
     balance = max(invoice.balance_due, 0)
     return {
         "issuer_name": issuer["name"],
+        # The school's own crest, served by the public logo route to a payer who
+        # has no session. Empty when the school has not uploaded one.
+        "logo_url": logo_url,
+        # Whether CodeX itself is billing, rather than a school billing its own
+        # customer. The pay page shows the XVS mark for the platform and the
+        # school's name for a school, and it cannot tell the two apart from the
+        # name alone: PLATFORM_ISSUER_NAME is configurable, so matching on the
+        # string "CodeX" would break the first time somebody edits it.
+        "issuer_is_platform": bool(invoice.entity.is_platform),
         "customer_name": invoice.customer.name,
         "invoice_number": invoice.document_number,
         "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else "",
@@ -204,6 +373,10 @@ def start_checkout(raw_token: str) -> dict:
             payer_email=invoice.customer.billing_email or "",
             payer_name=invoice.customer.name,
             narration=f"Invoice {invoice.document_number}",
+            # Back to the host they paid from, not the platform-wide default.
+            # A Corona parent finishing at the Console would reasonably think
+            # the money had gone somewhere it had not.
+            callback_url=payer_return_url(invoice) or None,
             metadata={"source": "invoice_pay_link", "invoice_number": invoice.document_number},
         )
 

@@ -1424,10 +1424,18 @@ class PayoutBatchApprovalTests(TestCase):
         holders is the parked case most of these tests are about, so creating the
         role deliberately does NOT staff it: that is ``_make_approver``'s job.
         """
-        role, _ = self.TenantRoleTemplate.objects.get_or_create(
+        # ``is_system_role``: the resolver nominates only flagged roles, because
+        # a role key is slugified from a user-supplied name and an unflagged one
+        # is indistinguishable from somebody naming a role "Payout Approver" to
+        # appoint themselves. ``ensure_approver_role`` sets it in production.
+        role, created = self.TenantRoleTemplate.objects.get_or_create(
             tenant=self.tenant, key=self.APPROVE_ROLE,
-            defaults={"name": "Payout Checker", "status": "ACTIVE"},
+            defaults={"name": "Payout Checker", "status": "ACTIVE",
+                      "is_system_role": True},
         )
+        if not created and not role.is_system_role:
+            role.is_system_role = True
+            role.save(update_fields=["is_system_role"])
         return role
 
     def _publish_template(self, *, on_rejection="RETURN_TO_REQUESTER"):
@@ -1465,10 +1473,14 @@ class PayoutBatchApprovalTests(TestCase):
             email=email, password="pw", status="ACTIVE",
             first_name="Senior", last_name="Checker", tenant=self.tenant,
         )
-        role, _ = self.TenantRoleTemplate.objects.get_or_create(
+        role, created = self.TenantRoleTemplate.objects.get_or_create(
             tenant=self.tenant, key=WF_DEFAULT_HIGH_VALUE_ROLE,
-            defaults={"name": "Payout Senior Approver", "status": "ACTIVE"},
+            defaults={"name": "Payout Senior Approver", "status": "ACTIVE",
+                      "is_system_role": True},
         )
+        if not created and not role.is_system_role:
+            role.is_system_role = True
+            role.save(update_fields=["is_system_role"])
         self.TenantUserRoleAssignment.objects.create(
             tenant=self.tenant, user=user, role=role,
             assignment_status="ACTIVE",

@@ -32,6 +32,7 @@ from rest_framework.views import APIView
 from core.response import error_response, success_response
 from vs_finance.models import FeeStructure
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+from vs_rbac.scoping import branch_q
 
 from .exceptions import (
     CrossTenantError,
@@ -64,16 +65,24 @@ class _FalView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
     def get_structure(self, pk):
-        """The fee structure, or 404 if it is not this school's.
+        """The fee structure, or 404 if it is not this school's, or not this caller's.
 
         Cross-tenant reads answer 404 rather than 403 for the same reason the
         student endpoints do: a 403 confirms the row exists.
+
+        The branch narrowing is the same rule and the same answer. A structure is
+        the price list, and this surface links it to a term and bills a cohort
+        from it, so a bursar pinned to Ikeja must not reach Lekki's - and a
+        template the school publishes for every branch has a null branch and stays
+        reachable by all of them, which is why the inclusive form is used here and
+        the exclusive one is not.
         """
         tenant = getattr(self.request, "tenant", None)
         if tenant is None:
             raise NotFound("No school in context.")
         structure = (
             FeeStructure.objects.select_related("entity")
+            .filter(branch_q(self.request, include_shared=True))
             .filter(pk=pk, entity__tenant=tenant)
             .first()
         )

@@ -344,7 +344,36 @@ def set_virtual_account_status(va, *, status, actor_user=None):
     return va  # Return the updated virtual account.
 
 
-@transaction.atomic
+# --------------------------------------------------------------------------- #
+# Confirming: three phases, and why the provider call is not in the middle one  #
+# --------------------------------------------------------------------------- #
+#
+# ``confirm_collection`` and ``confirm_payout`` both used to be one
+# ``@transaction.atomic`` function that took a row lock, then called Paystack
+# from inside it, then booked. That put a network round-trip inside a database
+# transaction holding a lock, which fails in two ways at once when the provider
+# is slow rather than down:
+#
+#   * every worker confirming is holding a Postgres connection open for the
+#     length of a Paystack call, so a provider degradation drains the connection
+#     pool and takes the whole API down with it - the site stops serving
+#     timetables because a gateway is slow;
+#   * the lock is held for that whole time, so a re-delivery of the same webhook
+#     blocks on it rather than short-circuiting, and Paystack's own retries make
+#     that pile-up worse exactly when things are already bad.
+#
+# So the work is split. The provider call happens with no transaction open and
+# no lock held; the lock is taken afterwards, for the few milliseconds the
+# booking actually needs.
+#
+# **The re-check after locking is what keeps it safe**, and is not optional. Two
+# deliveries of the same event can both pass the pre-check and both verify - two
+# harmless reads at the provider - but only one may book. The second takes the
+# lock, sees a terminal row, and returns it unchanged. That is the same
+# idempotency guarantee as before, now enforced at the point where it matters
+# instead of by holding everyone in a queue.
+
+
 # Handle the confirm collection workflow.
 def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
     """Confirm a collection and book the receipt - idempotently.
@@ -353,11 +382,19 @@ def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
     if omitted, the provider is polled. A SUCCEEDED collection books a customer receipt
     (Dr bank, Cr AR) and links it; FAILED/ABANDONED is recorded with no ledger effect.
     Re-confirming an already-terminal intent is a no-op (returns it unchanged).
+
+    Deliberately **not** ``@transaction.atomic``: see the note above. This half
+    does the provider round-trip with nothing locked; ``_confirm_collection_atomic``
+    takes the lock and owns every write.
     """
-    intent = CollectionIntent.objects.select_for_update().get(pk=intent.pk)
+    # Unlocked pre-check. Saves a pointless provider call for a row that is
+    # already settled, which is the common case under webhook re-delivery. It is
+    # not the idempotency guarantee - that is the re-check under the lock below.
+    intent = CollectionIntent.objects.get(pk=intent.pk)
     if intent.is_terminal:  # Terminal rows are already settled or failed.
         return intent  # Exit without duplicating ledger work.
 
+    verify_raw = None
     if status is None:  # When no explicit status is supplied, verify with the PSP.
         client = get_provider(intent.provider)  # Resolve the provider using the stored intent value.
         result = client.verify_collection(  # Ask the PSP for the final collection state.
@@ -377,7 +414,24 @@ def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
                 "Provider did not report a settled amount for this virtual account "
                 "deposit; booking held for manual review.")
         amount = result.amount or intent.amount  # Fall back to the original amount if the PSP omits it.
-        intent.raw_response = {**(intent.raw_response or {}), "verify": result.raw}  # Append the verification payload.
+        verify_raw = result.raw  # Carried into the locked half; applied to the row it re-reads.
+
+    return _confirm_collection_atomic(
+        intent.pk, status=status, amount=amount, verify_raw=verify_raw,
+        actor_user=actor_user,
+    )
+
+
+@transaction.atomic
+def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_user):
+    """Take the lock, re-check, and book. Every write in the flow happens here."""
+    intent = CollectionIntent.objects.select_for_update().get(pk=intent_id)
+    # The real idempotency guarantee. Another worker may have booked this while we
+    # were talking to the provider, and this is where that is caught.
+    if intent.is_terminal:
+        return intent
+    if verify_raw is not None:  # Append the verification payload to the row we locked.
+        intent.raw_response = {**(intent.raw_response or {}), "verify": verify_raw}
 
     if status != CollectionStatus.SUCCEEDED:  # Only success books a receipt.
         intent.status = (CollectionStatus.FAILED if status == CollectionStatus.FAILED
@@ -1125,18 +1179,23 @@ def _recompute_batch_status(batch):
     return batch  # Return the refreshed batch.
 
 
-@transaction.atomic
 # Handle the confirm payout workflow.
 def confirm_payout(payout, *, status=None, amount=None, actor_user=None):
     """Confirm a payout and book the vendor payment - idempotently.
 
     ``amount`` (kobo) optionally overrides the booked amount; if omitted on the verify
     path, the provider-reported settled amount is adopted (mirrors ``confirm_collection``).
+
+    Split the same way as ``confirm_collection`` and for the same reasons - see the
+    note above it. The provider round-trip happens here with nothing locked;
+    ``_confirm_payout_atomic`` takes the lock and owns every write.
     """
-    payout = PayoutInstruction.objects.select_for_update().get(pk=payout.pk)
+    # Unlocked pre-check: skip a pointless provider call for a row already settled.
+    payout = PayoutInstruction.objects.get(pk=payout.pk)
     if payout.is_terminal:  # Already confirmed or failed rows should not be processed again.
         return payout  # Exit early for idempotency.
 
+    verify_raw = None
     if status is None:  # Ask the PSP when the caller did not provide a terminal status.
         client = get_provider(payout.provider)  # Resolve the correct provider adapter.
         result = client.verify_transfer(  # Fetch the current transfer state from the PSP.
@@ -1144,7 +1203,23 @@ def confirm_payout(payout, *, status=None, amount=None, actor_user=None):
         )
         status = result.status  # Use the provider's transfer status for confirmation.
         amount = result.amount or payout.amount  # Adopt the PSP's settled amount, falling back to the instructed value.
-        payout.raw_response = {**(payout.raw_response or {}), "verify": result.raw}  # Append the verification payload.
+        verify_raw = result.raw  # Applied to the row the locked half re-reads.
+
+    return _confirm_payout_atomic(
+        payout.pk, status=status, amount=amount, verify_raw=verify_raw,
+        actor_user=actor_user,
+    )
+
+
+@transaction.atomic
+def _confirm_payout_atomic(payout_id, *, status, amount, verify_raw, actor_user):
+    """Take the lock, re-check, and book. Every write in the flow happens here."""
+    payout = PayoutInstruction.objects.select_for_update().get(pk=payout_id)
+    # Another worker may have booked this while we were talking to the provider.
+    if payout.is_terminal:
+        return payout
+    if verify_raw is not None:  # Append the verification payload to the row we locked.
+        payout.raw_response = {**(payout.raw_response or {}), "verify": verify_raw}
 
     if status != PayoutStatus.PAID:  # Only a paid transfer can book a vendor payment.
         if status in (PayoutStatus.FAILED, PayoutStatus.REVERSED):  # Preserve only terminal negative outcomes locally.

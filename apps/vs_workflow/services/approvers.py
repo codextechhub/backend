@@ -89,8 +89,24 @@ def _users_for_role_key(role_key: str, tenant, branch) -> list:
 
     from vs_rbac.models import TenantRoleTemplate
 
+    # ``is_system_role`` is not decoration here; it is the boundary.
+    #
+    # A tenant role's key is slugified from the name its creator typed, so anyone
+    # holding role-create can produce the key ``payout-approver`` by naming a role
+    # "Payout Approver". Without this clause that role's holders were resolved as
+    # eligible approvers for every payout batch the school raised - approval
+    # authority over the school's money, conferred by a string, with no payments
+    # permission held and nothing on the roles screen able to grant or withdraw
+    # it (see ``vs_rbac.unenforced``: the ten ``*.approve`` keys gate nothing).
+    #
+    # The flag is set only by :func:`vs_workflow.services.roles.ensure_approver_role`,
+    # which is provisioning, and is read-only on the roles API. So a look-alike
+    # resolves to nobody and the stage parks - the same outcome as a tenant that
+    # has no such role, which is the honest answer and the one the coverage
+    # command (``check_workflow_role_coverage``) already reports.
     role = TenantRoleTemplate.objects.filter(
         tenant=tenant, key=role_key, status=TenantRoleTemplate.Status.ACTIVE,
+        is_system_role=True,
     ).values_list("pk", flat=True).first()
     if role is None:
         return []

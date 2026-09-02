@@ -47,4 +47,8 @@ HEALTH_METRICS_BACKGROUND_FLUSH = False
 # whole event-type registry from vs_notifications migration 0008 and no
 # templates at all, which the suite seeds per test. Real environments keep the
 # warning; see vs_notifications/checks.py.
-SILENCED_SYSTEM_CHECKS = [*SILENCED_SYSTEM_CHECKS, "vs_notifications.W001"]
+# core.W001: CI runs with DEBUG=False and no worker, which is the check's exact
+# trigger. It is a fact about the deployment, not about the build.
+SILENCED_SYSTEM_CHECKS = [
+    *SILENCED_SYSTEM_CHECKS, "vs_notifications.W001", "core.W001",
+]

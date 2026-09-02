@@ -902,7 +902,7 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
                 days=policy.default_invoice_due_days,
             )
 
-        customer = _resolve_customer(entity, body.get("customer"))
+        customer = _resolve_customer(request, entity, body.get("customer"))
         with transaction.atomic():
             invoice = Invoice.objects.create(
                 entity=entity,
@@ -911,8 +911,10 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
                 # family that attends one site, so the receivable belongs there and
                 # no request body may retarget it. A school-wide customer keeps a
                 # school-wide invoice, which is what keeps their ledger consistent.
-                # This is also the check that stops a Lekki bursar billing an Ikeja
-                # family whose id she guessed, which _resolve_customer does not narrow.
+                # It is also the second half of the guard against a Lekki bursar
+                # billing an Ikeja family: _resolve_customer now refuses to return
+                # a customer outside her branches at all, and this rule still
+                # decides the branch when the customer is legitimately shared.
                 branch_id=_inherited_branch_id(request, customer),
                 invoice_date=invoice_date,
                 due_date=due_date,

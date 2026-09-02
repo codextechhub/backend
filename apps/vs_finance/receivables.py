@@ -456,6 +456,77 @@ def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_deb
 
 
 # Support the apply payment subledger workflow.
+def lock_settlement_targets(plan):
+    """Re-read every target in *plan* under a row lock, returning the locked plan.
+
+    Settlement is a read-modify-write: it reads ``target.balance_due`` (derived
+    from the stored ``amount_paid``), decides how much to apply, and writes the
+    sum back. ``@transaction.atomic`` makes that atomic; it does **not** make it
+    isolated. On PostgreSQL's default READ COMMITTED, a second settlement running
+    beside the first reads the *pre-update* row, so both compute their share
+    against the same balance and the second write silently discards the first.
+
+    What that costs is not a stale number. Each run also writes its own allocation
+    row and posts its own journal crediting AR, so the sub-ledger records two
+    settlements, the general ledger credits AR twice, and the document reports
+    having been paid once. The AR control account is left carrying a credit that
+    nothing in the books explains - which is exactly the state the "split at
+    source" design in :func:`_post_payment_atomic` exists to make impossible.
+
+    It is a real race, not a theoretical one: a bursar recording a counter receipt
+    while the Paystack webhook for the same invoice is being confirmed is two
+    concurrent settlements of one document, and both paths reach here.
+
+    The lock is taken here rather than in each plan builder because this is the
+    one function that performs the write, so every caller is covered however its
+    plan was built - the auto-allocation queryset, an explicit ``allocations``
+    list from a request body, and the gateway booking path alike.
+
+    Ordering is the other half. Locks are taken model by model in a fixed order
+    and by ascending primary key within each model, so two receipts that settle
+    an overlapping set of documents always queue in the same sequence and cannot
+    deadlock against each other.
+
+    A target that has vanished between planning and locking is passed through
+    untouched; the ``balance_due`` cap below then applies nothing for it, which is
+    the same outcome as a document that was already settled.
+
+    The caller's **own** instances are refreshed in place and handed back, rather
+    than being replaced by the freshly fetched rows. That is not tidiness: the
+    objects in ``plan`` belong to whoever built it, and several callers keep
+    reading them afterwards. Swapping in copies would leave those callers holding
+    a pre-settlement view of a document this function has just moved - which is
+    precisely how ``void_expense_claim`` came to be asked whether a claim had been
+    reimbursed and answer from a stale ``amount_paid``.
+    """
+    if not plan:
+        return plan
+
+    ids_by_model: dict[type, set] = {}
+    by_key: dict[tuple, list] = {}
+    for target, _amount in plan:
+        pk = getattr(target, "pk", None)
+        if pk is None:
+            continue
+        ids_by_model.setdefault(type(target), set()).add(pk)
+        by_key.setdefault((type(target), pk), []).append(target)
+
+    for model in sorted(ids_by_model, key=lambda m: m._meta.label):
+        for row in (model.objects.select_for_update()
+                    .filter(pk__in=sorted(ids_by_model[model]))
+                    .order_by("pk")):
+            for target in by_key.get((model, row.pk), ()):
+                if target is row:
+                    continue
+                # Copy the locked row onto the caller's instance rather than
+                # calling refresh_from_db() on each one, which would be a second
+                # query per target for data this query has already returned.
+                for field in row._meta.concrete_fields:
+                    setattr(target, field.attname, getattr(row, field.attname))
+
+    return plan
+
+
 def _apply_payment_subledger(payment, plan, *, remaining):
     """Settle the plan's AR targets from a payment, capped at each target's balance and
     ``remaining``. A target is an :class:`Invoice` (→ PaymentAllocation, bump
@@ -471,6 +542,7 @@ def _apply_payment_subledger(payment, plan, *, remaining):
 
     applied, created = 0, []  # Track total applied cash and created allocation rows.
     latest = None  # Newest accounting date this run actually settled.
+    plan = lock_settlement_targets(plan)  # Nobody else may move these balances now.
     for target, requested in plan:  # Walk the settlement plan in order.
         if remaining <= 0:  # Stop once all cash has been consumed.
             break  # Exit the current loop.

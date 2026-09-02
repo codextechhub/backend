@@ -1,5 +1,9 @@
 """API tests for the approver group endpoints behind the Workflow Approver screen.
 
+Roles here are built with ``is_system_role=True`` because the resolver only
+nominates flagged roles - see ``test_services`` and
+``test_approver_role_reservation`` for why an unflagged one must confer nothing.
+
 Security-critical cases first: permission-denied and cross-tenant isolation on
 every entry point, then the group lifecycle and the live resolve preview.
 
@@ -41,7 +45,7 @@ factory = APIRequestFactory()
 
 def _grant(user, keys):
     """Give *user* a fresh role carrying *keys* on their own tenant."""
-    role = make_role(user.tenant, name=f"grp-grant-{next(_counter)}")
+    role = make_role(user.tenant, name=f"grp-grant-{next(_counter)}", is_system_role=True)
     for k in keys:
         make_role_permission(role, make_permission(k))
     make_assignment(user.tenant, user, role)
@@ -182,7 +186,7 @@ class ApproverGroupApiTests(TestCase):
 
     def test_cannot_add_role_from_another_tenant(self):
         other = make_school(slug="grp-outsider-role", name="Outsider Role")
-        foreign_role = make_role(other.tenant, name="Foreign Bursar", key="foreign-bursar")
+        foreign_role = make_role(other.tenant, name="Foreign Bursar", key="foreign-bursar", is_system_role=True)
         resp = _call(ADD_MEMBER, "post", BASE, self.manager, self.tenant,
                      {"kind": "ROLE", "role_key": foreign_role.key}, pk=self.group.pk)
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
@@ -276,7 +280,7 @@ class ApproverGroupApiTests(TestCase):
 
     def test_add_role_and_position_members(self):
         from vs_user.models import OrgNode, Position
-        role = make_role(self.tenant, name="Bursar", key="bursar")
+        role = make_role(self.tenant, name="Bursar", key="bursar", is_system_role=True)
         node = OrgNode.objects.create(code="DV-OPS", name="Ops", kind="DIVISION")
         Position.objects.create(title="Head of Ops", code="POS-OPS", org_node=node)
 
@@ -325,7 +329,7 @@ class ApproverGroupApiTests(TestCase):
 
     def test_resolve_reports_per_member_and_total(self):
         person = make_school_admin(self.branch, email="grp-person@test.com")
-        role = make_role(self.tenant, name="Bursar", key="bursar")
+        role = make_role(self.tenant, name="Bursar", key="bursar", is_system_role=True)
         role_holder = make_school_admin(self.branch, email="grp-bursar@test.com")
         make_assignment(self.tenant, role_holder, role)
         WorkflowApproverGroupMember.objects.create(
@@ -345,7 +349,7 @@ class ApproverGroupApiTests(TestCase):
     def test_resolve_dedupes_people_reachable_twice(self):
         """Someone who is both a named member and a role holder counts once."""
         both = make_school_admin(self.branch, email="grp-both@test.com")
-        role = make_role(self.tenant, name="Bursar", key="bursar")
+        role = make_role(self.tenant, name="Bursar", key="bursar", is_system_role=True)
         make_assignment(self.tenant, both, role)
         WorkflowApproverGroupMember.objects.create(
             group=self.group, kind="USER", user=both)
@@ -383,8 +387,8 @@ class DynamicRolePreviewTests(TestCase):
         _grant(self.builder, ["workflow.template.view", "workflow.template.manage"])
 
         self.officer_role = make_role(self.tenant, name="Finance Officer",
-                                      key="finance-officer")
-        self.bursar_role = make_role(self.tenant, name="Bursar", key="bursar")
+                                      key="finance-officer", is_system_role=True)
+        self.bursar_role = make_role(self.tenant, name="Bursar", key="bursar", is_system_role=True)
         self.officer = make_school_admin(self.branch, email="dyn-officer@test.com")
         self.bursar = make_school_admin(self.branch, email="dyn-bursar@test.com")
         make_assignment(self.tenant, self.officer, self.officer_role)
@@ -442,7 +446,7 @@ class DynamicRolePreviewTests(TestCase):
 
     def test_role_from_another_tenant_rejected(self):
         other = make_school(slug="dyn-prev-other", name="Other")
-        foreign = make_role(other.tenant, name="Foreign", key="foreign-role")
+        foreign = make_role(other.tenant, name="Foreign", key="foreign-role", is_system_role=True)
         resp = self._preview({"amount": 1},
                              rules=[{"role_key": foreign.key, "condition": None}])
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
@@ -481,7 +485,7 @@ class StageApproverOverrideApiTests(TestCase):
             template=self.central, code="approval", label="Approval",
             approver_source="ROLE", approver_role_key="central-approver")
 
-        make_role(self.tenant, name="Our Approver", key="our-approver")
+        make_role(self.tenant, name="Our Approver", key="our-approver", is_system_role=True)
 
     def _create(self, user=None, **body):
         payload = {"stage": self.stage.pk, "approver_source": "ROLE",
@@ -504,7 +508,7 @@ class StageApproverOverrideApiTests(TestCase):
 
         approver = make_school_admin(self.branch, email="ovr-api-approver@test.com")
         make_assignment(self.tenant, approver,
-                        make_role(self.tenant, name="Chosen", key="chosen-role"))
+                        make_role(self.tenant, name="Chosen", key="chosen-role", is_system_role=True))
         self._create(approver_role_key="chosen-role")
 
         requester = make_school_admin(self.branch, email="ovr-api-req@test.com")

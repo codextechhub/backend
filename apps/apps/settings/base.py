@@ -89,8 +89,13 @@ REST_FRAMEWORK = {
         # against the next payer's.
         "invoice_pay":       "240/hour",
         "invoice_pay_start": "60/hour",
-        # Keyed by the pay token, so it bounds a single invoice's link.
+        # Keyed by the pay token, so these bound a single invoice's link rather
+        # than a shared school address. Two scopes, not one: the read is used
+        # several times by an honest payer (open the page, start a checkout, come
+        # back from the gateway), and spending those out of the budget that stops
+        # a link being worked would refuse somebody mid-payment.
         "invoice_pay_link":  "12/hour",
+        "invoice_pay_link_read": "60/hour",
         "guide_analytics": "120/minute",
         # Public barcode-login preview - throttled hard because it confirms
         # whether an email belongs to a known account (enumeration surface).
@@ -359,6 +364,39 @@ PAYMENTS_DEFAULT_PROVIDER = config("PAYMENTS_DEFAULT_PROVIDER", default="PAYSTAC
 # ``vs_payments.services.default_callback_url()`` derive it at call time, when
 # FRONTEND_BASE_URL is whatever the running environment actually set.
 PAYMENTS_CALLBACK_URL = config("PAYMENTS_CALLBACK_URL", default="")
+
+# --------------------------------------------------------------------------- #
+# Where a PAYING CUSTOMER is sent                                              #
+# --------------------------------------------------------------------------- #
+# Not FRONTEND_BASE_URL. That one addresses the Console (staff sign in at
+# intranet.codexng.com), and it is right for the links staff receive - invites,
+# password resets. A parent paying a fee invoice is not staff and has no account
+# anywhere: they belong on their own school's app, which is served per school at
+# <slug>.xvs.codexng.com. Sending them to the Console was how the pay link
+# pointed at a backoffice they cannot open.
+#
+# Scheme and host only. The school's slug is inserted as a subdomain at call
+# time, so one setting serves every school and a local checkout still works
+# (http://localhost:5174 becomes http://corona.localhost:5174, the same
+# <slug>.localhost shape the onboarding seeder already prints).
+SCHOOL_APP_BASE_URL = config("SCHOOL_APP_BASE_URL", default="https://xvs.codexng.com")
+
+# Where a payer goes when the invoice was raised by the PLATFORM's own books
+# rather than a school's. CodeX billing a school has no school subdomain to
+# build from: its books belong to the platform tenant, and a Customer records no
+# tenant of its own, so nothing on the invoice says which school is paying it.
+#
+# Empty means "use the reserved pay. subdomain of SCHOOL_APP_BASE_URL". It has to
+# be a subdomain rather than the bare host: bare xvs.codexng.com serves the
+# product site, not the app, so a link there would land on marketing copy. Every
+# subdomain is already covered by the wildcard DNS and certificate the schools
+# use, and "pay" is reserved in vs_tenants.RESERVED_TENANT_SLUGS, so no school
+# can take it. Left as an env var rather than baked into code: moving these
+# payers elsewhere is then an environment change, not a deploy.
+#
+# NOT defaulted here to f"{SCHOOL_APP_BASE_URL}". See PAYMENTS_CALLBACK_URL
+# above for what happens to a setting derived from another at import time.
+PLATFORM_PAY_BASE_URL = config("PLATFORM_PAY_BASE_URL", default="")
 
 # Platform (CodeX) issuer identity - the letterhead printed on invoices/receipts the
 # CodeX *platform* entity raises for its own customers (the schools). School-owned
