@@ -36,31 +36,46 @@ from ..services.scoping import branch_for_write, scope_students, UNSET
 from .base import StudentsViewMixin
 
 
-def _list_queryset(tenant):
+def _list_queryset(tenant, session=None):
     """One queryset with everything a row needs already prefetched.
 
     The prefetches are the whole reason a page of fifty students is a fixed
     number of queries rather than a hundred and fifty: without them each row
     fetches its own class and its own guardians, and the cost grows with the
     page size.
+
+    **``session`` changes which enrolment the row reads, and must not filter on
+    ``is_active``.** That flag marks a student's CURRENT placement, not the fact
+    of having been on a roll: promoting Amaka out of 2026/2027 left her SSS1 A
+    row with ``is_active=False``, so filtering on it answers "nobody was in
+    SSS1 A last year". Ordering by it instead puts the year's live row first
+    and keeps the superseded ones behind it, which is also what a mid-year
+    transfer needs - two rows in one year, the later one current.
     """
-    active = Prefetch(
-        "enrolments",
-        queryset=ClassEnrolment.objects.filter(is_active=True).select_related(
-            "school_class", "school_class__level", "session",
-        ),
-        to_attr="_active_enrolments",
+    enrolments = ClassEnrolment.objects.select_related(
+        "school_class", "school_class__level", "session",
     )
+    enrolments = (
+        enrolments.filter(session=session).order_by("-is_active", "-id")
+        if session is not None
+        else enrolments.filter(is_active=True)
+    )
+    active = Prefetch("enrolments", queryset=enrolments, to_attr="_active_enrolments")
     guardians = Prefetch(
         "guardian_links",
         queryset=StudentGuardian.objects.filter(is_primary=True).select_related(
             "guardian",
         ),
     )
+    qs = Student.objects.filter(tenant=tenant)
+    if session is not None:
+        # The roll AS IT WAS: everyone with a placement that year, and nobody
+        # who only exists in another one.
+        qs = qs.filter(enrolments__session=session)
     return (
-        Student.objects.filter(tenant=tenant)
-        .select_related("branch", "applied_for")
+        qs.select_related("branch", "applied_for")
         .prefetch_related(active, guardians)
+        .distinct()
     )
 
 
@@ -83,7 +98,10 @@ class StudentListCreateView(StudentsViewMixin, generics.ListCreateAPIView):
 
     def get_queryset(self):
         params = self.request.query_params
-        qs = scope_students(_list_queryset(self.tenant), self.request.user, self.tenant)
+        qs = scope_students(
+            _list_queryset(self.tenant, self.session_filter),
+            self.request.user, self.tenant,
+        )
 
         status = (params.get("status") or "").strip().upper()
         if status and status != "ALL":
@@ -334,21 +352,31 @@ class StudentSummaryView(StudentsViewMixin, APIView):
         return super().get_permissions()
 
     def get(self, request):
+        # The same roll the table below shows, on both lenses. The figures
+        # describing a different set of students from the rows underneath them
+        # is the defect this endpoint has already been fixed for once.
+        base = Student.objects.filter(tenant=self.tenant)
+        if self.session_filter is not None:
+            base = base.filter(enrolments__session=self.session_filter)
         scoped = self.narrow_to_branch(
-            scope_students(
-                Student.objects.filter(tenant=self.tenant),
-                request.user, self.tenant,
-            ),
+            scope_students(base, request.user, self.tenant),
         )
+        # distinct=True on the COUNT, not on the queryset: the session lens
+        # joins through enrolments, and a student with two rows in a year - a
+        # mid-year transfer - would otherwise be counted twice. A bare
+        # .distinct() does not survive values().annotate(), which silently
+        # collapsed the groups instead and reported 6 students out of 83.
         by_status = {
             row["status"]: row["n"]
-            for row in scoped.values("status").annotate(n=Count("id"))
+            for row in scoped.values("status").annotate(n=Count("id", distinct=True))
         }
         unassigned = scoped.filter(status__in=ON_ROLL).exclude(
             enrolments__is_active=True,
-        ).distinct().count()
+        ).distinct().count()  # distinct on the rows here: no aggregate to break
 
-        session = self.session_or_none
+        # The capacity panel is about the year being READ, not the school's
+        # current one - last year's classes had last year's loads.
+        session = self.session_filter or self.session_or_none
         capacity = (
             fullest_classes(
                 self.tenant, request.user, session, branch=self.branch_filter,
@@ -368,4 +396,9 @@ class StudentSummaryView(StudentsViewMixin, APIView):
             ],
             "nearest_capacity": capacity,
             "session": str(session) if session else "",
+            # Status, guardians and documents carry no year, so under a session
+            # lens these counts describe THIS YEAR'S students as they stand
+            # today. The screen has to say so rather than implying it knows who
+            # was suspended in 2026.
+            "status_is_current": self.session_filter is not None,
         })

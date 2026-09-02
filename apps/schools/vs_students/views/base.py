@@ -167,6 +167,37 @@ class StudentsViewMixin:
         self._branch_filter = resolve_branch_reference(self.tenant, raw, "branch")
         return self._branch_filter
 
+    @property
+    def session_filter(self):
+        """The year this request is reading, or None for the school's current one.
+
+        A person is not per-session, but their PLACEMENT is, and so is the roll
+        itself: Lagoon View had 85 students in 2026/2027 and has 73 in
+        2027/2028, and a child in SSS1 A last year is in SSS2 A this year. So
+        "which year" is a real question about students even though status,
+        guardians and documents carry no year at all.
+
+        None means the module's existing behaviour - the active year, read
+        through each enrolment's ``is_active`` flag. A named year means the
+        register AS IT WAS: see ``enrolment_for`` for why that cannot use
+        ``is_active``.
+        """
+        if "_session_filter" in self.__dict__:
+            return self._session_filter
+        raw = (self.request.query_params.get("session") or "").strip()
+        if not raw:
+            self._session_filter = None
+            return None
+        from rest_framework.exceptions import ValidationError
+
+        from schools.vs_academics.models import AcademicSession
+
+        row = AcademicSession.objects.filter(tenant=self.tenant, pk=raw).first()
+        if row is None:
+            raise ValidationError({"session": "No such year at this school."})
+        self._session_filter = row
+        return row
+
     def narrow_to_branch(self, queryset, field="branch"):
         """Apply :attr:`branch_filter` to *queryset*, or hand it back whole."""
         branch = self.branch_filter

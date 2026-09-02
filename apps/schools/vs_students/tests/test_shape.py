@@ -672,3 +672,96 @@ class RosterReadsItsOwnYearTests(StudentsFixture):
         nxt = {r["full_name"] for r in self.roster(self.next_class).data["data"]}
         self.assertEqual(here, {"Ada Thisyear"})
         self.assertEqual(nxt, {"Obi Nextyear"})
+
+
+class SessionLensTests(StudentsFixture):
+    """The roll and the class both belong to a year.
+
+    A student in SSS1 A last year is in SSS2 A this year, and a student enrolled
+    this year was not on last year's roll at all - so "which year" is a real
+    question about students even though status carries no year.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from schools.vs_academics.models import (
+            AcademicSession,
+            Level,
+            SchoolClass,
+            SessionStatus,
+        )
+
+        self.next_year = AcademicSession.all_objects.create(
+            tenant=self.tenant, name="2041/2042",
+            start_date=dt.date(2041, 9, 1), end_date=dt.date(2042, 7, 31),
+            status=SessionStatus.DRAFT,
+        )
+        next_jss2 = Level.all_objects.create(
+            tenant=self.tenant, program=self.program, session=self.next_year,
+            name="JSS2", code="JSS2", order_index=2,
+        )
+        self.next_class = SchoolClass.all_objects.create(
+            tenant=self.tenant, level=next_jss2, session=self.next_year,
+            name="JSS2 A", code="JSS2A42", arm="A", capacity=30, branch=None,
+        )
+        # Moves up: this year in JSS1 A, next year in JSS2 A.
+        self.mover = self.student(first="Ada", last="Mover")
+        self.place(self.mover, self.shared_class)
+        moved = self.place(self.mover, self.next_class, session=self.next_year)
+        # A promotion leaves the OLD row inactive, which is the trap: filtering
+        # on is_active answers "nobody was in JSS1 A last year".
+        self.mover.enrolments.filter(session=self.year).update(is_active=False)
+        self.assertTrue(moved)
+        # Only ever on next year's roll.
+        self.newcomer = self.student(first="Obi", last="Newcomer")
+        self.place(self.newcomer, self.next_class, session=self.next_year)
+
+    def rows(self, session=None):
+        params = {"session": session.pk} if session else None
+        return self.get(self.admin, "student-list", params=params).data
+
+    def test_the_roll_differs_between_years(self):
+        this_year = {r["full_name"] for r in self.rows(self.year)["data"]}
+        next_year = {r["full_name"] for r in self.rows(self.next_year)["data"]}
+        self.assertIn("Ada Mover", this_year)
+        self.assertIn("Ada Mover", next_year)
+        # The newcomer has no placement in the older year, so is not on its roll.
+        self.assertNotIn("Obi Newcomer", this_year)
+        self.assertIn("Obi Newcomer", next_year)
+
+    def test_a_students_class_is_the_one_they_held_that_year(self):
+        """The defect this exists to prevent: one class shown for every year."""
+        def klass(session):
+            row = next(
+                r for r in self.rows(session)["data"] if r["full_name"] == "Ada Mover"
+            )
+            return r if False else row["class_name"]
+
+        self.assertEqual(klass(self.year), "JSS1 A")
+        self.assertEqual(klass(self.next_year), "JSS2 A")
+
+    def test_a_superseded_placement_still_counts_as_having_been_on_the_roll(self):
+        """is_active marks the CURRENT placement, not the fact of a placement."""
+        names = {r["full_name"] for r in self.rows(self.year)["data"]}
+        self.assertIn("Ada Mover", names)
+
+    def test_the_summary_describes_the_same_roll_as_the_list(self):
+        for session in (self.year, self.next_year):
+            with self.subTest(session=session.name):
+                listed = self.rows(session)["pagination"]["totalItems"]
+                summary = self.get(
+                    self.admin, "student-summary", params={"session": session.pk},
+                ).data["data"]
+                self.assertEqual(summary["on_roll"], listed)
+
+    def test_the_summary_admits_that_status_has_no_year(self):
+        plain = self.get(self.admin, "student-summary").data["data"]
+        lensed = self.get(
+            self.admin, "student-summary", params={"session": self.year.pk},
+        ).data["data"]
+        self.assertFalse(plain["status_is_current"])
+        self.assertTrue(lensed["status_is_current"])
+
+    def test_an_unknown_year_is_refused_rather_than_ignored(self):
+        response = self.get(self.admin, "student-list", params={"session": 999999})
+        self.assertEqual(response.status_code, 400)

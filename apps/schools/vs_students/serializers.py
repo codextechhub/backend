@@ -175,6 +175,11 @@ class StudentListSerializer(_BranchAware):
             "full_name", "status", "status_label", "branch", "branch_name",
             "class_name", "level_name", "primary_guardian", "photo_url",
             "enrolment_date",
+            # How long an application has been waiting is the one fact the
+            # applicant board and the directory's work queue are both sorting
+            # on, and it was detail-only - so both had a date they could not
+            # reach without a request per row.
+            "applied_on",
         ]
 
     def _enrolment(self, obj):
