@@ -30,3 +30,7 @@ docs/FRONTEND_CHANGES_OWED.md
 
 # agent worktrees (never commit)
 .claude/worktrees/
+
+# Machine-specific: launch.json holds absolute paths to one developer's
+# checkout, so it works nowhere but the machine that wrote it.
+.claude/launch.json
