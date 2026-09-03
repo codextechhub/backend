@@ -1037,36 +1037,30 @@ def _build_default_templates() -> dict:
         },
 
         # ── user.invited (EMAIL only, transactional) ────────────────────────
-        # Ported from vs_user/templates/vs_user/emails/invitation.{txt,html}.
-        # The Django-template variables there ({{ user.first_name }} etc.) are
-        # flattened to the context keys the render engine receives:
-        #   user_first_name, user_full_name, school_name, invitation_url, expiry_days
+        # The recipient may not have signed in before, so the message names the
+        # inviter, the workspace, the action, and the expiry without relying on
+        # any product knowledge.
         ("user.invited", C.EMAIL): {
             "subject": (
-                "{% if has_school %}You have been invited to {{ school_name }} "
-                "on XVision System{% else %}You have been invited to XVision "
-                "System{% endif %}"
+                "{% if inviter_name %}{{ inviter_name }} invited you to "
+                "{{ tenant_name }}{% else %}Your invitation to {{ tenant_name }}{% endif %}"
             ),
             "body": (
-                "Welcome to {{ school_name }}\n\n"
                 "Hello {{ user_first_name }},\n\n"
-                "You have been invited to join {{ school_name }} on XVision System.\n\n"
-                "YOUR ACCOUNT DETAILS\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "Name:        {{ user_full_name }}\n"
-                "Institution: {{ school_name }}\n\n"
-                "ACTIVATE YOUR ACCOUNT\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "Click the link below to set up your password and activate your account:\n\n"
+                "{% if inviter_name %}{{ inviter_name }} invited you to join "
+                "{{ tenant_name }} on XVision System.{% else %}You have been invited "
+                "to join {{ tenant_name }} on XVision System.{% endif %}\n\n"
+                "INVITATION DETAILS\n"
+                "Name: {{ user_full_name }}\n"
+                "Workspace: {{ tenant_name }}\n"
+                "Link expires: {{ expiry_days }} days after this email\n\n"
+                "Set a password to activate your account. This invitation link can only "
+                "be used once.\n\n"
                 "{{ invitation_url }}\n\n"
-                "⏰ IMPORTANT: This invitation link will expire in {{ expiry_days }} days.\n\n"
-                "If you didn't expect this invitation or have any questions, please contact "
-                "your administrator.\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "XVision System\n"
-                "Powering Smart Institutions"
+                "If you did not expect this invitation, ignore this email or contact the "
+                "administrator who invited you."
             ),
-            "cta_label": "Activate your account",
+            "cta_label": "Set up your account",
             "cta_url": "{{ invitation_url }}",
         },
 

@@ -56,7 +56,7 @@ def send_invitation_email_task(self, invitation_id: int, token: str):
     The engine's user.invited template renders:
       - The user's first name / full name
       - The invitation link containing the raw one-time token
-      - The school name (or a school-less variant when the user has no school)
+      - The workspace name and the person who sent the invitation
       - The 7-day expiry notice
 
     A resend rotates the token, so an earlier URL stops working immediately.
@@ -88,8 +88,8 @@ def send_invitation_email_task(self, invitation_id: int, token: str):
 
     user = invitation.user
 
-    school = getattr(user.tenant, 'school_profile', None)  # None for platform users.
-    school_name = school.name if school else 'CodeX'
+    profile = getattr(user.tenant, 'school_profile', None)  # None for platform users.
+    tenant_name = profile.name if profile else 'CodeX Vision'
     base_url = getattr(settings, 'FRONTEND_BASE_URL', None)
     if not base_url:
         raise ImproperlyConfigured('FRONTEND_BASE_URL must be set in settings.')
@@ -101,11 +101,14 @@ def send_invitation_email_task(self, invitation_id: int, token: str):
         context={
             'user_first_name': user.first_name,
             'user_full_name':  user.full_name,
-            'school_name':     school_name,
+            'tenant_name':     tenant_name,
+            'inviter_name':    user.invited_by_name or '',
             'invitation_url':  invitation_url,
             'expiry_days':     7,
-            # Drives the school-less subject variant in the DB template.
-            'has_school':      bool(school),
+            # Compatibility for staff-authored templates based on the earlier
+            # standard copy. New standard templates use domain-neutral keys.
+            'school_name':     tenant_name,
+            'has_school':      bool(profile),
         },
         recipients=[user],
         tenant=user.tenant,

@@ -1151,6 +1151,88 @@ class EmailLayoutTests(_NotifFixture):
 
 
 # ---------------------------------------------------------------------------
+# Invitation email - first-contact trust and activation guidance
+# ---------------------------------------------------------------------------
+
+class InvitationEmailDesignTests(_NotifFixture):
+
+    def setUp(self):
+        super().setUp()
+        from .models import NotificationTemplate
+        self.template = NotificationTemplate.objects.get(
+            event_type=self._event("user.invited"), channel=ChannelChoices.EMAIL,
+        )
+
+    def _render(self, **overrides):
+        from .services.render import render_notification_template
+
+        context = {
+            "user_first_name": "Ngozi",
+            "user_full_name": "Ngozi Okafor",
+            "tenant_name": "Bright Star School",
+            "inviter_name": "Ada Admin",
+            "invitation_url": "https://example.test/activate/token",
+            "expiry_days": 7,
+            **overrides,
+        }
+        return render_notification_template(self.template, context)
+
+    def test_invitation_names_the_sender_workspace_expiry_and_action(self):
+        subject, body, html = self._render()
+
+        self.assertEqual(subject, "Ada Admin invited you to Bright Star School")
+        self.assertIn(
+            "Ada Admin invited you to join Bright Star School on XVision System.",
+            body,
+        )
+        self.assertIn("Workspace: Bright Star School", body)
+        self.assertIn("Link expires: 7 days after this email", body)
+        self.assertIn("This invitation link can only be used once.", body)
+        self.assertIn("https://example.test/activate/token", body)
+        self.assertIn(">Set up your account</a>", html)
+        self.assertEqual(html.count("https://example.test/activate/token"), 2)
+
+    def test_invitation_reads_cleanly_without_a_named_inviter(self):
+        subject, body, html = self._render(inviter_name="")
+
+        self.assertEqual(subject, "Your invitation to Bright Star School")
+        self.assertIn(
+            "You have been invited to join Bright Star School on XVision System.",
+            body,
+        )
+        self.assertNotIn(" invited you to join", body)
+        self.assertIn("Bright Star School", html)
+
+    def test_standard_copy_uses_domain_neutral_context_keys(self):
+        source = f"{self.template.subject}\n{self.template.body}"
+        self.assertIn("{{ tenant_name }}", source)
+        self.assertIn("{{ inviter_name }}", source)
+        self.assertNotIn("{{ school_name }}", source)
+
+    def test_migration_preserves_staff_authored_invitation(self):
+        from importlib import import_module
+        from django.apps import apps
+
+        self.template.subject = "My subject"
+        self.template.body = "My message"
+        self.template.cta_label = "Continue"
+        self.template.html_body = "<html>staff design</html>"
+        self.template.html_is_custom = True
+        self.template.save()
+
+        migration = import_module(
+            "vs_notifications.migrations.0013_refine_user_invitation_email"
+        )
+        migration.refine_standard_invitation(apps, None)
+        self.template.refresh_from_db()
+
+        self.assertEqual(self.template.subject, "My subject")
+        self.assertEqual(self.template.body, "My message")
+        self.assertEqual(self.template.cta_label, "Continue")
+        self.assertEqual(self.template.html_body, "<html>staff design</html>")
+
+
+# ---------------------------------------------------------------------------
 # Stored email HTML - the database holds what gets sent
 #
 # The console edits html_body directly, so the invariant these pin is: what an

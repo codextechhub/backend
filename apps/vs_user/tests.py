@@ -1401,6 +1401,9 @@ class InvitationEngineDispatchTests(TestCase):
         self.assertNotIn(token, notif.body)
         self.assertNotIn(token, notif.html_body)
         self.assertEqual(notif.metadata.get("from_name"), "Ada Admin")
+        self.assertEqual(notif.subject, "Ada Admin invited you to CodeX Vision")
+        self.assertIn("Workspace: CodeX Vision", notif.body)
+        self.assertIn("Link expires: 7 days after this email", notif.body)
 
     def test_successful_delivery_updates_invitation_via_receiver(self):
         from django.core import mail
