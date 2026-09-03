@@ -1,3 +1,18 @@
+"""Tenants and their branches: the boundary every other app scopes itself by.
+
+A tenant is served from its own subdomain, so its slug is a DNS label before it
+is an identifier: a school called "Support Academy" that took ``support`` would
+be served the help site instead of its own. :data:`RESERVED_TENANT_SLUGS` holds
+the names the platform answers on itself. It lives in this platform app rather
+than in the schools product because an ORGANIZATION tenant and a VIGIL clinic
+group come off the same wildcard and must be held to the same list, and the
+engines may not import the schools app to reach it.
+
+Both slug rules are enforced in :meth:`Tenant.save` rather than by a field
+validator. Every writer in this codebase makes a tenant through
+``Tenant.objects.create()``, and field validators never run on that path, so a
+validator would look like enforcement and catch nothing.
+"""
 from __future__ import annotations
 
 from django.core.exceptions import ValidationError
@@ -22,25 +37,9 @@ tenant_slug_validator = RegexValidator(
 )
 
 
-#: Slugs no customer may take, because each one is (or will be) a hostname the
-#: platform itself answers on. Every tenant is served from its own subdomain -
-#: ``bright-star.xvs.codexng.com``, matched by the CORS origin regex in
-#: ``settings.base`` - so a tenant slug is a DNS label first and an identifier
-#: second, and a school called "Support Academy" that took ``support`` would be
-#: served the help site instead of its own.
-#:
-#: It lives here, in the platform app, rather than in ``schools.vs_schools``
-#: where it began. The names being protected are platform infrastructure, not
-#: school vocabulary: an ORGANIZATION tenant and a VIGIL clinic group get a
-#: subdomain off the same wildcard and must be held to the same list, and the
-#: engines may not import the schools app to reach it.
-#:
-#: It sits *beside* ``tenant_slug_validator`` rather than inside it, and is
-#: enforced in :meth:`Tenant.save`, for one blunt reason: field validators do
-#: not run on ``Tenant.objects.create()``, which is how every writer in this
-#: codebase makes a tenant. A validator on the field would have looked like
-#: enforcement and caught nothing. Extend the set here; no migration is needed
-#: because nothing about it is stored in the field definition.
+#: Hostnames the platform answers on itself, matched by the CORS origin regex
+#: in ``settings.base``. Extend the set freely: nothing here is stored in a
+#: field definition, so no migration follows. See the module docstring.
 RESERVED_TENANT_SLUGS = frozenset({
     # The bare product and marketing hosts.
     "www", "xvs", "vigil", "intranet", "blog", "docs", "help", "support",
@@ -52,8 +51,7 @@ RESERVED_TENANT_SLUGS = frozenset({
     "admin", "root", "system", "internal", "static", "assets", "cdn", "media",
     "files", "img", "images", "download", "downloads", "mail", "email", "smtp",
     "imap", "ns", "ns1", "ns2", "ftp", "vpn", "proxy", "metrics", "health",
-    # Environments. A school called "Dev" would otherwise take the host the
-    # next environment needs.
+    # Environments, whose hosts the next deployment needs.
     "dev", "staging", "test", "demo", "sandbox", "preview", "local",
     # The platform tenant itself, seeded by vs_tenants 0002.
     "codex",
@@ -76,6 +74,22 @@ class Tenant(models.Model):
     Two rules follow, both enforced in :meth:`save` so no writer can miss them:
     it may not be one of :data:`RESERVED_TENANT_SLUGS`, and once the tenant has
     gone live it may not change at all.
+
+    ACTIVE and PENDING are both authenticable. A school onboards itself before
+    it goes live (FR-012), and being admitted says nothing about which surfaces
+    are open: that is settled per view by
+    ``vs_rbac.permissions.TenantSurfaceAllowed``. SUSPENDED and INACTIVE are
+    refused outright, exactly as an unknown slug is.
+
+    A PENDING spell is tracked by columns of its own rather than by
+    ``created_at``, because a spell can begin more than once. A school
+    suspended for an abandoned onboarding and later reinstated is pending from
+    the moment it was reinstated, so a sweep reading ``created_at`` would
+    expire it again on its very next run, forever. ``expiry_warned_at`` belongs
+    to the spell for the same reason: a sweep asking only "is this school
+    inside the warning window?" would send the same warning every day, and one
+    that never cleared the stamp would leave a reinstated school silently
+    unwarnable.
     """
 
     class Kind(models.TextChoices):
@@ -89,11 +103,7 @@ class Tenant(models.Model):
         SUSPENDED = "SUSPENDED", "Suspended"
         INACTIVE = "INACTIVE", "Inactive"
 
-    # The statuses whose users may sign in and assert this tenant. PENDING is
-    # here because a school has to onboard itself before it goes live (FR-012);
-    # being admitted says nothing about which surfaces are open, which is
-    # settled per view by vs_rbac.permissions.TenantSurfaceAllowed. SUSPENDED
-    # and INACTIVE are refused outright, as an unknown slug is.
+    # Statuses whose users may sign in and assert this tenant.
     AUTHENTICABLE_STATUSES = (Status.ACTIVE, Status.PENDING)
 
     name = models.CharField(max_length=255)
@@ -106,19 +116,9 @@ class Tenant(models.Model):
     )
     activated_at = models.DateTimeField(null=True, blank=True)
     deactivated_at = models.DateTimeField(null=True, blank=True)
-    # When this tenant entered the PENDING spell it is in now; null whenever it
-    # is not PENDING. `created_at` cannot answer that question, which is the
-    # whole reason this column exists: a school suspended for an abandoned
-    # onboarding and later put back to PENDING is pending again from the moment
-    # it was reinstated, while its creation date stays where it always was. A
-    # sweep reading `created_at` would expire such a school again on its very
-    # next run, forever.
+    # Start of the current PENDING spell; null whenever the tenant is not PENDING.
     pending_since = models.DateTimeField(null=True, blank=True, db_index=True)
-    # When the tenant was last told its pending spell is about to run out. It
-    # belongs to the spell, not to the tenant: a sweep that asked only "is this
-    # school within the warning window?" would answer yes every day and send
-    # the same warning a dozen times, and one that never cleared the stamp
-    # would leave a reinstated school silently unwarnable for ever.
+    # Last expiry warning sent for the current spell; cleared when the spell ends.
     expiry_warned_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
@@ -212,11 +212,14 @@ class Tenant(models.Model):
         })
 
     def save(self, *args, **kwargs):
-        # Both guards live here rather than on the field, because nothing in
-        # this codebase creates a tenant through a form: it is
-        # ``Tenant.objects.create()`` from ``School.save()``, from the
-        # onboarding services and from the seeds, and field validators never
-        # run on that path.
+        """Normalise the slug and enforce both slug rules on every write path.
+
+        The guards live here rather than on the field because nothing in this
+        codebase creates a tenant through a form. It is
+        ``Tenant.objects.create()`` from ``School.save()``, from the onboarding
+        services and from the seeds, and field validators never run on that
+        path.
+        """
         self.slug = (self.slug or "").strip().lower()
         self._assert_slug_allowed()
         self._assert_slug_unchanged_once_live()
@@ -290,19 +293,17 @@ class Branch(models.Model):
 
     "Branch" is not school vocabulary - a bank, a clinic chain and a retail
     group all have branches - so the model belongs beside ``Tenant`` rather
-    than inside the schools product. It used to hang off ``vs_schools.School``
-    and every app that needed to know which tenant owned a site had to travel
-    ``branch.school.tenant``; the tenant is now a column on the row.
+    than inside the schools product. The owning tenant is a column on the row,
+    so no reader travels ``branch.school.tenant`` to learn who owns a site, and
+    no engine app has to import the schools app to declare a foreign key here.
 
-    The table is still ``vs_schools_branch``. Keeping the class name, the
-    integer primary key and the table meant the move to this app changed only
-    Django's model state: no row moved, no foreign key constraint was rebuilt,
-    and every ``branch_id`` already stored anywhere (including in issued JWTs)
-    still names the same site.
+    The table is ``vs_schools_branch``, and the class name and integer primary
+    key match it. That is deliberate: it is what lets every ``branch_id``
+    already stored anywhere, issued JWTs included, keep naming the same site.
 
     Fields:
         tenant: FK to the owning Tenant. Every creation path must supply it;
-            there is no longer a school to derive it from.
+            there is no school to derive it from.
         name: Display label such as "Lekki Branch".
         code: Integer code unique within the tenant; filled on first save.
         is_main: Boolean marker for the canonical site (constraint enforces 1).
@@ -325,6 +326,18 @@ class Branch(models.Model):
     for every out-of-service state, so a tenant is never left with a canonical
     site that is suspended, deactivated or - permanently, since CLOSED is
     terminal - shut. Hand `is_main` over with `promote_to_main()` first.
+
+    `_type` is optional in the schema as well as in prose. Rows created outside
+    the serializers - by an import, a data migration, the shell, a test factory
+    - store `""`, and `BranchUpdateSerializer` runs `full_clean()` over the
+    whole instance, so a `_type` that is required in the schema makes every one
+    of those rows permanently unpatchable through the API over a field nobody
+    touched.
+
+    Every database this repo runs on supports partial unique indexes
+    (PostgreSQL locally, in CI and in staging; SQLite under
+    `apps.settings.test`), which is what keeps "one main branch per tenant"
+    a constraint rather than a convention.
     """
 
     tenant = models.ForeignKey(
@@ -346,16 +359,8 @@ class Branch(models.Model):
         help_text="Marks the primary/main branch for this tenant.",
     )
 
-    # Free-form label for the site: "Primary", "Secondary", "Nursery". Nothing
-    # branches on it - it is rendered in the branch list and detail payloads,
-    # carried by the import template as a not-required column, and read nowhere
-    # else - so it is declared optional, which is what its comment always said
-    # it was. It was ``CharField(max_length=80)`` with no ``blank``: optional in
-    # prose and required in the schema. Every row made outside the serializers
-    # (``seed_import``, a data migration, the shell, the test factories) stored
-    # ``""`` and was then permanently unpatchable through the API, because
-    # ``BranchUpdateSerializer`` runs ``full_clean()`` over the whole instance
-    # and the blank it refused was one nobody had touched.
+    # Free-form site label: "Primary", "Secondary", "Nursery". Nothing branches
+    # on it, and it must stay `blank=True`. See the class docstring.
     _type = models.CharField(max_length=80, blank=True, default="")
 
     # Branch contact/location info
@@ -380,14 +385,12 @@ class Branch(models.Model):
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 
-    # Tenant isolation: tenant users are automatically scoped to their tenant;
-    # all_objects is the unscoped escape hatch for platform code.
+    # Tenant isolation; all_objects is the unscoped hatch for platform code.
     objects = TenantAwareManager()
     all_objects = models.Manager()
 
     class Meta:
-        # The table did not move with the class. Renaming it would rewrite 39
-        # foreign key constraints for a cosmetic gain.
+        # Table name kept: renaming rewrites 39 FK constraints for nothing.
         db_table = "vs_schools_branch"
         default_manager_name = "objects"
         base_manager_name = "all_objects"
@@ -397,16 +400,11 @@ class Branch(models.Model):
             models.Index(fields=["tenant", "code"]),
         ]
         constraints = [
-            # The uniqueness the docstring has always promised and the table
-            # had never had until phase B.
             models.UniqueConstraint(
                 fields=["tenant", "code"],
                 name="uq_branch_tenant_code",
             ),
-            # A partial unique index. Every engine this repo runs on supports
-            # them (PostgreSQL local/CI/staging, SQLite in apps.settings.test);
-            # the MariaDB fallback that could not was retired 2026-06-12. Same
-            # shape as vs_notifications.NotificationSetting and vs_user.User.
+            # Partial unique index, as in vs_notifications and vs_user.
             models.UniqueConstraint(
                 fields=["tenant"],
                 condition=Q(is_main=True),
@@ -416,12 +414,13 @@ class Branch(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self) -> str:
-        # Was ``school.slug:code``. ``Tenant.slug`` and ``School.slug`` can
-        # diverge for a renamed school (``School.save`` syncs the tenant's
-        # name and status but deliberately not its slug, because the tenant
-        # slug is the public ``?tenant=`` key), so this string can differ from
-        # the old one for such a school. It is a debugging repr, used nowhere
-        # in an API response or an audit label.
+        """A debugging repr, used in no API response and no audit label.
+
+        Keyed on the tenant slug rather than the school's. The two diverge for
+        a renamed school, because ``School.save`` syncs the tenant's name and
+        status but deliberately not its slug: the tenant slug is the public
+        ``?tenant=`` key and has to stay put.
+        """
         return f"{self.tenant.slug}:{self.code}"
 
     def clean(self):
@@ -451,12 +450,12 @@ class Branch(models.Model):
     def allocate_next_code(*, tenant_id: int) -> int:
         """Allocate the next branch code (1..N) for one tenant.
 
-        Locks the *tenant* row rather than the branch rows. An older version
-        locked ``select_for_update().filter(school=school)``, which locks
-        nothing at all when the owner has no branches yet, so two concurrent
-        first-branch creates both read max=0 and both wrote code 1. The tenant
-        row always exists (``tenant`` is non-nullable), so locking it serialises
-        allocation for an empty tenant exactly as well as for a full one.
+        Locks the *tenant* row rather than the branch rows. Locking the branch
+        rows locks nothing at all while a tenant still has none, so two
+        concurrent first-branch creates would both read max=0 and both write
+        code 1. The tenant row always exists (``tenant`` is non-nullable), so
+        locking it serialises allocation for an empty tenant exactly as well as
+        for a full one.
 
         Reads through ``all_objects`` deliberately: ``objects`` is the
         ``TenantAwareManager``, and under an ambient tenant context that differs
@@ -508,20 +507,18 @@ class Branch(models.Model):
     })
 
     #: The complement of :attr:`OUT_OF_SERVICE_STATES`: a branch somebody may
-    #: still be posted to. Stated positively because the authorisation filters
-    #: in ``vs_rbac`` join through a *nullable* branch column, where a negative
-    #: filter would also drop the whole-tenant grants (``branch IS NULL``) that
-    #: must always count. Derived from the choices rather than written out, so a
-    #: new lifecycle state cannot be silently treated as in service.
-    #: Written as a set difference rather than a comprehension because a
-    #: comprehension in a class body cannot see the class-level name above it.
+    #: still be posted to. Stated positively because the ``vs_rbac`` filters
+    #: join through a nullable branch column, where a negative filter would
+    #: also drop the whole-tenant grants (``branch IS NULL``) that always
+    #: count. Derived from the choices so a new lifecycle state cannot be
+    #: silently treated as in service.
     IN_SERVICE_STATES = frozenset(BranchStatus.values) - OUT_OF_SERVICE_STATES
 
-    # The lifecycle edges a branch may travel. Two rules shape it: CLOSED is
-    # terminal (a shut-down branch is re-created, not resurrected), and PENDING
-    # is never a target, because "pending activation" is a fact about a branch
-    # that has never opened and activation cannot be undone. SUSPENDED is only
-    # reachable from ACTIVE - you cannot suspend what was never trading.
+    #: The lifecycle edges a branch may travel. CLOSED is terminal, a shut-down
+    #: branch being re-created rather than resurrected. PENDING is never a
+    #: target, because "pending activation" is a fact about a branch that has
+    #: never opened and activation cannot be undone. SUSPENDED is reachable
+    #: only from ACTIVE: nothing that was never trading can be suspended.
     ALLOWED_TRANSITIONS = {
         BranchStatus.PENDING: frozenset({
             BranchStatus.ACTIVE, BranchStatus.INACTIVE, BranchStatus.CLOSED,
@@ -608,8 +605,7 @@ class Branch(models.Model):
             raise BranchNotInService(branch_name=self.name, status=self.status)
 
         if self.is_main:
-            # Idempotent on purpose: the serializer and any retry can call this
-            # without first asking whether it is needed.
+            # Idempotent: the serializer and any retry may call this blind.
             return self
 
         Tenant.objects.select_for_update().only("id").get(pk=self.tenant_id)
@@ -666,8 +662,7 @@ class Branch(models.Model):
         elif to_state in self.OUT_OF_SERVICE_STATES:
             self.deactivated_at = now
             if to_state == BranchStatus.CLOSED and self.closed_at is None:
-                # Mirrors clean(); transition() saves with update_fields and so
-                # never runs full_clean().
+                # Mirrors clean(): transition() never runs full_clean().
                 self.closed_at = now
 
         self.save(update_fields=[
@@ -697,9 +692,17 @@ class BranchLifecycle(models.Model):
     Indexed lookups support timeline views per branch or filtering by resulting state
     via (`branch`, `occurred_at`) and (`branch`, `to_state`).
 
-    Travels with ``Branch`` because ``Branch.transition`` writes it: leaving it
-    behind would have meant this app importing the schools app on every
-    lifecycle change.
+    Lives beside ``Branch`` because ``Branch.transition`` writes it. Housing it
+    in the schools app would mean this app importing that one on every
+    lifecycle change, which the engine boundary forbids.
+
+    Three of the four text columns are blank-not-null on purpose.
+    ``from_state`` is empty for a creation event, which has no state to come
+    from; ``actor_id`` is empty for a system-driven transition such as the
+    onboarding sweep or a management command; ``reason`` is empty whenever the
+    caller gave none. All three are NOT NULL, so the blank is the absent value
+    and ``None`` is not available. ``to_state`` is the exception and stays
+    required: an event that does not say where the branch went is not an event.
     """
 
     branch = models.ForeignKey(
@@ -708,22 +711,12 @@ class BranchLifecycle(models.Model):
         related_name="lifecycle_events",
     )
 
-    # A creation event has no state to come from, and ``BranchCreateSerializer``
-    # has always written ``from_state=""`` for one. ``to_state`` is the opposite
-    # and stays required: an event that does not say where the branch went is
-    # not an event.
     from_state = models.CharField(
         max_length=32, choices=BranchStatus.choices, blank=True, default="",
     )
     to_state = models.CharField(max_length=32, choices=BranchStatus.choices)
 
-    # ``Branch.transition`` writes ``str(actor_id or "")``, so a system-driven
-    # transition - the onboarding sweep, a management command - stores a blank
-    # here by design. Same fix as ``reason`` below, which this sweep missed the
-    # first time round.
     actor_id = models.CharField(max_length=120, blank=True, default="")
-    # The column is NOT NULL, so default=None made every writer that omitted
-    # `reason` raise IntegrityError.
     reason = models.TextField(blank=True, default="")
 
     occurred_at = models.DateTimeField(default=timezone.now, db_index=True)

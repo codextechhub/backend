@@ -409,10 +409,7 @@ class BranchDatabaseConstraintTests(TestCase):
         """
         main = self._branch(self.alpha, code=1, is_main=True, name="HQ")
         self._insert(main)
-        # Straight to the table, exactly as the class docstring describes: the
-        # lifecycle refuses to close a main branch, so a row in this shape can
-        # only arrive by a path that skips ``transition()``. The constraint has
-        # to keep holding anyway.
+        # Past transition(), which refuses to close a main branch at all.
         Branch.all_objects.filter(pk=main.pk).update(status=BranchStatus.CLOSED)
         self.assertEqual(
             Branch.all_objects.get(pk=main.pk).status, BranchStatus.CLOSED,
@@ -445,19 +442,18 @@ class BranchDatabaseConstraintTests(TestCase):
         )
 
     def test_closing_a_main_branch_is_refused_so_the_tenant_keeps_one(self):
-        """The dead end these constraints used to permit, now closed off.
+        """A tenant may never be left holding a closed main branch.
 
-        This test used to assert the damage rather than prevent it: nothing
-        demoted ``is_main`` when a branch closed and nothing refused the
-        closure, so a tenant could be left with a main branch that was out of
-        service and could never be replaced - the partial unique index below
-        refuses to hand the flag to any survivor, and CLOSED is terminal, so
-        there was no way back. The constraints were never the gap; the
-        lifecycle was, and ``Branch.transition`` now refuses the edge.
+        The dead end it would create is permanent. CLOSED is terminal, and the
+        partial unique index refuses to hand ``is_main`` to any survivor while
+        the closed row still holds it, so the tenant would have a canonical
+        site that is out of service and can never be replaced.
 
-        The second half still asserts the old dead end, because it is what
-        makes the refusal necessary: were a main branch ever closed by a path
-        that skips ``transition()``, the survivor still could not be promoted.
+        The lifecycle is what closes the dead end: ``Branch.transition``
+        refuses the edge outright. The constraints are not the guard and were
+        never meant to be, which the second half demonstrates by reaching the
+        dead end past ``transition()`` and showing the survivor still cannot be
+        promoted.
         """
         main = self._branch(self.alpha, code=1, is_main=True, name="HQ")
         other = self._branch(self.alpha, code=2, name="Lekki")
@@ -477,9 +473,7 @@ class BranchDatabaseConstraintTests(TestCase):
             ).exists()
         )
 
-        # Why the refusal has to exist: written straight to the table, past
-        # transition(), the closed main branch cannot hand the flag over. The
-        # model guard refuses it, and so does the database.
+        # Past transition(): a closed main branch cannot hand the flag over.
         Branch.all_objects.filter(pk=main.pk).update(status=BranchStatus.CLOSED)
         other.is_main = True
         with self.assertRaises(DjangoValidationError):

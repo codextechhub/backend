@@ -1,11 +1,11 @@
 """Give Branch and BranchLifecycle their new home. Model state only.
 
-Phase D of docs/architecture/school-decoupling-scope.md.
+See docs/architecture/school-decoupling-scope.md.
 
-``Branch`` is the platform's *site* primitive: a campus, a clinic, a store.
-It lived in the schools app only because that is where it was first needed,
-and six engine apps had to import a product app to declare a foreign key to
-it. It moves here with its own tenant, which it has carried since phase B.
+``Branch`` is the platform's *site* primitive: a school branch, a clinic, a
+store. It sat in the schools app only because that is where it was first
+needed, which forced six engine apps to import a product app to declare a
+foreign key to it. It moves here carrying its own tenant column.
 
 **Nothing here touches the database.** The class name, the ``BigAutoField``
 primary key and the table are all unchanged, so ``vs_schools_branch`` and its

@@ -23,10 +23,13 @@ def reset_current_tenant(token):
 
 
 def clear_current_tenant():
+    """Clear the tenant scope and every identity that hangs off it.
+
+    This is the cleanup hook authentication tests and request boundaries call,
+    so it drops the dual identity as well. A proxy identity outliving its
+    tenant scope would attribute the next request's events to the wrong actor.
+    """
     _current_tenant.set(None)
-    # This function predates dual-identity context and is already the cleanup
-    # hook used by authentication tests and request boundaries. Clearing both
-    # prevents a proxy identity surviving after its tenant scope is removed.
     _current_audit_actor.set(None)
     _current_effective_user.set(None)
     _current_impersonation_session.set(None)

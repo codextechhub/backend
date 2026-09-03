@@ -2,17 +2,17 @@
 
 ``Branch`` is keyed by an ordinary auto-incrementing integer, so a reference
 arriving from a request body, a query parameter or an import row is only ever a
-decimal id.  Every caller that resolves one has to answer the same three
-questions - is the value a usable integer, does the row exist, and does it
-belong to the tenant the caller is entitled to - and getting any of them wrong
-has bitten us before:
+decimal id. Every caller that resolves one has to answer the same three
+questions, and each has its own way of going wrong:
 
-* declaring the input as a UUID (or, before B23, a slug) means the lookup can
-  never match, so the reference is silently unusable;
-* handing the raw string straight to the ORM turns a non-numeric or oversized
-  value into a database error, i.e. a 500 where a 400 belongs;
-* checking tenancy *after* the row is fetched lets the caller tell "someone
-  else's branch" apart from "no such branch", which is an id oracle.
+* is the value a usable integer? Declaring the input as a UUID or a slug means
+  the lookup can never match, so the reference is silently unusable;
+* does the row exist? Handing the raw string straight to the ORM turns a
+  non-numeric or oversized value into a database error, a 500 where a 400
+  belongs;
+* does it belong to the tenant the caller is entitled to? Checking tenancy
+  after the row is fetched lets the caller tell "someone else's branch" apart
+  from "no such branch", which is an id oracle.
 
 :func:`find_branch_in_tenant` answers all three at once, and
 :func:`resolve_branch_reference` puts the standard validation error on top.
@@ -40,9 +40,9 @@ def find_tenant(ref):
     is what an operator reads off a row they are already looking at. Blank
     references, unparseable ones and unknown ones all answer ``None``.
 
-    Written for the operator-facing management commands, which must now be told
-    WHICH tenant an address belongs to: one address can be a login at several
-    of them, so an email no longer identifies one account.
+    The operator-facing management commands depend on this, because an email
+    address alone does not identify an account: the same address can be a login
+    at several tenants, so the tenant has to be named alongside it.
     """
     if ref in (None, ""):
         return None
@@ -64,8 +64,11 @@ def find_branch_in_tenant(tenant, ref):
 
     Returns ``None`` for a blank reference, a reference that is not a plausible
     integer id, a branch that does not exist, and a branch owned by another
-    tenant.  Collapsing those cases is intentional: the caller cannot use the
+    tenant. Collapsing those cases is intentional: the caller cannot use the
     parameter to discover which ids exist outside its own tenant.
+
+    The branch carries its tenant directly, so the boundary is a single column
+    on the row and the explicit filter is the whole check.
     """
     if tenant is None or ref in (None, ""):
         return None
@@ -76,10 +79,7 @@ def find_branch_in_tenant(tenant, ref):
     if not raw.isdigit() or int(raw) > _MAX_BIGINT:
         return None
 
-    # all_objects deliberately: the explicit tenant filter is the security
-    # boundary, and it must not depend on ambient request-local tenant state.
-    # The branch owns the tenant itself, so the boundary is one column on the
-    # row; there is no school to travel through any more.
+    # all_objects deliberately: the filter is the boundary, not ambient state.
     return Branch.all_objects.filter(tenant=tenant, pk=int(raw)).first()
 
 

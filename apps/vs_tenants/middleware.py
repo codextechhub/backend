@@ -1,3 +1,9 @@
+"""Request-local tenant cleanup, and the audit safety net for proxied sessions.
+
+An admin acting as another user must leave a trail even when the view they
+reach emits nothing of its own, so this is where a proxied request that
+produced no audit event gets a request-level one instead.
+"""
 from __future__ import annotations
 
 import re
@@ -9,9 +15,8 @@ from .context import clear_request_context, get_current_audit_event_count
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
-# These writes only maintain the current user's inbox/read state. They are
-# automatic UI bookkeeping, not business changes, so successful calls do not
-# belong in the audit timeline. Failed calls remain security-audited below.
+# Inbox and read-state upkeep: automatic UI writes, not business changes, so a
+# successful call earns no timeline entry. A failed one is still audited.
 NON_BUSINESS_PROXY_WRITE_PATHS = {
     "/v1/notify/mark-read/",
     "/v1/notify/mark-all-read/",
@@ -96,7 +101,25 @@ def _proxy_change_description(request) -> str:
 
 
 class TenantContextCleanupMiddleware:
-    """Guarantee that request-local tenant state cannot leak between requests."""
+    """Guarantee that request-local tenant state cannot leak between requests.
+
+    Cleanup runs on the way in and again in ``finally``, so a view that raises
+    cannot leave a tenant or a proxy identity behind for the next request the
+    same worker serves.
+
+    While a proxy session is active the middleware also closes the gap a
+    feature-level event would otherwise leave open. A request that emitted no
+    audit event of its own gets a request-level fallback: failures and denials
+    as ``PROXY_ACTION_FAILED``, business writes as ``PROXY_CHANGE``. Successful
+    reads are deliberately not audited here. They land in the session's access
+    trail instead, and a sensitive read still emits its own explicit event.
+
+    A fallback row carries the module of the surface that opened the proxy
+    rather than a fixed one, matching the lifecycle bookends in
+    ``vs_admin_console``. A school-initiated session writing PLATFORM rows
+    would file its own trail behind ``platform.audit.view``, where nobody at
+    the school can read it.
+    """
 
     def __init__(self, get_response):
         self.get_response = get_response
@@ -108,10 +131,7 @@ class TenantContextCleanupMiddleware:
             session = getattr(request, "impersonation_session", None)
             if session is not None:
                 _record_proxy_activity(session, request, response)
-            # A feature-level event is always more useful than a request-level
-            # fallback. Successful reads land in the session's access trail
-            # instead of the audit stream; sensitive reads can still emit
-            # their own explicit audit event.
+            # Nothing feature-level was emitted: fall back to a request-level row.
             if session is not None and get_current_audit_event_count() == 0:
                 from vs_audit.services import emit_audit_event
 
@@ -119,10 +139,6 @@ class TenantContextCleanupMiddleware:
                 target = getattr(request, "effective_user", None)
                 actor_label = _user_label(actor)
                 target_label = _user_label(target)
-                # Scope the fallback rows to the surface that initiated the
-                # proxy, matching the lifecycle bookends in vs_admin_console.
-                # Without this a school-initiated session would write PLATFORM
-                # rows that only platform.audit.view holders can ever read.
                 from vs_admin_console.views import is_platform_actor
                 proxy_module_key = "PLATFORM" if is_platform_actor(actor) else "SCHOOL"
                 metadata = {
