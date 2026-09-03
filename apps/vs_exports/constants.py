@@ -266,9 +266,9 @@ ROW_WARNING_THRESHOLD = 250_000
 CONCURRENT_RUN_LIMIT = 3
 
 #: How long a run may sit in each non-terminal state before the sweeper decides its
-#: worker is never coming back. Nothing in the process can strand a run any more -
-#: :func:`vs_exports.services.execute_run` always leaves the row terminal - but a
-#: worker killed mid-run never reaches that code at all, and an unswept run is worse
+#: worker is never coming back. Nothing inside the process strands a run:
+#: :func:`vs_exports.services.execute_run` always leaves the row terminal. But a
+#: worker killed mid-run never reaches that code, and an unswept run is worse
 #: than a failed one: it spins forever on the Files screen with nothing to cancel or
 #: retry, and it counts against :data:`CONCURRENT_RUN_LIMIT`, so three of them stop
 #: the whole tenant exporting.

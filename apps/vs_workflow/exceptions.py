@@ -38,23 +38,29 @@ class UnknownOperatorError(WorkflowError):
     default_message = "A condition used an unsupported operator."
 
 
-# Raised when a stage names an approver source the resolver cannot resolve.
-# Deliberately an error rather than an empty approver list: "nobody could be
-# resolved" and "this stage is misconfigured" look identical downstream, and a
-# stage with skip_if_no_approvers=True treats the former as
-# permission to skip itself. Returning [] for an unrecognised source would
-# therefore let a configuration mistake silently approve spend.
 class UnknownApproverSourceError(WorkflowError):
+    """Raised when a stage names an approver source the resolver cannot resolve.
+
+    An error rather than an empty approver list. Downstream, "nobody could be
+    resolved" and "this stage is misconfigured" look identical, and a stage
+    with ``skip_if_no_approvers=True`` reads the former as permission to skip
+    itself, so returning ``[]`` for an unrecognised source would let a
+    configuration mistake approve spend silently.
+    """
+
     error_code = "UNKNOWN_APPROVER_SOURCE"
     default_message = "This stage names an approver source the engine cannot resolve."
 
 
-# Raised when the submitter does not belong to the tenant the document approves under.
-# 404 rather than 403 deliberately: the caller is asking about a document in a tenant
-# that is not theirs, and confirming that it exists is itself the disclosure. The
-# module submit endpoints answer the same way for an unknown id, so the two cases are
-# indistinguishable from outside.
 class CrossTenantDocumentError(WorkflowError):
+    """Raised when the submitter is outside the tenant the document approves under.
+
+    404 rather than 403. The caller is asking about a document in a tenant that
+    is not theirs, and confirming it exists is itself the disclosure. The
+    module submit endpoints answer the same way for an unknown id, so the two
+    cases are indistinguishable from outside.
+    """
+
     error_code = "DOCUMENT_NOT_FOUND"
     default_message = "The referenced document was not found."
     http_status = 404

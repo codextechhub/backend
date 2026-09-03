@@ -1385,11 +1385,10 @@ class PayoutBatchApprovalTests(TestCase):
             defaults={"name": "Payments Ops (all keys)", "status": "ACTIVE"},
         )
         if created:
-            # Scope-filtered, not just prefix-filtered: this builds a tenant role,
-            # and a handful of finance keys are platform-only because
-            # they write global reference tables (currencies, FX rates). The
-            # grant guard refuses those, so "every finance key" has to mean
-            # every finance key a tenant may actually hold.
+            # Scope-filtered, not just prefix-filtered: this builds a tenant role, and
+            # the finance keys writing global reference tables (currencies, FX rates)
+            # are platform-only. The grant guard refuses those, so "every finance key"
+            # means every one a tenant may actually hold.
             keys = Permission.objects.filter(
                 scope=PermissionScope.TENANT,
             ).filter(

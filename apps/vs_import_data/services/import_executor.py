@@ -78,13 +78,10 @@ def run_create_serializer(*, serializer_class, payload: dict, context: dict, tar
 def execute_dataset_handler(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
     dataset_type = import_batch.template.dataset_type
 
-    # The last of the three gates, and the one that does not assume the other
-    # two ran. A batch uploaded before this rule existed, or reached by a path
-    # nobody has thought of, still cannot execute a CodeX dataset on behalf of a
-    # school. It is checked per row, where the write actually happens.
-    #
-    # Refused rather than raised: a row that must not run is a skipped row with
-    # a reason on it, not a crashed job, so the rest of the batch still reports.
+    # The last of the three gates, and the one that assumes neither of the
+    # others ran: a batch reached by any path still cannot execute a CodeX
+    # dataset on behalf of a school. Checked per row, where the write happens,
+    # and refused rather than raised so the rest of the batch still reports.
     from ..datasets import REFUSAL_MESSAGE, may_import
 
     if not may_import(queued_by, dataset_type):
@@ -219,24 +216,18 @@ def import_cx_users_row(import_batch, payload: dict, queued_by) -> ImportExecuti
 
     email = normalize_email(_s("email"))
     # Scoped to the tenant that will own the row. This handler names the
-    # platform (codex) tenant as the target regardless of who queued the batch
-    # - it is the CX-user handler - so that is the tenant the address has to be
-    # free in. It used to say the same thing by forcing user_type=CX_STAFF and
-    # letting the serializer translate that back into the tenant it came from.
-    # Unscoped, a CX hire could not be imported because the same person already
-    # has a parent account at the school her own child attends - which Phase 0
-    # settled as legitimate and unconnected.
+    # platform (codex) tenant as its target whoever queued the batch, so that
+    # is the tenant the address must be free in. Unscoped, a CX hire could not
+    # be imported when the same person already has a parent account at the
+    # school her own child attends, which is legitimate and unconnected.
     platform_tenant = Tenant.objects.filter(
         slug='codex', kind=Tenant.Kind.PLATFORM,
     ).first()
     if platform_tenant is None:
-        # Refuse rather than fall through. The target tenant is handed to
-        # UserCreateSerializer as ``request.tenant`` below, and that field has
-        # a fallback: a queuer who is not themselves on the platform tenant
-        # would silently get their OWN tenant instead, and a CX hire would be
-        # created inside a school. The old shape could not reach that - it
-        # forced user_type=CX_STAFF and the serializer refused a missing codex
-        # outright - so the refusal is restated here where the target is named.
+        # Refuse rather than fall through. The target tenant reaches
+        # UserCreateSerializer as request.tenant below, and that field falls back:
+        # a queuer not themselves on the platform tenant would silently get their
+        # own, creating a CX hire inside a school.
         return ImportExecutionResult(
             action=ImportRowActionChoices.SKIP,
             instance=None,
@@ -264,11 +255,10 @@ def import_cx_users_row(import_batch, payload: dict, queued_by) -> ImportExecuti
         if value:
             data[field] = value
 
-    # The target tenant, stated rather than inferred: UserCreateSerializer
-    # reads request.tenant for an actor who is not already on the platform
-    # tenant, and returns the platform tenant for one who is, so naming codex
-    # here gives the same answer for either queuer - which is the answer the
-    # forced user_type used to produce.
+    # The target tenant, stated rather than inferred. UserCreateSerializer
+    # reads request.tenant for an actor outside the platform tenant and returns
+    # the platform tenant for one inside it, so naming codex here gives the
+    # same answer for either queuer.
     request = SimpleNamespace(user=queued_by, tenant=platform_tenant)
     serializer = UserCreateSerializer(data=data, context={"request": request})
     serializer.is_valid(raise_exception=True)
@@ -443,11 +433,9 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
     # SimpleNamespace gives us a minimal stand-in without importing django.test.
     context = {
         "request": SimpleNamespace(user=queued_by),
-        # The USER, not its id, despite the key's name. Every other caller of
-        # these serializers - the school views' ActorContextMixin - puts a User
-        # object here, and the audit emitter needs one. Honouring the name cost
-        # us the audit record for every branch created by import: the emitter
-        # raised on the string, swallowed it, and wrote nothing.
+        # The USER, not its id, despite the key's name. Every other caller of these
+        # serializers puts a User object here and the audit emitter needs one: the
+        # emitter raises on a string, swallows it, and writes nothing.
         "actor_id": queued_by,
     }
 
@@ -562,11 +550,9 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
     context = {
         "request": SimpleNamespace(user=queued_by),
         "school": school,
-        # The USER, not its id, despite the key's name. Every other caller of
-        # these serializers - the school views' ActorContextMixin - puts a User
-        # object here, and the audit emitter needs one. Honouring the name cost
-        # us the audit record for every branch created by import: the emitter
-        # raised on the string, swallowed it, and wrote nothing.
+        # The USER, not its id, despite the key's name. Every other caller of these
+        # serializers puts a User object here and the audit emitter needs one: the
+        # emitter raises on a string, swallows it, and writes nothing.
         "actor_id": queued_by,
     }
 

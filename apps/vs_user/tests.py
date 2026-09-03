@@ -1459,7 +1459,8 @@ class InvitationEngineDispatchTests(TestCase):
         from vs_user.models import PasswordResetRequest
         from vs_user.tasks import send_password_reset_email_task
 
-        user = make_cx_user(email="pwreset@codex.test")
+        school = make_school(name="Bright Star School", slug="bright-star-reset")
+        user = make_school_admin(school, email="pwreset@bright-star.test")
         token, token_hash = issue_password_reset_token()
         reset_request = PasswordResetRequest.objects.create(
             user=user,
@@ -1481,9 +1482,41 @@ class InvitationEngineDispatchTests(TestCase):
         notif = Notification.objects.get(recipient=user, channel=ChannelChoices.EMAIL)
         self.assertEqual(notif.event_type.key, "user.password_reset")
         self.assertEqual(notif.metadata.get("from_name"), "CodeX System")
+        self.assertEqual(notif.subject, "Reset your password for Bright Star School")
+        self.assertIn("Account: pwreset@bright-star.test", notif.body)
+        self.assertIn("Workspace: Bright Star School", notif.body)
+        self.assertIn(
+            "Link expires: "
+            + timezone.localtime(reset_request.expires_at).strftime(
+                "%d %b %Y, %H:%M %Z"
+            ),
+            notif.body,
+        )
+        self.assertIn("Your current password remains unchanged", notif.body)
         self.assertIn("reset-password", notif.body)
         self.assertNotIn(token, notif.body)
         self.assertNotIn(token, notif.html_body)
+
+    def test_workspace_name_supports_a_non_school_tenant(self):
+        from vs_tenants.models import Tenant
+        from vs_user.tasks import _tenant_display_name
+
+        tenant = Tenant.objects.create(
+            name="Vigil Health Group",
+            slug="vigil-health-email",
+            kind=Tenant.Kind.ORGANIZATION,
+            status=Tenant.Status.ACTIVE,
+        )
+        user = User.objects.create_user(
+            email="security@vigil-health.test",
+            password="Str0ng!pass123",
+            first_name="Nneka",
+            last_name="Okafor",
+            tenant=tenant,
+            status=User.Status.ACTIVE,
+        )
+
+        self.assertEqual(_tenant_display_name(user), "Vigil Health Group")
 
 
 class PasswordPolicyTests(TestCase):

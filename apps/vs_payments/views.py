@@ -146,11 +146,9 @@ def _legacy_beneficiary_fields(body) -> dict:
 # Collections                                                                 #
 # --------------------------------------------------------------------------- #
 
-# Console status groups → underlying CollectionStatus values (the UI filters by
-# group). Defined in constants.py: the Export Centre's screen bindings need the
-# same expansion to make a quick export match the table it was started from.
-# Re-exported here so the existing references in this module keep reading the
-# way they always have.
+# Console status groups -> underlying CollectionStatus values, defined in
+# constants.py and re-exported here. The Export Centre's screen bindings
+# need the same expansion to make a quick export match its table.
 
 
 # Group endpoint behavior for Collection List Create View.

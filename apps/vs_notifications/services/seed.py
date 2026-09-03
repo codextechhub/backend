@@ -1073,16 +1073,22 @@ def _build_default_templates() -> dict:
             ),
         },
         ("user.account_locked", C.EMAIL): {
-            "subject": "Your CodeX Vision account has been locked",
+            "subject": "Security alert: your {{ tenant_name }} account is locked",
             "body": (
                 "Hello {{ user_name }},\n\n"
-                "Your CodeX Vision account for {{ school_name }} was locked on {{ locked_at }} "
-                "due to repeated failed login attempts.\n\n"
-                "To unlock your account, follow the instructions here:\n"
+                "We locked your {{ tenant_name }} account after repeated failed sign-in "
+                "attempts.\n\n"
+                "SECURITY DETAILS\n"
+                "Workspace: {{ tenant_name }}\n"
+                "Locked at: {{ locked_at }}\n\n"
+                "Sign-in is blocked until an administrator restores access. Review the "
+                "unlock steps or contact your administrator.\n\n"
                 "{{ unlock_instructions_link }}\n\n"
-                "If you did not attempt to log in, please contact your school administrator immediately.\n\n"
-                "CodeX Vision"
+                "If these sign-in attempts were not yours, contact your administrator "
+                "immediately and ask them to review the account activity."
             ),
+            "cta_label": "Review unlock steps",
+            "cta_url": "{{ unlock_instructions_link }}",
         },
 
         # ── import.completed ────────────────────────────────────────────────
@@ -1128,38 +1134,35 @@ def _build_default_templates() -> dict:
         },
 
         # ── user.password_reset (EMAIL only, transactional) ─────────────────
-        # Ported from vs_user/templates/vs_user/emails/password_reset.{txt,html}.
-        # Flat context keys: user_first_name, reset_url, expiry_hours, origin,
-        # sender_name.
+        # The reset row supplies its real expiry, so configured windows and the
+        # email can never disagree. The raw one-time URL remains in plain text.
         ("user.password_reset", C.EMAIL): {
             "subject": (
-                "{% if origin == 'ADMIN' %}Your CodeX Vision password has been "
-                "reset by an administrator{% else %}Reset your CodeX Vision "
-                "password{% endif %}"
+                "{% if origin == 'ADMIN' %}{{ sender_name }} requested a password "
+                "reset for {{ tenant_name }}{% else %}Reset your password for "
+                "{{ tenant_name }}{% endif %}"
             ),
             "body": (
-                "{% if origin == 'ADMIN' %}PASSWORD RESET REQUESTED"
-                "{% else %}RESET YOUR PASSWORD{% endif %}\n\n"
                 "Hello {{ user_first_name }},\n\n"
-                "{% if origin == 'ADMIN' %}Your administrator has initiated a password "
-                "reset for your CodeX Vision account.{% else %}We received a request to "
-                "reset the password for your CodeX Vision account.{% endif %}\n\n"
-                "RESET YOUR PASSWORD\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "Click the link below to create a new password:\n\n"
+                "{% if origin == 'ADMIN' %}{{ sender_name }} requested a password reset "
+                "for your {{ tenant_name }} account.{% else %}We received a request to "
+                "reset the password for your {{ tenant_name }} account.{% endif %}\n\n"
+                "PASSWORD RESET DETAILS\n"
+                "Account: {{ user_email }}\n"
+                "Workspace: {{ tenant_name }}\n"
+                "Link expires: {{ expires_at }}\n\n"
+                "Use the secure link to choose a new password. It can only be used once, "
+                "and requesting another reset will make this link stop working.\n\n"
                 "{{ reset_url }}\n\n"
-                "⏰ This link will expire in {{ expiry_hours }} hour"
-                "{% if expiry_hours > 1 %}s{% endif %}.\n\n"
-                "🔒 SECURITY NOTICE\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "If you didn't request this password reset, please ignore this email.\n"
-                "Your password will remain unchanged.\n\n"
-                "For security concerns, contact your administrator immediately.\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "XVision System\n"
-                "Empowering education through technology"
+                "{% if origin == 'ADMIN' %}If you do not recognize this request or the "
+                "person who sent it, contact your administrator before using the link."
+                "{% else %}If you did not request this reset, ignore this email and "
+                "consider asking your administrator to review recent account activity."
+                "{% endif %}\n\n"
+                "Your current password remains unchanged until this link is used "
+                "successfully."
             ),
-            "cta_label": "Reset your password",
+            "cta_label": "Choose a new password",
             "cta_url": "{{ reset_url }}",
         },
 

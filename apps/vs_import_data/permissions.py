@@ -3,15 +3,13 @@ from vs_rbac.permissions import HasRBACPermission, has_permission
 #: ``dataset_type`` -> the owning module's own import key.
 #:
 #: A domain app registers its pair from ``AppConfig.ready``; this engine
-#: imports nothing. That direction matters more here than it looks: the entry
-#: this replaced was a hard-coded ``finance.bankaccount.import`` against a
-#: bank-statement batch, so every module added afterwards was refused the
-#: wizard however its key was granted - and the failure read as a seeding
-#: problem rather than as a branch nobody had extended.
+#: imports nothing. The direction matters: a hard-coded entry here refuses
+#: the wizard to every module added afterwards however its key is granted,
+#: and that failure reads as a seeding problem rather than as a branch
+#: nobody extended.
 _DATASET_IMPORT_KEYS: dict[str, str] = {
-    # Finance's own pair, which was the hard-coded case. Kept here rather than
-    # registered from vs_finance so the behaviour that shipped is unchanged
-    # even if that app's ready() is never reached.
+    # Finance's own pair, kept here rather than registered from vs_finance so
+    # it holds even if that app's ready() is never reached.
     "bank_statements": "finance.bankaccount.import",
 }
 

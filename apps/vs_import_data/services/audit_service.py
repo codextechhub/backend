@@ -69,10 +69,9 @@ def create_import_audit_log(
         **metadata,
     }
 
-    # Imports run inside Celery tasks (see vs_import_data.tasks), where there is
-    # no request and therefore no ambient tenant to inherit. Every row a
-    # 900-pupil import writes would otherwise be unattributable to the school it
-    # was written for. Both references carry the tenant directly; the branch is
+    # Imports run inside Celery tasks, where there is no request and so no
+    # ambient tenant to inherit; every row of a 900-pupil import would be
+    # unattributable. Both references carry the tenant, and the branch is
     # preferred because a branch-scoped import names it precisely.
     tenant = None
     if branch is not None:

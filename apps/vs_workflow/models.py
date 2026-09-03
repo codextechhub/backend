@@ -321,11 +321,10 @@ class WorkflowStage(models.Model):
     quorum_count = models.PositiveIntegerField(default=0)
     on_rejection = models.CharField(max_length=30, choices=StageOnRejection.choices,
                                     default=StageOnRejection.TERMINAL)
-    # Defaults to False: a stage nobody can approve parks and waits for somebody
-    # to be appointed. Auto-skipping is the dangerous answer and must be asked for
-    # by name. The default used to be True, so a ladder republished without this
-    # field - which is every republish that did not think about it - silently
-    # became one that could pass spend through unapproved.
+    # Defaults to False: a stage nobody can approve parks and waits for an
+    # appointment. Auto-skipping is the dangerous answer, so it must be asked
+    # for by name; defaulting it True passes spend through unapproved whenever
+    # a ladder is republished without thinking about this field.
     skip_if_no_approvers = models.BooleanField(default=False)
     # Declarative inclusion condition - stage only runs when this evaluates True.
     # {"op": "gte", "field": "amount", "value": 100000} or {"fn": "module.fn_name"}

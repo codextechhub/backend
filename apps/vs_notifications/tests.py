@@ -1233,6 +1233,154 @@ class InvitationEmailDesignTests(_NotifFixture):
 
 
 # ---------------------------------------------------------------------------
+# Password and account security email design
+# ---------------------------------------------------------------------------
+
+class PasswordSecurityEmailDesignTests(_NotifFixture):
+
+    def setUp(self):
+        super().setUp()
+        from .models import NotificationTemplate
+        from .services.seed import _build_default_templates
+
+        self.reset = NotificationTemplate.objects.get(
+            event_type=self._event("user.password_reset"),
+            channel=ChannelChoices.EMAIL,
+        )
+        self.locked = NotificationTemplate.objects.create(
+            event_type=self._event("user.account_locked"),
+            channel=ChannelChoices.EMAIL,
+            **_build_default_templates()[
+                ("user.account_locked", ChannelChoices.EMAIL)
+            ],
+        )
+
+    def _render_reset(self, **overrides):
+        from .services.render import render_notification_template
+
+        context = {
+            "user_first_name": "Ngozi",
+            "user_email": "ngozi@bright-star.test",
+            "tenant_name": "Bright Star School",
+            "reset_url": "https://example.test/reset-password/token",
+            "expiry_hours": 6,
+            "expires_at": "03 Sep 2026, 18:30 WAT",
+            "origin": "SELF",
+            "sender_name": "Ada Admin",
+            **overrides,
+        }
+        return render_notification_template(self.reset, context)
+
+    def test_self_service_reset_is_specific_and_keeps_both_delivery_paths(self):
+        subject, body, html = self._render_reset()
+
+        self.assertEqual(subject, "Reset your password for Bright Star School")
+        self.assertIn("Account: ngozi@bright-star.test", body)
+        self.assertIn("Workspace: Bright Star School", body)
+        self.assertIn("Link expires: 03 Sep 2026, 18:30 WAT", body)
+        self.assertIn("It can only be used once", body)
+        self.assertIn("requesting another reset will make this link stop working", body)
+        self.assertIn("Your current password remains unchanged", body)
+        self.assertIn("https://example.test/reset-password/token", body)
+        self.assertIn(">Choose a new password</a>", html)
+        self.assertEqual(html.count("https://example.test/reset-password/token"), 2)
+
+    def test_admin_reset_names_the_sender_without_claiming_the_password_changed(self):
+        subject, body, _ = self._render_reset(origin="ADMIN")
+
+        self.assertEqual(
+            subject,
+            "Ada Admin requested a password reset for Bright Star School",
+        )
+        self.assertIn(
+            "Ada Admin requested a password reset for your Bright Star School account.",
+            body,
+        )
+        self.assertIn("contact your administrator before using the link", body)
+        self.assertNotIn("has been reset", f"{subject}\n{body}".lower())
+
+    def test_locked_account_email_is_tenant_neutral_and_remains_inactive(self):
+        from .services.render import render_notification_template
+
+        subject, body, html = render_notification_template(
+            self.locked,
+            {
+                "user_name": "Ngozi Okafor",
+                "tenant_name": "Bright Star School",
+                "locked_at": "03 Sep 2026, 18:30 WAT",
+                "unlock_instructions_link": "https://example.test/help/unlock",
+            },
+        )
+
+        self.assertFalse(self.locked.event_type.is_active)
+        self.assertEqual(
+            subject,
+            "Security alert: your Bright Star School account is locked",
+        )
+        self.assertIn("Workspace: Bright Star School", body)
+        self.assertIn("Sign-in is blocked", body)
+        self.assertIn("review the account activity", body)
+        self.assertIn(">Review unlock steps</a>", html)
+        self.assertEqual(html.count("https://example.test/help/unlock"), 2)
+        self.assertNotIn("{{ school_name }}", f"{self.locked.subject}\n{self.locked.body}")
+
+    def test_migration_refreshes_both_standard_security_templates(self):
+        from importlib import import_module
+        from django.apps import apps
+
+        for template in (self.reset, self.locked):
+            template.subject = "Old subject"
+            template.body = "Old body"
+            template.cta_label = "Old action"
+            template.cta_url = "https://old.test"
+            template.html_is_custom = False
+            template.save()
+
+        migration = import_module(
+            "vs_notifications.migrations.0014_refine_password_security_emails"
+        )
+        migration.refine_standard_security_emails(apps, None)
+        self.reset.refresh_from_db()
+        self.locked.refresh_from_db()
+
+        self.assertIn("{{ tenant_name }}", self.reset.subject)
+        self.assertEqual(self.reset.cta_label, "Choose a new password")
+        self.assertIn("{{ expires_at }}", self.reset.body)
+        self.assertIn("{{ tenant_name }}", self.locked.subject)
+        self.assertEqual(self.locked.cta_label, "Review unlock steps")
+        self.assertIn("<html", self.locked.html_body.lower())
+
+    def test_migration_preserves_staff_authored_security_templates(self):
+        from importlib import import_module
+        from django.apps import apps
+
+        for template in (self.reset, self.locked):
+            template.subject = f"My {template.event_type.key} subject"
+            template.body = "My message"
+            template.cta_label = "Continue"
+            template.cta_url = "https://mine.test"
+            template.html_body = "<html>staff design</html>"
+            template.html_is_custom = True
+            template.save()
+
+        migration = import_module(
+            "vs_notifications.migrations.0014_refine_password_security_emails"
+        )
+        migration.refine_standard_security_emails(apps, None)
+
+        for template in (self.reset, self.locked):
+            template.refresh_from_db()
+            self.assertEqual(
+                template.subject,
+                f"My {template.event_type.key} subject",
+            )
+            self.assertEqual(template.body, "My message")
+            self.assertEqual(template.cta_label, "Continue")
+            self.assertEqual(template.cta_url, "https://mine.test")
+            self.assertEqual(template.html_body, "<html>staff design</html>")
+
+
+# ---------------------------------------------------------------------------
 # Stored email HTML - the database holds what gets sent
 #
 # The console edits html_body directly, so the invariant these pin is: what an

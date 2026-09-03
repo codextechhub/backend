@@ -206,12 +206,10 @@ class Command(BaseCommand):
                     else f"  {role_id}: all keys already assigned."
                 )
 
-        # ── School roles ──────────────────────────────────────────────────────
-        # Attached to the PREBUILT templates (so every school provisioned from
-        # now on has them) and backfilled into the tenant templates already
-        # provisioned from them (so schools that onboarded before this get them
-        # too). A school that onboarded last month would otherwise have an
-        # Export button its role could never satisfy.
+        # Attached to the PREBUILT templates, so every school provisioned from them
+        # has these, and backfilled into tenant templates already provisioned, so a
+        # school that onboarded earlier is not left with an Export button its role
+        # can never satisfy.
         self.stdout.write(self.style.MIGRATE_HEADING(
             "\n  Granting the Export Centre to school roles...\n"
         ))

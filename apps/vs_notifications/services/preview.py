@@ -63,7 +63,7 @@ _EXACT_SAMPLES = {
     "session_name":     "2026/2027",
     "customer_name":    "Mr. Adeola Bakare",
     "vendor_name":      "Bluecrest Supplies Ltd",
-    "origin":           "USER",
+    "origin":           "SELF",
     "expiry_days":      7,
     "expiry_hours":     24,
     "expiry_minutes":   15,

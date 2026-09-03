@@ -32,16 +32,28 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 import logging
+from math import ceil
 
 from celery import shared_task
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
+from django.utils import timezone
 
 logger = logging.getLogger('vs_user.tasks')
 
 _INVITATION_TOKEN_MARKER = "__XVS_INVITATION_TOKEN__"
 _PASSWORD_RESET_TOKEN_MARKER = "__XVS_PASSWORD_RESET_TOKEN__"
+
+
+def _tenant_display_name(user) -> str:
+    """Return the product-facing workspace name for an account's tenant."""
+    profile = getattr(user.tenant, 'school_profile', None)
+    if profile is not None:
+        return profile.name
+    if getattr(user.tenant, 'kind', None) == 'PLATFORM':
+        return 'CodeX Vision'
+    return user.tenant.name
 
 
 # =============================================================================
@@ -88,8 +100,8 @@ def send_invitation_email_task(self, invitation_id: int, token: str):
 
     user = invitation.user
 
-    profile = getattr(user.tenant, 'school_profile', None)  # None for platform users.
-    tenant_name = profile.name if profile else 'CodeX Vision'
+    profile = getattr(user.tenant, 'school_profile', None)  # Legacy template context below.
+    tenant_name = _tenant_display_name(user)
     base_url = getattr(settings, 'FRONTEND_BASE_URL', None)
     if not base_url:
         raise ImproperlyConfigured('FRONTEND_BASE_URL must be set in settings.')
@@ -177,11 +189,11 @@ def send_password_reset_email_task(
     Dispatch a password reset email via the notification engine.
 
     origin values:
-      SELF  - user requested it themselves. Link valid for 1 hour.
-      ADMIN - admin triggered it. Link valid for 24 hours.
+      SELF  - user requested it themselves. Uses the configured self-service window.
+      ADMIN - admin triggered it. Uses the configured administrator window.
 
     The raw token is embedded in the reset URL. It is never stored in the
-    database - only its SHA-256 hash is stored in PasswordResetRequest.
+    database - only its HMAC-SHA-256 digest is stored in PasswordResetRequest.
 
     From-address parity: sender_name is carried in metadata as from_name so the
     delivery task builds the From from it.
@@ -194,7 +206,7 @@ def send_password_reset_email_task(
     try:
         reset_request = (
             PasswordResetRequest.objects
-            .select_related('user')
+            .select_related('user__tenant__school_profile')
             .get(pk=reset_request_id)
         )
     except PasswordResetRequest.DoesNotExist:
@@ -213,15 +225,24 @@ def send_password_reset_email_task(
     base_url = getattr(settings, 'FRONTEND_BASE_URL', None)
     if not base_url:
         raise ImproperlyConfigured('FRONTEND_BASE_URL must be set in settings.')
-    reset_url    = f'{base_url.rstrip("/")}/reset-password/{_PASSWORD_RESET_TOKEN_MARKER}'
-    expiry_hours = 1 if origin == 'SELF' else 24
+    reset_url = f'{base_url.rstrip("/")}/reset-password/{_PASSWORD_RESET_TOKEN_MARKER}'
+    expiry_hours = max(
+        1,
+        ceil((reset_request.expires_at - reset_request.created_at).total_seconds() / 3600),
+    )
+    expires_at = timezone.localtime(reset_request.expires_at).strftime(
+        '%d %b %Y, %H:%M %Z'
+    )
 
     send_notification(
         event_key="user.password_reset",
         context={
             'user_first_name': user.first_name,
+            'user_email':      user.email,
+            'tenant_name':     _tenant_display_name(user),
             'reset_url':       reset_url,
             'expiry_hours':    expiry_hours,
+            'expires_at':      expires_at,
             'origin':          origin,
             'sender_name':     sender_name,
         },

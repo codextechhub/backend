@@ -785,12 +785,10 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
         if not template.is_download_enabled:
             raise serializers.ValidationError("This template is not available for use.")
 
-        # Datasets that act on CodeX's own records - provisioning a school,
-        # hiring CX staff - are refused here rather than in the view, because
-        # this is where the template id becomes a template. The list endpoint
-        # already withholds them, but a request naming the id directly reaches
-        # this and nothing else. See ``datasets.py`` for what a school could do
-        # while nothing asked.
+        # Datasets acting on CodeX's own records are refused here rather than in
+        # the view, because this is where the template id becomes a template. The
+        # list endpoint withholds them, but a request naming the id directly
+        # reaches this and nothing else. See datasets.py.
         from .datasets import REFUSAL_MESSAGE, may_import
 
         request = self.context.get("request")

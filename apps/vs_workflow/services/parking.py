@@ -85,12 +85,9 @@ def empty_active_stages(document_types=None):
     ).select_related(
         "stage", "instance",
         # Everything the resolution cache touches per row, fetched with the scan
-        # rather than lazily. A page of parked documents walks each of these once
-        # per row, so a missing relation here is a descriptor query PER STAGE,
-        # which is exactly the per-row cost this module's cache and its
-        # query-count test exist to prevent. ``instance__tenant`` is the one that
-        # bites hardest: both the override lookup and the role-holder lookup take
-        # the tenant object, not its id.
+        # rather than lazily: a missing relation here is a descriptor query per
+        # stage. instance__tenant bites hardest, because both the override lookup
+        # and the role-holder lookup take the tenant object rather than its id.
         "instance__tenant", "instance__branch",
         # Read by ``stage_role_key``'s fallback and by ``stage_requirement``.
         "stage__approver_role", "stage__approver_group",
@@ -239,10 +236,9 @@ def _repair_one(stage_instance_id, cache: ResolutionCache, document_types=None) 
     """Refill one empty approver snapshot under a row lock. Returns rows created."""
     with transaction.atomic():
         # Re-validate every precondition inside the lock: a concurrent vote, skip or
-        # terminal transition may have landed between detection and here, and the freeze
-        # guarantee (a populated snapshot is never rewritten or added to) is part of it.
-        # Two concurrent callers serialise on that lock, so the loser sees the winner's
-        # rows and does nothing.
+        # terminal transition may have landed since detection, and the freeze
+        # guarantee is part of it. Two callers serialise, so the loser sees the
+        # winner's rows and does nothing.
         stage_instance = lock_parked_stage(stage_instance_id, document_types)
         if stage_instance is None:
             return 0
@@ -272,16 +268,9 @@ def _repair_one(stage_instance_id, cache: ResolutionCache, document_types=None) 
             },
             message="Approvers became available for a parked stage.",
         )
-        # Tell the people who just became eligible. Until this existed a repaired
-        # document waited silently: the stage was already ACTIVE, so no activation
-        # notification had ever fired for it, and the audit row nobody reads was the
-        # only trace. Whoever was appointed to the role discovered the waiting work
-        # only by opening the queue on spec, which can be days after it became
-        # approvable. Same event and recipients as a stage activating normally,
-        # because that is exactly what it means to them; the audit entry above
-        # carries the marker distinguishing a repair from a real activation.
-        # Imported here rather than at module load: routing imports this module's
-        # siblings and the notifier is only needed on the rare repairing pass.
+        # Tell the people who just became eligible. The stage is already ACTIVE, so
+        # no activation notice fires on its own and a repaired document would
+        # otherwise wait in silence.
         from vs_workflow.constants import NOTIF_EVENT_STAGE_ACTIVATED
         from vs_workflow.services.routing import notify
 

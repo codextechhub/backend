@@ -590,11 +590,9 @@ class FromScreenView(_ExportBase):
                 # dataset publishes both today; that is not a promise the UI
                 # should be hardcoding.
                 "supported_formats": [str(f) for f in dataset.formats],
-                # Every column the caller could pick, so the drawer can offer a
-                # column chooser without a second round trip. Filtered by the
-                # SAME sensitive-field gate the catalogue uses: a column this
-                # user may not export is never offered, rather than offered and
-                # then silently dropped from the file as an omission.
+                # Every column the caller could pick, through the same sensitive-field gate
+                # the catalogue uses: a column they may not export is never offered rather
+                # than offered and then dropped from the file.
                 "fields": [
                     f.describe() for f in dataset.fields
                     if include_sensitive or not f.sensitive
@@ -645,11 +643,9 @@ class QuickExportView(_ExportBase):
                 "columns": "Choose at least one column before running this export.",
             })
 
-        # A small export is worth producing inline: the caller waits a moment and
-        # gets the file, instead of queueing and then going to look for it. The
-        # SERVER decides, by re-running its own estimate - the drawer's claim that
-        # the file will be small is a hint, not an authorisation, and an inline
-        # run holds a web worker for its whole duration.
+        # The server decides, by re-running its own estimate. The drawer's claim
+        # that the file will be small is a hint, not an authorisation, and an
+        # inline run holds a web worker for its whole duration.
         run_inline = False
         if wants_sync:
             try:

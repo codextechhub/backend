@@ -345,36 +345,27 @@ def set_virtual_account_status(va, *, status, actor_user=None):
 
 
 # --------------------------------------------------------------------------- #
-# Confirming: three phases, and why the provider call is not in the middle one  #
+# Confirming: the provider call sits outside the lock, deliberately            #
 # --------------------------------------------------------------------------- #
 #
-# ``confirm_collection`` and ``confirm_payout`` both used to be one
-# ``@transaction.atomic`` function that took a row lock, then called Paystack
-# from inside it, then booked. That put a network round-trip inside a database
-# transaction holding a lock, which fails in two ways at once when the provider
-# is slow rather than down:
+# ``confirm_collection`` and ``confirm_payout`` each run in three phases: an
+# unlocked pre-check, the provider round-trip with no transaction open and no
+# lock held, then a short atomic section that takes the lock and owns every
+# write.
 #
-#   * every worker confirming is holding a Postgres connection open for the
-#     length of a Paystack call, so a provider degradation drains the connection
-#     pool and takes the whole API down with it - the site stops serving
-#     timetables because a gateway is slow;
-#   * the lock is held for that whole time, so a re-delivery of the same webhook
-#     blocks on it rather than short-circuiting, and Paystack's own retries make
-#     that pile-up worse exactly when things are already bad.
+# Putting the network call inside the locked transaction fails twice over when
+# the provider is slow rather than down. Every confirming worker holds a
+# Postgres connection open for the length of a Paystack call, so a gateway
+# degradation drains the connection pool and takes the whole API down with it:
+# the site stops serving timetables because a payment gateway is slow. And the
+# lock is held for that whole time, so a re-delivered webhook blocks on it
+# instead of short-circuiting, which the provider's own retries then compound.
 #
-# So the work is split. The provider call happens with no transaction open and
-# no lock held; the lock is taken afterwards, for the few milliseconds the
-# booking actually needs.
+# The re-check after locking is what keeps the split safe, and it is not
+# optional. Two deliveries of one event can both pass the pre-check and both
+# verify - two harmless reads at the provider - but only one may book. The
+# second takes the lock, sees a terminal row and returns it unchanged.
 #
-# **The re-check after locking is what keeps it safe**, and is not optional. Two
-# deliveries of the same event can both pass the pre-check and both verify - two
-# harmless reads at the provider - but only one may book. The second takes the
-# lock, sees a terminal row, and returns it unchanged. That is the same
-# idempotency guarantee as before, now enforced at the point where it matters
-# instead of by holding everyone in a queue.
-
-
-# Handle the confirm collection workflow.
 def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
     """Confirm a collection and book the receipt - idempotently.
 
@@ -386,6 +377,15 @@ def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
     Deliberately **not** ``@transaction.atomic``: see the note above. This half
     does the provider round-trip with nothing locked; ``_confirm_collection_atomic``
     takes the lock and owns every write.
+
+    Falling back to ``intent.amount`` is safe for a collection we initiated,
+    because that amount is the one we asked the payer for. It is not safe for a
+    virtual-account deposit, where the intent was built from the inbound event,
+    so the fallback would be the webhook's own claim - the very thing this
+    re-verification exists to distrust. With no provider-reported amount there
+    is nothing authoritative to book, so the event is marked FAILED and
+    surfaces on the operator's needs-attention list with the money still
+    visibly unrecorded.
     """
     # Unlocked pre-check. Saves a pointless provider call for a row that is
     # already settled, which is the common case under webhook re-delivery. It is
@@ -401,13 +401,8 @@ def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
             reference=intent.reference, provider_reference=intent.provider_reference,
         )
         status = result.status  # Trust the PSP status for the confirmation decision.
-        # Falling back to intent.amount is safe for a collection we initiated: that amount
-        # is the one *we* asked the payer for. It is not safe for a virtual-account
-        # deposit, where the intent was built from the inbound event, so the fallback
-        # would be the webhook's own claim - exactly the thing this re-verification
-        # exists to distrust. With no provider-reported amount there is nothing
-        # authoritative to book, so refuse: the event is marked FAILED and surfaces on
-        # the operator's needs-attention list with the money still visibly unrecorded.
+        # No provider-reported amount means nothing authoritative to book. See the
+        # docstring.
         if (result.amount <= 0 and intent.virtual_account_id
                 and intent.channel == CollectionChannel.VIRTUAL_ACCOUNT):
             raise PaymentStateError(
@@ -424,7 +419,23 @@ def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
 
 @transaction.atomic
 def _confirm_collection_atomic(intent_id, *, status, amount, verify_raw, actor_user):
-    """Take the lock, re-check, and book. Every write in the flow happens here."""
+    """Take the lock, re-check, and book. Every write in the flow happens here.
+
+    A gateway receipt continues the customer's chain exactly as a counter
+    receipt does, so it carries the customer's branch. Without that the online
+    path, which is how most parents actually pay, leaves every receipt
+    school-wide while the invoice it settles sits in a branch, splitting one
+    family's ledger across two scopes.
+
+    A receipt cannot settle an invoice that is not raised yet: crediting AR
+    before the invoice debits it drives the control negative for the gap, and
+    the posting service refuses an explicit allocation that does so. That
+    refusal must not surface here, because the payer's money has already moved
+    and failing the booking would leave real cash unrecorded while the PSP
+    retries a call that can never succeed. A payment against a future-dated
+    invoice is a prepayment: it parks as customer credit and is applied once
+    the invoice exists.
+    """
     intent = CollectionIntent.objects.select_for_update().get(pk=intent_id)
     # The real idempotency guarantee. Another worker may have booked this while we
     # were talking to the provider, and this is where that is caught.
@@ -491,11 +502,7 @@ def _book_receipt(intent, *, actor_user=None):
     received = datetime.date.today()
     payment = Payment.objects.create(
         entity=intent.entity, customer=intent.customer,
-        # A gateway receipt continues the customer's chain exactly as a
-        # counter receipt does. Without this the online path - which is how most
-        # parents actually pay - would leave every receipt school-wide while the
-        # invoice it settles sat in a branch, splitting one family's ledger
-        # across two scopes.
+        # The customer's branch, so the receipt and its invoice share a scope.
         branch=intent.customer.branch,
         payment_date=received, currency=intent.currency,
         method=PaymentMethod.ONLINE, amount=intent.amount, deposit_account=deposit,
@@ -503,13 +510,8 @@ def _book_receipt(intent, *, actor_user=None):
         narration=intent.narration or f"Gateway collection {intent.reference}",
     )
 
-    # A receipt cannot settle an invoice that is not raised yet - crediting AR before
-    # the invoice debits it drives the control negative for the gap, and the posting
-    # service now refuses an explicit allocation that does so. Here that refusal must
-    # not be allowed to surface: the payer's money has already moved, and failing the
-    # booking would leave real cash unrecorded while the PSP retries a call that can
-    # never succeed. A payment against a future-dated invoice is simply a prepayment,
-    # so it parks as customer credit and is applied once the invoice exists.
+    # A payment against a future-dated invoice parks as customer credit. See
+    # the docstring.
     settles_now = bool(intent.invoice_id) and intent.invoice.invoice_date <= received
     if settles_now:  # Invoice-linked receipts should settle that invoice directly.
         post_payment(payment, actor_user=actor_user,

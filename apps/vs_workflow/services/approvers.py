@@ -89,21 +89,13 @@ def _users_for_role_key(role_key: str, tenant, branch) -> list:
 
     from vs_rbac.models import TenantRoleTemplate
 
-    # ``is_system_role`` is not decoration here; it is the boundary.
-    #
-    # A tenant role's key is slugified from the name its creator typed, so anyone
-    # holding role-create can produce the key ``payout-approver`` by naming a role
-    # "Payout Approver". Without this clause that role's holders were resolved as
-    # eligible approvers for every payout batch the school raised - approval
-    # authority over the school's money, conferred by a string, with no payments
-    # permission held and nothing on the roles screen able to grant or withdraw
-    # it (see ``vs_rbac.unenforced``: the ten ``*.approve`` keys gate nothing).
-    #
-    # The flag is set only by :func:`vs_workflow.services.roles.ensure_approver_role`,
-    # which is provisioning, and is read-only on the roles API. So a look-alike
-    # resolves to nobody and the stage parks - the same outcome as a tenant that
-    # has no such role, which is the honest answer and the one the coverage
-    # command (``check_workflow_role_coverage``) already reports.
+    # ``is_system_role`` is the boundary, not decoration. A tenant role's key is
+    # slugified from the name its creator typed, so anyone holding role-create
+    # could produce `payout-approver` by naming a role "Payout Approver" and
+    # confer approval authority over the school's money with a string. The flag
+    # is set only by services.roles.ensure_approver_role, which is provisioning,
+    # and is read-only on the roles API, so a look-alike resolves to nobody and
+    # the stage parks: the same honest outcome as a tenant with no such role.
     role = TenantRoleTemplate.objects.filter(
         tenant=tenant, key=role_key, status=TenantRoleTemplate.Status.ACTIVE,
         is_system_role=True,
@@ -397,7 +389,27 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     always excluded - they cannot approve their own submission. Both rules are
     applied once, after the dispatch, because they hold for every source: an
     approver from outside the requesting tenant is never eligible, whichever
-    branch above produced them.
+    branch above produced them. Containment is never made per-source, for the
+    same reason self-approval is not: a rule each branch has to remember is a
+    rule a new branch eventually forgets. Organogram positions in particular are
+    platform-global seats, so a climb that does not depend on the requester at
+    all could otherwise hand a tenant's document to somebody outside it.
+
+    There are two doors into the eligible list and both run the same filter.
+    The base users are the first. Delegations are the second: scoping the
+    delegation row to the tenant reads like containment without being it,
+    because nothing constrains the user that row names, so an approver could
+    hand their authority to somebody in another tenant. A delegate is a person
+    entering the eligible list and goes through ``_tenant_members`` exactly as
+    the base users do, which also stops "active" and "home tenant" coming to
+    mean different things at the two doors. A row naming a foreign delegate is
+    neutralised at resolution rather than deleted: ignoring a row is safe and
+    reversible, destroying somebody's delegation history is neither.
+
+    Delegations are applied ahead of ``excluded_delegators``, so an exclusive
+    delegation naming an outsider cannot strip the delegator while contributing
+    nobody. A row not allowed to add an approver is not allowed to remove one
+    either.
 
     Active delegations then expand the list regardless of source: if an eligible
     approver has delegated their authority, the delegate is added on their behalf
@@ -433,16 +445,7 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
             stage=stage.code, approver_source=stage.approver_source,
         )
 
-    # Tenant containment is barred from being per-source for the same reason
-    # self-approval is: a rule each branch has to remember is a rule a new
-    # branch eventually forgets. ORGANOGRAM forgot. Organogram positions are
-    # platform-global seats, so a climb (SPECIFIC_POSITION above all, which does
-    # not depend on the requester at all) could hand a tenant's document to
-    # somebody outside that tenant. The role, group and override paths already
-    # resolve inside instance.tenant, and _tenant_members is a pure filter, so
-    # applying it here is a no-op for them and the one missing guard for
-    # ORGANOGRAM. This is the first of the two doors into the eligible list; the
-    # delegation block below is the second, and runs the same filter.
+    # The first of the two containment doors. See the docstring.
     base_users = _tenant_members(base_users, instance.tenant_id)
 
     # Self-approval is barred on every source, so the filter lives here once
@@ -462,29 +465,13 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
         Q(document_type="") | Q(document_type=instance.document_type),
     ).exclude(delegate_id=instance.requested_by_id).select_related("delegator", "delegate"))
 
-    # The second door, running the same containment filter as the first.
-    # ``tenant=instance.tenant`` above scopes the delegation ROW and reads like
-    # containment without being it: nothing constrained the user that row names,
-    # so an approver could hand their authority to somebody in another tenant and
-    # resolution would seat that outsider as an eligible approver. A delegate is
-    # a person entering the eligible list, so they go through _tenant_members
-    # exactly as the base users did, which also means "active" and "home tenant"
-    # cannot come to mean different things at the two doors.
-    #
-    # Rows written before this rule existed may already name a foreign delegate,
-    # and they are neutralised here rather than deleted or rewritten by a data
-    # migration: ignoring a row at resolution is safe and reversible, whereas
-    # destroying somebody's delegation history is neither.
+    # The second door, running the same filter. See the docstring.
     contained_delegate_ids = {
         u.pk for u in _tenant_members(
             [d.delegate for d in delegations], instance.tenant_id,
         )
     }
-    # Deliberately ahead of excluded_delegators: an exclusive delegation naming
-    # an outsider must not strip the delegator while contributing nobody. A row
-    # that is not allowed to add an approver is not allowed to remove one either,
-    # or refusing the outsider would empty the stage instead of leaving it as it
-    # was before the row was written.
+    # Ahead of excluded_delegators on purpose. See the docstring.
     delegations = [d for d in delegations if d.delegate_id in contained_delegate_ids]
 
     result: List[EligibleApprover] = []

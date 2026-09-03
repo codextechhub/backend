@@ -33,13 +33,11 @@ from vs_exports.catalogue import (
 def _instances(scope):
     from .models import WorkflowInstance
 
-    # include_shared=True, matching branch_q(request, include_shared=True) at
-    # every one of this module's own call sites: a branch-pinned row is an
-    # override of the tenant-wide default rather than a replacement for it, so
-    # a branch user must still see the tenant-wide approvals. The exclusive
-    # reading was tried on the screens and is recorded there as a defect - it
-    # left branch users with an empty list whenever the tenant published at
-    # tenant level, which is the normal case.
+    # include_shared=True, matching every one of this module's call sites: a
+    # branch-pinned row overrides the tenant-wide default rather than replacing
+    # it, so a branch user must still see the tenant-wide approvals. Reading it
+    # exclusively empties the list whenever the tenant publishes at tenant
+    # level, which is the normal case.
     return narrow_to_caller_branches(
         WorkflowInstance.objects.filter(tenant=scope.tenant),
         scope, inclusive=True,

@@ -66,58 +66,42 @@ PLATFORM_ONLY_DATASETS: frozenset[str] = frozenset({
 
 #: Datasets a school may import for itself.
 #:
-#: **``calendar_events`` is the first entry this set has ever held**, so it is
-#: the first time the answer to "may a school import this?" is yes. It earns
-#: that on three counts, and a future dataset should be argued the same way:
+#: A dataset earns a place here on three counts, and a new one has to be
+#: argued the same way:
 #:
 #: 1. *The school already creates these by hand, through an API that is its
-#:    own.* ``academics.calendar.create`` is a school key held by school roles,
-#:    and the events endpoint accepts exactly what this file carries. Contrast
-#:    ``branches``, where the equivalent endpoint refuses a school outright -
-#:    that gap between the file and the API is what made the branches import a
-#:    way around a permission.
-#: 2. *The handler creates nothing but the school's own rows.* One
-#:    ``CalendarEvent`` inside the uploading tenant's own year, plus its
-#:    audience rows. No tenant, no account, no role, no permission grant.
-#: 3. *There is a real reason to do it in bulk.* A year's calendar is thirty to
-#:    sixty dated entries that a school already keeps in a spreadsheet, and
-#:    typing them one at a time into a drawer is the whole of a morning.
+#:    own.* For calendar events that is ``academics.calendar.create``, a
+#:    school key held by school roles, and the events endpoint accepts
+#:    exactly what the file carries. For students it is
+#:    ``school.students.create`` and ``POST /v1/students/``.
+#: 2. *The handler creates nothing but the school's own rows.* A
+#:    ``CalendarEvent`` in the uploading tenant's own year with its audience
+#:    rows; a Student, a Guardian and their link inside the uploading tenant.
+#:    No tenant, no account, no role, no permission grant.
+#: 3. *There is a real reason to do it in bulk.* A year's calendar is thirty
+#:    to sixty dated entries a school already keeps in a spreadsheet, and a
+#:    school arriving on the platform brings hundreds of children it holds
+#:    the same way. Typing either in one at a time is not a migration path.
 #:
-#: The remaining onboarding datasets - staff and parents - still have no
-#: template and no model to import into. When one lands, adding it here is
-#: the only change needed, and the same three questions are the ones to ask.
+#: ``branches`` is deliberately absent, and it is the sharpest argument for
+#: classifying datasets rather than assuming. A branch looks like a school's
+#: own data, and it is, but creating one is not a school's to do: every view
+#: in ``vs_schools/views/branch.py`` demands ``platform.branches.create`` or
+#: ``.update``, which is PLATFORM-scoped and held by no school role, so a
+#: live school administrator posting to the branch endpoint is refused
+#: outright. An unclassified import engine asks none of that, and uploading
+#: a branches CSV would create the branch, a branch administrator account
+#: and a branch-scoped role: a school that cannot create one branch by
+#: asking could create twenty by uploading a spreadsheet.
 #:
-#: ``branches`` is NOT here, and the reason is the sharpest argument for
-#: classifying datasets rather than assuming. A branch looks like a school's own
-#: data, and it is - but creating one is not a school's to do. Every view in
-#: ``vs_schools/views/branch.py`` demands ``platform.branches.create`` /
-#: ``.update``, which is PLATFORM-scoped and held by no school role. A live
-#: school administrator posting to the branch endpoint is refused outright
-#: (verified against lagoon-view: "You do not have permission to perform this
-#: action").
+#: A school still administers the branches it HAS. ``school.branches.view``
+#: and ``.manage`` are its own keys; opening and editing branches is not.
 #:
-#: The import engine asked none of that. Uploading a branches CSV created the
-#: branch, a branch administrator account, and a branch-scoped role - so the
-#: file upload was a way around a permission the API refuses at the front door.
-#: A school cannot create one branch by asking, and could create twenty by
-#: uploading a spreadsheet.
-#:
-#: A school still administers the branches it HAS - ``school.branches.view``
-#: and ``.manage`` are its own. It is opening and editing them that is not, and
-#: those two keys have been dropped from the school permission group.
+#: The remaining onboarding datasets, staff and parents, have no template
+#: and no model to import into. When one lands, adding it here is the only
+#: change needed.
 TENANT_DATASETS: frozenset[str] = frozenset({
     DatasetTypeChoices.CALENDAR_EVENTS,
-    # M11. The second entry, and it earns it on the same three counts:
-    #
-    # 1. The school already creates these by hand through an API that is its
-    #    own - school.students.create is a school key held by school roles, and
-    #    POST /v1/students/ accepts exactly what this file carries.
-    # 2. The handler creates nothing but the school's own rows: a Student, a
-    #    Guardian and their link, inside the uploading tenant. No tenant, no
-    #    account, no role, no permission grant.
-    # 3. There is a real reason to do it in bulk - a school arriving on the
-    #    platform brings hundreds of children it already holds in a
-    #    spreadsheet, and typing them one at a time is not a migration path.
     DatasetTypeChoices.STUDENTS,
 })
 
