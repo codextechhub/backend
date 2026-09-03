@@ -255,6 +255,66 @@ agent when fixes share constants.py/migrations; run the test suite yourself
 after agent work). Template: `docs/finance/_report_template.md`. Status and
 next slices live at the top of the playbook.
 
+## Comments: short inline, the story in the docstring
+
+An inline comment is a label, not an explanation. Keep it to one short line that
+names what the next line or block does. If the point takes more than that to
+make, it does not belong inline: move it into the docstring of the module,
+class, function or method it concerns.
+
+The docstring is where the reasoning lives. Write it there once, properly, and
+let the code below stay clean.
+
+### Write for a stranger reading it years from now
+
+Every comment and docstring is permanent documentation. It has to read the same
+way to somebody who has never seen this branch, this milestone or this
+conversation. Describe the code as it is, in the present tense, and let it
+stand on its own.
+
+That rules out:
+
+- milestone, sprint, wave and ticket names - `M16`, `wave 3`, `the RBAC sprint`;
+- change narration - "added", "changed", "moved here", "now returns", "used to";
+- notes aimed at a reviewer - "note that", "as discussed", "for now",
+  "temporary until we", "so you can see it working";
+- time references - "recently", "since the refactor", "will be removed later".
+
+Not this:
+
+```python
+# M16 config added here so the setting is enabled on the preview screen
+preview_enabled = resolve_flag(tenant, "notification_preview")
+```
+
+This:
+
+```python
+def render_preview(template, tenant):
+    """Render a notification exactly as its recipient will receive it.
+
+    Branding, locale and channel settings resolve from the tenant rather than
+    from the request, so an admin checking a template sees what the recipient
+    sees.
+    """
+    preview_enabled = resolve_flag(tenant, "notification_preview")
+```
+
+The second version says more, and it stays true and useful long after the
+milestone that prompted it is forgotten.
+
+### What a docstring should carry
+
+Say what the thing is for, and what a caller needs to know that the signature
+does not already tell them: the invariant it keeps, the scope it applies to,
+the condition that makes it behave differently, the reason behind a choice that
+looks odd. Do not restate the parameter list in prose, and do not turn the
+docstring into a history of the file.
+
+This applies to every comment written anywhere in the codebase, tests included,
+and to every comment already sitting beside code being changed: bring it up to
+this standard rather than leaving it as found.
+
 ## Writing punctuation
 
 Do not use em dashes (Unicode U+2014) anywhere in source code, comments,
