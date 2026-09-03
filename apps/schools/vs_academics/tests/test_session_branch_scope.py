@@ -209,8 +209,9 @@ class ReactivationTests(_Base):
         self.assertEqual(s.activated_at, stamped)
 
     def test_a_year_with_no_terms_still_activates(self):
-        """Whether an empty year may be activated is M14's question, not this
-        rule's, and the archived-term refusal must not answer it by accident."""
+        """Whether an empty year may be activated is the calendar module's
+        question, not this rule's, and the archived-term refusal must not answer
+        it by accident."""
         s = self.session("2026/2027")
         activate_session(s, self.tenant)
         s.refresh_from_db()

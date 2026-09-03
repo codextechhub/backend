@@ -694,9 +694,8 @@ class Command(BaseCommand):
         target_school = schools[0] if schools else None
         if target_school is not None:
             # Whom a CS lead would proxy is a question about authority, and
-            # authority is the role. Asking a persona column used to answer it
-            # only because SCHOOL_ADMIN happened to exist; STAFF said nothing,
-            # and would have picked a random teacher.
+            # authority is the role. A persona column cannot answer it: it
+            # would pick a random teacher.
             target_user = (
                 User.objects.filter(
                     tenant=target_school.tenant,

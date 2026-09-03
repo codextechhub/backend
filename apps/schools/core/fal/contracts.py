@@ -5,8 +5,8 @@ schools.core.fal.contracts
 Framework-agnostic value objects that make up the Finance Abstraction Layer
 (FAL) contract. These are the *only* types that cross the boundary between the
 generic finance/payments/procurement subsystems (``vs_finance`` /
-``vs_payments`` / ``vs_procurement``) and their school-specific consumers
-(M9 onboarding, M11 students, M25 dashboards, M26 reports, M28 parent portal).
+``vs_payments`` / ``vs_procurement``) and their school-specific consumers:
+onboarding, students, dashboards, reports and the parent portal.
 
 The FAL is deliberately **school-aware**: school vocabulary (school, student,
 guardian, session, term) belongs here, because the FAL is the boundary where
@@ -59,25 +59,22 @@ CURRENCY_NGN = "NGN"
 #
 # ``DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"``, and every model the
 # FAL touches (Tenant, School, Branch, LedgerEntity, Customer, Invoice, Payment,
-# User, WorkflowInstance, AcademicSession, AcademicTerm, the five procurement
-# documents) has an integer primary key.
+# User, AcademicSession, AcademicTerm, the five procurement documents) has an
+# integer primary key. ``WorkflowInstance`` is the exception and is noted below.
 #
 # Two ref families:
 #
 #   Ref      -> a platform row's primary key. A plain int.
-#   LooseRef -> the opaque id of a record in a school app that does not exist in
-#               the repository yet (student, guardian). Carried as a string
-#               because that is exactly how the backend stores such a link:
-#               ``Customer.source_type`` + ``Customer.source_id`` are plain
-#               CharFields, never an FK, so the ledger stays decoupled from any
-#               product app. Keeping these opaque also means the FAL never
-#               guesses a primary-key type for a model nobody has written.
+#   LooseRef -> the opaque id of a record in a school app the ledger must not
+#               name. Carried as a string because that is how the backend
+#               stores such a link: ``Customer.source_type`` and
+#               ``Customer.source_id`` are plain CharFields, never an FK, so
+#               the ledger stays decoupled from any product app.
 #
-# CHANGED IN 1.1.2: ``SessionRef`` and ``TermRef`` move from LooseRef to Ref.
-# v1.1.1 made them strings on the stated grounds that "there is no academic
-# calendar app". There is now: ``schools.vs_academics.AcademicSession`` and
-# ``AcademicTerm`` are real, tenant-scoped, integer-PK models, and the FAL lives
-# inside ``apps/schools/`` so it may name them. See ``models.FeeStructureTermLink``.
+# ``SessionRef`` and ``TermRef`` are Refs rather than LooseRefs, because
+# ``schools.vs_academics.AcademicSession`` and ``AcademicTerm`` are real,
+# tenant-scoped, integer-PK models and the FAL lives inside ``apps/schools/``
+# so it may name them. See ``models.FeeStructureTermLink``.
 # --------------------------------------------------------------------------- #
 Ref = int
 LooseRef = str
@@ -92,11 +89,10 @@ FeeStructureRef = Ref     # a vs_finance FeeStructure
 UserRef = Ref             # a vs_user User
 VendorRef = Ref           # a vs_procurement Vendor
 DocRef = Ref              # a procurement document's primary key
-#: CORRECTED IN 1.1.2. v1.1.1 listed ``WorkflowInstance`` among the models with
-#: an integer primary key. It is not one: ``WorkflowInstance.id`` is a
+#: A LooseRef, not a Ref. ``WorkflowInstance.id`` is a
 #: ``CharField(primary_key=True, max_length=8)`` holding a generated short id
-#: (``vs_workflow/models.py``), and ``document_object_id`` is a CharField too.
-#: Typing this ref as an int would have been wrong at the first ``approve()``.
+#: (``vs_workflow/models.py``), and ``document_object_id`` is a CharField too,
+#: so typing this as an int is wrong at the first ``approve()``.
 WorkflowInstanceRef = LooseRef  # a vs_workflow WorkflowInstance's short id
 SessionRef = Ref          # a schools.vs_academics AcademicSession
 TermRef = Ref             # a schools.vs_academics AcademicTerm
@@ -104,18 +100,9 @@ TermRef = Ref             # a schools.vs_academics AcademicTerm
 StudentRef = LooseRef     # a future school student record
 GuardianRef = LooseRef    # a future parent/guardian record
 
-#: The ``Customer.source_type`` value the FAL writes for a student. Defined once,
-#: here, because it is the FAL's own value: ``Customer``'s docstring deliberately
-#: names no product model ("this app must not know which products exist"), so
-#: there is nothing upstream to agree with.
-#:
-#: CORRECTED IN 1.1.3. This read ``"vs_schools.Student"`` while the student app
-#: was unwritten and the label was a guess. Module 11 landed as
-#: ``schools.vs_students`` with the app label ``vs_students``, so the guess was
-#: wrong and every AR account the FAL opened would have been filed against a
-#: model that does not exist. It cost one line, which is what defining it in one
-#: place was for. No data was written under the old value: nothing outside the
-#: FAL's own tests had called ``ensure_customer``.
+#: The app label must match the student app as it is installed,
+#: ``vs_students``. A wrong label files every AR account the FAL opens
+#: against a model that does not exist, and nothing downstream notices.
 SOURCE_TYPE_STUDENT = "vs_students.Student"
 
 T = TypeVar("T")
@@ -146,7 +133,7 @@ class FinanceResult(Generic[T]):
       "unavailable" state, *not* a zero.
 
     ``computed_at`` is a freshness stamp. The FAL itself does no persistent
-    caching; consumers (e.g. the M25 dashboard's cache layer) cache above the
+    caching; consumers (the dashboard's cache layer, say) cache above the
     FAL and use ``computed_at`` to reason about staleness.
     """
 
@@ -252,11 +239,10 @@ class FilterClause:
 class Page(Generic[T]):
     """A page of rows, mirroring the shape of ``core.pagination.XVSPagination``.
 
-    CORRECTED IN 1.1.2: v1.1.1 warned consumers that an empty page serialises as
-    ``{}`` rather than ``[]`` because ``core.response.success_response`` coerced a
-    falsy payload. It no longer does - only a genuinely absent payload becomes
-    ``{}``, and an empty list stays a list (``apps/core/response.py:23``). A
-    consumer doing ``data.map(...)`` on an empty result is safe.
+    An empty page serialises as ``[]``, not ``{}``: only a genuinely absent
+    payload becomes ``{}`` and an empty list stays a list
+    (``apps/core/response.py``). A consumer doing ``data.map(...)`` on an empty
+    result is safe.
     """
 
     items: tuple[T, ...]
@@ -267,7 +253,7 @@ class Page(Generic[T]):
 
 
 # --------------------------------------------------------------------------- #
-# KPI / aggregate value objects (consumed mainly by M25)
+# KPI / aggregate value objects (consumed mainly by the dashboards)
 # --------------------------------------------------------------------------- #
 class Unit(str, Enum):
     KOBO = "KOBO"        # money, integer minor units
@@ -394,7 +380,7 @@ class PaymentRow:
 
 
 # --------------------------------------------------------------------------- #
-# Aggregate dashboard contracts (M25) - component 5.
+# Aggregate dashboard contracts - component 5.
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class AgeingRow:
@@ -427,7 +413,7 @@ class FeeLiability:
 
 
 # --------------------------------------------------------------------------- #
-# Per-entity fee views (student & parent portals - M11/M28)
+# Per-entity fee views (student and parent portals)
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class InvoiceLine:
@@ -451,7 +437,7 @@ class InvoiceView:
 
 @dataclass(frozen=True)
 class FeeStatus:
-    """A student's read-only fee position, for the student portal (M11)."""
+    """A student's read-only fee position, for the student portal."""
 
     student_ref: StudentRef
     balance: Kobo
@@ -472,7 +458,7 @@ class Receipt:
 
 
 # --------------------------------------------------------------------------- #
-# Procurement views (M25 dashboards, M26 reports)
+# Procurement views (dashboards and reports)
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class ProcurementSnapshot:
@@ -504,7 +490,8 @@ class EntityHandle:
     idempotent hit on a retried onboarding.
 
     Decision (2026-07-04): every school has exactly **one primary** entity,
-    provisioned by M9; ``resolve_entity`` returns it (``is_primary=True``). Two
+    provisioned by onboarding; ``resolve_entity`` returns it
+    (``is_primary=True``). Two
     candidate primaries raise ``AmbiguousPrimaryEntity``; the FAL never guesses.
 
     ``is_primary`` is **not** backed by a model field. ``LedgerEntity`` has no

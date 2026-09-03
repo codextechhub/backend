@@ -64,7 +64,7 @@ BINDINGS = [
 #: union, so a FileField still cannot be added without somebody deciding which
 #: of the two lists it belongs in.
 LATER_BINDINGS = [
-    # M11. Both carry their own tenant, and both models are created in the
+    # Both carry their own tenant, and both models are created in the
     # release that introduced the binding, so there is nothing to rescue - the
     # backfill is a no-op by construction and is run anyway, because "there
     # cannot be any rows" is exactly the assumption that turns out to be wrong.

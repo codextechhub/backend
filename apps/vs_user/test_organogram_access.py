@@ -343,9 +343,9 @@ class OrganogramTenantIsolationTests(TestCase):
         )
 
     def test_user_filter_cannot_reach_outside_the_callers_tenant(self):
-        # Amaka names Chidera's id. The filter used to be the first thing
-        # applied to an unbounded table, so it selected his whole tenure
-        # history; it now picks from rows she was already entitled to.
+        # Amaka names Chidera's id. Applied first to an unbounded table the
+        # filter selects his whole tenure history; it must pick from the rows
+        # she is already entitled to.
         self.assertEqual(
             self._assignments_for(self.amaka, user=str(self.cx_staff.id)), [],
         )

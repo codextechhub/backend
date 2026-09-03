@@ -1,4 +1,4 @@
-"""Routes for M11 Student Management.
+"""Routes for student management.
 
 Guardian routes live under ``/v1/guardians/`` because a guardian is reachable
 from more than one student, so the tenant check on them cannot be inherited

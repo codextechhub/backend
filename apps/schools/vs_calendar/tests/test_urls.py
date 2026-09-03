@@ -1,8 +1,9 @@
 """The three mounts, and the ordering trap that would 404 all of them.
 
-M13 mounts at ``v1/academics/``. Django tries patterns in list order, so an
-entry for the shorter prefix placed first matches ``v1/academics/timetable/
-rooms/``, fails to resolve the remainder inside M13's urlconf, and answers 404
+``vs_academics`` mounts at ``v1/academics/``. Django tries patterns in list
+order, so an entry for the shorter prefix placed first matches
+``v1/academics/timetable/rooms/``, fails to resolve the remainder inside that
+module's urlconf, and answers 404
 rather than falling through to this module. Three lines of care in
 ``apps/urls.py``, and a test that is cheaper than finding out from a customer.
 """

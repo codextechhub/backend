@@ -1,9 +1,10 @@
 """Which school years may still be written to.
 
-M13 refuses every write against an archived year, and cannot refuse this one:
-an enrolment is this module's row and M13 cannot see it. Its FR-009 rule 3 says
-so explicitly, and says M11 builds this itself and M13 must not build a second,
-because a guard written twice is a guard applied once.
+``vs_academics`` refuses every write against an archived year, and cannot
+refuse this one: an enrolment is this module's row and ``vs_academics`` cannot
+see it. Its FR-009 rule 3 says so explicitly, and says this module builds the
+guard itself while ``vs_academics`` must not build a second, because a guard
+written twice is a guard applied once.
 
 What it protects is the truthfulness of a closed year. Once 2024/2025 is
 archived, who was in JSS1 A that year is a fact, and attendance, results and

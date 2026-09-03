@@ -204,8 +204,8 @@ class Command(BaseCommand):
 
         A guardian here is SHARED by every student with this surname - that
         sharing is the relationship the Guardians screen exists to show. But
-        three of the guardian's fields used to be derived from the child who
-        happened to be enrolled first, or not deterministically at all:
+        Three of the guardian's fields must not be derived from whichever child
+        happened to be enrolled first, or derived non-deterministically:
 
           * the honorific and the initial came from that child's seed, while
             the RELATIONSHIP on each link came from each child's own seed. So

@@ -224,9 +224,8 @@ class PasswordService:
         # PENDING, LOCKED and SUSPENDED. LOCKED and PENDING become ACTIVE
         # (the reset IS the unlock, and the activation); ACTIVE is already
         # there; SUSPENDED deliberately stays suspended, because a new
-        # password is not a reinstatement. There is no longer any status
-        # that lands here, keeps its own value and walks away with a
-        # working credential - which is what REJECTED used to do.
+        # password is not a reinstatement. No status may land here, keep its
+        # own value and walk away with a working credential.
         if user.status in (User.Status.LOCKED, User.Status.PENDING):
             if user.status == User.Status.LOCKED:
                 lockout = AccountLockout.objects.select_for_update().filter(user=user).first()

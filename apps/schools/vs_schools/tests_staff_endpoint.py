@@ -2,10 +2,10 @@
 
 The same gap as ``/v1/i/me/profile/``, one step further along the checklist.
 "Add Staff & Invitations" is a step CodeX asks a school for during onboarding,
-and until this endpoint existed the only way to create a school user was
-``/v1/user/users/``, gated on ``platform.team.*`` - a key no school
-administrator holds. So the step could be asked for and never done. The first
-test below is that gap, stated as a passing assertion.
+and the only other way to create a school user is ``/v1/user/users/``, gated
+on ``platform.team.*``, a key no school administrator holds. Without this
+endpoint the step can be asked for and never done. The first test below is that
+gap, stated as a passing assertion.
 
 The rest are the two questions this surface has to answer correctly every time:
 who may write here, and whose people they can see.

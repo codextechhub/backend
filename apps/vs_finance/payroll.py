@@ -212,8 +212,7 @@ def roster_for(entity, branch=None):
     """The active salary rows a run for *branch* covers, as a queryset.
 
     ``branch=None`` covers the whole entity - every active row, branched or not.
-    That is the central run, it is what payroll has always done, and it is what a
-    CENTRAL school keeps doing unchanged.
+    That is the central run, and what a CENTRAL school does.
 
     A *branch* is read **exclusively**: exactly the rows carrying that branch, and
     deliberately **not** the rows carrying none. This is the second place on the

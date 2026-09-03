@@ -88,11 +88,10 @@ def _has_initial_data(tenant, school) -> bool:
     """At least one import that fully succeeded. IMPORT_SUCCEEDED only.
 
     **A partial import does not complete this step, by decision (2026-08-17),
-    and this condition must not be relaxed to accept one.** Where the two
-    disagreed, the import screen was the side that was corrected: it used to
-    report a partial import as success, and it no longer does. Onboarding is
-    the strict side on purpose, because this step is the school's own statement
-    that its data is in, and half a roll of students is not.
+    and this condition must not be relaxed to accept one.** Onboarding is the
+    strict side on purpose, because this step is the school's own statement that
+    its data is in, and half a roll of students is not. Where the import screen
+    disagrees, the import screen is the side to correct.
 
     Onboarding reads the import engine's result and never validates or imports
     anything itself.

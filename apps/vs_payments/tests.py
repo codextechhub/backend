@@ -1778,12 +1778,12 @@ class PayoutBatchApprovalTests(TestCase):
     def test_another_tenant_cannot_submit_this_batch(self):
         """The reported hole, on a real batch.
 
-        A finance user at a different tenant used to be able to POST this batch's pk
-        to the generic ``/v1/workflow/instances/`` endpoint. The instance was
-        created inside *this* tenant, the handler marked the batch pending
-        approval, and the 201 handed the outsider the reference, the total, the
-        provider and the names of this tenant's approvers. The endpoint is gone;
-        this asserts the service refuses even when a caller reaches it directly.
+        A finance user at a different tenant POSTing this batch's pk to a
+        generic workflow-instance endpoint would have the instance created
+        inside *this* tenant, the batch marked pending approval, and the 201
+        hand the outsider the reference, the total, the provider and the names
+        of this tenant's approvers. The endpoint does not exist; this asserts
+        the service refuses even when a caller reaches it directly.
         """
         from vs_tenants.models import Tenant
         from vs_workflow.exceptions import CrossTenantDocumentError

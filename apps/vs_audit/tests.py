@@ -1247,12 +1247,12 @@ class AuditExportTenantIsolationTests(AuditTenantIsolationFixture, TestCase):
 class ExportCentreDatasetScopeTests(AuditTenantIsolationFixture, TestCase):
     """The Export Centre dataset must answer the question the Explorer answered.
 
-    1da5c2a bounded every read in ``vs_audit.views`` with a predicate that
-    recovers a tenant's pre-d1ceccb rows through ``metadata['tenant_id']``. The
-    ``audit.events`` dataset kept a second, narrower boundary of its own -
-    ``filter(tenant=scope.tenant)`` - so Bright Star's officer read her old
-    password resets on the screen, exported that same view, and opened a file
-    they were missing from.
+    Every read in ``vs_audit.views`` is bounded by a predicate that also
+    recovers rows carrying their tenant in ``metadata['tenant_id']``. A second,
+    narrower boundary on the ``audit.events`` dataset -
+    ``filter(tenant=scope.tenant)`` - has Bright Star's officer read her old
+    password resets on the screen, export that same view, and open a file they
+    are missing from.
     """
 
     def setUp(self):
@@ -1619,10 +1619,9 @@ class RetiredTrailRollupTests(EntityTrailCounterFixture, TestCase):
     def test_a_trail_with_no_events_left_reports_zero(self):
         """One of the 10. Every event gone, the catalogue row still standing.
 
-        A platform reviewer opening the console used to read the trail's stored
-        figure here - a count of events that no longer exist anywhere. Zero is
-        the only true answer, and the trail is still listed, because "this
-        entity was audited once" remains a fact worth keeping.
+        A stored figure here would be a count of events that no longer exist
+        anywhere. Zero is the only true answer, and the trail is still listed,
+        because "this entity was audited once" remains a fact worth keeping.
         """
         AuditEvent.objects.filter(
             entity_type=self.SHARED[0], entity_id=self.SHARED[1],

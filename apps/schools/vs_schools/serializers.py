@@ -778,12 +778,13 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         branch: Branch = self.instance
-        # ``is_main=true`` used to be refused whenever another main branch
-        # existed, which made promotion impossible for every school that had
-        # one - and a main branch can no longer be retired without promoting a
-        # sibling first, so that refusal was the dead end itself. It is now a
-        # handover: ``Branch.promote_to_main`` demotes the incumbent in the
-        # same transaction. All that is refused here is promoting a branch that
+        # ``is_main=true`` is a handover, not a refusal:
+        # ``Branch.promote_to_main`` demotes the incumbent in the same
+        # transaction. Refusing it whenever another main branch exists makes
+        # promotion impossible for every school that has one, and since a main
+        # branch cannot be retired without promoting a sibling first, that
+        # refusal is the dead end itself. All that is refused here is promoting
+        # a branch that
         # is out of service.
         if attrs.get("is_main") is True and branch.status not in Branch.IN_SERVICE_STATES:
             raise serializers.ValidationError({
@@ -1020,10 +1021,10 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
 
     The `branches` field accepts a list of branch objects and is **required**:
     every school has at least one branch, its main branch, from the moment it
-    exists. It used to be ``required=False, default=list``, which let this
-    endpoint (and the bulk importer behind it) mint a school with nowhere to put
-    a user, a document or a student. Every branch rule below used to sit behind
-    an ``if branches:`` and so never ran for the one payload that needed them.
+    exists. Optional here - ``required=False, default=list`` - lets this
+    endpoint and the bulk importer behind it mint a school with nowhere to put
+    a user, a document or a student, and puts every branch rule below behind an
+    ``if branches:`` that never runs for the one payload needing them.
 
     Business rules enforced here:
       - At least ONE branch must be submitted.
@@ -1549,13 +1550,12 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
     def update(self, instance: School, validated_data: Dict[str, Any]) -> School:
         """Write the change, then record who made it.
 
-        This used to read ``actor_id`` out of the context and drop it on the
-        floor: no audit event was emitted at all, while ``BranchUpdateSerializer``
-        directly above audits every field it touches. That was survivable while
-        the endpoint edited mottos. It stopped being survivable at 0699ada, when
-        ``slug`` became writable here: the slug is mirrored onto the tenant and
-        is therefore the host every one of a school's users signs in at, and it
-        could be moved with no record of who moved it or where from.
+        Reading ``actor_id`` out of the context and dropping it emits no audit
+        event at all, while ``BranchUpdateSerializer`` directly above audits
+        every field it touches. That is survivable for a motto and not for
+        ``slug``, which is writable here: the slug is mirrored onto the tenant
+        and is therefore the host every one of a school's users signs in at, so
+        it must not move without a record of who moved it and from where.
 
         Same shape as the branch above, deliberately: the same
         ``AuditDiffService`` snapshot, the same before/diff pair, the same
@@ -1768,12 +1768,12 @@ class SchoolResetConfigSerializer(serializers.Serializer):
         school: School = self.context["school"]
 
         # The token has to be this school's address, and nothing else will do.
-        # It used to be checked for emptiness only, so "x" reset any school an
-        # operator could name: with Bright Star open in one tab and Greenfield
-        # in another, a reset fired at the wrong slug went through, Bright
-        # Star's branding was deleted, and nothing in the request had ever said
-        # "Bright Star" for anyone to catch it. Naming the school in the body
-        # is what makes a mis-aimed reset a 400 instead of a deletion, and the
+        # Checked for emptiness only, "x" resets any school an operator can
+        # name: with Bright Star open in one tab and Greenfield in another, a
+        # reset fired at the wrong slug goes through, Bright Star's branding is
+        # deleted, and nothing in the request ever said "Bright Star" for
+        # anyone to catch it. Naming the school in the body is what makes a
+        # mis-aimed reset a 400 instead of a deletion, and the
         # slug is the right thing to name because it is the address the
         # operator is already looking at in the URL.
         #
@@ -2032,15 +2032,15 @@ class SchoolBranchSerializer(serializers.ModelSerializer):
 
     **Two of the three counts are still deliberately null.** There is no Student
     and no Teacher model in the product yet, so a number for either would be
-    invented. Null says "not known" and the screen renders a dash; the day M11
-    and M12 land, each becomes an annotation without the response shape changing
-    under any client already reading it.
+    invented. Null says "not known" and the screen renders a dash; the day
+    those models land, each becomes an annotation without the response shape
+    changing under any client already reading it.
 
-    ``classes_count`` is the first of the three to become real. M13 landed
-    ``SchoolClass``, so the annotation this docstring promised is now in
-    ``MyBranchListView.get_queryset``, and it counts **live** classes: an
-    archived class is one the school has retired, and including it would make
-    the branch card disagree with the class list beside it.
+    ``classes_count`` is the one of the three that is real, annotated in
+    ``MyBranchListView.get_queryset`` now that ``SchoolClass`` exists. It counts
+    **live** classes: an archived class is one the school has retired, and
+    including it would make the branch card disagree with the class list
+    beside it.
 
     A branch with no classes reports ``0``, which is a different claim from
     ``null`` and a true one - the school has this site and has built nothing on

@@ -108,7 +108,7 @@ class ClassTimetableListView(CalendarViewMixin, APIView):
     grid is in, and whether it has a clash in it.
 
     Not in FRD v3.0.1, which serves one grid at a time and leaves the picker
-    with nothing to render. M13's class list gives names only.
+    with nothing to render. ``vs_academics``' class list gives names only.
 
     docstring-name: Class timetables
     """

@@ -62,10 +62,10 @@ class ParentPaymentBridgeTests(FALFixture):
     def test_the_shipped_default_reads_the_real_student_roll(self):
         """The bridge is open, and it is open on the real link.
 
-        This used to assert the opposite: with no student roll, nothing could
-        answer the ownership question and the shipped resolver refused. Module
-        11 landed, the default now reads StudentGuardian, and a mother linked to
-        her own child is admitted with no resolver injected by the test.
+        The shipped default reads StudentGuardian, so a mother linked to her
+        own child is admitted with no resolver injected by the test. Without a
+        student roll to answer the ownership question the resolver can only
+        refuse, which is why the roll is the default's source.
         """
         student = self.student(self.corona, self.ikeja)
         guardian = self.guardian_of(self.corona, student)

@@ -155,10 +155,10 @@ class ClassDetailView(_ClassBase, generics.RetrieveUpdateAPIView):
     """GET, PATCH /v1/academics/classes/<id>/
 
     There is no delete route, and its absence is a promise another module
-    depends on rather than a local preference: M11's ClassEnrolment points at
-    SchoolClass with on_delete=PROTECT, which is safe precisely because there
-    is no route to reach that refusal with. A delete may not be added here
-    without M11's agreement.
+    depends on rather than a local preference: ``vs_students``' ClassEnrolment
+    points at SchoolClass with on_delete=PROTECT, which is safe precisely
+    because there is no route to reach that refusal with. A delete may not be
+    added here without that module's agreement.
 
     docstring-name: One class
     """

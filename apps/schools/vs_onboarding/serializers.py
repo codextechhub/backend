@@ -80,11 +80,11 @@ class GoLiveRequestSerializer(serializers.ModelSerializer):
         """Does this school have a set of books?
 
         Books are provisioned at school creation on a best-effort basis, so
-        some school's books do not arrive. This used to be a required
-        checklist step, which blocked go-live until somebody looked; the
-        checklist no longer carries it, so the fact is put in front of the
-        person who decides instead. A school going live without books discovers
-        it in Finance, and by then it is trading.
+        some school's books do not arrive. The checklist deliberately does not
+        carry this as a required step, which would block go-live until somebody
+        looked; the fact is put in front of the person who decides instead. A
+        school going live without books discovers it in Finance, and by then it
+        is trading.
 
         Reads the ``has_books`` annotation the list view adds, and falls back to
         a query only when the serializer is used somewhere that did not

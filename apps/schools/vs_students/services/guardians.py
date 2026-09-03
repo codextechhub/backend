@@ -274,3 +274,75 @@ def guardian_directory(tenant, user, *, search="", include_unlinked=False,
     # name is what the list is read by, the pk breaks ties between the several
     # households that share a surname.
     return qs.order_by("full_name", "pk")
+
+
+#: The guardian's own details, as opposed to their link to any one student.
+GUARDIAN_FIELDS = ("full_name", "phone", "email", "occupation", "address")
+
+
+@transaction.atomic
+def update_guardian(guardian, *, actor, **fields):
+    """Correct a guardian's own details.
+
+    **This had no route at all until now**, which meant a phone number typed
+    wrongly at enrolment was permanent: the create path is the only place that
+    ever wrote these columns, and linking an EXISTING guardian passes their id
+    and drops every other field. A registrar's only workaround was to create a
+    second record for the same parent, which splits the household and breaks the
+    sibling link the Guardians screen exists to show.
+
+    Only changed fields are written, so an unchanged save is not an audit entry
+    saying somebody edited a record they did not.
+
+    Two couplings the caller must not have to know about:
+
+    * **Email is unique per school**, so moving one onto an address another
+      guardian already holds is refused by name rather than surfacing as an
+      IntegrityError.
+    * **The portal account is resolved FROM the email**, so changing the email
+      re-resolves it. Leaving it would point a corrected guardian at the account
+      belonging to the address they no longer use.
+    """
+    changed = {}
+    for key in GUARDIAN_FIELDS:
+        if key not in fields:
+            continue
+        value = (fields[key] or "").strip()
+        if value != getattr(guardian, key):
+            changed[key] = value
+
+    if not changed:
+        return guardian, []
+
+    email = changed.get("email")
+    if email:
+        clash = (
+            Guardian.objects.filter(tenant=guardian.tenant, email__iexact=email)
+            .exclude(pk=guardian.pk)
+            .first()
+        )
+        if clash is not None:
+            raise ValidationError({
+                "email": (
+                    f"{clash.full_name} already uses that address at this "
+                    f"school. Two guardians cannot share one."
+                ),
+            })
+
+    for key, value in changed.items():
+        setattr(guardian, key, value)
+    if "email" in changed:
+        guardian.user = resolve_user(guardian.tenant, changed["email"])
+    guardian.save(update_fields=[*changed, "user", "updated_at"])
+
+    emit_audit_event(
+        module_key=AuditModuleKey.STUDENT,
+        action_type=AuditActionType.UPDATE,
+        entity_type="Guardian", entity_id=str(guardian.pk),
+        entity_label=guardian.full_name,
+        tenant=guardian.tenant, actor_user=actor,
+        summary=f"{guardian.full_name}'s details updated: "
+                f"{', '.join(sorted(changed))}.",
+        metadata={"fields": sorted(changed)},
+    )
+    return guardian, sorted(changed)

@@ -1,10 +1,10 @@
 """One person, several postings: what an admin who already has an account gets.
 
-``provision_admin_user`` is idempotent about the account and used to be
-idempotent about everything else with it. Finding a User already on the tenant,
-it stamped the admin link SENT and returned - so the grant that makes an
-administrator able to do anything was written only for whichever posting
-happened to be provisioned first.
+``provision_admin_user`` is idempotent about the account and deliberately not
+about the grant. Finding a User already on the tenant, stamping the admin link
+SENT and returning would write the grant that makes an administrator able to do
+anything for whichever posting happened to be provisioned first, and for no
+other.
 
 Corona names ``head@corona.ng`` as the primary admin of both Lekki and Ikeja in
 one create request. The first branch mints the account; the second finds it,
@@ -273,7 +273,7 @@ class ExistingAccountIsGrantedAtItsNewPostingTests(TestCase):
         )
 
     def test_no_second_account_is_minted(self):
-        """The idempotency this path has always had must survive the fix."""
+        """The account itself is minted once, however many postings name it."""
         school, ikeja, role, _ = self._corona_with_an_incumbent()
 
         self._post_an_existing_admin_to(ikeja, school=school, role_key=role.key)
@@ -332,10 +332,10 @@ class ExistingAccountIsGrantedAtItsNewPostingTests(TestCase):
     def test_a_posting_with_no_role_template_is_refused(self):
         """An admin who can sign in and do nothing is not a provisioned admin.
 
-        The same refusal the fresh-account path has always made. Without it the
-        existing-user branch would quietly stamp the link SENT and hand back an
-        account with no authority at the site it was posted to - which is the
-        defect this class exists for, wearing a different hat.
+        The same refusal the fresh-account path makes. Without it the
+        existing-user branch quietly stamps the link SENT and hands back an
+        account with no authority at the site it was posted to, which is this
+        class's own defect wearing a different hat.
         """
         school, ikeja, _, _ = self._corona_with_an_incumbent()
 

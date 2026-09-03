@@ -572,7 +572,7 @@ class PlacementTests(StudentsFixture):
             start_date=dt.date(2019, 9, 1), end_date=dt.date(2020, 7, 31),
             status=SessionStatus.ARCHIVED,
         )
-        # A class sits at a level of its OWN year - M13 keeps those in step -
+        # A class sits at a level of its OWN year - vs_academics keeps those in step -
         # so the old year needs its own JSS1 for the old class to hang off.
         old_jss1 = Level.all_objects.create(
             tenant=self.tenant, program=self.program, session=past,

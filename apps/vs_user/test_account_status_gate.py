@@ -2,20 +2,20 @@
 
 The defect these tests close
 ----------------------------
-Every gate on this question used to be written as a list of the statuses it
-wanted to REFUSE, with everything else falling through to permitted:
+A gate written as a list of the statuses it REFUSES, with everything else
+falling through to permitted, admits every status added to the enum afterwards:
 
-* ``LoginService._check_status`` was a dict of error payloads consulted with
-  ``.get()``. PENDING, LOCKED, SUSPENDED and DEACTIVATED were in it. DRAFT,
-  PENDING_APPROVAL and REJECTED were not, so all three signed in and got tokens,
-  a session row and their effective permission set.
-* ``AdminPasswordResetView`` checked nothing at all, so an administrator could
+* a ``LoginService._check_status`` that is a dict of error payloads consulted
+  with ``.get()`` names PENDING, LOCKED, SUSPENDED and DEACTIVATED, so DRAFT,
+  PENDING_APPROVAL and REJECTED sign in and get tokens, a session row and their
+  effective permission set.
+* an ``AdminPasswordResetView`` that checks nothing lets an administrator
   put a working password on an account in any state whatever.
-* ``PasswordService.confirm_reset`` promoted LOCKED and PENDING to ACTIVE and
-  left every other status alone - so a rejected hire came out of it still
-  REJECTED and now holding a live credential.
-* ``vs_rbac.permissions.IsAuthenticatedAndActive`` compared against three
-  string literals, so the same three statuses passed the per-request gate too.
+* a ``PasswordService.confirm_reset`` that promotes LOCKED and PENDING to
+  ACTIVE and leaves every other status alone lets a rejected hire come out of
+  it still REJECTED and holding a live credential.
+* an ``IsAuthenticatedAndActive`` comparing against three string literals lets
+  the same three statuses pass the per-request gate too.
 
 Concretely, and this is what the tests below reproduce: Bright Star asks Codex
 for a finance officer seat for Emeka. The hire is entered, the Finance Officer

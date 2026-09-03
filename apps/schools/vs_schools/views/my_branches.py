@@ -29,8 +29,9 @@ list, because academic structure is built before go-live and cannot be built
 without it.
 
 ``TaskKey.ACADEMIC_STRUCTURE`` is a required onboarding task
-(``schools/vs_onboarding/constants.py``), and M13's screens scope a department,
-a programme, a level, a class or a subject to "the whole school" or to one
+(``schools/vs_onboarding/constants.py``), and the academic-structure screens
+scope a department, a programme, a level, a class or a subject to "the whole
+school" or to one
 branch. That control reads this list. With the surface shut, a two-branch school
 still PENDING gets an empty branch picker, cannot scope anything to a branch,
 and so cannot finish the required task that would make it live - the school is

@@ -1,48 +1,43 @@
-# services/email_availability.py
-# The one answer to "may this address become an account here?", shared by every
-# creation and rename path that asks it.
-#
-# Why this exists at all
-# ----------------------
-# ``User.email`` used to be unique across the whole platform, so every caller
-# could ask the question with an unscoped ``filter(email=...)`` and be right.
-# ``uq_user_email_per_tenant`` narrowed uniqueness to one address per tenant,
-# and the moment it did, every one of those unscoped lookups became a defect of
-# the same shape: it answers about the WHOLE platform when it was only ever
-# entitled to ask about one tenant.
-#
-# The damage is not symmetrical, which is why both halves matter:
-#
-# * An unscoped ``.exists()`` REFUSES something legal. Ada Okoye has a child at
-#   Bright Star and enrols a second at Greenfield with the same address;
-#   Greenfield's admin is told the address is taken and cannot make her an
-#   account, while learning that she holds one somewhere else.
-# * An unscoped ``.first()`` ACCEPTS something wrong, silently. CodeX creates
-#   Greenfield with ada.okoye@example.test as its primary administrator, the
-#   provisioner finds her Bright Star row, decides the admin "already exists",
-#   and hands Greenfield's admin link to another school's account. Nothing
-#   raises and nothing is logged as an error.
-#
-# So the rule is one function, not a pattern to be re-typed per call site: pass
-# the tenant that WOULD own the account, get back the refusal message or an
-# empty string.
-#
-# The transitional second rule
-# ----------------------------
-# While ``sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN`` is False a sign-in that
-# names no tenant still falls back to a platform-wide email lookup, so a second
-# tenant's copy of an address could not be told apart at the door.
-# ``User._guard_cross_tenant_email`` therefore refuses to CREATE that pair
-# while the switch is off, and lifts the refusal when it is on. The switch is
-# now on, so the refusal has lifted; this module follows it either way.
-#
-# This module mirrors that rule rather than restating it, so a pre-check and the
-# model can never disagree, and so flipping the switch narrows every pre-check
-# in the same instant it narrows the model. Get it wrong in the other direction
-# and Phase 4 achieves nothing: the switch goes on, sign-in is safe, and
-# Greenfield is still refused Ada's second account by a stale global check in a
-# serializer.
+"""The one answer to "may this address become an account here?", shared by every
+creation and rename path that asks it.
 
+Why this exists at all
+``uq_user_email_per_tenant`` makes an address unique per tenant, not across the
+platform, so an unscoped ``filter(email=...)`` is a defect wherever it appears:
+it answers about the WHOLE platform when it is only entitled to ask about one
+tenant.
+
+The damage is not symmetrical, which is why both halves matter:
+
+* An unscoped ``.exists()`` REFUSES something legal. Ada Okoye has a child at
+  Bright Star and enrols a second at Greenfield with the same address;
+  Greenfield's admin is told the address is taken and cannot make her an
+  account, while learning that she holds one somewhere else.
+* An unscoped ``.first()`` ACCEPTS something wrong, silently. CodeX creates
+  Greenfield with ada.okoye@example.test as its primary administrator, the
+  provisioner finds her Bright Star row, decides the admin "already exists",
+  and hands Greenfield's admin link to another school's account. Nothing
+  raises and nothing is logged as an error.
+
+So the rule is one function, not a pattern to be re-typed per call site: pass
+the tenant that WOULD own the account, get back the refusal message or an
+empty string.
+
+The transitional second rule
+While ``sign_in_scope.REQUIRE_TENANT_ON_SIGN_IN`` is False a sign-in that
+names no tenant still falls back to a platform-wide email lookup, so a second
+tenant's copy of an address could not be told apart at the door.
+``User._guard_cross_tenant_email`` therefore refuses to CREATE that pair
+while the switch is off, and lifts the refusal when it is on. The switch is
+now on, so the refusal has lifted; this module follows it either way.
+
+This module mirrors that rule rather than restating it, so a pre-check and the
+model can never disagree, and so flipping the switch narrows every pre-check
+in the same instant it narrows the model. Get it wrong in the other direction
+and Phase 4 achieves nothing: the switch goes on, sign-in is safe, and
+Greenfield is still refused Ada's second account by a stale global check in a
+serializer.
+"""
 from __future__ import annotations
 
 from ..email_normalization import normalize_email

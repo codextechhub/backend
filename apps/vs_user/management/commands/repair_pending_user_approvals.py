@@ -37,13 +37,10 @@ class Command(BaseCommand):
             tenant__kind=Tenant.Kind.PLATFORM,
             status=User.Status.PENDING_APPROVAL,
         ).select_related("tenant", "invited_by")
-        # Unlike delete_user and create_superuser this command never took
-        # ``.get()`` or ``.first()``: it filters and iterates, so an address
-        # held at two tenants repairs both rather than picking one. That is
-        # already safe (the work is idempotent and re-submits a stuck
-        # approval), but it is not always what the operator asked for, so
-        # --tenant_id narrows it. The tenant-kind filter above means only
-        # platform users can ever match, which today means the codex tenant.
+        # Filters and iterates rather than taking .get() or .first(), so an address
+        # held at two tenants repairs both. That is safe, the work being idempotent,
+        # but it is not always what the operator asked for, so --tenant_id narrows
+        # it. The tenant-kind filter above admits only platform users.
         if options.get("tenant_id"):
             tenant = find_tenant(options["tenant_id"])
             if tenant is None:

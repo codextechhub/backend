@@ -443,10 +443,9 @@ class UserListScopeTests(TestCase):
         return view.get_queryset()
 
     def test_cx_and_school_rows_are_told_apart_by_tenant_kind(self):
-        """The list used to carry a ``user_type`` column, and a
-        ``?user_type=CX_STAFF`` filter beside it. Both are gone. The split the
-        console's two tabs actually draw is by tenant kind, which is what
-        ``?scope=school`` filters on and what each row now reports."""
+        """The split the console's two tabs draw is by tenant kind, not by a
+        persona column: it is what ``?scope=school`` filters on and what each
+        row reports."""
         from vs_user.serializers import UserListSerializer
 
         rows = {
@@ -820,10 +819,11 @@ class SeedOrganogramCommandTests(TestCase):
 class OrgNodeDeleteProtectionTests(TestCase):
     """Deleting an org unit must either succeed or explain itself.
 
-    Two regressions live here: (a) `parent` used to be SET_NULL, so deleting a
-    Division silently orphaned its subtree into a state clean() forbids -
-    un-editable and un-deletable; (b) ProtectedError subclasses IntegrityError,
-    so every blocked delete surfaced as a 500 "An unexpected error occurred."
+    Two failures are pinned here. `parent` must not be SET_NULL, or deleting a
+    Division silently orphans its subtree into a state clean() forbids, leaving
+    it un-editable and un-deletable. And ProtectedError subclasses
+    IntegrityError, so a blocked delete surfaces as a 500 unless it is caught
+    ahead of the generic handler.
     """
 
     def setUp(self):
@@ -2098,10 +2098,9 @@ class UserBranchAssignmentTests(TestCase):
         branches, so resolving before this check would hide the real reason
         behind a lookup failure.
 
-        The actor is what says a platform hire is being made. It used to be a
-        ``user_type=CX_STAFF`` in the body, which a school administrator could
-        type - and which is why this test used to be able to run its request
-        through a school actor at all.
+        The actor is what says a platform hire is being made, never a field in
+        the body: a school administrator can type a body field, and would then
+        be able to run this request through a school actor.
         """
         from vs_rbac.models import TenantRoleTemplate
 
@@ -2333,10 +2332,9 @@ class SignInTenantScopeTests(TestCase):
 
     # ── A sign-in that names no tenant is refused ────────────────────────────
     #
-    # These two used to assert the opposite: while the switch was off a
-    # tenantless sign-in resolved by a global email lookup, and the comment
-    # here said "the two live frontends send no tenant; neither may break".
-    # Both now do send one, the switch is on, and the refusal is the point.
+    # A tenantless sign-in resolving by a global email lookup is exactly what
+    # the per-tenant email uniqueness makes ambiguous, so the refusal is the
+    # point. Both live frontends send a tenant.
 
     def test_tenant_user_is_refused_when_no_tenant_is_supplied(self):
         with self.assertRaises(ValueError) as ctx:
@@ -4625,9 +4623,9 @@ class UserTypeMigrationTests(TransactionTestCase):
 class BranchRuleAgreementTests(TestCase):
     """The database and ``clean()`` must forbid the same set, exactly.
 
-    The rule used to be written four times and the copies were free to drift.
-    These assert the two that are load-bearing - the check constraint and the
-    model's own validation - still say the same thing, from both sides.
+    Written more than once, the copies are free to drift. These assert the two
+    that are load-bearing - the check constraint and the model's own validation
+    - say the same thing, from both sides.
     """
 
     def setUp(self):

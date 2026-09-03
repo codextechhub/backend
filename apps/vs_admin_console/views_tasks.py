@@ -352,9 +352,9 @@ class TaskMonitorViewSet(
         """Status counts (all-time and last 24h) plus a per-task breakdown.
 
         Built from ``get_queryset`` rather than from ``BackgroundJob.objects``.
-        The counts used to be unscoped, which meant an operator restricted to
-        one school still read the platform-wide totals - and "recent_failures"
-        listed other customers' job labels outright.
+        Unscoped counts let an operator restricted to one school read the
+        platform-wide totals, and have "recent_failures" list other customers'
+        job labels outright.
         """
         day_ago = timezone.now() - timedelta(hours=24)
         scoped = self.get_queryset()

@@ -170,7 +170,7 @@ def custom_exception_handler(exc, context):
             message = data.get("detail", fallback)
         elif isinstance(data, list) and len(data) == 1 and isinstance(data[0], str):
             # DRF renders ValidationError("some text") as a bare list, not a
-            # dict - reading .get() off it used to turn a 400 into a 500.
+            # dict, and calling .get() on that turns a 400 into a 500.
             message = data[0]
         else:
             message = fallback

@@ -86,7 +86,7 @@ class PeriodOrderConflict(CalendarError):
     applies-to, and no order field, so ``order_index`` is assigned from the
     times and a caller cannot make it disagree with them. This stays for rows
     that arrive by import, by fixture or by migration - the same reason FR-007
-    keeps two alerts M13 refuses at write time.
+    keeps two alerts ``vs_academics`` refuses at write time.
     """
 
     error_code = "PERIOD_ORDER_CONFLICT"

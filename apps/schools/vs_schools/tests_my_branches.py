@@ -104,11 +104,9 @@ class MyBranchesTests(TestCase):
         Null says "not known" and the screen renders a dash. A zero would say
         the branch has no students, which is a different and false claim.
 
-        ``classes_count`` was in this list until M13 landed a Class model, and
-        the day it did this test had to choose: keep asserting null and freeze
-        the count out, or move it. It moved, to
-        BranchClassCountTests below, where a zero is asserted as a true claim
-        rather than a missing one.
+        ``classes_count`` is not in this list. It has a Class model behind it,
+        so it is asserted in BranchClassCountTests below, where a zero is a true
+        claim rather than a missing one.
         """
         response = self.client_for(self.admin).get(
             reverse("my-branch-list"), {"tenant": self.tenant.slug},
@@ -154,8 +152,9 @@ class PendingSchoolBranchesTests(TestCase):
 
     Written because it could not, and because the consequence was not a broken
     screen but an unreachable go-live: ``TaskKey.ACADEMIC_STRUCTURE`` is a
-    required onboarding task, M13's screens scope every row to the whole school
-    or to one branch, and that control reads this list. Shut, a two-branch
+    required onboarding task, the academic-structure screens scope every row to
+    the whole school or to one branch, and that control reads this list. Shut,
+    a two-branch
     school could never finish the task that would make it live.
     """
 
@@ -241,13 +240,12 @@ class PendingSchoolBranchesTests(TestCase):
 
 
 class BranchClassCountTests(TestCase):
-    """The count SchoolBranchSerializer promised would arrive with M13.
+    """``classes_count`` on ``SchoolBranchSerializer``, annotated from a real
+    Class model.
 
-    It shipped as a hard ``None`` with a docstring saying it would become an
-    annotation the day a Class model existed. M13 landed one, so these pin the
-    three things that were decided when it did: live classes only, zero rather
-    than null for a branch with none, and the shared classes of a school that
-    has never used the branch column belonging to no branch's card.
+    Three rules hold it: live classes only, zero rather than null for a branch
+    with none, and the shared classes of a school that has never used the
+    branch column belonging to no branch's card.
     """
 
     @classmethod
@@ -341,7 +339,7 @@ class BranchClassCountTests(TestCase):
         self.assertEqual(rows["Ikeja Branch"]["classes_count"], 0)
 
     def test_the_other_two_counts_are_still_null(self):
-        """M11 and M12 have not landed, so a number for either would be invented."""
+        """No Student and no Teacher model, so a number for either would be invented."""
         row = self.rows()["Lekki Branch"]
         self.assertIsNone(row["students_count"])
         self.assertIsNone(row["teachers_count"])

@@ -44,14 +44,13 @@ def tenant_event_predicate(tenant) -> Q:
     to every null row hands her somebody else's. Matching the id recorded at the
     time returns exactly the rows that are hers, recovered rather than inferred.
 
-    Only three writers ever recorded that id: ``vs_user.services.audit`` (the
-    whole IDENTITY stream, since 661a73a), ``vs_rbac.signals`` and
-    ``vs_rbac.services``. Finance, procurement, payments, imports and tickets
-    never did, so their pre-d1ceccb rows carry no id and stay platform-only, as
-    do post-d1ceccb rows written under a PLATFORM assertion (see
-    :func:`vs_audit.services.resolve_event_tenant`). Both are the safe direction
-    to be wrong in: a tenant sees less of its own history than it might, never
-    another tenant's.
+    Three writers record that id: ``vs_user.services.audit`` for the whole
+    IDENTITY stream, ``vs_rbac.signals`` and ``vs_rbac.services``. Finance,
+    procurement, payments, imports and tickets do not, so their rows carry no
+    id and stay platform-only, as do rows written under a PLATFORM assertion
+    (see :func:`vs_audit.services.resolve_event_tenant`). Both are the safe
+    direction to be wrong in: a tenant sees less of its own history than it
+    might, never another tenant's.
 
     ``tenant`` of ``None`` fails closed rather than matching the null rows, which
     would be the whole platform's history handed to a caller who is inside no
@@ -142,8 +141,8 @@ def visible_trail_counters(trails, request):
     """Count each entity's audit trail over the events *this caller* can read.
 
     ``EntityAuditTrail`` is keyed on ``(entity_type, entity_id)`` and stores no
-    counters at all - see the model docstring for why the three it used to store
-    were dropped. ``event_count``, ``first_event_at`` and ``last_event_at`` are
+    counters at all; see the model docstring for why a stored rollup cannot be
+    trusted. ``event_count``, ``first_event_at`` and ``last_event_at`` are
     produced here, from ``AuditEvent``, every time somebody asks.
 
     Returns ``{(entity_type, entity_id): {...}}`` for the trails handed in. **A

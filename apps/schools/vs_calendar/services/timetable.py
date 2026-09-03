@@ -10,8 +10,9 @@ and a room - and they can disagree. Which of them decides:
   deliberately: it would put the same value in every row of a grid, be a second
   answer to a question the room already answers, and be free to contradict it.
 * **A class bound to a branch may only use that branch's rooms**
-  (``ROOM_BRANCH_CONFLICT``). This is the containment invariant M13 applies to
-  its own hierarchy, applied to a physical place - and it is a different code
+  (``ROOM_BRANCH_CONFLICT``). This is the containment invariant
+  ``vs_academics`` applies to its own hierarchy, applied to a physical place -
+  and it is a different code
   from ``BRANCH_SCOPE_CONFLICT`` on purpose, because a school reading the
   message needs to know which of the two it has hit.
 * **A period must be the school's or the room's branch's**

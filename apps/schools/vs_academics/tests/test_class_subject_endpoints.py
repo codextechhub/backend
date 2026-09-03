@@ -133,11 +133,11 @@ class ClassSecurityTests(_Base):
         self.assertEqual(response.status_code, 404, response.data)
 
     def test_there_is_no_delete_route_for_a_class(self):
-        """Its absence is a promise M11 depends on.
+        """Its absence is a promise ``vs_students`` depends on.
 
         ClassEnrolment points here with on_delete=PROTECT, which is safe only
-        because nothing can reach that refusal. If a delete is added, M11 has
-        to agree first - so this fails and asks.
+        because nothing can reach that refusal. A delete added here needs that
+        module's agreement first, so this fails and asks.
         """
         klass = SchoolClass.all_objects.create(
             tenant=self.tenant, session=self.year, level=self.jss1, name="JSS1 A", code="JSS1-A",

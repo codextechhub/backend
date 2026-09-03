@@ -1,16 +1,16 @@
-# models.py
-# All models for the vs_users module in one flat file.
-#
-# Contents (in order):
-#   TimeStampedModel      - shared abstract base
-#   User + UserManager    - platform-wide custom user model (AUTH_USER_MODEL)
-#   UserInvitation        - hashed invitation token and expiry/usage gate
-#   LoginSession          - application-level session tracker
-#   AuthAttempt           - every login attempt, success or failure
-#   AccountLockout        - per-user brute-force lockout state
-#   PasswordResetRequest  - hashed reset token store
-#   AuthEventLog          - append-only audit event log
+"""models.py
+All models for the vs_users module in one flat file.
 
+Contents (in order):
+  TimeStampedModel      - shared abstract base
+  User + UserManager    - platform-wide custom user model (AUTH_USER_MODEL)
+  UserInvitation        - hashed invitation token and expiry/usage gate
+  LoginSession          - application-level session tracker
+  AuthAttempt           - every login attempt, success or failure
+  AccountLockout        - per-user brute-force lockout state
+  PasswordResetRequest  - hashed reset token store
+  AuthEventLog          - append-only audit event log
+"""
 from __future__ import annotations
 
 import hashlib
@@ -30,9 +30,8 @@ from vs_rbac.managers import TenantAwareManager
 
 from . import email_normalization
 
-# The one fact that used to be recorded twice - once as the tenant's kind and
-# once as a ``CX_STAFF`` persona on every one of its users. Bound to a name
-# here so the several places that ask it read alike.
+# Platform-ness is the tenant's kind and nothing else. Bound to a name here so
+# the several places that ask it read alike.
 PLATFORM_TENANT_KIND = Tenant.Kind.PLATFORM
 
 
@@ -130,15 +129,11 @@ class UserManager(BaseUserManager.from_queryset(UserQuerySet)):
 # User model
 # ─────────────────────────────────────────────────────────────────────────────
 
-# What a caller is told when an address is refused because it already belongs
-# to an account at ANOTHER tenant and sign-in cannot yet tell the two apart.
-#
-# It names no tenant, no school, no account and no person, and it does not say
-# that an account exists elsewhere. An administrator at Greenfield who typed
-# ada@gmail.com must not be able to learn from this refusal that Bright Star
-# has a parent by that address - that is the same enumeration concern the
-# barcode preview was scoped for, and it applies to any message a customer's
-# own staff can trigger with a guess.
+# What a caller is told when an address already belongs to an account at
+# another tenant. It names no tenant, school, account or person, and does
+# not say that an account exists elsewhere: an administrator at Greenfield
+# who typed ada@gmail.com must not learn from the refusal that Bright Star
+# has a parent by that address.
 CROSS_TENANT_EMAIL_REFUSAL = (
     'This email address cannot be used for a new account here yet. Sign-in '
     'does not yet name the tenant it is addressed to, so two accounts sharing '
@@ -148,32 +143,31 @@ CROSS_TENANT_EMAIL_REFUSAL = (
 
 
 class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
-    """
-    Every person who logs into any part of CodeX Vision - Vision staff,
-    school admins, teachers, students, parents - is a record here.
+    """Every person who signs into any part of CodeX Vision.
+
+    Vision staff, school admins, teachers, students and parents are all rows
+    here. There is deliberately no persona column: one can disagree with
+    reality and nothing could detect the disagreement, since a row marked
+    STUDENT with no student record anywhere is both writable and invisible.
+    Every question a persona column would answer is asked of something that
+    cannot be wrong about itself instead. "Does this person work for the
+    platform?" is :attr:`is_platform_user`, which reads the kind of the tenant
+    the account belongs to. "Is this person a parent?" is whether they have a
+    guardian record. "What does this person do here?" is their role, which is
+    also the only thing deciding what they may do.
+
+    :attr:`SIGN_IN_STATUSES` and :attr:`PASSWORD_STATUSES` are the single
+    answer to which statuses may authenticate and which may hold a password.
+    Both enumerate what is PERMITTED. Naming the refusals instead is the
+    defect, not a detail of it: every gate that lists the statuses it rejects
+    admits every status added to the enum afterwards, silently, because nobody
+    edits every list. A status added tomorrow can do nothing until it is
+    written into one of these sets deliberately.
     """
 
     workflow_document_type = "PLATFORM_USER_CREATION"
 
     # ── Choices ──────────────────────────────────────────────────────────────
-
-    # There is deliberately no ``UserType``.
-    #
-    # A persona column can disagree with reality, and nothing could ever
-    # detect the disagreement: a row marked STUDENT with no student record
-    # anywhere was writable and undetectable. Every question the column used to
-    # answer is now asked of something that cannot be wrong about itself.
-    #
-    #   "does this person work for the platform?"  ->  ``is_platform_user``,
-    #       which reads the kind of the tenant the account actually belongs to;
-    #   "is this person a parent?"                 ->  they have a guardian
-    #       record;
-    #   "what does this person do here?"           ->  their role, which is
-    #       also the only thing that decides what they may do.
-    #
-    # CX_STAFF and "belongs to the PLATFORM tenant" were the same fact recorded
-    # twice, with nothing holding the two copies together. STUDENT and PARENT
-    # were read by no line of code at all.
 
     class Status(models.TextChoices):
         DRAFT            = 'DRAFT',            'Draft'
@@ -186,27 +180,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         REJECTED         = 'REJECTED',         'Creation Rejected'
 
     # ── Which statuses may authenticate, and which may hold a password ────────
-    #
-    # These two sets are the single answer to a question that used to be asked
-    # in five places, each of them by listing the statuses it wanted to REFUSE
-    # and letting everything else through:
-    #
-    #   * ``LoginService._check_status`` named PENDING, LOCKED, SUSPENDED and
-    #     DEACTIVATED, so DRAFT, PENDING_APPROVAL and REJECTED signed in;
-    #   * ``IsAuthenticatedAndActive`` (vs_rbac) named SUSPENDED, LOCKED and
-    #     DEACTIVATED, as string literals, so the same three passed;
-    #   * ``AdminPasswordResetView`` named none at all, so an admin could put a
-    #     working password on any account in any state;
-    #   * ``PasswordService.request_reset`` named only DEACTIVATED;
-    #   * ``PasswordService.confirm_reset`` promoted LOCKED and PENDING and left
-    #     every other status where it was, holding a brand-new usable password.
-    #
-    # Naming the refusals is the defect, not a detail of it. Every status added
-    # to the enum since - DRAFT, PENDING_APPROVAL and REJECTED all postdate that
-    # code - became able to sign in the moment it was added, silently, because
-    # no one edited five lists. So the sets below enumerate what is PERMITTED
-    # and everything absent is refused. A status added tomorrow can do nothing
-    # until it is deliberately written into one of them.
+    # See the class docstring for why both enumerate what is permitted.
 
     #: The only statuses a sign-in may succeed from. Not a shorthand for
     #: "not obviously bad": PENDING has been invited but has not set a password,
@@ -215,22 +189,10 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     #: login at all. Exactly one status means "this person may work today".
     SIGN_IN_STATUSES = frozenset({Status.ACTIVE})
 
-    #: The statuses that may hold a usable password. Wider than SIGN_IN_STATUSES
-    #: on purpose, and the two cannot be collapsed into one set:
-    #:
-    #:   * PENDING is the normal invited-but-not-activated path - the invitation
-    #:     link exists precisely to put a first password on the account;
-    #:   * LOCKED is unlocked BY a reset, so refusing one would strand the
-    #:     account behind the lockout it is meant to clear;
-    #:   * SUSPENDED may be given a new password (an admin resetting a
-    #:     suspected-compromised credential before reinstating) and still may
-    #:     not sign in, which is what suspension means.
-    #:
-    #: Absent, and refused: DEACTIVATED, which is terminal and which the
-    #: self-service reset already refused while the admin reset did not; and
-    #: DRAFT, PENDING_APPROVAL and REJECTED, which are not accounts anyone has
-    #: been granted yet. A credential on one of those is the bug this exists to
-    #: close - see the two properties below and their call sites.
+    #: Absent, and refused: DEACTIVATED, which is terminal; and DRAFT,
+    #: PENDING_APPROVAL and REJECTED, which are not accounts anyone has been
+    #: granted yet. A credential on one of those is what this set exists to
+    #: prevent - see the two properties below and their call sites.
     PASSWORD_STATUSES = frozenset({
         Status.ACTIVE, Status.PENDING, Status.LOCKED, Status.SUSPENDED,
     })
@@ -325,10 +287,10 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             # academic structure and procurement documents already use. It does
             # not mean "no branches exist".
             #
-            # It used to be ``ck_vision_staff_no_branch``, a CheckConstraint
-            # reading ``user_type='CX_STAFF'``. That was a correlated proxy for
-            # the tenant kind, not the rule, and the two could drift apart in
-            # silence. Stating the real rule needs the tenant's ``kind``, which
+            # Not a CheckConstraint on a persona column: that is a correlated
+            # proxy for the tenant kind rather than the rule, and the two drift
+            # apart in silence. Stating the real rule needs the tenant's
+            # ``kind``, which
             # lives in another table - and a CHECK constraint is evaluated per
             # row and may not contain a subquery, on PostgreSQL or anywhere
             # else, so no CheckConstraint can express it. Django says so first:
@@ -410,9 +372,9 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         Returns the refusal in words, or ``None`` when the pairing is legal.
 
         The rule is short: a user on the PLATFORM tenant takes no branch, and
-        everybody else may or may not have one. It used to be asked of
-        ``user_type``, which only correlated with the answer; asking the tenant
-        is asking the fact.
+        everybody else may or may not have one. Asked of the tenant, which is
+        the fact, and never of a persona column, which only correlates with
+        it.
 
         Takes ``has_branch`` as a bool rather than the branch itself so a caller
         holding only an unresolved reference - the create serializer, which must
@@ -542,12 +504,11 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         Nothing else can be derived, and nothing should be. A user with no
         branch could belong to any tenant on the platform, and picking one
         would put a person inside a customer they have no business being in.
-        There used to be a second rule here - a ``CX_STAFF`` account fell back
-        to the Codex PLATFORM tenant - and it was the persona column standing
-        in for the answer it was supposed to be derived FROM. With the column
-        gone the circle is broken: a caller creating platform staff names the
-        platform tenant, the same way a caller creating a school user names
-        the school's.
+        There is deliberately no second rule falling a platform account back
+        to the Codex tenant. That would be a persona standing in for the answer
+        it is supposed to be derived FROM, a circle. A caller creating platform
+        staff names the platform tenant, the same way a caller creating a school
+        user names the school's.
 
         Note what is deliberately NOT written here. "No branch and no tenant"
         does not mean "platform staff" - that would be inferring an identity
@@ -604,9 +565,8 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             with transaction.atomic():
                 # One allocation rule, matching the one uid constraint: the
                 # next number within this account's own tenant. Platform staff
-                # used to be counted separately, over every CX_STAFF row
-                # regardless of tenant - which, since they all sit in the one
-                # PLATFORM tenant, produced the same sequence this does.
+                # are not a special case; they all sit in the one PLATFORM
+                # tenant, so the same rule gives them the same sequence.
                 max_uid = (
                     User.objects.select_for_update()
                     .filter(tenant_id=self.tenant_id)

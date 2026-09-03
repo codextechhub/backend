@@ -18,11 +18,11 @@ class StoredFile(models.Model):
     """One uploaded file, and the record it belongs to.
 
     The binding columns are not bookkeeping, they are the authorisation input.
-    A row used to be nothing but a name and some bytes, which made the name the
-    only credential: anyone signed in who had ever seen a ``/media/<name>`` URL
-    could fetch it for ever, from any tenant, whatever had since happened to the
-    record it came from. ``core.media.authorize`` now answers three questions
-    that only these columns can answer - whose file is this, what record is it
+    A row that is nothing but a name and some bytes makes the name the only
+    credential: anyone signed in who has ever seen a ``/media/<name>`` URL can
+    fetch it for ever, from any tenant, whatever has since happened to the
+    record it came from. ``core.media.authorize`` answers three questions that
+    only these columns can answer - whose file is this, what record is it
     evidence for, and is it still current - and refuses the read unless all
     three agree with the caller.
 

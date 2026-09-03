@@ -67,7 +67,7 @@ class ProvisioningError(FALError):
 
 
 class EntityNotProvisioned(ProvisioningError):
-    """A school has no LedgerEntity yet (M9 onboarding has not run / not linked).
+    """A school has no LedgerEntity yet (onboarding has not run, or not linked).
 
     Reads and billing that require the school's set of books raise this rather
     than silently creating one on a read path. Provisioning is an explicit,
@@ -78,7 +78,7 @@ class EntityNotProvisioned(ProvisioningError):
 class AmbiguousPrimaryEntity(ProvisioningError):
     """A school has more than one candidate primary ``LedgerEntity``.
 
-    Decision (2026-07-04): M9 provisions exactly **one** primary entity per
+    Decision (2026-07-04): onboarding provisions exactly **one** primary entity per
     school and ``resolve_entity(school_ref)`` returns it. If two candidates
     exist, the FAL raises this loudly; it never guesses. Callers that need a
     non-primary entity pass an explicit ``entity_ref`` override instead.
@@ -104,14 +104,11 @@ class CustomerCreationRace(ProvisioningError):
 class CustomerNotProvisioned(ProvisioningError):
     """A student has no AR ``Customer`` in the entity being billed.
 
-    ADDED in 1.1.2, and forced by the backend rather than chosen. Creating a
-    Customer needs a display name, and there is no student app anywhere in
-    ``apps/`` from which the FAL could read one. So cohort billing
-    (``generate_cohort_invoices``) resolves students to *existing* customers and
-    refuses a student who has none, instead of inventing a name or silently
-    dropping that child from the run. The caller creates the customer first with
-    ``StudentCustomerPort.ensure_customer(..., name=...)``, which is what M11
-    does on first billing anyway.
+    Creating a Customer needs a display name.
+    :meth:`StudentCustomerPort.ensure_customer` reads one from the roll, so this
+    is raised when the student reference names no child there and the caller
+    passed no name either. Cohort billing refuses that student rather than
+    inventing a name or silently dropping the child from the run.
     """
 
 
@@ -129,11 +126,10 @@ class TermNotLinkedError(FALError):
 class InvalidTermLinkError(FALError):
     """The session/term pair named in ``link_term`` does not hold together.
 
-    ADDED in 1.1.2. v1.1.1 assumed sessions and terms were opaque strings into an
-    app nobody had written, so there was nothing to validate. They are now real
-    rows (``schools.vs_academics.AcademicSession`` / ``AcademicTerm``), so a term
-    that belongs to a different session is a caller error the FAL can and should
-    catch.
+    Sessions and terms are real rows
+    (``schools.vs_academics.AcademicSession`` and ``AcademicTerm``), not opaque
+    strings, so a term belonging to a different session is a caller error the
+    FAL can and should catch.
     """
 
 
@@ -169,18 +165,16 @@ class PaymentGatewayError(FALError):
 class GuardianLinkNotConfigured(FALError):
     """The guardian-to-student ownership check has no source to consult.
 
-    ADDED in 1.1.2, and the honest name for a hole in the backend rather than a
-    decision. Decision 5 (2026-07-04) says every parent-portal read and payment
-    is authorised by the guardian-to-student link, because guardians hold no RBAC
-    keys. There is no guardian model and no student model in the repository, so
-    the FAL ships with a resolver that denies everything
-    (``adapters.django_finance.DenyAllGuardianLinkAdapter``) and this error is
-    what a caller sees.
+    Decision 5 (2026-07-04) says every parent-portal read and payment is
+    authorised by the guardian-to-student link, because guardians hold no RBAC
+    keys. A deployment without the student module points ``FAL_GUARDIAN_LINK``
+    at ``adapters.django_finance.DenyAllGuardianLinkAdapter``, which has no
+    source to consult, and this error is what a caller sees.
 
     It is deliberately not ``CrossTenantError``: "this guardian does not own that
     child" and "nobody can answer that question yet" are different facts, and a
     portal must not report the second as the first. Wire a real resolver through
-    ``FAL_GUARDIAN_LINK`` when M11 lands.
+    ``FAL_GUARDIAN_LINK``.
     """
 
 

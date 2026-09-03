@@ -9,7 +9,12 @@ from django.template.exceptions import TemplateSyntaxError, TemplateDoesNotExist
 
 from ..constants import ChannelChoices
 from ..exceptions import InvalidTemplateSyntaxError, TemplateRenderError
-from .layout import BRAND_FALLBACK, brand_from_context, compose_email_html
+from .layout import (
+    BRAND_FALLBACK,
+    brand_from_context,
+    brand_logo_from_context,
+    compose_email_html,
+)
 
 
 # Validate template text before admins can save it.
@@ -135,5 +140,6 @@ def render_notification_template(notification_template, context: dict) -> tuple[
             getattr(notification_template, "cta_url", "") or "", context,
         ),
         brand=brand_from_context(context),
+        brand_logo_url=brand_logo_from_context(context),
     )
     return rendered_subject, rendered_body, rendered_html

@@ -417,11 +417,11 @@ class InheritedBranchTests(_WriteFixture):
         """The write-side half of the isolation the read half already gives.
 
         The Ikeja bursar types a Lekki family's code at the receipt endpoint. She
-        is refused, and the refusal now arrives one step earlier than it used to:
-        ``_resolve_customer`` is branch-filtered, so the customer does not resolve
-        for her at all and the answer is **404, not 403**.
+        is refused one step earlier than a permission check would refuse her:
+        ``_resolve_customer`` is branch-filtered, so the customer does not
+        resolve for her at all and the answer is **404, not 403**.
 
-        The change of code is deliberate and is the stricter of the two. A 403
+        404 is deliberate and the stricter of the two. A 403
         confirms the row exists, which turns a customer code into an oracle for
         which families another branch bills; a 404 is the same answer an unknown
         code gets. It matches ``get_student_or_404`` and procurement's

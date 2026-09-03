@@ -1,8 +1,8 @@
-"""The branch read endpoints, and the scoping filter phase D rewrote.
+"""The branch read endpoints, and the filter that scopes them.
 
-Every one of these views used to select its rows with ``school__slug=<slug>``.
-``Branch`` no longer has a school, so they now say
-``tenant__school_profile__slug=<slug>``. The two express the same set of rows -
+``Branch`` carries no school, so every one of these views selects its rows with
+``tenant__school_profile__slug=<slug>`` rather than ``school__slug=<slug>``.
+The two express the same set of rows -
 ``School.tenant`` is a non-nullable OneToOneField - but a filter rewritten
 wrongly does not raise, it stops narrowing, and every school would then see
 every other school's sites. None of these endpoints had a test before, so the

@@ -1,7 +1,7 @@
-"""The two update endpoints, and the rows they used to be unable to touch.
+"""The two update endpoints, and the rows a caller must be able to touch.
 
-Two defects, one shape: a rule that existed in the model and nowhere a caller
-could reach.
+One shape underlies both: a rule that lives in the model and nowhere a caller
+can reach is a rule nobody can satisfy.
 
 * A school's slug is editable until it goes live and frozen after, enforced in
   ``School.save()`` since 474a01c - but ``SchoolUpdateSerializer`` exposed no
@@ -394,12 +394,12 @@ class BranchUpdateBlankFieldTests(TestCase):
     def test_a_genuinely_required_field_still_refuses_the_write(self):
         """``name`` was deliberately not swept: a site must be named.
 
-        What changed is *when* that is asked. This class used to assert the
-        refusal by patching ``address`` on a nameless row, which made the point
-        about the column but sent the error to the wrong request: the caller
-        was refused over a field they had not touched, could not see on the
-        screen they were on, and on the School endpoint could not have fixed if
-        they wanted to, since ``name`` is not writable there at all. The rule is
+        What matters is *when* it is asked. Asserting the refusal by patching
+        ``address`` on a nameless row makes the point about the column but
+        sends the error to the wrong request: the caller is refused over a
+        field they never touched, cannot see on the screen they are on, and on
+        the School endpoint could not fix if they wanted to, ``name`` not being
+        writable there at all. The rule is
         now that a request answers for what it wrote, so the refusal arrives
         when somebody actually tries to unname a branch - see
         ``PartialUpdateValidatesOnlyWhatItWasSentTests`` for the other half.
@@ -593,10 +593,11 @@ class SchoolUpdateAuditTests(TestCase):
         in at the misspelt host because the log table was full.
 
         The failure is a real database error, not a mocked Python one, because
-        that is the case that used to be dangerous: ``emit_audit_event`` runs
-        inside the serializer's own ``transaction.atomic`` block, and a database
-        error there marks the whole transaction for rollback. Catching it was
-        never enough - the school's edit died at commit with the audit row.
+        that is the dangerous case: ``emit_audit_event`` runs inside the
+        serializer's own ``transaction.atomic`` block, and a database error
+        there marks the whole transaction for rollback. Catching it is not
+        enough on its own - the school's edit dies at commit with the audit
+        row.
         """
         school = self._pending_school(slug="fragile-star", name="Fragile Star")
 
@@ -663,12 +664,12 @@ class SchoolResetConfigAuditTests(TestCase):
 class SchoolTrailIsKeyedOnThePrimaryKeyTests(TestCase):
     """One school, one trail, whatever its address happens to be.
 
-    School audit events used to be filed under the slug, which matched the
-    creation path and read well in the Event Explorer. It stopped being safe at
-    0699ada, when the slug became editable before go-live: correcting Bright
-    Star's address from ``bright-star`` to ``bright-star-academy`` split its
-    history in two, and the half containing the school's own creation was left
-    filed under an address nobody would ever look up again.
+    Filing school audit events under the slug matches the creation path and
+    reads well in the Event Explorer, and it is unsafe the moment the slug is
+    editable before go-live: correcting Bright Star's address from
+    ``bright-star`` to ``bright-star-academy`` splits its history in two, and
+    the half holding the school's own creation is left filed under an address
+    nobody will ever look up again.
 
     These tests drive the real endpoints end to end - create, rename, reset -
     because the defect was only visible across all three.
@@ -819,9 +820,9 @@ class SchoolTrailIsKeyedOnThePrimaryKeyTests(TestCase):
         self.assertEqual(trail.entity_label, "Bright Star Academy")
 
     def test_the_creation_summary_still_names_the_sign_in_address(self):
-        """``entity_id`` used to be the slug, and the Event Explorer searches
-        it. Moving to the pk would have made the address unfindable on the one
-        event that records where it came from, so the summary carries it."""
+        """The Event Explorer searches ``entity_id``, which holds the pk. That
+        would leave the sign-in address unfindable on the one event recording
+        where it came from, so the summary carries it."""
         school = self._create_school(slug="bright-star")
 
         event = self._school_events().get(action_type=AuditActionType.CREATE)
@@ -847,12 +848,11 @@ class SchoolTrailIsKeyedOnThePrimaryKeyTests(TestCase):
     def test_the_trail_row_is_the_same_row_before_and_after_a_rename(self):
         """One row, both events on it - counted on the events themselves.
 
-        This used to read ``trail.event_count``. That column is gone (vs_audit
-        migration 0011): it was a stored rollup that only ever incremented, so
-        it could not be trusted to say how many events were really there. What
-        the test wants to know has not changed - did the rename land on the
-        school's existing trail or start a second one - and the events answer it
-        directly.
+        Counted on the events rather than on a stored rollup. ``event_count``
+        only ever incremented, so it could not be trusted to say how many
+        events were really there, and the question here - did the rename land
+        on the school's existing trail or start a second one - is one the
+        events answer directly.
         """
         school = self._create_school()
         events = AuditEvent.objects.filter(
@@ -892,12 +892,13 @@ class SchoolTrailIsKeyedOnThePrimaryKeyTests(TestCase):
 class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
     """One branch, one trail - and one *school's* branch, not the platform's.
 
-    Branch events used to be filed under ``Branch.code``, which is allocated
-    per tenant from 1. Every school's main branch is therefore code 1, and
+    Filing branch events under ``Branch.code`` cannot work: the code is
+    allocated per tenant from 1, so every school's main branch is code 1, and
     ``EntityAuditTrail`` is unique on (entity_type, entity_id) with no tenant
-    column, so ``Branch:1`` was a single row for the whole platform: Bright
-    Star's branch being created, Greenfield's being renamed and Corona's being
-    edited all landed on it, interleaved, with nothing to say whose was whose.
+    column. ``Branch:1`` would be a single row for the whole platform, with
+    Bright Star's branch being created, Greenfield's being renamed and Corona's
+    being edited all landing on it interleaved and nothing saying whose was
+    whose.
 
     These drive the three real write paths - the wizard's inline main branch,
     the standalone branch create, and the branch update - because that is where
@@ -1135,10 +1136,10 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
     # --- the code has to survive leaving entity_id --------------------------
 
     def test_the_creation_summary_names_the_code_and_the_school(self):
-        """``entity_id`` used to hold the code, and the Event Explorer searches
-        that column. The code is what a school's own staff call the branch, and
-        "Main Branch" is not a distinguishing label, so the summary carries
-        both the code and the school it belongs to."""
+        """The Event Explorer searches ``entity_id``, which holds the pk. The
+        code is what a school's own staff call the branch, and "Main Branch" is
+        not a distinguishing label, so the summary carries both the code and
+        the school it belongs to."""
         school, main = self._create_school_with_main_branch(
             name="Bright Star", slug="bright-star",
         )
@@ -1233,7 +1234,7 @@ class PartialUpdateValidatesOnlyWhatItWasSentTests(TestCase):
         self.assertEqual(branch.name, "", "the untouched column was rewritten")
 
     def test_the_blank_column_can_itself_be_filled_in(self):
-        """The way out of the dead end, which used to be shut too."""
+        """The way out of the dead end, which has to stay open."""
         school = make_school(slug="blank-name-fix", name="Blank Name Fix")
         branch = make_branch(school, name="Main Branch")
         Branch.all_objects.filter(pk=branch.pk).update(name="")

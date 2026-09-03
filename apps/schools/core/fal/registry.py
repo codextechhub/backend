@@ -35,11 +35,9 @@ Note: there is deliberately **no** ``FAL_PAYMENT_PORT`` key.
 settlement stays inside ``vs_payments``.
 
 ``FAL_GUARDIAN_LINK`` resolves the guardian-to-student link from the student
-roll. It used to default to a resolver that refused every question, because no
-such link existed; Module 11 landed and it now points at the real one, which is
-what opened the parent portal's payment bridge. A deployment without the student
-module points it back at ``DenyAllGuardianLinkAdapter`` so the bridge fails
-closed instead of failing to import.
+roll, which is what opens the parent portal's payment bridge. A deployment
+without the student module points it at ``DenyAllGuardianLinkAdapter`` so the
+bridge fails closed instead of failing to import.
 
 Usage at a call site::
 

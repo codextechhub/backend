@@ -420,12 +420,12 @@ class OnboardingReinstateView(OnboardingViewMixin, APIView):
     who somehow held the key still cannot reinstate anybody - including
     themselves.
 
-    That second gate used to be written out here in ``post`` against
-    ``request.tenant``. It is now ``platform_decision``, shared with approve and
-    reject, which fixes two things beyond the duplication: it runs before the
-    key is evaluated, so the refusal no longer reveals whether the caller held
-    the key, and it reads the caller's own tenant, so it keeps its meaning on a
-    view that also accepts a cross-tenant ``?tenant=`` assertion.
+    That second gate is ``platform_decision``, shared with approve and reject
+    rather than written out here against ``request.tenant``. Sharing it buys
+    two things beyond the duplication: it runs before the key is evaluated, so
+    the refusal does not reveal whether the caller held the key, and it reads
+    the caller's own tenant, so it keeps its meaning on a view that also
+    accepts a cross-tenant ``?tenant=`` assertion.
 
     docstring-name: Reinstate a suspended school
     """

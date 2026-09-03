@@ -611,7 +611,7 @@ class AdmissionSuggestionTests(StudentsFixture):
 class RosterReadsItsOwnYearTests(StudentsFixture):
     """A register belongs to its class's year, not to whichever year is active.
 
-    M13 gave classes a year, so a school has one JSS1 A per session. Reading the
+    A class belongs to a year, so a school has one JSS1 A per session. Reading the
     roster against the ACTIVE year answered for the wrong one the moment the
     class was not this year's - an empty register and "0 of 30", with nothing
     saying which year had been looked in.
@@ -817,3 +817,96 @@ class SessionLensReachesEveryListTests(SessionLensTests):
         rows = self.get(self.admin, "guardian-list").data["data"]
         names = [g["full_name"] for g in rows]
         self.assertEqual(names, sorted(names))
+
+
+class GuardianEditTests(StudentsFixture):
+    """A guardian's own details can be corrected.
+
+    Until this route existed they could not be, anywhere: the create path was
+    the only writer, and linking an EXISTING guardian passes their id and drops
+    every other field. A phone number mistyped at enrolment was permanent, and
+    the only workaround was a second record for the same parent - which splits
+    the household and breaks the sibling link.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.g = self.guardian(
+            name="Mrs. Patricia Okafor", phone="08065550130",
+            email="patricia@example.ng",
+        )
+        self.child = self.student(first="Tobi", last="Okafor")
+        self.link(self.child, self.g)
+
+    def test_a_mistyped_number_can_be_corrected(self):
+        response = self.patch(
+            self.admin, "guardian-detail", {"phone": "08065550131"}, pk=self.g.pk,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.g.refresh_from_db()
+        self.assertEqual(self.g.phone, "08065550131")
+
+    def test_only_the_named_fields_move(self):
+        self.patch(self.admin, "guardian-detail", {"phone": "0806"}, pk=self.g.pk)
+        self.g.refresh_from_db()
+        self.assertEqual(self.g.full_name, "Mrs. Patricia Okafor")
+        self.assertEqual(self.g.email, "patricia@example.ng")
+
+    def test_an_unchanged_save_is_not_an_edit(self):
+        """Or the history fills with entries for edits nobody made."""
+        response = self.patch(
+            self.admin, "guardian-detail",
+            {"phone": self.g.phone}, pk=self.g.pk,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Nothing to change", response.data["message"])
+
+    def test_an_email_another_guardian_holds_is_refused_by_name(self):
+        """Email is unique per school, so this must not surface as a 500."""
+        other = self.guardian(
+            name="Mr. Emeka Obi", phone="08065550999", email="emeka@example.ng",
+        )
+        response = self.patch(
+            self.admin, "guardian-detail", {"email": other.email}, pk=self.g.pk,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Mr. Emeka Obi", str(response.data))
+
+    def test_a_blank_name_is_refused(self):
+        """A guardian with no name cannot be picked out of a ward list."""
+        response = self.patch(
+            self.admin, "guardian-detail", {"full_name": "   "}, pk=self.g.pk,
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_reading_needs_view_but_writing_needs_update(self):
+        from vs_rbac.tests.helpers import (
+            make_assignment, make_role, make_role_permission, make_school_admin,
+        )
+
+        role = make_role(self.school, name="Reader", key="guardian_reader")
+        make_role_permission(role, self.permissions["school.students.view"])
+        viewer = make_school_admin(
+            None, email="guardian-reader@test.example", tenant=self.tenant,
+        )
+        make_assignment(self.school, viewer, role, branch=None)
+        self.assertEqual(
+            self.get(viewer, "guardian-detail", pk=self.g.pk).status_code, 200,
+        )
+        self.assertEqual(
+            self.patch(
+                viewer, "guardian-detail", {"phone": "0806"}, pk=self.g.pk,
+            ).status_code,
+            403,
+        )
+
+    def test_another_schools_guardian_is_404_not_403(self):
+        """An id must not reveal that a person exists at another school."""
+        theirs = self.guardian(
+            tenant=self.solo.tenant, name="Mrs. Elsewhere",
+            phone="08065550777", email="elsewhere@example.ng",
+        )
+        response = self.patch(
+            self.admin, "guardian-detail", {"phone": "0806"}, pk=theirs.pk,
+        )
+        self.assertEqual(response.status_code, 404)

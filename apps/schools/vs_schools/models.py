@@ -389,8 +389,8 @@ class School(TimeStampedModel):
                 SchoolStatus.INACTIVE: Tenant.Status.INACTIVE,
                 SchoolStatus.SUSPENDED: Tenant.Status.SUSPENDED,
             }.get(self.status, Tenant.Status.PENDING)
-            # The slug is mirrored now, where it used to be seeded at creation
-            # and then left alone. Correcting a typo before go-live has to
+            # The slug is mirrored on every save, not seeded once at creation
+            # and left alone. Correcting a typo before go-live has to
             # reach the tenant or it does not reach the sign-in address at all,
             # which is the only address that matters: a school that fixed
             # ``corona-secondry`` on its own row would still be served at the
@@ -426,12 +426,12 @@ class School(TimeStampedModel):
     def branches(self):
         """This school's sites.
 
-        ``Branch`` moved to ``vs_tenants`` and lost its ``school`` foreign key,
-        so the reverse accessor that used to be generated here is now a hop
-        through the tenant. ``School.tenant`` is a non-nullable OneToOneField,
-        so this is exactly the same set of rows the FK produced, and it is
-        still a manager, so ``.filter()``, ``.count()`` and DRF's ``many=True``
-        all behave as before. Prefetch it as ``"tenant__branches"``.
+        ``Branch`` lives in ``vs_tenants`` and carries no ``school`` foreign
+        key, so this is a hop through the tenant rather than a generated
+        reverse accessor. ``School.tenant`` is a non-nullable OneToOneField, so
+        it is exactly the set of rows a direct FK would give, and it is still a
+        manager: ``.filter()``, ``.count()`` and DRF's ``many=True`` all work.
+        Prefetch it as ``"tenant__branches"``.
         """
         return self.tenant.branches
 

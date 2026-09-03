@@ -65,8 +65,9 @@ def resolve_class(tenant, user, class_id):
 def assert_class_is_in_session(school_class, session):
     """A placement's class and its year must be the same year.
 
-    An enrolment records both, and since M13 gave classes a year the two can
-    disagree: the row then says a child is on this year's roll in a class that
+    An enrolment records both, and because a class belongs to a year the two
+    can disagree: the row then says a child is on this year's roll in a class
+    that
     belongs to a year that has ended. Nothing looks wrong anywhere, because
     every year's JSS1 A is called JSS1 A - the register for this year simply
     does not have them on it.
@@ -262,8 +263,8 @@ def class_seats(tenant, user, session, *, branch=None, only_with_capacity=False)
     cost a roster request per option, growing with the school.
 
     It lives here rather than on the academics class list because the enrolment
-    row is this module's: putting it there would make an M13 view import a
-    school app it must not know about. Same reasoning as the roster.
+    row is this module's: putting it there would make a ``vs_academics`` view
+    import a school app it must not know about. Same reasoning as the roster.
 
     *branch* narrows to that site's classes plus the school-wide ones, which is
     what a null branch means. A class with no capacity set is returned with
@@ -278,8 +279,8 @@ def class_seats(tenant, user, session, *, branch=None, only_with_capacity=False)
 
     from schools.vs_academics.models import SchoolClass
 
-    # Scoped to the YEAR, not just the tenant. Since M13 gave classes a year a
-    # school has one JSS1 A per session, all named JSS1 A - so an unscoped list
+    # Scoped to the YEAR, not just the tenant. A class belongs to a year, so a
+    # school has one JSS1 A per session, all named JSS1 A - and an unscoped list
     # offers a picker two identical options, and the one from a year that ended
     # is refused by assert_class_is_in_session on save. The registrar sees a
     # name they recognise and a refusal they cannot explain.

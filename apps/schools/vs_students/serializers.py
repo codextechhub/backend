@@ -85,6 +85,32 @@ class GuardianSerializer(serializers.ModelSerializer):
         return obj.user_id is not None
 
 
+class GuardianUpdateSerializer(serializers.Serializer):
+    """A guardian's OWN details. Not their link to any one student.
+
+    Every field optional, because this is a correction: a registrar fixing a
+    mistyped phone number should not have to resend the address to keep it.
+    Relationship and primary-contact are absent on purpose - those belong to a
+    LINK, one per student, and a guardian standing for three children has three
+    of them.
+    """
+
+    full_name = serializers.CharField(max_length=150, required=False)
+    phone = serializers.CharField(max_length=32, required=False, allow_blank=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    occupation = serializers.CharField(
+        max_length=100, required=False, allow_blank=True,
+    )
+    address = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_full_name(self, value):
+        # Blank is refused rather than allowed through: a guardian with no name
+        # is a row nobody can identify on the directory or in a ward list.
+        if not (value or "").strip():
+            raise serializers.ValidationError("A guardian needs a name.")
+        return value
+
+
 class GuardianLinkSerializer(serializers.ModelSerializer):
     guardian = GuardianSerializer(read_only=True)
     relationship_label = serializers.CharField(

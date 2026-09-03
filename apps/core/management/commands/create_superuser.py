@@ -237,10 +237,9 @@ class Command(BaseCommand):
             first_name=first_name,
             last_name=last_name,
             phone=phone,
-            # Named, not derived. The platform tenant used to be filled in by
-            # User._derive_tenant() off a CX_STAFF persona - which was the
-            # answer arriving back where it started. A caller minting platform
-            # staff says so by naming the platform tenant.
+            # Named, not derived. Deriving it from a persona has the answer
+            # arrive back where it started; a caller minting platform staff
+            # says so by naming the platform tenant.
             tenant=_codex_tenant(),
             status=User.Status.ACTIVE,
             is_active=True,
@@ -326,9 +325,9 @@ class Command(BaseCommand):
     def _assign_role_to_existing(self, options):
         email = normalize_email(options['email'])
 
-        # ``.get(email=...)`` used to be a question with one answer. It is not:
-        # one address can be a login at several tenants, so the unscoped form
-        # raises MultipleObjectsReturned - and the role being granted here is
+        # ``.get(email=...)`` is not a question with one answer: one address
+        # can be a login at several tenants, so the unscoped form raises
+        # MultipleObjectsReturned - and the role being granted here is
         # Vision Super Admin, the most privileged seat on the platform. Ada
         # Okoye's parent account at Bright Star must never be the row that
         # picks up because it happened to sort first.

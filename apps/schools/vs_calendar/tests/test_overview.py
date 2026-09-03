@@ -101,7 +101,7 @@ class OverviewAlertTests(_Base):
         self.assertIn("EVENT_OUTSIDE_ANY_TERM", self._codes())
 
     def test_a_malformed_term_written_behind_the_api_is_still_reported(self):
-        """M13 refuses this at write time; rows arrive by import too."""
+        """``vs_academics`` refuses this at write time; rows arrive by import too."""
         from schools.vs_academics.models import AcademicTerm
 
         AcademicTerm.all_objects.filter(pk=self.second_term.pk).update(

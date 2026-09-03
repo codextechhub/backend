@@ -181,11 +181,10 @@ class LoginService:
 
         The permission decision is ``user.may_sign_in`` and nothing else. The
         map below only chooses the WORDING of a refusal that has already been
-        made, which is the inversion this method needed: it used to be the map
-        itself, consulted with ``errors.get(user.status)``, so a status nobody
-        had written a message for was signed in. DRAFT, PENDING_APPROVAL and
-        REJECTED were all added to the enum after this code and all three
-        inherited a working login on the day they were added.
+        made. That inversion matters: consulting the map itself with
+        ``errors.get(user.status)`` signs in any status nobody has written a
+        message for, so every status added to the enum afterwards inherits a
+        working login on the day it is added.
 
         A status with no message here is refused as INVALID_CREDENTIALS -
         byte-identical to a wrong password, including the 401 the view derives

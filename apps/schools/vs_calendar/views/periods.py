@@ -55,8 +55,8 @@ class _PeriodBase(CalendarViewMixin):
         return raised_branch(self.request.user, self.tenant, requested)
 
     def _lens_branch(self):
-        # The module's one lens reader. This used to be its own copy, which is
-        # how five other surfaces came to have no copy at all.
+        # The module's one lens reader. A local copy here is how the other
+        # surfaces end up with no copy at all.
         from ..services.scoping import lens_branch
 
         return lens_branch(self)

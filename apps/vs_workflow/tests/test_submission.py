@@ -337,12 +337,12 @@ class RetiredSubmitPermissionTests(TestCase):
 class AutoSkipDefaultTests(TestCase):
     """A stage published without ``skip_if_no_approvers`` parks, it does not skip.
 
-    The default used to be True on both the model and the publish service, so the
-    dangerous answer arrived by omission. Omission is the common case: a tenant
-    publishes its own full version of a central ladder, and an editor changing one
-    threshold does not resend the fields it is not changing. A payout ladder
-    republished that way would auto-skip a stage nobody could approve and dispatch
-    the money unapproved.
+    Defaulting True on the model or the publish service has the dangerous answer
+    arrive by omission, and omission is the common case: a tenant publishes its
+    own full version of a central ladder, and an editor changing one threshold
+    does not resend the fields it is not changing. A payout ladder republished
+    that way would auto-skip a stage nobody could approve and dispatch the money
+    unapproved.
     """
 
     def setUp(self):

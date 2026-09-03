@@ -1,25 +1,23 @@
-# services/sign_in_scope.py
-# Resolving which tenant a sign-in (or a self-service password reset) is
-# addressed to, BEFORE the account is looked up by email.
-#
-# Why this exists at all
-# ----------------------
-# Both LoginService.login and PasswordService.request_reset used to find the
-# account with an unscoped ``User.objects.filter(email__iexact=...).first()``
-# and take the tenant from whatever row came back. That is only correct while
-# ``User.email`` is unique across the whole platform. The moment uniqueness is
-# narrowed to one address per tenant, the same query returns two rows and
-# ``.first()`` picks one: a parent whose two children attend two different
-# customers of this platform, and who reuses her password, is signed in to the
-# wrong one - and a reset she asks for at one rewrites her password at the
-# other. Neither failure raises anything.
-#
-# So the caller may now assert the tenant. It is a ``Tenant.slug``, and the
-# frontend reads it off the subdomain it is served from: the page at
-# ``bright-star.xvs.codexng.com`` sends ``bright-star``. The lookup is then
-# scoped to it. That check is real today (an account that belongs to another
-# tenant is refused) and becomes load-bearing when uniqueness narrows.
+"""Resolving which tenant a sign-in (or a self-service password reset) is
+addressed to, BEFORE the account is looked up by email.
 
+Why this exists at all
+Both LoginService.login and PasswordService.request_reset used to find the
+account with an unscoped ``User.objects.filter(email__iexact=...).first()``
+and take the tenant from whatever row came back. That is only correct while
+``User.email`` is unique across the whole platform. The moment uniqueness is
+narrowed to one address per tenant, the same query returns two rows and
+``.first()`` picks one: a parent whose two children attend two different
+customers of this platform, and who reuses her password, is signed in to the
+wrong one - and a reset she asks for at one rewrites her password at the
+other. Neither failure raises anything.
+
+So the caller may now assert the tenant. It is a ``Tenant.slug``, and the
+frontend reads it off the subdomain it is served from: the page at
+``bright-star.xvs.codexng.com`` sends ``bright-star``. The lookup is then
+scoped to it. That check is real today (an account that belongs to another
+tenant is refused) and becomes load-bearing when uniqueness narrows.
+"""
 from __future__ import annotations
 
 from vs_tenants.models import Tenant

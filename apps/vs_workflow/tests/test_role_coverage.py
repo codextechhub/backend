@@ -3,12 +3,11 @@
 The command exists to answer one question before it costs anything: can this
 tenant actually staff the approval stages a central template routes to it?
 
-It used to answer that by counting holders, which is not the same question. A
-role held by exactly one person reads as staffed and is not: a requester may
-never approve their own submission, so everything that person raises has zero
-eligible approvers and parks with nobody able to release it. A live tenant sat
-in exactly that state while the command reported it green, which is what these
-tests pin.
+Counting holders is not the same question. A role held by exactly one person
+reads as staffed and is not: a requester may never approve their own
+submission, so everything that person raises has zero eligible approvers and
+parks with nobody able to release it. A tenant in that state must not be
+reported green, which is what these tests pin.
 """
 from io import StringIO
 
@@ -36,10 +35,10 @@ class RoleCoverageTests(TestCase):
 
         # The command reports on EVERY central stage, which is the right shape
         # for it and the wrong shape for a test that wants to know what verdict
-        # one stage produces. These cases used to be the only central template
-        # in the database and quietly depended on it; vs_payments migration
-        # 0006 then seeded a real platform fallback naming two more role keys,
-        # so the summary line could never be reached again.
+        # one stage produces. These cases must not depend on being the only
+        # central template in the database: vs_payments migration 0006 seeds a
+        # platform fallback naming two more role keys, and the summary line is
+        # then unreachable.
         #
         # Retired rather than deleted: retired_at is the field the command
         # already filters on, so this narrows the report using the model's own

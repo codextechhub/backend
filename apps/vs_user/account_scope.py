@@ -9,12 +9,12 @@ integer, so every endpoint that resolved a target with
 Concretely: Amaka administers Bright Star and holds ``platform.team.suspend``,
 which is how she suspends her own leavers. Tunde teaches at Greenfield, a
 different customer of this platform, and his account happens to be id 41.
-``POST /v1/user/41/suspend/`` used to return 200 and log him out of his school.
-Her key was never the thing that was wrong - she is supposed to hold it - and a
-403 would have been the wrong refusal anyway, because it confirms that 41 is
-somebody. The lookup was the thing that was wrong.
+``POST /v1/user/41/suspend/`` must not return 200 and log him out of his
+school. Her key is not the problem - she is supposed to hold it - and a 403
+would be the wrong refusal too, because it confirms that 41 is somebody. The
+lookup is what has to be scoped.
 
-Eight surfaces had it, so the answer lives here rather than eight times over:
+Eight surfaces ask it, so the answer lives here rather than eight times over:
 
 * ``UserEmailChangeView``, ``UserSuspendView``, ``UserReactivateView``,
   ``UserUnlockView`` (``views/accounts.py``);
@@ -81,17 +81,16 @@ def administrable_users(request, queryset=None):
 
     qs = qs.filter(tenant=getattr(request, "tenant", None) or getattr(user, "tenant", None))
 
-    # ``branch_q`` renders an *empty* ``Q()`` for a caller nothing narrows, and
-    # ``Q() | Q(pk=...)`` collapses to ``Q(pk=...)`` in Django - which would cut
-    # an unnarrowed admin down to a single row. Ask whether there is a narrowing
-    # at all before combining, which also keeps the unnarrowed caller's SQL
-    # unchanged, as :mod:`vs_rbac.scoping` intends.
-    # ``include_shared=True`` spelled out rather than left to the default: a null
-    # branch means "across the whole tenant" on this very model, and a4916e9 made
-    # that the normal shape for a school user - so the shared arm is the common
-    # case here, not the edge. Getting it backwards would empty the staff list and
-    # every picker built on it, and would make a colleague with no posting
-    # un-suspendable.
+    # branch_q renders an empty Q() for a caller nothing narrows, and
+    # `Q() | Q(pk=...)` collapses to `Q(pk=...)`, which would cut an unnarrowed
+    # admin down to a single row. Asking whether there is a narrowing at all
+    # also leaves that caller's SQL unchanged, as vs_rbac.scoping intends.
+    #
+    # include_shared=True is spelled out rather than left to the default: a
+    # null branch means "across the whole tenant" on this model and is the
+    # normal shape for a school user, so the shared arm is the common case.
+    # Backwards, it empties the staff list and every picker built on it, and
+    # makes a colleague with no posting un-suspendable.
     narrowing = branch_q(request, include_shared=True)
     if not narrowing:
         return qs

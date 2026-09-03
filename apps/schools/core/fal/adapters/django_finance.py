@@ -704,6 +704,20 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
     @envelope
     def generate_cohort_invoices(self, fee_structure_ref, student_refs, *, period=None,
                                  dry_run=False):
+        """Bill a cohort against a fee structure, or preview what billing would do.
+
+        A preview runs the real thing and throws the writes away, deliberately
+        rather than lazily. Fee items are priced and taxed inside ``post_invoice``,
+        so a second implementation that summed the item amounts would quote a
+        pre-tax figure, and be wrong in exactly the case a bursar most needs it
+        right. Running the real code also means every refusal a real run would
+        raise is raised here: a preview that hid the cross-tenant error would
+        promise a run that then fails.
+
+        The invoice pks are dropped rather than returned. They stop existing when
+        the block exits, and handing back identifiers for rows nobody can fetch is
+        the kind of honest-looking answer that costs an afternoon.
+        """
         from vs_finance import fees
         from vs_finance.models import Customer, Invoice
 
@@ -776,17 +790,7 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
             with transaction.atomic():
                 return _available(_run())
 
-        # A preview runs the real thing and throws the writes away. That is
-        # deliberate rather than lazy: fee items are priced and taxed inside
-        # post_invoice, so a second implementation that summed the item amounts
-        # would quote a pre-tax figure and be wrong in exactly the case a bursar
-        # most needs it right. Running the real code also means every refusal a
-        # real run would raise is raised here - a preview that hid the
-        # cross-tenant error would promise a run that then fails.
-        #
-        # The invoice pks are dropped rather than returned. They stop existing
-        # when this block exits, and handing back identifiers for rows nobody can
-        # fetch is the kind of honest-looking answer that costs an afternoon.
+        # Preview: run it for real, then discard the writes. See the docstring.
         try:
             with transaction.atomic():
                 raise _PreviewComplete(_run())
@@ -1329,9 +1333,8 @@ class DjangoFinanceReadAdapter(FinanceReadPort):
 class DjangoGuardianLinkAdapter(GuardianLinkPort):
     """The ownership check, answered from the student roll.
 
-    Module 11 landed, so the question decision 5 turns on has a source at last:
     ``StudentGuardian`` is the link between a child and the people responsible
-    for them, and a row's existence is the whole answer.
+    for them, and a row's existence is the whole answer decision 5 turns on.
 
     Two details matter. The pair carries its own tenant and both sides carry
     theirs, so a matching row cannot span two schools and the pair lookup is
@@ -1933,13 +1936,11 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
     def post_to_ledger(self, doc, *, actor_ref):
         """Post an approved bill or payment to the ledger.
 
-        ADDED in 1.1.2, and forced by the engine rather than chosen. The spec had
-        ``record_supplier_bill`` and ``pay_supplier`` record *and* post in one
-        call. They cannot: ``vs_procurement`` refuses to post a vendor invoice or
-        a vendor payment whose ``approval_state`` is not APPROVED, and approval
-        is an act by a person that happens in between. A single method could only
-        satisfy the old signature by skipping approval, which is the exact thing
-        decision 2 exists to forbid.
+        Recording and posting cannot be one call. ``vs_procurement`` refuses to
+        post a vendor invoice or a vendor payment whose ``approval_state`` is
+        not APPROVED, and approval is an act by a person that happens in
+        between, so a single method could only manage both by skipping the
+        approval decision 2 exists to forbid.
 
         So the chain is record, submit, approve, post, and this is the last step.
         A goods receipt does not appear here because a receipt is not an
@@ -1986,7 +1987,7 @@ class DjangoProcurementActionAdapter(ProcurementActionPort):
 # ProcurementReadPort
 # --------------------------------------------------------------------------- #
 class DjangoProcurementReadAdapter(ProcurementReadPort):
-    """Read-only procurement for M25/M26, scoped to the school's entity."""
+    """Read-only procurement for dashboards and reports, scoped to the entity."""
 
     def _entity_of(self, school_ref):
         return _primary_entity(_school(school_ref))

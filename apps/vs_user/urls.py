@@ -1,15 +1,15 @@
-# urls.py
-# URL configuration for vs_users.
-# Wire into your root urls.py like this:
-#
-#   from django.urls import path, include
-#   urlpatterns = [
-#       path('api/v1/', include('vs_users.urls')),
-#       ...
-#   ]
-#
-# All routes below are relative to that prefix.
+"""urls.py
+URL configuration for vs_users.
+Wire into your root urls.py like this:
 
+  from django.urls import path, include
+  urlpatterns = [
+      path('api/v1/', include('vs_users.urls')),
+      ...
+  ]
+
+All routes below are relative to that prefix.
+"""
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 

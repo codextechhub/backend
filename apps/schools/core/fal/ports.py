@@ -38,11 +38,11 @@ Why many small ports instead of one fat interface
 Each consumer depends only on the capability it needs, and the type system
 enforces the boundary:
 
-    M9  onboarding     -> EntityResolverPort (+ ProcurementActionPort for seeding)
-    M11 students       -> StudentCustomerPort + FinanceReadPort (read-only)
-    M25 dashboards     -> FinanceReadPort  (+ ProcurementReadPort)
-    M26 reports        -> FinanceReadPort  (+ ProcurementReadPort)
-    M28 parent portal  -> FinanceReadPort + ParentPaymentBridgePort
+    onboarding         -> EntityResolverPort (+ ProcurementActionPort for seeding)
+    students           -> StudentCustomerPort + FinanceReadPort (read-only)
+    dashboards         -> FinanceReadPort  (+ ProcurementReadPort)
+    reports            -> FinanceReadPort  (+ ProcurementReadPort)
+    parent portal      -> FinanceReadPort + ParentPaymentBridgePort
     school procurement -> ProcurementActionPort + ProcurementReadPort
 
 Because the student portal is handed a ``FinanceReadPort`` (never a
@@ -165,7 +165,7 @@ class EntityResolverPort(ABC):
     port takes ``school_ref`` explicitly and depends on none of it; an adapter
     must never read ``request``.
 
-    Decision (2026-07-04): M9 provisions exactly **one primary** entity per
+    Decision (2026-07-04): onboarding provisions exactly **one primary** entity per
     school; ``resolve_entity`` returns that primary. If two candidate primaries
     exist, implementations raise ``AmbiguousPrimaryEntity``, loudly and never
     guessing. Ports that act on a specific entity also accept an explicit
@@ -177,7 +177,7 @@ class EntityResolverPort(ABC):
         self, school_ref: SchoolRef, *, code: str, name: str,
         base_currency: str = "NGN",
     ) -> FinanceResult[EntityHandle]:
-        """Ensure a ``LedgerEntity`` exists for ``school_ref`` (M9 onboarding).
+        """Ensure a ``LedgerEntity`` exists for ``school_ref`` (onboarding).
 
         **Idempotent.** Onboarding retries are expected: a second call for a
         school that already has an entity returns the existing handle with
@@ -361,7 +361,7 @@ class FinanceRbacPort(ABC):
       caller named no branch, so the adapter forwards ``ANY_BRANCH``.
 
     Decision (2026-07-04): this port applies to **staff-facing surfaces only**.
-    Parents and guardians hold no RBAC keys; the M28 parent portal authorises via
+    Parents and guardians hold no RBAC keys; the parent portal authorises via
     **ownership checks** on the guardian-to-student link instead.
     """
 
@@ -388,7 +388,7 @@ class FinanceReadPort(ABC):
     is **no raw SQL**: adapters build ORM querysets.
     """
 
-    # ----- Headline KPIs (M25) --------------------------------------------- #
+    # ----- Headline KPIs (dashboards) -------------------------------------- #
     @abstractmethod
     def collections(
         self, school_ref: SchoolRef, branch_ref: Optional[BranchRef] = None,
@@ -424,7 +424,7 @@ class FinanceReadPort(ABC):
     ) -> FinanceResult[Series]:
         """Payment volume over time, as an ordered series (kobo)."""
 
-    # ----- Dashboard data contracts (M25, component 5) --------------------- #
+    # ----- Dashboard data contracts (component 5) -------------------------- #
     @abstractmethod
     def ar_ageing(
         self, school_ref: SchoolRef, branch_ref: Optional[BranchRef] = None,
@@ -438,38 +438,38 @@ class FinanceReadPort(ABC):
     ) -> FinanceResult[FeeLiability]:
         """Total billed vs collected vs outstanding for a term."""
 
-    # ----- Detail lists (dashboard drill-down + M26 report sources) -------- #
+    # ----- Detail lists (dashboard drill-down + report sources) ------------ #
     @abstractmethod
     def debtors(
         self, school_ref: SchoolRef, branch_ref: Optional[BranchRef] = None,
         filters: tuple[FilterClause, ...] = (), page: int = 1, page_size: int = 20,
     ) -> FinanceResult[Page[DebtorRow]]:
-        """Paged debtor list (KPI drill-down M25 + report 'debtors' source M26)."""
+        """Paged debtor list: dashboard KPI drill-down, and the 'debtors' report."""
 
     @abstractmethod
     def fee_invoices(
         self, school_ref: SchoolRef, branch_ref: Optional[BranchRef] = None,
         filters: tuple[FilterClause, ...] = (), page: int = 1, page_size: int = 20,
     ) -> FinanceResult[Page[FeeRow]]:
-        """Paged invoice-level rows. Report 'fees' source (M26)."""
+        """Paged invoice-level rows. The 'fees' report source."""
 
     @abstractmethod
     def payments(
         self, school_ref: SchoolRef, branch_ref: Optional[BranchRef] = None,
         filters: tuple[FilterClause, ...] = (), page: int = 1, page_size: int = 20,
     ) -> FinanceResult[Page[PaymentRow]]:
-        """Paged transaction-level rows. Report 'payments' source (M26)."""
+        """Paged transaction-level rows. The 'payments' report source."""
 
-    # ----- Per-entity fee views (portals, M11/M28) ------------------------- #
+    # ----- Per-entity fee views (student and parent portals) --------------- #
     @abstractmethod
     def fee_status(self, student_ref: StudentRef) -> FinanceResult[FeeStatus]:
-        """A single student's read-only fee position (student portal, M11)."""
+        """A single student's read-only fee position (student portal)."""
 
     @abstractmethod
     def invoices_for(
         self, student_ref: StudentRef, include_history: bool = True,
     ) -> FinanceResult[tuple[InvoiceView, ...]]:
-        """A child's invoices with line items (parent portal, M28)."""
+        """A child's invoices with line items (parent portal)."""
 
     @abstractmethod
     def combined_balance(
@@ -487,16 +487,15 @@ class FinanceReadPort(ABC):
 class GuardianLinkPort(ABC):
     """Answers "does this guardian own this child?" for component 6.
 
-    ADDED in 1.1.2 and not one of the seven components. Decision 5 (2026-07-04)
-    authorises every parent-portal read and payment by the guardian-to-student
-    link, because guardians hold no RBAC keys. There is no guardian model and no
-    student model in the repository, so there is nothing for the parent-payment
-    adapter to consult.
+    Not one of the seven components. Decision 5 (2026-07-04) authorises every
+    parent-portal read and payment by the guardian-to-student link, because
+    guardians hold no RBAC keys, so the check needs a source it can ask.
 
-    Rather than leave the check as a comment for M11 to notice, it is a port with
-    a deny-everything default. The bridge is therefore closed in production until
-    somebody wires a real resolver through ``FAL_GUARDIAN_LINK``, and open in a
-    test that injects one, so the rest of component 6 is genuinely exercised.
+    It is a port rather than a hard-coded lookup so that the answer can be
+    swapped per deployment through ``FAL_GUARDIAN_LINK``. Where the student
+    module is installed that resolves to the real link on ``StudentGuardian``;
+    where it is not, ``DenyAllGuardianLinkAdapter`` closes the bridge rather
+    than failing to import.
     """
 
     @abstractmethod
@@ -512,7 +511,7 @@ class GuardianLinkPort(ABC):
 # Component 6 - Parent portal payment bridge
 # =========================================================================== #
 class ParentPaymentBridgePort(ABC):
-    """M28's safe door onto ``vs_payments``: **initiate plus read-only
+    """The parent portal's safe door onto ``vs_payments``: **initiate plus read-only
     status/receipts, ownership-checked**. It never books anything.
 
     Delegates initiation to ``vs_payments.services.initiate_collection(...)``,
@@ -734,13 +733,12 @@ class ProcurementActionPort(ABC):
     ) -> FinanceResult[ProcDocument]:
         """Record a vendor invoice, priced and three-way matched, still DRAFT.
 
-        CORRECTED in 1.1.2: this used to say "record and post". It cannot do
-        both. ``vs_procurement`` refuses to post a vendor invoice that has not
-        been approved, and approval is a decision a person makes in between, so
-        one call could only have posted by skipping the approval decision 2
-        exists to protect. The bill is priced and matched here so the approver
-        sees the variance verdict while deciding; :meth:`post_to_ledger` follows
-        approval.
+        Recording and posting cannot be one call. ``vs_procurement`` refuses to
+        post a vendor invoice that has not been approved, and approval is a
+        decision a person makes in between, so a single call could only post by
+        skipping the decision this exists to protect. The bill is priced and
+        matched here so the approver sees the variance verdict while deciding;
+        :meth:`post_to_ledger` follows approval.
 
         :raises ProcurementStateError: the engine refused the bill or a line.
         :raises CrossTenantError / CrossBranchError: scope violation.
@@ -753,13 +751,12 @@ class ProcurementActionPort(ABC):
     ) -> FinanceResult[ProcDocument]:
         """Record a vendor payment against a bill, still DRAFT and unposted.
 
-        CORRECTED in 1.1.2, for the same reason as
-        :meth:`record_supplier_bill`: money leaving the school is approvable
-        spend, and the engine will not post an unapproved payment. The bill this
-        money is for is named now, as a draft allocation instruction, so the
-        approval wait cannot lose it and posting settles the bill the school
-        chose rather than the oldest one. ``amount`` is integer kobo, and
-        part-payment is allowed.
+        Unposted for the same reason as :meth:`record_supplier_bill`: money
+        leaving the school is approvable spend, and the engine will not post an
+        unapproved payment. The bill this money is for is named as a draft
+        allocation instruction, so the approval wait cannot lose it and posting
+        settles the bill the school chose rather than the oldest one. ``amount``
+        is integer kobo, and part-payment is allowed.
 
         :raises ProcurementStateError: the amount is not positive, or the engine
             refused the payment.
@@ -772,9 +769,9 @@ class ProcurementActionPort(ABC):
     ) -> FinanceResult[ProcDocument]:
         """Post an APPROVED vendor invoice or vendor payment to the ledger.
 
-        ADDED in 1.1.2. The chain is record, submit, approve, post, and without
-        this the port could take a school as far as an approved bill and then
-        leave it stranded. A goods receipt is not approvable and is posted by
+        The chain is record, submit, approve, post, and this is its last step:
+        without it the port takes a school as far as an approved bill and leaves
+        it stranded. A goods receipt is not approvable and is posted by
         :meth:`receive_goods` directly, so it is not accepted here.
 
         :raises ProcurementStateError: the document is not approved, is already
@@ -789,7 +786,7 @@ class ProcurementActionPort(ABC):
     ) -> FinanceResult[bool]:
         """Seed the school's approval ladder **with no approver assigned**.
 
-        Called by M9 onboarding **immediately after**
+        Called by onboarding **immediately after**
         ``EntityResolverPort.provision_entity``. Delegates to
         ``vs_procurement.approvals.ensure_tenant_approval_templates(tenant, ...)``,
         resolving ``entity.tenant`` because the ladder is a governance policy of
@@ -810,10 +807,10 @@ class ProcurementActionPort(ABC):
 
 
 # =========================================================================== #
-# ProcurementReadPort - read-only procurement (M25/M26)
+# ProcurementReadPort - read-only procurement (dashboards and reports)
 # =========================================================================== #
 class ProcurementReadPort(ABC):
-    """Read-only procurement aggregates and rows (M25 dashboards, M26 reports)."""
+    """Read-only procurement aggregates and rows (dashboards and reports)."""
 
     @abstractmethod
     def snapshot(
@@ -826,7 +823,7 @@ class ProcurementReadPort(ABC):
         self, school_ref: SchoolRef, branch_ref: Optional[BranchRef] = None,
         filters: tuple[FilterClause, ...] = (), page: int = 1, page_size: int = 20,
     ) -> FinanceResult[Page[ProcurementRow]]:
-        """Paged procurement rows. Report 'procurement' source (M26)."""
+        """Paged procurement rows. The 'procurement' report source."""
 
 
 # =========================================================================== #

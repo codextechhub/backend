@@ -98,12 +98,12 @@ def provision_admin_user(
                 # One person, several postings. Corona names head@corona.ng as
                 # the primary admin of both Lekki and Ikeja in one create
                 # request: the first call makes the account and the second
-                # lands here. It used to return at this point, so the account
-                # existed, Ikeja's link said SENT, and the grant that would let
-                # that person do anything at Ikeja was never written - they
-                # signed in and could work at Lekki only, with nothing on the
-                # record to say why. The account is still made once and the
-                # invitation still sent once; what repeats is the grant, which
+                # lands here. Returning at this point leaves the account made,
+                # Ikeja's link saying SENT, and the grant that would let that
+                # person do anything at Ikeja never written - they sign in,
+                # work at Lekki only, and nothing on the record says why. The
+                # account is made once and the invitation sent once; what
+                # repeats is the grant, which
                 # is the part that is genuinely per-branch.
                 #
                 # ``branch=role_obj.branch`` matches the creation path below,

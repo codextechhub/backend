@@ -1,18 +1,18 @@
-# receivers.py
-# Delivery-signal receivers that keep UserInvitation email tracking in sync
-# with the notification engine.
-#
-# The invitation email is dispatched through vs_notifications; the engine fires
-# notification_sent / notification_failed on terminal delivery. These receivers
-# correlate the terminal record back to its UserInvitation via the
-# invitation id carried in Notification.metadata and update the same tracking
-# fields the old bypass task wrote (email_attempts / email_status / email_sent_at
-# / email_last_error).
-#
-# Receivers must never raise - a tracking failure must not break dispatch or the
-# delivery task. They filter on the user.invited event key so other events are
-# ignored cheaply.
+"""receivers.py
+Delivery-signal receivers that keep UserInvitation email tracking in sync
+with the notification engine.
 
+The invitation email is dispatched through vs_notifications; the engine fires
+notification_sent / notification_failed on terminal delivery. These receivers
+correlate the terminal record back to its UserInvitation via the
+invitation id carried in Notification.metadata and update the same tracking
+fields the old bypass task wrote (email_attempts / email_status / email_sent_at
+/ email_last_error).
+
+Receivers must never raise - a tracking failure must not break dispatch or the
+delivery task. They filter on the user.invited event key so other events are
+ignored cheaply.
+"""
 import logging
 
 from django.dispatch import receiver

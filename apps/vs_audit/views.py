@@ -379,12 +379,10 @@ class EntityAuditTrailListView(generics.ListAPIView):
         page = self.paginate_queryset(queryset)
         trails = page if page is not None else list(queryset)
 
-        # One grouped query for the whole page, never one per row. Every caller
-        # is answered this way now: a platform caller used to be handed the
-        # stored rollup for free, which cost no query and was wrong - it only
-        # ever incremented, so it counted events that had since been deleted.
-        # One query per page is what an honest number costs, and it is a
-        # per-page cost, not a per-trail one.
+        # One grouped query for the whole page, never one per row, and the
+        # same for every caller. A stored rollup costs no query and is wrong:
+        # it only ever increments, so it counts events since deleted. One query
+        # per page is what an honest number costs.
         ctx = {
             **self.get_serializer_context(),
             "visible_counters": visible_trail_counters(trails, request),
@@ -575,9 +573,9 @@ def write_audit_export_file(job, queryset, masked_fields):
     """Write the export through the default storage; return (file_name, name, rows).
 
     The CSV is streamed to a temporary file rather than held in memory, and the
-    value handed back is the **storage name** - the key ``default_storage``
-    chose, which is what ``AuditExportJob.file_path`` has always been documented
-    to hold. Nothing about the body ever goes into that column.
+    value handed back is the **storage name**, the key ``default_storage``
+    chose, which is what ``AuditExportJob.file_path`` holds. Nothing about the
+    body goes into that column.
 
     The temp file is opened in BINARY mode: storage backends read the handle
     through ``django.core.files.File`` and write the chunks straight to their

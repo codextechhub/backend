@@ -4,11 +4,12 @@ Who may read a stored file, and for how long.
 Two separate questions, deliberately kept separate, because each one alone
 leaves a hole the other closes.
 
-**Whose file is this?**  A ``StoredFile`` used to carry nothing but a name and
-some bytes, so ``/media/<name>`` could only ever ask "are you signed in?".  The
-name itself was the credential.  A bursar who left Corona Secondary School for
-Greenfield Academy still had the Corona URLs in her browser history, and her new
-and entirely valid Greenfield session was enough to replay them - the request
+**Whose file is this?**  Carrying nothing but a name and some bytes, a
+``StoredFile`` leaves ``/media/<name>`` able to ask only "are you signed in?",
+which makes the name itself the credential.  A bursar who left Corona Secondary
+School for Greenfield Academy still has the Corona URLs in her browser history,
+and her new and entirely valid Greenfield session is enough to replay them - the
+request
 even carried ``?tenant=greenfield-academy`` in the query string, and nothing
 compared it to anything.  :func:`authorize` now compares the row's tenant to the
 caller's, then asks the owning record's own policy whether this caller may read

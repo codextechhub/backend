@@ -1,19 +1,16 @@
-# vs_user/tokens.py
-# ---------------------------------------------------------------------------
-# Custom JWT token configuration for CodeX Vision.
-#
-# Extends SimpleJWT's default token to embed tenant_id, tenant_slug, branch_id,
-# account_status, and full_name directly into every access token payload.
-#
-# This means the frontend and any middleware can read the user's workspace
-# context directly from the token without hitting the database on every request.
-#
-# Wired into settings/base.py via:
-#   SIMPLE_JWT = {
-#       'TOKEN_OBTAIN_SERIALIZER': 'vs_user.tokens.CustomTokenObtainPairSerializer',
-#   }
-# ---------------------------------------------------------------------------
+"""Custom JWT token configuration for CodeX Vision.
 
+Extends SimpleJWT's default token to embed tenant_id, tenant_slug, branch_id,
+account_status, and full_name directly into every access token payload.
+
+This means the frontend and any middleware can read the user's workspace
+context directly from the token without hitting the database on every request.
+
+Wired into settings/base.py via:
+  SIMPLE_JWT = {
+      'TOKEN_OBTAIN_SERIALIZER': 'vs_user.tokens.CustomTokenObtainPairSerializer',
+  }
+"""
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken

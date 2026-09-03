@@ -4,9 +4,9 @@ schools.core.fal - Finance Abstraction Layer
 
 A **school-aware** contract over the generic finance, payments and procurement
 subsystems (``vs_finance`` / ``vs_payments`` / ``vs_procurement``). School
-modules (M9 onboarding, M11 students, M25 dashboards, M26 reports, M28 parent
-portal, school procurement) depend on this package's *ports* and never import
-finance or procurement models directly.
+modules - onboarding, students, dashboards, reports, the parent portal and
+school procurement - depend on this package's *ports* and never import finance
+or procurement models directly.
 
 Where this package belongs
 --------------------------
@@ -135,21 +135,11 @@ from .registry import (
     get_student_customer,
 )
 
-#: 1.1.3 is the release where the school layer stopped being hypothetical.
-#: Module 11 landed, and with it the two models this contract had been written
-#: around the absence of. Four things follow. The student source type was a
-#: guess at an app label and the guess was wrong, so it is corrected from
-#: ``vs_schools.Student`` to ``vs_students.Student``. The guardian ownership
-#: check has a real source and is now the default, which is what opens the
-#: parent portal's payment bridge. ``ensure_customer`` fills a child's name and
-#: branch from the roll, so the account is opened in the child's own name
-#: (decided 2026-08-30). And cohort billing opens an account for a child who has
-#: none, which is what it was always specified to do and could not.
+#: The version of the contract this package implements.
 #:
-#: Still a correction release rather than a major bump, on the grounds v1.1.1
-#: set: the contract has one caller and no consuming module. Making a required
-#: argument optional is additive; nothing that compiled against 1.1.2 stops
-#: compiling.
+#: Bumped on any change to a port signature, a source-type constant or a
+#: default resolver. A consuming module pins the version it was written
+#: against; the FAL's own change log lives with the spec, not here.
 FAL_CONTRACT_VERSION = "1.1.3"
 
 default_app_config = "schools.core.fal.apps.FalConfig"

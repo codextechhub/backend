@@ -340,8 +340,9 @@ class Level(_Branched):
     #:
     #: Without the flag the last two are one null, so a school that wires half
     #: its chain and is interrupted graduates every unwired year group at once
-    #: and hears about it from a parent. M11 must refuse to promote out of the
-    #: third state rather than treating it as the second (FRD v2.7 FR-005).
+    #: and hears about it from a parent. ``vs_students`` must refuse to promote
+    #: out of the third state rather than treating it as the second
+    #: (FRD v2.7 FR-005).
     next_level = models.ForeignKey(
         "self", on_delete=models.SET_NULL, null=True, blank=True,
         related_name="previous_levels",
@@ -408,9 +409,9 @@ class SchoolClass(_Branched):
     #: How many pupils the class holds.
     #:
     #: Advisory in the exact sense that nothing here reads it to refuse
-    #: anything - there is no Student model in this module to count. M11
-    #: enforces it on placement. No screen writes it today either, so M11 must
-    #: read a null as "no limit" rather than as a limit not yet reached.
+    #: anything - there is no Student model in this module to count.
+    #: ``vs_students`` enforces it on placement, and must read a null as "no
+    #: limit" rather than as a limit not yet reached.
     capacity = models.PositiveSmallIntegerField(null=True, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,

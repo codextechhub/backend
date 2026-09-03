@@ -10,9 +10,8 @@ from __future__ import annotations
 from django.db import models
 
 # ── Permission keys ────────────────────────────────────────────────────────
-# The first five are seeded already (core.seed_school_permissions); the last
-# two are added by the same seeder in this change. academics.classes.assign is
-# M13's and is used, never re-registered: FRD v2.4 section 8.1.
+# All seeded by core.seed_school_permissions. academics.classes.assign belongs
+# to ``vs_academics`` and is used here, never re-registered: FRD v2.4 sec 8.1.
 PERM_VIEW = "school.students.view"
 PERM_CREATE = "school.students.create"
 PERM_UPDATE = "school.students.update"

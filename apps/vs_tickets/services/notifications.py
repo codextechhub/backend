@@ -147,8 +147,8 @@ def notify_assigned(ticket, actor=None):
         actor=actor,
         recipients=[ticket.assignee],
         context=context_for(ticket, actor_name=getattr(actor, "full_name", "")),
-        # Direct assignment creates responsibility even when the new owner
-        # previously muted the conversation.
+        # Direct assignment creates responsibility even for an owner who has
+        # muted the conversation.
         respect_mute=False,
     )
 

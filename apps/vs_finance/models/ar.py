@@ -333,9 +333,9 @@ class PaymentAllocation(TimeStampedModel):
     A row is an immutable **event**, not a running total. A receipt applied to the
     same invoice in two goes writes two rows, because the two tranches credited AR on
     two different dates and an "as at" report has to be able to tell them apart. The
-    row used to be unique per (payment, invoice) and accumulate, which meant its
-    single ``effective_date`` could only describe one of the tranches - and whichever
-    it described, the reconstruction disagreed with the ledger for the days between.
+    A row unique per (payment, invoice) that accumulated would have one
+    ``effective_date`` describing one of the tranches, and whichever it described
+    the reconstruction would disagree with the ledger for the days between.
     """
 
     payment = models.ForeignKey(

@@ -27,19 +27,20 @@ from vs_exports.catalogue import (
 )
 
 
-# Build the base queryset for user accounts.
-#
-# This mirrors UserListView exactly, and it has to: the Users console is a
-# PLATFORM console. Its School Users tab lists accounts belonging to school
-# tenants - other tenants than the caller's - and a dataset fenced to
-# `tenant=scope.tenant` returned only the platform tenant's own CX staff, so
-# exporting that tab produced an empty file while the table showed people.
-#
-# The fence still exists for everyone else. Only a caller whose own tenant is of
-# kind PLATFORM reads across tenants, which is the same condition the list
-# endpoint applies and the same one that already governs what they can see on
-# screen. A school-tenant caller exporting users still gets only their own.
 def _users(scope):
+    """The base queryset for user accounts, mirroring ``UserListView`` exactly.
+
+    It has to mirror it. The Users console is a PLATFORM console, and its
+    School Users tab lists accounts belonging to school tenants rather than
+    the caller's own, so a dataset fenced to ``tenant=scope.tenant`` returns
+    only the platform tenant's CX staff and exports that tab as an empty file
+    while the table shows people.
+
+    The fence still holds for everyone else. Only a caller whose own tenant is
+    of kind PLATFORM reads across tenants, which is the condition the list
+    endpoint applies and the one already governing what they see on screen. A
+    school-tenant caller exporting users gets only their own.
+    """
     from vs_tenants.models import Tenant
 
     from .models import User
@@ -93,12 +94,11 @@ def register_datasets():
                   description="The account's identity - always exported."),
             Field("first_name", "First name", "Person", KIND_TEXT),
             Field("last_name", "Last name", "Person", KIND_TEXT),
-            # What the "Type" column used to be. It said Staff / Student /
-            # Parent, and an access review cannot act on any of those: two rows
-            # both reading "Staff" are a principal and a Year 4 teacher. The
-            # role is the answer a reviewer needs, and unlike the persona it is
-            # also the thing that decides what the person may do. The platform
-            # / tenant split the column also carried is ``tenant_kind`` below.
+            # The role, not a persona. An access review cannot act on Staff /
+            # Student / Parent: two rows both reading "Staff" are a principal
+            # and a Year 4 teacher. The role is what a reviewer needs, and it
+            # is also what decides what the person may do. The platform/tenant
+            # split is ``tenant_kind`` below.
             Field("role", "Role", "Account", KIND_TEXT),
             Field("status", "Status", "Account", KIND_CHOICE, choices=_USER_STATUS),
             Field("is_active", "Active", "Account", KIND_TEXT),
@@ -225,13 +225,10 @@ def _translate_users(params):
 
     filters, unmapped = [], []
     if scope := params.get("scope"):
-        # The screen's two tabs are "CX" and "School", and that split is by
-        # tenant KIND: CX staff are the platform tenant's users. An earlier
-        # version mapped this to "every user_type except CX_STAFF", which is a
-        # different question and produced an empty file - the rows it wanted
-        # live in other tenants entirely. Filter the same column the list view
-        # does. The screen no longer offers a persona filter at all, so this is
-        # the whole of the mapping.
+        # The screen's two tabs split by tenant KIND: CX staff are the platform
+        # tenant's users. Filtering by persona instead asks a different question and
+        # produces an empty file, because the rows it wants live in other tenants
+        # entirely. Filter the same column the list view does.
         if scope == "school":
             filters.append({"id": "tenant_kind", "values": [
                 str(k) for k in Tenant.Kind.values if k != Tenant.Kind.PLATFORM

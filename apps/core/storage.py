@@ -17,10 +17,10 @@ its owning record a moment later (:mod:`core.binding`); ``MediaView`` then refus
 any read whose tenant, owning record or signature does not agree with the caller.
 See :mod:`core.media` for what each of those checks catches.
 
-The high-entropy name (:meth:`get_available_name`) survives as defence in depth,
-not as the access control it used to be. It stops a path like
-``expense-receipts/receipt.pdf`` from being typed into a browser; it never stopped
-a name that had been handed out once from working for ever, for anyone.
+The high-entropy name (:meth:`get_available_name`) is defence in depth and not
+the access control. It stops a path like ``expense-receipts/receipt.pdf`` from
+being typed into a browser; it does nothing about a name that has been handed
+out once and then works for ever, for anyone.
 """
 from __future__ import annotations
 

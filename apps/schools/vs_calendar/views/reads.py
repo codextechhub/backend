@@ -6,12 +6,13 @@ is coming next, and what is wrong if anything is.
 
 **Two alerts here can never be produced through the API**, and they stay.
 ``TERM_OUTSIDE_SESSION`` and ``TERM_DATES_OVERLAP`` are both refused at write
-time by M13 and backed by a check constraint, so a calendar built through the
+time by ``vs_academics`` and backed by a check constraint, so a calendar built
+through the
 API cannot contain either. Rows arrive by import, by fixture and by migration
 too, and a school year that is quietly malformed produces a calendar that is
 wrong everywhere and blamed nowhere. They are read-only observations: this
-module reports them and must not try to correct them, because the write path is
-M13's.
+module reports them and must not try to correct them, because the write path
+belongs to ``vs_academics``.
 
 **Two alerts and two counts here are not in FRD v3.0.1, and are deliberate.**
 Its FR-007 forbids a timetable figure or a clash on this response. That text is
@@ -278,8 +279,9 @@ class OverviewView(CalendarViewMixin, APIView):
                 "ids": [],
             })
 
-        # Defensive: M13 refuses both at write time and a check constraint backs
-        # it, so neither can arrive through the API. Rows arrive other ways.
+        # Defensive: ``vs_academics`` refuses both at write time and a check
+        # constraint backs it, so neither arrives through the API. Rows arrive
+        # other ways.
         outside = [
             t for t in terms
             if t.start_date < session.start_date or t.end_date > session.end_date

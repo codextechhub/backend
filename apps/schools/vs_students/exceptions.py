@@ -38,8 +38,9 @@ class DuplicateStudent(StudentsError):
 class YearIsClosed(StudentsError):
     """A write aimed at a school year that has been archived.
 
-    Carries M13's error code rather than one of its own. It is the same
-    refusal about the same year, and a client that already knows how to render
+    Carries ``vs_academics``' error code rather than one of its own. It is the
+    same refusal about the same year, and a client that already knows how to
+    render
     it should not have to learn a second name for it because the row being
     written belongs to a different module.
     """
@@ -54,10 +55,9 @@ class YearIsClosed(StudentsError):
 class ClassBelongsToAnotherYear(StudentsError):
     """The class named is a different year's class of the same name.
 
-    Only reachable since M13 gave classes a year. Before that a school had one
-    JSS1 A and there was nothing to get wrong; now it has one per year, all
-    called JSS1 A, and an id from the wrong one looks entirely normal on every
-    screen that renders the name.
+    Reachable because a class belongs to a year. A school has one JSS1 A per
+    year, all called JSS1 A, so an id from the wrong one looks entirely normal
+    on every screen that renders the name.
     """
 
     error_code = "CLASS_BELONGS_TO_ANOTHER_YEAR"

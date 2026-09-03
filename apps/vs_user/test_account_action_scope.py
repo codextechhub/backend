@@ -220,7 +220,7 @@ class AccountActionTenantScopeTests(TestCase):
 
         Amaka administers Bright Star. She sends the primary key of Tunde, a
         Greenfield teacher she has never heard of, to each of the eight
-        endpoints. Every one of them used to do the work.
+        endpoints. Unscoped, every one of them does the work.
         """
         for action in ACTIONS:
             with self.subTest(action=action):

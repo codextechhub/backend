@@ -402,9 +402,8 @@ def run(tenant, user, *, from_session, to_session, overrides=None, branch=None):
     students already moved - which is what makes the batch restartable.
     """
     # The branch travels INTO the classification, not just onto the batch row.
-    # It used to be stamped on the record and nowhere else, so a run labelled
-    # "Main Branch" promoted every branch's students and the label was the only
-    # thing that said otherwise.
+    # Stamped on the record alone, a run labelled "Main Branch" promotes every
+    # branch's students and the label is the only thing that says otherwise.
     plan = classify(
         tenant, user, from_session=from_session, to_session=to_session,
         overrides=overrides, branch=branch,

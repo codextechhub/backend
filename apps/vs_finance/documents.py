@@ -215,9 +215,9 @@ def invoice_document_context(invoice) -> dict:
             "amount_paid": format_naira(invoice.amount_paid),  # Display paid amount.
             "balance_due": format_naira(invoice.balance_due),  # Display outstanding balance.
             "qr_payload": invoice.document_number,  # QR payload currently uses document number.
-            # The public pay page. The printable invoice is handed to the same
-            # customer the email goes to, so its "Pay online" control has to be a
-            # real destination rather than the dead chip it used to draw.
+            # The public pay page. The printable invoice reaches the same
+            # customer the email does, so its "Pay online" control has to be a
+            # real destination rather than a dead chip.
             "pay_url": invoice_pay_url(invoice),
         },
     }

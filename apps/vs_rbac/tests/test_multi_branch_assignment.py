@@ -4,11 +4,11 @@
 constraints allow at most one active whole-tenant grant of a role per person,
 *and* at most one active grant of a role per person per branch. Mr Eze teaching
 at Ikeja on Mondays and Lekki on Thursdays is one person holding one role twice,
-and the schema has always been able to record it.
+and the schema records it.
 
-Both API write paths then refused it, because each looked for a duplicate on
-``(tenant, user, role, ACTIVE)`` and never mentioned ``branch``. The schema
-permitted the arrangement; the API forbade it. These tests pin the corrected
+An API write path that looks for a duplicate on ``(tenant, user, role, ACTIVE)``
+without mentioning ``branch`` refuses that arrangement, so the schema permits
+what the API forbids. These tests pin the
 rule at both write paths, and pin the half that must not regress with it: two
 whole-tenant grants of one role are still one too many, and getting the NULL
 handling wrong is precisely how that guarantee would be lost.

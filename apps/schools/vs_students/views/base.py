@@ -144,11 +144,11 @@ class StudentsViewMixin:
         """The branch this request asked to be narrowed to, or None.
 
         Resolved ONCE per request and cached, and read by every list and every
-        aggregate in the module. It used to live inline in the student list and
-        nowhere else, which meant the directory's table narrowed to a branch
-        while the summary above it kept answering for the whole school - 87
-        students printed over 49 rows, with nothing on screen saying which was
-        which. A registrar reporting a branch's roll read the wrong number.
+        aggregate in the module. Resolved inline in the student list alone, the
+        directory's table narrows to a branch while the summary above it keeps
+        answering for the whole school: 87 students printed over 49 rows, with
+        nothing on screen saying which is which, and a registrar reporting a
+        branch's roll reads the wrong number.
 
         Ignored at a single-branch school: the dimension has receded from every
         response there, so a branch parameter is meaningless rather than wrong.

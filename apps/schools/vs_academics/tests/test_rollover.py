@@ -651,11 +651,11 @@ class ScrappingAProgrammeTests(_Base):
             self.assertEqual(counts["Sciences"], 1, f"wrong in {year.name}")
 
     def test_it_is_never_deleted_only_left_out_of_the_new_year(self):
-        """There is no delete to refuse any more, which is the stronger answer.
+        """There is no delete to refuse, which is the stronger answer.
 
-        The refusal used to have to explain that last year still held levels.
-        Now the route is gone: a programme is part of what a school ran, and
-        the way to stop running it is to leave it out of the new year.
+        A programme is part of what a school ran, so the way to stop running it
+        is to leave it out of the new year rather than to delete it and be
+        refused because last year still holds levels.
         """
         url = reverse(
             "academics-program-detail", kwargs={"pk": self.commercial.pk},

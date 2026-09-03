@@ -434,26 +434,24 @@ class EntityAuditTrail(models.Model):
     ``entity_label``, the only human handle on a row keyed by a primary key
     ("Purchase order 00042 for the science block", not ``PurchaseOrder:42``).
 
-    **It is deliberately not a rollup.** It used to store ``event_count``,
-    ``first_event_at`` and ``last_event_at``, maintained by a ``register_event``
-    that only ever incremented. Nothing ever decremented, so the three columns
-    were a high-water mark rather than a count, and the platform console - the
-    one audience still reading the stored figure - was the audience most misled
-    by it. In ``cx_db`` 11 of 889 trails disagreed with the events beneath them,
-    ``User:1`` stored 1690 against 399 real events, and 10 trails described
-    entities with no events at all.
+    **It is deliberately not a rollup.** Stored ``event_count``,
+    ``first_event_at`` and ``last_event_at`` columns, maintained by a
+    ``register_event`` that only increments, are a high-water mark rather than
+    a count, and the platform console reading the stored figure is the audience
+    most misled by one.
 
-    That is not a bug you patch, because the drift is written into this repo's
-    own history: migration 0003 deleted every ``IMPERSONATED_REQUEST`` event and
-    left the counters standing, and migration 0004 - one migration later, same
-    table - had to carry 25 lines of hand-written recount to avoid repeating it.
-    A stored total obliges every future deletion to remember, and the first one
-    already forgot. Nor could the columns be repaired: the events they counted
-    are gone, and a recomputed number is still a number the next reader has no
-    way to tell apart from a stale one.
+    The drift is not patchable, because a stored total obliges every future
+    deletion to remember it. This repo's own history shows how that goes:
+    migration 0003 deleted every ``IMPERSONATED_REQUEST`` event and left the
+    counters standing, and migration 0004, one migration later on the same
+    table, had to carry 25 lines of hand-written recount to avoid repeating it.
+    Repair does not help either: the events a stale number counted are gone,
+    and a recomputed one is still a number the next reader cannot tell apart
+    from a stale one.
 
-    So the three columns were dropped (migration 0011) and the counters are now
-    computed from ``AuditEvent`` for the caller asking, over the index
+    So there are no counter columns (migration 0011 dropped them) and the
+    counters are computed from ``AuditEvent`` for the caller asking, over the
+    index
     ``(entity_type, entity_id, event_at)`` that has been on that table since
     migration 0002. See :func:`vs_audit.scoping.visible_trail_counters`: one
     grouped query answers a whole page, for a tenant caller and a platform

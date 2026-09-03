@@ -7,12 +7,11 @@ Two callers must agree about a document that has not been submitted yet:
 * a domain gate such as :func:`vs_finance.approvals.approval_required` - may
   this document take the direct-post path instead?
 
-They used to answer from two hand-copied cascades, and a gate that only asked
-*"does a template exist"* while the engine asked *"which stage would activate"*
-disagreed the moment a ladder's stages were all conditional: the gate refused
-the direct post for a document the engine would route past every approval stage
-on, leaving no route to the ledger at all. Both questions are answered here now,
-so the two cannot drift again.
+Both are answered here, from one cascade, so they cannot drift. Two hand-copied
+cascades disagree the moment a ladder's stages are all conditional: a gate that
+asks *"does a template exist"* while the engine asks *"which stage would
+activate"* refuses the direct post for a document the engine would route past
+every approval stage on, leaving no route to the ledger at all.
 
 Nothing in this module writes; it is safe to call on a read path.
 """

@@ -142,10 +142,10 @@ INSTALLED_APPS = [
     # After vs_academics: this app points at its session, class and subject,
     # which is the order the dependency runs in.
     "schools.vs_calendar",
-    # M9. School-specific by construction, so it sits beside vs_schools under
+    # School-specific by construction, so it sits beside vs_schools under
     # apps/schools/ and never beside the domain-neutral engines.
     "schools.vs_onboarding",
-    # M11. After vs_academics: every ClassEnrolment row carries two non-null
+    # After vs_academics: every ClassEnrolment row carries two non-null
     # foreign keys into it, so that is the order the dependency runs in.
     "schools.vs_students",
     # The Finance Abstraction Layer: the boundary where school words meet the
@@ -340,6 +340,20 @@ HEALTH_PROBE_BASE_URL = config(
     "HEALTH_PROBE_BASE_URL", default="https://api.codexng.com"
 ).rstrip("/")
 HEALTH_SSL_DOMAIN = config("HEALTH_SSL_DOMAIN", default="api.codexng.com")
+
+# Where this API answers from, for the few absolute links that must point at it
+# rather than at an application.
+#
+# Its own setting rather than a second use of HEALTH_PROBE_BASE_URL above, which
+# happens to hold the same value: that one names where the synthetic probes
+# should knock, and somebody re-pointing the probes at a canary would silently
+# re-point the logo in every school's email with it.
+#
+# Read at call time, never frozen into an f-string here - see the note on
+# PAYMENTS_CALLBACK_URL below for the staging incident that rule comes from.
+API_PUBLIC_BASE_URL = config(
+    "API_PUBLIC_BASE_URL", default="https://api.codexng.com"
+).rstrip("/")
 
 # --------------------------------------------------------------------------- #
 # Payment providers (vs_payments)                                             #

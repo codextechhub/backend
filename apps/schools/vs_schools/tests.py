@@ -610,7 +610,7 @@ class BranchMoveMigrationTests(_MigrationHarness):
         self.assertNotIn("vs_schools__school__38f3c1_idx", constraints)
         self.assertNotIn("vs_schools__school__e52510_idx", constraints)
         self.assertNotIn("vs_schools__school__b13fda_idx", constraints)
-        # The uniqueness phase B added must survive the re-keying.
+        # The uniqueness guarantees must survive the re-keying.
         self.assertIn("uq_branch_tenant_code", constraints)
         self.assertIn("uq_branch_one_main_per_tenant", constraints)
 
@@ -978,11 +978,11 @@ class SchoolDetailMissingSlugTests(TestCase):
 class SchoolDetailCarriesTheSchoolIdTests(TestCase):
     """The detail response names the school it is describing.
 
-    ``SchoolListSerializer`` has always carried ``id`` - the scoped endpoints
-    (vs_config entitlements and overrides, notification settings) key on it -
-    but the detail serializer did not, and the detail response is the one a
-    console screen is built from. With audit trails now keyed on the primary
-    key it became load-bearing: a "view this school's audit trail" link needs
+    ``SchoolListSerializer`` carries ``id`` because the scoped endpoints
+    (vs_config entitlements and overrides, notification settings) key on it,
+    and the detail response is the one a console screen is built from, so it
+    needs the same. Audit trails are keyed on the primary key, which makes it
+    load-bearing: a "view this school's audit trail" link needs
     ``School:<pk>``, and the screen showing the school could not supply it
     without going back to the list for the id of the school already on screen.
     """

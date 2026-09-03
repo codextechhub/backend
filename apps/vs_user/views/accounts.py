@@ -117,12 +117,11 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         )
 
         # Who this caller may touch at all: the tenant boundary and the branch
-        # narrowing, both from ``account_scope``. This used to be two clauses
-        # written out here and nowhere else, which is why the six by-id account
-        # actions (suspend, unlock, reactivate, email change, admin password
-        # reset, invitation resend) had neither - the same line is what stops an
-        # Ikeja admin deactivating a Lekki-posted colleague by id, and what stops
-        # a Bright Star admin suspending a Greenfield teacher by id.
+        # narrowing, both from ``account_scope``. Shared rather than written out
+        # here, so the six by-id account actions (suspend, unlock, reactivate,
+        # email change, admin password reset, invitation resend) get it too.
+        # It is what stops an Ikeja admin deactivating a Lekki-posted colleague
+        # by id, and a Bright Star admin suspending a Greenfield teacher.
         qs = administrable_users(self.request, qs)
 
         qs = qs.exclude(status__in=[User.Status.PENDING_APPROVAL, User.Status.REJECTED])

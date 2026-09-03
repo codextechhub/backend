@@ -15,8 +15,8 @@ the thing that actually matters: a grant written by school onboarding has to be
 the same row vs_config's own evaluation reads back. Asserting only "a row
 exists" would have passed against the old scope key too.
 
-No test previously created a school with ``package_setup_data``, which is why a
-crash on the main creation path went unnoticed.
+Creating a school with ``package_setup_data`` is the main creation path, so it
+has to be exercised here rather than assumed.
 """
 from datetime import timedelta
 
@@ -441,11 +441,11 @@ class SchoolPackageEntitlementTests(TestCase):
 
 
 class PlanBranchCeilingTests(TestCase):
-    """``PackagePlan.max_branch``, which nothing used to read.
+    """``PackagePlan.max_branch``, and the creation paths that must read it.
 
-    The column was there, ``seed_package`` filled it with real numbers - Starter
-    1, Standard 5, Premium 20 - and the plans screen showed them, and no
-    creation path ever looked. Bright Star signed for one site and opened four.
+    ``seed_package`` fills the column with real numbers - Starter 1, Standard 5,
+    Premium 20 - and the plans screen shows them, so a creation path that does
+    not look lets Bright Star sign for one site and open four.
     That is not a limit a school worked around, it is a promise the product made
     on its own pricing page and then broke by itself.
 

@@ -1,7 +1,7 @@
 """One request for the console landing screen (`/overview`).
 
-The screen shows eight numbers that used to be eight endpoints. They were already
-issued in parallel, so the cost was never their sum - the win here is elsewhere:
+The screen shows eight numbers in one request rather than eight. Eight calls
+would be issued in parallel, so the cost is not their sum; the win is elsewhere:
 
   * one authentication, tenant resolution and permission evaluation instead of
     eight;
@@ -91,9 +91,9 @@ def _team(user, tenant) -> dict:
 def _tasks(user) -> dict:
     """Own-task headline plus the few the panel lists.
 
-    Ordering mirrors what the screen used to do client-side: overdue first, then
-    by priority, then by nearest deadline. Sorted in Python over the list that
-    ``stats_for`` already materialised - no second query.
+    Ordered overdue first, then by priority, then by nearest deadline, which is
+    the order the screen presents. Sorted in Python over the list ``stats_for``
+    has already materialised, so there is no second query.
     """
     from vs_todo.serializers import TaskSerializer
     from vs_todo.services.stats import own_tasks_qs, stats_for

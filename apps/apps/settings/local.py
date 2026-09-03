@@ -39,6 +39,10 @@ FRONTEND_BASE_URL = 'http://localhost:5173'  # Console (console-fe)
 # subdomain at call time: corona.localhost:5174 resolves to 127.0.0.1 without
 # any hosts-file entry, which is the same shape the onboarding seeder prints.
 SCHOOL_APP_BASE_URL = 'http://localhost:5174'  # school-fe
+# This API, for the links that point at it rather than at an application - the
+# school logo in an email is the one so far. Without this a locally sent email
+# would carry a production URL and quietly show no logo, or somebody else's.
+API_PUBLIC_BASE_URL = 'http://localhost:8000'
 
 # PostgreSQL - the only engine, same as staging and CI. The MariaDB
 # fallback was retired 2026-06-12; final dump: ~/cx_db_mariadb_final_backup.sql.gz

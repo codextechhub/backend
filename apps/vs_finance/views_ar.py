@@ -788,8 +788,8 @@ class PaymentListView(_FinanceBase):
                 | Q(customer__code__icontains=search) | Q(reference__icontains=search))
 
         # allocation_status is derived from allocated_amount/refunded_amount vs amount;
-        # express it as a DB filter so paging counts are correct (it used to filter
-        # post-slice in Python). Mirror PaymentSerializer.get_allocation_status exactly
+        # express it as a DB filter so paging counts are correct, never
+        # post-slice in Python. Mirror PaymentSerializer.get_allocation_status
         # - refunded is checked before unallocated, or refunded cash would be counted
         # as still available.
         status_f = request.query_params.get("status")

@@ -6,9 +6,8 @@ disagreement.** That section defines a teacher as a ``vs_user.User`` "whose
 length that a domain read of it does not violate the instruction that it must
 never drive authorization. The column does not exist. ``vs_user`` migration
 ``0008_drop_admin_user_types`` retired the SCHOOL_ADMIN and BRANCH_ADMIN
-personas and ``0009_drop_user_type`` dropped the field, and
-``vs_user/models.py`` now reads, where the choices used to be: "There is
-deliberately no ``UserType``."
+personas and ``0009_drop_user_type`` dropped the field. ``vs_user.User`` says
+so in its own docstring: there is deliberately no persona column.
 
 **A teacher is therefore a role grant, not a persona.** Specifically: a user of
 this tenant, ACTIVE, holding an ACTIVE ``TenantUserRoleAssignment`` to a
@@ -36,8 +35,8 @@ replacement is an improvement rather than a workaround:
 **What this still gets wrong, stated rather than hidden.** A teacher who has not
 been given a login does not appear, and neither does one whose role assignment
 nobody made. Both are real at a Nigerian secondary school. This is good enough
-to build a timetable on and it is not a staffing register; M12 owns that, and
-when it lands this module changes one function.
+to build a timetable on and it is not a staffing register. A staff module owns
+that, and when one lands this module changes one function.
 
 **What it must never grow.** No specialism, no availability, no qualification,
 no maximum load, no suggested-teacher ranking, and no workload figure carrying a

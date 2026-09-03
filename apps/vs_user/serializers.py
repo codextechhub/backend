@@ -179,11 +179,10 @@ class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     school_id    = serializers.SerializerMethodField()
     school_name  = serializers.SerializerMethodField()
     branch_name  = serializers.CharField(source='branch.name', read_only=True, default=None)
-    # Replaces the ``user_type`` column this list used to carry. The console's
-    # two tabs are CX and School, and that split has always been the tenant's
-    # kind - ``scope=school`` on the list endpoint already filters on exactly
-    # this. What the tab could not say per row, this says per row. The human
-    # answer to "who is this person here" is ``role``, which is beside it.
+    # The console's two tabs are CX and School, and that split is the tenant's
+    # kind: ``scope=school`` on the list endpoint filters on exactly this. What
+    # the tab says for a whole page, this says per row. The human answer to
+    # "who is this person here" is ``role``, beside it.
     tenant_kind  = serializers.CharField(source='tenant.kind', read_only=True)
     invited_by_name         = serializers.SerializerMethodField()
     invitation_email_status = serializers.SerializerMethodField()
@@ -349,8 +348,8 @@ class UserCreateSerializer(serializers.Serializer):
                 target_tenant, branch_ref not in (None, ''),
             )
             if error:
-                # Reported on 'branch' now. It used to be reported on
-                # 'user_type', which was never the field the caller got wrong.
+                # Reported on 'branch', the field the caller actually got
+                # wrong.
                 raise serializers.ValidationError({'branch': error})
             attrs['branch'] = None
         else:

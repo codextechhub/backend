@@ -71,10 +71,10 @@ class DuplicateTermOrder(AcademicsError):
 class DuplicateLevelOrder(AcademicsError):
     """Two levels in one programme sharing a position.
 
-    ``uq_academic_level_order`` stops it and answered the generic duplicate
-    message. The level's name and code have carried written refusals since
-    ``services/uniqueness.py`` was added; its position was left behind, because
-    that helper only knows about names and codes.
+    ``uq_academic_level_order`` stops it, and without this the refusal is the
+    generic duplicate message. ``services/uniqueness.py`` writes the refusals
+    for a level's name and code but knows about nothing else, so position needs
+    its own.
     """
 
     error_code = "DUPLICATE_LEVEL_ORDER"

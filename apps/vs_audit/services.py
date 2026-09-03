@@ -229,10 +229,10 @@ def emit_audit_event(
     serializers, the onboarding effects - and a *database* error here (not a
     Python one) marks the whole enclosing transaction for rollback. Catching
     the exception was not enough: the caller carried on, and its own legitimate
-    write was then refused at commit with TransactionManagementError. So an
-    audit failure used to be able to destroy the business change it was only
-    supposed to describe. Rolling back to a savepoint confines the damage to
-    the audit row, which is the stated contract.
+    write is then refused at commit with TransactionManagementError, so an
+    audit failure destroys the business change it is only supposed to describe.
+    Rolling back to a savepoint confines the damage to the audit row, which is
+    the stated contract.
     """
     from .models import AuditEvent, AuditActorType, EntityAuditTrail
 

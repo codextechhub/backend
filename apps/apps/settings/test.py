@@ -1,11 +1,12 @@
 """
 Test settings.
 
-PostgreSQL, like local, CI, staging and production. SQLite used to live here
-because it needs no server, and it cost more than it saved: threaded tests,
-row locking (select_for_update), the finance audit trigger and the branch-code
-allocator all behave differently or not at all on it, so a green local run
-could hide a broken deploy and a red one could mean nothing. There is now one
+PostgreSQL, like local, CI, staging and production. SQLite needs no server,
+which is the only thing it has to recommend it here, and it costs more than it
+saves: threaded tests, row locking (select_for_update), the finance audit
+trigger and the branch-code allocator all behave differently or not at all on
+it, so a green local run can hide a broken deploy and a red one can mean
+nothing. There is one
 engine everywhere.
 
 Celery runs EAGER (in-process). Without it, every test that dispatches a

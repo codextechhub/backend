@@ -1,27 +1,26 @@
-# email_normalization.py
-# The one place an email address is folded to the form the database stores.
-#
-# Why this is a module of its own
-# ------------------------------
-# Django's ``BaseUserManager.normalize_email`` lowercases only the DOMAIN, so
-# ``Ada@Gmail.com`` comes out of it as ``Ada@gmail.com`` with its capital
-# intact. PostgreSQL unique indexes are case sensitive, so two rows differing
-# only in case can sit side by side, while every lookup in this codebase asks
-# for ``email__iexact`` and takes ``.first()``. Half-normalising is therefore
-# worse than not normalising at all: it lets a pair exist that no lookup can
-# tell apart.
-#
-# Before this module there were two spellings of "already exists" - one using
-# ``iexact`` and one using ``=`` - so one creation path forbade a duplicate the
-# other happily created. Both now normalise their input here and compare
-# exactly, which is only sound because ``User.save``/``full_clean`` and the
-# ``ck_user_email_lowercase`` database constraint guarantee every stored
-# address is already in this form.
-#
-# This module imports nothing from the project on purpose: the data migration
-# that repairs historical rows imports it too, and a migration must not drag in
-# the current models.
+"""email_normalization.py
+The one place an email address is folded to the form the database stores.
 
+Why this is a module of its own
+Django's ``BaseUserManager.normalize_email`` lowercases only the DOMAIN, so
+``Ada@Gmail.com`` comes out of it as ``Ada@gmail.com`` with its capital
+intact. PostgreSQL unique indexes are case sensitive, so two rows differing
+only in case can sit side by side, while every lookup in this codebase asks
+for ``email__iexact`` and takes ``.first()``. Half-normalising is therefore
+worse than not normalising at all: it lets a pair exist that no lookup can
+tell apart.
+
+Before this module there were two spellings of "already exists" - one using
+``iexact`` and one using ``=`` - so one creation path forbade a duplicate the
+other happily created. Both now normalise their input here and compare
+exactly, which is only sound because ``User.save``/``full_clean`` and the
+``ck_user_email_lowercase`` database constraint guarantee every stored
+address is already in this form.
+
+This module imports nothing from the project on purpose: the data migration
+that repairs historical rows imports it too, and a migration must not drag in
+the current models.
+"""
 from __future__ import annotations
 
 

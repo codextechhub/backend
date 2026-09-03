@@ -64,7 +64,7 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "students", "update",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "students", "manage",           _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "students", "view_sensitive",   _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
-    # M11. school_admin only for import: a bad import is the fastest way to
+    # school_admin only for import: a bad import is the fastest way to
     # damage a school's records and is reversible only through the engine's
     # rollback. Export reaches branch_admin because a branch admin exports
     # their own branch's roll and cannot reach anybody else's.
@@ -145,7 +145,7 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("academics", "classes", "manage",         _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("academics", "classes", "assign",         _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
 
-    # M13 Academic Structure. "structure" covers departments, programs and
+    # Academic structure. "structure" covers departments, programs and
     # levels, which are one screen and one mental object to a school; "subject"
     # is its own resource because a branch admin may create one and may not
     # create a programme. Sessions and classes reuse the resources above.
@@ -154,7 +154,7 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("academics", "structure", "update",       _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
     ("academics", "structure", "manage",       _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
-    # M14. A resource of its own rather than four more uses of the calendar
+    # A resource of its own rather than four more uses of the calendar
     # keys: adding a public holiday and rebuilding the school's entire timetable
     # are not one act. Merging them would also hand academics.calendar.manage,
     # which is SENSITIVE and school_admin-only, the power to delete a grid.

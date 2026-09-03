@@ -1,16 +1,15 @@
-# services/organogram.py
-# Business logic for the CX-staff organogram (org chart).
-#
-# OrganogramService owns:
-#   - Assigning a user to a position (with primary-seat handling + history)
-#   - Closing / ending an assignment
-#   - Resolving a user's manager chain along the solid reporting line
-#   - Building the position tree
-#   - Listing vacancies
-#   - Resolving organogram-based approvers for the workflow engine
-#     (the four climb modes: direct manager, N levels up, department head,
-#      specific position)
+"""Business logic for the CX-staff organogram (org chart).
 
+OrganogramService owns:
+  - Assigning a user to a position (with primary-seat handling + history)
+  - Closing / ending an assignment
+  - Resolving a user's manager chain along the solid reporting line
+  - Building the position tree
+  - Listing vacancies
+  - Resolving organogram-based approvers for the workflow engine
+    (the four climb modes: direct manager, N levels up, department head,
+     specific position)
+"""
 from __future__ import annotations
 
 from typing import List, Optional

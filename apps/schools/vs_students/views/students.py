@@ -149,7 +149,7 @@ class StudentListCreateView(StudentsViewMixin, generics.ListCreateAPIView):
     @transaction.atomic
     def create(self, request, *args, **kwargs):
         # Two keys, not one. Enrolment creates a record AND seats the child,
-        # and seating is M13's power. Checked before anything is validated so
+        # and seating is vs_academics' power. Checked before validation so
         # the refusal is a 403 and not a validation error.
         self.assert_holds(PERM_CREATE, PERM_CLASS_ASSIGN)
 

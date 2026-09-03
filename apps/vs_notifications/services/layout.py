@@ -52,6 +52,10 @@ _HEADER   = "#0f2747"
 # Stored standard templates use this domain-neutral key. The render service
 # derives it from the issuer, entity, or tenant context before substituting it.
 EMAIL_BRAND_PLACEHOLDER = "{{ email_brand }}"
+# The header mark's placeholder. Paired with EMAIL_BRAND_PLACEHOLDER above: the
+# stored document keeps both, and dispatch substitutes them per recipient, so a
+# template seeded once still signs itself with each school's own logo.
+EMAIL_BRAND_LOGO_PLACEHOLDER = "{{ brand_logo_url }}"
 
 _FONT = (
     "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, "
@@ -131,6 +135,7 @@ def compose_email_html(
     cta_label: str = "",
     cta_url: str = "",
     brand: str = "",
+    brand_logo_url: str = "",
     as_template: bool = False,
     placeholder_cta: bool = False,
 ) -> str:
@@ -154,6 +159,8 @@ def compose_email_html(
         cta_label:       Button label. Ignored when cta_url is empty.
         cta_url:         Button destination. Empty means no button.
         brand:           Sender name for the header strip. Falls back to the platform.
+        brand_logo_url:  Absolute http(s) image for the header mark. Empty, or
+                         anything else, leaves the platform's own initials.
         as_template:     Compose a reusable template document (see above).
         placeholder_cta: Keep a non-http destination (a {{ variable }}).
 
@@ -182,6 +189,7 @@ def compose_email_html(
 
     brand = _clean(brand) or BRAND_FALLBACK
     headline = _clean(subject) or brand
+    mark = _brand_mark_html(brand_logo_url, keep_placeholders=keep_placeholders)
     content = _blocks_to_html(body or "", skip_url=cta_url)
     button = _button_html(cta_label, cta_url) if cta_url else ""
     brand_text = _text(brand)
@@ -216,7 +224,7 @@ style="width:100%;border-collapse:collapse;">
 style="width:42px;border-collapse:separate;">
 <tr><td width="42" height="42" align="center" valign="middle" \
 style="width:42px;height:42px;background-color:{_HEADER};border-radius:11px;\
-color:#ffffff;font-size:13px;font-weight:800;letter-spacing:.5px;">CV</td></tr>
+color:#ffffff;font-size:13px;font-weight:800;letter-spacing:.5px;">{mark}</td></tr>
 </table>
 </td>
 <td valign="middle" style="padding-left:12px;">
@@ -260,6 +268,50 @@ Powered by CodeX Vision</p>
 """)
 
 
+# What sits in the 42px header square: a school's own logo, or the platform's
+# initials.
+def _brand_mark_html(logo_url: str, *, keep_placeholders: bool = False) -> str:
+    """The header mark, as HTML for the inside of the coloured square.
+
+    A school's own logo where there is one, so a parent opening a fee reminder
+    sees their school rather than a product they were never told about.
+    Otherwise the platform initials that were there before.
+
+    Two rules, both about the medium:
+
+    * Only absolute http(s), for the same reason the CTA has that rule: this is
+      interpolated into a document, and a ``javascript:`` or ``data:`` value has
+      no business in it. The URL is escaped as well as checked.
+    * ``alt=""``, deliberately empty. Most clients block remote images until the
+      reader allows them, and an alt string would leave the school's name
+      stranded inside a coloured box next to the same name in text. Empty alt
+      collapses to nothing and the square keeps its fill, which is the calmest
+      thing a blocked image can do here. The name is beside it either way.
+    """
+    url = (logo_url or "").strip()
+
+    # Template mode. The document is stored once and rendered per recipient, so
+    # the mark has to survive as a decision rather than an answer: wrapped in an
+    # {% if %} because a school without a logo would otherwise get <img src="">,
+    # which every mail client draws as a broken image.
+    if keep_placeholders and _is_placeholder(url):
+        return (
+            "{% if brand_logo_url %}"
+            f'<img src="{url}" width="42" height="42" alt="" '
+            'style="display:block;width:42px;height:42px;border-radius:11px;'
+            'object-fit:cover;border:0;">'
+            "{% else %}CV{% endif %}"
+        )
+
+    if not url.lower().startswith(("http://", "https://")):
+        return "CV"
+    return (
+        f'<img src="{_attr(url)}" width="42" height="42" alt="" '
+        'style="display:block;width:42px;height:42px;border-radius:11px;'
+        'object-fit:cover;border:0;">'
+    )
+
+
 # Resolve the header's sender name from the caller-supplied context.
 def brand_from_context(context: dict) -> str:
     """Return the first non-empty branding value in the context, else ""."""
@@ -268,6 +320,20 @@ def brand_from_context(context: dict) -> str:
         if value:
             return value
     return ""
+
+
+# Resolve the header's mark from the caller-supplied context.
+def brand_logo_from_context(context: dict) -> str:
+    """Return the caller's brand logo URL, else "".
+
+    Read from the context rather than looked up here, and that is the point:
+    resolving it would mean this engine app knowing what a school is, walking
+    tenant -> school profile -> branding to find one. The sender NAME arrives
+    the same way, from the caller that already holds the record.
+    """
+    if not context:
+        return ""
+    return _clean(str(context.get("brand_logo_url") or ""))
 
 
 # ---------------------------------------------------------------------------

@@ -155,7 +155,7 @@ class TheYearTravelsIntoTheExportTests(SimpleTestCase):
     Levels, classes and subjects each belong to exactly one, so an export that
     ignored the lens handed a school three years of JSS1 A stacked on top of
     each other - and, with no year column, no way to tell which was which.
-    "session" used to sit in the ignore list, from when the pill was a caption.
+    "session" is a filter and not a caption, so it must never be ignored.
     """
 
     def screen(self, key):

@@ -27,8 +27,8 @@ So the token now carries two more things, and both are checked on the way back i
 
 * ``v``, the invoice's :attr:`~vs_finance.models.Invoice.pay_token_version`. Bumping it
   (:func:`revoke_pay_links`) invalidates the links for that invoice and no other -
-  which is what the RFQ vendor portal has always done with ``token_version``, and the
-  right answer here for the same reason;
+  which is what the RFQ vendor portal does with ``token_version``, and the right
+  answer here for the same reason;
 * an age. :data:`TOKEN_MAX_AGE` bounds how long a copy stays live, so a link nobody
   revoked still dies on its own. It is deliberately generous, and it costs a slow payer
   nothing: every dunning email renders a fresh URL through :func:`invoice_pay_url`, so

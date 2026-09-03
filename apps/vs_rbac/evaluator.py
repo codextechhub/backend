@@ -6,11 +6,11 @@ role and assignment owned by the effective user's active tenant.
 Branch scope
 ------------
 An assignment may be pinned to one :class:`vs_tenants.Branch`, or left whole
-tenant (``branch IS NULL``). Reading that column correctly turns on the
-distinction between two questions ``branch=None`` used to answer at once:
+tenant (``branch IS NULL``). Reading that column correctly turns on keeping
+apart two questions a bare ``branch=None`` would answer at once:
 
 * *"the caller named no branch"* - what every permission gate means, and what
-  :data:`ANY_BRANCH` now says explicitly. Every grant the user holds counts,
+  :data:`ANY_BRANCH` says explicitly. Every grant the user holds counts,
   whole tenant or branch pinned;
 * *"the entity as a whole"* - the scope a document with ``branch IS NULL`` sits
   in, which only whole-tenant grants reach. That is what an explicit ``None``

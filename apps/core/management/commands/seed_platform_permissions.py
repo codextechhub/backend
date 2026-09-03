@@ -67,9 +67,9 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
         "team",
         # Staff account management, for whichever tenant holds it. These keys
         # are held inside schools as well as by CodeX (see TENANT_HOLDABLE_KEYS
-        # below), so the wording must be true for both readers. It used to say
-        # "Vision", which read as CodeX's own staff on a screen where a school
-        # was choosing what its own bursar could do.
+        # below), so the wording must be true for both readers. "Vision" reads
+        # as CodeX's own staff on a screen where a school is choosing what its
+        # own bursar may do.
         "Staff account management",
         [
             ("view",       "View staff accounts",              False, _NORMAL),

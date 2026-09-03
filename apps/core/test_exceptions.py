@@ -1,9 +1,9 @@
 """
 Tests for the project-wide DRF exception handler envelope.
 
-`ValidationError("some text")` renders as a bare list rather than a dict, and
-the handler used to call `.get("detail")` on it unconditionally - turning every
-such 400 anywhere in the API into a 500.
+`ValidationError("some text")` renders as a bare list rather than a dict, so a
+handler calling `.get("detail")` on it unconditionally turns every such 400
+anywhere in the API into a 500.
 """
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.test import TestCase

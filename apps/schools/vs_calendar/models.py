@@ -1,7 +1,7 @@
 """The dated contents of a school year, and the timetable that runs inside it.
 
-Eight models. M13 (``schools.vs_academics``) owns the year itself - the session,
-the term, the class and the subject - and this module points at them and never
+Eight models. ``schools.vs_academics`` owns the year itself - the session, the
+term, the class and the subject - and this module points at them and never
 re-specifies them. FRD v3.0.1 section 5 is the boundary.
 
 Every model carries its own ``tenant`` foreign key, even where its parent
@@ -388,7 +388,8 @@ class ClassTimetable(_Owned):
     models and only ``Exam`` carries ``status`` and ``published_at``. As
     specified, the publish endpoint has nothing to write to.
 
-    The state cannot live on ``SchoolClass``: that is M13's model, and a class
+    The state cannot live on ``SchoolClass``: that is ``vs_academics``' model,
+    and a class
     outlives a session while its timetable does not - the same class is a draft
     again next year.
 

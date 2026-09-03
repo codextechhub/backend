@@ -603,7 +603,7 @@ class ArchivedRowsAreReachableTests(_Base):
 
 
 class ALevelSaysWhetherItEndsTests(_Base):
-    """The three promotion states, and why two of them used to be one.
+    """The three promotion states, and why `next_level` alone gives two.
 
     `next_level` alone has two states and the school needs three. A level with
     no target is either the end of the road or a level nobody has wired yet,

@@ -1,4 +1,4 @@
-"""M9 School Onboarding: the control room, the checklist and the go-live gate.
+"""School onboarding: the control room, the checklist and the go-live gate.
 
 The tests are ordered the way the acceptance criteria are: security and
 tenancy first, because those are the ones that must not be deferred, then
@@ -309,12 +309,11 @@ class EndpointPermissionTests(OnboardingFixture):
 class SelfApprovalAttackTests(OnboardingFixture):
     """A school must not be able to take itself live, however it gets the key.
 
-    The defence used to be a sentence: ``onboarding.go_live.approve`` is
-    "granted to platform roles by default", so no school holds it. A default is
-    not a boundary. Both keys live in the ``onboarding`` module, so migration
-    0007 classified them TENANT, and the guard from ad41a03 - which refuses a
-    PLATFORM-scoped key granted inside a tenant - has nothing to say about
-    them. A school admin who can mint a role can mint one carrying either.
+"Granted to platform roles by default" is not a boundary, only a default.
+    Both keys live in the ``onboarding`` module, so migration 0007 classified
+    them TENANT, and the guard that refuses a PLATFORM-scoped key granted
+    inside a tenant has nothing to say about them. A school admin who can mint
+    a role can mint one carrying either.
 
     The gate is therefore the caller's asserted tenant, exactly as on
     :class:`OnboardingReinstateView`: only the platform tenant may decide.
@@ -658,10 +657,10 @@ class GoLiveQueueTests(OnboardingFixture):
     def test_the_reviewer_is_told_whether_the_school_has_books(self):
         """The books gate moved here when it left the school's checklist.
 
-        Books are provisioned at school creation on a best-effort basis. That
-        used to be a required step, blocking go-live until somebody looked;
-        removing it took the safety net away, so the fact is put in front of
-        the one person who can still act on it before the school trades.
+        Books are provisioned at school creation on a best-effort basis, and
+        the checklist does not carry it as a required step blocking go-live.
+        With no safety net there, the fact goes in front of the one person who
+        can still act on it before the school trades.
         """
         from vs_finance.models import LedgerEntity
 
@@ -1151,11 +1150,11 @@ class TaskTransitionTests(OnboardingFixture):
         )
 
     def test_a_required_task_cannot_be_skipped(self):
-        """The product decision that replaced "skippable but still blocking".
+        """A required task is refused outright, not skippable-but-blocking.
 
-        It used to be allowed and simply kept go-live blocked. It is now
-        refused outright, with a code of its own so the client can say why
-        rather than blaming the edge.
+        Allowing the skip and keeping go-live blocked leaves the client with
+        nothing to say beyond blaming the edge, so the refusal carries a code
+        of its own.
         """
         self.complete_all_but(self.tenant, TaskKey.ACADEMIC_STRUCTURE)
 

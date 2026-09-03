@@ -219,9 +219,9 @@ class ExecutorRefusesPlatformDatasetsTests(TestCase):
     def test_a_school_queued_branch_batch_is_skipped_too(self):
         """Branches moved out of the school's reach; the executor follows.
 
-        This test used to assert the opposite - that branches reached its
-        handler for a school - which is exactly the behaviour that let a school
-        create branches it cannot create through the branch endpoint.
+        A school-queued branch batch reaching its handler is exactly the
+        behaviour that would let a school create branches it cannot create
+        through the branch endpoint.
         """
         from unittest.mock import patch
 

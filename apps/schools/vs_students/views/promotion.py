@@ -118,7 +118,7 @@ class PromotionRunView(_PromotionBase):
         return super().get_permissions()
 
     def post(self, request):
-        # Two keys: the run writes placements, and placing is M13's power.
+        # Two keys: the run writes placements, and placing is vs_academics'.
         self.assert_holds(PERM_MANAGE, PERM_CLASS_ASSIGN)
 
         data = self._payload(request)

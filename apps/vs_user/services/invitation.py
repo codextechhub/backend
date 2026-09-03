@@ -1,12 +1,11 @@
-# services/invitation.py
-# All business logic for the invitation and activation flow.
-#
-# InvitationService handles:
-#   - Creating a UserInvitation when a new user is created
-#   - Validating the invitation by user_id (not token)
-#   - Activating the account when the user submits their password
-#   - Resending an invitation (resets expiry, dispatches new email)
+"""All business logic for the invitation and activation flow.
 
+InvitationService handles:
+  - Creating a UserInvitation when a new user is created
+  - Validating the invitation by user_id (not token)
+  - Activating the account when the user submits their password
+  - Resending an invitation (resets expiry, dispatches new email)
+"""
 from __future__ import annotations
 
 from datetime import timedelta

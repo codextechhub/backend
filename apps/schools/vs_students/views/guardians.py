@@ -15,6 +15,7 @@ from ..serializers import (
     GuardianDirectorySerializer,
     GuardianLinkSerializer,
     GuardianSerializer,
+    GuardianUpdateSerializer,
     GuardianWriteSerializer,
     StudentListSerializer,
 )
@@ -225,8 +226,31 @@ class GuardianDetailView(StudentsViewMixin, APIView):
     """
 
     def get_permissions(self):
-        self.rbac_permission = PERM_VIEW
+        # Reading needs `view`; correcting the record needs `update`, the same
+        # key that edits a student. A guardian's details are school data.
+        self.rbac_permission = (
+            PERM_UPDATE if self.request.method == "PATCH" else PERM_VIEW
+        )
         return super().get_permissions()
+
+    @transaction.atomic
+    def patch(self, request, pk):
+        """Correct a guardian's own details.
+
+        Scoped through ``self.guardian``, so another school's guardian answers
+        404 rather than 403 - an id must not reveal that a person exists
+        elsewhere.
+        """
+        guardian = self.guardian(pk)
+        writer = GuardianUpdateSerializer(data=request.data, partial=True)
+        writer.is_valid(raise_exception=True)
+        guardian, changed = guardian_service.update_guardian(
+            guardian, actor=request.user, **writer.validated_data,
+        )
+        return success_response(
+            f"{guardian.full_name} updated." if changed else "Nothing to change.",
+            data=GuardianSerializer(guardian).data,
+        )
 
     def get(self, request, pk):
         guardian = self.guardian(pk)

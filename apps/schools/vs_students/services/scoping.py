@@ -40,8 +40,8 @@ def scope_classes(queryset, user, tenant):
     """Narrow a *class* queryset - inclusive, because a class may be shared.
 
     A school-wide class has a null branch and belongs to every branch, so a
-    branch-bound caller must still see it. This is M13's rule and this module
-    reads through it rather than reimplementing it.
+    branch-bound caller must still see it. This is ``vs_academics``' rule and
+    this module reads through it rather than reimplementing it.
     """
     visible = visible_branch_ids(user, tenant)
     if visible is WHOLE_TENANT:

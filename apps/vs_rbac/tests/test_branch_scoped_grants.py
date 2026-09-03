@@ -215,11 +215,10 @@ class BranchScopedGrantVisibilityTests(_BranchGrantFixture):
     def test_a_whole_tenant_grant_outranks_the_holders_home_posting(self):
         """A school-wide role means the school, whatever the staff record says.
 
-        This assertion used to read ``frozenset({self.lekki.pk})``, on the
-        grounds that access came from the grant and visibility from
-        ``User.branch``. It cannot: two people holding the identical grant then
-        saw different schools depending on whether their staff record named a
-        site, which makes a home posting into a permission. The grant decides.
+        Access and visibility both come from the grant. Taking visibility from
+        ``User.branch`` instead has two people holding the identical grant see
+        different schools depending on whether their staff record names a site,
+        which makes a home posting into a permission. The grant decides.
         """
         legacy = self.person(self.tenant, "legacy@grant.test", branch=self.lekki)
         role = self.role_granting(self.tenant, "Finance Officer")
@@ -295,11 +294,12 @@ class WholeTenantGrantReachTests(_BranchGrantFixture):
     holds grants at withdrawn sites  nothing at all
     ===============================  =============================================
 
-    The first and the third used to be the same answer inside ``_grant_scope``,
-    which is what let a home posting narrow a school-wide grant. Each test below
-    names one row, and the last two are asserted against each other as well as
-    against themselves: ``frozenset()`` and "the whole tenant" are opposite
-    answers a single typo apart, and the typo widens rather than narrows.
+    The first and the third must stay distinct answers inside ``_grant_scope``:
+    collapsing them is what lets a home posting narrow a school-wide grant. Each
+    test below names one row, and the last two are asserted against each other
+    as well as against themselves, because ``frozenset()`` and "the whole
+    tenant" are opposite answers a single typo apart, and the typo widens
+    rather than narrows.
     """
 
     def setUp(self):

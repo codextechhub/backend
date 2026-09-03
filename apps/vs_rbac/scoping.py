@@ -27,14 +27,14 @@ Read in order, first match wins::
 
 A whole-tenant grant dominating is not a detail: it is what "whole tenant"
 means, and it is how everybody working today holds their access. It dominates
-``User.branch`` too, which is the part that was written down here and not
-delivered: the first arm and the last one both used to answer "no narrowing",
-the caller fell through to their home posting either way, and a Finance Officer
-for the whole school saw the one site her staff record happened to name. Two
-people holding the identical grant then saw different schools because one of
-them had a home posting and the other did not, which is a permission decided by
-a field that is not a permission. The grant wins; ``User.branch`` is the
-fallback for somebody whose grants say nothing, which is all it was ever for.
+``User.branch`` too. Let the first arm and the last one both answer "no
+narrowing" and the caller falls through to their home posting either way, so a
+Finance Officer for the whole school sees the one site her staff record happens
+to name, and two people holding the identical grant see different schools
+because one of them has a home posting and the other does not. That is a
+permission decided by a field which is not a permission. The grant wins;
+``User.branch`` is the fallback for somebody whose grants say nothing, which is
+all it is for.
 
 The branch arm may legitimately resolve to *nothing* (every granted branch has
 since been suspended or closed). That is an empty set, not a missing answer, and

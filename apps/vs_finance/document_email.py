@@ -215,10 +215,10 @@ def _invoice_context(invoice, delivery) -> dict:
         "due_date": invoice.due_date.isoformat() if invoice.due_date else "-",
         "school_name": _issuer_name(invoice.entity),
         "issuer_name": _issuer_name(invoice.entity),
-        # The public pay page for this invoice, not a checkout URL and not the
-        # post-payment return URL this used to send (which took the customer to a
-        # "thanks for paying" screen they had not paid on). The page mints the
-        # checkout when they click, so the amount is whatever is still owed then.
+        # The public pay page for this invoice: not a checkout URL, and not the
+        # post-payment return URL, which lands the customer on a "thanks for
+        # paying" screen they have not paid on. The page mints the checkout
+        # when they click, so the amount is whatever is still owed then.
         "payment_link": invoice_pay_url(invoice),
         "note": delivery.note,
     }

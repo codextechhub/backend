@@ -1,36 +1,36 @@
-# tasks.py
-# Celery tasks for vs_users.
-#
-# Both tasks are thin wrappers around the vs_notifications engine. They exist
-# as tasks (rather than inline send_notification calls at the call sites) for
-# two reasons the call sites depend on:
-#   * they are enqueued with .delay() carrying the reserved _job_* kwargs, so
-#     core.tasks_base.TrackedTask records a BackgroundJob row for each email;
-#   * the async hop keeps the (cheap, synchronous) dispatch off the request.
-#
-# Nothing enqueues these tasks directly. Callers go through the queue_* helpers
-# below, which hold the enqueue until the caller's transaction commits - see
-# queue_invitation_email for why enqueuing any earlier silently loses emails.
-#
-# The engine renders DB templates, creates the Notification record, and sends
-# the email inside vs_notifications.deliver_email_notification. Invitation email
-# delivery tracking (UserInvitation.email_*) is updated by the delivery-signal
-# receivers in vs_user/receivers.py.
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# SECTION 1 - INVITATION EMAIL
-# ─────────────────────────────────────────────────────────────────────────────
-# Dispatched when a new user account is created or when an admin resends.
-# The invitation link contains a one-time invitation-family token. Only its
-# HMAC-SHA-256 digest is stored on UserInvitation.
-#
-# SECTION 2 - PASSWORD RESET EMAIL
-# ─────────────────────────────────────────────────────────────────────────────
-# Dispatched for both self-service and admin-triggered password resets.
-# The raw token (never stored) is embedded in the reset link.
-# Messaging adapts based on origin: SELF or ADMIN.
-# ─────────────────────────────────────────────────────────────────────────────
+"""tasks.py
+Celery tasks for vs_users.
 
+Both tasks are thin wrappers around the vs_notifications engine. They exist
+as tasks (rather than inline send_notification calls at the call sites) for
+two reasons the call sites depend on:
+  * they are enqueued with .delay() carrying the reserved _job_* kwargs, so
+    core.tasks_base.TrackedTask records a BackgroundJob row for each email;
+  * the async hop keeps the (cheap, synchronous) dispatch off the request.
+
+Nothing enqueues these tasks directly. Callers go through the queue_* helpers
+below, which hold the enqueue until the caller's transaction commits - see
+queue_invitation_email for why enqueuing any earlier silently loses emails.
+
+The engine renders DB templates, creates the Notification record, and sends
+the email inside vs_notifications.deliver_email_notification. Invitation email
+delivery tracking (UserInvitation.email_*) is updated by the delivery-signal
+receivers in vs_user/receivers.py.
+
+─────────────────────────────────────────────────────────────────────────────
+SECTION 1 - INVITATION EMAIL
+─────────────────────────────────────────────────────────────────────────────
+Dispatched when a new user account is created or when an admin resends.
+The invitation link contains a one-time invitation-family token. Only its
+HMAC-SHA-256 digest is stored on UserInvitation.
+
+SECTION 2 - PASSWORD RESET EMAIL
+─────────────────────────────────────────────────────────────────────────────
+Dispatched for both self-service and admin-triggered password resets.
+The raw token (never stored) is embedded in the reset link.
+Messaging adapts based on origin: SELF or ADMIN.
+─────────────────────────────────────────────────────────────────────────────
+"""
 import logging
 from math import ceil
 
@@ -54,6 +54,29 @@ def _tenant_display_name(user) -> str:
     if getattr(user.tenant, 'kind', None) == 'PLATFORM':
         return 'CodeX Vision'
     return user.tenant.name
+
+
+def _tenant_logo_url(user) -> str:
+    """The workspace's own logo, absolute, for the header of an email.
+
+    Absolute and public, because neither of the usual routes to a logo works
+    here. There is no request to build a relative path against, and the
+    authenticated /media/ route is no use to a mail client with no session -
+    which is exactly what the public brand route exists for.
+
+    "" when the tenant has no school profile, or the school has uploaded
+    nothing: the email then keeps the platform mark it has always shown.
+    """
+    profile = getattr(user.tenant, 'school_profile', None)
+    if profile is None:
+        return ''
+    branding = getattr(profile, 'branding', None)
+    if branding is None or not getattr(branding, 'logo', None):
+        return ''
+    base = (getattr(settings, 'API_PUBLIC_BASE_URL', '') or '').rstrip('/')
+    if not base:
+        return ''
+    return f'{base}/v1/i/public/schools/{profile.slug}/logo/'
 
 
 # =============================================================================
@@ -121,6 +144,9 @@ def send_invitation_email_task(self, invitation_id: int, token: str):
             # standard copy. New standard templates use domain-neutral keys.
             'school_name':     tenant_name,
             'has_school':      bool(profile),
+            # The header mark. A school that has uploaded a logo signs its own
+            # invitations with it; everyone else keeps the platform initials.
+            'brand_logo_url':  _tenant_logo_url(user),
         },
         recipients=[user],
         tenant=user.tenant,
@@ -240,6 +266,7 @@ def send_password_reset_email_task(
             'user_first_name': user.first_name,
             'user_email':      user.email,
             'tenant_name':     _tenant_display_name(user),
+            'brand_logo_url':  _tenant_logo_url(user),
             'reset_url':       reset_url,
             'expiry_hours':    expiry_hours,
             'expires_at':      expires_at,

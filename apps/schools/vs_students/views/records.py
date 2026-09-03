@@ -218,7 +218,7 @@ class ClassRosterView(StudentsViewMixin, generics.ListAPIView):
     """GET /v1/students/classes/<class_id>/roster/
 
     Mounted here rather than under /v1/academics/, because the enrolment row is
-    this module's and registering it there would make an M13 view import a
+    this module's and registering it there would make a vs_academics view import a
     school app it must not know about.
 
     docstring-name: A class roster
@@ -230,7 +230,7 @@ class ClassRosterView(StudentsViewMixin, generics.ListAPIView):
     def class_session(self):
         """The year this register belongs to: the CLASS's, not the school's.
 
-        M13 gave classes a year, so a school has one JSS1 A per session and an
+        A class belongs to a year, so a school has one JSS1 A per session and an
         enrolment names the same year its class does. Reading the roster against
         the ACTIVE year therefore answered for the wrong one the moment the
         class was not this year's: SSS2 B holding twenty-five children reported
