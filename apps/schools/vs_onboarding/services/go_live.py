@@ -122,7 +122,7 @@ def submit_go_live(
         entity_type="GoLiveRequest",
         entity_id=request.pk,
         actor=actor,
-        entity_label=effects.school_context(tenant)["school_name"],
+        entity_label=effects.school_name(tenant),
         diff_data={
             "status": {"from": "", "to": GoLiveStatus.PENDING.value},
             "preferred_go_live_at": str(preferred_go_live_at),
@@ -366,7 +366,7 @@ def _record_activation_failure(tenant, request, actor, exc):
         entity_type="GoLiveRequest",
         entity_id=request.pk,
         actor=actor,
-        entity_label=effects.school_context(tenant)["school_name"],
+        entity_label=effects.school_name(tenant),
         severity=AuditSeverity.CRITICAL,
         status=AuditStatus.FAILED,
         diff_data={

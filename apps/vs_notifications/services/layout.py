@@ -37,6 +37,23 @@ BRAND_FALLBACK = "CodeX Vision"
 # Context keys consulted, in order, for the sender name in the header.
 _BRAND_CONTEXT_KEYS = ("issuer_name", "school_name", "entity_name", "tenant_name")
 
+# The same, for the mark beside it. One key per name key, in the same order, so
+# a caller that names the sender can brand it without learning a second
+# vocabulary: whoever passes ``school_name`` passes ``school_logo_url``.
+#
+# ``brand_logo_url`` is last and is the internal name the layout substitutes.
+# Accepted so a caller may address the slot directly, but no caller should have
+# to guess it - reading only that key is why every send but two kept the
+# platform mark while all thirty-one documents already had somewhere to put a
+# school's own.
+_BRAND_LOGO_CONTEXT_KEYS = (
+    "issuer_logo_url",
+    "school_logo_url",
+    "entity_logo_url",
+    "tenant_logo_url",
+    "brand_logo_url",
+)
+
 # Palette - kept in sync with the console's neutral scale.
 _INK      = "#101828"
 _BODY     = "#475467"
@@ -330,10 +347,31 @@ def brand_logo_from_context(context: dict) -> str:
     resolving it would mean this engine app knowing what a school is, walking
     tenant -> school profile -> branding to find one. The sender NAME arrives
     the same way, from the caller that already holds the record.
+
+    Consults the same key family as the name, in the same order, so the two
+    always agree about which sender the header describes.
+
+    The scheme is checked HERE and not only where the document is composed.
+    ``_brand_mark_html`` refuses anything but absolute http(s), but a stored
+    template carries ``{{ brand_logo_url }}`` inside the ``src`` and is
+    substituted at send time, so that guard never runs on the path that
+    actually delivers mail: every one of the standard documents would have
+    interpolated whatever a caller put in the context. Refusing here covers
+    both paths, and the value is still escaped where it is written.
     """
     if not context:
         return ""
-    return _clean(str(context.get("brand_logo_url") or ""))
+    for key in _BRAND_LOGO_CONTEXT_KEYS:
+        value = _clean(str(context.get(key) or ""))
+        if not value:
+            continue
+        # A relative path cannot resolve in a mail client and a javascript: or
+        # data: value has no business in a document. Either way the header
+        # keeps the platform initials, which is what an absent logo shows.
+        if not value.lower().startswith(("http://", "https://")):
+            return ""
+        return value
+    return ""
 
 
 # ---------------------------------------------------------------------------

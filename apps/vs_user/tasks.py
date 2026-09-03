@@ -38,6 +38,7 @@ from celery import shared_task
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
+from django.urls import reverse
 from django.utils import timezone
 
 logger = logging.getLogger('vs_user.tasks')
@@ -76,7 +77,11 @@ def _tenant_logo_url(user) -> str:
     base = (getattr(settings, 'API_PUBLIC_BASE_URL', '') or '').rstrip('/')
     if not base:
         return ''
-    return f'{base}/v1/i/public/schools/{profile.slug}/logo/'
+    # reverse(), not a literal path. The route is named and owned by another
+    # app; spelling it out here is a copy that goes stale silently, and a logo
+    # that 404s in a mail client shows nothing rather than raising anywhere we
+    # would see it. Resolving the name is not importing the app.
+    return f'{base}{reverse("public-school-logo", args=[profile.slug])}'
 
 
 # =============================================================================

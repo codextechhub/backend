@@ -1302,8 +1302,13 @@ class ReadinessTests(OnboardingFixture):
         ready_calls = [c for c in send.call_args_list if c.args[0] == "onboarding.go_live_ready"]
         self.assertEqual(len(ready_calls), 1)
         context = ready_calls[0].args[1]
+        # An exact set on purpose: a template renders what the context carries,
+        # and a key that quietly disappears renders as blank rather than
+        # failing. school_logo_url brands the email's header mark and travels
+        # with the name it describes.
         self.assertEqual(
-            set(context), {"school_name", "school_slug", "completed_by_name"},
+            set(context),
+            {"school_name", "school_slug", "school_logo_url", "completed_by_name"},
         )
 
     def test_re_entering_ready_after_a_rejection_announces_again(self):

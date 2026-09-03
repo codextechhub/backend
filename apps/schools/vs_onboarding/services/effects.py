@@ -33,12 +33,41 @@ def school_of(tenant):
     return getattr(tenant, "school_profile", None)
 
 
-def school_context(tenant) -> dict:
-    """The two school keys every seeded onboarding template renders."""
+def school_name(tenant) -> str:
+    """Just the school's display name, for a caller that wants only that.
+
+    Separate from ``school_context`` because that one now reaches the branding
+    row to brand the email header, and two audit call sites want a label and
+    nothing else. Asking them to pay a query for a logo they discard is the
+    kind of cost that arrives quietly and never leaves.
+    """
     school = school_of(tenant)
+    return getattr(school, "name", None) or getattr(tenant, "name", "")
+
+
+def school_context(tenant) -> dict:
+    """The school keys every seeded onboarding template renders.
+
+    ``school_logo_url`` brands the header mark. It sits beside the name on
+    purpose: the notification engine consults one key family for both, so a
+    caller that names the sender brands it in the same breath and the two
+    cannot end up describing different schools. Empty when the school has
+    uploaded nothing, and the shared layout then draws the platform initials.
+    """
+    # Imported here, like the other app modules in this file: serializers pull
+    # in most of the schools app, and effects is imported from go_live at module
+    # load.
+    from schools.vs_schools.serializers import public_logo_url
+
+    school = school_of(tenant)
+    branding = getattr(school, "branding", None) if school is not None else None
     return {
         "school_name": getattr(school, "name", None) or getattr(tenant, "name", ""),
         "school_slug": getattr(school, "slug", None) or getattr(tenant, "slug", ""),
+        "school_logo_url": public_logo_url(
+            getattr(school, "slug", "") or "",
+            has_logo=bool(getattr(branding, "logo", None)),
+        ),
     }
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from django.utils import timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.urls import reverse
@@ -188,11 +189,22 @@ def public_logo_url(slug: str, *, has_logo: bool, request=None) -> str:
     Absolute when a request is available, because the console runs on a
     different origin from the API and a relative path would resolve against the
     console's own host.
+
+    Absolute without one too, from ``API_PUBLIC_BASE_URL``. An email is
+    composed in a Celery task with no request in hand, and a relative src in a
+    mail client resolves against nothing - the shared layout drops any
+    non-absolute URL and falls back to initials, so a relative path here would
+    read as "this school has no logo". Returns "" when the setting is empty
+    rather than emitting a path that cannot load, which is the same answer and
+    an honest one.
     """
     if not slug or not has_logo:
         return ""
     path = reverse("public-school-logo", args=[slug])
-    return request.build_absolute_uri(path) if request is not None else path
+    if request is not None:
+        return request.build_absolute_uri(path)
+    base = (getattr(settings, "API_PUBLIC_BASE_URL", "") or "").rstrip("/")
+    return f"{base}{path}" if base else ""
 
 
 class SchoolBrandingSerializer(serializers.ModelSerializer):

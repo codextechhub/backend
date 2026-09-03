@@ -109,6 +109,13 @@ def render_notification_template(notification_template, context: dict) -> tuple[
     # Copying keeps the caller's dict untouched.
     context = dict(context or {})
     context.setdefault("email_brand", brand_from_context(context) or BRAND_FALLBACK)
+    # The mark beside the name, resolved from the same key family. Without this
+    # the stored {% if brand_logo_url %} could only ever be true for a caller
+    # that happened to use the layout's own internal key: two send paths did,
+    # and the other twenty-nine showed the platform initials over a school's
+    # name. No fallback - an absent logo is a real answer, and the layout draws
+    # the initials for it rather than an empty <img>.
+    context.setdefault("brand_logo_url", brand_logo_from_context(context))
 
     rendered_subject = (
         render_template(notification_template.subject, context)
