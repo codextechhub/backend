@@ -320,9 +320,6 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
 
     Package setup
         package_plan            optional – PackagePlan code e.g. basic / standard / premium
-        student_capacity        optional – defaults to 50
-        teacher_capacity        optional – defaults to 10
-        admin_capacity          optional – defaults to 3
         enabled_modules         optional – comma-separated module keys e.g. "students,attendance"
         subscription_expires_at optional – YYYY-MM-DD
     """
@@ -398,9 +395,6 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
         package_setup_data = {
             "package_plan": package_plan_code,
             "enabled_modules": enabled_modules,
-            "student_capacity": _int("student_capacity", 50),
-            "teacher_capacity": _int("teacher_capacity", 10),
-            "admin_capacity": _int("admin_capacity", 3),
         }
         sub_expires = _s("subscription_expires_at")
         if sub_expires:

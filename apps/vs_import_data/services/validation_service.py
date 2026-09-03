@@ -254,9 +254,12 @@ def _validate_schools_rules(import_batch) -> list[dict]:
 
     _col = _build_col_resolver(import_batch.template)
 
-    # Prefetch valid plans (with limits) and module keys once to avoid per-row DB hits
-    active_plans = {p.code: p for p in PackagePlan.objects.filter(is_active=True)}
-    valid_plan_codes = set(active_plans.keys())
+    # Prefetch the valid plan codes and module keys once to avoid per-row DB hits.
+    # Codes only: the whole plan objects were fetched for their capacity limits,
+    # which are no longer checked here because a school no longer declares one.
+    valid_plan_codes = set(
+        PackagePlan.objects.filter(is_active=True).values_list("code", flat=True)
+    )
     valid_module_keys = set(Capability.objects.filter(
         is_active=True, kind=Capability.Kind.MODULE
     ).values_list("key", flat=True))
@@ -342,58 +345,6 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                 "column_name": _col("package_plan"),
                 "raw_value": plan_code,
             })
-
-        # --- capacity checks (plan present and valid) ---
-        elif plan_code and plan_code in active_plans:
-            plan = active_plans[plan_code]
-            student_cap = _int("student_capacity")
-            teacher_cap = _int("teacher_capacity")
-            admin_cap = _int("admin_capacity")
-
-            # min_value=1 (mirrors serializer IntegerField(min_value=1))
-            for cap_val, target_field in (
-                (student_cap, "student_capacity"),
-                (teacher_cap, "teacher_capacity"),
-                (admin_cap, "admin_capacity"),
-            ):
-                if cap_val is not None and cap_val < 1:
-                    issues.append({
-                        "severity": "error",
-                        "code": "business_rule",
-                        "message": f"{_col(target_field)} must be at least 1.",
-                        "row_number": row_number,
-                        "column_name": _col(target_field),
-                        "raw_value": str(cap_val),
-                    })
-
-            # plan limits
-            if student_cap is not None and student_cap >= 1 and plan.max_students is not None and student_cap > plan.max_students:
-                issues.append({
-                    "severity": "error",
-                    "code": "business_rule",
-                    "message": f"Exceeds plan limit of {plan.max_students} students.",
-                    "row_number": row_number,
-                    "column_name": _col("student_capacity"),
-                    "raw_value": str(student_cap),
-                })
-            if teacher_cap is not None and teacher_cap >= 1 and plan.max_teachers is not None and teacher_cap > plan.max_teachers:
-                issues.append({
-                    "severity": "error",
-                    "code": "business_rule",
-                    "message": f"Exceeds plan limit of {plan.max_teachers} teachers.",
-                    "row_number": row_number,
-                    "column_name": _col("teacher_capacity"),
-                    "raw_value": str(teacher_cap),
-                })
-            if admin_cap is not None and admin_cap >= 1 and plan.max_admins is not None and admin_cap > plan.max_admins:
-                issues.append({
-                    "severity": "error",
-                    "code": "business_rule",
-                    "message": f"Exceeds plan limit of {plan.max_admins} admins.",
-                    "row_number": row_number,
-                    "column_name": _col("admin_capacity"),
-                    "raw_value": str(admin_cap),
-                })
 
         # --- enabled_modules: each key must exist and be active ---
         raw_modules = _s("enabled_modules")

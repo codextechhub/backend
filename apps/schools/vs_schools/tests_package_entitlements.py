@@ -85,9 +85,6 @@ class SchoolPackageEntitlementTests(TestCase):
             "package_setup_data": {
                 "package_plan": self.plan.code,
                 "enabled_modules": modules,
-                "student_capacity": 100,
-                "teacher_capacity": 10,
-                "admin_capacity": 5,
             },
             # Every school is created with its main branch. These tests are
             # about entitlements, so the branch is scenery, but it has to be
@@ -167,7 +164,6 @@ class SchoolPackageEntitlementTests(TestCase):
 
         setup = SchoolPackageSetup.objects.get(school=school)
         self.assertEqual(setup.package_plan, self.plan)
-        self.assertEqual(setup.student_capacity, 100)
         # Not supplied, so it defaults a year out rather than staying null.
         self.assertIsNotNone(setup.subscription_expires_at)
 
@@ -497,9 +493,6 @@ class PlanBranchCeilingTests(TestCase):
             SchoolPackageSetup.objects.create(
                 school=school,
                 package_plan=plan,
-                student_capacity=100,
-                teacher_capacity=10,
-                admin_capacity=5,
                 subscription_expires_at=timezone.localdate() + timedelta(days=365),
             )
         return school
@@ -542,9 +535,6 @@ class PlanBranchCeilingTests(TestCase):
             payload["package_setup_data"] = {
                 "package_plan": plan.code,
                 "enabled_modules": [],
-                "student_capacity": 100,
-                "teacher_capacity": 10,
-                "admin_capacity": 5,
             }
         response = self._client().post(
             reverse("school-create"), payload, format="json",

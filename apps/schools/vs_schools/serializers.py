@@ -349,10 +349,6 @@ class SchoolPackageSetupWriteSerializer(serializers.Serializer):
         help_text="List of module `key` strings to enable. E.g. ['students', 'attendance'].",
     )
 
-    student_capacity = serializers.IntegerField(min_value=1)
-    teacher_capacity = serializers.IntegerField(min_value=1)
-    admin_capacity = serializers.IntegerField(min_value=1)
-
     subscription_expires_at = serializers.DateField(
         required=False,
         allow_null=True,
@@ -361,24 +357,7 @@ class SchoolPackageSetupWriteSerializer(serializers.Serializer):
     )
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
-        plan: PackagePlan = attrs["package_plan"]
         errors = {}
-
-        # --- Capacity vs plan limits ---
-        if plan.max_students is not None and attrs["student_capacity"] > plan.max_students:
-            errors["student_capacity"] = (
-                f"Exceeds plan limit of {plan.max_students} students."
-            )
-
-        if plan.max_teachers is not None and attrs["teacher_capacity"] > plan.max_teachers:
-            errors["teacher_capacity"] = (
-                f"Exceeds plan limit of {plan.max_teachers} teachers."
-            )
-
-        if plan.max_admins is not None and attrs["admin_capacity"] > plan.max_admins:
-            errors["admin_capacity"] = (
-                f"Exceeds plan limit of {plan.max_admins} admins."
-            )
 
         # --- Subscription expiry ---
         expires_at = attrs.get("subscription_expires_at")
@@ -419,9 +398,6 @@ class SchoolPackageSetupReadSerializer(serializers.ModelSerializer):
             "id",
             "package_plan",
             "enabled_modules",
-            "student_capacity",
-            "teacher_capacity",
-            "admin_capacity",
             "subscription_expires_at",
             "is_active",
             "notes",

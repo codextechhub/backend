@@ -520,13 +520,20 @@ class PackagePlan(TimeStampedModel):
 
 class SchoolPackageSetup(TimeStampedModel):
     """
-    Applied subscription configuration for an school.
+    Applied subscription configuration for a school.
 
-    Records the chosen `PackagePlan`, seat capacities for key roles, subscription
-    expiry, activation flag, and optional operator notes. `clean()` ensures
-    capacities are positive, the expiry date is not in the past, and that each
-    capacity respects the limits enforced by the associated `PackagePlan`. The
-    one-to-one relationship guarantees at most one active setup per school.
+    Records the chosen `PackagePlan`, subscription expiry, activation flag, and
+    optional operator notes. `clean()` ensures the expiry date is not in the
+    past. The one-to-one relationship guarantees at most one active setup per
+    school.
+
+    It does NOT record seat capacities. Three columns held a declared number of
+    students, teachers and admins, checked at registration against the plan's
+    own maximums and never again: nothing compared them to how many people a
+    school actually had, so a school with a 500-student capacity enrolled its
+    501st with nothing in the way. They described an intention, in a place that
+    reads like a limit. A plan still carries `max_students` and its siblings,
+    which describe the PLAN rather than any school on it.
     """
     school = models.OneToOneField(
         School,
@@ -538,10 +545,6 @@ class SchoolPackageSetup(TimeStampedModel):
         on_delete=models.PROTECT,
         related_name="school_setups",
     )
-    student_capacity = models.PositiveIntegerField()
-    teacher_capacity = models.PositiveIntegerField()
-    admin_capacity = models.PositiveIntegerField()
-
     subscription_expires_at = models.DateField()
 
     is_active = models.BooleanField(default=True)
@@ -557,46 +560,8 @@ class SchoolPackageSetup(TimeStampedModel):
     def clean(self):
         errors = {}
 
-        if self.student_capacity < 1:
-            errors["student_capacity"] = "Student capacity must be at least 1."
-
-        if self.teacher_capacity < 1:
-            errors["teacher_capacity"] = "Teacher capacity must be at least 1."
-
-        if self.admin_capacity < 1:
-            errors["admin_capacity"] = "Admin capacity must be at least 1."
-
         if self.subscription_expires_at < timezone.localdate():
             errors["subscription_expires_at"] = "Subscription expiry cannot be in the past."
-
-        # Plan limits
-        if self.package_plan_id:
-            if (
-                self.package_plan.max_students is not None
-                and self.student_capacity > self.package_plan.max_students
-            ):
-                errors["student_capacity"] = (
-                    f"Student capacity exceeds plan limit "
-                    f"({self.package_plan.max_students})."
-                )
-
-            if (
-                self.package_plan.max_teachers is not None
-                and self.teacher_capacity > self.package_plan.max_teachers
-            ):
-                errors["teacher_capacity"] = (
-                    f"Teacher capacity exceeds plan limit "
-                    f"({self.package_plan.max_teachers})."
-                )
-
-            if (
-                self.package_plan.max_admins is not None
-                and self.admin_capacity > self.package_plan.max_admins
-            ):
-                errors["admin_capacity"] = (
-                    f"Admin capacity exceeds plan limit "
-                    f"({self.package_plan.max_admins})."
-                )
 
         if errors:
             raise ValidationError(errors)

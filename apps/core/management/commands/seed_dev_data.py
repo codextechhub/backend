@@ -350,7 +350,6 @@ class Command(BaseCommand):
                     school=school,
                     defaults=dict(
                         package_plan=plan,
-                        student_capacity=1000, teacher_capacity=100, admin_capacity=10,
                         subscription_expires_at=self.now + timedelta(days=365),
                     ),
                 )
