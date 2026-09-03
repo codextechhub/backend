@@ -17,7 +17,11 @@ from vs_rbac.models import Permission, PrebuiltRolePermission, PrebuiltRoleTempl
 # rightly, because a default here is copied into every school that adopts the
 # template and a platform key would be a fleet-wide grant.
 PERMISSION_PREFIXES = {
-    "finance_admin": ["finance."],
+    # `payments.` rides with finance because two mounted finance screens are
+    # gated on it: Collections and Virtual Accounts sit in the finance console
+    # and check `payments.collection.`. Without it a school adopting this role
+    # fresh from the library gets 121 grants and two screens it cannot open.
+    "finance_admin": ["finance.", "payments."],
     "procurement_admin": ["procurement."],
 }
 
@@ -59,8 +63,9 @@ PREBUILT_ROLES = [
         "description": (
             "Runs the whole of the school's money, across every branch: sets what a "
             "term costs, raises the bills, takes payment, chases what is late, pays "
-            "staff and suppliers, posts to the ledger and closes the books. "
-            "This template carries EVERY finance permission, restricted ones "
+            "staff and suppliers, posts to the ledger and closes the books, and "
+            "runs the collection gateway that money arrives through. "
+            "This template carries EVERY finance and payments permission, restricted ones "
             "included - posting journals, voiding a payroll run, writing off an "
             "invoice and creating a supplier payment all arrive together. It is "
             "meant for the one person who genuinely does all of it at a small "

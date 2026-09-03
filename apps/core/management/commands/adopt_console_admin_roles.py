@@ -31,14 +31,12 @@ from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 
 from vs_rbac.models import (
-    Permission,
     PrebuiltRoleTemplate,
     TenantRolePermission,
     TenantRoleTemplate,
     TenantUserRoleAssignment,
 )
 from vs_rbac.services import create_role_from_suggestion, set_role_access
-from vs_rbac.models import platform_only_keys
 
 User = get_user_model()
 
@@ -46,12 +44,16 @@ User = get_user_model()
 SCHOOL_KIND = "SCHOOL"
 
 
+# What each role should carry is NOT restated here. It is read from the
+# library template's own defaults, because the library is where that decision
+# lives and a second copy of it drifts: adding `payments.` to Finance Admin in
+# the seeder left a list here still saying `finance.` only, and the tenants
+# quietly kept the old set.
 ROLES = [
     {
         "prebuilt_key": "finance_admin",
         "key": "finance-admin",
         "name": "Finance Admin",
-        "prefixes": ["finance."],
         # Finance Manager was this role under an older name.
         "renames_from": ["finance-manager", "finance_manager"],
     },
@@ -59,7 +61,6 @@ ROLES = [
         "prebuilt_key": "procurement_admin",
         "key": "procurement-admin",
         "name": "Procurement Admin",
-        "prefixes": ["procurement."],
         # Nothing to rename: no school ever had a procurement role.
         "renames_from": [],
     },
@@ -113,37 +114,43 @@ class Command(BaseCommand):
             return
 
         for spec in ROLES:
-            keys = [k for k in spec["prefixes"]]
-            wanted = self._module_keys(spec["prefixes"])
+            wanted = self._template_keys(spec["prebuilt_key"])
+            if wanted is None:
+                self.stdout.write(self.style.WARNING(
+                    f"\n{spec['name']}: no active {spec['prebuilt_key']} in the library, skipped. "
+                    f"Run seed_prebuilt_role_templates first."
+                ))
+                continue
             self.stdout.write(
-                f"\n{spec['name']}: {len(wanted)} grantable key(s) under {', '.join(keys)}"
+                f"\n{spec['name']}: {len(wanted)} key(s) on the library template"
             )
             for slug in slugs:
                 self._apply(spec, slug, wanted, actor, create_missing, dry_run)
 
         self._report_retired(only, dry_run)
 
-    def _module_keys(self, prefixes):
-        """Every key under these prefixes that a school may actually hold.
+    def _template_keys(self, prebuilt_key):
+        """What the library says this role carries.
 
-        Platform-scoped keys are dropped here rather than left to fail one by
-        one: they belong to no tenant, and two finance keys
-        (``finance.currency.create``, ``finance.fxrate.create``) are in that
-        position permanently.
+        Reading the template's defaults rather than re-deriving from prefixes
+        makes the library the single answer to "what is in this role", and means
+        a key added there by any route - a prefix sweep, or somebody attaching
+        one by hand - reaches the tenants on the next run.
+
+        Platform-scoped keys cannot be template defaults in the first place, so
+        nothing needs filtering here; ``PrebuiltRolePermission`` already refused
+        them when the library was seeded.
         """
-        keys = []
-        for prefix in prefixes:
-            keys.extend(
-                Permission.objects.filter(key__startswith=prefix)
-                .order_by("key")
-                .values_list("key", flat=True)
-            )
-        platform = platform_only_keys(keys)
-        if platform:
-            self.stdout.write(self.style.WARNING(
-                f"  not grantable inside a tenant: {', '.join(sorted(platform))}"
-            ))
-        return [key for key in keys if key not in platform]
+        template = PrebuiltRoleTemplate.objects.filter(
+            key=prebuilt_key, is_active=True,
+        ).first()
+        if template is None:
+            return None
+        return list(
+            template.default_permissions
+            .order_by("permission_id")
+            .values_list("permission_id", flat=True)
+        )
 
     def _apply(self, spec, slug, wanted, actor, create_missing, dry_run):
         role = self._find(spec, slug)
@@ -209,10 +216,7 @@ class Command(BaseCommand):
         set_role_access(
             role=role,
             actor=actor,
-            reason=(
-                f"Adopt {spec['name']}: grant every "
-                f"{', '.join(spec['prefixes'])} permission the tenant may hold."
-            ),
+            reason=f"Adopt {spec['name']}: match the library template's defaults.",
             permission_keys=sorted(held | set(wanted)),
             allow_restricted=True,
             source="role_suggestion",
