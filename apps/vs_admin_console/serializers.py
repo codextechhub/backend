@@ -54,10 +54,9 @@ class ImpersonationSessionSerializer(serializers.ModelSerializer):
         names = sorted({a.role.name for a in assignments if a.role.name})
         if names:
             return ", ".join(names)
-        # A tenant account holding no active role. ``User.role`` is the
-        # denormalised display name written at creation, so it usually still
-        # says what the person was hired as; the last resort names the boundary
-        # the account sits on and claims nothing more.
+        # A tenant account holding no active role. User.role is the denormalised
+        # display name written at creation; the last resort names only the boundary
+        # the account sits on.
         return user.role or "Tenant user"
 
     def get_staff_type_label(self, obj):

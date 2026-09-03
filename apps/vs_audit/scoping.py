@@ -96,10 +96,8 @@ def audit_scope_predicate(request):
     if getattr(home, "kind", None) == Tenant.Kind.PLATFORM:
         return None
 
-    # A caller who is inside no tenant cannot be inside this one. Every
-    # authenticated request carries a tenant today, so ``None`` here is
-    # unreachable; tenant_event_predicate fails closed so that it stays
-    # unreachable if that ever changes.
+    # A caller inside no tenant cannot be inside this one. Every authenticated
+    # request carries one, so this fails closed to keep None unreachable.
     return tenant_event_predicate(getattr(request, "tenant", None) or home)
 
 

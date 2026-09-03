@@ -269,9 +269,29 @@ def _signals(user, tenant) -> dict:
     a key says the caller may see *that kind of number for their own books*, and
     nothing more: no level of permission reaches another tenant's ledger, and
     reading one is done by proxying a user who holds the key there. These
-    queries previously carried the gate without the scope, so a school's own
-    dashboard counted every other school's documents and named the school with
-    the worst fiscal runway.
+    queries carry the gate and the scope together, never one alone: a gate
+    without a scope has a school's own dashboard count every other school's
+    documents and name the school with the worst fiscal runway.
+
+    One branch is platform-only, and it is narrow on purpose. Webhook failures
+    attached to neither a collection nor a payout belong to no tenant at all: a
+    bad signature, an unparseable payload, an event for a reference this
+    platform never issued. Somebody has to be told, because that is the shape a
+    broken endpoint takes, but it reports rows attached to nobody rather than
+    widening any count to everybody.
+
+    "Exports ready to download" obeys the landing screen's one rule, that
+    acting on something clears its row. It counts only a finished export the
+    caller has not yet downloaded, so collecting the file removes the card. A
+    plain "SUCCEEDED in the last 24h" count would sit there for a full day
+    whether or not the person collected the file, which is exactly the
+    counter-that-cannot-be-cleared this screen forbids. A file already taken,
+    expired or purged is dropped rather than nagged about: there is nothing
+    left to download, and the honest state is silence rather than a dead link.
+    Exports alone, because they are the one job kind that leaves a downloadable
+    artefact. Attribution is by the run's requester, which is always set and
+    indexed, and the cost is one COUNT over a two-table join bounded by one
+    person's own live exports.
     """
     from django.utils import timezone
 
@@ -319,10 +339,8 @@ def _signals(user, tenant) -> dict:
             signals["draft_journals"] = {"count": drafts}
 
     if has_permission(user, PERM_PO_VIEW, tenant=tenant):
-        # Issued orders still awaiting (full) delivery - the PO console's own
-        # open-orders rule: drafts and in-approval orders are not commitments,
-        # and receipt progress is derived from line quantities via the shared
-        # stage helper so this number always matches the PO list.
+        # Drafts and in-approval orders are not commitments. Receipt progress
+        # comes from the shared stage helper, so this matches the PO list.
         from django.db.models import Q, Sum
 
         from vs_finance.constants import DocumentStatus as FinDocStatus
@@ -349,18 +367,14 @@ def _signals(user, tenant) -> dict:
             signals["pos_awaiting_receipt"] = {"count": awaiting}
 
     if has_permission(user, PERM_WEBHOOK_VIEW, tenant=tenant):
-        # Imported locally, not read from the module scope: the purchase-order
-        # branch above does `from django.db.models import Q, Sum`, which makes Q
-        # a local name for this whole function. Without its own import here, a
-        # caller holding the webhook key but not the PO key hits an unbound Q.
+        # Local import: the purchase-order branch above binds Q as a local name for
+        # this whole function, so a caller without the PO key would hit an unbound Q.
         from django.db.models import Q
         from vs_payments.constants import WebhookStatus
         from vs_payments.models import WebhookEvent
 
-        # A webhook reaches a tenant through whichever of its two nullable
-        # sides is set. One attached to neither belongs to no tenant, and is
-        # reported by the separate platform signal below rather than counted
-        # into anybody's books.
+        # A webhook reaches a tenant through whichever of its two nullable sides is
+        # set. One attached to neither belongs to no tenant; see the docstring.
         recent_failures = WebhookEvent.objects.filter(
             status=WebhookStatus.FAILED, created_at__gte=since,
         )
@@ -370,16 +384,8 @@ def _signals(user, tenant) -> dict:
         if failures:
             signals["webhook_failures_24h"] = {"count": failures}
 
-        # Failures belonging to no tenant at all: a bad signature, an
-        # unparseable payload, an event for a reference this platform never
-        # issued. No school can act on them and none should see them, but they
-        # are the shape a broken endpoint takes, so somebody has to be told.
-        #
-        # This is the one platform-only branch in this function, and it is
-        # narrow on purpose. It does NOT widen the count above to "everything"
-        # for a platform caller: that exemption is exactly the defect this
-        # module was repaired for. It selects rows attached to neither side, so
-        # what it reports is nobody's data rather than everybody's.
+        # Rows attached to neither side: nobody's data, not everybody's. See the
+        # docstring.
         from vs_tenants.models import Tenant
 
         if getattr(tenant, "kind", None) == Tenant.Kind.PLATFORM:
@@ -505,26 +511,7 @@ def _signals(user, tenant) -> dict:
     if failed_jobs:
         signals["jobs_failed_24h"] = {"count": failed_jobs}
 
-    # Finished work still waiting to be collected. The landing screen's one rule
-    # is that acting on something clears its row, so this may only count outputs
-    # the caller has NOT yet downloaded - a plain "SUCCEEDED in the last 24h"
-    # count sat on the screen for a full day whether or not the person collected
-    # the file, which is precisely the counter-that-cannot-be-cleared this screen
-    # forbids. Scoped to exports because they are the one job kind that produces a
-    # downloadable artefact (imports, emails and system jobs leave nothing to
-    # collect), which is also what the notice's "ready to download" copy promises.
-    #
-    # A file is countable only while it is genuinely collectable: not yet
-    # downloaded, not purged, and not past its availability window. An expired or
-    # purged file is dropped rather than nagged about, because there is no longer
-    # anything to download - the honest state there is silence, not a dead link.
-    # Attribution is by the run's requester (the actor who asked for the export),
-    # which is always set, indexed, and independent of whether the async job row
-    # still exists.
-    #
-    # Cost: one COUNT with a two-table join (ExportFile -> ExportRun), driven by
-    # the requested_by index and the file's unique run FK. No per-row work, no
-    # Python loop, and the result set is bounded by one person's own live exports.
+    # Only what the caller has not yet collected. See the docstring.
     from vs_exports.models import ExportFile
 
     uncollected_exports = ExportFile.objects.filter(

@@ -1,9 +1,22 @@
+"""The platform boundary for CX-internal console surfaces.
+
+Two inputs are never authorisation here. ``is_staff`` means "may log into
+/admin/" and ``is_superuser`` is the Django escalation flag, so gating on
+either makes any future grant of Django-admin access a silent grant of console
+access. A console surface is gated on the actor's home tenant being the
+platform one, plus an RBAC key.
+
+Nothing in this module may define a class named ``IsVisionStaff``. The real one
+lives in ``vs_rbac.permissions`` and roughly twenty views across the codebase
+compose it; a local class of the same name reads as the platform boundary at
+every call site while asking a different question, and nothing at the call site
+says which of the two was imported.
+"""
 from __future__ import annotations
 
 from rest_framework.permissions import BasePermission
 
 
-# Restrict an endpoint to actors whose HOME tenant is the platform (Codex) one.
 class IsPlatformActor(BasePermission):
     """Gate CX-internal surfaces on the actor's own tenant kind.
 
@@ -34,35 +47,3 @@ class IsPlatformActor(BasePermission):
         if not (user and user.is_authenticated):
             return False
         return getattr(getattr(user, "tenant", None), "kind", None) == Tenant.Kind.PLATFORM
-
-
-# NOTE: this module used to define its own ``IsVisionStaff``, and that was the
-# defect rather than a stylistic wrinkle.
-#
-# ``vs_rbac.permissions.IsVisionStaff`` is the platform's real gate and asks
-# the right question - is this account on a PLATFORM-kind tenant - and roughly
-# twenty views across vs_payments, vs_user, vs_todo and apps/schools compose
-# it. The copy that lived here shared its name and asked a different question
-# entirely: ``user.is_staff``, the Django-admin login flag.
-#
-# A name collision is what made it dangerous. ``permission_classes =
-# [IsVisionStaff]`` in a sibling module reads as the platform-wide boundary to
-# anyone who has met the real class, and nothing at the call site said which
-# of the two had been imported. The task monitor was gated on the weaker one
-# for that reason, and the effect was that every Codex account - a sales hire,
-# a designer, anyone the platform grants Django admin to - could list every
-# tenant's task runs together with their raw errors and tracebacks.
-#
-# ``is_staff`` is also the wrong input on its own terms: it already means "may
-# log into /admin/", so reusing it as an authorisation decision means any
-# future grant of Django-admin access silently grants console access too.
-#
-# The class is gone rather than fixed. Import ``IsVisionStaff`` from
-# ``vs_rbac.permissions`` and pair it with an RBAC key, which is what
-# ``IsPlatformActor`` above explains and what ``views_tasks`` now does.
-
-# ``StaffReadOnlyOrSuperuserWrite`` stood here and is deleted with the class
-# above. It was never imported anywhere, and it was built on the same wrong
-# input - ``is_staff`` for the read half, ``is_superuser`` for the write half -
-# so leaving it in place would have left the next person a ready-made way to
-# reintroduce exactly this bug. Gate on the platform tenant plus an RBAC key.

@@ -114,10 +114,9 @@ class ImpersonationStartTests(ImpersonationTestBase):
         self.assertFalse(ImpersonationSession.objects.exists())
 
     def test_school_actor_cannot_start_in_a_foreign_tenant(self):
-        # School impersonation exists now, but it stops at the tenant edge: a
-        # school user cannot even assert the foreign tenant, so this is a
-        # non-enumerating 404 from the auth layer - even when they hold the
-        # full school.impersonation.* set in their OWN tenant.
+        # School impersonation stops at the tenant edge: a school user cannot even
+        # assert the foreign tenant, so the auth layer answers a non-enumerating
+        # 404 even when they hold the full school.impersonation.* set at home.
         other_school = make_school(slug="imp-other", name="Other School")
         other_branch = make_branch(other_school)
         school_actor = make_school_admin(
@@ -129,13 +128,9 @@ class ImpersonationStartTests(ImpersonationTestBase):
         self.assertFalse(ImpersonationSession.objects.exists())
 
     def test_school_actor_without_the_school_key_is_forbidden(self):
-        # Same tenant this time, so the auth layer lets it through - the denial
-        # must come from RBAC, and platform.* keys must not satisfy it.
-        #
-        # Since Permission.scope, the platform keys cannot even be granted
-        # inside a school tenant, so the refusal now happens one layer earlier.
-        # Both halves are asserted: the grant is refused, and the actor - left
-        # holding nothing - is refused too.
+        # Same tenant, so the auth layer lets it through and the denial must come
+        # from RBAC. Permission.scope refuses the grant itself, and the actor left
+        # holding nothing is refused too; both halves are asserted.
         from django.core.exceptions import ValidationError
 
         school_actor = make_school_admin(self.branch, email="nokey@school.test")
@@ -183,12 +178,9 @@ class ImpersonationStartTests(ImpersonationTestBase):
         self.assertEqual(payload["tenant_name"], self.school.tenant.name)
         self.assertEqual(payload["tenant_slug"], self.school.tenant.slug)
         self.assertEqual(payload["staff_type_label"], "CX Staff")
-        # There is no persona to name at all now, and the target here holds no
-        # active role and no denormalised role string, so the label falls all
-        # the way through to the one thing still true of the account: which
-        # side of the platform boundary it sits on. A target WITH a role gets
-        # its role named - see the impersonation serializer tests - which is
-        # what a reviewer reading a proxy log actually needs to know.
+        # No active role and no denormalised role string, so the label falls
+        # through to the one thing still true of the account: which side of the
+        # platform boundary it sits on.
         self.assertEqual(payload["target_type_label"], "Tenant user")
         event = AuditEvent.objects.get(
             impersonation_session=session, action_type="IMPERSONATION_STARTED",

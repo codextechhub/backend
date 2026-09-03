@@ -188,9 +188,8 @@ def golden_signals(tr: TimeRange, tenant_id=None) -> dict:
     # Saturation currently comes from datastore probes rather than request rows.
     saturation = _saturation(tr)
 
-    # Short windows on a low-traffic instance hold a handful of requests; the
-    # p95/error-rate numbers are still shown, but their status badges are only
-    # claimed once the window carries enough samples to support them.
+    # The numbers are still shown under the sample floor; only their status
+    # badges wait until the window can support them.
     enough_samples = totals["requests"] >= MIN_P95_SAMPLE
 
     return {
@@ -277,10 +276,8 @@ def _saturation(tr: TimeRange) -> dict:
 
 # Convert p95 latency into the shared health status vocabulary.
 def _status_for_latency(p95: float) -> str:
-    # Tuned for the deployment we actually run on (Render starter, 0.5 CPU),
-    # where heavy billing/report aggregates legitimately take several hundred
-    # ms. 400/600 were instance-sized for a bigger box and flagged normal work
-    # as degraded.
+    # Sized for the Render starter instance (0.5 CPU) this runs on, where a
+    # heavy billing or report aggregate legitimately takes several hundred ms.
     if p95 >= 1500:
         return HealthStatus.CRITICAL
     if p95 >= 800:

@@ -1,5 +1,25 @@
-"""
-Django base settings for apps project.
+"""Django base settings shared by every environment.
+
+``auth.E003`` is silenced here rather than per environment, because the
+decision behind it is the same in development, CI, staging and production.
+The check says ``USERNAME_FIELD`` must be globally unique, and here it
+deliberately is not: one real address can be a login at more than one customer
+of this platform, such as a parent with a child at two schools. Uniqueness
+lives on ``vs_user.User``'s ``uq_user_email_per_tenant`` instead.
+
+The check exists because ``django.contrib.auth``'s ``ModelBackend`` resolves a
+login with ``get_by_natural_key()``, a bare ``.get()`` on the username field,
+which would raise ``MultipleObjectsReturned``. Nothing here reaches it:
+requests authenticate with JWT through ``vs_rbac.authentication``,
+``LoginService`` checks the password itself against a tenant-scoped lookup, and
+``django.contrib.admin``, the other ``ModelBackend`` caller, is deliberately
+absent from ``INSTALLED_APPS``. An environment file that adds its own silenced
+checks must extend the list rather than replace it.
+
+``django.contrib.admin`` and ``django.contrib.messages`` are both absent on
+purpose. This is an API serving its own console: the admin site is not routed
+and no app ships an ``admin.py``, while ``messages`` is a server-rendered flash
+framework that nothing here imports, the frontend owning its own toasts.
 """
 
 from datetime import timedelta
@@ -19,35 +39,19 @@ SECRET_KEY = config("SECRET_KEY")
 RENDER_API_KEY = config("RENDER_API_KEY")
 TEMP_PASSWORD_PEPPER = config("TEMP_PASSWORD_PEPPER")
 
-# Three live secrets sat here as commented-out fallbacks, and commenting a
-# secret out does not unpublish it: they are in the committed history of this
-# repository and in every clone of it. All three are to be rotated at their
-# source (Render dashboard for the API key and the env group for the other
-# two) rather than merely deleted here.
+# No fallback literals for these three. A default lets a local run succeed
+# against a production credential when the env var is missing, which is how a
+# fallback secret gets used in anger, and a commented-out secret is still
+# published in every clone of this repository.
 #
-# Removing the lines is still worth doing. It stops the next person copying
-# them into a shell, and it stops a local run silently succeeding against a
-# production credential when the env var is missing - which is precisely how
-# a fallback secret gets used in anger.
+# OUTSTANDING: SECRET_KEY, RENDER_API_KEY and TEMP_PASSWORD_PEPPER were once
+# committed here as fallbacks and remain in this repository's history. Rotate
+# all three at source: the Render dashboard for the API key, the env group for
+# the other two.
 
 AUTH_USER_MODEL = "vs_user.User"
 
-# auth.E003 says USERNAME_FIELD must be globally unique. It deliberately is
-# not: one real address can be a login at more than one customer of this
-# platform (a parent with a child at two schools), so uniqueness lives on
-# vs_user.User's uq_user_email_per_tenant instead - see the per-tenant email
-# work in vs_user/models.py and migration 0007.
-#
-# The check exists because django.contrib.auth's ModelBackend resolves a login
-# with get_by_natural_key(), a bare .get() on the username field, which would
-# raise MultipleObjectsReturned. Nothing here goes through it: requests
-# authenticate with JWT via vs_rbac.authentication, LoginService checks the
-# password itself against a tenant-scoped lookup, and django.contrib.admin -
-# the other ModelBackend caller - is deliberately absent from INSTALLED_APPS.
-#
-# Silenced in base, not per environment: the design decision is the same in
-# development, CI, staging and production. Environment files that add their own
-# entries must extend this list rather than replace it.
+# Email is unique per tenant, not globally. See the module docstring.
 SILENCED_SYSTEM_CHECKS = ["auth.E003"]
 
 REST_FRAMEWORK = {
@@ -63,10 +67,8 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
         # A tenant that has not gone live reaches the onboarding surface and
-        # nothing else. The gate sits in the defaults so a view that declares
-        # no permission_classes at all is closed to it rather than open by
-        # omission; views that set their own list get the same check through
-        # IsAuthenticatedAndActive / HasRBACPermission.
+        # nothing else. In the defaults so a view declaring no permission_classes
+        # is closed to it rather than open by omission.
         "vs_rbac.permissions.TenantSurfaceAllowed",
     ],
     "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
@@ -82,18 +84,15 @@ REST_FRAMEWORK = {
         "activation":     "10/minute",
         "rfq_portal":     "120/hour",
         "rfq_verification": "10/hour",
-        # Public pay-an-invoice page. These two are keyed by IP, and a whole
-        # school's parents can share one address, so they are set to bound abuse
-        # rather than to pace a payer: the per-link limit below is what actually
-        # stops one pay link being worked, without one payer's attempts counting
-        # against the next payer's.
+        # Public pay-an-invoice page, keyed by IP. A whole school's parents can
+        # share one address, so these bound abuse rather than pace a payer; the
+        # per-link limits below are what stop one link being worked.
         "invoice_pay":       "240/hour",
         "invoice_pay_start": "60/hour",
-        # Keyed by the pay token, so these bound a single invoice's link rather
-        # than a shared school address. Two scopes, not one: the read is used
-        # several times by an honest payer (open the page, start a checkout, come
-        # back from the gateway), and spending those out of the budget that stops
-        # a link being worked would refuse somebody mid-payment.
+        # Keyed by the pay token, bounding one invoice's link. Two scopes: an
+        # honest payer reads several times (open, checkout, return from the
+        # gateway), and spending those from the write budget refuses them
+        # mid-payment.
         "invoice_pay_link":  "12/hour",
         "invoice_pay_link_read": "60/hour",
         # A school's crest on its own sign-in page. Cacheable and shared by a
@@ -120,10 +119,8 @@ SIMPLE_JWT = {
 # Application definition
 
 INSTALLED_APPS = [
-    # django.contrib.admin and django.contrib.messages are deliberately absent.
-    # This is an API serving its own console: the admin site was never routed,
-    # no app ships an admin.py, and messages is a server-rendered flash
-    # framework that nothing here imports - the frontend owns its own toasts.
+    # django.contrib.admin and django.contrib.messages are absent on purpose.
+    # See the module docstring.
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
@@ -151,10 +148,9 @@ INSTALLED_APPS = [
     # M11. After vs_academics: every ClassEnrolment row carries two non-null
     # foreign keys into it, so that is the order the dependency runs in.
     "schools.vs_students",
-    # The Finance Abstraction Layer. School-specific by construction too: it is
-    # the boundary where school words meet the neutral finance engines, so it
-    # belongs on this side of the line and never inside apps/core/. It is a
-    # Django app only because it owns one table, the fee-structure-to-term link.
+    # The Finance Abstraction Layer: the boundary where school words meet the
+    # neutral finance engines, so it belongs here and never in apps/core/. A
+    # Django app only because it owns the fee-structure-to-term link table.
     "schools.core.fal.apps.FalConfig",
     "vs_admin_console",
     "vs_user",
@@ -214,12 +210,10 @@ CORS_ALLOWED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
-# Every school is served from its own subdomain (bright-star.xvs.codexng.com),
-# so the browser origin differs per tenant and cannot be enumerated in advance.
-# The pattern matches one label only - it does not reach a.b.xvs.codexng.com -
-# and the bare product site keeps its explicit entry above.
-# django-cors-headers echoes the specific matched origin rather than "*", which
-# is what keeps this legal alongside CORS_ALLOW_CREDENTIALS.
+# Every school is served from its own subdomain, so the browser origin differs
+# per tenant and cannot be enumerated in advance. The pattern matches one label
+# only, and django-cors-headers echoes the matched origin rather than "*",
+# which is what keeps this legal alongside CORS_ALLOW_CREDENTIALS.
 CORS_ALLOWED_ORIGIN_REGEXES = [
     origin.strip()
     for origin in config(
@@ -272,10 +266,9 @@ WSGI_APPLICATION = "apps.wsgi.application"
 # Password validation
 # https://docs.djangoproject.com/en/5.0/ref/settings/#auth-password-validators
 
-# Canonical policy = 12 chars + uppercase + lowercase + digit + special
-# (PasswordComplexityValidator, the single source of truth in
-# vs_user/password_policy.py), plus not-common and not-similar-to-user-info.
-# MinimumLength/Numeric are dropped - the complexity validator subsumes both.
+# PasswordComplexityValidator in vs_user/password_policy.py is the single
+# source of truth: 12 characters, upper, lower, digit and special. It subsumes
+# MinimumLength and Numeric, so neither is listed here.
 AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
@@ -305,13 +298,11 @@ DEFAULT_FROM_EMAIL = config(
     "DEFAULT_FROM_EMAIL",
     default="CodeX Vision <chidera.ohanenye@codexng.com>",
 )
-# Monitoring copies are BCC, never CC.
-#
-# Every list below is an internal mailbox we copy so somebody can see what went
-# out. Copying it visibly put internal addresses in front of customers and vendors,
-# showed each recipient that their mail is monitored, and handed anyone who hits
-# reply-all a route into an internal inbox. None of that was intended; CC was simply
-# the first thing reached for. BCC delivers the same copy without any of it.
+# Monitoring copies are BCC, never CC. Every list below is an internal mailbox
+# copied so somebody can see what went out. A visible copy puts internal
+# addresses in front of customers and vendors, tells each recipient their mail
+# is monitored, and hands anyone hitting reply-all a route into an internal
+# inbox. BCC delivers the same copy without any of it.
 #
 # Each reads its old CC environment variable as the fallback default, so a
 # deployment that has not renamed its variables keeps the addresses it had.

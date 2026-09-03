@@ -401,9 +401,8 @@ class SmallSampleGuardTests(TestCase):
     def test_below_floor_window_leaves_module_status_unknown(self):
         from vs_health.tasks import refresh_module_service_statuses
 
-        # Starts CRITICAL (the state one slow request used to pin it in) so the
-        # assertion proves the guard actively demotes to UNKNOWN rather than
-        # matching the model's UNKNOWN default.
+        # Starts CRITICAL so the assertion proves the guard actively demotes to
+        # UNKNOWN rather than matching the model's UNKNOWN default.
         svc = MonitoredService.objects.create(
             key="billing", name="Billing & Fees", sort_order=1,
             current_status=HealthStatus.CRITICAL,

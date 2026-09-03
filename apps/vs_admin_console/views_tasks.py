@@ -249,10 +249,8 @@ class TaskMonitorViewSet(
         allowed = visible_tenant_ids(self.request.user)
         if allowed is not None:
             qs = qs.filter(tenant_id__in=allowed)
-        # An unknown slug narrows to nothing rather than being ignored:
-        # silently returning every tenant for a typo is how a filter becomes a
-        # leak. A tenant outside `allowed` is already excluded above, so this
-        # can never widen the scope either.
+        # An unknown slug narrows to nothing rather than being ignored: silently
+        # returning every tenant for a typo is how a filter becomes a leak.
         return narrow_by_tenant(qs, self.request.query_params)
 
     def _apply_filters(self, qs):
@@ -440,11 +438,8 @@ class TaskMonitorViewSet(
             data={
                 "eager_mode": eager,
                 "broker_configured": bool(getattr(settings, "CELERY_BROKER_URL", "")),
-                # False whenever nothing on the schedule has ever run. In eager
-                # mode that is guaranteed, because eager mode has no beat at all -
-                # stated as a fact about observed runs rather than inferred from
-                # the mode, so a worker that is configured but wedged reads the
-                # same as one that was never started.
+                # A fact about observed runs, not about the mode, so a worker that is
+                # configured but wedged reads the same as one never started.
                 "scheduler_alive": bool(last_by_task),
                 "never_run": sorted(
                     entry["task"] for entry in schedule.values()

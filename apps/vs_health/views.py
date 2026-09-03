@@ -256,10 +256,8 @@ class TaskListView(HealthViewMixin, generics.ListAPIView):
         status = params.get("status")
         if status:
             qs = qs.filter(status=status.upper())
-        # NOT ``?tenant=``: that is the tenant assertion the authentication
-        # layer requires, and it carries a slug. Filtering ``tenant_id`` by it
-        # raised on every request, so this table answered 500 to every caller
-        # it ever had. See core.tenant_filters.
+        # NOT ``?tenant=``, which is the authentication layer's tenant assertion
+        # and carries a slug rather than an id. See core.tenant_filters.
         qs = narrow_by_tenant(qs, params)
         kind = params.get("kind")
         if kind:

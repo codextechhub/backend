@@ -74,7 +74,20 @@ class AuditModuleKey(models.TextChoices):
 
 
 class AuditActionType(models.TextChoices):
-    """Specific auditable actions that can be emitted by the platform."""
+    """Specific auditable actions that can be emitted by the platform.
+
+    The vocabulary is closed and validated on save, and ``emit_audit_event``
+    never raises: an action type absent from this class is swallowed silently
+    and the trail a module promises is simply empty. So a value has to be
+    registered here before the module that emits it ships, not afterwards.
+
+    Only what the generic verbs cannot express earns an entry. An ordinary
+    create or edit of a department, a programme or a class uses CREATE, UPDATE
+    or DELETE with ``entity_type`` naming the model; a lifecycle step with its
+    own meaning gets its own type. Labels carry the design's dotted event name
+    where one exists, so a type and its specification stay traceable to each
+    other.
+    """
     # Generic CRUD
     CREATE = "CREATE", "Create"
     UPDATE = "UPDATE", "Update"
@@ -128,10 +141,7 @@ class AuditActionType(models.TextChoices):
     EXPORT_COMPLETED = "EXPORT_COMPLETED", "Export Completed"
     EXPORT_FAILED = "EXPORT_FAILED", "Export Failed"
 
-    # Export Centre (vs_exports). The vocabulary is closed and validated on save,
-    # so every event the module emits must be registered here - an unregistered
-    # action_type is silently swallowed by emit_audit_event and the trail is lost.
-    # Labels carry the design's dotted event name so the two stay traceable.
+    # Export Centre (vs_exports).
     EXPORT_DEFINITION_CREATED = "EXPORT_DEFINITION_CREATED", "Export Defined (export.definition.created)"
     EXPORT_DEFINITION_UPDATED = "EXPORT_DEFINITION_UPDATED", "Export Changed (export.definition.updated)"
     EXPORT_DEFINITION_DELETED = "EXPORT_DEFINITION_DELETED", "Export Archived (export.definition.deleted)"
@@ -146,10 +156,7 @@ class AuditActionType(models.TextChoices):
     EXPORT_FILE_EXPIRED = "EXPORT_FILE_EXPIRED", "Export File Expired (export.file.expired)"
     EXPORT_ADMIN_VIEWED_ACTIVITY = "EXPORT_ADMIN_VIEWED_ACTIVITY", "Export Activity Viewed (export.admin.viewed_activity)"
 
-    # School onboarding (M9). Registered here before the module emits anything:
-    # the vocabulary is closed and validated on save, and emit_audit_event never
-    # raises, so an unregistered value is dropped silently and the trail this
-    # module promises would simply be empty.
+    # School onboarding.
     ONBOARDING_PROVISIONED = "ONBOARDING_PROVISIONED", "Onboarding Provisioned"
     ONBOARDING_TASK_COMPLETED = "ONBOARDING_TASK_COMPLETED", "Onboarding Task Completed"
     ONBOARDING_TASK_SKIPPED = "ONBOARDING_TASK_SKIPPED", "Onboarding Task Skipped"
@@ -159,47 +166,31 @@ class AuditActionType(models.TextChoices):
     GO_LIVE_REJECTED = "GO_LIVE_REJECTED", "Go-Live Rejected"
     GO_LIVE_ACTIVATED = "GO_LIVE_ACTIVATED", "Go-Live Activated"
     GO_LIVE_FAILED = "GO_LIVE_FAILED", "Go-Live Failed"
-    # The two ends of the abandoned-onboarding decision: a school that stayed
-    # pending too long is suspended by a sweep nobody watches, and a platform
-    # operator can put it back. Both are status changes made to somebody else's
-    # school, so both have to be findable afterwards.
+    # Both ends of the abandoned-onboarding decision. Each is a status change
+    # made to somebody else's school, so each has to be findable afterwards.
     ONBOARDING_EXPIRED = "ONBOARDING_EXPIRED", "Onboarding Expired"
     ONBOARDING_REINSTATED = "ONBOARDING_REINSTATED", "Onboarding Reinstated"
 
-    # Academic structure (M13). Registered before the module emits anything,
-    # for the reason the onboarding block above gives. Only the lifecycle
-    # events that CREATE, UPDATE and DELETE cannot express are listed: an
-    # ordinary create or edit of a department, a programme or a class uses the
-    # generic three with entity_type naming the model.
+    # Academic structure.
     ACADEMIC_SESSION_ACTIVATED = "ACADEMIC_SESSION_ACTIVATED", "Academic Session Activated"
     ACADEMIC_SESSION_ARCHIVED = "ACADEMIC_SESSION_ARCHIVED", "Academic Session Archived"
-    # A session losing branches to another session that claimed them. Without
-    # it a school-wide year silently stops covering a branch and nothing in the
-    # trail says when or why (M13 FR-013).
+    # A session losing branches to another that claimed them. Without it a
+    # school-wide year silently stops covering a branch (FR-013).
     ACADEMIC_SESSION_NARROWED = "ACADEMIC_SESSION_NARROWED", "Academic Session Narrowed"
     ACADEMIC_TERM_ARCHIVED = "ACADEMIC_TERM_ARCHIVED", "Academic Term Archived"
     ACADEMIC_CLASS_ARCHIVED = "ACADEMIC_CLASS_ARCHIVED", "Academic Class Archived"
     ACADEMIC_CLASS_RESTORED = "ACADEMIC_CLASS_RESTORED", "Academic Class Restored"
     ACADEMIC_STRUCTURE_BULK_CREATED = "ACADEMIC_STRUCTURE_BULK_CREATED", "Academic Structure Bulk Created"
-    # M14. Publication is a lifecycle event no generic verb expresses, and
-    # it is the one a school will actually look up afterwards: "when did
-    # JSS1 A's timetable go out, and who sent it?"
+    # Publication is the lifecycle event a school looks up afterwards: when did
+    # JSS1 A's timetable go out, and who sent it?
     ACADEMIC_TIMETABLE_PUBLISHED = "ACADEMIC_TIMETABLE_PUBLISHED", "Academic Timetable Published"
 
-    # Platform operations. Registered before anything emits it, because the
-    # vocabulary is closed and validated on save and emit_audit_event swallows
-    # an unregistered value silently - which would leave exactly the trail
-    # this event exists to create empty.
-    #
-    # Reading a raw task traceback means reading whatever personal data the
-    # failing row carried, so the read is itself the auditable act. Without
-    # this, "who looked at Corona's failed guardian import" has no answer.
+    # Platform operations. Reading a raw task traceback means reading whatever
+    # personal data the failing row carried, so the read is itself the
+    # auditable act: "who looked at Corona's failed guardian import".
     TASK_DIAGNOSTIC_VIEWED = "TASK_DIAGNOSTIC_VIEWED", "Raw Task Diagnostic Viewed"
 
-    # M11 Student Management. Registered before anything emits them, because
-    # the vocabulary is closed and validated on save and emit_audit_event
-    # swallows an unregistered value silently - which would leave exactly the
-    # trail these events exist to create empty.
+    # Student management.
     STUDENT_ENROLLED = "STUDENT_ENROLLED", "Student Enrolled"
     STUDENT_CLASS_ASSIGNED = "STUDENT_CLASS_ASSIGNED", "Student Class Assigned"
     STUDENT_CLASS_TRANSFERRED = "STUDENT_CLASS_TRANSFERRED", "Student Class Transferred"

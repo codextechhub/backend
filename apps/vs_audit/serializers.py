@@ -146,10 +146,9 @@ class AuditEventDetailSerializer(serializers.ModelSerializer):
 # Entity Audit Trail Serializers
 # -----------------------------------------------------------------------------
 
-# The trail's two timestamps are computed, not model fields, so nothing formats
-# them on the way out. Borrowing a real ``DateTimeField`` keeps them rendered
-# exactly like every other datetime the API emits, including under a project
-# ``DATETIME_FORMAT``, rather than whatever ``str()`` happens to produce.
+# The trail's two timestamps are computed rather than model fields, so
+# borrowing a real DateTimeField is what renders them like every other
+# datetime the API emits, including under a project DATETIME_FORMAT.
 _TRAIL_DATETIME = serializers.DateTimeField()
 
 
@@ -424,14 +423,20 @@ NO_TENANT = "__none__"
 
 
 class AuditEventFilterSerializer(serializers.Serializer):
-    """
-    This serializer is not for saving to the database.
+    """Validate Event Explorer query parameters; nothing here is saved.
 
-    It is only for validating incoming filter/search query data.
+    The customer filter is named ``tenant_slug`` rather than ``tenant``.
+    ``tenant`` is reserved platform-wide for the tenant assertion: every
+    authenticated request carries ``?tenant=<slug>`` and
+    ``TenantJWTAuthentication`` reads it before this serializer sees the query
+    string, so a filter of that name would re-scope the whole request instead
+    of narrowing it. A CX staffer typing ``?tenant=bright-star`` to narrow the
+    Explorer would be answered "No tenant matches the requested context".
 
-    Typical use:
-    - validate query params
-    - then apply them in the view/queryset
+    It takes the slug rather than the primary key, unlike ``actor_user_id``
+    beside it, because the slug is the identifier ``Tenant`` publishes and the
+    value ``AuditEventListSerializer`` already renders in the ``tenant``
+    column. The console filters on exactly what it displays.
     """
 
     module_key = ChoiceListField(
@@ -459,21 +464,7 @@ class AuditEventFilterSerializer(serializers.Serializer):
     entity_type = serializers.CharField(required=False)
     entity_id = serializers.CharField(required=False)
 
-    # Narrow to one customer. Named ``tenant_slug`` and not ``tenant`` because
-    # ``tenant`` is reserved platform-wide for the tenant *assertion*: every
-    # authenticated request must carry ``?tenant=<slug>``, and
-    # ``TenantJWTAuthentication`` reads it before this serializer ever sees the
-    # query string. A filter of that name would not filter anything - it would
-    # re-scope the whole request, and a CX staffer typing ``?tenant=bright-star``
-    # to narrow the Explorer would be answered with "No tenant matches the
-    # requested context" instead.
-    #
-    # It takes the slug rather than the primary key, unlike ``actor_user_id``
-    # beside it, because that is the identifier ``Tenant`` publishes: "numeric
-    # primary keys are deliberately internal; slug is the stable, human-readable
-    # identifier accepted by tenant-scoped APIs". It is also what
-    # ``AuditEventListSerializer`` already renders in the ``tenant`` column, so
-    # the console filters on exactly the value it displays.
+    # Narrow to one customer. See the class docstring.
     tenant_slug = serializers.CharField(required=False)
 
     date_from = serializers.DateTimeField(required=False)

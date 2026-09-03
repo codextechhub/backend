@@ -203,9 +203,8 @@ class OverviewSectionTests(OverviewTestBase):
         self.assertEqual(self.fetch()["notifications"]["unread"], 2)
 
     def test_ticket_counts_drop_finished_work(self):
-        # The landing screen's rule: doing the work clears the card. Both ticket
-        # numbers therefore count unfinished tickets only - a resolved or closed
-        # ticket the caller once owned must not keep a row on the page.
+        # The landing screen's rule: doing the work clears the card. Collecting
+        # the file removes the row, and an expired or purged file never keeps it.
         from vs_tickets.constants import TicketStatus
         from vs_tickets.models import Ticket
 

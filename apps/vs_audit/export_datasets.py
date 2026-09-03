@@ -27,22 +27,24 @@ from vs_exports.catalogue import (
 )
 
 
-# Build the tenant-scoped base queryset for audit events.
-#
-# The boundary is ``vs_audit.scoping.tenant_event_predicate``, the same one the
-# Event Explorer and every other audit surface reads, rather than a second copy
-# spelled ``filter(tenant=scope.tenant)``. That copy was narrower: it matched the
-# column alone and missed the pre-d1ceccb rows that carry their owner's pk in
-# ``metadata['tenant_id']``. Bright Star's audit officer saw her old password
-# resets on the screen, exported that same view, and they were not in the file.
-#
-# Only the boundary is shared, not the console's widening for PLATFORM callers:
-# an export always covers your own organisation, which is exactly what
-# ``_translate_events`` tells a platform reviewer who narrowed the screen with
-# ``tenant_slug``. So this reads the predicate directly and never
-# ``audit_scope_predicate``. Codex is a tenant like any other here, and recovers
-# its own pre-backfill rows the same way every school does.
 def _audit_events(scope):
+    """The tenant-scoped base queryset an audit export reads.
+
+    The boundary is ``vs_audit.scoping.tenant_event_predicate``, the same one
+    the Event Explorer and every other audit surface reads, and never a second
+    copy spelled ``filter(tenant=scope.tenant)``. That copy is narrower: it
+    matches the column alone and misses rows that carry their owner's pk in
+    ``metadata['tenant_id']`` instead. Bright Star's audit officer would see
+    her old password resets on the screen, export that same view, and not find
+    them in the file.
+
+    Only the boundary is shared, not the console's widening for PLATFORM
+    callers. An export always covers the caller's own organisation, which is
+    what ``_translate_events`` tells a platform reviewer who narrowed the
+    screen with ``tenant_slug``, so this reads the predicate directly and never
+    ``audit_scope_predicate``. Codex is a tenant like any other here and
+    recovers its own rows the same way every school does.
+    """
     from .models import AuditEvent
     from .scoping import tenant_event_predicate
 
@@ -139,14 +141,9 @@ def _translate_events(params):
             "the other filters allow.",
         ))
     if value := params.get("tenant_slug"):
-        # The Explorer and this dataset do not mean the same thing by "tenant",
-        # and saying so is the whole point of Unmapped. The screen is not
-        # tenant-scoped: a platform reviewer browses every customer's events on
-        # it and narrows with ``tenant_slug``. The export is scoped in ``base``,
-        # to the caller's own organisation, and that boundary is deliberately
-        # not editable by a filter. Left unsaid, a reviewer who narrowed the
-        # screen to Bright Star and pressed Export would get a file covering a
-        # different set of rows than the one on the screen and no hint of it.
+        # The screen and the file do not mean the same thing by "tenant", and
+        # saying so is what Unmapped is for: the screen is not tenant-scoped, the
+        # export is, and the export's boundary is not editable by a filter.
         unmapped.append(Unmapped(
             "tenant_slug", value,
             "An audit export always covers your own organisation, so it cannot be "

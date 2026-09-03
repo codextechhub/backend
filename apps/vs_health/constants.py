@@ -3,6 +3,23 @@
 Kept separate from ``models`` so non-model code (middleware, collectors,
 services, tasks) can import status labels and the latency-histogram layout
 without dragging in the ORM.
+
+Latency is folded into fixed exponential millisecond buckets rather than
+stored per request, so a rollup row stays tiny while still yielding good p50,
+p95 and p99 estimates once many rows are merged. ``LATENCY_BUCKETS_MS`` holds
+upper bounds and one overflow bucket above the last bound is implied, making a
+histogram a list of ``len(LATENCY_BUCKETS_MS) + 1`` counts.
+
+``MIN_P95_SAMPLE`` is the floor below which those estimates are not reported at
+all. Traffic here runs at roughly one or two requests a minute, so a fifteen
+minute window routinely holds a couple of dozen requests, and a p95 or a 5xx
+rate drawn from that few samples is noise: one slow report request pushes p95
+past any latency threshold and opens a SEV2, and one 500 reads as a 20% error
+rate. Under the floor, percentile and ratio statuses report UNKNOWN and alert
+rules skip evaluation entirely, so the module never claims a green it cannot
+support and never raises a red it cannot justify. Thirty is the conventional
+smallest sample at which a tail estimate is worth quoting; even there p95 rests
+on the top two observations, so treat it as a floor and not a guarantee.
 """
 from __future__ import annotations
 
@@ -48,12 +65,7 @@ def worst_status(statuses) -> str:
 # ---------------------------------------------------------------------------
 # Latency histogram
 # ---------------------------------------------------------------------------
-# Per-request latency is folded into fixed exponential millisecond buckets so a
-# single rollup row stays tiny yet still yields good p50/p95/p99 estimates when
-# many rows are merged. ``LATENCY_BUCKETS_MS`` are upper bounds; one extra
-# overflow bucket (>last bound) is implied, so a histogram is a list of
-# ``len(LATENCY_BUCKETS_MS) + 1`` integer counts.
-# Fixed bucket boundaries for compact request latency histograms.
+#: Upper bounds, in milliseconds. See the module docstring.
 LATENCY_BUCKETS_MS = [
     5, 10, 25, 50, 75, 100, 150, 200, 300, 500,
     750, 1000, 1500, 2000, 3000, 5000, 10000,
@@ -63,39 +75,28 @@ HISTOGRAM_SIZE = len(LATENCY_BUCKETS_MS) + 1
 # ---------------------------------------------------------------------------
 # Small-sample floor for ratio/percentile signals
 # ---------------------------------------------------------------------------
-# Production traffic on this platform is roughly 1-2 requests/minute, so a 15
-# minute window routinely holds only a couple of dozen requests. A p95 (or a
-# 5xx error rate) computed from that few samples is noise, not signal: ONE slow
-# report request flips p95 past any latency threshold and opens a SEV2, and one
-# 500 makes a 20% error rate. Below this floor we have no statistically usable
-# signal, so percentile/ratio-driven statuses report UNKNOWN and alert rules
-# skip evaluation entirely - never a claimed green, never a noisy red.
-# 30 is the conventional smallest sample at which a tail estimate is worth
-# quoting at all (at n=30 the p95 still rests on the top ~2 observations, so
-# treat it as a floor, not a guarantee).
+#: Fewest samples a percentile or ratio may be claimed from. See the module
+#: docstring.
 MIN_P95_SAMPLE = 30
 
-# Bucket width, in seconds, that request metrics are aggregated into.
-# Request metrics are folded into minute buckets before persistence.
+#: Bucket width, in seconds, that request metrics are folded into before
+#: persistence.
 METRIC_BUCKET_SECONDS = 60
 
-# The Celery queues the platform runs (mirrors apps/celery.py + the design).
-# Queue names expected from Celery routing and health snapshots.
+#: The Celery queues the platform runs; mirrors apps/celery.py.
 KNOWN_QUEUES = ["imports", "exports", "notifications", "provisioning", "reports", "celery"]
 
-# Module "services" are route groups of the Django monolith, not separate
-# processes - their status is DERIVED from real request metrics on these
-# route prefixes (tasks.refresh_module_service_statuses), never probed.
+#: Module "services" are route groups of the monolith, not separate processes.
+#: Their status is derived from request metrics on these prefixes, never probed.
 ROUTE_PREFIX_SERVICES = {
     "schools": ("/v1/i/",),
     "billing": ("/v1/finance/", "/v1/payments/"),
     "reports": ("/v1/finance/reports/",),
 }
 
-# Request-derived alert rules need an explicit service boundary. ``api`` owns
-# the whole API surface; narrower services own only their resolved route groups.
-# A service absent from this map cannot honestly support error-rate or latency
-# rules because RequestMetric has no signal for it.
+#: The service boundary a request-derived alert rule needs. A service absent
+#: here supports no error-rate or latency rule: RequestMetric has no signal for
+#: it.
 REQUEST_METRIC_SERVICE_PREFIXES = {
     "api": ("/v1/",),
     "auth": ("/v1/user/",),

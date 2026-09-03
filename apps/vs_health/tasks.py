@@ -204,9 +204,9 @@ def capture_queue_snapshot_task() -> dict:
         )
         created += 1
 
-    # The Celery service card reflects real worker presence: workers online →
-    # healthy; broker reachable but no workers → critical (jobs would stall);
-    # broker unreachable/not redis → unknown (no signal, no claim).
+    # Real worker presence: workers online is healthy, a reachable broker with
+    # no workers is critical because jobs would stall, and an unreachable
+    # broker is unknown because there is no signal to claim anything from.
     from .models import MonitoredService
     celery_svc = MonitoredService.objects.filter(key="celery", is_active=True).first()
     if celery_svc:
@@ -237,10 +237,8 @@ def _current_metric_value(rule):
 
     tr = services.parse_range("15m")
 
-    # Both request-derived metrics are ratio/percentile estimates: on a window
-    # of a handful of requests one slow (or one failed) request swings them past
-    # any threshold and auto-opens an incident. Below the floor there is nothing
-    # to evaluate.
+    # Ratio and percentile estimates both: under the sample floor one slow or
+    # one failed request swings them past any threshold.
     if rule.metric in (AlertRule.Metric.ERROR_RATE, AlertRule.Metric.P95_LATENCY):
         qs = services._base_qs(tr.start, tr.end)
         if rule.target_service_id:
@@ -290,9 +288,8 @@ def evaluate_alert_rules_task() -> dict:
     )
     for rule_id in rule_ids:
         with transaction.atomic():
-            # The rule row is the mutex for its evaluation state, firing alert,
-            # incident, and notification records. Overlapping beat runs therefore
-            # cannot both observe a first breach and open duplicate incidents.
+            # The rule row is the mutex for its evaluation state, so overlapping beat
+            # runs cannot both see a first breach and open duplicate incidents.
             rule = (
                 AlertRule.objects.select_for_update()
                 .filter(id=rule_id, is_enabled=True)
