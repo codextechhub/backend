@@ -507,12 +507,13 @@ class CatalogItem(_AutoMasterCodeMixin, TimeStampedModel):
 class StockLocation(TimeStampedModel):
     """Somewhere stock physically sits: a branch store, a lab, a kitchen.
 
-    Stock used to be one pool per entity, which is wrong the moment a school has two
-    branches. The pool told you a thousand books existed; it could not tell you that
-    seven hundred were at one site and three hundred at the other, so an issue at the
-    smaller site drew against stock it did not have and the availability check allowed
-    it. Worse quietly: one blended average cost meant a branch that bought at a higher
-    price and one that bought lower both issued at the middle, so each site's expense
+    Stock is held per location rather than as one pool per entity, because a
+    pool is wrong the moment a school has two branches. It can say a thousand
+    books exist without saying that seven hundred are at one site and three
+    hundred at the other, so an issue at the smaller site draws against stock
+    it does not have and the availability check allows it. The quieter harm is
+    cost: one blended average means a branch that bought at a higher price and
+    one that bought lower both issue at the middle, so each site's expense
     was wrong in opposite directions.
 
     ``branch`` is optional on purpose. A school with no branches has one location and

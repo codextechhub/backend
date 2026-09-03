@@ -1,30 +1,24 @@
-# =============================================================================
-# vs_notifications / checks.py
-#
-# One Django system check, registered from VsNotificationsConfig.ready().
-#
-# WHY IT EXISTS
-# -------------
-# services/dispatch._fetch_templates returns nothing for a channel that has no
-# ACTIVE NotificationTemplate, and the dispatch loop then logs a WARNING and
-# skips that channel. Nothing raises, nothing retries, nothing fails. An
-# environment where the templates were never seeded therefore sends NOTHING,
-# and the only evidence is a log line nobody reads.
-#
-# This check reports that state at check time instead. It deliberately does NOT
-# change dispatch: a missing template still skips rather than raises, because
-# making a live send path fail hard is a separate and riskier decision.
-#
-# WHY THE DATABASE TAG
-# --------------------
-# The check queries the database, so it must not run on every management
-# command. Tagged with Tags.database it is skipped by a tag-filtered run, and
-# the `databases` guard below means it does no query at all unless the caller
-# actually named a database. Untagged and unguarded it would execute during
-# collectstatic, during migrate on an empty database, and in any environment
-# where the database is unreachable, turning a working command into a crash.
-# =============================================================================
+"""One Django system check, registered from VsNotificationsConfig.ready().
 
+WHY IT EXISTS
+services/dispatch._fetch_templates returns nothing for a channel that has no
+ACTIVE NotificationTemplate, and the dispatch loop then logs a WARNING and
+skips that channel. Nothing raises, nothing retries, nothing fails. An
+environment where the templates were never seeded therefore sends NOTHING,
+and the only evidence is a log line nobody reads.
+
+This check reports that state at check time instead. It deliberately does NOT
+change dispatch: a missing template still skips rather than raises, because
+making a live send path fail hard is a separate and riskier decision.
+
+WHY THE DATABASE TAG
+The check queries the database, so it must not run on every management
+command. Tagged with Tags.database it is skipped by a tag-filtered run, and
+the `databases` guard below means it does no query at all unless the caller
+actually named a database. Untagged and unguarded it would execute during
+collectstatic, during migrate on an empty database, and in any environment
+where the database is unreachable, turning a working command into a crash.
+"""
 from django.core.checks import Tags, Warning as CheckWarning, register
 from django.db.utils import OperationalError, ProgrammingError
 

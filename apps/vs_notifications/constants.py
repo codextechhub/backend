@@ -1,17 +1,37 @@
-# =============================================================================
-# vs_notifications / constants.py
-#
-# All enums, TextChoices, and the EVENT_TYPE_REGISTRY that seeds the
-# NotificationEventType table.  Adding a new event type means:
-#   1. Add an entry to EVENT_TYPE_REGISTRY below.  This list is the only place
-#      the catalogue is written down: vs_notifications migration 0008 reads it
-#      directly, so a new database picks the entry up with no further step.
-#   2. Run: python manage.py seed_notification_event_types  (resyncs databases
-#      that already exist; build.sh does this on every deploy)
-#   3. Run: python manage.py seed_notification_templates   (creates default body)
-# =============================================================================
+"""All enums, TextChoices, and the EVENT_TYPE_REGISTRY that seeds the
+NotificationEventType table.  Adding a new event type means:
+  1. Add an entry to EVENT_TYPE_REGISTRY below.  This list is the only place
+     the catalogue is written down: vs_notifications migration 0008 reads it
+     directly, so a new database picks the entry up with no further step.
+  2. Run: python manage.py seed_notification_event_types  (resyncs databases
+     that already exist; build.sh does this on every deploy)
+  3. Run: python manage.py seed_notification_templates   (creates default body)
 
+Each registry entry defines one ``NotificationEventType`` row:
 
+``key``
+    Unique dot-notation string, never changed after seeding.
+``label``
+    Human-readable name shown in School Admin settings.
+``description``
+    When the event fires.
+``source_module``
+    The ``vs_*`` app that owns the event.
+``supported_channels``
+    The channel strings the event supports.
+``default_enabled``
+    The fallback when no setting row exists, and the value platform rows are
+    seeded with.
+``is_transactional``
+    Optional, default False. True bypasses every ``NotificationSetting``
+    check and always dispatches on the supported channels, ``is_active``
+    still winning. For password resets, invitations and other must-send mail.
+``is_active``
+    Optional, default True. False registers the event but keeps it out of the
+    settings matrix, the admin catalogue and dispatch. It is an honesty flag:
+    an event stays inactive until a domain module actually emits it, and is
+    switched on in the same change that adds the ``send_notification`` call.
+"""
 # ---------------------------------------------------------------------------
 # Channel choices
 # ---------------------------------------------------------------------------
@@ -103,26 +123,7 @@ class NotificationPermission:
 
 
 # ---------------------------------------------------------------------------
-# Event type registry
-#
-# Each entry defines one NotificationEventType row.
-# Fields:
-#   key               - unique dot-notation string; never changes post-seed
-#   label             - human-readable name shown in School Admin settings
-#   description       - when does this event fire?
-#   source_module     - the vs_* app that owns this event
-#   supported_channels- list of channel strings this event supports
-#   default_enabled   - principled fallback when no setting row exists; also
-#                       the value used to seed platform rows
-#   is_transactional  - (optional, default False) True bypasses all
-#                       NotificationSetting checks; the event always dispatches
-#                       on its supported channels (is_active still wins). Use for
-#                       password resets, invites, and similar must-send mail.
-#   is_active         - (optional, default True) False registers the event but
-#                       keeps it OUT of the settings matrix, the admin catalogue
-#                       and dispatch. Honesty flag: an event stays inactive until
-#                       a domain module actually emits it - flip it on in the
-#                       same change that adds the send_notification call.
+# Event type registry. See the module docstring for the field contract.
 # ---------------------------------------------------------------------------
 
 # Authoritative seed list for NotificationEventType rows.
@@ -588,12 +589,11 @@ EVENT_TYPE_REGISTRY = [
         "is_active": False,  # imports report via task.failed instead
     },
 
-    # ── Export Centre (vs_exports) ─────────────────────────────────────────
     # Emitted by vs_exports.services._notify on every terminal run. Active,
-    # unlike the import pair above, because the Export Centre does NOT report
-    # through task.completed/task.failed: a background job that succeeded can
-    # still have produced a file with columns left out, and only the export
-    # event carries that distinction.
+    # unlike the import pair above, because the Export Centre does not report
+    # through task.completed/task.failed: a job that succeeded can still have
+    # produced a file with columns left out, and only the export event carries
+    # that distinction.
     {
         "key": "export.run_completed",
         "label": "Export ready",

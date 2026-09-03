@@ -105,10 +105,9 @@ class SettlementConcurrencyTests(_ARFixtureMixin, TransactionTestCase):
                 payment = Payment.objects.get(pk=payment_id)
                 # Each thread loads its **own** Invoice instance, exactly as two
                 # HTTP requests in two processes would. Sharing one Python object
-                # between the threads would let the first run's in-memory
-                # ``amount_paid`` update be visible to the second for free, and
-                # the test would then pass against the unlocked code - proving
-                # nothing. It did, until this line.
+                # lets the first run's in-memory ``amount_paid`` update reach the
+                # second for free, and the test then passes against unlocked
+                # code, proving nothing.
                 mine = Invoice.objects.get(pk=invoice.pk)
                 allocations = [(mine, self.INVOICE_KOBO)] if explicit else None
                 post_payment(

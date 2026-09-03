@@ -1,31 +1,27 @@
-# =============================================================================
-# vs_notifications / views.py
-#
-# ViewSets for vs_notifications.
-#
-# Endpoint groups:
-#   NotificationViewSet          - user feed, mark-read, unread count
-#   NotificationHistoryViewSet   - admin history log
-#   NotificationSettingViewSet   - effective settings matrix (read) + upsert
-#   NotificationTemplateViewSet  - Vision Staff template management
-#   NotificationEventTypeViewSet - event type catalogue (read-only, all users)
-#
-# Scoping model (scope comes from the ASSERTED TENANT, not a query parameter):
-#   * There is no ?school= parameter. Callers assert a tenant with ?tenant=<slug>
-#     and get that tenant's rows. Asserting a slug that is not the caller's own
-#     tenant is refused with 404 in vs_rbac.authentication (never leak another
-#     tenant's existence); none of these views opt in via
-#     platform_cross_tenant_param, so not even CX staff can cross over here.
-#   * A PLATFORM-kind tenant (CX staff) is Codex's own tenant. In the settings
-#     endpoints it resolves to the PLATFORM scope - the tenant-NULL default rows
-#     every tenant inherits, NOT codex's own rows.
-#
-# NOTE on managers: view scoping is done EXPLICITLY (recipient=… / tenant=… /
-# all_objects) rather than relying on the ambient TenantAwareManager - the
-# tenant thread-local is not reliably set for DRF-authenticated requests, and
-# explicit scoping is the security-critical contract here.
-# =============================================================================
+"""ViewSets for vs_notifications.
 
+Endpoint groups:
+  NotificationViewSet          - user feed, mark-read, unread count
+  NotificationHistoryViewSet   - admin history log
+  NotificationSettingViewSet   - effective settings matrix (read) + upsert
+  NotificationTemplateViewSet  - Vision Staff template management
+  NotificationEventTypeViewSet - event type catalogue (read-only, all users)
+
+Scoping model (scope comes from the ASSERTED TENANT, not a query parameter):
+  * There is no ?school= parameter. Callers assert a tenant with ?tenant=<slug>
+    and get that tenant's rows. Asserting a slug that is not the caller's own
+    tenant is refused with 404 in vs_rbac.authentication (never leak another
+    tenant's existence); none of these views opt in via
+    platform_cross_tenant_param, so not even CX staff can cross over here.
+  * A PLATFORM-kind tenant (CX staff) is Codex's own tenant. In the settings
+    endpoints it resolves to the PLATFORM scope - the tenant-NULL default rows
+    every tenant inherits, NOT codex's own rows.
+
+NOTE on managers: view scoping is done EXPLICITLY (recipient=… / tenant=… /
+all_objects) rather than relying on the ambient TenantAwareManager - the
+tenant thread-local is not reliably set for DRF-authenticated requests, and
+explicit scoping is the security-critical contract here.
+"""
 import logging
 
 from django.db import transaction

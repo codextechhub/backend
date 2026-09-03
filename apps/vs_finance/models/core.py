@@ -1,8 +1,6 @@
 """Finance foundations.
 
-Foundational models for the finance engine (Phase 0).
-
-This module holds only the *foundations* every later model leans on:
+This module holds only the *foundations* every other model leans on:
 
 * :class:`TimeStampedModel` - shared created/updated stamps (matches the ``vs_*``
   convention).
@@ -16,8 +14,8 @@ This module holds only the *foundations* every later model leans on:
 * :class:`FinanceDocument` - the abstract base for numbered, entity-scoped,
   status-bearing documents (invoices, POs, journals …).
 
-The ledger proper (Account, JournalEntry, FiscalPeriod …) arrives in Phase 1 and
-builds on these.
+The ledger proper - ``Account``, ``JournalEntry``, ``FiscalPeriod`` - lives in
+:mod:`vs_finance.models.gl` and builds on these.
 """
 from __future__ import annotations
 
@@ -218,7 +216,7 @@ class DocumentSequence(models.Model):
     platform/product entities leave it null.
 
     New allocations use ``vs_tenants.TenantDocumentSequence``. This model is
-    retained so historical counter metadata is not destroyed by the refactor.
+    kept because it holds historical counter metadata that is still readable.
     """
 
     entity = models.ForeignKey(

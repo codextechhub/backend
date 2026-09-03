@@ -240,12 +240,12 @@ def _stages_payload(*, amount_field, threshold, gated, approver_role_key,
     and the same shape procurement uses for high-value spend.
 
     The first stage carries the condition too, and that is the whole point of the
-    threshold. It used to be unconditional, so *something* always applied and every
-    concession was gated at every amount: a ₦2,000 goodwill allowance was refused at
-    ``/post/`` exactly as a ₦400,000 waiver was, which is the opposite of what this
+    threshold. Leaving it unconditional means *something* always applies and every
+    concession is gated at every amount: a ₦2,000 goodwill allowance refused at
+    ``/post/`` exactly as a ₦400,000 waiver is, which is the opposite of what this
     constant is for. Below ``threshold`` no stage applies, ``approval_required``
-    answers False, and the allowance posts directly. At or above it the ladder is
-    unchanged - the adjustment approver, then the senior one.
+    answers False, and the allowance posts directly. At or above it the full
+    ladder runs: the adjustment approver, then the senior one.
 
     ``skip_if_no_approvers=False`` on every stage: an adjustment must never approve
     itself because nobody happens to hold the role. An unstaffed stage parks the

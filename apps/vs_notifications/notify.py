@@ -1,44 +1,40 @@
-# =============================================================================
-# vs_notifications / notify.py
-#
-# Public API for sending notifications from other apps.
-#
-# Usage:
-#
-#   from vs_notifications.notify import send_notification, UnregisteredRecipient
-#
-#   send_notification(
-#       event_key="billing.invoice_issued",
-#       context={
-#           "customer_name":  customer.name,
-#           "invoice_number": invoice.number,
-#           "due_date":       invoice.due_date.strftime("%d %b %Y"),
-#           "school_name":    school.name,
-#       },
-#       recipients=[guardian_user],
-#       school=school,
-#   )
-#
-# For inviting users who have no account yet, pass unregistered_recipients:
-#
-#   send_notification(
-#       event_key="user.invited",
-#       context={"invitation_url": url, "school_name": school.name},
-#       recipients=[],
-#       unregistered_recipients=[
-#           UnregisteredRecipient(email="new@staff.com", name="Jane Doe"),
-#       ],
-#       metadata={"activation_key": key},   # internal-only correlation data
-#   )
-#
-# `school` is OPTIONAL - notifications are recipient-centric. Pass it to scope
-# history and pick up a school's settings overrides; omit it for school-less
-# recipients (CX staff, invitees).
-#
-# All valid event_key values are listed in vs_notifications/constants.py
-# under EVENT_TYPE_REGISTRY.
-# =============================================================================
+"""Public API for sending notifications from other apps.
 
+Usage:
+
+  from vs_notifications.notify import send_notification, UnregisteredRecipient
+
+  send_notification(
+      event_key="billing.invoice_issued",
+      context={
+          "customer_name":  customer.name,
+          "invoice_number": invoice.number,
+          "due_date":       invoice.due_date.strftime("%d %b %Y"),
+          "school_name":    school.name,
+      },
+      recipients=[guardian_user],
+      school=school,
+  )
+
+For inviting users who have no account yet, pass unregistered_recipients:
+
+  send_notification(
+      event_key="user.invited",
+      context={"invitation_url": url, "school_name": school.name},
+      recipients=[],
+      unregistered_recipients=[
+          UnregisteredRecipient(email="new@staff.com", name="Jane Doe"),
+      ],
+      metadata={"activation_key": key},   # internal-only correlation data
+  )
+
+`school` is OPTIONAL - notifications are recipient-centric. Pass it to scope
+history and pick up a school's settings overrides; omit it for school-less
+recipients (CX staff, invitees).
+
+All valid event_key values are listed in vs_notifications/constants.py
+under EVENT_TYPE_REGISTRY.
+"""
 from typing import Optional
 
 from .services.dispatch import NotificationService

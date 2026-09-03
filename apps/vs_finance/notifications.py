@@ -57,9 +57,9 @@ def notify_invoice_issued(invoice, *, actor_user=None):
 
     Delegates to :mod:`vs_finance.document_email` so the automatic copy is recorded
     as a :class:`~vs_finance.models.FinanceDocumentDelivery` alongside any later
-    re-send. Sending it from here without a delivery row is what previously made the
-    history start at the first manual send and read as though nothing went out on
-    posting. Opening-balance invoices are still skipped, and this still never raises.
+    re-send. Sending from here without a delivery row makes the history start at
+    the first manual send and read as though nothing went out on posting.
+    Opening-balance invoices are skipped, and this never raises.
     """
     from .document_email import issue_invoice_copy
 

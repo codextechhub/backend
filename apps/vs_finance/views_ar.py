@@ -844,10 +844,10 @@ class PaymentSummaryView(_FinanceBase):
         today = datetime.date.today()
         week_start = today - datetime.timedelta(days=6)
         # "Sitting unapplied" must mean money that is still there. Summing
-        # ``amount - allocated_amount`` counted cash that had already been refunded
-        # back out, so the KPI kept advertising credit the customer no longer had.
-        # ``credit_remaining`` nets the refunds off; ``refunded`` is surfaced beside it
-        # so the difference is visible rather than mysterious.
+        # ``amount - allocated_amount`` counts cash already refunded back out and
+        # advertises credit the customer does not have. ``credit_remaining``
+        # nets the refunds off, and ``refunded`` sits beside it so the
+        # difference is visible rather than mysterious.
         unspent = F("amount") - F("allocated_amount") - F("refunded_amount")
         fully_refunded = Q(allocated_amount__lt=F("amount"),
                            refunded_amount__gte=F("amount") - F("allocated_amount"))
@@ -2704,8 +2704,8 @@ class InvoiceRevokePayLinkView(_FinanceBase):
     For the case the invoice's own state cannot answer: an invoice that is still
     open, whose pay link has been forwarded somewhere it should not have been. The
     page it opens shows the payer's name, the invoice number and what is still
-    owed, and until this existed the only lever was rotating the signing salt,
-    which would have invalidated every pay link the school had ever sent.
+    owed, and the only other lever is rotating the signing salt, which
+    invalidates every pay link the school has ever sent.
 
     Bumping the version invalidates this invoice's links and no other's. The
     invoice stays payable: re-sending it (``/email/`` or the next dunning notice)

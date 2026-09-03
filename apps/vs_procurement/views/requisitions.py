@@ -339,10 +339,9 @@ class RequisitionBudgetAvailabilityView(_ProcBase):
         if budget is not None:
             # Annual allocation: the department's budgeted amount across every period
             # of the operative plan. The commitment figure below is bounded to the
-            # same fiscal year so both sides of "available" share one time window
-            # (previously the budget was a single month while commitments were
-            # all-time, which understated availability for any department with a
-            # standing open PO).
+            # same fiscal year, so both sides of "available" share one time
+            # window. Mismatched windows understate availability for any
+            # department carrying a standing open PO.
             budget_amount = BudgetLine.objects.filter(
                 budget=budget, cost_center=cost_center,
             ).aggregate(total=Sum("amount"))["total"] or 0

@@ -81,8 +81,8 @@ def _unassigned_count(qs, branch_scope, *, prefix="") -> int | None:
     The **count** is deliberate: it says "your view is a subset, by this many documents"
     without disclosing what head office or another branch actually spent, which a money
     figure would.  ``None`` means the caller is not narrowed at all, and every caller
-    then keeps the response they had before this existed - an unbound viewer and a tenant
-    with no branches included.  Old rows are never given an invented branch.
+    then gets the unnarrowed response, an unbound viewer and a tenant with no branches
+    included.  A row without a branch is never given an invented one.
     """
     if branch_scope is None or not branch_scope.is_narrowed:
         return None
@@ -305,9 +305,8 @@ def reconcile_ap(entity, *, as_of=None) -> APReconciliation:
     aging = ap_aging(entity, as_of=as_of)
     # Money paid ahead of a bill is booked to the 1240 vendor-advance asset, not to the
     # AP control, so it belongs on the aging screen's vendor *net* position but not in
-    # this control-account reconciliation. It used to be netted here because the payment
-    # journal debited AP for the full gross, which is exactly the bug that put a debit
-    # balance on a liability. Mirrors :func:`vs_finance.reports.reconcile_ar`.
+    # this control-account reconciliation. Netting it here puts a debit balance
+    # on a liability. Mirrors :func:`vs_finance.reports.reconcile_ar`.
     subledger_total = aging.total_outstanding
 
     # De-duplicate shared AP controls: several vendors may point at the same account,

@@ -162,7 +162,7 @@ class DocumentNumberingError(FinanceError):
 
 
 # --------------------------------------------------------------------------- #  # Finance phase-4 support errors below.
-# Phase 4 - banking, expenses, payroll, budget, fixed assets, period close      #  # Support modules share these errors.
+# Banking, expenses, payroll, budget, fixed assets, period close      #  # Support modules share these errors.          
 # --------------------------------------------------------------------------- #  # End phase-4 header.
 
 # Group behavior for Missing Account Error.

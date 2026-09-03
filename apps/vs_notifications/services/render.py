@@ -1,13 +1,9 @@
-# =============================================================================
-# vs_notifications / services / render.py
-#
-# Handles rendering of NotificationTemplate bodies and subjects using
-# Django's template engine with the caller-supplied context dict.
-#
-# Called by dispatch.py before writing Notification records.
-# Called by the template preview endpoint.
-# =============================================================================
+"""Handles rendering of NotificationTemplate bodies and subjects using
+Django's template engine with the caller-supplied context dict.
 
+Called by dispatch.py before writing Notification records.
+Called by the template preview endpoint.
+"""
 from django.template import Context, Template
 from django.template.exceptions import TemplateSyntaxError, TemplateDoesNotExist
 

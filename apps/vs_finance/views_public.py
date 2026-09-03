@@ -70,7 +70,7 @@ class InvoicePayLinkReadThrottle(InvoicePayLinkThrottle):
     The read needs bounding for the same reason the checkout does, and more so: it
     is the route that discloses the payer's name, the invoice number and what is
     still owed, so a forwarded link being opened over and over is exactly what
-    should be limited. It was previously bounded by IP alone.
+    should be limited. IP alone cannot bound it.
 
     A **separate scope**, not a share of the checkout's, because the two are used at
     different rates by the same honest payer: she loads the page, starts a checkout,

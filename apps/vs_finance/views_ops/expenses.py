@@ -192,8 +192,8 @@ class ExpenseClaimSubmitView(_ExpenseClaimActionBase):
     """POST a draft expense claim into its configured approval workflow."""
 
     # Submitting cannot post or pay anything. Claim creators already hold the
-    # authority to finish and hand off their own draft, so no new tenant grants are
-    # needed merely to repair the previously missing hand-off.
+    # authority to finish and hand off their own draft, so the hand-off needs
+    # no tenant grant of its own.
     rbac_permission = "finance.expenseclaim.create"
 
     def post(self, request, pk):

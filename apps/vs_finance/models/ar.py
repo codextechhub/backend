@@ -17,7 +17,7 @@ from .core import TimeStampedModel, LedgerEntity, FinanceDocument
 from .gl import Account, CostCenter, Currency, TaxCode
 
 # ---------------------------------------------------------------------------
-# Phase 2 - Accounts Receivable (the revenue cycle)
+# Accounts Receivable (the revenue cycle)
 # ---------------------------------------------------------------------------
 #
 # A deliberately **domain-neutral** AR core: a generic Customer is billed with a

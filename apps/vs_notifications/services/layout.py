@@ -1,33 +1,29 @@
-# =============================================================================
-# vs_notifications / services / layout.py
-#
-# The ONE HTML shell every email notification is rendered into.
-#
-# A notification template carries plain text and (optionally) a call-to-action.
-# The visual - header, typography, detail tables, button, footer - comes from
-# here, not from markup pasted into each template. That is the whole point:
-#   * an author writes a message, not an HTML document;
-#   * every email looks the same because there is one place it is styled;
-#   * a template that never carried html_body still ships a proper email.
-#
-# compose_email_html() reads the ALREADY RENDERED plain body (post {{ }}
-# substitution) and infers structure from how the text is written:
-#
-#   Label: value      (two or more in a row)   -> a details table
-#   - item / • item                            -> a bulleted list
-#   ALL CAPS SHORT LINE                        -> a section heading
-#   ─────── / ━━━━━━━                          -> a horizontal rule
-#   anything else                              -> a paragraph
-#
-# Everything is escaped and then urlized, so a rendered value containing
-# markup can never inject HTML into the email (see urlize(autoescape=True) -
-# render.py deliberately renders templates with autoescape OFF because admins
-# author the copy, so escaping has to happen HERE, at the boundary).
-#
-# Layout rules for email clients: tables, inline styles, one 640px column,
-# no external assets, no <style> block (Gmail strips much of it anyway).
-# =============================================================================
+"""The ONE HTML shell every email notification is rendered into.
 
+A notification template carries plain text and (optionally) a call-to-action.
+The visual - header, typography, detail tables, button, footer - comes from
+here, not from markup pasted into each template. That is the whole point:
+  * an author writes a message, not an HTML document;
+  * every email looks the same because there is one place it is styled;
+  * a template that never carried html_body still ships a proper email.
+
+compose_email_html() reads the ALREADY RENDERED plain body (post {{ }}
+substitution) and infers structure from how the text is written:
+
+  Label: value      (two or more in a row)   -> a details table
+  - item / • item                            -> a bulleted list
+  ALL CAPS SHORT LINE                        -> a section heading
+  ─────── / ━━━━━━━                          -> a horizontal rule
+  anything else                              -> a paragraph
+
+Everything is escaped and then urlized, so a rendered value containing
+markup can never inject HTML into the email (see urlize(autoescape=True) -
+render.py deliberately renders templates with autoescape OFF because admins
+author the copy, so escaping has to happen HERE, at the boundary).
+
+Layout rules for email clients: tables, inline styles, one 640px column,
+no external assets, no <style> block (Gmail strips much of it anyway).
+"""
 from __future__ import annotations
 
 import re

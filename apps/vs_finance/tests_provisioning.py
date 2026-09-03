@@ -1,9 +1,9 @@
 """Provisioning a set of books as a service, and the one-primary-entity guard.
 
-The whole sequence that makes books usable used to live inside
-``LedgerEntityCreateSerializer.create``, so an HTTP POST was the only way to get
-a set of books. These tests exercise it as what it now is: a function any caller
-can reach, with the guard sitting on it rather than on the endpoint.
+The sequence that makes books usable is a function any caller can reach, not
+something reachable only through ``LedgerEntityCreateSerializer.create`` and an
+HTTP POST. These tests exercise it as such, with the guard sitting on the
+function rather than on the endpoint.
 """
 from __future__ import annotations
 

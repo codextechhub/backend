@@ -192,9 +192,9 @@ from vs_tenants.models import Branch
 def _platform_tenant():
     """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
 
-    Being platform staff IS being on this tenant - there is no persona column
-    standing in for it any more - so a fixture that wants a CX account names
-    the tenant, exactly as production code does.
+    Being platform staff IS being on this tenant, with no persona column
+    standing in for it, so a fixture that wants a CX account names the tenant
+    exactly as production code does.
     """
     from vs_tenants.models import Tenant
 
@@ -2088,7 +2088,7 @@ class DunningTests(_ARFixtureMixin, TestCase):
 
 
 # =========================================================================== #
-# Phase 4 - banking, expenses, payroll, budget, fixed assets, period close     #
+# Banking, expenses, payroll, budget, fixed assets, period close     #          
 # =========================================================================== #
 
 
@@ -6455,11 +6455,11 @@ class _StubRequest:
 class EntityListScopingTests(TestCase):
     """EntityListCreateView.get_queryset is tenancy-scoped for EVERY caller (F1).
 
-    This class used to assert that CX staff see every entity. That exemption was
-    the defect: the list granted platform callers a latitude ``resolve_entity``
-    never granted, so the console listed every school's books and then refused
-    to open any of them. No level of permission reads another tenant's ledger;
-    cross-tenant work is done by proxying a user who holds the key there.
+    CX staff are not exempt. Granting platform callers a latitude
+    ``resolve_entity`` does not grant has the console list every school's books
+    and then refuse to open any of them. No level of permission reads another
+    tenant's ledger; cross-tenant work is done by proxying a user who holds the
+    key there.
     """
 
     # Prepare or verify the setUp test path.

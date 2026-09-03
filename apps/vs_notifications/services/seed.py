@@ -1,13 +1,9 @@
-# =============================================================================
-# vs_notifications / services / seed.py
-#
-# Seed helpers called by management commands and by vs_onboarding after a
-# new school is provisioned.
-#
-# All seed functions are idempotent - safe to run repeatedly without
-# creating duplicate records.
-# =============================================================================
+"""Seed helpers called by management commands and by vs_onboarding after a
+new school is provisioned.
 
+All seed functions are idempotent - safe to run repeatedly without
+creating duplicate records.
+"""
 import logging
 
 from ..constants import EVENT_TYPE_REGISTRY

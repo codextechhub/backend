@@ -1,14 +1,13 @@
-"""Posting-layer guards.
+"""Posting-layer guards, and the service that runs them.
 
-The principle locked in Phase 0: **business rules are enforced where journals are
-posted, not in the UI.** A request that somehow bypasses the screens (an API call, a
-script, a webhook) must still be unable to post into a closed period or write an
-unbalanced entry.
+**Business rules are enforced where journals are posted, not in the UI.** A
+request that bypasses the screens - an API call, a script, a webhook - must
+still be unable to post into a closed period or write an unbalanced entry.
 
-In Phase 0 the ``FiscalPeriod`` model does not exist yet, so these guards are
-duck-typed: they operate on any object exposing a ``status`` (and optionally a
-``label``). Phase 1 introduces the real model and the full ``post_journal`` service,
-which will call these same guards - keeping the enforcement point singular.
+The guards are duck-typed rather than bound to :class:`~vs_finance.models.
+FiscalPeriod`: they operate on any object exposing a ``status``, and optionally
+a ``label`` for the error message. :func:`post_journal` calls these same guards,
+which is what keeps the enforcement point singular.
 """
 from __future__ import annotations
 
@@ -299,7 +298,7 @@ def sum_sides(lines: Iterable) -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 - posting services
+# Posting services
 # ---------------------------------------------------------------------------
 #
 # These are the ONLY supported way to make a journal affect balances. They run the

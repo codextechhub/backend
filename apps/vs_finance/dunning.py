@@ -120,12 +120,12 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
     if not stages:  # A policy with no ladder cannot generate notices.
         raise PostingError(f"Dunning policy '{policy.name}' has no stages defined.")
 
-    # What was owed **on the run date**, not what is owed now. A dunning run for a past
-    # date used to read live balances, so a settlement made after that date suppressed
-    # the reminder that should have gone out - and a re-run of the same date produced a
-    # different answer. The AR snapshot rebuilds each invoice's balance as at ``as_of``
-    # from dated evidence; for a run dated today it returns exactly the live figures,
-    # so the ordinary daily path is unchanged.
+    # What was owed **on the run date**, not what is owed now. Reading live
+    # balances for a past date lets a settlement made after that date suppress
+    # the reminder that should have gone out, and makes a re-run of the same
+    # date answer differently. The AR snapshot rebuilds each invoice's balance
+    # as at ``as_of`` from dated evidence, and for a run dated today it returns
+    # exactly the live figures.
     from .reports import _ar_snapshot
 
     today = timezone.now().date()

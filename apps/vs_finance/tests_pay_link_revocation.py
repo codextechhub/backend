@@ -196,8 +196,8 @@ class PayLinkReadThrottleTests(_PayLinkFixture, TestCase):
     """The summary read is bounded per link, not only per IP.
 
     It is the route that discloses the payer's name, the invoice number and the
-    balance, and it was previously bounded by IP alone - which cannot do this job,
-    because a whole school's parents share one address.
+    balance. IP alone cannot bound it, because a whole school's parents share
+    one address.
     """
 
     def setUp(self):

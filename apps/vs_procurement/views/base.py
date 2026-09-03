@@ -108,13 +108,12 @@ def _resolve_cost_center(entity, ref, field="cost_center"):
 #   * a document that *continues* a chain takes the branch from its source
 #     document and nothing else (:func:`_inherited_branch_id`);
 #
-#     Both of those rules were procurement's and are now the platform's, in
-#     :mod:`vs_rbac.scoping`, because finance needed the identical two.  What is
-#     left here are one-line adapters that supply ``entity.tenant`` - procurement
-#     is entity-scoped, the rules are tenant-scoped - and procurement's own
-#     reading of a null branch.  No policy lives in them; a second copy of "which
-#     branch does this belong to" is exactly how two modules come to disagree
-#     about the same school.
+#     Both rules live in :mod:`vs_rbac.scoping`, because finance needs the
+#     identical two.  What is here are one-line adapters supplying
+#     ``entity.tenant`` - procurement is entity-scoped, the rules are
+#     tenant-scoped - and procurement's own reading of a null branch.  No policy
+#     lives in them: a second copy of "which branch does this belong to" is how
+#     two modules come to disagree about the same school.
 #
 #   * every read narrows to the caller's branch, whether it is a list, a KPI
 #     total, an analytics report or a single document.  One rule
@@ -310,8 +309,8 @@ def _document_or_404(request, qs, pk, message, *, field="branch", prefix=""):
 
     A row in another branch is reported with exactly the same "no such document"
     message as a row that does not exist, so the endpoint is not an id-discovery
-    channel; ``qs`` must already be entity-scoped, which keeps tenant isolation
-    where it has always been.
+    channel; ``qs`` must already be entity-scoped, which is what keeps tenant
+    isolation upstream of this helper.
     """
     row = _branch_visible(request, qs, field=field, prefix=prefix).filter(pk=pk).first()
     if row is None:

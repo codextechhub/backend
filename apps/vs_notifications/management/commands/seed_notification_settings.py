@@ -1,20 +1,16 @@
-# =============================================================================
-# vs_notifications / management / commands / seed_notification_settings.py
-#
-# Seeds the platform-wide (school=NULL) NotificationSetting rows from each
-# active event type's default_enabled. These are the platform defaults that
-# resolve_channels() layers school overrides on top of.
-#
-# Optionally materialises per-school override rows with --school <slug> / --all
-# (an explicit override path; platform defaults already cover every school).
-# Uses get_or_create - existing admin-configured rows are never overwritten.
-#
-# Usage:
-#   python manage.py seed_notification_settings                 # platform rows
-#   python manage.py seed_notification_settings --school <slug> # + one school
-#   python manage.py seed_notification_settings --all           # + every school
-# =============================================================================
+"""Seeds the platform-wide (school=NULL) NotificationSetting rows from each
+active event type's default_enabled. These are the platform defaults that
+resolve_channels() layers school overrides on top of.
 
+Optionally materialises per-school override rows with --school <slug> / --all
+(an explicit override path; platform defaults already cover every school).
+Uses get_or_create - existing admin-configured rows are never overwritten.
+
+Usage:
+  python manage.py seed_notification_settings                 # platform rows
+  python manage.py seed_notification_settings --school <slug> # + one school
+  python manage.py seed_notification_settings --all           # + every school
+"""
 from django.core.management.base import BaseCommand, CommandError
 
 from vs_notifications.services.seed import seed_platform_settings, seed_school_settings

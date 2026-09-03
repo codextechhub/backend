@@ -1,20 +1,16 @@
-# =============================================================================
-# vs_notifications / models.py
-#
-# Models:
-#   NotificationEventType   - platform-defined event registry (seeded)
-#   NotificationTemplate    - per-(event_type, channel) editable template
-#   NotificationSetting     - enable/disable toggle per channel; school-scoped
-#                             OR platform-wide (school=NULL)
-#   Notification            - dispatch record, one per recipient per channel
-#
-# The platform is global: school users are only a fraction of notification
-# consumers (CX staff and future user types have no school). Notifications are
-# therefore RECIPIENT-centric - `Notification.school` is a nullable filter/
-# history anchor, not a dispatch requirement. Settings layer the same way:
-# a NotificationSetting with school=NULL is a platform-wide default.
-# =============================================================================
+"""Models:
+  NotificationEventType   - platform-defined event registry (seeded)
+  NotificationTemplate    - per-(event_type, channel) editable template
+  NotificationSetting     - enable/disable toggle per channel; school-scoped
+                            OR platform-wide (school=NULL)
+  Notification            - dispatch record, one per recipient per channel
 
+The platform is global: school users are only a fraction of notification
+consumers (CX staff and future user types have no school). Notifications are
+therefore RECIPIENT-centric - `Notification.school` is a nullable filter/
+history anchor, not a dispatch requirement. Settings layer the same way:
+a NotificationSetting with school=NULL is a platform-wide default.
+"""
 import uuid
 
 from django.conf import settings

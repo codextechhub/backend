@@ -1,11 +1,7 @@
-# =============================================================================
-# vs_notifications / exceptions.py
-#
-# Typed domain exceptions.  All exceptions carry an error_code that maps
-# directly to the NotificationErrorCode constants, making API error responses
-# consistent and machine-readable.
-# =============================================================================
-
+"""Typed domain exceptions.  All exceptions carry an error_code that maps
+directly to the NotificationErrorCode constants, making API error responses
+consistent and machine-readable.
+"""
 from .constants import NotificationErrorCode
 
 

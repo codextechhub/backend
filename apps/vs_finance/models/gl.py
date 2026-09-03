@@ -22,7 +22,7 @@ from ..money import MoneyField
 from .core import TimeStampedModel, LedgerEntity, FinanceDocument
 
 # ---------------------------------------------------------------------------
-# Phase 1 - General Ledger core
+# General Ledger core
 # ---------------------------------------------------------------------------
 #
 # Reference data (Currency, FxRate) is **global** - a naira is a naira regardless of

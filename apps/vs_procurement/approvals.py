@@ -89,7 +89,7 @@ def _default_stages_payload(
     anybody holding the role tenant-wide, and never to another site's approvers. A
     document with no branch (raised for the entity as a whole) forwards ``None`` and
     therefore resolves to tenant-wide holders only, which is also exactly what a
-    tenant with no branches at all has always done.
+    tenant with no branches at all does.
     """
     return [
         {

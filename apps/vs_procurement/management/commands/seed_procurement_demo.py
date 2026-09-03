@@ -57,7 +57,7 @@ class Command(BaseCommand):
     help = "Seed idempotent CODEX procurement data for populated UI verification."
 
     def handle(self, *args, **options):
-        """Create missing fixtures and leave previously-transitioned records untouched."""
+        """Create missing fixtures and leave already-transitioned records untouched."""
 
         # ── Prerequisites and actors ──────────────────────────────────────────
         # Procurement deliberately consumes the finance demo's tenant, chart, periods,

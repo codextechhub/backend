@@ -1,13 +1,9 @@
-# =============================================================================
-# vs_notifications / management / commands / seed_notification_templates.py
-#
-# Creates default NotificationTemplate records for all active event types.
-# Uses get_or_create - never overwrites templates Vision Staff have customised.
-#
-# Usage:
-#   python manage.py seed_notification_templates
-# =============================================================================
+"""Creates default NotificationTemplate records for all active event types.
+Uses get_or_create - never overwrites templates Vision Staff have customised.
 
+Usage:
+  python manage.py seed_notification_templates
+"""
 from django.core.management.base import BaseCommand
 
 from vs_notifications.services.seed import seed_notification_templates

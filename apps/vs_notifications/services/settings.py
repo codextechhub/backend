@@ -1,22 +1,17 @@
-# =============================================================================
-# vs_notifications / services / settings.py
-#
-# resolve_channels() / resolve_channels_bulk() - the single truth source for
-# which channels should fire for a given (event_type, optional school).
-#
-# Called by dispatch.py before creating Notification records, and by the
-# settings API to compute the effective matrix (bulk variant - one query for
-# all event types instead of one per event type).
-#
-# There is NO fail-open behaviour: the principled fallback for a missing
-# setting row is the event type's default_enabled. Resolution layers, most
-# specific wins:  school row → platform row → default_enabled.
-#
-# The service layer must NOT depend on the thread-local tenant context (Celery
-# tasks have none), so it reads through `all_objects` and scopes explicitly.
-# =============================================================================
+"""resolve_channels() / resolve_channels_bulk() - the single truth source for
+which channels should fire for a given (event_type, optional school).
 
+Called by dispatch.py before creating Notification records, and by the
+settings API to compute the effective matrix (bulk variant - one query for
+all event types instead of one per event type).
 
+There is NO fail-open behaviour: the principled fallback for a missing
+setting row is the event type's default_enabled. Resolution layers, most
+specific wins:  school row → platform row → default_enabled.
+
+The service layer must NOT depend on the thread-local tenant context (Celery
+tasks have none), so it reads through `all_objects` and scopes explicitly.
+"""
 # Resolve channel settings for many event types with one settings query.
 def resolve_channels_bulk(event_types, tenant=None, rows=None, school=None) -> dict:
     """

@@ -30,7 +30,7 @@ from .core import TimeStampedModel, LedgerEntity, FinanceDocument
 from .gl import Account, CostCenter, Currency, FiscalYear, TaxCode
 
 # ---------------------------------------------------------------------------
-# Phase 4 - banking, expenses, payroll, budget, fixed assets, period close
+# Banking, expenses, payroll, budget, fixed assets, period close
 # ---------------------------------------------------------------------------
 #
 # All of these are entity-scoped finance-core concepts that post through the same

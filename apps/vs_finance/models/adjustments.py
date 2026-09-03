@@ -20,7 +20,7 @@ from .gl import Account, CostCenter, Currency, TaxCode
 from .ar import Customer, Invoice
 
 # ---------------------------------------------------------------------------
-# Phase 4 - AR adjustments (credit/debit notes, refunds, write-offs)
+# AR adjustments (credit/debit notes, refunds, write-offs)
 # ---------------------------------------------------------------------------
 #
 # The other side of the revenue cycle: not every billed amount is collected as first

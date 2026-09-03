@@ -1,24 +1,22 @@
-# =============================================================================
-# vs_notifications / 0006_store_email_html_in_the_database
-#
-# Moves the email markup INTO the database.
-#
-# 0005 took hand-written HTML out of every template and had the shared layout
-# compose it at send time. That bought one consistent design and cost the thing
-# an administrator actually needs: somewhere to see the markup and change it.
-# This migration puts it back, without giving up the consistency:
-#
-#   * every active email template gets its html_body filled with the standard
-#     layout, {{ placeholders }} intact, so it is real, readable, editable HTML;
-#   * html_is_custom says who maintains it. False means the row is regenerated
-#     from the layout on every save (see NotificationTemplate.save), so an
-#     untouched template still follows the platform design. True means someone
-#     edited the markup and it is preserved verbatim.
-#
-# Reverse empties the column again: the render path falls back to composing at
-# send time, which is exactly the 0005 behaviour.
-# =============================================================================
+"""vs_notifications / 0006_store_email_html_in_the_database
 
+Moves the email markup INTO the database.
+
+0005 took hand-written HTML out of every template and had the shared layout
+compose it at send time. That bought one consistent design and cost the thing
+an administrator actually needs: somewhere to see the markup and change it.
+This migration puts it back, without giving up the consistency:
+
+  * every active email template gets its html_body filled with the standard
+    layout, {{ placeholders }} intact, so it is real, readable, editable HTML;
+  * html_is_custom says who maintains it. False means the row is regenerated
+    from the layout on every save (see NotificationTemplate.save), so an
+    untouched template still follows the platform design. True means someone
+    edited the markup and it is preserved verbatim.
+
+Reverse empties the column again: the render path falls back to composing at
+send time, which is exactly the 0005 behaviour.
+"""
 from django.db import migrations, models
 
 

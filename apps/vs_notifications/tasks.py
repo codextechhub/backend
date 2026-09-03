@@ -1,17 +1,13 @@
-# =============================================================================
-# vs_notifications / tasks.py
-#
-# Celery tasks for vs_notifications.
-#
-# Tasks:
-#   deliver_email_notification  - dispatches a single email Notification record
-#
-# On terminal transition (SENT / FAILED) the task fires the corresponding
-# delivery signal (notification_sent / notification_failed) so downstream
-# trackers (e.g. vs_user invitation status) can react. The record's internal
-# `metadata` carries the correlation data a receiver needs.
-# =============================================================================
+"""Celery tasks for vs_notifications.
 
+Tasks:
+  deliver_email_notification  - dispatches a single email Notification record
+
+On terminal transition (SENT / FAILED) the task fires the corresponding
+delivery signal (notification_sent / notification_failed) so downstream
+trackers (e.g. vs_user invitation status) can react. The record's internal
+`metadata` carries the correlation data a receiver needs.
+"""
 import logging
 
 from celery import shared_task

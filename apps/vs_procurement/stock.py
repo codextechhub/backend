@@ -6,11 +6,11 @@ movement adjusts quantity and value atomically and snapshots the running balance
 the recorded value always equals the perpetual-inventory balance carried in the item's
 ``inventory_account``.
 
-**Stock is held per location.** It used to be one pool per entity, which is wrong the
-moment a school has two branches: the pool knew a thousand units existed but not that
-seven hundred sat at one site, so an issue at the other drew against stock it did not
-have and the availability check allowed it. One blended average also meant a site that
-bought dearer and a site that bought cheaper both issued at the middle.
+**Stock is held per location**, never as one pool per entity. A pool is wrong the
+moment a school has two branches: it knows a thousand units exist but not that seven
+hundred sit at one site, so an issue at the other draws against stock it does not have
+and the availability check allows it. One blended average also has a site that bought
+dearer and a site that bought cheaper both issuing at the middle.
 
 :class:`~vs_procurement.models.StockBalance` now holds the quantity and value per
 (item, location) and is the authority. The item's own ``on_hand_qty`` and

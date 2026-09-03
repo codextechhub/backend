@@ -1,17 +1,13 @@
-# =============================================================================
-# vs_notifications / services / preview.py
-#
-# Two helpers that make a template self-describing, so the editor needs no
-# hand-maintained variable list and no hand-typed sample data:
-#
-#   template_variables()  - the {{ names }} a template actually uses.
-#   sample_context()      - believable stand-in values for those names, so a
-#                           preview shows the real visual on first open.
-#
-# Sample values are for LOOKING at a template. They are never dispatched and
-# never touch a Notification record.
-# =============================================================================
+"""Two helpers that make a template self-describing, so the editor needs no
+hand-maintained variable list and no hand-typed sample data:
 
+  template_variables()  - the {{ names }} a template actually uses.
+  sample_context()      - believable stand-in values for those names, so a
+                          preview shows the real visual on first open.
+
+Sample values are for LOOKING at a template. They are never dispatched and
+never touch a Notification record.
+"""
 from __future__ import annotations
 
 import re

@@ -1,6 +1,6 @@
 """Accounting-date integrity - can this transaction have happened on this date?
 
-The engine has always had two independent notions of "when":
+The engine has two independent notions of "when":
 
 * **real time** - ``created_at``, the order rows were entered; and
 * **the accounting date** - ``invoice_date`` / ``payment_date`` / ``refund_date`` /

@@ -1,18 +1,14 @@
-# =============================================================================
-# vs_notifications / tests.py
-#
-# Suite for the recipient-centric notification overhaul.
-#
-# Security first (403 without RBAC, cross-tenant isolation, feed 404, history
-# scoping), then the domain logic (resolve_channels layering, dispatch with no
-# school, html multipart, pre-flight FAILED signal, delivery task signals), the
-# settings API (effective matrix shape + source, upsert, IN_APP + transactional
-# rejections), and the empty-list response shape.
-#
-# Runs on Postgres, the only engine the platform uses - so the conditional
-# UniqueConstraints here are exercised the way production enforces them.
-# =============================================================================
+"""Suite for the recipient-centric notification overhaul.
 
+Security first (403 without RBAC, cross-tenant isolation, feed 404, history
+scoping), then the domain logic (resolve_channels layering, dispatch with no
+school, html multipart, pre-flight FAILED signal, delivery task signals), the
+settings API (effective matrix shape + source, upsert, IN_APP + transactional
+rejections), and the empty-list response shape.
+
+Runs on Postgres, the only engine the platform uses - so the conditional
+UniqueConstraints here are exercised the way production enforces them.
+"""
 from unittest import mock
 
 from django.contrib.auth import get_user_model

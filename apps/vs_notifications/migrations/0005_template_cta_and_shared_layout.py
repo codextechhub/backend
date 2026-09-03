@@ -1,22 +1,20 @@
-# =============================================================================
-# vs_notifications / 0005_template_cta_and_shared_layout
-#
-# Moves email templates onto the shared HTML shell (services/layout.py).
-#
-# Schema: a template gains cta_label + cta_url, so "the message has a button"
-# stops being something an author expresses by hand-writing a <table> of
-# markup.
-#
-# Data: the five platform-authored html_body blobs (invitation, password
-# reset, credit note, debit note, vendor purchase order) are cleared, because
-# the shell now renders those emails from their plain bodies and their new CTA.
-# Only these known keys are touched - any other template carrying custom HTML
-# keeps it and keeps overriding the shell.
-#
-# Reverse re-adds nothing: the previous inline markup lives in migration 0004
-# and in git history, and re-instating it would undo the point of the change.
-# =============================================================================
+"""vs_notifications / 0005_template_cta_and_shared_layout
 
+Moves email templates onto the shared HTML shell (services/layout.py).
+
+Schema: a template gains cta_label + cta_url, so "the message has a button"
+stops being something an author expresses by hand-writing a <table> of
+markup.
+
+Data: the five platform-authored html_body blobs (invitation, password
+reset, credit note, debit note, vendor purchase order) are cleared, because
+the shell now renders those emails from their plain bodies and their new CTA.
+Only these known keys are touched - any other template carrying custom HTML
+keeps it and keeps overriding the shell.
+
+Reverse re-adds nothing: the previous inline markup lives in migration 0004
+and in git history, and re-instating it would undo the point of the change.
+"""
 from django.db import migrations, models
 
 

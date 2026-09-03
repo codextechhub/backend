@@ -1,23 +1,19 @@
-# =============================================================================
-# vs_notifications / serializers.py
-#
-# Serializers:
-#   NotificationListSerializer            - compact feed list (no body)
-#   NotificationDetailSerializer          - full record including body/html_body
-#   MarkReadSerializer                    - validates mark-read request payload
-#   AcknowledgeRouteSerializer            - validates viewed application routes
-#   NotificationHistorySerializer         - admin history log list view
-#   NotificationHistoryDetailSerializer   - admin history log detail view
-#   NotificationEventTypeSerializer       - event type read (all users)
-#   NotificationTemplateSerializer        - template management (Vision Staff)
-#   NotificationTemplatePreviewSerializer - preview render (Vision Staff)
-#   EffectiveSettingSerializer            - one row of the effective settings matrix
-#   SettingsBulkUpdateSerializer          - bulk PATCH payload validator
-#
-# FLS: Notification.metadata is INTERNAL-ONLY and is never exposed by any
-# serializer here. Do not add it.
-# =============================================================================
+"""Serializers:
+  NotificationListSerializer            - compact feed list (no body)
+  NotificationDetailSerializer          - full record including body/html_body
+  MarkReadSerializer                    - validates mark-read request payload
+  AcknowledgeRouteSerializer            - validates viewed application routes
+  NotificationHistorySerializer         - admin history log list view
+  NotificationHistoryDetailSerializer   - admin history log detail view
+  NotificationEventTypeSerializer       - event type read (all users)
+  NotificationTemplateSerializer        - template management (Vision Staff)
+  NotificationTemplatePreviewSerializer - preview render (Vision Staff)
+  EffectiveSettingSerializer            - one row of the effective settings matrix
+  SettingsBulkUpdateSerializer          - bulk PATCH payload validator
 
+FLS: Notification.metadata is INTERNAL-ONLY and is never exposed by any
+serializer here. Do not add it.
+"""
 from rest_framework import serializers
 
 from .constants import ChannelChoices, NotificationErrorCode

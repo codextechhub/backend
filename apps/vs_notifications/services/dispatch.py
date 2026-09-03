@@ -1,35 +1,31 @@
-# =============================================================================
-# vs_notifications / services / dispatch.py
-#
-# NotificationService - the primary entry point for all notification dispatch.
-#
-# Called by other module services (vs_finance, vs_workflow, vs_user, etc.).
-# Never called directly from views.
-#
-# Notifications are RECIPIENT-centric, and so is ownership: each record is
-# stamped with the RECIPIENT'S OWN tenant, because that is the tenant whose
-# inbox and whose history log the record shows up in. The tenant/school a
-# caller passes says what the message is ABOUT and is stored separately as
-# `origin_tenant`. The two are the same party for most events, and diverge the
-# moment one tenant's activity is reported to another's staff (a school's
-# support ticket going to platform triage). Stamping the caller's tenant on
-# every row put internal support notes inside the school's own history log.
-#
-# A single send may therefore span tenants: recipients are grouped by owner
-# tenant and each group resolves its own channel settings, so a school muting
-# an event cannot silence the platform staff reading the same event. CX staff
-# and any other school-less recipients are first-class.
-#
-# Responsibilities:
-#   - Validate the event key
-#   - Resolve which channels fire (resolve_channels - school row → platform row
-#     → default_enabled; transactional events bypass settings)
-#   - Render templates (subject, plain body, optional HTML body)
-#   - Create Notification records (storing metadata + html_body)
-#   - Enqueue Celery tasks via transaction.on_commit (email only)
-#   - Fire notification_failed for pre-flight FAILED email records after commit
-# =============================================================================
+"""NotificationService - the primary entry point for all notification dispatch.
 
+Called by other module services (vs_finance, vs_workflow, vs_user, etc.).
+Never called directly from views.
+
+Notifications are RECIPIENT-centric, and so is ownership: each record is
+stamped with the RECIPIENT'S OWN tenant, because that is the tenant whose
+inbox and whose history log the record shows up in. The tenant/school a
+caller passes says what the message is ABOUT and is stored separately as
+`origin_tenant`. The two are the same party for most events, and diverge the
+moment one tenant's activity is reported to another's staff (a school's
+support ticket going to platform triage). Stamping the caller's tenant on
+every row put internal support notes inside the school's own history log.
+
+A single send may therefore span tenants: recipients are grouped by owner
+tenant and each group resolves its own channel settings, so a school muting
+an event cannot silence the platform staff reading the same event. CX staff
+and any other school-less recipients are first-class.
+
+Responsibilities:
+  - Validate the event key
+  - Resolve which channels fire (resolve_channels - school row → platform row
+    → default_enabled; transactional events bypass settings)
+  - Render templates (subject, plain body, optional HTML body)
+  - Create Notification records (storing metadata + html_body)
+  - Enqueue Celery tasks via transaction.on_commit (email only)
+  - Fire notification_failed for pre-flight FAILED email records after commit
+"""
 import logging
 from dataclasses import dataclass
 from typing import Optional

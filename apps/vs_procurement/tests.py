@@ -122,9 +122,9 @@ from vs_procurement.exceptions import InsufficientStockError, StockError
 def _platform_tenant():
     """The one PLATFORM tenant, seeded by vs_tenants migration 0002.
 
-    Being platform staff IS being on this tenant - there is no persona column
-    standing in for it any more - so a fixture that wants a CX account names
-    the tenant, exactly as production code does.
+    Being platform staff IS being on this tenant, with no persona column
+    standing in for it, so a fixture that wants a CX account names the tenant
+    exactly as production code does.
     """
     from vs_tenants.models import Tenant
 
@@ -237,10 +237,10 @@ class _P2PFixtureMixin:
     def _seed_stock(self, item, *, on_hand_qty, stock_value, location=None):
         """Put an item into a known state without going through the ledger.
 
-        Writing the item's totals alone no longer describes a reachable state: the
-        location balance is the authority and the totals are its roll-up, so a test
-        that seeds only the roll-up describes stock standing nowhere. This writes both,
-        exactly as a movement would.
+        Writing the item's totals alone does not describe a reachable state: the
+        location balance is the authority and the totals are its roll-up, so seeding
+        only the roll-up describes stock standing nowhere. This writes both, exactly
+        as a movement would.
         """
         from vs_procurement.models import StockBalance, StockItem, StockLocation
 
@@ -13434,14 +13434,14 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
         self.assertEqual(visible, {order.pk for order in orders.values()})
 
     def test_a_whole_tenant_grant_outranks_the_holders_home_posting(self):
-        """Acceptance 4, corrected: the school-wide grant means the school.
+        """Acceptance 4: the school-wide grant means the school.
 
-        This used to assert ``{orders["lekki"].pk}`` on the grounds that access
-        came from the grant and visibility from ``User.branch``. Mrs Adebayo is
-        Finance Officer for the whole of the school and her staff record says
-        Lekki, so she opened the purchases screen and saw one branch, while the
-        colleague holding the identical grant with no home posting saw all
-        three. A staff column is not a permission; the grant decides.
+        Access comes from the grant and so does visibility. Taking visibility
+        from ``User.branch`` instead splits the two: Mrs Adebayo is Finance
+        Officer for the whole school and her staff record says Lekki, so she
+        opens the purchases screen and sees one branch while the colleague
+        holding the identical grant with no home posting sees all three. A
+        staff column is not a permission; the grant decides.
         """
         orders = self.orders_in_every_branch()
         legacy = self.user_for(self.multi_tenant, "legacy@multi.test", branch=self.lekki)
@@ -13541,12 +13541,12 @@ class ProcurementBranchGrantAcceptanceTests(_BranchTenantsFixture, TestCase):
 class SharedBranchScopeAgreementTests(_BranchTenantsFixture, TestCase):
     """Procurement and the platform helper must stay the same mechanism.
 
-    ``_caller_branch_ids`` and the ``Q`` it feeds used to live here. They now live
-    in :mod:`vs_rbac.scoping`, because procurement was the only module that ever
-    narrowed a read and every other module needed the same answer. A promotion is
-    only safe while it is a *move*: the moment procurement grows its own second
-    copy, these two rules can disagree, and the way they would disagree is silent -
-    a list that quietly shows a branch too many or a branch too few.
+    ``_caller_branch_ids`` and the ``Q`` it feeds live in
+    :mod:`vs_rbac.scoping`, shared rather than owned here, because every module
+    that narrows a read needs the same answer. Sharing is only safe while there
+    is exactly one copy: the moment procurement grows a second, the two rules
+    can disagree, and they disagree silently - a list that shows a branch too
+    many or a branch too few.
 
     So this class asserts identity and equality rather than behaviour. The
     behaviour is asserted by ``ParkedAndOverrideFilterBranchScopeTests`` and the

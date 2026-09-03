@@ -1,12 +1,11 @@
 """Provisioning a tenant's books, and what else gets set up when they are.
 
 :func:`provision_books` is the one way a usable set of books comes into
-existence. It used to live inside ``LedgerEntityCreateSerializer.create``, which
-meant an HTTP POST was the *only* way to get one: nothing else in the platform
-could provision books without either faking a request or duplicating the
-sequence and drifting out of step with it. School creation needs books at the
-moment a school is created, so the sequence moved down here where any caller can
-reach it, and the serializer became one of those callers.
+existence, and it lives here rather than inside
+``LedgerEntityCreateSerializer.create`` so that an HTTP POST is not the only way
+to get one. School creation needs books at the moment a school is created, and
+nothing should have to fake a request or duplicate the sequence to provision
+them. The serializer is one caller among several.
 
 The rest of this module is the provisioner registry described below.
 
@@ -119,7 +118,7 @@ def provision_books(
     Args:
         tenant: The owning ``vs_tenants.Tenant``. ``None`` lets
             ``LedgerEntity.save()`` fall back to the Codex platform tenant,
-            which is the behaviour the API had before this function existed.
+            which is what the API path resolves to.
         name: Human-friendly name of the entity keeping the books.
         code: Short uppercase code. Callers are responsible for normalising and
             for uniqueness; the column is globally unique and 16 characters.
