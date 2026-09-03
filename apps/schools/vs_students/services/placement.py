@@ -314,7 +314,7 @@ def class_seats(tenant, user, session, *, branch=None, only_with_capacity=False)
         .annotate(n=Count("student", distinct=True))
     )
     held = {row["school_class"]: row["n"] for row in counted}
-    qs = qs.select_related("branch", "level")
+    qs = qs.select_related("branch", "level", "level__program")
     return [
         {
             "id": c.pk,
@@ -323,13 +323,28 @@ def class_seats(tenant, user, session, *, branch=None, only_with_capacity=False)
             "branch_name": c.branch.name if c.branch_id else None,
             "level": c.level_id,
             "level_name": c.level.name if c.level_id else "",
+            # The ladder's own order, so a picker shows Primary 4 before JSS1
+            # before SSS1. Sorting by name gives alphabetical, which puts JSS1
+            # above Primary 4 and reads as nonsense to a registrar.
+            #
+            # Programme FIRST, because each programme numbers its own levels
+            # from 1 - JSS1 and SSS1 are both order_index 1, so level order
+            # alone interleaves the two ladders into JSS1, SSS1, JSS2, SSS2.
+            "level_order": (
+                (c.level.program.order_index, c.level.order_index)
+                if c.level_id and c.level.program_id
+                else (999, c.level.order_index if c.level_id else 0)
+            ),
             "capacity": c.capacity,
             "used": held.get(c.pk, 0),
             "remaining": (
                 None if c.capacity is None else c.capacity - held.get(c.pk, 0)
             ),
         }
-        for c in qs.order_by("name")
+        # Programme, then level, then name: JSS1 A, JSS1 B, JSS2 A, SSS1 A.
+        for c in qs.order_by(
+            "level__program__order_index", "level__order_index", "name",
+        )
     ]
 
 
