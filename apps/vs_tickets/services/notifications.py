@@ -115,11 +115,8 @@ def dispatch_ticket_event(
                 event_key=event_key,
                 context=context or context_for(ticket),
                 recipients=recipients,
-                # The ticket's tenant is what the message is ABOUT, not who
-                # owns the resulting rows. Dispatch stores it as origin_tenant
-                # and gives each record to its recipient's own tenant, so a
-                # note written for platform triage staff never lands in the
-                # school's notification history.
+                # What the message is about, not who owns the rows. Dispatch stores this
+                # as origin_tenant and gives each record to its recipient's own tenant.
                 tenant=ticket.tenant,
                 metadata={"ticket_id": ticket.pk, "ticket_number": ticket.ticket_number},
             )
@@ -186,9 +183,8 @@ def notify_status_changed(ticket, *, old_status, actor=None):
 def notify_commented(comment, actor=None):
     recipients = _ticket_participants(comment.ticket)
     if comment.visibility != CommentVisibility.INTERNAL:
-        # Until a ticket is assigned, the support queue is the other side of
-        # the public conversation. Otherwise the requester's reply is reduced
-        # to the requester alone and then suppressed as an actor echo.
+        # Until assignment the queue is the other side of the public
+        # conversation; without it a requester's reply reaches nobody.
         if (
             comment.ticket.assignee_id is None
             and comment.author_id == comment.ticket.requester_id

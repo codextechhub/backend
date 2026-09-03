@@ -1,3 +1,19 @@
+"""Validating and writing a configuration value, and the guards around it.
+
+``validate_value`` checks a value against its definition: type, choices,
+bounds. Some settings additionally have to be checked against the world, and
+the world belongs to another app. "Run payroll per branch" is only a legal
+value for a school whose employees have all been given a branch, and vs_config
+has no business knowing what an employee is.
+
+So the owning app registers a guard for its own key from its
+``AppConfig.ready``, and vs_config calls it without ever importing that app.
+The dependency points one way: everything may depend on configuration, and
+configuration depends on nothing. A guard refuses by raising
+``ConfigurationError`` or a subclass, which every write path already renders as
+the setting being rejected, so a guard needs no special handling at any call
+site.
+"""
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
@@ -9,22 +25,7 @@ from .audit import record_configuration_event
 from .scopes import normalize_scope, scope_name
 
 
-# --------------------------------------------------------------------------- #
-# Write guards: rules a definition cannot express about itself                 #
-# --------------------------------------------------------------------------- #
-#
-# ``validate_value`` checks a value against the definition - type, choices, bounds.
-# Some settings additionally need checking against the *world*, and the world is
-# owned by another app. "Run payroll per branch" is only a legal value for a school
-# whose employees have all been given a branch, and vs_config has no business
-# knowing what an employee is.
-#
-# So the owning app registers a guard for its own key from its ``AppConfig.ready``,
-# and vs_config calls it without ever importing the app. The dependency points one
-# way: everything may depend on configuration; configuration depends on nothing.
-# A guard signals refusal by raising ``ConfigurationError`` (or a subclass), which
-# every write path already renders as the setting being rejected, so a guard needs
-# no special handling at any call site.
+# ── Write guards: rules a definition cannot express about itself ───────────── #
 
 _VALUE_GUARDS = {}
 
@@ -148,9 +149,8 @@ def set_value(*, definition, value, actor, tenant=None, branch=None, reason=""):
             f"'{definition.key}' cannot be configured at {requested_scope} scope."
         )
     validate_value(definition, value)
-    # A value can be a perfectly valid choice and still be one this school is not
-    # in a position to make. Guards run after the definition's own rules and before
-    # anything is written, so a refusal leaves no half-applied switch behind.
+    # After the definition's own rules and before any write, so a refusal
+    # leaves no half-applied switch behind.
     run_value_guards(definition, value, tenant=tenant, branch=branch)
     # The persisted scope_key mirrors resolve_value's inheritance keys.
     scope_key = (

@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 
 RETENTION_DAYS = 180
 
-# Search analytics must help editors without retaining arbitrary user text. Only
-# task and product words from this closed vocabulary survive. Everything else is
-# replaced, so "invite Ada Okafor" is stored as "invite [redacted]".
+# Search analytics must help editors without retaining arbitrary user text,
+# so only words in this closed vocabulary survive: "invite Ada Okafor" is
+# stored as "invite [redacted]".
 SAFE_SEARCH_TERMS = frozenset({
     "account", "activate", "activation", "add", "admin", "allocate", "analytics",
     "approval", "approve", "asset", "assign", "audit", "balance", "bank", "batch",

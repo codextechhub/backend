@@ -28,10 +28,9 @@ class TaskStatus(models.TextChoices):
 
 
 # ── RBAC permission keys ──────────────────────────────────────────────────────
-# Access to the ToDo tool is gated to CX staff; *what* a person may see and who
-# they may assign to is then enforced structurally by the organogram (a manager
-# sees their area and assigns down it). These keys exist for future fine-grained
-# wiring through the RBAC registry; today the views gate on CX-staff membership.
+# Declared for the RBAC registry. The views gate on CX-staff membership, and
+# what a person sees is settled structurally by the organogram: a manager sees
+# their own area and assigns down it.
 PERM_TASK_VIEW     = "todo.task.view"
 PERM_TASK_MANAGE   = "todo.task.manage"
 PERM_TASK_ASSIGN   = "todo.task.assign"
@@ -41,7 +40,6 @@ PERM_TASK_ASSIGN   = "todo.task.assign"
 EVENT_TASK_ASSIGNED  = "todo.task_assigned"
 EVENT_TASK_COMPLETED = "todo.task_completed"
 
-# Grace window between a user self-completing a task and the review request
-# going out. The Celery task is queued with this countdown and re-checks the
-# task's state at send time, so undoing within the window cancels the email.
+# Grace window before a self-completion sends its review request. The queued
+# task re-reads the state at send time, so undoing inside it cancels the email.
 REVIEW_GRACE_SECONDS = 5

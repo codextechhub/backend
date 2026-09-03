@@ -46,9 +46,8 @@ INTEGRATION_DEFAULTS = {
 SPECIAL_MANAGED_KEYS = frozenset((*SECURITY_FIELDS.values(), *INTEGRATION_FIELDS.values()))
 PRODUCT_OWNED_KEYS = SPECIAL_MANAGED_KEYS
 
-# A scoped security value may only be as strict as, or stricter than, its
-# parent. This prevents a school or branch from weakening the platform's
-# compliance baseline while still allowing local risk controls.
+# The clamp each security field obeys: a scoped value may only be as strict as
+# its parent, or stricter. See resolve_security_settings.
 SECURITY_COMPLIANCE = {
     "failed_login_threshold": {"direction": "maximum", "min": 3, "max": 20},
     "account_lock_minutes": {"direction": "minimum", "min": 5, "max": 1440},
@@ -230,6 +229,11 @@ def resolve_security_settings(*, tenant=None, branch=None):
     function, so clamping here closes that gap for all of them at once. The
     value as stored is preserved under ``configured`` so administration screens
     can still show what was chosen and why it is not in force.
+
+    A branch value is clamped against the school layer and a school value
+    against the platform. The parent is itself resolved through this function,
+    so the clamp is transitive: a lax school cannot let a branch end up weaker
+    than the platform baseline.
     """
     tenant, branch = normalize_scope(tenant=tenant, branch=branch)
     definitions, values = _scoped_values(SECURITY_FIELDS.values(), tenant=tenant, branch=branch)
@@ -258,10 +262,7 @@ def resolve_security_settings(*, tenant=None, branch=None):
         result["source_scopes"][field] = _scope_label(row.scope_key if row else None)
         result["overrides"][field] = bool(row and row.scope_key == current_scope)
 
-    # A non-platform override is bounded by the effective parent value. Branch
-    # values compare with the school layer; school values compare with platform.
-    # The parent is itself resolved through this function, so the clamp is
-    # transitive: a branch can never be weaker than platform via a lax school.
+    # Clamp against the parent layer. See the docstring.
     if tenant is not None:
         parent = resolve_security_settings(tenant=tenant) if branch is not None else resolve_security_settings()
         for field, policy in SECURITY_COMPLIANCE.items():

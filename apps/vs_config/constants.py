@@ -30,11 +30,10 @@ class ConfigPermissions:
     ]
 
 
-# Definition-level scope labels declared in ConfigurationDefinition.allowed_scopes.
-# These name the LEVEL a value may be written at, not the persisted scope_key
-# prefix. The middle level keeps the historical label "school" (a school IS a
-# tenant) so definition payloads/response shapes stay stable across the tenant
-# cutover, even though the stored scope_key now reads "tenant:<id>".
+# Scope labels declared in ConfigurationDefinition.allowed_scopes. They name the
+# LEVEL a value may be written at, not the persisted scope_key prefix: the middle
+# level is labelled "school" while its stored key reads "tenant:<id>". A school IS
+# a tenant, and the label is part of the definition payload's public shape.
 PLATFORM_SCOPE = "platform"
 SCHOOL_SCOPE = "school"
 BRANCH_SCOPE = "branch"

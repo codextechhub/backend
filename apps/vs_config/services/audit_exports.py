@@ -92,7 +92,16 @@ def _write_rows(writer, events):
 
 
 def execute_configuration_audit_export(job_id):
-    """Stream a queued export to platform storage without holding it in memory."""
+    """Stream a queued export to platform storage without holding it in memory.
+
+    The temp file is opened in binary mode. Storage backends read the handle
+    through ``django.core.files.File`` and write its chunks straight to their
+    destination, and a text-mode handle yields ``str`` chunks that the default
+    ``DatabaseStorage`` cannot put in a ``BinaryField``. Only
+    ``FileSystemStorage`` is forgiving enough to reopen itself in text mode.
+    ``csv`` needs a text interface, so a ``TextIOWrapper`` is layered on top and
+    detached again before the read.
+    """
     job = ConfigurationAuditExportJob.objects.select_related(
         "requested_by", "tenant", "branch",
     ).filter(pk=job_id).first()
@@ -112,12 +121,7 @@ def execute_configuration_audit_export(job_id):
         ).order_by("-created_at")
         queryset = apply_configuration_audit_filters(queryset, job.filters)
         row_count = 0
-        # The temp file is opened in BINARY mode: storage backends read this handle
-        # through django.core.files.File and write the chunks straight to their
-        # destination. A text-mode handle yields str chunks, which the default
-        # DatabaseStorage cannot put in a BinaryField (only FileSystemStorage is
-        # forgiving enough to reopen itself in text mode). csv needs a text
-        # interface, so a TextIOWrapper is layered on and detached before the read.
+        # Binary handle, text wrapper on top. See the docstring.
         with tempfile.NamedTemporaryFile(suffix=".csv") as handle:
             text = io.TextIOWrapper(handle, encoding="utf-8", newline="", write_through=True)
             try:

@@ -1,16 +1,11 @@
-# models.py
-# Models for the vs_todo module - "ToDo - Org Accountability".
-#
-# Contents:
-#   TimeStampedModel  - re-used shared abstract base (from vs_user)
-#   Task              - one accountable item owned by exactly one CX staff member
-#
-# The reporting hierarchy that powers roll-up and assignment rules is NOT stored
-# here. It is derived live from the CX organogram (Position.reports_to). This
-# file holds only the task itself: who owns it, who handed it down, what it
-# measures, and whether it is done. Status (Completed / In Progress / Overdue)
-# is derived from `is_done` + `deadline`, exactly as in the design.
+"""One accountable item, owned by exactly one CX staff member.
 
+The reporting hierarchy that powers roll-up and assignment rules is not stored
+here. It is derived live from the CX organogram (``Position.reports_to``), so
+this module holds only the task itself: who owns it, who handed it down, what
+it measures, and whether it is done. Status (Completed, In Progress, Overdue)
+is likewise derived, from ``is_done`` and ``deadline`` together.
+"""
 from __future__ import annotations
 
 from django.conf import settings
@@ -63,9 +58,7 @@ class Task(TimeStampedModel):
         max_length=8, choices=Priority.choices, default=Priority.MEDIUM,
     )
 
-    # Snapshot of the assignee's department at creation time (derived from their
-    # org node). Kept denormalized so historical tasks keep their department even
-    # if the person later moves teams - mirrors the design carrying it per task.
+    # Snapshot of the assignee's department at creation, from their org node.
     department = models.CharField(max_length=150, blank=True, default="")
 
     # ── State ─────────────────────────────────────────────────────────────────

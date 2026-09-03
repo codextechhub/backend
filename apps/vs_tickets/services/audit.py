@@ -44,10 +44,9 @@ def record_ticket_audit(
         entity_id=str(ticket.pk),
         entity_label=ticket.ticket_number,
         actor_user=actor,
-        # The ticket owns its tenant, so say so rather than relying on whose
-        # request happens to be in flight: a CX agent working a Bright Star
-        # ticket asserts ``?tenant=codex``, and inheriting that would file the
-        # school's support history under Codex.
+        # From the ticket, not from the request in flight: a CX agent working a
+        # Bright Star ticket asserts ?tenant=codex, and inheriting that would file
+        # the school's support history under Codex.
         tenant=ticket.tenant,
         summary=summary or f"Ticket {ticket.ticket_number}: {action}",
         before_data=before_data or {},

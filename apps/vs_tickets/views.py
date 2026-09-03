@@ -48,33 +48,33 @@ from .services import tickets as ticket_svc
 from .services import visibility
 
 
-# API surface for ticket creation, assignment, lifecycle, comments, files, and audit.
 class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
-    """Ticket CRUD plus assignment, transitions, comments, attachments and audit."""
+    """Ticket CRUD plus assignment, transitions, comments, attachments and audit.
+
+    Filing is the one escalation route a school that has not gone live still
+    has, so ``create`` is part of the pending-tenant surface (FR-010, FR-012).
+    ``attachments`` is on it for the same reason: a school reporting that a
+    screen is wrong needs to show the screen, and without it the only route is
+    replying to the confirmation email with a screenshot, which moves the
+    evidence off the platform and out of the ticket it belongs to. The rest of
+    the desk (lists, threads, assignment) opens at go-live.
+
+    That surface is narrower than it looks. ``attachments`` is a detail action
+    and ``get_queryset`` still scopes tickets to the caller, so a pending
+    school can only attach to a ticket it filed itself, and every file goes
+    through ``validate_upload`` first: 10 MB, an extension allowlist, and a
+    magic-byte check that the content matches the extension.
+
+    Only the actions in :attr:`RBAC_ACTION_KEYS` are gated on a key, with
+    support staff bypassing in the permission class. The rest rely on queryset
+    and object scoping, because anyone may file a ticket and a participant
+    always keeps access to their own thread.
+    """
 
     permission_classes = TICKET_PERMISSIONS
 
-    # Filing a ticket is the one escalation route a school that has not gone
-    # live still has, so POST /v1/support/tickets/ is part of the pending-tenant
-    # surface (FR-010, FR-012).
-    #
-    # ``attachments`` joins it: a school reporting that a screen is wrong needs
-    # to show the screen. Without it the only route was "reply to the
-    # confirmation email with a screenshot", which moves the evidence off the
-    # platform and out of the ticket it belongs to.
-    #
-    # This is narrower than it looks. The action is detail=True, and
-    # ``get_queryset`` still scopes tickets to the caller, so a pending school
-    # can only attach to a ticket it filed itself. Every file goes through
-    # ``validate_upload`` first: 10 MB, an extension allowlist, and a magic-byte
-    # check that the content matches the extension.
-    #
-    # The rest of the desk (lists, threads, assignment) still opens at go-live.
     pending_tenant_surface = ("create", "attachments")
 
-    # Actions gated by an RBAC key (support staff bypass in the permission
-    # class). Absent actions rely on queryset/object scoping: anyone may file
-    # a ticket and participants always keep access to their own thread.
     RBAC_ACTION_KEYS = {
         "assign": TicketPermission.ASSIGN,
         "transition": TicketPermission.MANAGE,
@@ -105,9 +105,8 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         params = self.request.query_params
         if value := params.get("status"):
             qs = qs.filter(status=value)
-        # `state=active` is the list-shaped twin of the workload counters: the
-        # dashboard cards link here, and a card must land on exactly the rows
-        # it counted.
+        # The list-shaped twin of the workload counters: a dashboard card
+        # links here and must land on exactly the rows it counted.
         if params.get("state") == "active":
             qs = qs.filter(status__in=ACTIVE_TICKET_STATUSES)
         if value := params.get("priority"):
@@ -349,17 +348,23 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         )
 
 
-# Aggregate visible ticket workload for dashboard counters.
 class TicketDashboardView(APIView):
+    """Aggregate ticket workload for the dashboard counters.
+
+    Reads through the same visibility boundary as the ticket list, so a card
+    and the list it links to can never disagree.
+
+    The per-person counters are workload rather than history: they answer "what
+    is still on me", so finished tickets are excluded from them. ``total`` and
+    the by-status, by-priority and by-category breakdowns stay
+    whole-population, since a per-status count that filtered by status would be
+    nonsense.
+    """
+
     permission_classes = TICKET_PERMISSIONS
 
     def get(self, request):
-        # Dashboard numbers must use the same visibility boundary as the ticket list.
         qs = visibility.visible_tickets_qs(request.user)
-        # The per-person counters are workload, not history: they answer "what
-        # is still on me", so finished tickets are excluded. `total` and the
-        # by_status/by_priority/by_category breakdowns stay whole-population -
-        # a per-status count that filtered by status would be nonsense.
         active = Q(status__in=ACTIVE_TICKET_STATUSES)
         aggregates = {
             "total": Count("id"),

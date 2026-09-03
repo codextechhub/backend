@@ -28,14 +28,10 @@ class TicketStatus(models.TextChoices):
     CLOSED = "CLOSED", "Closed"
 
 
-#: The statuses that still represent live work.
-#:
-#: Every person-scoped workload number ("assigned to me", "my open requests",
-#: the dashboard's live-ticket count) must be filtered by this. Counting a
-#: RESOLVED or CLOSED ticket as workload leaves a counter the reader cannot
-#: clear by doing the work: they resolve everything and the number stays.
-#: OPEN alone is equally wrong in the other direction, since picking a ticket
-#: up (ASSIGNED / IN_PROGRESS) would drop it out of the workload.
+#: The statuses that still represent live work, and the filter every
+#: person-scoped workload number must use. Counting a RESOLVED or CLOSED
+#: ticket leaves a counter the reader cannot clear by doing the work; OPEN
+#: alone drops a ticket out of the workload the moment somebody picks it up.
 ACTIVE_TICKET_STATUSES = (
     TicketStatus.OPEN,
     TicketStatus.ASSIGNED,

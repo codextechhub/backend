@@ -533,10 +533,8 @@ class IntegrationConnectionTestView(ConfigAPIView):
                 {"connection": "Wait 30 seconds before testing this connection again."}
             )
         except Exception:
-            # Provider and SMTP exceptions may contain endpoints or response bodies.
-            # Keep them in server logs, never in this administrator response - the
-            # response says only that the test failed, so the traceback here is the
-            # single place anyone can find out why.
+            # Provider and SMTP failures can carry endpoints and response bodies,
+            # so the trace goes to the server log and never to the response.
             logger.exception(
                 "Integration connection test failed for '%s' (actor %s)",
                 connection, request.user.pk,

@@ -53,11 +53,9 @@ def _tickets(scope):
 
     user = getattr(scope, "user", None)
     if user is None:
-        # Fails closed, unlike the catalogue helper, and deliberately: ticket
-        # conversations carry personal and operationally sensitive detail, and
-        # a view grant here is already not school-wide access. Every real run
-        # carries a user - ``ExportRun.requested_by`` is non-null - so this is
-        # the unreachable branch, not the ordinary one.
+        # Fails closed, unlike the catalogue helper: ticket conversations carry
+        # sensitive detail. ExportRun.requested_by is non-null, so this is the
+        # unreachable branch rather than the ordinary one.
         return Ticket.all_objects.none()
     return visibility.visible_tickets_qs(user).filter(tenant=scope.tenant)
 
@@ -129,10 +127,8 @@ def _translate_tickets(params):
     from .constants import ACTIVE_TICKET_STATUSES
 
     filters, unmapped = [], []
-    # `state=active` is not a status - it is the unresolved set the workload
-    # counters use (OPEN, ASSIGNED, IN_PROGRESS). Expanding it through the same
-    # constant the list view filters on is what keeps the file equal to the
-    # table; treating "active" as a literal status would match nothing.
+    # `state=active` is not a status but the unresolved set. Expanding it
+    # through the constant the list view uses keeps file and table equal.
     if state := params.get("state"):
         if state == "active":
             filters.append({"id": "status", "values": [str(s) for s in ACTIVE_TICKET_STATUSES]})

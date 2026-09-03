@@ -1,15 +1,12 @@
-# vs_config/services/audit.py
-#
-# Thin wrapper around Module 5's AuditLog service.
-# All writes in vs_config that need to appear in the platform-wide audit trail
-# call write_audit_log() from here.
-#
-# This keeps the coupling point in one place. If Module 5's interface changes,
-# only this file needs updating - not every service in vs_config.
-#
-# ConfigurationAuditEvent is authoritative locally; this module also mirrors
-# events to the platform audit trail.
+"""The single coupling point between vs_config and the platform audit trail.
 
+Every write in this app that must appear platform-wide calls
+:func:`write_audit_log` from here, so a change to the audit service's interface
+touches this file and no other service in the app.
+
+``ConfigurationAuditEvent`` remains authoritative locally. What this module
+writes is a mirror of it.
+"""
 import logging
 
 logger = logging.getLogger(__name__)
@@ -52,11 +49,8 @@ def record_configuration_event(
         target_id=event.target_id,
         detail={"before": before or {}, "after": after or {}, **(metadata or {})},
         branch=branch,
-        # The local row already resolved this (including from the branch), and
-        # the mirror was throwing it away: a configuration change made for
-        # Bright Star landed in the platform trail with no customer on it. A
-        # platform-default change legitimately resolves to None here and stays
-        # null, which is what the platform layer means in this module.
+        # Carried from the local row, which resolves it from the branch when the
+        # caller named only that. Null here means the platform default layer.
         tenant=tenant,
     )
     return event

@@ -333,6 +333,6 @@ class PermissionSeedTests(TestCase):
     def test_seed_all_permissions_runs_clean(self):
         from vs_rbac.models import Permission
         call_command("seed_all_permissions", verbosity=0)
-        # Spot-check one key from the previously-missing organogram set and one todo key.
+        # One key from the organogram set and one from todo.
         self.assertTrue(Permission.objects.filter(key="platform.organogram.view").exists())
         self.assertTrue(Permission.objects.filter(key="todo.task.assign").exists())

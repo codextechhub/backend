@@ -115,9 +115,9 @@ DEFINITIONS = [
 
 # (key, label, description, value_type, default_value, validation_rules)
 #
-# Settings a SCHOOL may override, not only the platform. Kept in their own
-# table rather than given a seventh tuple element, so the platform-only list
-# above cannot acquire a school scope by a typo in a column nobody reads.
+# Settings a SCHOOL may override. Held in their own table rather than behind a
+# seventh tuple element, so the platform-only list above cannot acquire a
+# school scope through a typo in a column nobody reads.
 SCHOOL_SCOPED_DEFINITIONS = [
     (
         "students.admission_number.required", "Admission Number Required",
@@ -188,10 +188,8 @@ class Command(BaseCommand):
                     "allowed_scopes": ["platform", "school"],
                 },
             )
-            # get_or_create leaves an existing row alone, so a definition
-            # seeded before it gained the school scope would stay
-            # platform-only and every school write would answer "cannot be
-            # configured at school scope". Widen it in place.
+            # get_or_create leaves an existing row alone, so widen it here:
+            # a platform-only row refuses every school write.
             if not created and "school" not in (row.allowed_scopes or []):
                 row.allowed_scopes = sorted({*(row.allowed_scopes or []), "platform", "school"})
                 row.save(update_fields=["allowed_scopes"])

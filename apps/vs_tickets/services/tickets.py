@@ -183,9 +183,8 @@ def add_comment(ticket: Ticket, *, actor, body: str, visibility: str) -> TicketC
             body=body,
             visibility=visibility,
         )
-        # Commenting is an explicit signal of participation. Re-follow a
-        # previously muted thread so later collaborators and lifecycle events
-        # reach this resolver without requiring an assignment or direct reply.
+        # Commenting is an explicit signal of participation, so it re-follows
+        # a muted thread.
         subscription_svc.follow(
             ticket,
             actor,
@@ -218,20 +217,23 @@ def set_ticket_following(ticket: Ticket, *, actor, following: bool) -> bool:
     return following
 
 
-# Attach a file to the ticket or to one of its comments.
 def add_attachment(ticket: Ticket, *, actor, file_obj, comment: TicketComment | None = None) -> TicketAttachment:
+    """Attach a file to the ticket, or to one of its comments.
+
+    The stored content type comes from the file's own bytes, never from the
+    multipart part's declared type. That declaration is attacker-controlled,
+    and the download view serves the stored value straight back as the response
+    Content-Type with inline disposition for anything ``image/*``. Trusting it
+    lets a caller upload SVG markup named ``.png`` and declared
+    ``image/svg+xml``, and have it rendered, and executed, in the next reader's
+    session.
+    """
     if not can_attach_to_ticket(actor, ticket):
         raise PermissionDenied("You cannot attach files to this ticket.")
     if comment is not None and comment.ticket_id != ticket.pk:
         # Prevent a foreign comment id from linking files across ticket threads.
         raise ValidationError("Comment does not belong to this ticket.")
 
-    # Derive the stored content type from the file's own bytes, never from the
-    # multipart part's declared type. That declaration is attacker-controlled, and the
-    # download view serves the stored value back as the response Content-Type with
-    # inline disposition for anything image/*, so trusting it let a caller upload
-    # SVG markup named .png declared as image/svg+xml and have it rendered - and
-    # executed - in the next reader's session. The bytes have to agree now.
     _, verified_content_type = validate_upload(
         file_obj, allowed=TICKET_EXTENSIONS, max_bytes=MAX_TICKET_ATTACHMENT_BYTES,
         size_message="Attachments are limited to 10 MB.",

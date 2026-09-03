@@ -25,9 +25,8 @@ class TicketUserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        # ``tenant_kind`` replaces ``user_type``: on a ticket the distinction
-        # that matters is support desk versus the tenant who raised it, and
-        # that is the tenant's kind. ``role`` still says what the person does.
+        # On a ticket the distinction that matters is the support desk versus
+        # the tenant who raised it, which is the tenant's kind.
         fields = ["id", "name", "email", "tenant_kind", "role"]
 
 
@@ -167,9 +166,8 @@ class TicketContextSerializer(serializers.Serializer):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Read at build time rather than at import time: an app registers from
-        # its own ready(), and this module is imported by URL loading, which
-        # can happen first.
+        # Read at build time, not import time: URL loading can beat an app's
+        # own ready() to it.
         for key, choices in registered_choice_fields().items():
             self.fields[key] = serializers.ChoiceField(
                 choices=list(choices), required=False,
@@ -233,9 +231,13 @@ class TicketAttachmentCreateSerializer(serializers.Serializer):
     comment_id = serializers.IntegerField(required=False, allow_null=True)
 
     def validate_file(self, value):
-        # First-line validation through the shared checker, which also verifies the
-        # bytes match the extension. core.storage.DatabaseStorage re-checks type and
-        # size as defense-in-depth but raises an unhandled 500 if hit.
+        """Reject the file here rather than letting storage reject it later.
+
+        ``core.storage.DatabaseStorage`` re-checks type and size as
+        defence-in-depth, but it raises an unhandled 500 when it does, so this
+        has to be the check that actually refuses. The shared checker also
+        verifies that the bytes match the extension.
+        """
         validate_upload(
             value,
             allowed=TICKET_EXTENSIONS,
