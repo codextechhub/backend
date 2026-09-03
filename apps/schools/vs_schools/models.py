@@ -437,10 +437,28 @@ class School(TimeStampedModel):
 
     @property
     def main_branch(self):
+        """This school's main site, from the prefetch where there is one.
+
+        Returns the main branch with its ``primary_admin`` pre-loaded, to avoid
+        ``DoesNotExist`` on the reverse OneToOne when serializing.
+
+        The prefetch check is the point. Chaining ``.select_related()`` and
+        ``.filter()`` onto the manager builds a fresh queryset, which cannot use
+        a prefetched result and goes to the database instead - so a caller that
+        had already paid for ``prefetch_related("tenant__branches")`` paid again,
+        once per school. On the console's school list that was one extra query
+        per row: 14 queries for one school, 20 for seven.
+
+        Filtering in Python when the rows are already in memory, and falling
+        back to the query when they are not, so a School loaded on its own
+        behaves exactly as before.
         """
-        Returns the main branch with its primary_admin pre-loaded to avoid
-        DoesNotExist on the reverse OneToOne when serializing.
-        """
+        cache = getattr(self.tenant, "_prefetched_objects_cache", None)
+        if cache is not None and "branches" in cache:
+            # Prefetched. Callers that need primary_admin on the result say so
+            # in their own Prefetch queryset; both views that read this do.
+            return next((b for b in cache["branches"] if b.is_main), None)
+
         return (
             self.branches
             .select_related("primary_admin", "primary_admin__contact")

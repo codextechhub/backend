@@ -4,6 +4,7 @@ from django.utils import timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
+from django.urls import reverse
 from django.utils.text import slugify
 from rest_framework import serializers
 
@@ -176,16 +177,58 @@ class ContactInfoSerializer(serializers.ModelSerializer):
         read_only_fields = [ "created_at", "updated_at"]
 
 
+def public_logo_url(slug: str, *, has_logo: bool, request=None) -> str:
+    """The school's public brand URL, or "" when there is nothing to show.
+
+    One helper for the two console-facing serializers so the choice of route is
+    made once. ``has_logo`` is passed in rather than looked up: both callers
+    already hold the branding row, and asking again would put a query behind
+    every row of a school list.
+
+    Absolute when a request is available, because the console runs on a
+    different origin from the API and a relative path would resolve against the
+    console's own host.
+    """
+    if not slug or not has_logo:
+        return ""
+    path = reverse("public-school-logo", args=[slug])
+    return request.build_absolute_uri(path) if request is not None else path
+
+
 class SchoolBrandingSerializer(serializers.ModelSerializer):
     class Meta:
         model = SchoolBranding
         fields = [
-            
+
             "logo",
             "created_at",
             "updated_at",
         ]
         read_only_fields = [ "created_at", "updated_at"]
+
+    def to_representation(self, instance):
+        """Emit a logo URL the reader can actually fetch.
+
+        ``ImageField`` renders ``logo.url``, the bare ``/media/<name>`` path,
+        and ``MediaView`` answers 404 to that: a read needs a signature naming
+        who asked. Signing alone does not rescue this one either. This
+        serializer is nested on the CONSOLE's school detail, and ``authorize``
+        refuses any ``/media/`` read whose row tenant differs from the caller's
+        before a per-model policy is consulted - so a CodeX operator looking at
+        Holy Cross is refused, correctly, by a boundary worth keeping.
+
+        The public brand route is the way through, and it is not a hole: it is
+        ``AllowAny`` by design because the same image is painted on the school's
+        sign-in page, which anybody can open. See ``PublicSchoolLogoView``.
+        """
+        data = super().to_representation(instance)
+        school = getattr(instance, "school", None)
+        data["logo"] = public_logo_url(
+            getattr(school, "slug", ""),
+            has_logo=bool(getattr(instance, "logo", None)),
+            request=self.context.get("request"),
+        )
+        return data
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         # Minimal “token” validation hooks; keep it light and let BrandingService enforce deeper rules.
@@ -834,6 +877,7 @@ class SchoolListSerializer(serializers.ModelSerializer):
     """
     main_branch = BranchListSerializer(read_only=True)
     total_students = serializers.ReadOnlyField(default=0)
+    logo = serializers.SerializerMethodField()
 
     class Meta:
         model = School
@@ -849,8 +893,30 @@ class SchoolListSerializer(serializers.ModelSerializer):
             "activated_at",
             "total_students",
             "main_branch",
+            # A row of names reads as a spreadsheet; a row of marks reads as a
+            # list of schools. The list view already select_related("branding")
+            # for it, so this costs no query - the field simply was never added.
+            "logo",
         ]
         read_only_fields = fields
+
+    def get_logo(self, obj) -> str:
+        """The school's logo, or "" when it has none.
+
+        The public brand URL rather than a signed ``/media/`` one, for the
+        reason spelled out on ``SchoolBrandingSerializer``: this list is read
+        from the console, across tenants, where a ``/media/`` read is refused
+        before any policy runs.
+
+        Empty rather than null so a caller never has to tell "no logo" apart
+        from "logo I may not fetch". Both end at the same bundled fallback.
+        """
+        branding = getattr(obj, "branding", None)
+        return public_logo_url(
+            getattr(obj, "slug", ""),
+            has_logo=bool(getattr(branding, "logo", None)),
+            request=self.context.get("request"),
+        )
 
 
 class SchoolDetailSerializer(serializers.ModelSerializer):

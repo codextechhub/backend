@@ -47,7 +47,19 @@ class SchoolListView(ActorContextMixin, generics.ListAPIView):
         .select_related("branding",)
         # "tenant__branches", not "branches": School.branches is now a property
         # over the tenant's sites, so the prefetch has to name the real path.
-        .prefetch_related("tenant__branches")
+        #
+        # Carrying primary_admin the way the detail view's prefetch does, because
+        # School.main_branch now reads this cache rather than re-querying, and
+        # the branch serializer walks into the admin's contact. Without it the
+        # query saved per school would come straight back as two.
+        .prefetch_related(
+            Prefetch(
+                "tenant__branches",
+                queryset=Branch.objects.select_related(
+                    "primary_admin", "primary_admin__contact"
+                ),
+            )
+        )
     )
 
     def get_queryset(self):
