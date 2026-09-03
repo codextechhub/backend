@@ -34,6 +34,7 @@ from vs_audit.services import AuditDiffService, emit_audit_event
 from vs_config.models import Capability, CapabilityEntitlement
 from vs_config.services.capabilities import set_entitlement
 from vs_user.email_normalization import normalize_email
+from vs_tenants.app_urls import school_app_url
 
 
 # -----------------------------------------------------------------------------
@@ -919,6 +920,18 @@ class SchoolDetailSerializer(serializers.ModelSerializer):
     primary_admin = SchoolPrimaryAdminReadSerializer(read_only=True)
     package_setup = SchoolPackageSetupReadSerializer(read_only=True)
     total_students = serializers.ReadOnlyField(default=0)
+    app_url = serializers.SerializerMethodField()
+
+    def get_app_url(self, obj) -> str:
+        """Where this school's own people sign in.
+
+        Derived, never stored: one configured host with the slug inserted, so a
+        school that was registered a minute ago already has an address and
+        nobody has to fill one in. Blank when the deployment has no school host
+        configured, which the Console renders as absent rather than as a link
+        that goes nowhere.
+        """
+        return school_app_url(getattr(obj, "slug", ""))
 
     class Meta:
         model = School
@@ -955,6 +968,10 @@ class SchoolDetailSerializer(serializers.ModelSerializer):
 
             # Extras
             "total_students",
+            # The address the school itself uses. The Console had no way to
+            # reach a school's own app, so finding it meant knowing the domain
+            # and typing the slug by hand.
+            "app_url",
         ]
         read_only_fields = fields
 

@@ -40,6 +40,8 @@ from datetime import timedelta
 from urllib.parse import urlsplit, urlunsplit
 
 from django.conf import settings
+
+from vs_tenants.app_urls import school_app_url
 from django.core import signing
 from django.utils import timezone
 from rest_framework.exceptions import NotFound
@@ -166,10 +168,10 @@ def payer_base_url(invoice) -> str:
         slug = PLATFORM_PAY_SUBDOMAIN
     if not base:
         return ""
-    parts = urlsplit(base)
-    if not parts.netloc:  # A host with no scheme cannot be given a subdomain safely.
-        return base
-    return urlunsplit((parts.scheme, f"{slug}.{parts.netloc}", parts.path, "", ""))
+    # The insertion itself lives in vs_tenants.app_urls, because the Console
+    # needs the same answer to show a school where its own app is served, and
+    # two copies of "how do we build a school's address" would drift.
+    return school_app_url(slug)
 
 
 def payer_return_url(invoice) -> str:
