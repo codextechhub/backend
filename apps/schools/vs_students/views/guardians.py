@@ -17,6 +17,7 @@ from ..serializers import (
     GuardianSerializer,
     GuardianUpdateSerializer,
     GuardianWriteSerializer,
+    PhotoUploadSerializer,
     StudentListSerializer,
 )
 from ..services import documents as document_service
@@ -128,7 +129,7 @@ class StudentGuardiansView(StudentsViewMixin, APIView):
         )
         return success_response(
             f"{guardian.full_name} linked to {student.full_name}.",
-            data=GuardianSerializer(guardian).data, status=201,
+            data=GuardianSerializer(guardian, context={"request": request}).data, status=201,
         )
 
 
@@ -271,7 +272,7 @@ class GuardianDetailView(StudentsViewMixin, APIView):
             ).select_related("school_class")
         }
         return success_response(data={
-            **GuardianSerializer(guardian).data,
+            **GuardianSerializer(guardian, context={"request": request}).data,
             "wards": [
                 {
                     "id": s.pk, "name": s.full_name,
@@ -284,6 +285,49 @@ class GuardianDetailView(StudentsViewMixin, APIView):
                 for s in wards
             ],
         })
+
+
+class GuardianPhotoView(StudentsViewMixin, APIView):
+    """POST, DELETE /v1/guardians/<id>/photo/
+
+    A face for the person collecting a child. Optional everywhere and a gate on
+    nothing: a school holds guardians it has never met, and a rule that wanted a
+    photograph before a parent could be recorded would be met with a blank file.
+
+    Its own route rather than a field on the PATCH, because the bytes arrive as
+    multipart and the rest of that form is JSON - and because removing a
+    photograph is a different act from correcting a phone number, worth its own
+    audit line.
+
+    docstring-name: A guardian's photograph
+    """
+
+    def get_permissions(self):
+        # The same key that corrects the rest of the record.
+        self.rbac_permission = PERM_UPDATE
+        return super().get_permissions()
+
+    def post(self, request, pk):
+        guardian = self.guardian(pk)
+        writer = PhotoUploadSerializer(data=request.data)
+        writer.is_valid(raise_exception=True)
+        guardian = guardian_service.set_photo(
+            guardian, upload=writer.validated_data["photo"], actor=request.user,
+        )
+        return success_response(
+            f"{guardian.full_name}'s photograph saved.",
+            data=GuardianSerializer(guardian, context={"request": request}).data,
+        )
+
+    def delete(self, request, pk):
+        guardian = self.guardian(pk)
+        if not guardian.photo:
+            raise NotFound("This guardian has no photograph.")
+        guardian = guardian_service.clear_photo(guardian, actor=request.user)
+        return success_response(
+            f"{guardian.full_name}'s photograph removed.",
+            data=GuardianSerializer(guardian, context={"request": request}).data,
+        )
 
 
 class GuardianStudentsView(StudentsViewMixin, generics.ListAPIView):

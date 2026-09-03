@@ -143,8 +143,14 @@ class DocumentType(models.TextChoices):
 #: school registering a child on the day they arrive rarely has the birth
 #: certificate in hand, and a rule that refused the enrolment would be worked
 #: around with a blank file. FRD v2.4 FR-015 rule 4.
+#:
+#: A photograph is not among them, here or on a guardian. A school photographs
+#: its intake on a day it chooses, not at the desk while a parent waits, so a
+#: record marked incomplete for a missing picture is marked incomplete for
+#: every child on their first day - which teaches everybody to ignore the mark
+#: on the row that is genuinely missing a birth certificate.
 REQUIRED_DOCUMENTS = frozenset({
-    DocumentType.BIRTH_CERTIFICATE, DocumentType.PASSPORT_PHOTO,
+    DocumentType.BIRTH_CERTIFICATE,
 })
 
 

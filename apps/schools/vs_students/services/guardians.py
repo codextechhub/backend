@@ -346,3 +346,48 @@ def update_guardian(guardian, *, actor, **fields):
         metadata={"fields": sorted(changed)},
     )
     return guardian, sorted(changed)
+
+
+@transaction.atomic
+def set_photo(guardian, *, upload, actor):
+    """Give a guardian a face, or replace the one they have.
+
+    ``core.binding`` does the rest on save: it points the stored bytes at this
+    row, and retires whatever this field pointed at before - so a replaced
+    photograph does not keep its own live url after the school believes it has
+    been replaced.
+
+    Optional, always. A school holds guardians it has never met, and nothing in
+    the module gates on this being set.
+    """
+    guardian.photo = upload
+    guardian.save(update_fields=["photo", "updated_at"])
+    emit_audit_event(
+        module_key=AuditModuleKey.STUDENT,
+        action_type=AuditActionType.UPDATE,
+        entity_type="Guardian", entity_id=str(guardian.pk),
+        entity_label=guardian.full_name,
+        tenant=guardian.tenant, actor_user=actor,
+        summary=f"{guardian.full_name}'s photograph updated.",
+        metadata={"field": "photo"},
+    )
+    return guardian
+
+
+@transaction.atomic
+def clear_photo(guardian, *, actor):
+    """Take the photograph away. Audited separately: it is the direction that
+    loses evidence, and the bytes do not come back."""
+    guardian.photo.delete(save=False)
+    guardian.photo = ""
+    guardian.save(update_fields=["photo", "updated_at"])
+    emit_audit_event(
+        module_key=AuditModuleKey.STUDENT,
+        action_type=AuditActionType.UPDATE,
+        entity_type="Guardian", entity_id=str(guardian.pk),
+        entity_label=guardian.full_name,
+        tenant=guardian.tenant, actor_user=actor,
+        summary=f"{guardian.full_name}'s photograph removed.",
+        metadata={"field": "photo", "removed": True},
+    )
+    return guardian

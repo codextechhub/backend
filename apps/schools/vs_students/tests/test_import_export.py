@@ -340,8 +340,12 @@ class DocumentTests(StudentsFixture):
         response = self.get(self.admin, "student-documents", pk=self.row.pk)
         self.assertEqual(len(response.data["data"]), 5)
         self.assertTrue(all(not r["attached"] for r in response.data["data"]))
+        # The birth certificate alone. The passport photograph used to be
+        # prompted for too, and is not: a school photographs its intake on a
+        # day it chooses, so marking every new child incomplete for a missing
+        # picture teaches everybody to ignore the mark.
         required = {r["document_type"] for r in response.data["data"] if r["required"]}
-        self.assertEqual(required, {"BIRTH_CERTIFICATE", "PASSPORT_PHOTO"})
+        self.assertEqual(required, {"BIRTH_CERTIFICATE"})
 
     def test_attaching_records_the_file_and_returns_a_signed_url(self):
         response = self._upload()

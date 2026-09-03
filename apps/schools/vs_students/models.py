@@ -44,6 +44,10 @@ def student_photo_path(instance, filename):
     return f"students/{instance.tenant_id}/photos/{filename}"
 
 
+def guardian_photo_path(instance, filename):
+    return f"guardians/{instance.tenant_id}/photos/{filename}"
+
+
 def student_document_path(instance, filename):
     return (
         f"students/{instance.tenant_id}/documents/"
@@ -197,6 +201,11 @@ class Guardian(_Owned):
     occupation = models.CharField(max_length=100, blank=True, default="")
     #: The guardian's own address, which is not always the child's.
     address = models.TextField(blank=True, default="")
+    #: A face for the person collecting a child. Always optional: a school
+    #: holds guardians it has never met, and a rule that demanded a photograph
+    #: before a parent could be recorded would be worked around with a blank
+    #: file, exactly as the document checklist would be.
+    photo = models.FileField(upload_to=guardian_photo_path, blank=True)
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         null=True, blank=True, related_name="guardian_profiles",

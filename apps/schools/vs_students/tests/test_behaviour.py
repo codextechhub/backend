@@ -11,6 +11,8 @@ from django.db import IntegrityError, connection, transaction
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
+from core.media import sign
+
 from schools.vs_academics.models import (
     AcademicSession,
     Level,
@@ -1267,3 +1269,159 @@ class PassportPhotographTests(StudentsFixture):
             self.get(self.admin, "student-list")
 
         self.assertEqual(len(second), len(first))
+
+
+class GuardianPhotographTests(StudentsFixture):
+    """A face for the person collecting a child, and it is never demanded.
+
+    The gap this closes: ``Guardian`` carried a name, a phone, an email, an
+    occupation and an address and no file field at all - so gate staff opening
+    a contact card saw a phone number where a face should be, and there was
+    nothing anywhere in the product that could have put one there.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.parent = self.guardian(name="Mrs. Adaeze Bello")
+
+    def _upload(self, *, name="adaeze.jpg", content_type="image/jpeg", size=64):
+        upload = SimpleUploadedFile(name, b"x" * size, content_type=content_type)
+        url = reverse("guardian-photo", kwargs={"pk": self.parent.pk})
+        return self.client_for(self.admin).post(
+            f"{url}?tenant={self.tenant.slug}", {"photo": upload},
+            format="multipart",
+        )
+
+    def test_a_guardian_starts_with_no_photograph_and_that_is_fine(self):
+        response = self.get(self.admin, "guardian-detail", pk=self.parent.pk)
+        self.assertEqual(response.data["data"]["photo_url"], "")
+
+    def test_uploading_one_puts_it_on_the_record_and_the_directory(self):
+        # The directory lists guardians who have a child here, so give her one.
+        self.link(self.student(first="Chidi", last="Bello"), self.parent)
+        self.assertEqual(self._upload().status_code, 200)
+
+        detail = self.get(self.admin, "guardian-detail", pk=self.parent.pk)
+        self.assertTrue(detail.data["data"]["photo_url"])
+
+        rows = self.get(self.admin, "guardian-list").data["data"]
+        row = next(r for r in rows if r["id"] == self.parent.pk)
+        self.assertTrue(row["photo_url"])
+
+    def test_the_url_is_absolute_because_the_api_is_another_host(self):
+        self._upload()
+        detail = self.get(self.admin, "guardian-detail", pk=self.parent.pk)
+        self.assertTrue(detail.data["data"]["photo_url"].startswith("http"))
+
+    def test_removing_it_leaves_the_record_intact(self):
+        self._upload()
+        response = self.delete(
+            self.admin, "guardian-photo", pk=self.parent.pk,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.parent.refresh_from_db()
+        self.assertFalse(self.parent.photo)
+        self.assertEqual(self.parent.full_name, "Mrs. Adaeze Bello")
+
+    def test_removing_a_photograph_that_is_not_there_is_a_404_not_a_success(self):
+        self.assertEqual(
+            self.delete(self.admin, "guardian-photo", pk=self.parent.pk).status_code,
+            404,
+        )
+
+    def test_a_pdf_is_refused_and_the_message_names_what_was_sent(self):
+        response = self._upload(name="scan.pdf", content_type="application/pdf")
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("image", str(response.data).lower())
+
+    def test_an_oversize_photograph_is_refused(self):
+        response = self._upload(size=6 * 1024 * 1024)
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("6MB", str(response.data))
+
+    def test_another_schools_guardian_answers_404_never_403(self):
+        """An id must not reveal that a person exists at another school."""
+        outsider = self.guardian(
+            tenant=self.solo.tenant, name="Mr. Somebody Else",
+            email="somebody@example.ng", phone="08099990000",
+        )
+        url = reverse("guardian-photo", kwargs={"pk": outsider.pk})
+        response = self.client_for(self.admin).post(
+            f"{url}?tenant={self.tenant.slug}",
+            {"photo": SimpleUploadedFile("x.jpg", b"x" * 8, content_type="image/jpeg")},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 404, response.data)
+
+
+class GuardianPhotoReadPolicyTests(StudentsFixture):
+    """A guardian's face is reachable by whoever reaches one of their children.
+
+    The branch check cannot be made on the guardian: the row carries no branch
+    on purpose, because one household serves siblings at two branches. So the
+    policy asks the question the record itself answers - which of this person's
+    children does this caller see - and a caller who sees none of them is
+    refused the photograph too.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.parent = self.guardian(name="Mrs. Adaeze Bello")
+        self.link(
+            self.student(first="Chidi", last="Bello", branch=self.ikeja),
+            self.parent,
+        )
+        # Uploaded through the route, not assigned to the field. The stored
+        # row takes its tenant from the request that wrote it, and a file
+        # written outside one has none - which authorize() refuses, correctly.
+        url = reverse("guardian-photo", kwargs={"pk": self.parent.pk})
+        self.client_for(self.admin).post(
+            f"{url}?tenant={self.tenant.slug}",
+            {"photo": SimpleUploadedFile(
+                "face.jpg", b"x" * 32, content_type="image/jpeg",
+            )},
+            format="multipart",
+        )
+        self.parent.refresh_from_db()
+
+    def _read(self, user):
+        return self.client_for(user).get(
+            reverse("stored-media", kwargs={"name": self.parent.photo.name}),
+            {"t": sign(self.parent.photo.name, user), "tenant": self.tenant.slug},
+        )
+
+    def test_a_school_wide_admin_may_read_it(self):
+        self.assertEqual(self._read(self.admin).status_code, 200)
+
+    def test_a_head_pinned_to_another_branch_may_not(self):
+        """Their only child is at Ikeja; this caller is pinned to Lekki."""
+        self.assertEqual(self._read(self.lekki_head).status_code, 404)
+
+    def test_somebody_holding_no_student_permission_may_not(self):
+        self.assertEqual(self._read(self.nobody).status_code, 404)
+
+
+class PhotographsAreOptionalTests(StudentsFixture):
+    """A photograph is a prompt on nobody's record, on either side.
+
+    A school photographs its intake on a day it chooses, not at the desk while
+    a parent waits. Marking every new child's record incomplete for a missing
+    picture teaches everybody to ignore the mark - including on the row that is
+    genuinely missing a birth certificate.
+    """
+
+    def test_the_passport_photograph_is_not_a_required_document(self):
+        pupil = self.student(first="Ngozi", last="Umeh")
+        rows = self.get(self.admin, "student-documents", pk=pupil.pk).data["data"]
+        photo = next(
+            r for r in rows if r["document_type"] == DocumentType.PASSPORT_PHOTO
+        )
+        self.assertFalse(photo["required"])
+
+    def test_the_birth_certificate_still_is(self):
+        pupil = self.student(first="Ngozi", last="Umeh")
+        rows = self.get(self.admin, "student-documents", pk=pupil.pk).data["data"]
+        cert = next(
+            r for r in rows if r["document_type"] == DocumentType.BIRTH_CERTIFICATE
+        )
+        self.assertTrue(cert["required"])

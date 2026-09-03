@@ -22,6 +22,7 @@ from .views import (
     ConfirmApplicantView,
     GuardianDetailView,
     GuardianDirectoryView,
+    GuardianPhotoView,
     GuardianStudentsView,
     PromotionBatchView,
     PromotionPreviewView,
@@ -131,6 +132,7 @@ guardian_patterns = [
         "<int:pk>/students/", GuardianStudentsView.as_view(),
         name="guardian-students",
     ),
+    path("<int:pk>/photo/", GuardianPhotoView.as_view(), name="guardian-photo"),
 ]
 
 urlpatterns = student_patterns

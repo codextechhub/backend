@@ -71,13 +71,17 @@ class _BranchAware(serializers.ModelSerializer):
 
 class GuardianSerializer(serializers.ModelSerializer):
     has_account = serializers.SerializerMethodField()
+    photo_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Guardian
         fields = [
             "id", "full_name", "phone", "email", "occupation", "address",
-            "has_account",
+            "has_account", "photo_url",
         ]
+
+    def get_photo_url(self, obj):
+        return guardian_photo_url(obj, request=self.context.get("request"))
 
     def get_has_account(self, obj):
         # Whether they have a login, never which User row it is: an internal
@@ -132,7 +136,23 @@ class GuardianLinkSerializer(serializers.ModelSerializer):
         ]
 
 
+def guardian_photo_url(guardian, *, request=None):
+    """A guardian's face, absolute so the browser asks the API for it.
+
+    Absolute for the same reason every other media url in the platform is: a
+    bare ``/media/`` path resolves against the FRONTEND's origin, which serves
+    the single-page app and not the file.
+    """
+    from core.media import signed_url
+
+    return (
+        signed_url(guardian.photo.name, absolute_for=request)
+        if guardian.photo else ""
+    )
+
+
 class GuardianDirectorySerializer(serializers.ModelSerializer):
+    photo_url = serializers.SerializerMethodField()
     ward_count = serializers.IntegerField(read_only=True)
     ward_names = serializers.SerializerMethodField()
     is_sibling_household = serializers.SerializerMethodField()
@@ -140,7 +160,10 @@ class GuardianDirectorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Guardian
         fields = ["id", "full_name", "phone", "email", "ward_count",
-                  "ward_names", "is_sibling_household"]
+                  "ward_names", "is_sibling_household", "photo_url"]
+
+    def get_photo_url(self, obj):
+        return guardian_photo_url(obj, request=self.context.get("request"))
 
     def get_ward_names(self, obj):
         return self.context.get("wards", {}).get(obj.pk, [])
@@ -535,11 +558,44 @@ class DocumentSerializer(serializers.Serializer):
 
 #: 5 MB. Comfortably more than a phone photograph of a certificate, and small
 #: enough that a directory of fifty faces is not a slow page.
-MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 
 IMAGE_CONTENT_TYPES = frozenset({
     "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif",
 })
+
+
+def check_upload(upload, *, field, must_be_image, subject):
+    """Size, and type when the file will be rendered as a picture.
+
+    One function for both photographs. A file accepted here is drawn in an
+    ``<img>`` on a list, so a PDF that slips through is a broken picture beside
+    a person's name on the directory, the class register and the guardian's
+    list of children - and nothing on any of those screens would say why. The
+    refusal names what was sent instead, because "invalid file" sends somebody
+    trying the same PDF again.
+
+    Raises ``ValidationError`` keyed on ``field`` so the message lands under
+    the input the reader would change.
+    """
+    size = getattr(upload, "size", 0) or 0
+    if size > MAX_UPLOAD_BYTES:
+        raise serializers.ValidationError({
+            field: (
+                f"That file is {size // (1024 * 1024)}MB. The limit is "
+                f"{MAX_UPLOAD_BYTES // (1024 * 1024)}MB."
+            ),
+        })
+    if not must_be_image:
+        return
+    content_type = (getattr(upload, "content_type", "") or "").lower()
+    if content_type not in IMAGE_CONTENT_TYPES:
+        raise serializers.ValidationError({
+            field: (
+                f"{subject} must be an image - JPEG, PNG, WebP or HEIC. This "
+                f"one is a {content_type or 'file of unknown type'}."
+            ),
+        })
 
 
 class DocumentUploadSerializer(serializers.Serializer):
@@ -547,32 +603,24 @@ class DocumentUploadSerializer(serializers.Serializer):
     file = serializers.FileField()
 
     def validate(self, attrs):
-        """A passport photograph has to be an image, and nothing may be huge.
+        check_upload(
+            attrs["file"], field="file",
+            must_be_image=attrs["document_type"] == DocumentType.PASSPORT_PHOTO,
+            subject="A passport photograph",
+        )
+        return attrs
 
-        The photograph is rendered in an ``<img>`` on every list, so a PDF
-        accepted here is a broken picture beside a child's name on the
-        directory, the class register and the guardian's list of children - and
-        nothing on any of those screens would say why.
-        """
-        upload = attrs["file"]
-        size = getattr(upload, "size", 0) or 0
-        if size > MAX_DOCUMENT_BYTES:
-            raise serializers.ValidationError({
-                "file": (
-                    f"That file is {size // (1024 * 1024)}MB. The limit is "
-                    f"{MAX_DOCUMENT_BYTES // (1024 * 1024)}MB."
-                ),
-            })
-        if attrs["document_type"] == DocumentType.PASSPORT_PHOTO:
-            content_type = (getattr(upload, "content_type", "") or "").lower()
-            if content_type not in IMAGE_CONTENT_TYPES:
-                raise serializers.ValidationError({
-                    "file": (
-                        "A passport photograph must be an image - JPEG, PNG, "
-                        "WebP or HEIC. This one is a "
-                        f"{content_type or 'file of unknown type'}."
-                    ),
-                })
+
+class PhotoUploadSerializer(serializers.Serializer):
+    """A guardian's photograph. Always optional, never a gate on anything."""
+
+    photo = serializers.FileField()
+
+    def validate(self, attrs):
+        check_upload(
+            attrs["photo"], field="photo", must_be_image=True,
+            subject="A photograph",
+        )
         return attrs
 
 
