@@ -22,7 +22,6 @@ from __future__ import annotations
 from django.utils import timezone
 from rest_framework import serializers
 
-from core.media import signed_url
 from vs_rbac.fls import FieldSecurityMixin
 
 from .constants import (
@@ -42,6 +41,7 @@ from .models import (
     StudentPromotionBatch,
     StudentStatusLog,
 )
+from .services import documents as document_service
 
 
 def _age_on(dob, when=None):
@@ -233,7 +233,7 @@ class StudentListSerializer(_BranchAware):
         return ""
 
     def get_photo_url(self, obj):
-        return signed_url(obj.photo.name) if obj.photo else ""
+        return document_service.face_url(obj, request=self.context.get("request"))
 
 
 class StudentDetailSerializer(FieldSecurityMixin, _BranchAware):
@@ -302,7 +302,7 @@ class StudentDetailSerializer(FieldSecurityMixin, _BranchAware):
         return str(row.session) if row else ""
 
     def get_photo_url(self, obj):
-        return signed_url(obj.photo.name) if obj.photo else ""
+        return document_service.face_url(obj, request=self.context.get("request"))
 
     def get_allowed_transitions(self, obj):
         from .services.status import IMPACT, allowed_from
@@ -533,9 +533,47 @@ class DocumentSerializer(serializers.Serializer):
     url = serializers.CharField(allow_blank=True)
 
 
+#: 5 MB. Comfortably more than a phone photograph of a certificate, and small
+#: enough that a directory of fifty faces is not a slow page.
+MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
+
+IMAGE_CONTENT_TYPES = frozenset({
+    "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif",
+})
+
+
 class DocumentUploadSerializer(serializers.Serializer):
     document_type = serializers.ChoiceField(choices=DocumentType.choices)
     file = serializers.FileField()
+
+    def validate(self, attrs):
+        """A passport photograph has to be an image, and nothing may be huge.
+
+        The photograph is rendered in an ``<img>`` on every list, so a PDF
+        accepted here is a broken picture beside a child's name on the
+        directory, the class register and the guardian's list of children - and
+        nothing on any of those screens would say why.
+        """
+        upload = attrs["file"]
+        size = getattr(upload, "size", 0) or 0
+        if size > MAX_DOCUMENT_BYTES:
+            raise serializers.ValidationError({
+                "file": (
+                    f"That file is {size // (1024 * 1024)}MB. The limit is "
+                    f"{MAX_DOCUMENT_BYTES // (1024 * 1024)}MB."
+                ),
+            })
+        if attrs["document_type"] == DocumentType.PASSPORT_PHOTO:
+            content_type = (getattr(upload, "content_type", "") or "").lower()
+            if content_type not in IMAGE_CONTENT_TYPES:
+                raise serializers.ValidationError({
+                    "file": (
+                        "A passport photograph must be an image - JPEG, PNG, "
+                        "WebP or HEIC. This one is a "
+                        f"{content_type or 'file of unknown type'}."
+                    ),
+                })
+        return attrs
 
 
 class PromotionBatchSerializer(serializers.ModelSerializer):

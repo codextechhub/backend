@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import datetime as dt
 
-from django.db import IntegrityError, transaction
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import IntegrityError, connection, transaction
+from django.test.utils import CaptureQueriesContext
+from django.urls import reverse
 
 from schools.vs_academics.models import (
     AcademicSession,
@@ -16,6 +19,7 @@ from schools.vs_academics.models import (
 )
 from schools.vs_students.constants import (
     ALLOWED_TRANSITIONS,
+    DocumentType,
     EnrolmentOutcome,
     Gender,
     PromotionOutcome,
@@ -28,6 +32,7 @@ from schools.vs_students.models import (
     ClassEnrolment,
     Guardian,
     Student,
+    StudentDocument,
     StudentGuardian,
     StudentStatusLog,
 )
@@ -1114,3 +1119,151 @@ class UnwiredLevelTests(StudentsFixture):
             if r["from_id"] == self.shared_class.pk
         )
         self.assertFalse(row["terminal"])
+
+
+class PassportPhotographTests(StudentsFixture):
+    """The photograph a school uploads has to become the face it sees.
+
+    The defect this covers: ``Student.photo`` is serialised as ``photo_url``
+    and written by nothing anywhere, while the passport photograph - a REQUIRED
+    document since FR-015 - sat in ``StudentDocument`` being read by nothing but
+    the checklist. A school that had uploaded every document the module asked
+    for still saw initials on every row, and had nowhere it could point at to
+    say "the photograph goes here".
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.pupil = self.student(first="Tunde", last="Bello")
+
+    def _upload(self, *, document_type, name, content_type, size=64):
+        upload = SimpleUploadedFile(name, b"x" * size, content_type=content_type)
+        url = reverse("student-documents", kwargs={"pk": self.pupil.pk})
+        return self.client_for(self.admin).post(
+            f"{url}?tenant={self.tenant.slug}",
+            {"document_type": document_type, "file": upload},
+            format="multipart",
+        )
+
+    def test_uploaded_passport_photograph_becomes_the_students_photo_url(self):
+        self.assertEqual(
+            self.get(self.admin, "student-detail", pk=self.pupil.pk).data["data"][
+                "photo_url"
+            ],
+            "",
+        )
+
+        self.assertEqual(
+            self._upload(
+                document_type=DocumentType.PASSPORT_PHOTO,
+                name="tunde.jpg", content_type="image/jpeg",
+            ).status_code,
+            201,
+        )
+
+        detail = self.get(self.admin, "student-detail", pk=self.pupil.pk)
+        self.assertTrue(detail.data["data"]["photo_url"])
+
+    def test_the_directory_row_carries_it_too_not_only_the_profile(self):
+        """The row is where it was most visible as missing."""
+        self._upload(
+            document_type=DocumentType.PASSPORT_PHOTO,
+            name="tunde.png", content_type="image/png",
+        )
+        rows = self.get(self.admin, "student-list").data["data"]
+        row = next(r for r in rows if r["id"] == self.pupil.pk)
+        self.assertTrue(row["photo_url"])
+
+    def test_the_urls_are_absolute_because_the_api_is_another_host(self):
+        """A bare /media/ path resolves against the FRONTEND, which has none.
+
+        The app runs at the school's own subdomain and the API at api.…, so a
+        path handed to an <img> or a "View" link fetched the single-page app's
+        index.html and got HTML where an image should have been. Every other
+        module already passes ``absolute_for``; this one did not.
+        """
+        self._upload(
+            document_type=DocumentType.PASSPORT_PHOTO,
+            name="tunde.jpg", content_type="image/jpeg",
+        )
+        detail = self.get(self.admin, "student-detail", pk=self.pupil.pk)
+        self.assertTrue(detail.data["data"]["photo_url"].startswith("http"))
+
+        docs = self.get(self.admin, "student-documents", pk=self.pupil.pk)
+        photo = next(
+            d for d in docs.data["data"]
+            if d["document_type"] == DocumentType.PASSPORT_PHOTO
+        )
+        self.assertTrue(photo["url"].startswith("http"), photo["url"])
+
+    def test_removing_it_takes_the_face_away_again(self):
+        self._upload(
+            document_type=DocumentType.PASSPORT_PHOTO,
+            name="tunde.jpg", content_type="image/jpeg",
+        )
+        doc = self.pupil.documents.get(document_type=DocumentType.PASSPORT_PHOTO)
+        self.delete(
+            self.admin, "student-document-detail",
+            pk=self.pupil.pk, doc_id=doc.pk,
+        )
+        detail = self.get(self.admin, "student-detail", pk=self.pupil.pk)
+        self.assertEqual(detail.data["data"]["photo_url"], "")
+
+    def test_a_pdf_is_refused_as_a_passport_photograph_and_the_message_says_why(self):
+        """It would render as a broken picture beside the child's name."""
+        response = self._upload(
+            document_type=DocumentType.PASSPORT_PHOTO,
+            name="scan.pdf", content_type="application/pdf",
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("image", str(response.data).lower())
+
+    def test_a_pdf_is_still_a_perfectly_good_birth_certificate(self):
+        """The rule is about the photograph, not about documents."""
+        response = self._upload(
+            document_type=DocumentType.BIRTH_CERTIFICATE,
+            name="birth.pdf", content_type="application/pdf",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+
+    def test_an_oversize_upload_is_refused_with_its_own_size_named(self):
+        response = self._upload(
+            document_type=DocumentType.BIRTH_CERTIFICATE,
+            name="huge.pdf", content_type="application/pdf",
+            size=6 * 1024 * 1024,
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("6MB", str(response.data))
+
+    def test_the_directory_does_not_ask_once_per_face(self):
+        """The prefetch, not fifty extra queries on a page of fifty children."""
+        for i in range(3):
+            other = self.student(first=f"Child{i}", last="Ade")
+            SimpleUploadedFile(f"c{i}.jpg", b"x" * 32, content_type="image/jpeg")
+            StudentDocument.objects.create(
+                tenant=self.tenant, student=other,
+                document_type=DocumentType.PASSPORT_PHOTO,
+                file=SimpleUploadedFile(
+                    f"c{i}.jpg", b"x" * 32, content_type="image/jpeg",
+                ),
+                uploaded_by=self.admin,
+            )
+
+        with CaptureQueriesContext(connection) as first:
+            self.get(self.admin, "student-list")
+
+        for i in range(3, 9):
+            other = self.student(first=f"Child{i}", last="Ade")
+            StudentDocument.objects.create(
+                tenant=self.tenant, student=other,
+                document_type=DocumentType.PASSPORT_PHOTO,
+                file=SimpleUploadedFile(
+                    f"c{i}.jpg", b"x" * 32, content_type="image/jpeg",
+                ),
+                uploaded_by=self.admin,
+            )
+
+        with CaptureQueriesContext(connection) as second:
+            self.get(self.admin, "student-list")
+
+        self.assertEqual(len(second), len(first))

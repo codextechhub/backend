@@ -19,6 +19,7 @@ from ..serializers import (
     GuardianWriteSerializer,
     StudentListSerializer,
 )
+from ..services import documents as document_service
 from ..services import guardians as guardian_service
 from ..services.scoping import scope_students
 from .base import StudentsViewMixin
@@ -305,4 +306,5 @@ class GuardianStudentsView(StudentsViewMixin, generics.ListAPIView):
             guardian, self.request.user, self.tenant,
         ).select_related("branch").prefetch_related(
             "enrolments__school_class", "guardian_links__guardian",
+            document_service.photo_prefetch(),
         )

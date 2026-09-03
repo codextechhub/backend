@@ -45,7 +45,7 @@ class StudentDocumentsView(StudentsViewMixin, APIView):
 
     def get(self, request, pk):
         student = self.student(pk)
-        rows = document_service.checklist(student)
+        rows = document_service.checklist(student, request=request)
         return success_response(data=DocumentSerializer(rows, many=True).data)
 
     @transaction.atomic
@@ -61,7 +61,8 @@ class StudentDocumentsView(StudentsViewMixin, APIView):
         return success_response(
             f"{doc.get_document_type_display()} attached.",
             data=DocumentSerializer(
-                document_service.checklist(student), many=True,
+                document_service.checklist(student, request=request),
+                many=True,
             ).data,
             status=201,
         )
@@ -267,6 +268,7 @@ class ClassRosterView(StudentsViewMixin, generics.ListAPIView):
             ),
         ).select_related("branch").prefetch_related(
             "enrolments__school_class", "guardian_links__guardian",
+            document_service.photo_prefetch(),
         )
 
     def list(self, request, *args, **kwargs):

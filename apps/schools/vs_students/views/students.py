@@ -30,6 +30,7 @@ from ..serializers import (
     StudentListSerializer,
     StudentWriteSerializer,
 )
+from ..services import documents as document_service
 from ..services import enrolment as enrolment_service
 from ..services.placement import fullest_classes, resolve_class
 from ..services.scoping import branch_for_write, scope_students, UNSET
@@ -74,7 +75,7 @@ def _list_queryset(tenant, session=None):
         qs = qs.filter(enrolments__session=session)
     return (
         qs.select_related("branch", "applied_for")
-        .prefetch_related(active, guardians)
+        .prefetch_related(active, guardians, document_service.photo_prefetch())
         .distinct()
     )
 

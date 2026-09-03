@@ -22,8 +22,11 @@ from ..constants import REQUIRED_DOCUMENTS, DocumentType
 from ..models import StudentDocument
 
 
-def checklist(student):
-    """Every type, attached or not. The screen shows all five either way."""
+def checklist(student, *, request=None):
+    """Every type, attached or not. The screen shows all five either way.
+
+    ``request`` makes the file URLs absolute - see ``_media_url``.
+    """
     held = {d.document_type: d for d in student.documents.all()}
     rows = []
     for value, label in DocumentType.choices:
@@ -35,9 +38,60 @@ def checklist(student):
             "attached": doc is not None,
             "uploaded_at": doc.uploaded_at if doc else None,
             "id": doc.pk if doc else None,
-            "url": _media_url(doc) if doc else "",
+            "url": _media_url(doc, request) if doc else "",
         })
     return rows
+
+
+#: The prefetch that makes ``face_url`` free on a list.
+#:
+#: Without it the directory asks one extra question per row - fifty students,
+#: fifty queries for fifty photographs - which is the cost ``_list_queryset``
+#: exists to avoid. ``to_attr`` keeps it clear of ``documents.all()``, so the
+#: profile's own checklist still reads every type.
+def photo_prefetch():
+    from django.db.models import Prefetch
+
+    return Prefetch(
+        "documents",
+        queryset=StudentDocument.objects.filter(
+            document_type=DocumentType.PASSPORT_PHOTO,
+        ).order_by("-uploaded_at"),
+        to_attr="_passport_photo",
+    )
+
+
+def face_url(student, *, request=None):
+    """The student's face, for an avatar.
+
+    **This reads the passport photograph, not ``Student.photo``.** That column
+    exists, is serialised as ``photo_url``, and is written by nothing at all -
+    no route, no serializer, no service anywhere in the codebase sets it. So
+    every school that had done what the module asked and uploaded the required
+    passport photograph still saw initials on every screen, and there appeared
+    to be nowhere to upload a photograph even though they already had.
+
+    The photograph was never missing. It was in ``StudentDocument`` under
+    ``PASSPORT_PHOTO`` - a required document since FR-015 - being read by
+    nothing but the checklist. One source, read here.
+
+    ``Student.photo`` still wins if a row ever carries one, so nothing that
+    might populate it later is silently ignored.
+    """
+    from core.media import signed_url
+
+    if student.photo:
+        return signed_url(student.photo.name, absolute_for=request)
+
+    held = getattr(student, "_passport_photo", None)
+    doc = (
+        (held[0] if held else None)
+        if held is not None
+        else student.documents.filter(
+            document_type=DocumentType.PASSPORT_PHOTO,
+        ).order_by("-uploaded_at").first()
+    )
+    return _media_url(doc, request) if doc else ""
 
 
 def missing_required(student):
@@ -45,15 +99,30 @@ def missing_required(student):
     return sorted(REQUIRED_DOCUMENTS - held)
 
 
-def _media_url(doc):
+def _media_url(doc, request=None):
     """A signed, user-bound, expiring URL - never a bare /media/ path.
 
     An unsigned path inside its window is a bearer token, which is exactly the
     behaviour core.media exists to have removed.
+
+    **``absolute_for`` is not optional in practice.** Without it ``signed_url``
+    returns a bare ``/media/...`` PATH, and the browser resolves a path against
+    the page's own origin - which is the frontend, not the API. The two are
+    never the same host: the app runs at ``lagoon-view.xvs.codexng.com`` and the
+    API at ``api.codexng.com``. So every "View" link on this checklist opened
+    the single-page app's own index.html instead of the document, and the
+    passport photograph resolved to the same HTML and failed to decode, which
+    is why a student who HAD a photograph still showed initials.
+
+    Every other module that hands a media URL to a browser already passes it -
+    the school logo, finance receipts, the organogram's photographs. This one
+    did not.
     """
     from core.media import signed_url
 
-    return signed_url(getattr(doc.file, "name", "") or "")
+    return signed_url(
+        getattr(doc.file, "name", "") or "", absolute_for=request,
+    )
 
 
 @transaction.atomic
