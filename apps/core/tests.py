@@ -503,11 +503,10 @@ class BackfillTests(_MediaFixture):
                 list(module.BINDINGS) + list(module.LATER_BINDINGS)
             )
         }
-        # Nothing is exempt. Export and audit artefacts do not appear here at all
-        # because they keep their storage key in a plain CharField rather than a
-        # FileField - they are written straight to the storage by a background
-        # job and served by their own permission-checking views, so they were
-        # never part of the FileField story this walk is about.
+        # Nothing is exempt. Export and audit artefacts are absent because they
+        # keep their storage key in a plain CharField rather than a FileField:
+        # written straight to storage by a background job and served by their own
+        # permission-checking views, so they are outside the FileField walk.
         missing = []
         for model in live_apps.get_models():
             for field in model._meta.get_fields():

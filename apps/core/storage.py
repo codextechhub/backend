@@ -131,11 +131,10 @@ class DatabaseStorage(Storage):
         return f"{settings.MEDIA_URL}{_clean_name(name)}"
 
     def get_available_name(self, name, max_length=None):
-        # Give every stored file a high-entropy token in its name so it can't be
-        # fetched by guessing a predictable path. This is defence in depth, not the
-        # access control: what decides a read is the file's tenant, its owning
-        # record's policy and the URL's signature (see core.media). The original
-        # filename root is kept as a readable prefix.
+        # A high-entropy token in every stored filename, so a file cannot be
+        # fetched by guessing a path. Defence in depth, not the access control:
+        # that is the file's tenant, its owning record's policy and the URL
+        # signature (see core.media). The original root stays as a readable prefix.
         name = _clean_name(name)
         directory, base = posixpath.split(name)
         root, ext = os.path.splitext(base)

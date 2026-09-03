@@ -1,17 +1,11 @@
-# vs_users/management/commands/create_superuser.py
-# ENHANCED VERSION - with optional defaults for quick bootstrap
-#
-# Usage with defaults:
-#   python manage.py create_superuser
-#   (Creates: admin@codexvision.com with default password)
-#
-# Usage with custom values:
-#   python manage.py create_superuser \
-#     --email custom@email.com \
-#     --password "CustomP@ss" \
-#     --first-name Custom \
-#     --last-name Admin
+"""Create the platform superuser, with defaults for a quick bootstrap.
 
+    python manage.py create_superuser
+    python manage.py create_superuser --email a@b.com --password "P@ss" \
+        --first-name Custom --last-name Admin
+
+Only ever mints CX staff on the platform (codex) tenant.
+"""
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
@@ -92,14 +86,6 @@ class Command(BaseCommand):
     DEFAULT_FIRST_NAME = 'System'
     DEFAULT_LAST_NAME  = 'Administrator'
     DEFAULT_PHONE      = ''
-    
-    # Option: Read defaults from environment variables (more secure)
-    # Uncomment these to use env vars instead of hardcoded values:
-    # import os
-    # DEFAULT_EMAIL      = os.getenv('SUPERUSER_EMAIL', 'admin@codexng.com')
-    # DEFAULT_PASSWORD   = os.getenv('SUPERUSER_PASSWORD', 'Admin@123456')
-    # DEFAULT_FIRST_NAME = os.getenv('SUPERUSER_FIRST_NAME', 'System')
-    # DEFAULT_LAST_NAME  = os.getenv('SUPERUSER_LAST_NAME', 'Administrator')
     
     # ═════════════════════════════════════════════════════════════════════════
     

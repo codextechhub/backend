@@ -1,51 +1,31 @@
-# =============================================================================
-# core / checks.py
-#
-# One Django system check, registered from CoreConfig.ready().
-#
-# WHY IT EXISTS
-# -------------
-# ``CELERY_TASK_ALWAYS_EAGER`` makes ``.delay()`` run its task inline, in the
-# calling process. That is the right default for local development and for a
-# deployment whose worker is not up yet, and it is deliberately what
-# ``apps/settings/staging.py`` falls back to.
-#
-# What it does NOT do is run ``beat``. Eager mode has no scheduler, so in that
-# configuration **no periodic task fires at all** - not once, not late, never.
-# ``apps/celery.py`` currently schedules, among others:
-#
-#   finance-daily-dunning              overdue fee reminders
-#   payments-dispatch-undispatched-payouts   the recovery sweep for a payout
-#                                      that was approved but never sent
-#   payments-unbooked-digest / -surge  the alarms for gateway money that
-#                                      failed to book
-#   mark-stuck-import-jobs             the thing that notices a dead import
-#
-# None of that is loud when it does not happen. A school simply is not chased
-# for its fees, and nobody is told that nobody was chased. The comment in
-# apps/celery.py reasons that the tasks are idempotent "so a missed window is
-# safe", which is true of missing *one* window and is not the situation this
-# check exists to catch: the scheduler having never run at all.
-#
-# WHY A WARNING AND NOT AN ERROR
-# ------------------------------
-# An Error makes every management command exit non-zero, including the
-# ``migrate`` that runs during deploy. Shipping that would take a system which
-# is currently serving traffic in this state and refuse to deploy it, which is a
-# worse failure than the one being reported. It is a Warning so it is visible on
-# every command in production without being a gate.
-#
-# **Once the worker and broker are live, change ``CheckWarning`` to
-# ``CheckError`` below.** At that point the condition genuinely is a
-# misconfiguration rather than a known transitional state, and a deploy that
-# reintroduces it should fail.
-#
-# WHY IT IS GUARDED ON DEBUG
-# --------------------------
-# Eager mode is correct in development, so firing there would train everyone to
-# ignore the message - which is exactly how this went unnoticed for months in
-# the first place. It speaks only where it is a problem.
-# =============================================================================
+"""One Django system check, registered from ``CoreConfig.ready()``.
+
+``CELERY_TASK_ALWAYS_EAGER`` makes ``.delay()`` run its task inline in the
+calling process. That is the right default for local development and for a
+deployment whose worker is not up, and ``apps/settings/staging.py``
+deliberately falls back to it.
+
+What eager mode does not do is run ``beat``. It has no scheduler, so in that
+configuration no periodic task fires at all: not once, not late, never. Among
+what ``apps/celery.py`` schedules are the overdue fee reminders, the recovery
+sweep for a payout approved but never sent, the alarms for gateway money that
+failed to book, and the sweep that notices a dead import. None of that is loud
+when it does not happen. A school is simply not chased for its fees, and nobody
+is told that nobody was chased. The idempotence that makes a missed window safe
+is about missing one window, not about the scheduler having never run.
+
+It is a Warning rather than an Error because an Error makes every management
+command exit non-zero, including the ``migrate`` that runs during deploy: a
+system already serving traffic in this state would refuse to deploy, which is a
+worse failure than the one being reported. A Warning stays visible on every
+command in production without being a gate. Once the worker and broker are
+live, this becomes a genuine misconfiguration rather than a known transitional
+state, and ``CheckWarning`` below should become ``CheckError`` so that a deploy
+reintroducing it fails.
+
+It is guarded on ``DEBUG`` because eager mode is correct in development, and a
+check that fires where it is not a problem trains everyone to ignore it.
+"""
 from __future__ import annotations
 
 from django.conf import settings

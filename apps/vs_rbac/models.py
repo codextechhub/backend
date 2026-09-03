@@ -782,18 +782,16 @@ class TenantUserRoleAssignment(TimeStampedModel):
 
     class Meta:
         constraints = [
-            # Split in two on purpose. One constraint over (tenant, user, role)
-            # made the same role at two branches unstorable, so "Storekeeper at
-            # Ikeja" *and* "Storekeeper at Lekki" - the arrangement a single
-            # ``User.branch`` cannot express, and the reason branch scope is a
-            # set of grants - could not be recorded at all. Splitting keeps both
-            # guarantees intact rather than trading one away: at most one active
-            # whole-tenant grant of a role per person, and at most one active
-            # grant of a role per person per branch.
+            # Split in two on purpose. One constraint over (tenant, user, role) makes
+            # the same role at two branches unstorable, so "Storekeeper at Ikeja" and
+            # "Storekeeper at Lekki" - the arrangement a single User.branch cannot
+            # express, and the reason branch scope is a set of grants - could not be
+            # recorded at all. Two constraints keep both guarantees: at most one active
+            # whole-tenant grant of a role per person, and at most one active grant of
+            # a role per person per branch.
             #
-            # A single constraint including ``branch`` would not do: PostgreSQL
-            # treats NULLs as distinct, so it would silently permit duplicate
-            # whole-tenant grants that are refused today.
+            # A single constraint including branch would not do: PostgreSQL treats
+            # NULLs as distinct, so it would permit duplicate whole-tenant grants.
             models.UniqueConstraint(
                 fields=["tenant", "user", "role"],
                 condition=Q(assignment_status="ACTIVE", branch__isnull=True),
@@ -838,11 +836,9 @@ class TenantUserRoleAssignment(TimeStampedModel):
             assignment_status=cls.AssignmentStatus.ACTIVE,
         )
         # The NULL trap the constraint comment warns about, in its ORM form.
-        # Writing ``branch=branch`` for both cases works today only because
-        # Django rewrites ``= None`` into ``IS NULL``; it reads as an equality
-        # test against NULL, and the first caller to pass an id-or-``None``
-        # through the same expression loses the whole-tenant guarantee - the
-        # exact duplicate the constraints were split in two to prevent. Keeping
+        # ``branch=branch`` for both cases works only because Django rewrites
+        # ``= None`` into ``IS NULL``, and the first caller to pass an id-or-None
+        # through the same expression loses the whole-tenant guarantee. Keeping
         # "no branch" a lookup rather than a value makes that unavailable.
         qs = qs.filter(branch__isnull=True) if branch is None else qs.filter(branch=branch)
         if exclude_pk is not None:

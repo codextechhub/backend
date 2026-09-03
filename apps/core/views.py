@@ -25,15 +25,14 @@ from .models import StoredFile
 
 class MediaView(APIView):
     permission_classes = [IsAuthenticatedAndActive]
-    # A school that has not gone live still has a shell to render, and the logo
-    # in it is one it uploaded itself during onboarding. Without this the school
-    # could set a logo and then be refused the bytes of its own image until
-    # go-live - the sidebar, the favicon and the profile preview would all fall
-    # back to the bundled default, and the upload would look broken.
+    # A school that has not gone live still renders a shell, and the logo in it
+    # is one it uploaded during onboarding. Refusing the bytes would drop the
+    # sidebar, favicon and profile preview back to the bundled default and make
+    # the upload look broken.
     #
-    # This grants a pending tenant no reach it would not have the moment it went
-    # live: what it may read is decided by the file's own tenant and its owning
-    # record's policy, both of which are the same before and after go-live.
+    # This grants a pending tenant no reach it would not have at go-live: what
+    # it may read is decided by the file's own tenant and its owning record's
+    # policy, which are the same on both sides of that line.
     pending_tenant_surface = True
 
     def get(self, request, name: str):

@@ -1,17 +1,15 @@
-# core/mixins.py
-#
-# Drop-in mixins for DRF generic views and viewsets.
-# Override retrieve / create / update / destroy so every non-paginated
-# response is wrapped in the standard envelope:
-#
-#   { "success": true, "message": "...", "data": { ... } }
-#
-# Usage (generic view):
-#   class MyView(RetrieveModelMixin, generics.RetrieveAPIView): ...
-#
-# Usage (viewset):
-#   class MyViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet): ...
+"""Drop-in mixins for DRF generic views and viewsets.
 
+They override retrieve, create, update and destroy so every non-paginated
+response is wrapped in the standard envelope::
+
+    {"success": true, "message": "...", "data": {...}}
+
+Usage::
+
+    class MyView(RetrieveModelMixin, generics.RetrieveAPIView): ...
+    class MyViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet): ...
+"""
 from rest_framework import status
 from rest_framework.response import Response
 

@@ -107,12 +107,11 @@ def custom_exception_handler(exc, context):
 
     # Intercept Django model/form validation errors.
     #
-    # This used to read `exc.messages`, which flattens a field-keyed error into
-    # a bare list of sentences. A `full_clean()` on a model with eight editable
-    # columns therefore answered "This field cannot be blank." and never said
-    # which field, leaving the caller nothing to act on. `message_dict` keeps
-    # the keys; `messages` is still the fallback for the errors that genuinely
-    # have no field (`ValidationError("...")` raised from a service).
+    # `message_dict` and not `messages`: the latter flattens a field-keyed
+    # error into bare sentences, so a full_clean() on a model with eight
+    # editable columns answers "This field cannot be blank." without saying
+    # which one. `messages` stays the fallback for errors that genuinely have
+    # no field, such as a ValidationError raised from a service.
     if isinstance(exc, DjangoValidationError):
         detail = _validation_error_detail(exc)
         return Response({
@@ -121,12 +120,11 @@ def custom_exception_handler(exc, context):
             "error": {"code": "VALIDATION_ERROR", "detail": detail},
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    # A delete blocked by an on_delete=PROTECT / RESTRICT foreign key is the
-    # client asking for something the data model forbids, not a server bug -
-    # so it must carry an actionable message. This branch MUST stay above the
-    # IntegrityError one: ProtectedError/RestrictedError subclass IntegrityError
-    # and would otherwise be logged as an opaque 500 ("An unexpected error
-    # occurred."), which is what the whole platform did before.
+    # A delete blocked by an on_delete=PROTECT or RESTRICT foreign key is the
+    # client asking for something the data model forbids, not a server bug, so
+    # it carries an actionable message. This branch MUST stay above the
+    # IntegrityError one: ProtectedError and RestrictedError subclass it and
+    # would otherwise be logged as an opaque 500.
     if isinstance(exc, (ProtectedError, RestrictedError)):
         phrase, detail = _blocker_summary(exc)
         logger.info("Delete blocked by protected references: %s", detail or exc)

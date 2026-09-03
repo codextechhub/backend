@@ -54,11 +54,10 @@ class StoredFile(models.Model):
     )
 
     owner_content_type = models.ForeignKey(
-        # SET_NULL, not CASCADE. Django prunes stale content types when a model
-        # is renamed or removed, and cascading would take the bytes with them -
-        # silent data loss triggered by a refactor. Losing the binding is enough:
-        # an unbound row is refused, so the file stops being served either way,
-        # but it is still there to look at.
+        # SET_NULL, not CASCADE. Django prunes stale content types when a model is
+        # renamed or removed, and cascading would take the bytes with them: silent
+        # data loss triggered by a refactor. Losing the binding is enough, because
+        # an unbound row is refused and the file stops being served either way.
         "contenttypes.ContentType", on_delete=models.SET_NULL, null=True, blank=True,
         related_name="stored_files",
     )

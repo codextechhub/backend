@@ -103,13 +103,11 @@ class TenantJWTAuthentication(JWTAuthentication):
         impersonation = None
 
         if slug:
-            # ACTIVE or PENDING (FR-012). A school that has not gone live still
-            # has to sign its first administrator in to complete onboarding, so
-            # authentication admits it and the permission layer decides which
-            # surfaces are open to it (vs_rbac.permissions.TenantSurfaceAllowed).
-            # Authentication answers who you are; it must not answer what you
-            # may reach, because the view - and therefore the surface - is not
-            # its business. SUSPENDED and INACTIVE stay out entirely.
+            # ACTIVE or PENDING (FR-012). A school that has not gone live still signs
+            # its first administrator in to complete onboarding, so authentication
+            # admits it and TenantSurfaceAllowed decides which surfaces are open.
+            # Authentication answers who you are, never what you may reach. SUSPENDED
+            # and INACTIVE stay out entirely.
             tenant = Tenant.objects.filter(
                 slug=slug, status__in=Tenant.AUTHENTICABLE_STATUSES,
             ).first()

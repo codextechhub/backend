@@ -24,6 +24,16 @@ def is_vision_super_admin(user):
     Memoised on the user instance - user objects are re-fetched on every
     request, so this saves one EXISTS query per permission check within a
     request without ever serving stale data across requests.
+
+    The role must live on the PLATFORM tenant, and that clause is the whole of
+    the bypass's safety. A role's key is derived from the name its creator
+    types, so a check that asked only "do you hold a role keyed
+    xvs_super_admin in your own tenant" lets a school admin holding role-create
+    name a role "xvs_super_admin", assign it, and have its holder answer True
+    here. That short-circuits :class:`HasRBACPermission` before it examines any
+    key, and so bypasses every permission gate on the platform, in every
+    tenant. There is no legitimate non-platform holder: the role is the
+    platform's.
     """
     if not user or not getattr(user, "is_authenticated", False):
         return False
@@ -31,20 +41,7 @@ def is_vision_super_admin(user):
     if cached is not None:
         return cached  # Reuse the request-local assignment check.
     from .models import TenantUserRoleAssignment
-    # The role must live on the PLATFORM tenant, and this clause is the whole
-    # of the bypass's safety. Without it the check asked only "do you hold a
-    # role keyed xvs_super_admin in your OWN tenant", and a role's key is
-    # derived from the name its creator types. So a school admin holding
-    # role-create could name a role "xvs_super_admin", assign it, and the
-    # holder would return True from here - which short-circuits HasRBACPermission
-    # before it examines any key, and therefore bypasses every permission gate
-    # on the platform, in every tenant.
-    #
-    # The guard in vs_user.serializers refuses that key only when
-    # ``creating_platform_staff`` is true, so a school user created with a
-    # school role of that name was never caught.
-    #
-    # There is no legitimate non-platform holder: the role IS the platform's.
+    # Platform tenant only. See the docstring.
     from vs_tenants.models import Tenant
 
     result = TenantUserRoleAssignment.objects.filter(
@@ -248,19 +245,15 @@ class IsAuthenticatedAndActive(BasePermission):
         if not u or not u.is_authenticated:
             return False
 
-        # Deny by default, exactly as LoginService does, and for the same
-        # reason. This used to be three ``==`` comparisons against string
-        # literals - SUSPENDED, LOCKED, DEACTIVATED - and every status added to
-        # the enum afterwards passed the gate by not being one of them. That is
-        # three of the eight; DRAFT, PENDING_APPROVAL, REJECTED and PENDING all
-        # walked through. Reading ``may_sign_in`` also makes this class agree
-        # with the sign-in service by construction rather than by both lists
-        # being edited together, which is what did not happen last time.
+        # Deny by default, exactly as LoginService does and for the same reason.
+        # Comparing against a list of refused statuses lets every status added to
+        # the enum afterwards pass by not being one of them. Reading may_sign_in
+        # also makes this class agree with the sign-in service by construction
+        # rather than by two lists being edited together.
         #
-        # ``getattr`` rather than a direct attribute read: this gate runs
-        # against whatever ``request.user`` is, and a request that arrives
-        # without a real ``User`` (a test double, a differently-shaped
-        # principal) must be refused, not crash and not be waved through.
+        # getattr rather than a direct read: this gate runs against whatever
+        # request.user is, and a request arriving without a real User must be
+        # refused rather than crash or be waved through.
         if not getattr(u, "may_sign_in", False):
             status = getattr(u, "status", None)
             raise PermissionDenied(self._STATUS_MESSAGES.get(
@@ -326,6 +319,19 @@ class HasRBACPermission(BasePermission):
 
     The tenant context is read from ``request.rbac_tenant`` / ``request.tenant``
     (set by ``TenantJWTAuthentication`` from the ``?tenant=`` assertion).
+
+    The pending-tenant surface gate is applied here as well as in
+    ``IsAuthenticatedAndActive``, because a handful of views pair this class
+    with a bare ``IsAuthenticated``. It runs before the super-admin bypass on
+    purpose: the question is whether the tenant being operated on is live, not
+    what the caller holds.
+
+    No branch is named when the evaluator is asked. Access is "any grant I hold
+    covers this key"; which rows that holder may then see is answered
+    separately, and once, by :func:`vs_rbac.scoping.visible_branch_ids`. Naming
+    a branch here asks for the "entity as a whole" scope and discards every
+    branch-pinned grant, so a role granted for one site would let its holder do
+    nothing anywhere.
     """
 
     def has_permission(self, request, view):
@@ -333,12 +339,8 @@ class HasRBACPermission(BasePermission):
         if not u or not u.is_authenticated:
             return False
 
-        # A handful of views pair this class with a bare ``IsAuthenticated``
-        # instead of ``IsAuthenticatedAndActive``, so the surface gate is
-        # applied here as well. It raises rather than returning False, hence
-        # the discarded result. It runs before the super-admin bypass on
-        # purpose: the question is whether the tenant being operated on is
-        # live, not what the caller holds.
+        # The surface gate, applied here too. It raises rather than returning
+        # False, hence the discarded result. See the docstring.
         TenantSurfaceAllowed().has_permission(request, view)
 
         # Vision super admin bypasses all RBAC permission checks.
@@ -354,13 +356,7 @@ class HasRBACPermission(BasePermission):
             or getattr(request, "tenant", None)
             or getattr(u, "tenant", None)
         )
-        # No branch is named here, deliberately. This used to read
-        # ``request.branch``, an attribute no middleware has ever set, so the
-        # evaluator was always asked for the "entity as a whole" scope and every
-        # branch-pinned grant was discarded - a role granted for one site let its
-        # holder do nothing anywhere. Access is now "any grant I hold covers this
-        # key"; which rows that same holder may see is answered separately and
-        # once by ``vs_rbac.scoping.visible_branch_ids``.
+        # No branch is named here, deliberately. See the docstring.
 
         if rbac_perms is not None and rbac_perms != "":
             if isinstance(rbac_perms, list) and not rbac_perms:

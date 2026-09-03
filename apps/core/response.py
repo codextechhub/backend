@@ -15,11 +15,10 @@ def success_response(message="", data=None, status=200):
     return Response({
         "success": True,
         "message": message,
-        # ``data or {}`` turned an empty list into an object, so every
-        # non-paginated list endpoint answered ``{}`` when it had nothing to
-        # show and any caller doing ``data.map(...)`` crashed on the empty
-        # case. Only a genuinely absent payload becomes ``{}``; an empty list
-        # stays a list, which is what the paginated envelope has always done.
+        # An empty list stays a list; only a genuinely absent payload becomes {}.
+        # `data or {}` collapses the empty list into an object, so a non-paginated
+        # list endpoint answers {} when it has nothing to show and any caller doing
+        # data.map(...) crashes on the empty case.
         "data": {} if data is None else data
     }, status=status)
 

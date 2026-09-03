@@ -70,18 +70,19 @@ class _NoGrants:
 
 #: "The caller's grants say nothing at all, so ask their home posting."
 #:
-#: Module-private, and deliberately *not* :data:`WHOLE_TENANT`. There are three
-#: answers a set of grants can give, not two:
+#: Module-private, and deliberately *not* :data:`WHOLE_TENANT`. A set of grants
+#: gives three answers, not two:
 #:
 #: * a whole-tenant grant -> :data:`WHOLE_TENANT`, the whole tenant, final;
 #: * branch-pinned grants -> those branches, possibly *none* of them once the
-#:   sites are withdrawn, which is an empty frozenset and means "sees nothing";
+#:   sites are withdrawn, which is an empty frozenset meaning "sees nothing";
 #: * no grants at all -> this, the only case ``User.branch`` still decides.
 #:
-#: The first and third used to share ``None`` and were therefore indistinguishable
-#: to :func:`visible_branch_ids`, which is exactly how a whole-tenant grant came
-#: to be narrowed to its holder's home posting. It never leaves this module: the
-#: public answer is still ``None`` or a frozenset, and only that is memoised.
+#: The first and third must never share ``None``, or
+#: :func:`visible_branch_ids` cannot tell them apart and a whole-tenant grant
+#: ends up narrowed to its holder's home posting. This value never leaves the
+#: module: the public answer is still ``None`` or a frozenset, and only that is
+#: memoised.
 _SILENT = _NoGrants()
 
 

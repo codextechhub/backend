@@ -48,11 +48,11 @@ PHONE_MASK = "[phone redacted]"
 DIGITS_MASK = "[number redacted]"
 VALUE_MASK = "[redacted]"
 
-# Postgres embeds the offending row value in the DETAIL line of a constraint
-# violation: `Key (email)=(ada.okeye@gmail.com) already exists.` The column
-# name is diagnostic and stays; the value is the payload and goes. Handled
-# before the narrower patterns so a value of any shape is caught, including
-# the ones no other rule here recognises (a guardian's name, a home address).
+# Postgres embeds the offending row value in the DETAIL line of a
+# constraint violation: `Key (email)=(ada.okeye@gmail.com) already exists.`
+# The column name is diagnostic and stays; the value is the payload and
+# goes. Handled before the narrower patterns so a value of any shape is
+# caught, including a guardian's name or a home address.
 _PG_DETAIL_KEY = re.compile(
     r"(?P<head>Key\s*\([^)]*\)\s*=\s*\()(?P<value>[^)]*)(?P<tail>\))",
     re.IGNORECASE,
