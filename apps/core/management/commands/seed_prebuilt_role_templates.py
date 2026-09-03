@@ -18,6 +18,7 @@ from vs_rbac.models import Permission, PrebuiltRolePermission, PrebuiltRoleTempl
 # template and a platform key would be a fleet-wide grant.
 PERMISSION_PREFIXES = {
     "finance_admin": ["finance."],
+    "procurement_admin": ["procurement."],
 }
 
 
@@ -66,6 +67,25 @@ PREBUILT_ROLES = [
             "school. Where a second pair of eyes is wanted on adjustments or "
             "payouts, assign the approver roles to somebody else and do not give "
             "this one out twice."
+        ),
+    },
+    {
+        "key": "procurement_admin",
+        "name": "Procurement Admin",
+        "scope": "institution",
+        # Tier B, unlike Finance Admin: every school runs money, not every school
+        # runs a purchasing function.
+        "tier": "B",
+        "description": (
+            "Runs the whole of the school's buying, across every branch: raises "
+            "requisitions and purchase orders, books in deliveries, records "
+            "supplier invoices and pays them, keeps the vendor list and the "
+            "catalogue, runs sourcing and holds the stock. "
+            "This template carries EVERY procurement permission, restricted ones "
+            "included - approving a requisition, posting a goods receipt and "
+            "creating a supplier payment all arrive together. Where a second "
+            "pair of eyes is wanted on approvals, assign the approver roles to "
+            "somebody else and do not give this one out twice."
         ),
     },
     {
@@ -216,19 +236,25 @@ class Command(BaseCommand):
                 )
                 continue
 
+            # Counted per template. Sharing the running totals across templates
+            # made procurement's line report finance's two refusals as its own.
+            added = 0
+            turned_away = 0
             for permission in missing:
                 try:
                     with transaction.atomic():
                         PrebuiltRolePermission.objects.create(
                             prebuilt_role=template, permission=permission,
                         )
-                    attached += 1
+                    added += 1
                 except ValidationError as error:
+                    turned_away += 1
                     refused.append(f"{key}: {permission.key} ({error.messages[0]})")
 
+            attached += added
             self.stdout.write(
-                f"  Defaults on {key}: {attached} attached, "
-                f"{len(held)} already held, {len(refused)} refused"
+                f"  Defaults on {key}: {added} attached, "
+                f"{len(held)} already held, {turned_away} refused"
             )
 
         return attached, refused
