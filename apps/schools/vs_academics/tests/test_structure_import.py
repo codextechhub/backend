@@ -331,3 +331,168 @@ class OwnershipTests(_Base):
         issues = validate_structure_import_batch(batch)
         self.assertEqual(len(issues), 1)
         self.assertIn("no year running", issues[0]["message"])
+
+
+class SubjectImportTests(_Base):
+    """The subject list, and where each subject is taught.
+
+    The check worth the code is the last one: a year group this file leaves
+    with no subject at all. Adding subjects one at a time, nobody notices that
+    SSS3 was never ticked, because the subject screen shows what each SUBJECT
+    covers and never what each year group is missing.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        from schools.vs_academics.models import Level, Program
+
+        cls.programme = Program.all_objects.create(
+            tenant=cls.tenant, name="Junior Secondary", code="JS", order_index=1,
+        )
+        cls.jss1 = Level.all_objects.create(
+            tenant=cls.tenant, session=cls.year, program=cls.programme,
+            name="JSS1", code="JSS1", order_index=1,
+        )
+        cls.jss2 = Level.all_objects.create(
+            tenant=cls.tenant, session=cls.year, program=cls.programme,
+            name="JSS2", code="JSS2", order_index=2,
+        )
+
+    def srow(self, **overrides):
+        base = {
+            "subject": "Mathematics", "levels": "JSS1; JSS2",
+            "kind": "Core", "department": "", "branch": "", "description": "",
+        }
+        base.update(overrides)
+        return base
+
+    def sresolve(self, rows):
+        from schools.vs_academics.subject_imports import resolve_file
+
+        return resolve_file(rows, tenant=self.tenant, session=self.year)
+
+    def serrors(self, rows):
+        return [i for _n, i in self.sresolve(rows).issues if i.severity == "error"]
+
+    def swarnings(self, rows):
+        return [i for _n, i in self.sresolve(rows).issues if i.severity == "warning"]
+
+    def full(self):
+        """Both year groups covered, so the empty-timetable check stays quiet."""
+        return [self.srow(), self.srow(**{"subject": "English"})]
+
+    def test_a_clean_file_reports_no_error(self):
+        self.assertEqual(self.serrors(self.full()), [])
+
+    def test_a_year_group_the_school_does_not_run_is_refused_not_skipped(self):
+        """Skipping it would teach the subject in one fewer year, silently."""
+        errors = self.serrors([self.srow(**{"levels": "JSS1; JSS9"})])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("JSS9", errors[0].message)
+
+    def test_the_same_subject_on_two_rows_is_refused(self):
+        errors = self.serrors([self.srow(), self.srow()])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("exists once", errors[0].message)
+
+    def test_a_subject_naming_no_year_group_is_warned_about(self):
+        warnings = self.swarnings([self.srow(**{"levels": ""})])
+        self.assertTrue(
+            any("taught nowhere" in w.message for w in warnings), warnings,
+        )
+
+    def test_a_year_group_left_with_no_subject_is_warned_about(self):
+        """The fault a form cannot have: no screen shows an empty year group."""
+        warnings = self.swarnings([self.srow(**{"levels": "JSS1"})])
+        self.assertTrue(
+            any("empty timetable" in w.message and "JSS2" in w.message
+                for w in warnings),
+            warnings,
+        )
+
+    def test_a_file_that_covers_every_year_group_says_nothing(self):
+        warnings = self.swarnings(self.full())
+        self.assertEqual(
+            [w for w in warnings if "empty timetable" in w.message], [],
+        )
+
+    def test_a_year_group_listed_twice_on_one_row_is_warned_about(self):
+        warnings = self.swarnings([
+            self.srow(**{"levels": "JSS1; JSS1; JSS2"}),
+        ])
+        self.assertTrue(
+            any("listed twice" in w.message for w in warnings), warnings,
+        )
+
+    def test_an_unrecognised_kind_is_imported_as_core_with_a_warning(self):
+        warnings = self.swarnings([self.srow(**{"kind": "sometimes"})])
+        self.assertTrue(
+            any("imported as Core" in w.message for w in warnings), warnings,
+        )
+
+    def test_building_creates_the_subject_and_its_offerings(self):
+        from schools.vs_academics.models import Subject, SubjectOffering
+        from schools.vs_academics.subject_imports import build_subjects
+
+        counts = build_subjects(
+            self.sresolve(self.full()), tenant=self.tenant, session=self.year,
+        )
+        self.assertEqual(counts["subjects"], 2)
+        self.assertEqual(counts["offerings"], 4)
+        self.assertEqual(
+            Subject.all_objects.filter(tenant=self.tenant).count(), 2,
+        )
+        self.assertEqual(
+            SubjectOffering.objects.filter(tenant=self.tenant).count(), 4,
+        )
+
+    def test_re_uploading_adds_no_second_subject_and_no_second_offering(self):
+        from schools.vs_academics.subject_imports import build_subjects
+
+        build_subjects(self.sresolve(self.full()), tenant=self.tenant, session=self.year)
+        counts = build_subjects(
+            self.sresolve(self.full()), tenant=self.tenant, session=self.year,
+        )
+        self.assertEqual(counts, {"subjects": 0, "offerings": 0, "departments": 0})
+
+    def test_a_subject_the_school_already_holds_is_warned_about(self):
+        from schools.vs_academics.subject_imports import build_subjects
+
+        build_subjects(self.sresolve(self.full()), tenant=self.tenant, session=self.year)
+        warnings = self.swarnings(self.full())
+        self.assertTrue(
+            any("already in this school's subject list" in w.message
+                for w in warnings),
+            warnings,
+        )
+
+    def test_a_department_named_on_a_row_is_created_once(self):
+        from schools.vs_academics.models import Department
+        from schools.vs_academics.subject_imports import build_subjects
+
+        counts = build_subjects(
+            self.sresolve([
+                self.srow(**{"department": "Sciences"}),
+                self.srow(**{"subject": "Physics", "department": "Sciences"}),
+            ]),
+            tenant=self.tenant, session=self.year,
+        )
+        self.assertEqual(counts["departments"], 1)
+        self.assertEqual(
+            Department.all_objects.filter(tenant=self.tenant).count(), 1,
+        )
+
+    def test_a_school_may_import_its_own_subjects(self):
+        from vs_import_data.datasets import platform_only
+
+        self.assertFalse(platform_only("subjects"))
+
+    def test_the_template_exists_with_all_six_columns(self):
+        from vs_import_data.models import ImportTemplate
+
+        from schools.vs_academics.subject_imports import COLUMNS
+
+        template = ImportTemplate.objects.get(code="subjects_v1")
+        fields = set(template.columns.values_list("target_field", flat=True))
+        self.assertEqual(fields, set(COLUMNS))

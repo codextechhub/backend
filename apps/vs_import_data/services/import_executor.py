@@ -746,6 +746,11 @@ def execute_import(import_batch, queued_by):
 
         return execute_structure_import(import_batch, queued_by)
 
+    if import_batch.template.dataset_type == "subjects":
+        from schools.vs_academics.subject_imports import execute_subjects_import
+
+        return execute_subjects_import(import_batch, queued_by)
+
     rows = import_batch.preview_rows or []
     total_rows = len(rows)
 

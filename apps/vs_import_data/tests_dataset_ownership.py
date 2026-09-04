@@ -49,8 +49,8 @@ class DatasetOwnershipRuleTests(TestCase):
         self.assertFalse(may_import(SCHOOL, DatasetTypeChoices.SCHOOLS))
         self.assertFalse(may_import(SCHOOL, DatasetTypeChoices.CX_USERS))
 
-    def test_the_school_datasets_are_the_calendar_the_roll_and_the_structure(self):
-        """The three datasets a school may import, and no others.
+    def test_the_school_datasets_are_the_four_a_school_arrives_with(self):
+        """The four datasets a school may import, and no others.
 
         Written the day ``calendar_events`` was added, replacing a test that
         asserted no school dataset existed at all, and updated again as
@@ -62,6 +62,8 @@ class DatasetOwnershipRuleTests(TestCase):
         and carries a fourth: it unblocks the roll. The students import refuses
         any row naming a class the school has not built, so without it a school
         hand-types sixty classes before it can load a single child.
+        ``subjects`` is the other half of that structure, and rides the same
+        key: a school that may rebuild its spine may fill it in.
 
         Staff and parents still have no template and no model to import into,
         and every other dataset here is CodeX's.
@@ -71,6 +73,7 @@ class DatasetOwnershipRuleTests(TestCase):
         self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.CALENDAR_EVENTS))
         self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.STUDENTS))
         self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.ACADEMIC_STRUCTURE))
+        self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.SUBJECTS))
 
         school_datasets = {
             dataset for dataset in DatasetTypeChoices.values
@@ -82,10 +85,11 @@ class DatasetOwnershipRuleTests(TestCase):
                 DatasetTypeChoices.CALENDAR_EVENTS,
                 DatasetTypeChoices.STUDENTS,
                 DatasetTypeChoices.ACADEMIC_STRUCTURE,
+                DatasetTypeChoices.SUBJECTS,
             },
             "A dataset became a school import. Argue for it in datasets.py the "
-            "way calendar_events, students and academic_structure are argued "
-            "for, then update this test.",
+            "way calendar_events, students, academic_structure and subjects "
+            "are argued for, then update this test.",
         )
 
     def test_the_calendar_import_creates_nothing_but_school_rows(self):

@@ -111,6 +111,11 @@ TENANT_DATASETS: frozenset[str] = frozenset({
     # fills in sixty times. It also unblocks the students import, which
     # refuses any row naming a class the school has not built yet.
     DatasetTypeChoices.ACADEMIC_STRUCTURE,
+    # The subject list, and the year groups each subject is taught at. Argued
+    # the same way: the school creates these through academics.subject.create,
+    # the handler writes nothing but the uploading tenant's own rows, and a
+    # secondary school is fifty subjects across two hundred offerings.
+    DatasetTypeChoices.SUBJECTS,
 })
 
 

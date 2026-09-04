@@ -22,6 +22,9 @@ class VsAcademicsConfig(AppConfig):
         from .constants import PERM_STRUCTURE_IMPORT
 
         register_dataset_import_key("academic_structure", PERM_STRUCTURE_IMPORT)
+        # The subject list rides the same key: it is the other half of the
+        # structure, and a school that may rebuild the spine may fill it in.
+        register_dataset_import_key("subjects", PERM_STRUCTURE_IMPORT)
 
         register_datasets()
         # After the datasets: a binding names one, and an unpublished dataset

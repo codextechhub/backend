@@ -53,6 +53,7 @@ class DatasetTypeChoices(models.TextChoices):
     CALENDAR_EVENTS = "calendar_events", "Calendar Events"
     STUDENTS = "students", "Students"
     ACADEMIC_STRUCTURE = "academic_structure", "Academic Structure"
+    SUBJECTS = "subjects", "Subjects"
 
 
 class ImportBatchStatusChoices(models.TextChoices):
