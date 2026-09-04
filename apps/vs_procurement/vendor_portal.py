@@ -44,6 +44,8 @@ MAX_ATTACHMENTS_PER_REVISION = 5
 SESSION_HOURS = 24
 CODE_MINUTES = 10
 CODE_MAX_ATTEMPTS = 5
+_INVITATION_TOKEN_MARKER = "__XVS_VENDOR_RFQ_TOKEN__"
+_VERIFICATION_CODE_MARKER = "__XVS_VENDOR_RFQ_CODE__"
 
 
 def _digest(value: str) -> str:
@@ -91,7 +93,17 @@ def invitation_url(raw_token: str) -> str:
     return f"{str(settings.FRONTEND_BASE_URL).rstrip('/')}/vendor/rfq/{raw_token}"
 
 
-def _safe_notify(*, event_key: str, context: dict, invitation: RfqInvitation, recipients=None) -> bool:
+def _delivery_replacements(raw_token: str, verification_code: str = "") -> dict[str, str]:
+    replacements = {_INVITATION_TOKEN_MARKER: raw_token}
+    if verification_code:
+        replacements[_VERIFICATION_CODE_MARKER] = verification_code
+    return replacements
+
+
+def _safe_notify(
+    *, event_key: str, context: dict, invitation: RfqInvitation,
+    raw_token: str, recipients=None, verification_code: str = "",
+) -> bool:
     """Keep sourcing durable if an external email provider is unavailable."""
     targets = recipients if recipients is not None else list(invitation.recipients.all())
     invited_emails = {
@@ -118,6 +130,10 @@ def _safe_notify(*, event_key: str, context: dict, invitation: RfqInvitation, re
                 "invitation_id": invitation.pk,
                 "bcc": bcc,
             },
+            delivery_replacements=_delivery_replacements(
+                raw_token,
+                verification_code,
+            ),
         )
         return True
     except Exception:
@@ -125,7 +141,7 @@ def _safe_notify(*, event_key: str, context: dict, invitation: RfqInvitation, re
         return False
 
 
-def _recipient_context(invitation: RfqInvitation, recipient, raw_token: str) -> dict:
+def _recipient_context(invitation: RfqInvitation, recipient) -> dict:
     issuer = _issuer_block(invitation.rfq.entity)
     return {
         "recipient_name": recipient.name or invitation.vendor.name,
@@ -134,7 +150,7 @@ def _recipient_context(invitation: RfqInvitation, recipient, raw_token: str) -> 
         "rfq_number": invitation.rfq.document_number,
         "rfq_title": invitation.rfq.title or "Request for quotation",
         "deadline": format_deadline(invitation),
-        "invitation_url": invitation_url(raw_token),
+        "invitation_url": invitation_url(_INVITATION_TOKEN_MARKER),
     }
 
 
@@ -170,9 +186,10 @@ def prepare_invitation(invitation: RfqInvitation, *, rotate_token: bool = True) 
     invitation.status = RfqInvitationStatus.SENT if recipients else RfqInvitationStatus.PENDING
     invitation.save(update_fields=["token_version", "status", "updated_at"])
     for recipient in recipients:
-        context = _recipient_context(invitation, recipient, raw)
-        transaction.on_commit(lambda i=invitation, r=recipient, c=context: _safe_notify(
+        context = _recipient_context(invitation, recipient)
+        transaction.on_commit(lambda i=invitation, r=recipient, c=context, token=raw: _safe_notify(
             event_key="procurement.rfq_invitation", context=c, invitation=i, recipients=[r],
+            raw_token=token,
         ))
     return raw
 
@@ -262,13 +279,14 @@ def request_verification_code(raw_token: str, email: str) -> None:
         invitation=invitation, email=normalized, code_hash=make_password(code),
         expires_at=timezone.now() + timedelta(minutes=CODE_MINUTES),
     )
-    context = _recipient_context(invitation, recipient, raw_token) | {
-        "verification_code": code,
+    context = _recipient_context(invitation, recipient) | {
+        "verification_code": _VERIFICATION_CODE_MARKER,
         "expiry_minutes": CODE_MINUTES,
     }
     transaction.on_commit(lambda: _safe_notify(
         event_key="procurement.rfq_verification_code", context=context,
         invitation=invitation, recipients=[recipient],
+        raw_token=raw_token, verification_code=code,
     ))
 
 
@@ -526,7 +544,7 @@ def submit(invitation: RfqInvitation, email: str, raw_token: str) -> dict:
     invitation.save(update_fields=["status", "submitted_at", "updated_at"])
     recipient = invitation.recipients.filter(email__iexact=email).first()
     if recipient:
-        context = _recipient_context(invitation, recipient, raw_token) | {
+        context = _recipient_context(invitation, recipient) | {
             "quotation_number": quote.document_number,
             "revision": revision,
             "submitted_at": now.astimezone(_entity_timezone(invitation.rfq.entity)).strftime("%d %b %Y, %I:%M %p %Z"),
@@ -534,6 +552,7 @@ def submit(invitation: RfqInvitation, email: str, raw_token: str) -> dict:
         transaction.on_commit(lambda: _safe_notify(
             event_key="procurement.quotation_receipt", context=context,
             invitation=invitation, recipients=[recipient],
+            raw_token=raw_token,
         ))
     return form_payload(invitation)
 

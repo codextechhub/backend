@@ -40,9 +40,10 @@ def dispatch_rfq_reminders() -> dict:
         for recipient in invitation.recipients.all():
             delivered = vendor_portal._safe_notify(
                 event_key="procurement.rfq_reminder",
-                context=vendor_portal._recipient_context(invitation, recipient, raw),
+                context=vendor_portal._recipient_context(invitation, recipient),
                 invitation=invitation,
                 recipients=[recipient],
+                raw_token=raw,
             ) or delivered
         if delivered:
             invitation.reminder_stage = stage

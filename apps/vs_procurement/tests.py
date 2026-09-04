@@ -420,6 +420,7 @@ class VendorQuotationPortalTests(_P2PFixtureMixin, TestCase):
                     event_key="procurement.rfq_invitation",
                     context={},
                     invitation=self.invitation,
+                    raw_token="signed-token",
                 ))
         self.assertEqual(send.call_args.kwargs["metadata"]["bcc"], ["backend-test@codexng.com"])
 
@@ -432,8 +433,96 @@ class VendorQuotationPortalTests(_P2PFixtureMixin, TestCase):
                     event_key="procurement.rfq_invitation",
                     context={},
                     invitation=self.invitation,
+                    raw_token="signed-token",
                 )
         self.assertEqual(send.call_args.kwargs["metadata"]["bcc"], [])
+
+    def test_invitation_and_verification_secrets_are_delivery_only(self):
+        from vs_procurement.vendor_portal import (
+            _INVITATION_TOKEN_MARKER,
+            _VERIFICATION_CODE_MARKER,
+            prepare_invitation,
+            request_verification_code,
+        )
+
+        with patch("vs_procurement.vendor_portal._safe_notify") as notify:
+            with self.captureOnCommitCallbacks(execute=True):
+                raw = prepare_invitation(self.invitation)
+
+        invitation_call = notify.call_args.kwargs
+        invitation_text = str(invitation_call["context"])
+        self.assertIn(_INVITATION_TOKEN_MARKER, invitation_text)
+        self.assertNotIn(raw, invitation_text)
+        self.assertEqual(
+            invitation_call["raw_token"],
+            raw,
+        )
+
+        with patch("vs_procurement.vendor_portal._safe_notify") as notify:
+            with patch("vs_procurement.vendor_portal.secrets.randbelow", return_value=482913):
+                with patch(
+                    "vs_procurement.vendor_portal.transaction.on_commit",
+                    side_effect=lambda callback: callback(),
+                ):
+                    request_verification_code(raw, self.vendor.email)
+
+        code_call = notify.call_args.kwargs
+        code_text = str(code_call["context"])
+        self.assertIn(_INVITATION_TOKEN_MARKER, code_text)
+        self.assertIn(_VERIFICATION_CODE_MARKER, code_text)
+        self.assertNotIn(raw, code_text)
+        self.assertNotIn("482913", code_text)
+        self.assertEqual(
+            code_call["raw_token"],
+            raw,
+        )
+        self.assertEqual(code_call["verification_code"], "482913")
+
+    def test_vendor_secrets_stay_out_of_notification_history(self):
+        from vs_notifications.models import Notification
+        from vs_procurement.vendor_portal import (
+            _INVITATION_TOKEN_MARKER,
+            _VERIFICATION_CODE_MARKER,
+            _delivery_replacements,
+            _recipient_context,
+            _safe_notify,
+            prepare_invitation,
+        )
+
+        with patch("vs_procurement.vendor_portal._safe_notify"):
+            raw = prepare_invitation(self.invitation)
+        recipient = self.invitation.recipients.get(email=self.vendor.email)
+        context = _recipient_context(self.invitation, recipient)
+        code = "482913"
+        context["verification_code"] = _VERIFICATION_CODE_MARKER
+        context["expiry_minutes"] = 10
+        replacements = _delivery_replacements(raw, code)
+
+        with patch("vs_notifications.tasks.deliver_email_notification.delay") as deliver:
+            with self.captureOnCommitCallbacks(execute=True):
+                self.assertTrue(_safe_notify(
+                    event_key="procurement.rfq_verification_code",
+                    context=context,
+                    invitation=self.invitation,
+                    recipients=[recipient],
+                    raw_token=raw,
+                    verification_code=code,
+                ))
+
+        notification = Notification.all_objects.get(
+            event_type__key="procurement.rfq_verification_code",
+            unregistered_email=self.vendor.email,
+        )
+        stored = "\n".join(
+            (notification.subject, notification.body, notification.html_body)
+        )
+        self.assertIn(_VERIFICATION_CODE_MARKER, stored)
+        self.assertNotIn(raw, stored)
+        self.assertNotIn(code, stored)
+        self.assertEqual(
+            deliver.call_args.kwargs["replacements"],
+            replacements,
+        )
 
     def test_expired_invitation_blocks_draft_but_preserves_existing_data(self):
         from rest_framework.exceptions import ValidationError

@@ -411,3 +411,144 @@ class ExportDatasetTests(StudentsFixture):
         }
         for expected in ("first_name", "last_name", "date_of_birth", "address"):
             self.assertIn(expected, sensitive)
+
+
+class ImportCatchesWhatTheFormCatchesTests(_ImportFixture):
+    """Every fault the enrol screen refuses, the file is refused for too.
+
+    A form and a file that disagree are two sets of rules, and the file is the
+    one that writes hundreds of rows at a time. Each test below names the fault
+    a school actually makes in a spreadsheet.
+    """
+
+    def _errors(self, **overrides):
+        issues = validate_students_import_batch(self.batch([self.row(**overrides)]))
+        return [i for i in issues if i["severity"] == "error"]
+
+    def _warnings(self, rows):
+        issues = validate_students_import_batch(self.batch(rows))
+        return [i for i in issues if i["severity"] == "warning"]
+
+    # ── the year, which is the digit a spreadsheet gets wrong ──────────────
+
+    def test_a_birth_year_that_makes_the_child_an_adult_is_refused(self):
+        """1998 typed for 2008 puts a 28-year-old on a school roll."""
+        errors = self._errors(**{"Date of Birth": "1994-04-18"})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("over 25", errors[0]["message"])
+
+    def test_a_birth_year_that_makes_the_child_a_baby_is_refused(self):
+        errors = self._errors(**{"Date of Birth": "2025-04-18"})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("under 2", errors[0]["message"])
+
+    def test_a_school_age_child_passes(self):
+        self.assertEqual(self._errors(**{"Date of Birth": "2013-04-18"}), [])
+
+    # ── the admission date, which no form can get wrong ────────────────────
+
+    def test_an_admission_date_in_the_future_is_refused(self):
+        errors = self._errors(**{"Admission Date": "2099-01-06"})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("future", errors[0]["message"])
+
+    def test_an_admission_date_before_the_child_was_born_is_refused(self):
+        errors = self._errors(**{
+            "Date of Birth": "2013-04-18", "Admission Date": "2010-09-08",
+        })
+        self.assertEqual(len(errors), 1)
+        self.assertIn("before the student was born", errors[0]["message"])
+
+    # ── values that would explode at the write ─────────────────────────────
+
+    def test_a_value_too_long_for_its_column_is_refused_before_anything_is_written(self):
+        """Otherwise it is a DataError with half the file already committed."""
+        errors = self._errors(**{"First Name": "A" * 120})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("limit is 100", errors[0]["message"])
+
+    # ── the guardian columns, which decide which household a child joins ───
+
+    def test_a_guardian_email_that_is_not_an_address_is_refused(self):
+        """Guardians are matched on it, so a broken value splits a family."""
+        errors = self._errors(**{"Guardian Email": "chukwudi at example"})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("not an email address", errors[0]["message"])
+
+    def test_a_phone_too_short_to_ring_is_refused(self):
+        errors = self._errors(**{"Guardian Phone": "JSS1 A"})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("could ring", errors[0]["message"])
+
+    def test_two_rows_sharing_a_contact_under_different_names_are_warned_about(self):
+        """The second name is discarded and both children join one household.
+
+        Right for siblings, and wrong for a mistyped address, and the school is
+        the only one who can tell which.
+        """
+        warnings = self._warnings([
+            self.row(),
+            self.row(**{
+                "First Name": "Somto", "Guardian Name": "Mrs. Ada Eze",
+            }),
+        ])
+        self.assertTrue(
+            any("will not be recorded" in w["message"] for w in warnings),
+            warnings,
+        )
+
+    def test_siblings_sharing_a_contact_under_one_name_are_not_warned_about(self):
+        warnings = self._warnings([
+            self.row(), self.row(**{"First Name": "Somto"}),
+        ])
+        self.assertFalse(
+            any("will not be recorded" in w["message"] for w in warnings),
+            warnings,
+        )
+
+    def test_a_contact_the_school_already_holds_under_another_name_is_warned_about(self):
+        self.guardian(name="Mrs. Somebody Else", email="chukwudi@example.ng",
+                      phone="08099998888")
+        warnings = self._warnings([self.row()])
+        self.assertTrue(
+            any("Mrs. Somebody Else" in w["message"] for w in warnings), warnings,
+        )
+
+    # ── the fault a form cannot have ───────────────────────────────────────
+
+    def test_a_file_that_overfills_a_class_warns_once_and_names_the_count(self):
+        """Typing the 31st child into a class of 30 is refused on the spot.
+
+        A file naming that class forty times passes every row's own checks,
+        because no row is wrong on its own.
+        """
+        # row() names "JSS1 A", the school-wide class.
+        self.shared_class.capacity = 2
+        self.shared_class.save(update_fields=["capacity"])
+        warnings = self._warnings([
+            self.row(**{"First Name": "One", "Guardian Email": "a@example.ng",
+                        "Guardian Phone": "08000000001"}),
+            self.row(**{"First Name": "Two", "Guardian Email": "b@example.ng",
+                        "Guardian Phone": "08000000002"}),
+            self.row(**{"First Name": "Three", "Guardian Email": "c@example.ng",
+                        "Guardian Phone": "08000000003"}),
+        ])
+        overfull = [w for w in warnings if "over its capacity" in w["message"]]
+        self.assertEqual(len(overfull), 1, warnings)
+        self.assertIn("holds 2", overfull[0]["message"])
+
+    def test_a_file_inside_capacity_says_nothing(self):
+        self.shared_class.capacity = 30
+        self.shared_class.save(update_fields=["capacity"])
+        warnings = self._warnings([self.row()])
+        self.assertEqual(
+            [w for w in warnings if "capacity" in w["message"]], [],
+        )
+
+    # ── a shifted column, which is one mistake and many symptoms ───────────
+
+    def test_a_digit_in_a_name_is_warned_about(self):
+        warnings = self._warnings([self.row(**{"First Name": "Chiamaka 3"})])
+        self.assertTrue(
+            any("columns line up" in w["message"] for w in warnings), warnings,
+        )

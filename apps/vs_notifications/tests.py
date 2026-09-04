@@ -1147,6 +1147,211 @@ class EmailLayoutTests(_NotifFixture):
 
 
 # ---------------------------------------------------------------------------
+# Procurement vendor email design
+# ---------------------------------------------------------------------------
+
+class ProcurementVendorEmailDesignTests(_NotifFixture):
+
+    EVENT_KEYS = (
+        "procurement.purchase_order_issued",
+        "procurement.rfq_invitation",
+        "procurement.rfq_verification_code",
+        "procurement.rfq_reminder",
+        "procurement.quotation_receipt",
+        "procurement.rfq_amended",
+        "procurement.rfq_deadline_extended",
+    )
+
+    def setUp(self):
+        super().setUp()
+        from .models import NotificationTemplate
+
+        self.templates = {
+            event_key: NotificationTemplate.objects.get(
+                event_type=self._event(event_key),
+                channel=ChannelChoices.EMAIL,
+            )
+            for event_key in self.EVENT_KEYS
+        }
+
+    def _render(self, event_key, **overrides):
+        from .services.render import render_notification_template
+
+        context = {
+            "recipient_name": "Amina Vendor",
+            "vendor_name": "Bluecrest Supplies Ltd",
+            "issuer_name": "Bright Star School",
+            "rfq_number": "RFQ-2026-0042",
+            "rfq_title": "Science laboratory supplies",
+            "deadline": "12 Sep 2026, 05:00 PM WAT",
+            "invitation_url": "https://example.test/vendor/rfq/token",
+            "verification_code": "482913",
+            "expiry_minutes": 10,
+            "quotation_number": "QT-2026-0094",
+            "revision": 2,
+            "submitted_at": "04 Sep 2026, 02:15 PM WAT",
+            "rfq_version": 3,
+            "amendment_summary": "Two item specifications were updated.",
+            "response_required": "Yes",
+            "po_number": "PO-2026-0187",
+            "order_date": "04 Sep 2026",
+            "expected_date": "18 Sep 2026",
+            "total": "NGN 500,000.00",
+            "delivery_address": "14 Unity Road, Ikeja Branch",
+            "payment_terms": "Net 30",
+            "buyer_message": "Please confirm the delivery schedule before dispatch.",
+            "buyer_name": "Ada Buyer",
+            "buyer_email": "ada@bright-star.test",
+            **overrides,
+        }
+        return render_notification_template(self.templates[event_key], context)
+
+    def test_purchase_order_mail_explains_the_attachment_and_optional_buyer_note(self):
+        subject, body, html = self._render("procurement.purchase_order_issued")
+
+        self.assertEqual(subject, "Purchase order PO-2026-0187 from Bright Star School")
+        self.assertIn("Expected delivery: 18 Sep 2026", body)
+        self.assertIn("NOTE FROM THE BUYER", body)
+        self.assertIn("PDF copy of the purchase order is attached", body)
+        self.assertIn("ada@bright-star.test", body)
+        self.assertNotIn("<a ", html)
+
+        _, body, _ = self._render(
+            "procurement.purchase_order_issued",
+            buyer_message="",
+            buyer_email="",
+        )
+        self.assertNotIn("NOTE FROM THE BUYER", body)
+        self.assertNotIn(" at  if", body)
+
+    def test_invitation_and_reminder_name_the_deadline_and_available_actions(self):
+        subject, body, html = self._render("procurement.rfq_invitation")
+
+        self.assertEqual(
+            subject,
+            "Quotation request RFQ-2026-0042 from Bright Star School",
+        )
+        self.assertIn("Response deadline: 12 Sep 2026, 05:00 PM WAT", body)
+        self.assertIn("submit a quotation, or decline the request", body)
+        self.assertIn("one-time code", body)
+        self.assertIn(">Review quotation request</a>", html)
+        self.assertEqual(html.count("https://example.test/vendor/rfq/token"), 2)
+
+        subject, body, html = self._render("procurement.rfq_reminder")
+        self.assertEqual(subject, "Reminder: quotation due for RFQ-2026-0042")
+        self.assertIn("has not yet submitted or declined", body)
+        self.assertIn("finish your response or decline", body)
+        self.assertIn(">Complete your response</a>", html)
+
+    def test_verification_mail_keeps_the_code_out_of_the_subject_and_has_no_link(self):
+        subject, body, html = self._render("procurement.rfq_verification_code")
+
+        self.assertEqual(subject, "Your verification code for RFQ-2026-0042")
+        self.assertNotIn("482913", subject)
+        self.assertIn("VERIFICATION CODE\n482913", body)
+        self.assertIn("Code expires in: 10 minutes", body)
+        self.assertIn("Do not share it", body)
+        self.assertNotIn("https://example.test/vendor/rfq/token", body)
+        self.assertNotIn("<a ", html)
+
+    def test_receipt_confirms_delivery_without_claiming_acceptance_or_award(self):
+        subject, body, html = self._render("procurement.quotation_receipt")
+
+        self.assertEqual(
+            subject,
+            "Quotation QT-2026-0094 received for RFQ-2026-0042",
+        )
+        self.assertIn("Revision: 2", body)
+        self.assertIn("Submitted at: 04 Sep 2026, 02:15 PM WAT", body)
+        self.assertIn("confirms receipt only", body)
+        self.assertIn("does not mean the quotation has been accepted", body)
+        self.assertIn("or that an order has been awarded", body)
+        self.assertIn(">View submitted quotation</a>", html)
+
+    def test_amendment_distinguishes_required_and_information_only_changes(self):
+        subject, body, html = self._render("procurement.rfq_amended")
+
+        self.assertEqual(subject, "Action required: RFQ-2026-0042 was amended")
+        self.assertIn("Response required: Yes", body)
+        self.assertIn("acknowledge the amendment", body)
+        self.assertIn("returned to draft", body)
+        self.assertIn(">Review the amendment</a>", html)
+
+        subject, body, _ = self._render(
+            "procurement.rfq_amended",
+            response_required="No",
+        )
+        self.assertEqual(subject, "RFQ-2026-0042 was amended")
+        self.assertIn("Response required: No", body)
+        self.assertIn("No new response is required", body)
+        self.assertNotIn("returned to draft", body)
+
+    def test_deadline_extension_names_the_new_deadline_and_reuses_the_link(self):
+        subject, body, html = self._render("procurement.rfq_deadline_extended")
+
+        self.assertEqual(subject, "Quotation deadline extended for RFQ-2026-0042")
+        self.assertIn("New response deadline: 12 Sep 2026, 05:00 PM WAT", body)
+        self.assertIn("existing secure link remains valid", body)
+        self.assertIn(">Open the quotation form</a>", html)
+
+    def test_migration_refreshes_standard_rows_and_preserves_custom_rows(self):
+        from importlib import import_module
+        from django.apps import apps
+        from .services.seed import _build_default_templates
+
+        custom = self.templates["procurement.quotation_receipt"]
+        custom.subject = "My receipt subject"
+        custom.body = "My receipt message"
+        custom.cta_label = "Open mine"
+        custom.cta_url = "https://mine.test"
+        custom.html_body = "<html>staff design</html>"
+        custom.html_is_custom = True
+        custom.save()
+
+        for template in self.templates.values():
+            if template.pk == custom.pk:
+                continue
+            template.subject = "Old subject"
+            template.body = "Old body"
+            template.cta_label = "Old action"
+            template.cta_url = "https://old.test"
+            template.html_is_custom = False
+            template.save()
+
+        migration = import_module(
+            "vs_notifications.migrations.0017_refine_procurement_vendor_emails"
+        )
+        migration.refine_standard_procurement_emails(apps, None)
+
+        for event_key, template in self.templates.items():
+            template.refresh_from_db()
+            if template.pk == custom.pk:
+                self.assertEqual(template.subject, "My receipt subject")
+                self.assertEqual(template.body, "My receipt message")
+                self.assertEqual(template.cta_label, "Open mine")
+                self.assertEqual(template.cta_url, "https://mine.test")
+                self.assertEqual(template.html_body, "<html>staff design</html>")
+                continue
+
+            expected = _build_default_templates()[
+                (event_key, ChannelChoices.EMAIL)
+            ]
+            self.assertEqual(template.subject, expected["subject"], event_key)
+            self.assertEqual(template.body, expected["body"], event_key)
+            self.assertEqual(
+                template.cta_label,
+                expected.get("cta_label", ""),
+                event_key,
+            )
+            self.assertEqual(
+                template.cta_url,
+                expected.get("cta_url", ""),
+                event_key,
+            )
+            self.assertIn("<html", template.html_body.lower(), event_key)
+
+
+# ---------------------------------------------------------------------------
 # Invitation email - first-contact trust and activation guidance
 # ---------------------------------------------------------------------------
 

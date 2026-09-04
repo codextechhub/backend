@@ -199,10 +199,10 @@ class RfqInvitationExtendView(_ProcBase):
         invitation.save(update_fields=["extended_deadline", "status", "updated_at"])
         raw = vendor_portal.make_invitation_token(invitation)
         for recipient in invitation.recipients.all():
-            context = vendor_portal._recipient_context(invitation, recipient, raw)
-            transaction.on_commit(lambda i=invitation, r=recipient, c=context: vendor_portal._safe_notify(
+            context = vendor_portal._recipient_context(invitation, recipient)
+            transaction.on_commit(lambda i=invitation, r=recipient, c=context, token=raw: vendor_portal._safe_notify(
                 event_key="procurement.rfq_deadline_extended", context=c,
-                invitation=i, recipients=[r],
+                invitation=i, recipients=[r], raw_token=token,
             ))
         return success_response("Vendor deadline extended.", data={
             "deadline": deadline, "deadline_display": vendor_portal.format_deadline(invitation),
@@ -258,14 +258,14 @@ class RfqAmendmentCreateView(_ProcBase):
                     invitation.status = RfqInvitationStatus.DRAFTING
                     invitation.save(update_fields=["status", "updated_at"])
             for recipient in invitation.recipients.all():
-                context = vendor_portal._recipient_context(invitation, recipient, raw) | {
+                context = vendor_portal._recipient_context(invitation, recipient) | {
                     "rfq_version": rfq.version,
                     "amendment_summary": amendment.summary,
                     "response_required": "Yes" if response_required else "No",
                 }
-                transaction.on_commit(lambda i=invitation, r=recipient, c=context: vendor_portal._safe_notify(
+                transaction.on_commit(lambda i=invitation, r=recipient, c=context, token=raw: vendor_portal._safe_notify(
                     event_key="procurement.rfq_amended", context=c,
-                    invitation=i, recipients=[r],
+                    invitation=i, recipients=[r], raw_token=token,
                 ))
         from .orders import _rfq_detail_queryset
         detail = _rfq_detail_queryset(entity).get(pk=rfq.pk)
