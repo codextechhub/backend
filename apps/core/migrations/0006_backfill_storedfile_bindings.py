@@ -51,36 +51,68 @@ BINDINGS = [
     ("vs_tickets", "TicketAttachment", "file", "ticket__tenant"),
 ]
 
-#: File fields added after this migration ran.
+#: File fields that arrive after this migration, keyed by the migration that
+#: backfills each one: ``"app_label.migration_name" -> [binding, ...]``.
 #:
-#: A binding cannot simply be appended to :data:`BINDINGS` above: that list is
-#: resolved against THIS migration's own historical project state, where a
-#: later app does not exist, and a model missing from that state is skipped by
-#: the loop rather than backfilled - which is the silent failure the whole
+#: A later binding cannot simply be appended to :data:`BINDINGS` above. That
+#: list is resolved against THIS migration's own historical project state, in
+#: which a later model does not exist, and a model missing from that state is
+#: skipped by the loop rather than backfilled - the silent failure the whole
 #: exercise exists to prevent.
 #:
-#: So a later field is declared here instead, and its own app carries the
-#: migration that runs the backfill for it. The exhaustiveness test reads the
-#: union, so a FileField still cannot be added without somebody deciding which
-#: of the two lists it belongs in.
-LATER_BINDINGS = [
-    # Both carry their own tenant, and both models are created in the
-    # release that introduced the binding, so there is nothing to rescue - the
-    # backfill is a no-op by construction and is run anyway, because "there
-    # cannot be any rows" is exactly the assumption that turns out to be wrong.
-    ("vs_students", "Student", "photo", "tenant"),
-    ("vs_students", "StudentDocument", "file", "tenant"),
-]
+#: The key is what stops the same trap reappearing one level down. A field
+#: added in an app's third migration is invisible to its second, so a single
+#: app-wide list read by whichever of them runs first would hand that migration
+#: a field its own project state has never heard of. Each wave therefore names
+#: the migration that runs it, and that migration reads only its own key.
+#:
+#: The exhaustiveness test in ``core.tests`` reads the union of every value
+#: here and :data:`BINDINGS`, so a FileField cannot be added anywhere in the
+#: codebase without somebody deciding which wave it belongs to. A second test
+#: resolves each wave against its own migration's historical state, which
+#: catches what a run cannot: a field that state does not have raises, but a
+#: model it has never heard of is skipped, so the migration reports success and
+#: binds nothing.
+LATER_BINDINGS = {
+    # Student and StudentDocument arrive with the module itself, a guardian's
+    # photograph one migration later. In both waves the column is created in
+    # the same release as its binding, so there is nothing to rescue - the
+    # backfill is a no-op by construction and runs anyway, because "there
+    # cannot be any rows yet" is exactly the assumption that turns out to be
+    # wrong. All three models carry their own tenant.
+    "vs_students.0002_bind_student_files": [
+        ("vs_students", "Student", "photo", "tenant"),
+        ("vs_students", "StudentDocument", "file", "tenant"),
+    ],
+    "vs_students.0004_bind_guardian_photos": [
+        ("vs_students", "Guardian", "photo", "tenant"),
+    ],
+}
 
 
-def backfill(apps, schema_editor):
+def bind_rows(apps, bindings):
+    """Stamp each file's ``StoredFile`` row with the record and tenant owning it.
+
+    Returns ``(bound, skipped_no_tenant)``.
+
+    Every wave runs through here - this migration's own list and each later one
+    - so all of them treat a null tenant identically: the row is left unbound,
+    because a refused file is the safe failure and a file bound to a guess is
+    one served to the wrong school.
+
+    ``bindings`` is resolved against the caller's own historical project state.
+    A model that state has never heard of is skipped, which is safe only because
+    each wave names the migration that owns it. A field the state does not have
+    raises instead, and that is what makes a misfiled binding loud rather than
+    quietly ineffective.
+    """
     ContentType = apps.get_model("contenttypes", "ContentType")
     StoredFile = apps.get_model("core", "StoredFile")
 
     bound = 0
     skipped_no_tenant = 0
 
-    for app_label, model_name, field_name, tenant_lookup in BINDINGS:
+    for app_label, model_name, field_name, tenant_lookup in bindings:
         try:
             model = apps.get_model(app_label, model_name)
         except LookupError:  # pragma: no cover - model gone from a future tree
@@ -115,6 +147,14 @@ def backfill(apps, schema_editor):
                 owner_object_id=str(pk),
                 owner_field=field_name,
             )
+
+    return bound, skipped_no_tenant
+
+
+def backfill(apps, schema_editor):
+    StoredFile = apps.get_model("core", "StoredFile")
+
+    bound, skipped_no_tenant = bind_rows(apps, BINDINGS)
 
     orphaned = StoredFile.objects.filter(owner_content_type__isnull=True).count()
     if bound or skipped_no_tenant or orphaned:

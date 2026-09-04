@@ -8,11 +8,17 @@ be any rows yet" is exactly the assumption that turns out to be wrong, and an
 unbound row is not served at all.
 
 The bindings themselves are declared in
-``core.migrations.0006_backfill_storedfile_bindings.LATER_BINDINGS``, so the
-exhaustiveness test in ``core.tests`` reads one union and a FileField cannot be
-added to this module without somebody deciding where it belongs.
+``core.migrations.0006_backfill_storedfile_bindings.LATER_BINDINGS``, under this
+migration's own key. Reading one key rather than the whole app's worth is what
+keeps a field added by a later migration out of this one's project state, which
+has never heard of it. The exhaustiveness test in ``core.tests`` reads the
+union, so a FileField still cannot be added to this module without somebody
+deciding which migration backfills it.
 """
 from django.db import migrations
+
+#: The key this migration owns in ``LATER_BINDINGS``.
+WAVE = "vs_students.0002_bind_student_files"
 
 
 def backfill(apps, schema_editor):
@@ -22,32 +28,7 @@ def backfill(apps, schema_editor):
     module = importlib.import_module(
         "core.migrations.0006_backfill_storedfile_bindings",
     )
-    ContentType = apps.get_model("contenttypes", "ContentType")
-    StoredFile = apps.get_model("core", "StoredFile")
-
-    for app_label, model_name, field_name, tenant_lookup in module.LATER_BINDINGS:
-        if app_label != "vs_students":
-            continue
-        model = apps.get_model(app_label, model_name)
-        content_type = ContentType.objects.get_for_model(model)
-        rows = (
-            model.objects
-            .exclude(**{field_name: ""})
-            .exclude(**{f"{field_name}__isnull": True})
-            .values_list("pk", field_name, tenant_lookup)
-            .iterator(chunk_size=1000)
-        )
-        for pk, name, tenant_id in rows:
-            if not name or tenant_id is None:
-                # Refused is the safe failure; bound to a guess is the unsafe
-                # one. Same rule as the original backfill.
-                continue
-            StoredFile.objects.filter(name=name).update(
-                tenant_id=tenant_id,
-                owner_content_type=content_type,
-                owner_object_id=str(pk),
-                owner_field=field_name,
-            )
+    module.bind_rows(apps, module.LATER_BINDINGS[WAVE])
 
 
 class Migration(migrations.Migration):

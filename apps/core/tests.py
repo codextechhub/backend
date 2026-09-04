@@ -465,8 +465,9 @@ class BackfillTests(_MediaFixture):
 
         problems = []
         # LATER_BINDINGS is deliberately not checked here: by definition those
-        # models do not exist at this migration's state, which is why they are
-        # in a second list and run from their own app's migration.
+        # fields do not exist at this migration's state, which is why they are
+        # declared per wave and run from their own app's migration. The test
+        # below holds each of those to the same standard against its own state.
         for app_label, model_name, field_name, tenant_lookup in module.BINDINGS:
             try:
                 model = historical.get_model(app_label, model_name)
@@ -487,6 +488,80 @@ class BackfillTests(_MediaFixture):
 
         self.assertEqual(problems, [], "\n".join(problems))
 
+    def test_every_later_binding_resolves_at_the_migration_that_runs_it(self):
+        """The same trap as the test above, one level down.
+
+        A field added in an app's third migration does not exist at its second,
+        so a binding filed under the second is handed a project state that has
+        never heard of it. File a guardian's photograph there and the field
+        reads as covered while no migration can reach a single row of it.
+        """
+        from django.db.migrations.loader import MigrationLoader
+
+        module = self._module()
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+
+        problems = []
+        for wave, bindings in module.LATER_BINDINGS.items():
+            app_label, _, migration_name = wave.partition(".")
+            node = (app_label, migration_name)
+            if node not in loader.graph.nodes:
+                problems.append(f"{wave}: names no migration that exists")
+                continue
+            historical = loader.project_state(nodes=[node]).apps
+            for owner_app, model_name, field_name, tenant_lookup in bindings:
+                where = f"{wave}: {owner_app}.{model_name}"
+                try:
+                    model = historical.get_model(owner_app, model_name)
+                except LookupError:
+                    problems.append(f"{where}: model does not exist yet")
+                    continue
+                if field_name not in {f.name for f in model._meta.get_fields()}:
+                    problems.append(f"{where}.{field_name}: field does not exist yet")
+                    continue
+                try:
+                    # Forces the ORM to resolve the join without touching the database.
+                    list(model.objects.none().values_list(
+                        "pk", field_name, tenant_lookup,
+                    ))
+                except Exception as exc:
+                    problems.append(
+                        f"{where}: {tenant_lookup} -> {type(exc).__name__}: {exc}"
+                    )
+
+        self.assertEqual(problems, [], "\n".join(problems))
+
+    def test_every_later_wave_is_claimed_by_the_migration_it_names(self):
+        """Declaring a wave is not the same as running one.
+
+        A key that no migration answers to reads as covered - the exhaustiveness
+        test sees the field listed and passes - while nothing anywhere actually
+        binds a row. Each migration therefore states the wave it owns, and this
+        checks the two agree.
+        """
+        import sys
+
+        from django.db.migrations.loader import MigrationLoader
+
+        module = self._module()
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+
+        problems = []
+        for wave in module.LATER_BINDINGS:
+            app_label, _, migration_name = wave.partition(".")
+            node = (app_label, migration_name)
+            if node not in loader.graph.nodes:
+                problems.append(f"{wave}: names no migration that exists")
+                continue
+            runner = sys.modules[type(loader.disk_migrations[node]).__module__]
+            claimed = getattr(runner, "WAVE", None)
+            if claimed != wave:
+                problems.append(
+                    f"{wave}: that migration claims {claimed!r}, so nothing runs it"
+                )
+
+        self.assertEqual(problems, [], "\n".join(problems))
+
     def test_every_stored_file_field_is_either_backfilled_or_named_as_exempt(self):
         """A FileField added later must not fall out of the backfill unnoticed.
 
@@ -497,11 +572,10 @@ class BackfillTests(_MediaFixture):
         from django.db import models as dj_models
 
         module = self._module()
+        later = [b for wave in module.LATER_BINDINGS.values() for b in wave]
         covered = {
             (app_label.lower(), model.lower(), field)
-            for app_label, model, field, _ in (
-                list(module.BINDINGS) + list(module.LATER_BINDINGS)
-            )
+            for app_label, model, field, _ in list(module.BINDINGS) + later
         }
         # Nothing is exempt. Export and audit artefacts are absent because they
         # keep their storage key in a plain CharField rather than a FileField:
