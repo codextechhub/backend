@@ -61,11 +61,9 @@ REST_FRAMEWORK = {
 # vs_health: no background metric-flush thread under tests (see ci.py).
 HEALTH_METRICS_BACKGROUND_FLUSH = False
 
-# vs_notifications.W001 (active event types with no active template) is true
-# and useless here: the test database is built by migrations, so it holds the
-# whole event-type registry from vs_notifications migration 0008 and no
-# templates at all, which the suite seeds per test. Real environments keep the
-# warning; see vs_notifications/checks.py.
+# vs_notifications.W001 is true and useless here: the test database is built
+# by migrations, so it holds the whole event-type registry and no templates,
+# which the suite seeds per test. Real environments keep the warning.
 SILENCED_SYSTEM_CHECKS = [
     *SILENCED_SYSTEM_CHECKS, "vs_notifications.W001", "core.W001",
 ]

@@ -1355,7 +1355,10 @@ from django.test import override_settings
 @override_settings(
     EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
     DEFAULT_FROM_EMAIL="CodeX System <system@codexng.com>",
-    EMAIL_CC=[],
+    # EMAIL_BCC, not EMAIL_CC: the latter is only an environment fallback and no
+    # setting of that name is read, so naming it here controls nothing and these
+    # tests inherit whatever the deployment's monitoring list happens to be.
+    EMAIL_BCC=[],
     FRONTEND_BASE_URL="https://intranet.codexng.com",
 )
 class InvitationEngineDispatchTests(TestCase):
@@ -1429,6 +1432,36 @@ class InvitationEngineDispatchTests(TestCase):
         self.assertNotIn(token, notification.body)
         self.assertNotIn(token, notification.html_body)
         self.assertIn(token, mail.outbox[0].body)
+
+    @override_settings(EMAIL_BCC=["backend-test@codexng.com"])
+    def test_the_monitoring_mailbox_is_blind_copied_on_an_invitation(self):
+        """The invitation carries no bcc of its own, so the platform list applies.
+
+        The copy is deliberately usable: it carries the same activation link the
+        invitee gets, which is what lets the flow be tested end to end without
+        access to their inbox. Read access to that mailbox is therefore
+        equivalent to holding every pending invitation, and the copy must be
+        blind so the invitee never sees the address.
+        """
+        from django.core import mail
+
+        from vs_user.tasks import send_invitation_email_task
+
+        user = make_cx_user(email="bcc-invited@codex.test")
+        invitation, token = self._invitation_for(user)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            send_invitation_email_task.apply(
+                kwargs={"invitation_id": invitation.pk, "token": token}
+            )
+
+        self.assertEqual(len(mail.outbox), 1)
+        sent = mail.outbox[0]
+        self.assertEqual(sent.to, ["bcc-invited@codex.test"])
+        self.assertEqual(sent.bcc, ["backend-test@codexng.com"])
+        self.assertEqual(sent.cc, [], "the invitee must not see the monitor")
+        # The copy is the same message, so the link in it works.
+        self.assertIn(token, sent.body)
 
     def test_from_name_lands_in_outgoing_from_header(self):
         from django.core import mail

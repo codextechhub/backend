@@ -20,6 +20,114 @@ checks must extend the list rather than replace it.
 purpose. This is an API serving its own console: the admin site is not routed
 and no app ships an ``admin.py``, while ``messages`` is a server-rendered flash
 framework that nothing here imports, the frontend owning its own toasts.
+
+Secrets
+-------
+``SECRET_KEY``, ``RENDER_API_KEY`` and ``TEMP_PASSWORD_PEPPER`` carry no
+fallback literal, so the server refuses to start without them. A default lets a
+local run succeed against a production credential when the variable is missing,
+which is how a fallback secret gets used in anger, and a commented-out secret
+is still published in every clone of this repository.
+
+OUTSTANDING: all three were once committed here as fallbacks and remain in this
+repository's history. Rotate them at source - the Render dashboard for the API
+key, the env group for the other two.
+
+Throttling
+----------
+The public pay-an-invoice scopes are split between reads and writes rather than
+sharing one budget. An honest payer reads the page several times in one
+payment: opening it, starting a checkout, and returning from the gateway.
+Spending those reads out of the budget that exists to stop a link being worked
+would refuse somebody mid-payment.
+
+CORS
+----
+Every school is served from its own subdomain, so the browser origin differs
+per tenant and cannot be enumerated in advance. The regex matches one label
+only, and django-cors-headers echoes the matched origin rather than ``*``,
+which is what keeps this legal alongside ``CORS_ALLOW_CREDENTIALS``.
+
+Monitoring copies
+-----------------
+Every monitoring list below is an internal mailbox copied so somebody can see
+what went out, and every one of them is BCC rather than CC. A visible copy puts
+internal addresses in front of customers and vendors, tells each recipient
+their mail is monitored, and hands anyone hitting reply-all a route into an
+internal inbox.
+
+Each list reads its old ``*_CC`` variable as a fallback, so a deployment that
+has not renamed its variables keeps the addresses it had, and each falls back
+to :data:`MONITORING_MAILBOX` so a deployment setting neither variable still
+gets the copy. That default is written once and shared: three separately-typed
+defaults drift, and a list that drifts to ``""`` is empty on exactly the
+deployment nobody configured, which is where a missing copy is hardest to
+notice.
+
+The copy of an invitation carries the recipient's live activation link, so
+anybody who can read the monitoring mailbox can activate that account. That is
+deliberate, and it is what lets the invitation and activation flow be tested
+end to end without access to the invitee's own inbox. Treat read access to that
+mailbox as equivalent to holding every pending invitation on the platform, and
+set ``EMAIL_BCC`` empty on any deployment where that is not wanted.
+
+Base URLs, and why none of them derives from another
+----------------------------------------------------
+Four base URLs answer four different questions, and each is its own setting
+even where two currently hold the same value.
+
+``FRONTEND_BASE_URL`` addresses the Console, where staff sign in. It is right
+for the links staff receive: invitations and password resets.
+``SCHOOL_APP_BASE_URL`` addresses the school apps, served per school at
+``<slug>.xvs.codexng.com``. A parent paying a fee invoice is not staff and has
+no account anywhere, so they belong there; sending them to the Console is how a
+pay link comes to point at a backoffice they cannot open. It stores scheme and
+host only, and the slug is inserted as a subdomain at call time, so one setting
+serves every school and a local checkout still works.
+``PLATFORM_PAY_BASE_URL`` covers the payer whose invoice was raised by the
+platform's own books rather than a school's, which has no school subdomain to
+build from. Empty means the reserved ``pay.`` subdomain of
+``SCHOOL_APP_BASE_URL``: it must be a subdomain, because the bare host serves
+the product site rather than the app, and ``pay`` is reserved in
+``vs_tenants.RESERVED_TENANT_SLUGS`` so no school can take it.
+``API_PUBLIC_BASE_URL`` is where this API answers from, kept separate from
+``HEALTH_PROBE_BASE_URL`` even though they match today: that one names where
+the synthetic probes knock, and re-pointing the probes at a canary would
+silently re-point the logo in every school's email with them.
+
+**None of these may be derived from another at import time.** An environment
+module sets its own values *after* ``from .base import *``, so an f-string
+evaluated in this file freezes the base default and keeps it for ever. Staging
+shipped a localhost pay link to real customers exactly that way. Leave the
+derived setting empty and let the service resolve it at call time.
+
+Logging
+-------
+Records are emitted as one JSON object per line, so the stream can be searched,
+filtered by tenant or task, and shipped to a log service without touching a
+call site. ``LOG_FORMAT=plain`` restores human-readable output for local work.
+Without an explicit block Django's implicit default applies: app loggers
+propagate to a root with no handler, so anything below WARNING vanishes and
+everything above it reaches stderr in whatever shape the caller wrote it. On
+Render that stderr is the only log there is, it is unstructured, and it is
+dropped after roughly a week.
+
+Every handler carries ``core.redaction.RedactingLogFilter``. Personal data
+reaches the log stream by a route entirely separate from the database - a dozen
+``logger.warning(..., exc_info=True)`` calls, plus Celery's own traceback
+printing - so scrubbing only the stored error moves the leak rather than
+closing it. The unredacted traceback is not lost: ``core.models.TaskDiagnostic``
+holds it for 400 days behind ``platform.tasks.view_sensitive``, with every read
+audited. That table, not this stream, is where an investigation goes.
+
+``django.request`` is silenced under ``manage.py test``. The suite drives 401s,
+403s and 404s by the dozen on purpose and that logger reports every one at
+WARNING, which puts a line between every pair of dots and buries the one line
+that matters when something actually fails. It is silenced here rather than in
+``settings/test.py`` because the suite runs on ``local.py`` and ``ci.py`` too,
+so this is the only place the rule holds for all three. A test that cares what
+was logged uses ``assertLogs``, which attaches its own handler and is
+unaffected.
 """
 
 from datetime import timedelta
@@ -39,15 +147,8 @@ SECRET_KEY = config("SECRET_KEY")
 RENDER_API_KEY = config("RENDER_API_KEY")
 TEMP_PASSWORD_PEPPER = config("TEMP_PASSWORD_PEPPER")
 
-# No fallback literals for these three. A default lets a local run succeed
-# against a production credential when the env var is missing, which is how a
-# fallback secret gets used in anger, and a commented-out secret is still
-# published in every clone of this repository.
-#
-# OUTSTANDING: SECRET_KEY, RENDER_API_KEY and TEMP_PASSWORD_PEPPER were once
-# committed here as fallbacks and remain in this repository's history. Rotate
-# all three at source: the Render dashboard for the API key, the env group for
-# the other two.
+# No fallback literals, and three secrets still to rotate. See the module
+# docstring.
 
 AUTH_USER_MODEL = "vs_user.User"
 
@@ -89,10 +190,8 @@ REST_FRAMEWORK = {
         # per-link limits below are what stop one link being worked.
         "invoice_pay":       "240/hour",
         "invoice_pay_start": "60/hour",
-        # Keyed by the pay token, bounding one invoice's link. Two scopes: an
-        # honest payer reads several times (open, checkout, return from the
-        # gateway), and spending those from the write budget refuses them
-        # mid-payment.
+        # Keyed by the pay token, bounding one invoice's link. Read and write
+        # are separate budgets; see the module docstring.
         "invoice_pay_link":  "12/hour",
         "invoice_pay_link_read": "60/hour",
         # A school's crest on its own sign-in page. Cacheable and shared by a
@@ -210,10 +309,8 @@ CORS_ALLOWED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
-# Every school is served from its own subdomain, so the browser origin differs
-# per tenant and cannot be enumerated in advance. The pattern matches one label
-# only, and django-cors-headers echoes the matched origin rather than "*",
-# which is what keeps this legal alongside CORS_ALLOW_CREDENTIALS.
+# One subdomain per school, matched a single label deep. See the module
+# docstring.
 CORS_ALLOWED_ORIGIN_REGEXES = [
     origin.strip()
     for origin in config(
@@ -298,40 +395,29 @@ DEFAULT_FROM_EMAIL = config(
     "DEFAULT_FROM_EMAIL",
     default="CodeX Vision <chidera.ohanenye@codexng.com>",
 )
-# Monitoring copies are BCC, never CC. Every list below is an internal mailbox
-# copied so somebody can see what went out. A visible copy puts internal
-# addresses in front of customers and vendors, tells each recipient their mail
-# is monitored, and hands anyone hitting reply-all a route into an internal
-# inbox. BCC delivers the same copy without any of it.
-#
-# Each reads its old CC environment variable as the fallback default, so a
-# deployment that has not renamed its variables keeps the addresses it had.
-EMAIL_BCC = [
-    addr.strip()
-    for addr in config("EMAIL_BCC", default=config("EMAIL_CC", default="")).split(",")
-    if addr.strip()
-]
+# Monitoring copies are BCC, never CC, and a copy of an invitation carries a
+# working activation link. See the module docstring before changing either.
+MONITORING_MAILBOX = "backend-test@codexng.com"
+
+
+def _addresses(name: str, legacy_name: str) -> list[str]:
+    """The monitoring list *name* holds, falling back to its old CC variable."""
+    raw = config(name, default=config(legacy_name, default=MONITORING_MAILBOX))
+    return [addr.strip() for addr in raw.split(",") if addr.strip()]
+
+
+EMAIL_BCC = _addresses("EMAIL_BCC", "EMAIL_CC")
 # Procurement messages sent to external vendors use a narrower list so monitoring
 # does not copy unrelated platform email into the procurement inbox.
-PROCUREMENT_VENDOR_EMAIL_BCC = [
-    addr.strip()
-    for addr in config(
-        "PROCUREMENT_VENDOR_EMAIL_BCC",
-        default=config("PROCUREMENT_VENDOR_EMAIL_CC", default="backend-test@codexng.com"),
-    ).split(",")
-    if addr.strip()
-]
+PROCUREMENT_VENDOR_EMAIL_BCC = _addresses(
+    "PROCUREMENT_VENDOR_EMAIL_BCC", "PROCUREMENT_VENDOR_EMAIL_CC",
+)
 # Finance documents sent to paying customers (invoice, receipt, statement) copy a
 # finance-owned mailbox rather than the platform-wide EMAIL_BCC, for the same reason
 # procurement narrows its own: a customer document is not general platform mail.
-FINANCE_CUSTOMER_EMAIL_BCC = [
-    addr.strip()
-    for addr in config(
-        "FINANCE_CUSTOMER_EMAIL_BCC",
-        default=config("FINANCE_CUSTOMER_EMAIL_CC", default="backend-test@codexng.com"),
-    ).split(",")
-    if addr.strip()
-]
+FINANCE_CUSTOMER_EMAIL_BCC = _addresses(
+    "FINANCE_CUSTOMER_EMAIL_BCC", "FINANCE_CUSTOMER_EMAIL_CC",
+)
 FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="http://localhost:3000")
 
 # Public targets used by the platform-health synthetic probes. Keep these
@@ -341,16 +427,8 @@ HEALTH_PROBE_BASE_URL = config(
 ).rstrip("/")
 HEALTH_SSL_DOMAIN = config("HEALTH_SSL_DOMAIN", default="api.codexng.com")
 
-# Where this API answers from, for the few absolute links that must point at it
-# rather than at an application.
-#
-# Its own setting rather than a second use of HEALTH_PROBE_BASE_URL above, which
-# happens to hold the same value: that one names where the synthetic probes
-# should knock, and somebody re-pointing the probes at a canary would silently
-# re-point the logo in every school's email with it.
-#
-# Read at call time, never frozen into an f-string here - see the note on
-# PAYMENTS_CALLBACK_URL below for the staging incident that rule comes from.
+# Where this API answers from. Its own setting, never derived; see the
+# module docstring.
 API_PUBLIC_BASE_URL = config(
     "API_PUBLIC_BASE_URL", default="https://api.codexng.com"
 ).rstrip("/")
@@ -358,60 +436,28 @@ API_PUBLIC_BASE_URL = config(
 # --------------------------------------------------------------------------- #
 # Payment providers (vs_payments)                                             #
 # --------------------------------------------------------------------------- #
-# Secrets come from the environment - NEVER commit live keys. Each provider is
-# optional; an unconfigured provider raises ProviderNotConfiguredError when used.
-# Test/sandbox keys (sk_test_… for Paystack) are safe to use in non-production.
-# ``PAYMENTS_DEFAULT_PROVIDER`` selects the provider when a caller doesn't.
+# Keys come from the environment; never commit a live one. Each provider is
+# optional and raises ProviderNotConfiguredError when used unconfigured.
 PAYMENTS_DEFAULT_PROVIDER = config("PAYMENTS_DEFAULT_PROVIDER", default="PAYSTACK")
-# A callback URL the hosted checkout returns the payer to after paying.
-#
-# Deliberately NOT defaulted to f"{FRONTEND_BASE_URL}/payments/return" here. An
-# environment module (staging.py, local.py) sets FRONTEND_BASE_URL *after* it has
-# done ``from .base import *``, so an f-string evaluated at this line would freeze
-# the base default - http://localhost:3000 - and keep it for ever. Staging shipped
-# a localhost pay link to real customers that way. Leave it empty and let
-# ``vs_payments.services.default_callback_url()`` derive it at call time, when
-# FRONTEND_BASE_URL is whatever the running environment actually set.
+# Where the hosted checkout returns the payer. Empty on purpose:
+# vs_payments.services.default_callback_url() derives it at call time. See
+# the module docstring.
 PAYMENTS_CALLBACK_URL = config("PAYMENTS_CALLBACK_URL", default="")
 
 # --------------------------------------------------------------------------- #
 # Where a PAYING CUSTOMER is sent                                              #
 # --------------------------------------------------------------------------- #
-# Not FRONTEND_BASE_URL. That one addresses the Console (staff sign in at
-# intranet.codexng.com), and it is right for the links staff receive - invites,
-# password resets. A parent paying a fee invoice is not staff and has no account
-# anywhere: they belong on their own school's app, which is served per school at
-# <slug>.xvs.codexng.com. Sending them to the Console was how the pay link
-# pointed at a backoffice they cannot open.
-#
-# Scheme and host only. The school's slug is inserted as a subdomain at call
-# time, so one setting serves every school and a local checkout still works
-# (http://localhost:5174 becomes http://corona.localhost:5174, the same
-# <slug>.localhost shape the onboarding seeder already prints).
+# The school apps, not the Console. Scheme and host only; the slug becomes a
+# subdomain at call time. See the module docstring.
 SCHOOL_APP_BASE_URL = config("SCHOOL_APP_BASE_URL", default="https://xvs.codexng.com")
 
-# Where a payer goes when the invoice was raised by the PLATFORM's own books
-# rather than a school's. CodeX billing a school has no school subdomain to
-# build from: its books belong to the platform tenant, and a Customer records no
-# tenant of its own, so nothing on the invoice says which school is paying it.
-#
-# Empty means "use the reserved pay. subdomain of SCHOOL_APP_BASE_URL". It has to
-# be a subdomain rather than the bare host: bare xvs.codexng.com serves the
-# product site, not the app, so a link there would land on marketing copy. Every
-# subdomain is already covered by the wildcard DNS and certificate the schools
-# use, and "pay" is reserved in vs_tenants.RESERVED_TENANT_SLUGS, so no school
-# can take it. Left as an env var rather than baked into code: moving these
-# payers elsewhere is then an environment change, not a deploy.
-#
-# NOT defaulted here to f"{SCHOOL_APP_BASE_URL}". See PAYMENTS_CALLBACK_URL
-# above for what happens to a setting derived from another at import time.
+# Where a payer goes when the platform's own books raised the invoice.
+# Empty means the reserved pay. subdomain. See the module docstring.
 PLATFORM_PAY_BASE_URL = config("PLATFORM_PAY_BASE_URL", default="")
 
-# Platform (CodeX) issuer identity - the letterhead printed on invoices/receipts the
-# CodeX *platform* entity raises for its own customers (the schools). School-owned
-# entities take their letterhead from the school's own branding instead; this is only
-# the fallback identity for the platform books. The pay-to bank still comes from the
-# platform entity's primary collection BankAccount. Configure per environment.
+# The letterhead on invoices and receipts the CodeX platform entity raises
+# for its own customers. A school-owned entity uses the school's branding
+# instead. The pay-to bank still comes from the entity's own BankAccount.
 PLATFORM_ISSUER = {
     "name": config("PLATFORM_ISSUER_NAME", default="CodeX"),
     "tagline": config("PLATFORM_ISSUER_TAGLINE", default=""),
@@ -448,11 +494,9 @@ STATICFILES_DIRS = [
     BASE_DIR / "static",
 ]
 
-# Media: the platform only receives import spreadsheets and images, all
-# small - so uploads live in the DATABASE (core.storage.DatabaseStorage).
-# They survive ephemeral-disk redeploys, ride along with DB backups, and are
-# served with authentication by core.views.MediaView at /media/<name>.
-# Outgrow it? Point STORAGES["default"] at S3 and migrate the rows.
+# Uploads live in the DATABASE (core.storage.DatabaseStorage): they are all
+# small, they survive ephemeral-disk redeploys, and they ride along with DB
+# backups. Outgrow it by pointing STORAGES["default"] at S3.
 MEDIA_URL = "/media/"
 MEDIA_ROOT = os.path.join(BASE_DIR, "media")  # unused by DatabaseStorage; kept for tooling
 
@@ -462,12 +506,9 @@ STORAGES = {
 }
 # Upload ceiling for the DB-backed storage (bytes).
 MEDIA_DB_MAX_BYTES = config("MEDIA_DB_MAX_BYTES", default=25 * 1024 * 1024, cast=int)
-# The expiry window for a signed /media/ URL. Expiries are rounded to this
-# window so the same file keeps the same URL while it is open (which is what
-# lets the browser cache it), and a URL therefore lives between one and two
-# windows - 15 to 30 minutes by default. Every URL is minted for one user, so
-# this bounds how long a link that has escaped into an email or a chat thread
-# keeps working; it has nothing to do with how long a session lasts.
+# Expiry window for a signed /media/ URL, rounded so a file keeps one URL
+# while it is open and the browser can cache it. A URL therefore lives one
+# to two windows. It bounds an escaped link, not a session.
 MEDIA_SIGNED_URL_TTL_SECONDS = config(
     "MEDIA_SIGNED_URL_TTL_SECONDS", default=900, cast=int,
 )
@@ -523,31 +564,7 @@ SPECTACULAR_SETTINGS = {
 # --------------------------------------------------------------------------- #
 # Logging                                                                      #
 # --------------------------------------------------------------------------- #
-# There was no LOGGING block at all until now, which meant Django's implicit
-# default applied: app loggers propagated to a root with no handler, so
-# anything below WARNING vanished and everything above it reached stderr in
-# whatever shape the caller happened to write it. On Render that stderr is the
-# only log there is, it is unstructured, and it is dropped after roughly a
-# week.
-#
-# Two things are fixed here, and they are separate:
-#
-# 1. **Shape.** Records are emitted as one JSON object per line, so the stream
-#    can be searched, filtered by tenant or task, and shipped to a log service
-#    later without touching a single call site. ``LOG_FORMAT=plain`` restores
-#    human-readable output for local work.
-#
-# 2. **Content.** Every handler carries ``core.redaction.RedactingLogFilter``.
-#    The same guardian email that this change stops writing to
-#    ``BackgroundJob.error`` reaches the log stream by a completely separate
-#    route - a dozen ``logger.warning(..., exc_info=True)`` calls, plus
-#    Celery's own traceback printing - and scrubbing only the database would
-#    have moved the leak rather than closed it.
-#
-# The unredacted traceback is not lost: ``core.models.TaskDiagnostic`` holds
-# it for 400 days behind ``platform.tasks.view_sensitive``, with every read
-# audited. That table, not this stream, is where an investigation into last
-# quarter's failure goes.
+# One JSON object per line, every handler redacting. See the module docstring.
 LOG_LEVEL = config("LOG_LEVEL", default="INFO")
 LOG_FORMAT = config("LOG_FORMAT", default="json")
 
@@ -580,17 +597,7 @@ LOGGING = {
         },
     },
     "handlers": {
-        # Under `manage.py test` nothing is written to the terminal at all.
-        # The suite drives 401s, 403s and 404s by the dozen on purpose and
-        # django.request logs every one at WARNING, which put a line between
-        # every pair of dots and buried the one line that matters when
-        # something actually failed. It lives here rather than in
-        # settings/test.py because the suite is run on local.py and on ci.py as
-        # well - see CLAUDE.md, "Running the test suite on this machine" - so
-        # this is the only place the rule holds for all three.
-        #
-        # A test that cares what was logged should use assertLogs, which
-        # attaches its own handler and is unaffected by this.
+        # Silenced under `manage.py test`. See the module docstring.
         "console": {"class": "logging.NullHandler"} if RUNNING_TESTS else {
             "class": "logging.StreamHandler",
             "formatter": "plain" if LOG_FORMAT == "plain" else "json",

@@ -1,3 +1,46 @@
+"""Development settings, and the settings the test suite is run under.
+
+Email prints to the console by default. Celery is eager here, so every delivery
+runs inline in the request and an unreachable SMTP host stalls responses for
+``EMAIL_TIMEOUT`` times the recipient count. Set ``EMAIL_BACKEND`` in ``.env``
+to the SMTP backend to send real mail; Zoho works on port 465 with SSL where
+587 and TLS are blocked locally.
+
+Two system checks are silenced for a test run only, never for the whole file.
+This module is also the dev-server and dev-migrate settings, and a developer
+whose database has never been seeded is exactly who those checks exist to warn.
+
+``vs_notifications.W001`` reports active event types with no active template. It
+is true and useless under ``manage.py test``: the test database is built by
+migrations, so it holds the whole event-type registry and no templates at all,
+those being seeded per test, and the runner would print a paragraph naming every
+event type before every run of every app. ``core.W001`` is the same shape:
+Django forces ``DEBUG=False`` for a test run, which is precisely the condition
+the scheduler check fires on.
+
+They are silenced here rather than in ``test.py`` or ``ci.py`` because the suite
+is documented to run with ``--settings=apps.settings.local`` (see CLAUDE.md), so
+silencing them anywhere else would silence nothing here.
+
+Test fixtures are hashed cheaply for the same reason. PBKDF2 is deliberately
+slow and the suite creates users constantly, so the default cost dominates a
+run: ``schools.vs_schools`` took 17.5 minutes at 100% CPU for 143 tests, most
+of it hashing passwords nobody checks the strength of. ``ci.py`` and
+``test.py`` do this too, and this module needs it because it is the one
+CLAUDE.md tells you to run the suite with. It sits inside the test guard on
+purpose: this file is also the dev-server settings, and MD5-hashing a real
+developer's password would weaken that environment rather than speed anything
+up.
+
+Logging is plain text at WARNING here, where ``base.py`` defaults to JSON at
+INFO. JSON at INFO is right for a deployed log stream and wrong for a terminal
+somebody is working in, where it is a wall of one-line objects, most of them
+routine. Raise it deliberately when chasing something::
+
+    LOG_LEVEL=INFO ./cx/bin/python manage.py runserver ...
+
+The redaction filter is untouched: a quieter terminal is not a less careful one.
+"""
 from .base import *
 
 import sys
@@ -16,11 +59,7 @@ REST_FRAMEWORK = {
     ],
 }
 
-# Email prints to the console by default: with eager Celery every delivery
-# runs inline in the request, so an unreachable SMTP host stalls responses
-# for EMAIL_TIMEOUT × recipient count. Set EMAIL_BACKEND in .env to
-# django.core.mail.backends.smtp.EmailBackend to send real mail
-# (Zoho: port 465 + SSL works where 587/TLS is blocked locally).
+# Console backend by default; see the module docstring.
 EMAIL_BACKEND = config(
     "EMAIL_BACKEND",
     default="django.core.mail.backends.console.EmailBackend",
@@ -69,55 +108,20 @@ RESET_DB_ALLOWED_DATABASES = {
 # ---------------------------------------------------------------------------
 # System checks
 # ---------------------------------------------------------------------------
-# vs_notifications.W001 reports active notification event types with no active
-# template (see vs_notifications/checks.py). Under `manage.py test` it is true
-# but useless: the test database is built by migrations, so it gets the whole
-# event-type registry from vs_notifications migration 0008 and NO templates
-# (those come from seed_notification_templates, which the suite calls per test),
-# and the runner would print a paragraph naming every event type before every
-# run of every app.
-#
-# Silenced only for a test run, not for the whole file. This module is also the
-# dev-server and dev-migrate settings, and a developer whose database has never
-# been seeded is exactly the environment the check exists to warn. The suite is
-# documented to run with --settings=apps.settings.local (see CLAUDE.md), so
-# silencing it in test.py or ci.py alone would silence nothing here.
+# Two checks are silenced for a test run only. See the module docstring.
 if "test" in sys.argv:
-    # core.W001 too: Django forces DEBUG=False for a test run, which is exactly
-    # the condition the scheduler check fires on, so leaving it would print the
-    # same paragraph above every suite in the repo.
+    # Both are true under a test run and useless. See the module docstring.
     SILENCED_SYSTEM_CHECKS = [
         *SILENCED_SYSTEM_CHECKS, "vs_notifications.W001", "core.W001",
     ]
 
-    # Hash test fixtures cheaply. PBKDF2 is deliberately slow, and the suite
-    # creates users constantly, so the default cost dominates the run:
-    # schools.vs_schools took 17.5 minutes at 100% CPU for 143 tests, most of
-    # it hashing passwords nobody checks the strength of.
-    #
-    # ci.py and test.py already do this. local.py did not, and local.py is the
-    # module CLAUDE.md tells you to run the suite with - so the documented
-    # command was the one path still paying full price.
-    #
-    # Inside the test guard on purpose. This file is also the dev-server
-    # settings, and MD5-hashing a real developer's password would be a genuine
-    # weakening of that environment, not a speed-up.
+    # Cheap hashing for fixtures, inside the test guard. See the module
+    # docstring.
     PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 
 
 # --- Logging: readable, and quiet by default --------------------------------
-# base.py defaults to JSON at INFO, which is right for the deployed log stream
-# and wrong for a terminal somebody is working in: a wall of one-line JSON
-# objects, most of them routine.
-#
-# Locally the format is plain text and the floor is WARNING, so ordinary
-# request chatter stays out of the way and only something worth reading
-# appears. Raise it deliberately when chasing a problem:
-#
-#     LOG_LEVEL=INFO ./cx/bin/python manage.py runserver ...
-#
-# The redaction filter is untouched and still applies - a quieter terminal is
-# not a less careful one.
+# Plain text at WARNING; see the module docstring.
 LOG_FORMAT = config("LOG_FORMAT", default="plain")
 LOG_LEVEL = config("LOG_LEVEL", default="WARNING")
 

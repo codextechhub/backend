@@ -37,10 +37,8 @@ SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 SECURE_HSTS_PRELOAD = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 
-# Celery :eager (synchronous, in the web process) until the worker
-# service is live. Once the Render worker + Key Value (Redis) instance exist,
-# set CELERY_EAGER=false and REDIS_URL on BOTH services - env change only,
-# no code redeploy needed. Flip CELERY_EAGER back to true to bypass a broken
-# broker in an emergency.
+# Celery runs eager, in the web process, until the worker service is live.
+# Set CELERY_EAGER=false and REDIS_URL on BOTH services to switch over: an
+# env change, no redeploy. Flip it back to bypass a broken broker.
 CELERY_TASK_ALWAYS_EAGER     = config("CELERY_EAGER", default=True, cast=bool)
 CELERY_TASK_EAGER_PROPAGATES = CELERY_TASK_ALWAYS_EAGER
