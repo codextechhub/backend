@@ -31,10 +31,22 @@ CELERY_TASK_ALWAYS_EAGER = True
 CELERY_TASK_EAGER_PROPAGATES = True
 
 # Throttling off - tests hammer endpoints far faster than the rates allow.
+#
+# Every scope keeps its entry and loses only its rate. An empty dict does not
+# turn throttling off, it breaks it: a view that names its own
+# ``throttle_classes`` builds them whatever the default classes are, and DRF
+# raises ImproperlyConfigured for a scope with no entry at all, so those views
+# answer 500 to every request rather than being served without a limit. The
+# public pay-an-invoice routes are the ones that name their own. ``None`` is
+# the value DRF reads as "no limit", so each scope resolves, none of them
+# counts, and a scope added later inherits that without anybody having to
+# remember this file exists.
 REST_FRAMEWORK = {
     **REST_FRAMEWORK,
     "DEFAULT_THROTTLE_CLASSES": [],
-    "DEFAULT_THROTTLE_RATES": {},
+    "DEFAULT_THROTTLE_RATES": dict.fromkeys(
+        REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"], None,
+    ),
 }
 
 # vs_health: never spawn the background metric-flush thread under tests. It

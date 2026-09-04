@@ -16,6 +16,7 @@ the callback follows whatever frontend the running environment actually configur
 from __future__ import annotations
 
 import datetime
+from unittest import mock
 
 from django.conf import settings
 from django.core.cache import cache
@@ -364,20 +365,32 @@ class PublicInvoicePayPageTests(_PayLinkFixture, TestCase):
         Both pay from the school office wifi during the fee drive, so both arrive on
         the same address. Mrs Adeyemi's browser retries her link until it is spent;
         Mr Okonkwo must still be able to pay his.
+
+        The rate is stated here rather than read from the running settings. DRF
+        binds ``THROTTLE_RATES`` onto the throttle class at import, so patching the
+        class is the only thing that reaches it, and a settings module is free to
+        change or drop the deployed rate without this test's meaning changing. What
+        it asserts is that a link has a budget of its own; three requests show that
+        as well as twelve, and in a quarter of the time.
         """
         entity, _period, customer, first = self.build_payable()
         second = self.make_invoice(entity, customer, lines=[("4100", 1, 90000, None)])
         post_invoice(second)
 
-        rate = int(settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["invoice_pay_link"]
-                   .split("/")[0])
-        statuses = [self.client.post(self.checkout_url(first)).status_code
-                    for _ in range(rate + 1)]
-        self.assertEqual(statuses[:rate], [200] * rate)
-        self.assertEqual(statuses[-1], 429)
+        rate = 3
+        with mock.patch.object(
+            InvoicePayLinkThrottle, "THROTTLE_RATES",
+            {"invoice_pay_link": f"{rate}/hour"},
+        ):
+            statuses = [self.client.post(self.checkout_url(first)).status_code
+                        for _ in range(rate + 1)]
+            self.assertEqual(statuses[:rate], [200] * rate)
+            self.assertEqual(statuses[-1], 429)
 
-        # The other invoice's link is untouched by that.
-        self.assertEqual(self.client.post(self.checkout_url(second)).status_code, 200)
+            # The other invoice's link is untouched by that.
+            self.assertEqual(
+                self.client.post(self.checkout_url(second)).status_code, 200,
+            )
 
     # -- invoices that cannot take a payment ----------------------------------- #
 

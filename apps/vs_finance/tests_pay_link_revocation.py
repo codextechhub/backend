@@ -22,6 +22,7 @@ one.
 from __future__ import annotations
 
 import datetime
+from unittest import mock
 
 from django.core import signing
 from django.core.cache import cache
@@ -38,6 +39,7 @@ from .pay_links import (
     revoke_pay_links,
     summary,
 )
+from .views_public import InvoicePayLinkReadThrottle
 from .tests_pay_links import _PayLinkFixture
 
 
@@ -213,19 +215,27 @@ class PayLinkReadThrottleTests(_PayLinkFixture, TestCase):
         )
 
     def test_one_link_can_be_worked_only_so_hard(self):
-        from django.conf import settings
+        """The rate is stated here, not read from the running settings.
+
+        DRF binds ``THROTTLE_RATES`` onto the throttle class at import, so
+        patching the class is the only thing that reaches it, and a settings
+        module is free to change or drop the deployed rate without changing what
+        this test means: a link has a budget, and running it out closes it.
+        """
         from rest_framework.test import APIClient
 
-        rate = int(
-            settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["invoice_pay_link_read"]
-            .split("/")[0]
-        )
+        rate = 3
         client = APIClient()
 
-        statuses = [
-            client.get(self._url()).status_code for _ in range(rate + 1)
-        ]
+        with mock.patch.object(
+            InvoicePayLinkReadThrottle, "THROTTLE_RATES",
+            {"invoice_pay_link_read": f"{rate}/hour"},
+        ):
+            statuses = [
+                client.get(self._url()).status_code for _ in range(rate + 1)
+            ]
 
+        self.assertEqual(statuses[:rate], [200] * rate)
         self.assertEqual(statuses[-1], 429)
 
     def test_one_links_budget_is_not_spent_by_another(self):
@@ -235,7 +245,6 @@ class PayLinkReadThrottleTests(_PayLinkFixture, TestCase):
         budget were shared, the second parent would be refused because the first
         one read their own invoice.
         """
-        from django.conf import settings
         from rest_framework.test import APIClient
 
         other = self.make_invoice(
@@ -247,14 +256,16 @@ class PayLinkReadThrottleTests(_PayLinkFixture, TestCase):
         post_invoice(other)
         other.refresh_from_db()
 
-        rate = int(
-            settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["invoice_pay_link_read"]
-            .split("/")[0]
-        )
+        rate = 3
         client = APIClient()
-        for _ in range(rate + 1):
-            client.get(self._url())
+        with mock.patch.object(
+            InvoicePayLinkReadThrottle, "THROTTLE_RATES",
+            {"invoice_pay_link_read": f"{rate}/hour"},
+        ):
+            for _ in range(rate + 1):
+                client.get(self._url())
 
-        # Same client, same address, a different link: still served.
-        response = client.get(self._url(make_invoice_pay_token(other)))
+            # Same client, same address, a different link: still served.
+            response = client.get(self._url(make_invoice_pay_token(other)))
+
         self.assertEqual(response.status_code, 200)
