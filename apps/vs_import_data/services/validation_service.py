@@ -245,6 +245,12 @@ def _validate_dataset_specific_rules(import_batch) -> list[dict]:
         )
 
         return validate_subjects_import_batch(import_batch)
+    if dataset_type == "guardians":
+        from schools.vs_students.guardian_imports import (
+            validate_guardians_import_batch,
+        )
+
+        return validate_guardians_import_batch(import_batch)
     if dataset_type == "bank_statements":
         from vs_finance.statement_imports import validate_bank_statement_import_batch
 

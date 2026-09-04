@@ -20,3 +20,6 @@ def register() -> None:
     from vs_import_data.permissions import register_dataset_import_key
 
     register_dataset_import_key("students", PERM_IMPORT)
+    # Households ride the same key: a guardian is part of the roll,
+    # and the student import already creates one per child.
+    register_dataset_import_key("guardians", PERM_IMPORT)

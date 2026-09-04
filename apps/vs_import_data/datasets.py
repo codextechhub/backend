@@ -116,6 +116,13 @@ TENANT_DATASETS: frozenset[str] = frozenset({
     # the handler writes nothing but the uploading tenant's own rows, and a
     # secondary school is fifty subjects across two hundred offerings.
     DatasetTypeChoices.SUBJECTS,
+    # The households a school calls, and which child each one reaches. Argued
+    # the same way as the roll it hangs off: the school already creates these
+    # through school.students.update on its own guardians routes, the handler
+    # writes nothing but Guardian and StudentGuardian rows of the uploading
+    # tenant, and the student import carries only ONE guardian per child - so
+    # every second parent is typed in by hand, one drawer at a time.
+    DatasetTypeChoices.GUARDIANS,
 })
 
 

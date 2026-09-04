@@ -751,6 +751,16 @@ def execute_import(import_batch, queued_by):
 
         return execute_subjects_import(import_batch, queued_by)
 
+    # Whole-file: the primary-contact rules are read across rows, so half a
+    # file could move a primary contact and then fail before the row meant to
+    # replace it.
+    if import_batch.template.dataset_type == "guardians":
+        from schools.vs_students.guardian_imports import (
+            execute_guardians_import,
+        )
+
+        return execute_guardians_import(import_batch, queued_by)
+
     rows = import_batch.preview_rows or []
     total_rows = len(rows)
 

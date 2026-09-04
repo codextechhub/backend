@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 
-from schools.vs_students.constants import StudentStatus
+from schools.vs_students.constants import Relationship, StudentStatus
 from schools.vs_students.imports import resolve_row, validate_students_import_batch
 from schools.vs_students.models import Guardian, Student, StudentDocument
 
@@ -552,3 +552,232 @@ class ImportCatchesWhatTheFormCatchesTests(_ImportFixture):
         self.assertTrue(
             any("columns line up" in w["message"] for w in warnings), warnings,
         )
+
+
+class GuardianImportTests(_ImportFixture):
+    """Households: the second parent nothing else can add in bulk.
+
+    The tests that earn their place are the primary-contact ones. Linking a new
+    primary DEMOTES the old one without a word, so a file can move who the
+    school calls first and nobody would know - and no single row can see that
+    happening.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from schools.vs_students.services.guardians import link, upsert_guardian
+
+        self.amaka = self.student(first="Amaka", last="Adeleke", number="BFS/1")
+        self.mother, _ = upsert_guardian(
+            self.tenant, full_name="Mrs. Tolu Adeleke", phone="08035550101",
+            email="tolu@example.ng",
+        )
+        link(
+            self.amaka, self.mother, relationship=Relationship.MOTHER,
+            is_primary=True, actor=self.admin,
+        )
+
+    def grow(self, **overrides):
+        base = {
+            "Guardian Name": "Mr. Emeka Adeleke",
+            "Guardian Phone": "08035550102",
+            "Guardian Email": "emeka@example.ng",
+            "Admission Number": "BFS/1",
+            "Student First Name": "", "Student Last Name": "",
+            "Student Date of Birth": "",
+            "Relationship": "Father", "Primary Contact": "No",
+            "Occupation": "", "Home Address": "",
+        }
+        base.update(overrides)
+        return base
+
+    def gbatch(self, rows):
+        from vs_import_data.models import ImportBatch, ImportTemplate
+
+        return ImportBatch.all_objects.create(
+            tenant=self.tenant,
+            template=ImportTemplate.objects.get(code="guardians_v1"),
+            dataset_type="guardians", preview_rows=rows,
+            original_filename="households.xlsx", uploaded_by=self.admin,
+        )
+
+    def gissues(self, rows, severity):
+        from schools.vs_students.guardian_imports import (
+            validate_guardians_import_batch,
+        )
+
+        return [
+            i for i in validate_guardians_import_batch(self.gbatch(rows))
+            if i["severity"] == severity
+        ]
+
+    def gerrors(self, rows):
+        return self.gissues(rows, "error")
+
+    def gwarnings(self, rows):
+        return self.gissues(rows, "warning")
+
+    # ── identifying the child ──────────────────────────────────────────────
+
+    def test_a_clean_row_reports_no_error(self):
+        self.assertEqual(self.gerrors([self.grow()]), [])
+
+    def test_an_admission_number_no_student_holds_is_refused(self):
+        errors = self.gerrors([self.grow(**{"Admission Number": "BFS/999"})])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("BFS/999", errors[0]["message"])
+
+    def test_a_child_named_ambiguously_is_refused_rather_than_guessed(self):
+        """Two real children share a name and a birthday.
+
+        Picking the first would attach a father to the wrong family in silence.
+        """
+        self.student(first="Amaka", last="Adeleke", dob=self.amaka.date_of_birth)
+        errors = self.gerrors([self.grow(**{
+            "Admission Number": "", "Student First Name": "Amaka",
+            "Student Last Name": "Adeleke",
+            "Student Date of Birth": str(self.amaka.date_of_birth),
+        })])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("admission number", errors[0]["message"])
+
+    def test_naming_no_child_at_all_is_refused(self):
+        errors = self.gerrors([self.grow(**{"Admission Number": ""})])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Say which child", errors[0]["message"])
+
+    # ── the primary contact ────────────────────────────────────────────────
+
+    def test_moving_the_primary_contact_is_warned_about_and_names_who_loses_it(self):
+        """The change is silent otherwise: link() demotes without a word."""
+        warnings = self.gwarnings([self.grow(**{"Primary Contact": "Yes"})])
+        self.assertTrue(
+            any("Mrs. Tolu Adeleke" in w["message"] and "moves it" in w["message"]
+                for w in warnings),
+            warnings,
+        )
+
+    def test_two_rows_claiming_primary_for_one_child_are_refused(self):
+        """The second would silently win, so the file contradicts itself."""
+        errors = self.gerrors([
+            self.grow(**{"Primary Contact": "Yes"}),
+            self.grow(**{
+                "Guardian Name": "Mrs. Ada Eze", "Guardian Phone": "08035550103",
+                "Guardian Email": "ada@example.ng", "Primary Contact": "Yes",
+            }),
+        ])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("disagree", errors[0]["message"])
+
+    def test_a_child_given_contacts_and_no_primary_is_warned_about(self):
+        orphan = self.student(first="Ngozi", last="Umeh", number="BFS/2")
+        warnings = self.gwarnings([self.grow(**{
+            "Admission Number": "BFS/2", "Primary Contact": "No",
+        })])
+        self.assertTrue(
+            any("no primary contact" in w["message"] for w in warnings),
+            warnings,
+        )
+        self.assertTrue(orphan.pk)
+
+    # ── the household ──────────────────────────────────────────────────────
+
+    def test_the_primary_check_does_not_depend_on_row_order(self):
+        """The primary named on row 1, a second contact on row 2.
+
+        Read one row at a time, row 2 looks unprimaried: nothing is written
+        yet, so the database still says None and the file would be warned about
+        a child it has already settled.
+        """
+        orphan = self.student(first="Ngozi", last="Umeh", number="BFS/2")
+        warnings = self.gwarnings([
+            self.grow(**{
+                "Admission Number": "BFS/2", "Primary Contact": "Yes",
+                "Guardian Name": "Mr. A", "Guardian Phone": "08000000001",
+                "Guardian Email": "a@example.ng",
+            }),
+            self.grow(**{
+                "Admission Number": "BFS/2", "Primary Contact": "No",
+                "Guardian Name": "Mrs. B", "Guardian Phone": "08000000002",
+                "Guardian Email": "b@example.ng",
+            }),
+        ])
+        self.assertEqual(
+            [w for w in warnings if "no primary contact" in w["message"]], [],
+            warnings,
+        )
+        self.assertTrue(orphan.pk)
+
+    def test_a_pair_already_linked_is_skipped_not_linked_twice(self):
+        warnings = self.gwarnings([self.grow(**{
+            "Guardian Name": "Mrs. Tolu Adeleke",
+            "Guardian Phone": "08035550101",
+            "Guardian Email": "tolu@example.ng",
+        })])
+        self.assertTrue(
+            any("already linked" in w["message"] for w in warnings), warnings,
+        )
+
+    def test_the_same_pair_twice_in_one_file_is_refused(self):
+        errors = self.gerrors([self.grow(), self.grow()])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("only be linked once", errors[0]["message"])
+
+    def test_a_contact_the_school_holds_under_another_name_is_warned_about(self):
+        warnings = self.gwarnings([self.grow(**{
+            "Guardian Name": "Somebody Else",
+            "Guardian Phone": "08035550101",
+            "Guardian Email": "tolu@example.ng",
+            "Admission Number": "BFS/1",
+        })])
+        self.assertTrue(
+            any("Mrs. Tolu Adeleke" in w["message"] for w in warnings), warnings,
+        )
+
+    def test_a_phone_too_short_to_ring_is_refused(self):
+        errors = self.gerrors([self.grow(**{"Guardian Phone": "123"})])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("could ring", errors[0]["message"])
+
+    # ── writing ────────────────────────────────────────────────────────────
+
+    def test_it_creates_the_guardian_and_the_link(self):
+        from schools.vs_students.guardian_imports import build_links, resolve_file
+
+        resolved = resolve_file(
+            [{
+                "guardian_full_name": "Mr. Emeka Adeleke",
+                "guardian_phone": "08035550102",
+                "guardian_email": "emeka@example.ng",
+                "student_number": "BFS/1",
+                "student_first_name": "", "student_last_name": "",
+                "student_date_of_birth": "",
+                "relationship": "Father", "is_primary": "No",
+                "occupation": "", "address": "",
+            }],
+            tenant=self.tenant,
+        )
+        counts = build_links(resolved, tenant=self.tenant, actor=self.admin)
+        self.assertEqual(counts, {"guardians": 1, "links": 1})
+        self.assertEqual(
+            self.amaka.guardian_links.count(), 2,
+        )
+        # The mother keeps primary: the row did not claim it.
+        self.assertEqual(
+            self.amaka.guardian_links.get(is_primary=True).guardian,
+            self.mother,
+        )
+
+    def test_the_template_exists_with_all_eleven_columns(self):
+        from vs_import_data.models import ImportTemplate
+
+        from schools.vs_students.guardian_imports import COLUMNS
+
+        template = ImportTemplate.objects.get(code="guardians_v1")
+        fields = set(template.columns.values_list("target_field", flat=True))
+        self.assertEqual(fields, set(COLUMNS))
+
+    def test_a_school_may_import_its_own_households(self):
+        from vs_import_data.datasets import platform_only
+
+        self.assertFalse(platform_only("guardians"))
