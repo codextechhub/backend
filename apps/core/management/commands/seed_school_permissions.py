@@ -153,6 +153,11 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("academics", "structure", "create",       _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
     ("academics", "structure", "update",       _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
     ("academics", "structure", "manage",       _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    # Its own key, and SENSITIVE, exactly as school.students.import is. One
+    # upload builds a school's whole spine - every programme, year group and
+    # class - so it is not the same act as adding one class through the form,
+    # and a branch admin who may create a class may not rebuild the school.
+    ("academics", "structure", "import",       _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
     # A resource of its own rather than four more uses of the calendar
     # keys: adding a public holiday and rebuilding the school's entire timetable

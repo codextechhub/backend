@@ -103,6 +103,14 @@ PLATFORM_ONLY_DATASETS: frozenset[str] = frozenset({
 TENANT_DATASETS: frozenset[str] = frozenset({
     DatasetTypeChoices.CALENDAR_EVENTS,
     DatasetTypeChoices.STUDENTS,
+    # Programmes, year groups and classes. Argued the same three ways: the
+    # school already creates these through academics.structure.create and
+    # academics.classes.create, which are its own keys; the handler writes
+    # nothing but rows of the uploading tenant; and a secondary school is
+    # sixty classes and thirty year groups, which is not a form somebody
+    # fills in sixty times. It also unblocks the students import, which
+    # refuses any row naming a class the school has not built yet.
+    DatasetTypeChoices.ACADEMIC_STRUCTURE,
 })
 
 

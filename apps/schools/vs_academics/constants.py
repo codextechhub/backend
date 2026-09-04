@@ -16,6 +16,7 @@ PERM_STRUCTURE_VIEW = "academics.structure.view"
 PERM_STRUCTURE_CREATE = "academics.structure.create"
 PERM_STRUCTURE_UPDATE = "academics.structure.update"
 PERM_STRUCTURE_MANAGE = "academics.structure.manage"
+PERM_STRUCTURE_IMPORT = "academics.structure.import"
 
 PERM_CLASSES_VIEW = "academics.classes.view"
 PERM_CLASSES_CREATE = "academics.classes.create"

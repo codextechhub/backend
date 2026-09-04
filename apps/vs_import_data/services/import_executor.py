@@ -738,6 +738,14 @@ def execute_import(import_batch, queued_by):
 
         return execute_bank_statement_import(import_batch, queued_by)
 
+    # Whole-file too, and for the same reason: half a structure is worse than
+    # none. A school left with three of its five year groups, no promotion
+    # chain and no way to tell which rows took would have to unpick it by hand.
+    if import_batch.template.dataset_type == "academic_structure":
+        from schools.vs_academics.imports import execute_structure_import
+
+        return execute_structure_import(import_batch, queued_by)
+
     rows = import_batch.preview_rows or []
     total_rows = len(rows)
 

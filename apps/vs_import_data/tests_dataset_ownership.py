@@ -49,13 +49,20 @@ class DatasetOwnershipRuleTests(TestCase):
         self.assertFalse(may_import(SCHOOL, DatasetTypeChoices.SCHOOLS))
         self.assertFalse(may_import(SCHOOL, DatasetTypeChoices.CX_USERS))
 
-    def test_the_school_datasets_are_the_calendar_and_the_student_roll(self):
-        """The two datasets a school may import, and no others.
+    def test_the_school_datasets_are_the_calendar_the_roll_and_the_structure(self):
+        """The three datasets a school may import, and no others.
 
         Written the day ``calendar_events`` was added, replacing a test that
-        asserted no school dataset existed at all, and updated the day
-        ``students`` joined it. The rule it guards has not changed: a dataset is
-        a school's only when somebody has argued that it is, one at a time.
+        asserted no school dataset existed at all, and updated again as
+        ``students`` and then ``academic_structure`` joined it. The rule it
+        guards has not changed: a dataset is a school's only when somebody has
+        argued that it is, one at a time.
+
+        ``academic_structure`` was argued the same three ways as the other two,
+        and carries a fourth: it unblocks the roll. The students import refuses
+        any row naming a class the school has not built, so without it a school
+        hand-types sixty classes before it can load a single child.
+
         Staff and parents still have no template and no model to import into,
         and every other dataset here is CodeX's.
 
@@ -63,6 +70,7 @@ class DatasetOwnershipRuleTests(TestCase):
         """
         self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.CALENDAR_EVENTS))
         self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.STUDENTS))
+        self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.ACADEMIC_STRUCTURE))
 
         school_datasets = {
             dataset for dataset in DatasetTypeChoices.values
@@ -70,10 +78,14 @@ class DatasetOwnershipRuleTests(TestCase):
         }
         self.assertEqual(
             school_datasets,
-            {DatasetTypeChoices.CALENDAR_EVENTS, DatasetTypeChoices.STUDENTS},
+            {
+                DatasetTypeChoices.CALENDAR_EVENTS,
+                DatasetTypeChoices.STUDENTS,
+                DatasetTypeChoices.ACADEMIC_STRUCTURE,
+            },
             "A dataset became a school import. Argue for it in datasets.py the "
-            "way calendar_events and students are argued for, then update this "
-            "test.",
+            "way calendar_events, students and academic_structure are argued "
+            "for, then update this test.",
         )
 
     def test_the_calendar_import_creates_nothing_but_school_rows(self):

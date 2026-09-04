@@ -232,6 +232,13 @@ def _validate_dataset_specific_rules(import_batch) -> list[dict]:
         from schools.vs_students.imports import validate_students_import_batch
 
         return validate_students_import_batch(import_batch)
+    if dataset_type == "academic_structure":
+        # Owned by academics, for the same reason. This one reads the file as a
+        # whole rather than row by row: a level under two programmes, or a
+        # promotion chain that loops, is nothing any single row is wrong about.
+        from schools.vs_academics.imports import validate_structure_import_batch
+
+        return validate_structure_import_batch(import_batch)
     if dataset_type == "bank_statements":
         from vs_finance.statement_imports import validate_bank_statement_import_batch
 

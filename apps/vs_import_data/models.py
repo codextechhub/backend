@@ -52,6 +52,7 @@ class DatasetTypeChoices(models.TextChoices):
     BANK_STATEMENTS = "bank_statements", "Bank Statements"
     CALENDAR_EVENTS = "calendar_events", "Calendar Events"
     STUDENTS = "students", "Students"
+    ACADEMIC_STRUCTURE = "academic_structure", "Academic Structure"
 
 
 class ImportBatchStatusChoices(models.TextChoices):
