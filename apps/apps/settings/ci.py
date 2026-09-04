@@ -1,8 +1,25 @@
-"""
-CI settings - used by the GitHub Actions workflow (.github/workflows/ci.yml).
+"""CI settings, used by the GitHub Actions workflow (.github/workflows/ci.yml).
 
-PostgreSQL because that is what staging runs (B17): the whole point of CI is
-to exercise the schema/engine path that production code will actually meet.
+PostgreSQL, because that is what staging runs: the whole point of CI is to
+exercise the schema and engine path production code will actually meet.
+
+Throttling is disabled by zeroing the rates, never by emptying the dict. Every
+scope keeps its entry and loses only its rate. An empty dict does not turn
+throttling off, it breaks it: a view naming its own ``throttle_classes`` builds
+them whatever the default classes are, and DRF raises ``ImproperlyConfigured``
+for a scope with no entry at all, so those views answer 500 to every request
+rather than being served without a limit. The public pay-an-invoice routes are
+the ones that name their own. ``None`` is the value DRF reads as "no limit", so
+every scope resolves, none of them counts, and a scope added later inherits that
+without anybody having to remember this file exists.
+
+Two system checks are silenced. ``vs_notifications.W001`` reports active event
+types with no active template, which is true and useless here: the test database
+is built by migrations, so it holds the whole event-type registry and no
+templates at all, those being seeded per test. ``core.W001`` fires on
+``DEBUG=False`` with no worker, which is exactly how CI runs. Both are facts
+about the deployment rather than about the build, and real environments keep
+the warnings; see ``vs_notifications/checks.py``.
 """
 from .base import *
 
@@ -30,17 +47,8 @@ EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 CELERY_TASK_ALWAYS_EAGER = True
 CELERY_TASK_EAGER_PROPAGATES = True
 
-# Throttling off - tests hammer endpoints far faster than the rates allow.
-#
-# Every scope keeps its entry and loses only its rate. An empty dict does not
-# turn throttling off, it breaks it: a view that names its own
-# ``throttle_classes`` builds them whatever the default classes are, and DRF
-# raises ImproperlyConfigured for a scope with no entry at all, so those views
-# answer 500 to every request rather than being served without a limit. The
-# public pay-an-invoice routes are the ones that name their own. ``None`` is
-# the value DRF reads as "no limit", so each scope resolves, none of them
-# counts, and a scope added later inherits that without anybody having to
-# remember this file exists.
+# Throttling off: tests hammer endpoints far faster than the rates allow. Rates
+# are zeroed, never removed. See the module docstring.
 REST_FRAMEWORK = {
     **REST_FRAMEWORK,
     "DEFAULT_THROTTLE_CLASSES": [],
@@ -49,18 +57,12 @@ REST_FRAMEWORK = {
     ),
 }
 
-# vs_health: never spawn the background metric-flush thread under tests. It
-# would hold a DB connection open and block test-database teardown, and it
-# would race the explicit flush() the collector tests assert on.
+# vs_health: no background metric-flush thread under tests. It holds a DB
+# connection open, blocking test-database teardown, and races the explicit
+# flush() the collector tests assert on.
 HEALTH_METRICS_BACKGROUND_FLUSH = False
 
-# vs_notifications.W001 (active event types with no active template) is true
-# and useless here: the test database is built by migrations, so it holds the
-# whole event-type registry from vs_notifications migration 0008 and no
-# templates at all, which the suite seeds per test. Real environments keep the
-# warning; see vs_notifications/checks.py.
-# core.W001: CI runs with DEBUG=False and no worker, which is the check's exact
-# trigger. It is a fact about the deployment, not about the build.
+# Both are true under CI and useless. See the module docstring.
 SILENCED_SYSTEM_CHECKS = [
     *SILENCED_SYSTEM_CHECKS, "vs_notifications.W001", "core.W001",
 ]
