@@ -49,10 +49,9 @@ PostgreSQL is the only supported engine (MariaDB retired 2026-06-12; the old
 local data lives in `~/cx_db_mariadb_final_backup.sql.gz`). Rebuild the local
 database any time with `./reseed-dev.sh`.
 
-Required environment variables (server refuses to start without them):
-`SECRET_KEY`, `RENDER_API_KEY`, `TEMP_PASSWORD_PEPPER`. See
-`apps/apps/settings/base.py` for the optional ones (email, payment providers,
-`CORS_ALLOWED_ORIGINS`, …). Never commit real values.
+Required environment variable (the server refuses to start without it):
+`SECRET_KEY`. See `apps/apps/settings/base.py` for the optional ones (email,
+payment providers, `CORS_ALLOWED_ORIGINS`, …). Never commit real values.
 
 ## Getting started
 

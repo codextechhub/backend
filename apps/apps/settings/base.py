@@ -23,15 +23,22 @@ framework that nothing here imports, the frontend owning its own toasts.
 
 Secrets
 -------
-``SECRET_KEY``, ``RENDER_API_KEY`` and ``TEMP_PASSWORD_PEPPER`` carry no
-fallback literal, so the server refuses to start without them. A default lets a
-local run succeed against a production credential when the variable is missing,
-which is how a fallback secret gets used in anger, and a commented-out secret
-is still published in every clone of this repository.
+``SECRET_KEY`` carries no fallback literal, so the server refuses to start
+without it. A default lets a local run succeed against a production credential
+when the variable is missing, which is how a fallback secret gets used in anger,
+and a commented-out secret is still published in every clone of this repository.
 
-OUTSTANDING: all three were once committed here as fallbacks and remain in this
-repository's history. Rotate them at source - the Render dashboard for the API
-key, the env group for the other two.
+It is the only secret this file requires, and a setting added here must be
+read by something. One that gates startup and is referenced nowhere protects
+nothing: it costs every deployment a value to supply, and a green CI run
+against a dummy is the proof that it was never doing any work.
+
+OUTSTANDING: ``SECRET_KEY`` was once committed here as a fallback and remains in
+this repository's history, so rotate it in the env group. It signs the JWTs, the
+pay links (``vs_finance.pay_links``) and the ``/media/`` URLs
+(``core.media``), so rotating it logs every user out, kills every outstanding
+pay link and dead-ends every signed media URL already sitting in an inbox.
+Do it in a quiet window and re-send any dunning batch issued just before.
 
 Throttling
 ----------
@@ -141,13 +148,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 # SECURITY WARNING: keep the secret key used in production secret!
-# All three values MUST be set via environment variables or a .env file.
-# The server will refuse to start if any are missing.
+# Must be set via an environment variable or a .env file. The server refuses
+# to start without it.
 SECRET_KEY = config("SECRET_KEY")
-RENDER_API_KEY = config("RENDER_API_KEY")
-TEMP_PASSWORD_PEPPER = config("TEMP_PASSWORD_PEPPER")
 
-# No fallback literals, and three secrets still to rotate. See the module
+# No fallback literal, and one secret still to rotate. See the module
 # docstring.
 
 AUTH_USER_MODEL = "vs_user.User"

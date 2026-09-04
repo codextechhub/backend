@@ -42,8 +42,8 @@ services:
           type: keyvalue
           name: xvs-redis
           property: connectionString
-      # SECRET_KEY, RENDER_API_KEY, TEMP_PASSWORD_PEPPER, DB_*, EMAIL_*,
-      # ALLOWED_HOSTS, CORS_ALLOWED_ORIGINS come from the dashboard env group.
+      # SECRET_KEY, DB_*, EMAIL_*, ALLOWED_HOSTS and CORS_ALLOWED_ORIGINS
+      # come from the dashboard env group.
 
   - type: worker
     name: xvs-worker
