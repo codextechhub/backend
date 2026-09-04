@@ -1433,6 +1433,86 @@ class InvitationEngineDispatchTests(TestCase):
         self.assertNotIn(token, notification.html_body)
         self.assertIn(token, mail.outbox[0].body)
 
+    @override_settings(SCHOOL_APP_BASE_URL="https://xvs.codexng.com")
+    def test_a_school_user_activates_on_their_own_school_app(self):
+        """The Console is not theirs to sign into.
+
+        A school admin invited to Caleb follows the link to
+        caleb.xvs.codexng.com, under /accounts, where the school app serves the
+        activation page. Sending them to intranet.codexng.com lands them in the
+        CodeX backoffice, which they cannot open, and the /accounts prefix is
+        half the answer: the school app serves these pages one level down, so
+        the Console's root path resolves to nothing there.
+        """
+        from django.core import mail
+
+        from vs_user.tasks import send_invitation_email_task
+
+        school = make_school(name="Caleb International College", slug="caleb")
+        user = make_school_admin(school, email="ada@caleb.test")
+        invitation, token = self._invitation_for(user)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            send_invitation_email_task.apply(
+                kwargs={"invitation_id": invitation.pk, "token": token}
+            )
+
+        body = mail.outbox[0].body
+        self.assertIn(f"https://caleb.xvs.codexng.com/accounts/activate/{token}", body)
+        self.assertNotIn("intranet.codexng.com", body)
+
+    @override_settings(SCHOOL_APP_BASE_URL="https://xvs.codexng.com")
+    def test_a_school_user_resets_their_password_on_their_own_school_app(self):
+        """The reset link is built the same way, from the same helper."""
+        from unittest import mock
+
+        from django.core import mail
+
+        from vs_user.services.password import PasswordService
+        from vs_user.tasks import send_password_reset_email_task
+
+        school = make_school(name="Caleb International College", slug="caleb")
+        user = make_school_admin(school, email="ada-reset@caleb.test")
+
+        with mock.patch("vs_user.tasks.send_password_reset_email_task.delay") as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                PasswordService.request_reset(
+                    email=user.email, tenant=school.tenant.slug,
+                )
+        queued = {
+            k: v for k, v in delay.call_args.kwargs.items()
+            if not k.startswith("_job")
+        }
+        token = queued["token"]
+
+        with self.captureOnCommitCallbacks(execute=True):
+            send_password_reset_email_task.apply(kwargs=queued)
+
+        body = mail.outbox[0].body
+        self.assertIn(
+            f"https://caleb.xvs.codexng.com/accounts/reset-password/{token}", body
+        )
+        self.assertNotIn("intranet.codexng.com", body)
+
+    def test_platform_staff_still_activate_on_the_console(self):
+        """Platform staff do sign in at the Console, so their link is unchanged."""
+        from django.core import mail
+
+        from vs_user.tasks import send_invitation_email_task
+
+        user = make_cx_user(email="console-staff@codex.test")
+        invitation, token = self._invitation_for(user)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            send_invitation_email_task.apply(
+                kwargs={"invitation_id": invitation.pk, "token": token}
+            )
+
+        body = mail.outbox[0].body
+        self.assertIn(f"https://intranet.codexng.com/activate/{token}", body)
+        # No /accounts prefix on the Console: it serves these at its root.
+        self.assertNotIn("/accounts/activate/", body)
+
     @override_settings(EMAIL_BCC=["backend-test@codexng.com"])
     def test_the_monitoring_mailbox_is_blind_copied_on_an_invitation(self):
         """The invitation carries no bcc of its own, so the platform list applies.

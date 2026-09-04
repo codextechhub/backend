@@ -36,10 +36,11 @@ from math import ceil
 
 from celery import shared_task
 from django.conf import settings
-from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
 from django.urls import reverse
 from django.utils import timezone
+
+from vs_tenants.app_urls import account_link_base
 
 logger = logging.getLogger('vs_user.tasks')
 
@@ -130,11 +131,7 @@ def send_invitation_email_task(self, invitation_id: int, token: str):
 
     profile = getattr(user.tenant, 'school_profile', None)  # Legacy template context below.
     tenant_name = _tenant_display_name(user)
-    base_url = getattr(settings, 'FRONTEND_BASE_URL', None)
-    if not base_url:
-        raise ImproperlyConfigured('FRONTEND_BASE_URL must be set in settings.')
-
-    invitation_url = f'{base_url.rstrip("/")}/activate/{_INVITATION_TOKEN_MARKER}'
+    invitation_url = f'{account_link_base(user.tenant)}/activate/{_INVITATION_TOKEN_MARKER}'
 
     send_notification(
         event_key="user.invited",
@@ -253,10 +250,7 @@ def send_password_reset_email_task(
 
     user = reset_request.user
 
-    base_url = getattr(settings, 'FRONTEND_BASE_URL', None)
-    if not base_url:
-        raise ImproperlyConfigured('FRONTEND_BASE_URL must be set in settings.')
-    reset_url = f'{base_url.rstrip("/")}/reset-password/{_PASSWORD_RESET_TOKEN_MARKER}'
+    reset_url = f'{account_link_base(user.tenant)}/reset-password/{_PASSWORD_RESET_TOKEN_MARKER}'
     expiry_hours = max(
         1,
         ceil((reset_request.expires_at - reset_request.created_at).total_seconds() / 3600),
