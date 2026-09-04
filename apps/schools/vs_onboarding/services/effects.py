@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 
 from django.db import transaction
+from django.utils import timezone
 
 from vs_audit.models import AuditModuleKey, AuditSeverity, AuditStatus
 
@@ -80,6 +81,13 @@ def actor_name(actor) -> str:
         or getattr(actor, "email", "")
         or "Unknown user"
     )
+
+
+def display_datetime(value) -> str:
+    """Render one lifecycle timestamp for a person reading an email."""
+    if value is None:
+        return ""
+    return timezone.localtime(value).strftime("%d %b %Y, %H:%M %Z")
 
 
 def notification_recipients(tenant):

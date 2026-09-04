@@ -479,6 +479,7 @@ class ExpiryWarningTests(TestCase):
         self.assertEqual(context["school_name"], "Warned School")
         self.assertEqual(context["days_remaining"], ONBOARDING_EXPIRY_WARNING_DAYS)
         self.assertTrue(context["expires_on"])
+        self.assertRegex(context["expires_on_display"], r"^\d{2} [A-Z][a-z]{2} \d{4}$")
 
     def test_dry_run_neither_stamps_nor_sends(self):
         with patch("schools.vs_onboarding.services.effects._send") as send:
@@ -624,6 +625,10 @@ class StateExpiryPayloadTests(TestCase):
         self.assertEqual(
             context["expires_on"],
             timezone.localtime(expiry["expires_at"]).date().isoformat(),
+        )
+        self.assertEqual(
+            context["expires_on_display"],
+            timezone.localtime(expiry["expires_at"]).strftime("%d %b %Y"),
         )
         self.assertEqual(context["days_remaining"], expiry["days_remaining"])
 

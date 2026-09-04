@@ -1377,6 +1377,179 @@ class PasswordSecurityEmailDesignTests(_NotifFixture):
 
 
 # ---------------------------------------------------------------------------
+# Onboarding lifecycle email design
+# ---------------------------------------------------------------------------
+
+class OnboardingEmailDesignTests(_NotifFixture):
+
+    EVENT_KEYS = (
+        "onboarding.step_completed",
+        "onboarding.go_live_ready",
+        "onboarding.go_live_reviewed",
+        "onboarding.activated",
+        "onboarding.expiry_warning",
+        "onboarding.stale_report",
+    )
+
+    def setUp(self):
+        super().setUp()
+        from .models import NotificationTemplate
+
+        self.templates = {
+            event_key: NotificationTemplate.objects.get(
+                event_type=self._event(event_key),
+                channel=ChannelChoices.EMAIL,
+            )
+            for event_key in self.EVENT_KEYS
+        }
+
+    def _render(self, event_key, **overrides):
+        from .services.render import render_notification_template
+
+        context = {
+            "school_name": "Bright Star School",
+            "school_slug": "bright-star",
+            "school_logo_url": "",
+            "step_number": 3,
+            "total_steps": 5,
+            "step_name": "Academic Structure",
+            "completed_by_name": "Ada Admin",
+            "decision": "rejected",
+            "reviewed_by_name": "Musa Reviewer",
+            "reviewed_at": "2026-09-04T11:30:00+01:00",
+            "reviewed_at_display": "04 Sep 2026, 11:30 WAT",
+            "rejection_reason": "Confirm the main branch details.",
+            "go_live_at": "2026-09-04T11:32:00+01:00",
+            "go_live_at_display": "04 Sep 2026, 11:32 WAT",
+            "expires_on": "2026-09-18",
+            "expires_on_display": "18 Sep 2026",
+            "pending_days": 76,
+            "days_remaining": 14,
+            "stale_after_days": 60,
+            "window_days": 14,
+            "ageing_count": 2,
+            "expired_count": 1,
+            "ageing_list": "- Bright Star School (bright-star): 68 days pending",
+            "expired_list": "- Greenfield School (greenfield): 90 days pending",
+            "expiry_days": 90,
+            **overrides,
+        }
+        return render_notification_template(self.templates[event_key], context)
+
+    def test_progress_mail_names_the_step_and_ready_mail_gives_the_right_action(self):
+        subject, body, html = self._render("onboarding.step_completed")
+
+        self.assertEqual(
+            subject,
+            "Bright Star School onboarding: step 3 of 5 complete",
+        )
+        self.assertIn("Completed item: Academic Structure", body)
+        self.assertIn("Progress: Step 3 of 5", body)
+        self.assertIn("Ada Admin", body)
+        self.assertIn("PROGRESS DETAILS", html)
+
+        subject, body, _ = self._render("onboarding.go_live_ready")
+        self.assertEqual(subject, "Bright Star School is ready to request go-live")
+        self.assertIn("submit a go-live request", body)
+        self.assertIn("submit the request for platform review", body)
+        self.assertNotIn("flip the school", body.lower())
+
+    def test_review_mail_has_clear_approved_and_rejected_paths(self):
+        subject, body, _ = self._render("onboarding.go_live_reviewed")
+
+        self.assertEqual(
+            subject,
+            "Action needed: Bright Star School go-live request was not approved",
+        )
+        self.assertIn("Decision: rejected", body)
+        self.assertIn("Reviewed at: 04 Sep 2026, 11:30 WAT", body)
+        self.assertIn("Reason: Confirm the main branch details.", body)
+        self.assertIn("submit a new request", body)
+
+        subject, body, _ = self._render(
+            "onboarding.go_live_reviewed",
+            decision="approved",
+            rejection_reason="",
+        )
+        self.assertEqual(subject, "Bright Star School go-live request approved")
+        self.assertIn("activation confirmation", body)
+        self.assertNotIn("Reason:", body)
+
+    def test_activation_and_expiry_mail_use_human_dates_and_precise_outcomes(self):
+        subject, body, _ = self._render("onboarding.activated")
+
+        self.assertEqual(subject, "Bright Star School is live on CodeX Vision")
+        self.assertIn("Activated at: 04 Sep 2026, 11:32 WAT", body)
+        self.assertIn("permitted by their roles", body)
+        self.assertNotIn("2026-09-04T", body)
+
+        subject, body, _ = self._render(
+            "onboarding.expiry_warning",
+            days_remaining=1,
+        )
+        self.assertEqual(
+            subject,
+            "Action required by 18 Sep 2026: finish Bright Star School onboarding",
+        )
+        self.assertIn("Time remaining: 1 day", body)
+        self.assertNotIn("1 days", body)
+        self.assertIn("users cannot sign in", body)
+
+    def test_operator_report_separates_ageing_and_suspended_schools(self):
+        subject, body, html = self._render("onboarding.stale_report")
+
+        self.assertEqual(
+            subject,
+            "Onboarding follow-up: 2 ageing, 1 suspended",
+        )
+        self.assertIn("Ageing schools: 2", body)
+        self.assertIn("Recently suspended: 1", body)
+        self.assertIn("SCHOOLS STILL ONBOARDING", body)
+        self.assertIn("RECENTLY SUSPENDED", body)
+        self.assertIn("Bright Star School", html)
+        self.assertIn("Greenfield School", html)
+
+    def test_migration_refreshes_standard_rows_and_preserves_custom_rows(self):
+        from importlib import import_module
+        from django.apps import apps
+
+        custom = self.templates["onboarding.activated"]
+        custom.subject = "My activation subject"
+        custom.body = "My activation message"
+        custom.cta_label = "Continue"
+        custom.cta_url = "https://mine.test"
+        custom.html_body = "<html>staff design</html>"
+        custom.html_is_custom = True
+        custom.save()
+
+        for event_key, template in self.templates.items():
+            if template.pk == custom.pk:
+                continue
+            template.subject = "Old subject"
+            template.body = "Old body"
+            template.html_is_custom = False
+            template.save()
+
+        migration = import_module(
+            "vs_notifications.migrations.0016_refine_onboarding_emails"
+        )
+        migration.refine_standard_onboarding_emails(apps, None)
+
+        for event_key, template in self.templates.items():
+            template.refresh_from_db()
+            if template.pk == custom.pk:
+                self.assertEqual(template.subject, "My activation subject")
+                self.assertEqual(template.body, "My activation message")
+                self.assertEqual(template.cta_label, "Continue")
+                self.assertEqual(template.cta_url, "https://mine.test")
+                self.assertEqual(template.html_body, "<html>staff design</html>")
+            else:
+                self.assertNotEqual(template.subject, "Old subject")
+                self.assertNotEqual(template.body, "Old body")
+                self.assertIn("{{ brand_logo_url }}", template.html_body)
+
+
+# ---------------------------------------------------------------------------
 # Stored email HTML - the database holds what gets sent
 #
 # The console edits html_body directly, so the invariant these pin is: what an

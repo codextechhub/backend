@@ -1967,6 +1967,8 @@ class NotificationTests(OnboardingFixture):
         self.assertNotIn("{{", body)
 
     def test_activation_notifies_with_the_go_live_timestamp(self):
+        from .services import effects
+
         self.make_ready()
         request_row = self.submit_request()
         OnboardingProgress.all_objects.filter(tenant=self.tenant).update(
@@ -1985,6 +1987,10 @@ class NotificationTests(OnboardingFixture):
         self.assertTrue(reviewed.exists())
         self.assertTrue(activated.exists())
         self.assertIn("approved", reviewed.first().body)
+        progress = OnboardingProgress.all_objects.get(tenant=self.tenant)
+        display_time = effects.display_datetime(progress.go_live_at)
+        self.assertIn(f"Reviewed at: {display_time}", reviewed.first().body)
+        self.assertIn(f"Activated at: {display_time}", activated.first().body)
         self.assertNotIn("{{", activated.first().body)
 
     def test_a_notification_failure_never_undoes_committed_state(self):

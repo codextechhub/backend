@@ -70,6 +70,18 @@ _EXACT_SAMPLES = {
     "window_minutes":   30,
     "total_steps":      6,
     "step_number":      4,
+    "decision":         "rejected",
+    "reviewed_at_display": "04 Sep 2026, 11:30 WAT",
+    "go_live_at_display": "04 Sep 2026, 11:32 WAT",
+    "expires_on_display": "18 Sep 2026",
+    "pending_days":     76,
+    "days_remaining":  14,
+    "stale_after_days": 60,
+    "window_days":      14,
+    "ageing_count":     3,
+    "expired_count":    1,
+    "ageing_list":      "- Bright Star School (bright-star): 68 days pending",
+    "expired_list":     "- Greenfield School (greenfield): 90 days pending",
 }
 
 _SUFFIX_SAMPLES = (

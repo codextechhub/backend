@@ -311,6 +311,7 @@ def warn_expiring_onboarding(*, now=None, dry_run: bool = False) -> dict:
         context.update({
             "days_remaining": row["days_remaining"],
             "expires_on": timezone.localtime(expires_at).date().isoformat(),
+            "expires_on_display": timezone.localtime(expires_at).strftime("%d %b %Y"),
             "expiry_days": ONBOARDING_EXPIRY_DAYS,
             "pending_days": row["pending_days"],
         })
