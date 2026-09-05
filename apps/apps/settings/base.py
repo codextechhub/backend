@@ -252,6 +252,9 @@ INSTALLED_APPS = [
     # After vs_academics: every ClassEnrolment row carries two non-null
     # foreign keys into it, so that is the order the dependency runs in.
     "schools.vs_students",
+    # After vs_academics: every TeachingAssignment carries three non-null
+    # foreign keys into it, so that is the order the dependency runs in.
+    "schools.vs_staff",
     # The Finance Abstraction Layer: the boundary where school words meet the
     # neutral finance engines, so it belongs here and never in apps/core/. A
     # Django app only because it owns the fee-structure-to-term link table.

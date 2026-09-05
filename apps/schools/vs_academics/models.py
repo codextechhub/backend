@@ -413,6 +413,22 @@ class SchoolClass(_Branched):
     #: ``vs_students`` enforces it on placement, and must read a null as "no
     #: limit" rather than as a limit not yet reached.
     capacity = models.PositiveSmallIntegerField(null=True, blank=True)
+    #: The member of staff who owns this class, if one has been designated.
+    #:
+    #: Held here rather than on the assignment because the designation is unique
+    #: per class by construction, and a second copy on a row that is not would
+    #: let two people claim it. ``vs_staff`` writes it, through
+    #: ``school.teachers.assign``; this module declares the column and reads it.
+    #:
+    #: It points at ``StaffProfile`` and not at ``User``, which is the whole
+    #: difference: a class teacher who has left still holds the class until
+    #: somebody remembers to deactivate a login, and employment is the fact that
+    #: answers whether they still work here. SET_NULL, because a class outlives
+    #: whoever taught it and losing the record must not take the class with it.
+    class_teacher = models.ForeignKey(
+        "vs_staff.StaffProfile", on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="classes_led",
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         null=True, blank=True, related_name="+",

@@ -405,14 +405,26 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
         ),
     ),
     (
-        "Teaching Staff Records",
+        "Staff Records",
         BRANCH_SCOPABLE,
-        "Add, edit and manage teaching staff.",
+        "Add, edit and manage the school's people, and give them teaching duties.",
         (
             "school.teachers.view",
             "school.teachers.create",
             "school.teachers.update",
             "school.teachers.manage",
+            "school.teachers.assign",
+        ),
+    ),
+    (
+        "Staff Leave",
+        BRANCH_SCOPABLE,
+        "Apply for leave, record it for somebody else, and read what has been "
+        "taken. Approving a request is not here: that is the approvals module.",
+        (
+            "school.leave.apply",
+            "school.leave.view",
+            "school.leave.manage",
         ),
     ),
     (
@@ -438,6 +450,10 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
             "academics.structure.create",
             "academics.structure.update",
             "academics.structure.manage",
+            # Loading the spine from a spreadsheet is the same authority as
+            # building it by hand, one screen along, so it belongs in the same
+            # bundle rather than in a bundle of its own.
+            "academics.structure.import",
         ),
     ),
     (

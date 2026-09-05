@@ -103,6 +103,13 @@ PLATFORM_ONLY_DATASETS: frozenset[str] = frozenset({
 TENANT_DATASETS: frozenset[str] = frozenset({
     DatasetTypeChoices.CALENDAR_EVENTS,
     DatasetTypeChoices.STUDENTS,
+    # The school's own people. Argued the same three ways: a school already
+    # creates these one at a time through school.teachers.create, which is its
+    # own key; the handler writes nothing but rows of the uploading tenant, and
+    # its role column resolves inside that tenant so a platform role key is not
+    # reachable; and a secondary school opening with ninety staff is not a form
+    # somebody fills in ninety times.
+    DatasetTypeChoices.STAFF,
     # Programmes, year groups and classes. Argued the same three ways: the
     # school already creates these through academics.structure.create and
     # academics.classes.create, which are its own keys; the handler writes

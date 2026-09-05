@@ -221,6 +221,21 @@ class InvitationService:
             request=request,
         )
 
+        # 7. Tell whoever is listening, inside this transaction.
+        #
+        # A domain module may hold a record whose own lifecycle starts here: a
+        # school's staff record moves from Invited to Active when its owner
+        # accepts, and there is no second act of an administrator declaring
+        # somebody employed. This app must not import that module to say so -
+        # it is an engine and knows nothing about schools - so it announces the
+        # fact and the module that owns the consequence connects to it.
+        #
+        # Inside the transaction deliberately: a person must never be ACTIVE on
+        # their login and Invited on their staff record.
+        from ..signals import account_activated
+
+        account_activated.send(sender=User, user=user)
+
         return {
             'message': 'Account activated. You can now log in.',
         }

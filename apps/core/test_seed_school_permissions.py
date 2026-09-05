@@ -92,11 +92,25 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         new one: ``.import`` and ``.export``. Both verbs were already seeded, so
         no new action was invented - a key whose action is not in the canonical
         list cannot be created at all.
+
+        69 = 64, plus five. Four are M12's: ``school.teachers.assign``, which
+        decides who teaches what and who owns a class's marks, and the three
+        ``school.leave`` keys, which are three rather than two because applying
+        for your own leave, reading a colleague's and recording one on their
+        behalf are three different acts by three different people. The fifth is
+        ``academics.structure.import``, which was seeded with the structure
+        importer and never counted here.
+
+        No new resource was invented for staff records. ``school.teachers`` is
+        already seeded, already granted to all three prebuilt roles and already
+        mirrored in school-fe; registering ``school.staff.*`` beside it would
+        leave live keys governing nothing and tell the frontend that two
+        resources own one screen. The resource DESCRIPTION changed instead.
         """
         _run_school_seed()
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            64,
+            69,
         )
 
     def test_impersonation_keys_are_critical_and_restricted(self):
@@ -158,11 +172,12 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
     def test_school_admin_gets_all_keys(self):
         """A school admin holds every key in both modules.
 
-        64 = 62, plus M11's two: school.students.import and .export.
-        The 62 was 57 plus M14's five: academics.timetable view, create,
-        update, manage and publish.
+        69 = 64, plus M12's four and the structure importer's one. The 64 was
+        62 plus M11's two: school.students.import and .export. The 62 was 57
+        plus M14's five: academics.timetable view, create, update, manage and
+        publish.
         """
-        self.assertEqual(len(self._defaults("school_admin")), 64)
+        self.assertEqual(len(self._defaults("school_admin")), 69)
 
     def test_only_school_admin_gets_impersonation_by_default(self):
         # The most powerful school keys must never be a branch_admin/teacher
@@ -218,9 +233,17 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         about the whole school's curriculum, so structure.create, .update and
         .manage stay with the school admin, and so does subject.manage, which
         deletes.
+
+        36 = 32, plus M12's four. A branch admin holds every one of them: who
+        teaches which class at their branch is a branch decision, and so is
+        recording that somebody there is away. Only the employment lifecycle
+        stays with the school admin, because terminating somebody is not.
         """
         branch_admin = self._defaults("branch_admin")
-        self.assertEqual(len(branch_admin), 32)
+        self.assertEqual(len(branch_admin), 36)
+        self.assertIn("school.teachers.assign", branch_admin)
+        self.assertIn("school.leave.manage", branch_admin)
+        self.assertNotIn("school.teachers.manage", branch_admin)
         self.assertIn("school.students.export", branch_admin)
         self.assertNotIn("school.students.import", branch_admin)
         self.assertIn("academics.timetable.publish", branch_admin)
@@ -231,7 +254,9 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         self.assertNotIn("school.profile.update", self._defaults("branch_admin"))
 
     def test_teacher_default_count(self):
-        """10 = 9, plus the one read key M14 gives a teacher.
+        """11 = 10, plus the one key M12 gives a teacher: school.leave.apply.
+
+        The 10 was 9, plus the one read key M14 gives a teacher.
 
         A teacher holds academics.timetable.view because reading their own
         timetable is the single most useful thing this platform will ever do
@@ -246,7 +271,13 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         this module took.
         """
         keys = self._defaults("teacher")
-        self.assertEqual(len(keys), 10)
+        self.assertEqual(len(keys), 11)
+        # M12 gives a teacher exactly one key: applying for their own leave.
+        # Reading a colleague's is not something every colleague may do, so
+        # school.leave.view stops at the two admin roles.
+        self.assertIn("school.leave.apply", keys)
+        self.assertNotIn("school.leave.view", keys)
+        self.assertNotIn("school.teachers.assign", keys)
         self.assertIn("academics.timetable.view", keys)
         self.assertNotIn("academics.timetable.update", keys)
         self.assertIn("academics.structure.view", keys)
@@ -294,8 +325,8 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        # school_admin defaults are all 64 keys.
-        self.assertEqual(len(keys), 64)
+        # school_admin defaults are all 69 keys.
+        self.assertEqual(len(keys), 69)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
         self.assertIn("school.roles.approve", keys)
@@ -347,7 +378,7 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=teacher_role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        self.assertEqual(len(keys), 10)
+        self.assertEqual(len(keys), 11)
         self.assertIn("school.students.view", keys)
         self.assertNotIn("school.students.create", keys)
 

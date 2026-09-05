@@ -87,6 +87,15 @@ LATER_BINDINGS = {
     "vs_students.0004_bind_guardian_photos": [
         ("vs_students", "Guardian", "photo", "tenant"),
     ],
+    # A staff photograph and a staff document, both arriving with the module.
+    # Both models carry their own tenant, so the lookup is the column rather
+    # than a join. Same no-op-by-construction shape as the student wave, and it
+    # runs for the same reason: a seeder writing rows before the app config was
+    # wired leaves files nothing points at, and an unbound file is refused.
+    "vs_staff.0002_bind_staff_files": [
+        ("vs_staff", "StaffProfile", "photo", "tenant"),
+        ("vs_staff", "StaffDocument", "file", "tenant"),
+    ],
 }
 
 

@@ -1193,6 +1193,12 @@ class EmployeeSalarySerializer(FieldSecurityMixin, serializers.ModelSerializer):
     # per-branch payroll. ``branch_name`` is null for an unassigned row, which is
     # the state the frontend filters on to find who is still blocking the switch.
     branch_name = serializers.CharField(source="branch.name", read_only=True, default=None)
+    # The account this row is for, where one is known. Not FLS-stripped: WHO a
+    # roster row is about is not a pay figure, and it is what lets a caller ask
+    # whether the person being paid still works here. Null on every row written
+    # before the link existed, and there is no backfill, so a null means "not
+    # linked yet" rather than "not an employee".
+    employee_id = serializers.IntegerField(read_only=True, allow_null=True)
     # PAYE/pension/net/components are derived when a structure is assigned, else the stored
     # flat figures. Computed once per row (memoised) to avoid re-walking the components.
     paye_amount = serializers.SerializerMethodField()
@@ -1216,7 +1222,8 @@ class EmployeeSalarySerializer(FieldSecurityMixin, serializers.ModelSerializer):
     class Meta:
         model = EmployeeSalary
         fields = [
-            "id", "name", "branch_id", "branch_name", "structure_id", "structure_name",
+            "id", "name", "employee_id", "branch_id", "branch_name",
+            "structure_id", "structure_name",
             "gross_amount", "paye_amount", "pension_amount", "net_amount", "components",
             "cost_center", "is_active",
         ]

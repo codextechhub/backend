@@ -55,6 +55,7 @@ class DatasetTypeChoices(models.TextChoices):
     ACADEMIC_STRUCTURE = "academic_structure", "Academic Structure"
     SUBJECTS = "subjects", "Subjects"
     GUARDIANS = "guardians", "Guardians"
+    STAFF = "staff", "Staff"
 
 
 class ImportBatchStatusChoices(models.TextChoices):

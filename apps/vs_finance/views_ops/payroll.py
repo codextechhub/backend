@@ -330,6 +330,36 @@ def _resolve_salary(request, entity, pk):
     return sal
 
 
+# Support the resolve employee workflow.
+def _resolve_employee(entity, raw):
+    """Resolve an account id to the person a roster row is for, or None.
+
+    Deliberately a USER id and not a staff-record id. This app is
+    domain-neutral: it knows about entities, employees and money, and nothing
+    about schools or staff profiles, so a school module cannot be imported here
+    to resolve one. A user is the identity every domain already shares, and it
+    is what ``EmployeeSalary.employee`` has always pointed at.
+
+    Scoped to the entity's own tenant, so a crafted id cannot attach another
+    customer's account to this roster.
+
+    Optional on purpose, and it stays optional. A school may legitimately pay
+    somebody who has no account at all - a contractor, a visiting examiner - so
+    ``name`` remains the required field and this only ever adds certainty where
+    it is available.
+    """
+    if raw in (None, "", 0, "0"):
+        return None
+    from django.contrib.auth import get_user_model
+
+    user = get_user_model().objects.filter(
+        pk=raw, tenant=entity.tenant,
+    ).first() if str(raw).isdigit() else None
+    if user is None:
+        raise ValidationError({"employee": "No such person at this customer."})
+    return user
+
+
 # Support the resolve structure workflow.
 def _resolve_structure(entity, raw, *, required=False):
     """Resolve a salary-structure id scoped to the entity, or None."""
@@ -387,11 +417,19 @@ class EmployeeSalaryListCreateView(_FinanceBase):
     def post(self, request):
         entity = resolve_entity(request)
         body = request.data or {}
+        employee = _resolve_employee(entity, body.get("employee"))
         name = str(body.get("name", "")).strip()
+        if not name and employee is not None:
+            # Taken from the account when one is named, so a roster keyed on a
+            # person does not also depend on somebody retyping their name the
+            # same way twice.
+            name = " ".join(
+                part for part in (employee.first_name, employee.last_name) if part
+            ).strip()
         if not name:
             raise ValidationError({"name": "An employee name is required."})
         sal = EmployeeSalary.objects.create(
-            entity=entity, name=name,
+            entity=entity, name=name, employee=employee,
             # A pinned officer's new hire is hers; an unpinned bursar's is
             # unassigned until somebody says otherwise, which is what every row on
             # every roster is today. ``_branch_rule`` decides only the officer who
@@ -430,6 +468,18 @@ class EmployeeSalaryDetailView(_FinanceBase):
         entity = resolve_entity(request)
         sal = _resolve_salary(request, entity, pk)
         body = request.data or {}
+        if "employee" in body:
+            # Linking an existing row to its person is the whole point of
+            # FR-015: every row written before this shipped has a null here, and
+            # there is no backfill, so this is how a school closes the gap one
+            # roster row at a time.
+            sal.employee = _resolve_employee(entity, body.get("employee"))
+            if sal.employee is not None and not str(body.get("name", "")).strip():
+                sal.name = " ".join(
+                    part for part in (
+                        sal.employee.first_name, sal.employee.last_name,
+                    ) if part
+                ).strip() or sal.name
         if "name" in body:
             sal.name = str(body["name"]).strip()
         if "branch" in body:

@@ -1121,6 +1121,225 @@ TEMPLATES: list[dict] = [
             },
         ],
     },
+    {
+        # -----------------------------------------------------------------------
+        # One row = one member of a school's own staff, invited as they are
+        # created. A school dataset, argued in vs_import_data/datasets.py the
+        # same three ways the others are.
+        #
+        # There is no school column, deliberately: the handler takes its tenant
+        # from the batch, so there is nothing for a crafted file to name. The
+        # role column resolves inside THAT tenant, so a platform role key is not
+        # reachable and a file cannot create a CodeX hire.
+        # -----------------------------------------------------------------------
+        "template": {
+            "code": "staff_master_v1",
+            "name": "Staff Import",
+            "dataset_type": DatasetTypeChoices.STAFF,
+            "status": TemplateStatusChoices.ACTIVE,
+            "default_file_format": FileFormatChoices.XLSX,
+            "description": (
+                "Template for loading a school's existing staff in one go: "
+                "teachers, administrators, bursars and everybody else on the "
+                "payroll."
+            ),
+            "instructions": (
+                "One person per row. Everybody arrives as Invited with an "
+                "account in Pending Activation, and an invitation goes out by "
+                "email and in-app. "
+                "Email must be unique within this school; the same address may "
+                "be an account at another school, which is fine. "
+                "Role must already exist in this school's role catalogue - a "
+                "role the engine cannot find is a hard error, not a warning, "
+                "because there is no invite-now-decide-later. "
+                "Staff ID is your school's own format and is only checked for "
+                "not already being taken here; leave it blank if you do not "
+                "number your staff. "
+                "Employment Type is one of Full-time, Part-time, Contract or "
+                "Volunteer. Hire Date is YYYY-MM-DD. "
+                "Leave Branch blank for somebody who works across the whole "
+                "school, such as a registrar, or write the branch name exactly "
+                "as it appears in Branches. A school that runs a single branch "
+                "leaves it blank on every row. "
+                "A row whose email is already an account here is skipped with a "
+                "reason rather than added twice."
+            ),
+            "allow_sample_row": True,
+            "sample_row_data": {
+                "First Name": "Chukwuemeka",
+                "Middle Name": "",
+                "Last Name": "Eze",
+                "Email": "chukwuemeka.eze@example.ng",
+                "Phone": "0803 555 0112",
+                "Gender": "MALE",
+                "Staff ID": "BFS/STF/0012",
+                "Job Title": "Lead Teacher",
+                "Employment Type": "Full-time",
+                "Hire Date": "2021-09-06",
+                "Branch": "",
+                "Role": "teacher",
+            },
+            "validation_rules": {
+                "min_rows": 1,
+                # A large secondary school is two or three hundred staff. Five
+                # thousand is far past anything real and still cheap to check.
+                "max_rows": 5_000,
+                "allowed_file_formats": ["csv", "xlsx"],
+            },
+            "is_download_enabled": True,
+        },
+        "columns": [
+            {
+                "column_name": "First Name",
+                "target_field": "first_name",
+                "display_name": "First Name",
+                "help_text": "Given name, as it should appear on the staff list.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True,
+                "max_length": 100,
+                "sample_value": "Chukwuemeka",
+                "column_order": 1,
+            },
+            {
+                "column_name": "Middle Name",
+                "target_field": "middle_name",
+                "display_name": "Middle Name",
+                "help_text": "Optional.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "max_length": 100,
+                "sample_value": "",
+                "column_order": 2,
+            },
+            {
+                "column_name": "Last Name",
+                "target_field": "last_name",
+                "display_name": "Last Name",
+                "help_text": "Family name.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True,
+                "max_length": 100,
+                "sample_value": "Eze",
+                "column_order": 3,
+            },
+            {
+                "column_name": "Email",
+                "target_field": "email",
+                "display_name": "Email",
+                "help_text": (
+                    "Where the invitation goes. Must be unique within this "
+                    "school."
+                ),
+                "data_type": TemplateColumnDataTypeChoices.EMAIL,
+                "is_required": True,
+                "max_length": 254,
+                "sample_value": "chukwuemeka.eze@example.ng",
+                "column_order": 4,
+            },
+            {
+                "column_name": "Phone",
+                "target_field": "phone",
+                "display_name": "Phone",
+                "help_text": "Optional. Nothing is ever sent by SMS.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "max_length": 32,
+                "sample_value": "0803 555 0112",
+                "column_order": 5,
+            },
+            {
+                "column_name": "Gender",
+                "target_field": "gender",
+                "display_name": "Gender",
+                "help_text": "MALE or FEMALE. Optional.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "max_length": 16,
+                "sample_value": "MALE",
+                "column_order": 6,
+            },
+            {
+                "column_name": "Staff ID",
+                "target_field": "staff_number",
+                "display_name": "Staff ID",
+                "help_text": (
+                    "Your school's own format. Only checked for not already "
+                    "being taken here. Leave blank if you do not number staff."
+                ),
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "max_length": 32,
+                "sample_value": "BFS/STF/0012",
+                "column_order": 7,
+            },
+            {
+                "column_name": "Job Title",
+                "target_field": "job_title",
+                "display_name": "Job Title",
+                "help_text": (
+                    "What this person is. Not the same as their role, which is "
+                    "what they may do."
+                ),
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "max_length": 150,
+                "sample_value": "Lead Teacher",
+                "column_order": 8,
+            },
+            {
+                "column_name": "Employment Type",
+                "target_field": "employment_type",
+                "display_name": "Employment Type",
+                "help_text": "Full-time, Part-time, Contract or Volunteer.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "max_length": 20,
+                "sample_value": "Full-time",
+                "column_order": 9,
+            },
+            {
+                "column_name": "Hire Date",
+                "target_field": "hire_date",
+                "display_name": "Hire Date",
+                "help_text": (
+                    "When they started, YYYY-MM-DD. Tenure is worked out from "
+                    "it and is left blank where this is."
+                ),
+                "data_type": TemplateColumnDataTypeChoices.DATE,
+                "is_required": False,
+                "sample_value": "2021-09-06",
+                "column_order": 10,
+            },
+            {
+                "column_name": "Branch",
+                "target_field": "branch",
+                "display_name": "Branch",
+                "help_text": (
+                    "Branch name for somebody based at one site. Blank means "
+                    "across the whole school, which is a real answer."
+                ),
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False,
+                "max_length": 120,
+                "sample_value": "",
+                "column_order": 11,
+            },
+            {
+                "column_name": "Role",
+                "target_field": "role",
+                "display_name": "Role",
+                "help_text": (
+                    "A role key from this school's own catalogue, for example "
+                    "teacher or branch_admin. Required on every row."
+                ),
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True,
+                "max_length": 120,
+                "sample_value": "teacher",
+                "column_order": 12,
+            },
+        ],
+    },
 ]
 
 

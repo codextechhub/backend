@@ -75,6 +75,20 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "teachers", "create",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "teachers", "update",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "teachers", "manage",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    # Who teaches which subject to which class, and who is a class teacher.
+    # SENSITIVE because it decides who owns a class's marks, and branch_admin
+    # holds it because staffing a branch's classes is a branch decision.
+    ("school", "teachers", "assign",           _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+
+    # Leave is three keys rather than two because applying and deciding are
+    # different acts. Every member of staff applies for their own; reading a
+    # colleague's is not something a teacher may do, which is why ``view`` stops
+    # at the two admin roles. Approving is not here at all: it is the workflow
+    # engine's, held through its own keys, so no one key both files an absence
+    # and approves it.
+    ("school", "leave", "apply",               _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
+    ("school", "leave", "view",                _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("school", "leave", "manage",              _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
 
     ("school", "administrators", "view",       _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("school", "administrators", "create",     _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
@@ -188,7 +202,12 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("school", "dashboard"):      "School overview dashboard",
     ("school", "branches"):       "School branch management",
     ("school", "students"):       "Student records",
-    ("school", "teachers"):       "Teacher records",
+    # "Staff" rather than "Teacher": this resource governs the bursar and the
+    # registrar as much as the teacher. The KEY stays school.teachers.* because
+    # Permission.key is a primary key that four tables point at and school-fe
+    # checks by name; the description is a sentence.
+    ("school", "teachers"):       "Staff records",
+    ("school", "leave"):          "Staff leave requests",
     ("school", "administrators"): "School administrator accounts",
     ("school", "fees"):           "Fees and billing",
     ("school", "settings"):       "School settings",

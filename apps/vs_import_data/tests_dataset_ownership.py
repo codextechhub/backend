@@ -49,8 +49,8 @@ class DatasetOwnershipRuleTests(TestCase):
         self.assertFalse(may_import(SCHOOL, DatasetTypeChoices.SCHOOLS))
         self.assertFalse(may_import(SCHOOL, DatasetTypeChoices.CX_USERS))
 
-    def test_the_school_datasets_are_the_five_a_school_arrives_with(self):
-        """The five datasets a school may import, and no others.
+    def test_the_school_datasets_are_the_six_a_school_arrives_with(self):
+        """The six datasets a school may import, and no others.
 
         Written the day ``calendar_events`` was added, replacing a test that
         asserted no school dataset existed at all, and updated again as
@@ -69,9 +69,13 @@ class DatasetOwnershipRuleTests(TestCase):
         import carries ONE guardian per child, so every second parent was typed
         in by hand, one drawer at a time.
 
-        Staff is the one still missing - see todo.md, where it is parked with
-        the three things a look at it established - and every other dataset
-        here is CodeX's.
+        ``staff`` is the school's own people, and rides the key a school
+        already holds to create them one at a time. Its role column resolves
+        inside the uploading tenant, so the thing that made ``cx_users``
+        catastrophic - a handler that forces the platform tenant - has no
+        equivalent here.
+
+        Every other dataset here is CodeX's.
 
         This is meant to fail the day the next one lands. That is the point.
         """
@@ -80,6 +84,7 @@ class DatasetOwnershipRuleTests(TestCase):
         self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.ACADEMIC_STRUCTURE))
         self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.SUBJECTS))
         self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.GUARDIANS))
+        self.assertTrue(may_import(SCHOOL, DatasetTypeChoices.STAFF))
 
         school_datasets = {
             dataset for dataset in DatasetTypeChoices.values
@@ -93,10 +98,11 @@ class DatasetOwnershipRuleTests(TestCase):
                 DatasetTypeChoices.ACADEMIC_STRUCTURE,
                 DatasetTypeChoices.SUBJECTS,
                 DatasetTypeChoices.GUARDIANS,
+                DatasetTypeChoices.STAFF,
             },
             "A dataset became a school import. Argue for it in datasets.py the "
-            "way calendar_events, students, academic_structure and subjects "
-            "are argued for, then update this test.",
+            "way calendar_events, students, academic_structure, subjects, "
+            "guardians and staff are argued for, then update this test.",
         )
 
     def test_the_calendar_import_creates_nothing_but_school_rows(self):

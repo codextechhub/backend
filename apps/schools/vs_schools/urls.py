@@ -2,7 +2,6 @@ from django.urls import path
 
 from .views.my_branches import MyBranchDetailView, MyBranchListView
 from .views.package import PackagePlanListView, XVSModuleListView
-from .views.staff import SchoolStaffListCreateView, SchoolStaffResendView
 from .views.school import (
     SchoolCreateView,
     SchoolDetailView,
@@ -54,12 +53,9 @@ urlpatterns = [
         MyBranchDetailView.as_view(),
         name="my-branch-detail",
     ),
-    path("me/staff/", SchoolStaffListCreateView.as_view(), name="school-staff"),
-    path(
-        "me/staff/<int:pk>/resend/",
-        SchoolStaffResendView.as_view(),
-        name="school-staff-resend",
-    ),
+    # "me/staff/" is NOT here. It moved to schools.vs_staff, which owns the
+    # staff record the list now reads, and is mounted at the same path from the
+    # project URLconf so the address a school already calls is unchanged.
 
     # --------- School record access ---------
     path("<str:slug>/", SchoolDetailView.as_view(), name="school-detail"),

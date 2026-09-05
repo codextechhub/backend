@@ -20,6 +20,11 @@ from django.urls import path, include
 from core.views import MediaView
 
 urlpatterns = [
+    # Mounted BEFORE "v1/i/": the staff surface keeps the address a school
+    # already calls, and vs_schools' own "<str:slug>/" pattern would otherwise
+    # be reached first for anything under it. Same ordering rule the academics
+    # prefixes below follow, and tests/test_urls.py asserts it.
+    path("v1/i/me/staff/", include("schools.vs_staff.urls")),
     path("v1/i/", include("schools.vs_schools.urls")),
     # Mounted BEFORE "v1/academics/": Django tries patterns in list order,
     # so the shorter prefix would match "v1/academics/timetable/rooms/",

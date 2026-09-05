@@ -1,11 +1,19 @@
-"""``/v1/i/me/staff/`` - the school's own people, and inviting one.
+"""``/v1/i/me/staff/`` before a school goes live, and who may write to it.
 
 The same gap as ``/v1/i/me/profile/``, one step further along the checklist.
 "Add Staff & Invitations" is a step CodeX asks a school for during onboarding,
-and the only other way to create a school user is ``/v1/user/users/``, gated
-on ``platform.team.*``, a key no school administrator holds. Without this
-endpoint the step can be asked for and never done. The first test below is that
-gap, stated as a passing assertion.
+and the only other way to create a school user is ``/v1/user/users/``, gated on
+``platform.team.*``, a key no school administrator holds. Without this endpoint
+the step can be asked for and never done. The first test below is that gap,
+stated as a passing assertion.
+
+These tests moved here with the endpoint itself, which now lives in
+``schools.vs_staff`` because that is the app owning the record the list reads.
+Two things changed with the move and both are asserted below rather than
+assumed: the keys are the staff resource's rather than the administrator
+resource's, so a teacher can read the directory; and the queryset is the people
+who have a staff record rather than every account the tenant owns, which is the
+narrowing the old view's own docstring asked for.
 
 The rest are the two questions this surface has to answer correctly every time:
 who may write here, and whose people they can see.
@@ -27,7 +35,9 @@ from vs_tenants.models import BranchStatus, Tenant
 from vs_user.models import User
 from vs_user.tokens import CodeXRefreshToken
 
-from .models import SchoolStatus
+from schools.vs_schools.models import SchoolStatus
+from schools.vs_staff.constants import EmploymentStatus
+from schools.vs_staff.models import StaffProfile
 
 
 class SchoolStaffEndpointTests(TestCase):
@@ -43,8 +53,12 @@ class SchoolStaffEndpointTests(TestCase):
         )
         cls.tenant = cls.school.tenant
 
-        cls.view_perm = make_permission("school.administrators.view")
-        cls.create_perm = make_permission("school.administrators.create")
+        # The staff resource, not the administrator one. The key moved with the
+        # endpoint: a teacher holds school.teachers.view and did not hold
+        # school.administrators.view, so the directory was closed to the role
+        # a school's builder said could see it.
+        cls.view_perm = make_permission("school.teachers.view")
+        cls.create_perm = make_permission("school.teachers.create")
 
         cls.admin_role = make_role(cls.school, name="School Admin", key="school_admin")
         make_role_permission(cls.admin_role, cls.view_perm)
@@ -78,6 +92,24 @@ class SchoolStaffEndpointTests(TestCase):
         )
         make_assignment(cls.other, cls.other_admin, cls.other_role, branch=None)
 
+        # The directory lists the people who have a staff RECORD, not every
+        # account the tenant owns, which is the narrowing the old view's own
+        # docstring asked for and which guardians carrying accounts made urgent.
+        # So each of these accounts needs one to appear at all, and the test
+        # below asserts that an account without one is invisible.
+        profiles = {}
+        for key, user, tenant, branch in (
+            ("admin", cls.admin, cls.tenant, None),
+            ("branch_admin", cls.branch_admin, cls.tenant, cls.branch),
+            ("other_admin", cls.other_admin, cls.other.tenant, None),
+        ):
+            profiles[key] = StaffProfile.all_objects.create(
+                tenant=tenant, user=user, branch=branch,
+                employment_status=EmploymentStatus.ACTIVE,
+            )
+        cls.admin_profile = profiles["admin"]
+        cls.other_admin_profile = profiles["other_admin"]
+
     def _client(self, user):
         """A real bearer token, not ``force_authenticate``.
 
@@ -92,7 +124,7 @@ class SchoolStaffEndpointTests(TestCase):
 
     @property
     def url(self):
-        return reverse("school-staff")
+        return reverse("staff-list")
 
     def _get(self, user, tenant=None):
         return self._client(user).get(
@@ -193,11 +225,21 @@ class SchoolStaffEndpointTests(TestCase):
     # ── Resending ────────────────────────────────────────────────────────────
 
     def _resend_url(self, pk):
-        return reverse("school-staff-resend", args=[pk])
+        return reverse("staff-resend", args=[pk])
 
     def test_resending_reuses_the_account_rather_than_making_a_second(self):
+        """The id in the path is the STAFF RECORD's, not the account's.
+
+        Every route under ``/v1/i/me/staff/<id>/`` keys on the staff record now,
+        because that is what this surface is about and what the scoping is
+        written against. The old resend took a user id; the two are different
+        numbers and a caller that kept passing the old one gets an honest 404
+        rather than somebody else's record.
+        """
         self._post(self.admin, self._invite())
-        invited = User.objects.get(email="ngozi@bright-star.example.com")
+        invited = StaffProfile.all_objects.get(
+            user__email="ngozi@bright-star.example.com",
+        )
 
         response = self._client(self.admin).post(
             f"{self._resend_url(invited.pk)}?tenant={self.tenant.slug}",
@@ -209,14 +251,14 @@ class SchoolStaffEndpointTests(TestCase):
 
     def test_resending_to_somebody_already_active_is_refused(self):
         response = self._client(self.admin).post(
-            f"{self._resend_url(self.admin.pk)}?tenant={self.tenant.slug}",
+            f"{self._resend_url(self.admin_profile.pk)}?tenant={self.tenant.slug}",
         )
         self.assertEqual(response.status_code, 422, response.data)
 
     def test_another_schools_user_is_not_found_rather_than_forbidden(self):
         """A 403 here would confirm the id exists somewhere on the platform."""
         response = self._client(self.admin).post(
-            f"{self._resend_url(self.other_admin.pk)}?tenant={self.tenant.slug}",
+            f"{self._resend_url(self.other_admin_profile.pk)}?tenant={self.tenant.slug}",
         )
         self.assertEqual(response.status_code, 404, response.data)
 
@@ -302,3 +344,20 @@ class SchoolStaffEndpointTests(TestCase):
 
         emails = {row["email"] for row in self._get(self.admin).data["data"]}
         self.assertNotIn("draft@bright-star.example.com", emails)
+
+    def test_an_account_with_no_staff_record_is_not_in_the_directory(self):
+        """The narrowing that came with the move, stated as an assertion.
+
+        The old list was every user the tenant owned, and its own docstring said
+        that had to change before students and parents became user rows. A
+        guardian now carries an account, so a school's staff list would have
+        started including parents. Listing the people who HAVE a staff record is
+        the narrowing, and it costs nothing: no profile is written for a draft or
+        a refused creation either.
+        """
+        stranger = make_school_admin(
+            None, email="parent@bright-star.example.com", tenant=self.tenant,
+        )
+        emails = {row["email"] for row in self._get(self.admin).data["data"]}
+        self.assertNotIn(stranger.email, emails)
+        self.assertIn(self.admin.email, emails)

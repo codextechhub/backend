@@ -107,7 +107,68 @@ def execute_dataset_handler(import_batch, payload: dict, queued_by) -> ImportExe
     if dataset_type == "students":
         return import_students_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
 
+    if dataset_type == "staff":
+        return import_staff_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
+
     raise ValueError(f"Unsupported dataset type: {dataset_type}")
+
+
+# =========================================================
+# Staff handler
+# =========================================================
+def import_staff_row(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
+    """Add one member of staff to the uploading school.
+
+    Takes its tenant from the batch and nowhere else, and the template carries
+    no school column, so a row cannot name a different school. The role column
+    is a role key inside THIS school, resolved against its own catalogue, so a
+    platform role key is not resolvable and a row cannot make somebody a CodeX
+    hire.
+
+    Interpretation lives in ``vs_staff.imports``, not here. Validation and
+    execution are separate passes over the same file, and the way an import goes
+    wrong quietly is the two of them reading a row differently, so both call the
+    same resolver and this handler writes only what that resolver read.
+
+    Template columns (target_field) this handler reads:
+        first_name       required
+        middle_name      optional
+        last_name        required
+        email            required - unique within this school
+        phone            optional
+        gender           optional - MALE / FEMALE
+        staff_number     optional - the school's own format, unique here
+        job_title        optional
+        employment_type  optional - Full-time / Part-time / Contract / Volunteer
+        hire_date        optional - YYYY-MM-DD
+        branch           optional - blank means across the whole school
+        role             required - a TenantRoleTemplate key at THIS school
+    """
+    from schools.vs_staff.imports import create_staff_from_row, resolve_row
+    from schools.vs_staff.services.scoping import branch_dimension_applies
+
+    tenant = import_batch.tenant
+    row = resolve_row(
+        payload,
+        tenant=tenant,
+        batch_branch=import_batch.branch,
+        multi_branch=branch_dimension_applies(tenant),
+    )
+    if not row.ok:
+        # Validation should have caught these and refused the batch. Reaching
+        # here means the file changed, the catalogue changed, or a row slipped
+        # past, and the row fails with its own reasons rather than a traceback.
+        raise ValueError(
+            " ".join(i.message for i in row.issues if i.severity == "error"),
+        )
+
+    profile = create_staff_from_row(row, tenant=tenant, created_by=queued_by)
+    return ImportExecutionResult(
+        action=ImportRowActionChoices.CREATE,
+        instance=profile,
+        target_model="StaffProfile",
+        message=f"{row.first_name} {row.last_name} invited.",
+    )
 
 
 # =========================================================

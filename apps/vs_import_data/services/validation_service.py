@@ -245,6 +245,8 @@ def _validate_dataset_specific_rules(import_batch) -> list[dict]:
         )
 
         return validate_subjects_import_batch(import_batch)
+    if dataset_type == "staff":
+        return _validate_staff_rules(import_batch)
     if dataset_type == "guardians":
         from schools.vs_students.guardian_imports import (
             validate_guardians_import_batch,
@@ -773,3 +775,17 @@ def validate_import_batch(import_batch) -> dict:
         "summary": summary,
         "issues": issues,
     }
+
+
+def _validate_staff_rules(import_batch) -> list[dict]:
+    """Every staff row read through the same resolver the executor uses.
+
+    Two passes over one file that read a row differently is the way an import
+    goes wrong quietly, so this delegates rather than restating the rules: a
+    duplicate email inside the file and against the school, a duplicate staff
+    number, an unknown role, an unknown or out-of-service branch, and a hire
+    date that parses.
+    """
+    from schools.vs_staff.imports import validate_rows
+
+    return validate_rows(import_batch)

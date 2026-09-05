@@ -41,10 +41,15 @@ class SeedImportConfigurationTests(TestCase):
     def test_master_seed_includes_required_bulk_templates(self):
         """Every template a deploy is supposed to leave behind, and no others.
 
-        ``calendar_events`` and ``students`` are the two on this list a SCHOOL
-        can use. If either stops being seeded, the school import screen goes
-        back to showing an empty table and nothing else in the suite would
-        notice.
+        Six on this list are a SCHOOL's: calendar events, students, academic
+        structure, subjects, guardians and staff. If any stops being seeded,
+        that school's import screen goes back to showing a template it cannot
+        download and nothing else in the suite would notice.
+
+        The other four are CodeX's, and the split is the point rather than an
+        accident: ``vs_import_data/datasets.py`` carries the argument for each
+        school dataset one at a time, and ``tests_dataset_ownership.py`` is what
+        refuses a fifth that nobody argued for.
         """
         _call("seed_all_permissions")
 
@@ -62,6 +67,10 @@ class SeedImportConfigurationTests(TestCase):
                 DatasetTypeChoices.BANK_STATEMENTS,
                 DatasetTypeChoices.CALENDAR_EVENTS,
                 DatasetTypeChoices.STUDENTS,
+                DatasetTypeChoices.ACADEMIC_STRUCTURE,
+                DatasetTypeChoices.SUBJECTS,
+                DatasetTypeChoices.GUARDIANS,
+                DatasetTypeChoices.STAFF,
             },
         )
 
