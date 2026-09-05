@@ -217,4 +217,3 @@ LEAVE_TEMPLATE_NAME = "Leave-request approval"
 #: filed request parks rather than being approved unseen, which is the
 #: seeded-blocked-not-seeded-open contract every other ladder here keeps.
 LEAVE_APPROVER_GROUP_CODE = "leave-approvers"
-LEAVE_APPROVER_GROUP_NAME = "Leave Approvers"

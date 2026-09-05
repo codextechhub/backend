@@ -16,12 +16,16 @@ The approver is a **group**, not a provisioned role. A role would put a row on
 the school's own Roles and access screen that nobody there created and nobody
 can delete; this module renders that screen, so it would have been shipping its
 own confusion. See ``constants.LEAVE_APPROVER_GROUP_CODE``.
+
+The group itself is provisioned by ``vs_workflow.services.groups``, which every
+seeded ladder on this platform shares. This module briefly carried its own copy
+of that helper because the shared one had not landed yet; it has, and one way to
+create a group is the right number.
 """
 from __future__ import annotations
 
 from .constants import (
     LEAVE_APPROVER_GROUP_CODE,
-    LEAVE_APPROVER_GROUP_NAME,
     LEAVE_DOCUMENT_TYPE,
     LEAVE_TEMPLATE_CODE,
     LEAVE_TEMPLATE_NAME,
@@ -74,46 +78,6 @@ def _default_stages_payload(*, group_code: str) -> list:
     ]
 
 
-def ensure_leave_approver_group(tenant, *, code: str = LEAVE_APPROVER_GROUP_CODE):
-    """Return ``(group, created)`` for this school's leave-approver pool.
-
-    Empty by construction. A group nobody is in resolves to nobody, which the
-    stage's ``skip_if_no_approvers=False`` then turns into a parked request
-    rather than a granted one, so provisioning confers no authority on anybody.
-    Who approves leave stays a person's decision.
-
-    An existing group is returned untouched, including a deactivated one: a
-    school that switched it off has said something, and provisioning switching
-    it back on would be a seed overruling a person. Publishing refuses an
-    inactive group loudly instead, which is the better failure.
-
-    Written here rather than imported because the shared helper this duplicates,
-    ``vs_workflow.services.groups.ensure_approver_group``, is not committed yet.
-    When it lands this should collapse into it: two ways to create one group is
-    exactly the shape this codebase argues against, and the only reason for the
-    second one is timing.
-    """
-    from vs_workflow.models import WorkflowApproverGroup
-
-    if tenant is None:
-        raise ValueError("A tenant is required to ensure an approver group.")
-
-    existing = WorkflowApproverGroup.all_objects.filter(
-        tenant=tenant, code=code,
-    ).first()
-    if existing is not None:
-        return existing, False
-
-    group = WorkflowApproverGroup.objects.create(
-        tenant=tenant, branch=None, code=code, name=LEAVE_APPROVER_GROUP_NAME,
-        description=(
-            "Decides leave requests for this school. Add the people, roles or "
-            "seats that should approve an absence."
-        ),
-    )
-    return group, True
-
-
 def ensure_tenant_approval_templates(tenant, *, created_by=None):
     """Give one school its leave ladder. Returns ``(template, created)``.
 
@@ -126,6 +90,7 @@ def ensure_tenant_approval_templates(tenant, *, created_by=None):
     group would stall every future request, so the publish fails loudly instead.
     """
     from vs_workflow.models import WorkflowTemplate
+    from vs_workflow.services.groups import ensure_approver_group
     from vs_workflow.services.templates import publish_template
 
     existing = WorkflowTemplate.all_objects.filter(
@@ -135,7 +100,17 @@ def ensure_tenant_approval_templates(tenant, *, created_by=None):
     if existing is not None:
         return existing, False
 
-    group, _ = ensure_leave_approver_group(tenant)
+    # Empty by construction, so a request filed before anybody is nominated
+    # parks rather than being approved unseen. The name derives from the code,
+    # which is why only the description is passed.
+    group, _ = ensure_approver_group(
+        tenant, LEAVE_APPROVER_GROUP_CODE,
+        description=(
+            "Decides leave requests for this school. Empty until somebody adds "
+            "the people, roles or seats that should approve an absence, so "
+            "leave parks until then."
+        ),
+    )
     template = publish_template(
         tenant=tenant, branch=None, document_type=LEAVE_DOCUMENT_TYPE,
         code=LEAVE_TEMPLATE_CODE, name=LEAVE_TEMPLATE_NAME,
