@@ -119,8 +119,10 @@ def template_requires_approval(template, document, *, stages=None,
     if not stages:
         # A template with no stages approves nothing; the engine would route
         # straight to APPROVED. Blocking the direct post here would leave the
-        # document with no route to anywhere, so let it post as it did before
-        # anybody published the template.
+        # document with no route to anywhere, so it posts - but never silently.
+        # See ``approval_unconfigured``: a school is given a template of its own
+        # with no stages so it can choose them, and until it does, posting is an
+        # act somebody confirms and the log records.
         return False
     if has_routes is None:
         has_routes = WorkflowRoutePath.objects.filter(template=template).exists()
@@ -143,3 +145,68 @@ def template_requires_approval(template, document, *, stages=None,
     except WorkflowError:
         return True  # Undecidable template: gate it rather than bypass it.
     return True  # Hop limit hit - a cycle we will not resolve here.
+
+
+# Distinguish "no approval needed" from "no approval configured yet".
+def approval_unconfigured(document, *, default_tenant=None,
+                          code: Optional[str] = None) -> bool:
+    """True when a template routes this document but has no stages at all.
+
+    ``template_requires_approval`` answers False for three different situations,
+    and only two of them are safe to treat alike. No template published, and a
+    template whose every stage this document skips, both mean *this document
+    does not need approving*. A template with no stages means *nobody has said
+    what approving it looks like yet*, which is not the same claim.
+
+    The difference matters because a school's own template beats the shared one:
+    an empty template does not sit politely waiting to be filled in, it stands
+    in front of the platform ladder that would otherwise have caught the
+    document. A school that has gone live and not yet built its ladder would
+    post a payout run straight to the bank, and nothing anywhere would have
+    said so.
+
+    So the empty case is reported separately, and the domain gates refuse it
+    until somebody confirms in as many words that this document is going out
+    without approval. That confirmation is audited; see
+    ``record_unapproved_post``.
+    """
+    tenant, branch = document_scope(document, default_tenant=default_tenant)
+    document_type = getattr(document, "workflow_document_type", None)
+    if not document_type:
+        return False
+    template = resolve_template(
+        document_type, tenant=tenant, branch=branch, code=code,
+    )
+    if template is None:
+        return False
+    return not template.stages.exists()
+
+
+def record_unapproved_post(document, *, actor_user, reason: str, tenant=None):
+    """Write the durable trace of a document posted with no approval configured.
+
+    Separate from the workflow's own audit log because there is no workflow
+    instance to hang it on: the document never entered the engine. It goes to
+    the platform audit trail instead, where a school's own auditor and CodeX
+    both already look, and it names the person rather than the system - the
+    whole point is that somebody decided this.
+    """
+    from vs_audit.services import emit_audit_event
+
+    return emit_audit_event(
+        module_key="WORKFLOW",
+        action_type="POSTED_WITHOUT_APPROVAL",
+        actor_user=actor_user,
+        tenant=tenant,
+        entity_type=type(document).__name__,
+        entity_id=str(getattr(document, "pk", "")),
+        entity_label=str(document),
+        metadata={
+            "document_type": getattr(document, "workflow_document_type", ""),
+            "reason": reason,
+        },
+        summary=(
+            f"{type(document).__name__} {getattr(document, 'pk', '')} posted with "
+            f"no approval stages configured."
+        ),
+    )

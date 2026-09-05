@@ -1323,14 +1323,8 @@ class FeeStructureGenerateView(_FinanceBase):
             raise ValidationError({"applies_to":
                 "Only customer fee structures can generate AR invoices."})
         body = request.data or {}
-        from .document_settings import resolve_finance_document_settings
-        policy = resolve_finance_document_settings(entity)
         invoice_date = _date(body.get("invoice_date"), "invoice_date") or datetime.date.today()
         due_date = _date(body.get("due_date"), "due_date")
-        if due_date is None:
-            due_date = invoice_date + datetime.timedelta(
-                days=policy.default_invoice_due_days,
-            )
         if body.get("all_active"):
             customers = list(Customer.objects.filter(entity=entity, is_active=True))
         else:
@@ -1497,16 +1491,12 @@ class CreditNotePostView(_CreditNoteActionBase):
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
-        from .approvals import approval_required
+        from .approvals import guard_direct_post
         from .credit_notes import post_credit_note
 
         entity, note = self._note(request, pk)
         # Same opt-in gate as refunds and write-offs.
-        if approval_required(note):
-            raise ValidationError({
-                "detail": "This note is approval-gated; submit it for approval "
-                          "instead of posting directly.",
-            })
+        guard_direct_post(note, request, noun="note")
         body = request.data or {}
         plan = _allocation_plan(request, entity, body.get("allocations"))
         auto = bool(body.get("auto_allocate", plan is None))
@@ -1837,15 +1827,11 @@ class RefundPostView(_RefundActionBase):
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
-        from .approvals import approval_required
+        from .approvals import guard_direct_post
         from .credit_notes import post_refund
 
         _, refund = self._refund(request, pk)
-        if approval_required(refund):
-            raise ValidationError({
-                "detail": "This refund is approval-gated; submit it for approval "
-                          "instead of posting directly.",
-            })
+        guard_direct_post(refund, request, noun="refund")
         post_refund(refund, actor_user=request.user)
         refund.refresh_from_db()
         return success_response(
@@ -2027,14 +2013,11 @@ class WriteOffRequestPostView(_WriteOffActionBase):
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
-        from .approvals import approval_required
+        from .approvals import guard_direct_post
         from .credit_notes import post_write_off_request
 
         _, wor = self._wor(request, pk)
-        if approval_required(wor):
-            raise ValidationError({
-                "detail": "This write-off is approval-gated; submit it for approval instead.",
-            })
+        guard_direct_post(wor, request, noun="request")
         post_write_off_request(wor, actor_user=request.user)
         wor.refresh_from_db()
         return success_response(
@@ -2061,7 +2044,7 @@ class InvoiceWriteOffView(_FinanceBase):
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
-        from .approvals import approval_required
+        from .approvals import approval_required, confirm_unconfigured_post
         from .credit_notes import post_write_off_request
 
         entity = resolve_entity(request)
@@ -2085,6 +2068,7 @@ class InvoiceWriteOffView(_FinanceBase):
                 data=WriteOffRequestSerializer(wor).data,
             )
 
+        confirm_unconfigured_post(wor, request, noun="write-off")
         post_write_off_request(wor, actor_user=request.user)
         invoice.refresh_from_db()
         return success_response(
@@ -2859,17 +2843,13 @@ class ConcessionPostView(_ConcessionActionBase):
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
-        from .approvals import approval_required
+        from .approvals import guard_direct_post
         from .installments import post_concession
 
         _, concession = self._concession(request, pk)
         # Same opt-in gate as refunds and write-offs: with a template published for
         # this concession's scope, the only route to the ledger is through approval.
-        if approval_required(concession):
-            raise ValidationError({
-                "detail": "This concession is approval-gated; submit it for approval "
-                          "instead of posting directly.",
-            })
+        guard_direct_post(concession, request, noun="concession")
         post_concession(concession, actor_user=request.user)
         concession.refresh_from_db()
         return success_response(

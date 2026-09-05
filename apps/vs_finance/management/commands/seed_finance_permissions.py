@@ -38,10 +38,13 @@ FINANCE_RESOURCES = [
                                                 ("close", "CRITICAL"),
                                                 ("reopen", "CRITICAL"), ("lock", "CRITICAL")]),
     ("journal",      "journal entries",        [("view", "NORMAL"), ("post", "CRITICAL"), ("reverse", "CRITICAL"),
-                                                # Approval-workflow keys: submit a draft for approval, and the
-                                                # checker / high-value-controller approver keys the templates gate on.
-                                                ("submit", "SENSITIVE"), ("approve", "CRITICAL"),
-                                                ("approve_high_value", "CRITICAL")]),
+                                                # ``submit`` hands a draft to the approval engine.
+                                                # No approver keys. Who may approve is decided by the
+                                                # workflow stage - a role, a group, a dynamic rule or an
+                                                # organogram position - never by a permission. A key here
+                                                # would be ticked by somebody expecting it to grant
+                                                # approval and would grant nothing.
+                                                ("submit", "SENSITIVE")]),
     ("directentry",  "direct entries",         [("view", "NORMAL"), ("post", "CRITICAL")]),
     # email_statement sends a customer their own account position, so it is a
     # disclosure of financial data to an outside party, not a read.
@@ -103,15 +106,17 @@ FINANCE_RESOURCES = [
                                                 ("post", "SENSITIVE")]),
     ("refund",       "customer refunds",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("post", "CRITICAL"),
                                                 ("reverse", "CRITICAL"),
-                                                # Approval-workflow keys: submit a draft for approval, and the
-                                                # checker / high-value-controller approver keys the templates gate on.
-                                                ("submit", "SENSITIVE"), ("approve", "CRITICAL"),
-                                                ("approve_high_value", "CRITICAL")]),
+                                                # ``submit`` hands a draft to the approval engine.
+                                                # No approver keys. Who may approve is decided by the
+                                                # workflow stage - a role, a group, a dynamic rule or an
+                                                # organogram position - never by a permission. A key here
+                                                # would be ticked by somebody expecting it to grant
+                                                # approval and would grant nothing.
+                                                ("submit", "SENSITIVE")]),
     # Bad-debt write-offs are now a first-class approvable document (WriteOffRequest);
     # the existing finance.invoice.writeoff key still gates the invoice entry point.
     ("writeoff",     "bad-debt write-offs",    [("view", "NORMAL"), ("create", "SENSITIVE"),
-                                                ("post", "CRITICAL"), ("submit", "SENSITIVE"),
-                                                ("approve", "CRITICAL"), ("approve_high_value", "CRITICAL")]),
+                                                ("post", "CRITICAL"), ("submit", "SENSITIVE")]),
     ("tax",          "tax filings",            [("view", "NORMAL"), ("file", "SENSITIVE"),
                                                 ("pay", "CRITICAL"), ("manage", "SENSITIVE")]),
 ]

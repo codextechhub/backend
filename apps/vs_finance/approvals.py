@@ -444,3 +444,75 @@ def ensure_tenant_expense_claim_template(
         }],
     )
     return template, True
+
+
+# --------------------------------------------------------------------------- #
+# Direct-post guard                                                            #
+# --------------------------------------------------------------------------- #
+def guard_direct_post(document, request, *, noun="document"):
+    """Refuse a direct post that should be approved, and confirm one that cannot be.
+
+    Two different refusals, and collapsing them is what let money out.
+
+    A document whose ladder would stop it must be submitted, not posted: that is
+    the ordinary gate and it has always been here.
+
+    A document whose school holds a template with **no stages** is the case this
+    adds. It is not approval-free; it is approval-undecided. A school is given a
+    template of its own so it can choose its stages, and until it does, that
+    empty template stands in front of the shared platform ladder that would
+    otherwise have caught the document. Posting anyway is a legitimate thing for
+    a school to do - a bursar should not be stuck because nobody has built the
+    ladder yet - but it is a decision somebody makes, not a default the system
+    takes for them. So it needs ``confirm_without_approval`` in the body, and it
+    is written to the audit trail with the person's name against it.
+
+    :raises ValidationError: gated, or unconfirmed with no ladder configured.
+    """
+    from rest_framework.exceptions import ValidationError
+
+    from vs_workflow.services.resolution import (
+        approval_unconfigured, record_unapproved_post,
+    )
+
+    if approval_required(document):
+        raise ValidationError({
+            "detail": f"This {noun} is approval-gated; submit it for approval "
+                      f"instead of posting directly.",
+        })
+    confirm_unconfigured_post(document, request, noun=noun)
+
+
+def confirm_unconfigured_post(document, request, *, noun="document"):
+    """The confirmation half of :func:`guard_direct_post`, on its own.
+
+    Endpoints that *route* rather than refuse - submit when a ladder would stop
+    the document, post it otherwise - reach the direct path without ever calling
+    the guard, and would skip the confirmation with it. They call this on their
+    posting branch instead.
+    """
+    from rest_framework.exceptions import ValidationError
+
+    from vs_workflow.services.resolution import (
+        approval_unconfigured, record_unapproved_post,
+    )
+
+    if not approval_unconfigured(document):
+        return
+
+    body = request.data or {}
+    if not body.get("confirm_without_approval"):
+        from vs_workflow.exceptions import ApprovalNotConfiguredError
+
+        raise ApprovalNotConfiguredError(
+            f"No approval steps have been set up for this {noun}, so nobody "
+            f"will review it. Confirm you want to post it without approval, or "
+            f"set up the approval steps first."
+        )
+
+    record_unapproved_post(
+        document,
+        actor_user=getattr(request, "user", None),
+        reason=str(body.get("reason") or "").strip(),
+        tenant=getattr(request, "tenant", None),
+    )

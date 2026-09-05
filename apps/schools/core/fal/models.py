@@ -84,3 +84,69 @@ class FeeStructureTermLink(models.Model):
         if self.term_id:
             return f"{self.session.name} {self.term.name}"
         return self.session.name
+
+
+class FeeDueBasis(models.TextChoices):
+    """How a school wants a fee bill's due date worked out.
+
+    Schools do not think in payment terms. A supplier invoice is due "30 days
+    net" because that is a credit arrangement between two businesses; school
+    fees are due by a date in the school's own calendar, and every school states
+    it differently. These four cover what schools actually say.
+    """
+
+    TERM_END = "TERM_END", "End of the term billed"
+    SESSION_END = "SESSION_END", "End of the session billed"
+    MONTH_END = "MONTH_END", "End of the month the bill is raised"
+    DAYS_AFTER = "DAYS_AFTER", "A set number of days after the bill"
+
+
+class SchoolFeeDuePolicy(models.Model):
+    """When a school's fee bills fall due, for the school as a whole.
+
+    One row per school, and the school owns it: this is the setting a bursar
+    changes on a settings screen, not a per-run argument. A school that has
+    never set one bills on :attr:`FeeDueBasis.TERM_END`, because a term's fees
+    being due by the end of that term is what a school means when it says
+    nothing.
+
+    It lives in the FAL rather than in ``vs_finance`` because three of the four
+    bases are academic-calendar facts. ``vs_finance`` prices and posts invoices
+    for hospitals as readily as for schools and must never learn what a term is;
+    the FAL resolves the basis to a real date and hands the engine that date.
+
+    There is deliberately no branch column. A due date is a rule about the
+    school's fee calendar, and a school running Ikeja and Lekki bills the same
+    term at both; a per-branch rule would mean one child's fees falling due on a
+    different day from their sibling's at the other site.
+    """
+
+    tenant = models.OneToOneField(
+        "vs_tenants.Tenant",
+        on_delete=models.CASCADE,
+        related_name="fee_due_policy",
+        help_text="The school this rule belongs to.",
+    )
+    basis = models.CharField(
+        max_length=16, choices=FeeDueBasis.choices, default=FeeDueBasis.TERM_END,
+        help_text="Which date the school wants its fee bills to fall due on.",
+    )
+    #: Read only when ``basis`` is ``DAYS_AFTER``; kept rather than cleared when
+    #: the basis changes, so a school that switches to term end and back does not
+    #: lose the number it had chosen.
+    days_after = models.PositiveSmallIntegerField(
+        default=30,
+        help_text="Days after the bill date, used only when the basis is DAYS_AFTER.",
+    )
+    updated_by = models.ForeignKey(
+        "vs_user.User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="fee_due_policy_updates",
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name_plural = "school fee due policies"
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}: {self.get_basis_display()}"

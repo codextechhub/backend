@@ -461,6 +461,8 @@ class PayoutListCreateView(APIView):
             replay = bool(getattr(batch, "_idempotency_replay", False))
             instance = services.submit_payout_batch_for_approval(
                 batch, requested_by=request.user,
+                confirm_without_approval=bool((request.data or {}).get("confirm_without_approval")),
+                confirmation_reason=str((request.data or {}).get("reason") or "").strip(),
             )
             payout = batch.instructions.get()
         from vs_workflow.services import release as release_svc
@@ -584,7 +586,9 @@ class PayoutBatchListCreateView(APIView):
             if wants_submit:
                 instance = services.submit_payout_batch_for_approval(
                     batch, requested_by=request.user,
-                )
+                confirm_without_approval=bool((request.data or {}).get("confirm_without_approval")),
+                confirmation_reason=str((request.data or {}).get("reason") or "").strip(),
+            )
         data = PayoutBatchSerializer(batch, context={"request": request}).data
         if instance is not None:
             from vs_workflow.services import release as release_svc
@@ -700,7 +704,9 @@ class PayoutBatchSubmitForApprovalView(APIView):
 
         instance = services.submit_payout_batch_for_approval(
             batch, requested_by=request.user,
-        )  # Instance + stage 1, replay-safe for this batch.
+                confirm_without_approval=bool((request.data or {}).get("confirm_without_approval")),
+                confirmation_reason=str((request.data or {}).get("reason") or "").strip(),
+            )  # Instance + stage 1, replay-safe for this batch.
         batch.refresh_from_db()  # Pick up the handler's metadata change.
         return success_response(
             "Payout batch submitted for approval.",

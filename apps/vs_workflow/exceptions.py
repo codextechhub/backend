@@ -140,3 +140,26 @@ class HandlerAlreadyRegisteredError(WorkflowError):
 class ConditionFunctionAlreadyRegisteredError(WorkflowError):
     error_code = "CONDITION_FUNCTION_ALREADY_REGISTERED"
     default_message = "A condition function is already registered under this key."
+
+
+class ApprovalNotConfiguredError(WorkflowError):
+    """Posting a document whose school has a template but no stages in it.
+
+    Not a failure and not a permission problem: it is the engine declining to
+    make a decision that belongs to a person. A school is given a template of
+    its own so it can choose its stages, and an empty one is *approval
+    undecided*, not approval-free - it also stands in front of the shared
+    platform ladder that would otherwise have caught the document.
+
+    409 rather than 400: the request is well formed, and it conflicts with the
+    state of the school's own configuration. The caller clears it by saying, in
+    as many words, that this document goes out without approval - which is then
+    recorded against their name.
+    """
+
+    error_code = "APPROVAL_NOT_CONFIGURED"
+    default_message = (
+        "No approval steps have been set up for this document, so nobody will "
+        "review it."
+    )
+    http_status = 409

@@ -9,7 +9,7 @@ every payout batch the school raised, holding no payments permission at all.
 
 Nothing on the roles screen could have granted or withdrawn that, because the ten
 ``*.approve`` permissions a reader would expect to govern it are listed in
-``vs_rbac.unenforced``: they are seeded, grantable, and read by nothing.
+removed from the registry: they were seeded, grantable, and read by nothing.
 
 Two doors are closed, and both are tested here because either alone leaves the
 hole open:

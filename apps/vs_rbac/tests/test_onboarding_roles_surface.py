@@ -770,21 +770,39 @@ class UnenforcedKeysAreWithheldTests(TestCase):
             for p in group["permissions"]
         }
 
-    def test_an_unenforced_key_is_not_offered(self):
-        from vs_rbac.unenforced import UNENFORCED_KEYS
+    def test_the_approver_keys_that_gated_nothing_are_gone(self):
+        """Not hidden from one audience - removed.
 
-        for key in UNENFORCED_KEYS:
-            make_permission(key, scope=PermissionScope.TENANT)
+        A permission answers "may this person do this thing". Approval is not
+        one of those: the workflow stage decides it, by naming a role, a group,
+        a dynamic rule or an organogram position. Ten keys looked exactly like
+        the control and were consulted by nothing. Withholding them from the
+        school picker stopped the screen lying to a school and left them lying
+        to CodeX, which reads the same registry without that filter.
+        """
+        from vs_rbac.models import Permission
 
-        offered = self._catalogue()
-        for key in UNENFORCED_KEYS:
-            self.assertNotIn(key, offered, f"{key} gates nothing and was offered")
+        dead = [
+            "finance.journal.approve", "finance.journal.approve_high_value",
+            "finance.refund.approve", "finance.refund.approve_high_value",
+            "finance.writeoff.approve", "finance.writeoff.approve_high_value",
+            "payments.payout_batch.approve",
+            "payments.payout_batch.approve_high_value",
+            "procurement.approval.approve", "procurement.approval.approve_senior",
+        ]
+        still_here = sorted(
+            Permission.objects.filter(key__in=dead).values_list("key", flat=True)
+        )
+        self.assertEqual(
+            still_here, [],
+            f"These gate nothing and must not be registered: {still_here}",
+        )
 
-    def test_an_enforced_lookalike_is_still_offered(self):
-        """The narrowing is by key, never by the word "approve".
+    def test_an_enforced_lookalike_survived(self):
+        """The removal was by key, never by the word "approve".
 
         ``finance.budget.approve`` is a real gate - ``budgets.py`` declares it -
-        and hiding the whole family would have taken it away.
+        and taking out the whole family would have taken it with them.
         """
         make_permission("finance.budget.approve", scope=PermissionScope.TENANT)
         make_permission(
@@ -795,25 +813,22 @@ class UnenforcedKeysAreWithheldTests(TestCase):
         self.assertIn("finance.budget.approve", offered)
         self.assertIn("procurement.vendor_invoice.attach", offered)
 
-    def test_every_entry_says_what_really_controls_it(self):
-        from vs_rbac.unenforced import UNENFORCED_KEYS
+    def test_no_registered_key_gates_nothing(self):
+        """The rule that replaces the register.
 
-        self.assertTrue(UNENFORCED_KEYS)
-        for key, reason in UNENFORCED_KEYS.items():
-            self.assertGreater(
-                len(reason), 30, f"{key} is hidden without saying why",
-            )
+        ``unenforced.py`` kept a hand-written list of keys that gated nothing,
+        withheld from the school picker, with a test checking none had quietly
+        become wired. A list of exceptions outlives the problem it describes,
+        and hiding a key makes its absence a property of who is looking - the
+        console read the same registry without that filter.
 
-    def test_wiring_one_up_fails_this_test_rather_than_rotting(self):
-        """The guard that stops this list outliving the problem.
-
-        A list of "not implemented yet" keys is exactly the kind of thing that
-        survives the feature being implemented. If somebody points a view at one
-        of these, it becomes reachable by a route and this fails, naming the key
-        to delete from ``unenforced.py``.
+        So there is no list. Every active key must be reachable by some view. A
+        key that is not is either a permission nobody wrote the gate for, or a
+        label pretending to be a permission, and both are found here rather
+        than by somebody ticking a box and wondering why nothing changed.
         """
         from vs_rbac.management.commands.audit_permission_scope import Command
-        from vs_rbac.unenforced import UNENFORCED_KEYS
+        from vs_rbac.models import Permission
 
         command = Command()
         command._models = {}
@@ -821,9 +836,12 @@ class UnenforcedKeysAreWithheldTests(TestCase):
         for cls, source in command._views():
             reachable |= command._keys_for(cls, source)
 
-        now_wired = sorted(set(UNENFORCED_KEYS) & reachable)
+        registered = set(
+            Permission.objects.filter(is_active=True).values_list("key", flat=True)
+        )
+        gating_nothing = sorted(registered - reachable)
         self.assertEqual(
-            now_wired, [],
-            "These keys are now enforced by a view, so they must be removed "
-            f"from vs_rbac/unenforced.py and offered again: {now_wired}",
+            gating_nothing, [],
+            "Registered and consulted by no view. Either wire the gate or "
+            f"delete the key: {gating_nothing}",
         )

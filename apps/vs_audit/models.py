@@ -67,10 +67,12 @@ class AuditModuleKey(models.TextChoices):
     SCHOOL = "SCHOOL", "School Management"
     ACADEMICS = "ACADEMICS", "Academic Structure"
     STUDENT = "STUDENT", "Student Management"
+    STAFF = "STAFF", "Staff Management"
     BRANCH = "BRANCH", "Branch Management"
     EXPORTS = "EXPORTS", "Export Centre"
     SYSTEM = "SYSTEM", "System"
     PLATFORM = "PLATFORM", "Platform Operations"
+    WORKFLOW = "WORKFLOW", "Approvals & Workflow"
 
 
 class AuditActionType(models.TextChoices):
@@ -210,6 +212,33 @@ class AuditActionType(models.TextChoices):
     # evidence.
     STUDENT_DOCUMENT_REMOVED = "STUDENT_DOCUMENT_REMOVED", "Student Document Removed"
 
+    # Staff management. Ordinary creates, edits and deletes use CREATE, UPDATE
+    # and DELETE with entity_type naming the model; only the acts those three
+    # cannot express are registered here.
+    STAFF_EMPLOYMENT_STATUS_CHANGED = (
+        "STAFF_EMPLOYMENT_STATUS_CHANGED", "Staff Employment Status Changed",
+    )
+    STAFF_POSTING_CHANGED = "STAFF_POSTING_CHANGED", "Staff Posting Changed"
+    STAFF_TEACHING_ASSIGNED = "STAFF_TEACHING_ASSIGNED", "Staff Teaching Assigned"
+    # Separate from the generic DELETE because a class losing its teacher is
+    # the event a school searches the trail for.
+    STAFF_TEACHING_UNASSIGNED = "STAFF_TEACHING_UNASSIGNED", "Staff Teaching Unassigned"
+    STAFF_LEAVE_RECORDED = "STAFF_LEAVE_RECORDED", "Staff Leave Recorded"
+    # Filing and deciding are different acts by different people, so the trail
+    # keeps them apart: "who asked" and "who allowed it" are separate questions.
+    STAFF_LEAVE_DECIDED = "STAFF_LEAVE_DECIDED", "Staff Leave Decided"
+    # Nothing is deleted by a revocation: the account is closed and the record
+    # survives, so DELETE would describe it wrongly.
+    STAFF_INVITATION_REVOKED = "STAFF_INVITATION_REVOKED", "Staff Invitation Revoked"
+
+    # A document sent or posted with no approval steps configured for it.
+    #
+    # Its own type rather than a note on an existing one, because it is the
+    # question an auditor comes looking for: not what the document was, but
+    # which of them went out with nobody reviewing them, and who said so. A
+    # generic verb with the reason buried in metadata cannot be filtered on.
+    POSTED_WITHOUT_APPROVAL = "POSTED_WITHOUT_APPROVAL", "Posted without approval"
+
     CUSTOM = "CUSTOM", "Custom"
 
 
@@ -233,6 +262,7 @@ class ComplianceRuleType(models.TextChoices):
     MASKING = "MASKING", "Masking"
     ACCESS = "ACCESS", "Access"
     EXPORT = "EXPORT", "Export"
+
 
 
 # -----------------------------------------------------------------------------

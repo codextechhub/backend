@@ -172,6 +172,62 @@ class GenerationPreviewTests(FALFixture):
 
         return Customer.objects.filter(entity_id=self.corona_books.entity_ref).count()
 
+    def test_a_billed_cohort_says_who_raised_it(self):
+        """A bill with no author is a bill nobody can be asked about.
+
+        Corona's bursar bills JSS2 and a parent disputes the amount a week
+        later. If the invoice records no author, the school cannot tell who ran
+        it, and neither can CodeX. The bridge takes no actor argument, so it
+        reads the identity the request already established; without that, every
+        invoice a school raises is anonymous while every invoice raised on the
+        finance screen is signed.
+        """
+        from vs_tenants.context import (
+            clear_current_audit_identity, set_current_audit_identity,
+        )
+
+        from vs_finance.models import Invoice
+
+        set_current_audit_identity(
+            actor_user=self.bursar, effective_user=self.bursar,
+        )
+        self.addCleanup(clear_current_audit_identity)
+
+        self.bridge.generate_cohort_invoices(self.structure.pk, self.refs).unwrap()
+
+        raised = Invoice.objects.filter(
+            entity_id=self.corona_books.entity_ref,
+            reference=f"FEE:{self.structure.code}",
+        )
+        self.assertEqual(raised.count(), 2)
+        for invoice in raised:
+            with self.subTest(invoice=invoice.document_number):
+                self.assertEqual(invoice.created_by_id, self.bursar.pk)
+
+    def test_a_billed_cohort_carries_a_due_date(self):
+        """A null due date is not "no deadline", it is "never overdue".
+
+        Every ageing bucket, debtor list and dunning run selects on
+        ``due_date__lt``, and NULL matches none of them. Corona bills a whole
+        term's fees to Ada and Tunde; if the bridge leaves the date off, those
+        two never appear in the arrears the bursar chases, and nothing anywhere
+        reports them missing. The bridge names no date, so this pins that the
+        default reaches it.
+        """
+        from vs_finance.models import Invoice
+
+        self.bridge.generate_cohort_invoices(self.structure.pk, self.refs).unwrap()
+
+        raised = Invoice.objects.filter(
+            entity_id=self.corona_books.entity_ref,
+            reference=f"FEE:{self.structure.code}",
+        )
+        self.assertEqual(raised.count(), 2)
+        for invoice in raised:
+            with self.subTest(invoice=invoice.document_number):
+                self.assertIsNotNone(invoice.due_date)
+                self.assertGreater(invoice.due_date, invoice.invoice_date)
+
     def test_preview_writes_no_invoice(self):
         before = self._invoice_count()
         self.bridge.generate_cohort_invoices(

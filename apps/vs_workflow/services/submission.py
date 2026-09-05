@@ -19,7 +19,9 @@ from vs_workflow.services.resolution import document_scope, resolve_template
 
 # Create an approval instance and activate its first approvable stage.
 def submit_for_approval(document, requested_by, *,
-                         template_code: Optional[str] = None) -> WorkflowInstance:
+                         template_code: Optional[str] = None,
+                         confirm_without_approval: bool = False,
+                         confirmation_reason: str = "") -> WorkflowInstance:
     """Create a WorkflowInstance for document and activate its first stage.
 
     Template resolution uses a three-level cascade - branch-specific →
@@ -28,6 +30,17 @@ def submit_for_approval(document, requested_by, *,
     active templates take part: a tenant that adjusted a shared template and
     then asked for the platform version back has its own switched off, and this
     cascade is where that decision takes effect.
+
+    **A template with no stages refuses rather than approving instantly.** With
+    no stages, ``_pick_next_stage`` returns None on the first hop and the
+    instance terminates APPROVED before anybody has seen it - and a terminal
+    approved instance is exactly what a payout batch presents as its authority
+    to move money. So an empty template is treated here the way the finance
+    posting path treats it: not as "no approval needed" but as "nobody has said
+    what approving this looks like", which is a refusal until somebody says in
+    as many words that this document goes out unreviewed. ``confirm_without_approval``
+    is that sentence, and it is recorded against the caller's name.
+
     Calling code must ensure the document declares workflow_document_type and
     that a matching handler is registered, otherwise InvalidInstanceStateError
     / UnknownDocumentTypeError are raised before anything is written.
@@ -55,6 +68,28 @@ def submit_for_approval(document, requested_by, *,
             code=code, document_type=document_type,
         )
 
+    # A template with no stages. The router refuses one outright
+    # (``TemplateInvalidError: Template has no stages``), which is a true
+    # statement about the configuration and a dead end for the person holding
+    # the document: nothing they can do makes it move. So the refusal is made
+    # answerable here instead - a named code, and a way through that is recorded
+    # rather than forbidden.
+    unconfigured = not template.stages.exists()
+    if unconfigured:
+        from vs_workflow.exceptions import ApprovalNotConfiguredError
+        from vs_workflow.services.resolution import record_unapproved_post
+
+        if not confirm_without_approval:
+            raise ApprovalNotConfiguredError(
+                "No approval steps have been set up for this document, so "
+                "nobody will review it. Confirm you want to send it anyway, or "
+                "set up the approval steps first."
+            )
+        record_unapproved_post(
+            document, actor_user=requested_by, reason=confirmation_reason,
+            tenant=tenant,
+        )
+
     try:
         # Summary is best-effort display metadata; approval should not fail on it.
         document_summary = handler.get_document_summary(document) or {}
@@ -76,7 +111,15 @@ def submit_for_approval(document, requested_by, *,
         audit_service.write(instance, AuditEventType.INSTANCE_SUBMITTED, actor=requested_by,
                             context={"template": template.code})
         handler.on_submitted(instance, {"template": template.code})
-        routing_service.advance_instance(instance, current_attempt=1)
+        if unconfigured:
+            # Straight to approved, without the router: it would raise on a
+            # template with no stages, and there is nothing for it to route to.
+            # The instance is still written, so the document has the same
+            # terminal record it would have had if a ladder had passed it, and
+            # the audit entry above says a person chose this.
+            routing_service.terminate_approved(instance)
+        else:
+            routing_service.advance_instance(instance, current_attempt=1)
         return instance
 
 

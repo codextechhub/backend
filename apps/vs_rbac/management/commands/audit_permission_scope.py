@@ -157,9 +157,46 @@ class Command(BaseCommand):
             return {raw}
         if isinstance(raw, (list, tuple, set)):
             return {k for k in raw if isinstance(k, str)}
-        # A property switching on the HTTP method cannot be read off the class,
-        # so fall back to the literals in its body.
-        return set(KEY_PATTERN.findall(source)) if raw is not None and source else set()
+        # Three shapes cannot be read off the class, and all fall back to the
+        # source: a property switching on the HTTP method, a view assigning
+        # ``self.rbac_permission`` inside ``get_permissions``, and either of
+        # those naming a module-level constant rather than a literal.
+        #
+        # The last one is why names are resolved as well as literals scanned.
+        # ``ROLE_LIST_KEYS`` in a class body is not a key and never matches the
+        # pattern, so a view gated that way looked completely ungated - and this
+        # command exists to say which keys gate nothing, so under-reporting here
+        # is the direction that gets a working key deleted.
+        if not source:
+            return set()
+        found = set(KEY_PATTERN.findall(source))
+        found |= self._keys_from_names(cls, source)
+        return found
+
+    def _keys_from_names(self, cls, source) -> set:
+        """Keys reachable through a constant the class body names.
+
+        Only module-level names of the view's own module, and only values that
+        are strings or flat collections of them: enough to follow
+        ``rbac_permission = ROLE_LIST_KEYS``, and not so much that any list in
+        the module gets attributed to every view in it.
+        """
+        import sys
+
+        module = sys.modules.get(getattr(cls, "__module__", "") or "")
+        if module is None:
+            return set()
+        keys = set()
+        for name in set(re.findall(r"\b([A-Z][A-Z0-9_]{2,})\b", source)):
+            value = getattr(module, name, None)
+            if isinstance(value, str):
+                candidates = [value]
+            elif isinstance(value, (list, tuple, set)):
+                candidates = [v for v in value if isinstance(v, str)]
+            else:
+                continue
+            keys |= {v for v in candidates if KEY_PATTERN.fullmatch(f'"{v}"')}
+        return keys
 
     # ── resolving the table ──────────────────────────────────────────────────
 

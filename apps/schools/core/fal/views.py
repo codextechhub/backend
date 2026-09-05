@@ -42,6 +42,8 @@ from .exceptions import (
     InvalidTermLinkError,
     TermNotLinkedError,
 )
+from .due_dates import resolve_due_date
+from .models import FeeDueBasis, SchoolFeeDuePolicy
 from .registry import get_fee_term_bridge
 from .serializers import (
     GenerateInvoicesSerializer,
@@ -175,4 +177,113 @@ class GenerateInvoicesView(_FalView):
             ),
             data=generation_payload(result.value),
             status=status.HTTP_200_OK if dry_run else status.HTTP_201_CREATED,
+        )
+
+
+class FeeDuePolicyView(APIView):
+    """GET / PATCH when this school's fee bills fall due.
+
+    A school that has never opened this answers with the default it is already
+    billing by, not with an empty body: there is no "unset" state a bursar can
+    observe, because billing always has to pick a date and does.
+
+    ``preview`` on the read is what makes the choice legible. "End of the term
+    billed" is an abstraction until it says 15 November, and a bursar choosing
+    between four rules should not have to raise an invoice to find out what each
+    one means.
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+
+    @property
+    def rbac_permission(self):
+        return "school.fees.manage" if self.request.method == "PATCH" \
+            else "school.fees.view"
+
+    def _payload(self, request, row):
+        import datetime
+
+        from schools.vs_academics.models import AcademicSession, AcademicTerm
+
+        today = datetime.date.today()
+        tenant = request.tenant
+        session = (
+            AcademicSession.objects.filter(tenant=tenant, status="ACTIVE")
+            .order_by("-start_date").first()
+        )
+        term = None
+        if session is not None:
+            term = (
+                AcademicTerm.objects.filter(
+                    session=session, start_date__lte=today, end_date__gte=today,
+                ).first()
+                or AcademicTerm.objects.filter(session=session).order_by("start_date").first()
+            )
+
+        # What each rule would put on a bill raised today, priced by the same
+        # function that bills, so the preview cannot drift from the behaviour.
+        preview = {
+            basis.value: resolve_due_date(
+                basis=basis.value, days_after=row.days_after, invoice_date=today,
+                term_end=term.end_date if term else None,
+                session_end=session.end_date if session else None,
+            ).isoformat()
+            for basis in FeeDueBasis
+        }
+        return {
+            "basis": row.basis,
+            "basis_display": row.get_basis_display(),
+            "days_after": row.days_after,
+            "options": [
+                {"value": b.value, "label": b.label, "due_if_billed_today": preview[b.value]}
+                for b in FeeDueBasis
+            ],
+            "resolved_against": {
+                "session": session.name if session else None,
+                "term": term.name if term else None,
+            },
+        }
+
+    def _row(self, request):
+        row = SchoolFeeDuePolicy.objects.filter(tenant=request.tenant).first()
+        return row or SchoolFeeDuePolicy(tenant=request.tenant)
+
+    def get(self, request):
+        return success_response(
+            "Fee due policy retrieved.", data=self._payload(request, self._row(request)),
+        )
+
+    @transaction.atomic
+    def patch(self, request):
+        row = self._row(request)
+        body = request.data or {}
+
+        if "basis" in body:
+            basis = str(body.get("basis") or "").upper()
+            if basis not in FeeDueBasis.values:
+                return error_response(
+                    f"Basis must be one of {', '.join(FeeDueBasis.values)}.",
+                    status=status.HTTP_400_BAD_REQUEST, code="INVALID_BASIS",
+                )
+            row.basis = basis
+
+        if "days_after" in body:
+            try:
+                days = int(body.get("days_after"))
+            except (TypeError, ValueError):
+                days = -1
+            # Bounded rather than merely non-negative: zero means the bill is due
+            # the day it is raised, which a school may genuinely want, while a
+            # year of credit on a term's fees is a typo every time.
+            if not 0 <= days <= 365:
+                return error_response(
+                    "Days after the bill must be between 0 and 365.",
+                    status=status.HTTP_400_BAD_REQUEST, code="INVALID_DAYS_AFTER",
+                )
+            row.days_after = days
+
+        row.updated_by = request.user
+        row.save()
+        return success_response(
+            "Fee due policy updated.", data=self._payload(request, row),
         )

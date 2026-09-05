@@ -174,6 +174,14 @@ class Command(BaseCommand):
                 .tenant
             )
             role = create_role_from_suggestion(spec["prebuilt_key"], tenant, actor)
+            # CodeX owns these two the same way it owns School Admin, Branch
+            # Admin and Teacher. Without the flag they are indistinguishable
+            # from a role the school typed itself, so the roles screen files
+            # them under "Roles you added" and offers to let a school edit what
+            # CodeX maintains.
+            if not role.is_system_role:
+                role.is_system_role = True
+                role.save(update_fields=["is_system_role"])
             self.stdout.write(self.style.SUCCESS(
                 f"  [{slug}] created {role.name} with "
                 f"{TenantRolePermission.objects.filter(role=role, granted=True).count()} grant(s)"

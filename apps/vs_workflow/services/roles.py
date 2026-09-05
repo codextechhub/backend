@@ -36,9 +36,10 @@ def reserved_role_keys() -> set[str]:
     typed into the roles screen by anyone holding role-create, produces the key
     ``payout-approver`` - which is the key the seeded payout ladder resolves. The
     holder is then on the frozen approver list for every payout batch the school
-    raises, having been granted no payments permission at all. The ten
-    ``*.approve`` permissions that look like they govern this are listed in
-    ``vs_rbac.unenforced`` precisely because nothing reads them.
+    raises, having been granted no payments permission at all. Ten ``*.approve``
+    permissions used to sit in the registry looking as though they governed
+    this; they were deleted precisely because nothing read them, and a key that
+    grants nothing is a label that lies.
 
     Two doors follow from this set, and both are needed:
 

@@ -28,6 +28,15 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
     of created (POSTED) invoices. Skips a customer who already has a posted invoice
     referencing this structure (idempotent re-run guard via the invoice ``reference``).
     Raises :class:`PostingError` if the structure is empty or inactive.
+
+    An omitted ``due_date`` is derived here, from the entity's
+    ``default_invoice_due_days``, rather than left null. A null due date does not
+    read as "no deadline", it reads as "never overdue": every ageing bucket,
+    every debtor list and every dunning run selects on ``due_date__lt``, and NULL
+    matches none of them. A whole term's fees would sit outside the receivables
+    the school chases, and nothing would report them missing. Deriving it at this
+    level rather than in a caller is what makes that true for every caller,
+    including the school bridge, which bills a cohort and passes no date.
     """
     from .models import Invoice, InvoiceLine
 
@@ -38,6 +47,12 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
         raise PostingError(f"Fee structure {structure.code} is inactive.")
 
     invoice_date = invoice_date or datetime.date.today()
+    if due_date is None:  # Never leave it null: null is not a deadline, it is never overdue.
+        from .document_settings import resolve_finance_document_settings
+        policy = resolve_finance_document_settings(structure.entity)
+        due_date = invoice_date + datetime.timedelta(
+            days=policy.default_invoice_due_days,
+        )
     reference = f"FEE:{structure.code}"  # Stable idempotency reference for this structure.
     created = []  # Collect generated posted invoices for the return value.
 

@@ -50,7 +50,9 @@ from django.db.models import (
 )
 from django.db.models.functions import TruncMonth
 from django.utils import timezone
+from vs_tenants.context import get_current_audit_identity
 
+from ..due_dates import policy_for, resolve_due_date
 from ..contracts import (
     SOURCE_TYPE_STUDENT,
     AgeingBucket,
@@ -774,7 +776,30 @@ class DjangoFeeTermBridgeAdapter(FeeTermBridgePort):
             billable = tuple(ref for ref, c in pairs if c.pk not in already)
             to_bill = [c for _ref, c in pairs if c.pk not in already]
 
-            invoices = fees.generate_invoices(structure, to_bill) if to_bill else []
+            # The effective user, not the actor: where a CodeX operator is acting
+            # inside a school's session, the bill is the school's act and its
+            # ledger should say so. Read from the request context rather than a
+            # port argument, because every caller of this bridge is already
+            # inside an authenticated request and none of them should have to
+            # remember to thread an identity through to be attributed.
+            _actor, effective_user, _proxy = get_current_audit_identity()
+
+            # The school's own rule, resolved here rather than in the engine.
+            # Three of the four bases are academic-calendar facts, and the term
+            # this structure bills is known at exactly this point; vs_finance
+            # gets the answer as a plain date and stays ignorant of terms.
+            basis, days_after = policy_for(structure.entity.tenant_id)
+            invoice_date = datetime.date.today()
+            due_date = resolve_due_date(
+                basis=basis, days_after=days_after, invoice_date=invoice_date,
+                term_end=link.term.end_date if link.term_id else None,
+                session_end=link.session.end_date,
+            )
+
+            invoices = fees.generate_invoices(
+                structure, to_bill, actor_user=effective_user,
+                invoice_date=invoice_date, due_date=due_date,
+            ) if to_bill else []
 
             return InvoiceGenerationResult(
                 fee_structure_ref=structure.pk,

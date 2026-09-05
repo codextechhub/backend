@@ -43,8 +43,9 @@ PAYMENTS_RESOURCES = [
     ("virtual_account", "virtual accounts",    [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("manage", "SENSITIVE"), ("view_sensitive", "SENSITIVE")]),
     # Bulk-payout-batch approval (maker-checker over the highest-risk cash-out path).
-    ("payout_batch",    "bulk payout batches", [("submit", "SENSITIVE"), ("approve", "CRITICAL"),
-                                                ("approve_high_value", "CRITICAL")]),
+    # No approver keys: who may release a payout is the workflow stage's answer,
+    # not a permission's. See the note in the finance seeder.
+    ("payout_batch",    "bulk payout batches", [("submit", "SENSITIVE")]),
 ]
 
 

@@ -932,8 +932,17 @@ def create_payout_batch(
 
 
 @transaction.atomic
-def submit_payout_batch_for_approval(batch, *, requested_by):
-    """Submit one batch once, returning the existing instance on a replay."""
+def submit_payout_batch_for_approval(batch, *, requested_by,
+                                     confirm_without_approval=False,
+                                     confirmation_reason=""):
+    """Submit one batch once, returning the existing instance on a replay.
+
+    ``confirm_without_approval`` is passed straight through. A payout batch
+    presents a terminal approved instance as its authority to move money, so a
+    template with no stages would otherwise authorise the batch the instant it
+    was submitted; the engine refuses that unless somebody says so deliberately,
+    and this is how the view says it.
+    """
     from vs_workflow.models import WorkflowInstance
     from vs_workflow.services.submission import submit_for_approval
 
@@ -945,7 +954,11 @@ def submit_payout_batch_for_approval(batch, *, requested_by):
     )
     if existing is not None:
         return existing
-    return submit_for_approval(locked, requested_by=requested_by)
+    return submit_for_approval(
+        locked, requested_by=requested_by,
+        confirm_without_approval=confirm_without_approval,
+        confirmation_reason=confirmation_reason,
+    )
 
 
 class _PreparedDispatch(NamedTuple):

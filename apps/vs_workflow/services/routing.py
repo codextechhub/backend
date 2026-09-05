@@ -342,6 +342,11 @@ def advance_instance(instance: WorkflowInstance, *, current_attempt: int = 1) ->
 
 
 # Mark the workflow approved and run the document approval callback.
+def terminate_approved(instance: WorkflowInstance) -> WorkflowInstance:
+    """Public alias - see :func:`_terminate_approved`."""
+    return _terminate_approved(instance)
+
+
 def _terminate_approved(instance: WorkflowInstance) -> WorkflowInstance:
     """Finalise the instance as fully APPROVED and fire the handler callback.
 

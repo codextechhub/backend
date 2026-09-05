@@ -662,8 +662,7 @@ class TenantPermissionCatalogueView(TenantScopedRBACMixin, APIView):
     def get(self, request, *args, **kwargs):
         from .capability_map import capability_for
         from .models import PermissionScope, tenant_is_platform
-        from .unenforced import UNENFORCED_KEYS
-
+        
         tenant = self.get_tenant()
 
         permissions = (
@@ -673,12 +672,6 @@ class TenantPermissionCatalogueView(TenantScopedRBACMixin, APIView):
         )
         if not tenant_is_platform(tenant):
             permissions = permissions.filter(scope=PermissionScope.TENANT)
-            # Withhold keys that gate nothing. A box that changes nothing when
-            # ticked is worse than an absent one: it tells the person editing
-            # the role she has granted something she has not. See
-            # ``unenforced.py`` for what each one was expected to control and
-            # what actually controls it.
-            permissions = permissions.exclude(key__in=UNENFORCED_KEYS)
 
         is_on = self._capability_reader(tenant)
 
@@ -1203,12 +1196,6 @@ class TenantRoleChangeRequestDecisionView(TenantScopedRBACMixin, APIView):
             return error_response(
                 message=f"Request already decided ({obj.status}).",
                 status=status.HTTP_409_CONFLICT,
-            )
-
-        if obj.requested_by_id == request.user.pk:
-            return error_response(
-                message="You cannot decide your own role change request.",
-                status=status.HTTP_403_FORBIDDEN,
             )
 
         if action == "DENY":

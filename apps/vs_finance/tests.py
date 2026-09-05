@@ -5581,6 +5581,73 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
             {"customers": ["STU1"]}, format="json")
         self.assertEqual(again.json()["data"]["generated"], 0)
 
+    # Verify a generated fee invoice always carries a due date.
+    def test_generated_fee_invoices_always_carry_a_due_date(self):
+        """Omitting the date must mean "use the entity default", never "no date".
+
+        A null due date reads as never overdue, not as no deadline: the ageing
+        buckets, the debtor list and dunning all select on ``due_date__lt``, and
+        NULL matches none of them. The default is applied where the invoice is
+        built rather than where the request is parsed, so a caller that is not
+        this endpoint gets it too.
+        """
+        import datetime as _dt
+
+        entity, _, _ = self.build_books()
+        made = self.client.post(
+            f"/v1/finance/customers/?entity={entity.code}",
+            {"code": "stu9", "name": "Student Nine",
+             "billing_email": "student9@payer.test",
+             "billing_phone": "+2348000000019"}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        self.client.post(
+            f"/v1/finance/fee-structures/?entity={entity.code}",
+            {"code": "jss2t1", "name": "JSS2 Term 1",
+             "items": [{"description": "Tuition", "revenue_account": "4100",
+                        "amount": 10000000}]},
+            format="json",
+        )
+
+        # Omitted: falls back to the entity's default_invoice_due_days (30).
+        gen = self.client.post(
+            f"/v1/finance/fee-structures/JSS2T1/generate/?entity={entity.code}",
+            {"customers": ["STU9"], "invoice_date": "2026-01-10"}, format="json")
+        self.assertEqual(gen.status_code, 201, gen.content)
+        self.assertEqual(gen.json()["data"]["invoices"][0]["due_date"], "2026-02-09")
+
+        # Named explicitly: honoured rather than overwritten by the default.
+        self.client.post(
+            f"/v1/finance/fee-structures/?entity={entity.code}",
+            {"code": "jss3t1", "name": "JSS3 Term 1",
+             "items": [{"description": "Tuition", "revenue_account": "4100",
+                        "amount": 10000000}]},
+            format="json",
+        )
+        named = self.client.post(
+            f"/v1/finance/fee-structures/JSS3T1/generate/?entity={entity.code}",
+            {"customers": ["STU9"], "invoice_date": "2026-01-10",
+             "due_date": "2026-01-31"}, format="json")
+        self.assertEqual(named.json()["data"]["invoices"][0]["due_date"], "2026-01-31")
+
+        # And the service itself, which is the path every other caller reaches
+        # and the one the school bridge uses.
+        from vs_finance.fees import generate_invoices
+        from vs_finance.models import Customer, FeeStructure
+
+        made10 = self.client.post(
+            f"/v1/finance/customers/?entity={entity.code}",
+            {"code": "stu10", "name": "Student Ten",
+             "billing_email": "student10@payer.test",
+             "billing_phone": "+2348000000020"}, format="json")
+        self.assertEqual(made10.status_code, 201, made10.content)
+        raised = generate_invoices(
+            FeeStructure.objects.get(entity=entity, code="JSS2T1"),
+            [Customer.objects.get(entity=entity, code="STU10")],
+            invoice_date=_dt.date(2026, 3, 1),
+        )
+        self.assertEqual(len(raised), 1)
+        self.assertEqual(raised[0].due_date, _dt.date(2026, 3, 31))
+
     # Verify fee generation explains a customer's missing AR setup.
     def test_fee_generation_explains_missing_customer_receivable_account(self):
         entity, _, _ = self.build_books()

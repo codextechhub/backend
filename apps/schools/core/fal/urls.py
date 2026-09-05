@@ -12,9 +12,14 @@ belong to the procurement bridge, which is its own piece of work.
 """
 from django.urls import path
 
-from .views import GenerateInvoicesView, LinkTermView
+from .views import FeeDuePolicyView, GenerateInvoicesView, LinkTermView
 
 urlpatterns = [
+    path(
+        "settings/fee-due-policy/",
+        FeeDuePolicyView.as_view(),
+        name="fal-fee-due-policy",
+    ),
     path(
         "fee-structures/<int:pk>/link-term/",
         LinkTermView.as_view(),

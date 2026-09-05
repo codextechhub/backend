@@ -39,7 +39,9 @@ NEVER_GRANTED_BY_DEFAULT = frozenset({
 
 # (resource_name, resource_label, [(action, sensitivity), ...])
 PROCUREMENT_RESOURCES = [
-    ("approval",       "spend approvals",       [("approve", "SENSITIVE"), ("approve_senior", "CRITICAL"), ("manage", "SENSITIVE"),
+    # ``manage`` configures the rules and ``override`` steps past a stuck one;
+    # neither is "may approve", which the workflow stage decides.
+    ("approval",       "spend approvals",       [("manage", "SENSITIVE"),
                                                  ("override", "CRITICAL")]),
     ("settings",       "procurement settings",  [("view", "NORMAL"), ("update", "SENSITIVE")]),
     ("competition",    "competitive bidding policy", [("override", "CRITICAL")]),
