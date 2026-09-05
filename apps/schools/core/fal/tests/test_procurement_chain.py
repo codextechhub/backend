@@ -28,14 +28,30 @@ class ProcurementChainTests(FALFixture):
         self.vendor = self._vendor(self.corona_books, "Ojo Stationers")
 
     def _staff_the_approver_role(self):
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
+        """Make the approver eligible for the seeded ladder, the way a school does.
+
+        The ladder names an approver group, filled here with the role the approver
+        holds - which is how a school ordinarily staffs one, and what keeps branch
+        scoping meaningful for a role member.
+        """
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_GROUP
         from vs_rbac.models import TenantRoleTemplate
         from vs_rbac.tests.helpers import make_assignment
+        from vs_workflow.constants import GroupMemberKind
+        from vs_workflow.models import WorkflowApproverGroup, WorkflowApproverGroupMember
 
-        role = TenantRoleTemplate.objects.get(
-            tenant=self.corona.tenant, key=WF_DEFAULT_MANAGER_ROLE,
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=self.corona.tenant, key="procurement-checker",
+            defaults={"name": "Procurement Checker", "status": "ACTIVE",
+                      "is_system_role": True},
         )
         make_assignment(self.corona.tenant, self.approver, role)
+        group = WorkflowApproverGroup.all_objects.get(
+            tenant=self.corona.tenant, code=WF_DEFAULT_MANAGER_GROUP,
+        )
+        WorkflowApproverGroupMember.objects.get_or_create(
+            group=group, kind=GroupMemberKind.ROLE, role=role,
+        )
 
     def _vendor(self, books, name):
         """A supplier the school may actually pay.

@@ -7902,7 +7902,6 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
     (regression guard). Covers the security-first cases from design §11.
     """
 
-    APPROVE_KEY = "finance.journal.approve"
     #: Approver resolution reads role assignments, not permission grants.
     APPROVE_ROLE = "checker-role"
 
@@ -7997,9 +7996,6 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
             tenant=self.school.tenant, key=self.APPROVE_ROLE,
             defaults={"name": "Journal Checker", "status": "ACTIVE"},
-        )
-        self.TenantRolePermission.objects.get_or_create(
-            role=role, permission_id=self.APPROVE_KEY, defaults={"granted": True},
         )
         self.TenantUserRoleAssignment.objects.create(
             tenant=self.school.tenant, user=user, role=role, assignment_status="ACTIVE",
@@ -8215,7 +8211,6 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
     posting a standalone over-payment (books to customer-credit 2140).
     """
 
-    APPROVE_KEY = "finance.refund.approve"
     #: Approver resolution reads role assignments, not permission grants.
     APPROVE_ROLE = "refund-checker-role"
 
@@ -8320,9 +8315,6 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
             tenant=self.school.tenant, key=self.APPROVE_ROLE,
             defaults={"name": "Refund Checker", "status": "ACTIVE"},
-        )
-        self.TenantRolePermission.objects.get_or_create(
-            role=role, permission_id=self.APPROVE_KEY, defaults={"granted": True},
         )
         self.TenantUserRoleAssignment.objects.create(
             tenant=self.school.tenant, user=user, role=role, assignment_status="ACTIVE",
@@ -8535,7 +8527,6 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
     POSTED invoice with an outstanding balance.
     """
 
-    APPROVE_KEY = "finance.writeoff.approve"
     #: Approver resolution reads role assignments, not permission grants.
     APPROVE_ROLE = "writeoff-checker-role"
 
@@ -8640,9 +8631,6 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
             tenant=self.school.tenant, key=self.APPROVE_ROLE,
             defaults={"name": "Write-off Checker", "status": "ACTIVE"},
-        )
-        self.TenantRolePermission.objects.get_or_create(
-            role=role, permission_id=self.APPROVE_KEY, defaults={"granted": True},
         )
         self.TenantUserRoleAssignment.objects.create(
             tenant=self.school.tenant, user=user, role=role, assignment_status="ACTIVE",
@@ -10303,18 +10291,27 @@ class AdjustmentApprovalSeedTests(TestCase):
                 role.key,
             )
 
-    def test_the_approving_roles_exist_and_nobody_holds_them(self):
-        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+    def test_the_approving_groups_exist_and_nobody_is_in_them(self):
+        """Seeded blocked, not seeded open - and without inventing a role.
+
+        The ladder names approver groups, which arrive empty. No role is created
+        alongside them: a tenant that has just been seeded should not find roles on
+        its roles screen that it never asked for.
+        """
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_workflow.models import WorkflowApproverGroup
 
         from vs_finance.constants import (
-            WF_ADJUSTMENT_APPROVER_ROLE, WF_SENIOR_ADJUSTMENT_APPROVER_ROLE,
+            WF_ADJUSTMENT_APPROVER_GROUP, WF_SENIOR_ADJUSTMENT_APPROVER_GROUP,
         )
 
         tenant = self._seeded(slug="larch-adj", code="LRCAD")
-        for key in (WF_ADJUSTMENT_APPROVER_ROLE, WF_SENIOR_ADJUSTMENT_APPROVER_ROLE):
-            role = TenantRoleTemplate.objects.get(tenant=tenant, key=key)
+        for code in (WF_ADJUSTMENT_APPROVER_GROUP, WF_SENIOR_ADJUSTMENT_APPROVER_GROUP):
+            group = WorkflowApproverGroup.all_objects.get(tenant=tenant, code=code)
+            self.assertFalse(group.members.exists(), code)
             self.assertFalse(
-                TenantUserRoleAssignment.objects.filter(role=role).exists(), key)
+                TenantRoleTemplate.objects.filter(tenant=tenant, key=code).exists(),
+                code)
 
     def test_the_threshold_is_configurable_down_to_every_one(self):
         from vs_finance.approvals import ensure_tenant_approval_templates

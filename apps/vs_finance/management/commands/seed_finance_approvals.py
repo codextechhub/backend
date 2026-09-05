@@ -16,7 +16,7 @@ Two guarantees, matching the procurement and payout seeds:
   reported and skipped, so re-running after an administrator customised a threshold or
   a stage cannot restore the defaults over them.
 * **Seeded blocked.** The approving roles arrive with nobody in them, so the first
-  refund, write-off, or above-threshold concession parks and names the role to fill
+  refund, write-off, or above-threshold concession parks and names the group to fill
   rather than posting itself.
 
 Safe to re-run. ``--dry-run`` reports what would change and writes nothing.
@@ -29,9 +29,9 @@ from vs_finance.approvals import (
     ensure_tenant_expense_claim_template,
 )
 from vs_finance.constants import (
-    WF_ADJUSTMENT_APPROVER_ROLE,
+    WF_ADJUSTMENT_APPROVER_GROUP,
     WF_ADJUSTMENT_THRESHOLD,
-    WF_SENIOR_ADJUSTMENT_APPROVER_ROLE,
+    WF_SENIOR_ADJUSTMENT_APPROVER_GROUP,
 )
 
 
@@ -53,12 +53,14 @@ class Command(BaseCommand):
                  "approver (new ladders only). Pass 0 to approve every one.",
         )
         parser.add_argument(
-            "--approver-role", default=WF_ADJUSTMENT_APPROVER_ROLE,
-            help="Role key the first stage resolves approvers against.",
+            "--approver-group", default=WF_ADJUSTMENT_APPROVER_GROUP,
+            dest="approver_group",
+            help="Approver group code the first stage resolves against.",
         )
         parser.add_argument(
-            "--senior-role", default=WF_SENIOR_ADJUSTMENT_APPROVER_ROLE,
-            help="Role key the threshold-gated stage resolves against.",
+            "--senior-group", default=WF_SENIOR_ADJUSTMENT_APPROVER_GROUP,
+            dest="senior_group",
+            help="Approver group code the threshold-gated stage resolves against.",
         )
         parser.add_argument(
             "--dry-run", action="store_true",
@@ -84,8 +86,8 @@ class Command(BaseCommand):
 
         ladder_kwargs = {
             "threshold": options["threshold"],
-            "approver_role_key": options["approver_role"],
-            "senior_role_key": options["senior_role"],
+            "approver_group_code": options["approver_group"],
+            "senior_group_code": options["senior_group"],
         }
 
         # One transaction: a half-seeded tenant would gate some adjustments and leave
@@ -109,6 +111,6 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             "Done. Refunds and write-offs now need approval, and concessions and "
             "credit notes need it at or above the threshold. Expense claims now route "
-            "to their approving role. Nobody can approve until somebody holds the "
-            "relevant role, so the first one will park until they do.",
+            "to their approving group. Nobody can approve until somebody is put in "
+            "the relevant group, so the first one will park until they are.",
         ))

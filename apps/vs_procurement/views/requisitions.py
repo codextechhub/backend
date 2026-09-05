@@ -482,20 +482,24 @@ class ApprovalTemplateSetupView(_ProcBase):
     """Provision **this tenant's own** threshold-gated approval rules.
 
     The rules are created for the selected entity's owning tenant, never for the
-    platform: the platform-wide ladder is the shared fallback every tenant without
-    its own rules reads, and one tenant's administrator must not be able to rewrite
-    the threshold or the approving permissions for all the others.
+    platform: the platform-wide row is the shared route every tenant without its own
+    rules reads, it carries no steps, and one tenant's administrator must not be able
+    to rewrite what all the others resolve to.
 
-    Seeded blocked on purpose: the rules arrive with nobody holding the approving
-    role, so the first document submitted parks and asks for an approver to be
-    appointed rather than approving itself.
+    This is where a tenant's approval steps come from. Until it is called, submitting
+    a document resolves to the stageless shared row and is refused as unconfigured,
+    which the submitter is told and can confirm past deliberately.
+
+    Seeded blocked on purpose: each step names an approver group created empty, so the
+    first document submitted parks and asks for somebody to be added to the group
+    rather than approving itself.
 
     Idempotent and non-destructive: a document type whose ladder already exists is
     reported and left untouched, so re-running can never restore the defaults over a
     tenant's customised rules.
 
     POST body (all optional, applied only to newly created ladders): ``threshold``
-    (kobo), ``manager_role_key``, ``senior_role_key``.
+    (kobo), ``manager_group_code``, ``senior_group_code``.
 
     docstring-name: Set up approval templates
     """
@@ -508,10 +512,10 @@ class ApprovalTemplateSetupView(_ProcBase):
         kwargs = {}
         if "threshold" in body:
             kwargs["threshold"] = _money(body.get("threshold"), "threshold")
-        if body.get("manager_role_key"):
-            kwargs["manager_role_key"] = str(body["manager_role_key"])
-        if body.get("senior_role_key"):
-            kwargs["senior_role_key"] = str(body["senior_role_key"])
+        if body.get("manager_group_code"):
+            kwargs["manager_group_code"] = str(body["manager_group_code"])
+        if body.get("senior_group_code"):
+            kwargs["senior_group_code"] = str(body["senior_group_code"])
         results = approvals.ensure_tenant_approval_templates(
             entity.tenant, created_by=request.user, **kwargs,
         )

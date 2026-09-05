@@ -2,10 +2,10 @@
 
 Finance approvals are **opt-in by template** (design §7): a document type is
 approval-gated *iff* a :class:`~vs_workflow.models.WorkflowTemplate` exists for it
-at the document's ``(school, branch)`` scope, with the same branch → school →
+at the document's ``(tenant, branch)`` scope, with the same branch → tenant →
 platform cascade the engine's ``submit_for_approval`` uses. When no template
 exists, the direct-post path behaves exactly as it did before - so approvals can
-be switched on one document type and one school at a time, with zero migration.  # Keep the gate template-driven.
+be switched on one document type and one tenant at a time, with zero migration.  # Keep the gate template-driven.
 
 **A template existing is not the same question as a stage running.** The gate
 answered on existence alone, which is right only while every ladder's first stage
@@ -104,8 +104,8 @@ def approval_required(document) -> bool:
     """Return ``True`` iff ``document`` must go through workflow approval.
 
     True when a published :class:`~vs_workflow.models.WorkflowTemplate` resolves for
-    the document's ``workflow_document_type`` at its ``(school, branch)`` scope -
-    matched with the same branch-specific → school-wide → platform-wide cascade as
+    the document's ``workflow_document_type`` at its ``(tenant, branch)`` scope -
+    matched with the same branch-specific → tenant-wide → platform-wide cascade as
     :func:`vs_workflow.services.submission.submit_for_approval`, both going through
     :func:`vs_workflow.services.resolution.resolve_template` so the gate and the
     engine cannot resolve different templates - **and** at least one stage of that
@@ -231,8 +231,8 @@ def _adjustment_models():
             (Refund, WriteOffRequest, Concession, CreditNote)}
 
 
-def _stages_payload(*, amount_field, threshold, gated, approver_role_key,
-                    senior_role_key):
+def _stages_payload(*, amount_field, threshold, gated, approver_group_code,
+                    senior_group_code):
     """The stage list for one adjustment ladder.
 
     An always-gated type gets a single always-on stage. A threshold-gated type gets
@@ -257,8 +257,8 @@ def _stages_payload(*, amount_field, threshold, gated, approver_role_key,
         "label": "Adjustment approval",
         "kind": "APPROVAL",
         "order": 10,
-        "approver_source": "ROLE",
-        "approver_role_key": approver_role_key,
+        "approver_source": "WORKFLOW_GROUP",
+        "approver_group_code": approver_group_code,
         # Receivable adjustments are entity-scoped; a customer is not a branch.
         "approver_scope": "SCHOOL",
         "advance_rule": "ANY",
@@ -275,8 +275,8 @@ def _stages_payload(*, amount_field, threshold, gated, approver_role_key,
         "label": "Senior adjustment approval",
         "kind": "APPROVAL",
         "order": 20,
-        "approver_source": "ROLE",
-        "approver_role_key": senior_role_key,
+        "approver_source": "WORKFLOW_GROUP",
+        "approver_group_code": senior_group_code,
         "approver_scope": "SCHOOL",
         "advance_rule": "ANY",
         "on_rejection": "TERMINAL",
@@ -292,8 +292,8 @@ def ensure_tenant_approval_templates(
     tenant,
     *,
     threshold: int | None = None,
-    approver_role_key: str | None = None,
-    senior_role_key: str | None = None,
+    approver_group_code: str | None = None,
+    senior_group_code: str | None = None,
     created_by=None,
 ) -> list:
     """Give one tenant its own adjustment-approval rules. Returns ``[(template, created)]``.
@@ -312,22 +312,22 @@ def ensure_tenant_approval_templates(
     answered False and both posted directly - the gate was built and never switched on.
     """
     from vs_workflow.models import WorkflowTemplate
-    from vs_workflow.services.roles import ensure_approver_role
+    from vs_workflow.services.groups import ensure_approver_group
     from vs_workflow.services.templates import publish_template
 
     from .constants import (
-        WF_ADJUSTMENT_APPROVER_ROLE,
+        WF_ADJUSTMENT_APPROVER_GROUP,
         WF_ADJUSTMENT_THRESHOLD,
         WF_DEFAULT_TEMPLATE_CODE,
-        WF_SENIOR_ADJUSTMENT_APPROVER_ROLE,
+        WF_SENIOR_ADJUSTMENT_APPROVER_GROUP,
     )
 
     if tenant is None:
         raise ValueError("A tenant is required to seed its adjustment-approval rules.")
 
     threshold = WF_ADJUSTMENT_THRESHOLD if threshold is None else threshold
-    approver_role_key = approver_role_key or WF_ADJUSTMENT_APPROVER_ROLE
-    senior_role_key = senior_role_key or WF_SENIOR_ADJUSTMENT_APPROVER_ROLE
+    approver_group_code = approver_group_code or WF_ADJUSTMENT_APPROVER_GROUP
+    senior_group_code = senior_group_code or WF_SENIOR_ADJUSTMENT_APPROVER_GROUP
 
     models = _adjustment_models()
     document_types = list(_ADJUSTMENT_TEMPLATES)
@@ -342,17 +342,19 @@ def ensure_tenant_approval_templates(
         )
     }
 
-    # A tenant-scoped ROLE stage will not publish against a role the tenant does not
-    # have, and a brand-new tenant has no roles at all. Create them holder-less.
-    ensure_approver_role(
-        tenant, approver_role_key,
-        description="Approves receivable adjustments. Nobody holds it until an "
-                    "administrator assigns someone, so adjustments park until then.",
+    # A tenant-scoped WORKFLOW_GROUP stage will not publish against a group the
+    # tenant does not have. Created empty: a group nobody is in resolves to
+    # nobody, so the ladder parks its first document rather than approving it.
+    ensure_approver_group(
+        tenant, approver_group_code,
+        description="Approves receivable adjustments. Empty until the tenant "
+                    "adds people, roles or positions to it, so adjustments park "
+                    "until then.",
     )
-    ensure_approver_role(
-        tenant, senior_role_key,
-        description="Approves high-value concessions and credit notes. Nobody holds "
-                    "it until an administrator assigns someone.",
+    ensure_approver_group(
+        tenant, senior_group_code,
+        description="Approves high-value concessions and credit notes. Empty "
+                    "until the tenant puts somebody in it.",
     )
 
     results = []
@@ -369,8 +371,8 @@ def ensure_tenant_approval_templates(
                 stages_payload=_stages_payload(
                     amount_field=models[document_type].workflow_amount_field,
                     threshold=threshold, gated=gated,
-                    approver_role_key=approver_role_key,
-                    senior_role_key=senior_role_key,
+                    approver_group_code=approver_group_code,
+                    senior_group_code=senior_group_code,
                 ),
             ),
             True,
@@ -384,7 +386,7 @@ def ensure_tenant_approval_templates(
 def ensure_tenant_expense_claim_template(
     tenant,
     *,
-    approver_role_key: str | None = None,
+    approver_group_code: str | None = None,
     created_by=None,
 ):
     """Publish the tenant's expense-claim approval route if none exists.
@@ -395,18 +397,18 @@ def ensure_tenant_expense_claim_template(
     activation creates their approval notices.
     """
     from vs_workflow.models import WorkflowTemplate
-    from vs_workflow.services.roles import ensure_approver_role
+    from vs_workflow.services.groups import ensure_approver_group
     from vs_workflow.services.templates import publish_template
 
     from .constants import (
         WF_DEFAULT_TEMPLATE_CODE,
-        WF_EXPENSE_CLAIM_APPROVER_ROLE,
+        WF_EXPENSE_CLAIM_APPROVER_GROUP,
     )
 
     if tenant is None:
         raise ValueError("A tenant is required to seed its expense-claim approval rule.")
 
-    approver_role_key = approver_role_key or WF_EXPENSE_CLAIM_APPROVER_ROLE
+    approver_group_code = approver_group_code or WF_EXPENSE_CLAIM_APPROVER_GROUP
     existing = WorkflowTemplate.all_objects.filter(
         tenant=tenant,
         branch=None,
@@ -416,11 +418,11 @@ def ensure_tenant_expense_claim_template(
     if existing is not None:
         return existing, False
 
-    ensure_approver_role(
+    ensure_approver_group(
         tenant,
-        approver_role_key,
-        description="Approves staff expense claims. Nobody holds it until an "
-                    "administrator assigns someone, so claims park until then.",
+        approver_group_code,
+        description="Approves staff expense claims. Empty until the tenant puts "
+                    "somebody in it, so claims park until then.",
     )
     template = publish_template(
         tenant=tenant,
@@ -435,8 +437,8 @@ def ensure_tenant_expense_claim_template(
             "label": "Expense claim approval",
             "kind": "APPROVAL",
             "order": 10,
-            "approver_source": "ROLE",
-            "approver_role_key": approver_role_key,
+            "approver_source": "WORKFLOW_GROUP",
+            "approver_group_code": approver_group_code,
             "approver_scope": "SCHOOL",
             "advance_rule": "ANY",
             "on_rejection": "RETURN_TO_REQUESTER",
@@ -457,12 +459,12 @@ def guard_direct_post(document, request, *, noun="document"):
     A document whose ladder would stop it must be submitted, not posted: that is
     the ordinary gate and it has always been here.
 
-    A document whose school holds a template with **no stages** is the case this
-    adds. It is not approval-free; it is approval-undecided. A school is given a
+    A document whose tenant holds a template with **no stages** is the case this
+    adds. It is not approval-free; it is approval-undecided. A tenant is given a
     template of its own so it can choose its stages, and until it does, that
     empty template stands in front of the shared platform ladder that would
     otherwise have caught the document. Posting anyway is a legitimate thing for
-    a school to do - a bursar should not be stuck because nobody has built the
+    a tenant to do - a requester should not be stuck because nobody has built the
     ladder yet - but it is a decision somebody makes, not a default the system
     takes for them. So it needs ``confirm_without_approval`` in the body, and it
     is written to the audit trail with the person's name against it.

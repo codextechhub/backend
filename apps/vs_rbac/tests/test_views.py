@@ -450,12 +450,27 @@ class TenantRoleTemplateViewTests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertFalse(TenantRoleTemplate.objects.filter(pk=role.pk).exists())
 
-    def test_system_role_update_blocked(self):
-        role = make_role(self.school, name="Locked", is_system_role=True)
+    def test_a_school_may_edit_the_roles_codex_set_up_for_it(self):
+        """``is_system_role`` marks provenance, and no longer means read-only.
+
+        A school given School Admin, Branch Admin and Teacher at onboarding could not
+        change any of them, so wanting its admin to configure a payment gateway meant
+        creating a second role carrying that one permission and assigning it alongside
+        - a workaround for a rule that should not have been there. Which permissions a
+        school may hold at all is already bounded by ``PermissionScope.TENANT`` and
+        enforced on the grant models; refusing the edit on top of that decided, on the
+        school's behalf, that CodeX's first guess was final.
+        """
+        role = make_role(self.school, name="Seeded", is_system_role=True)
         resp = _token_client(self.admin).patch(
-            self._detail_url(role.key), {"name": "New"}, format="json"
+            self._detail_url(role.key), {"name": "Renamed by the school"}, format="json"
         )
-        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        role.refresh_from_db()
+        self.assertEqual(role.name, "Renamed by the school")
+        # The flag itself survives: it still records where the role came from, and the
+        # roles screen still groups on it.
+        self.assertTrue(role.is_system_role)
 
     def test_super_admin_can_update_locked_system_role(self):
         super_admin = make_vision_user(
@@ -924,7 +939,15 @@ class TenantRoleChangeRequestViewTests(TestCase):
         )
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_requester_cannot_approve_own_request(self):
+    def test_requester_may_approve_own_request_and_it_is_audited(self):
+        """A school with one approver can finish, and the log records that it did.
+
+        Two people deciding a grant is better and is not something most schools
+        can staff. Where the head teacher who raised the request is the only
+        holder of the approve key, refusing her produces no second approver - it
+        produces a request that sits pending until CodeX reaches into the tenant.
+        So it is allowed, under its own audit source.
+        """
         _grant(self.admin, [ROLE_APPROVE_KEY])
         rcr = make_role_change_request(self.school, self.admin, self.role)
         TenantRoleChangeDeltaItem.objects.create(
@@ -936,9 +959,16 @@ class TenantRoleChangeRequestViewTests(TestCase):
             self._decide_url(rcr.id), {"action": "APPROVE"}, format="json",
         )
 
-        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
         rcr.refresh_from_db()
-        self.assertEqual(rcr.status, TenantRoleChangeRequest.Status.PENDING)
+        self.assertEqual(rcr.status, TenantRoleChangeRequest.Status.APPROVED)
+
+        log = RBACAuditLog.objects.filter(
+            entity_type="TenantRoleTemplate", entity_id=str(self.role.pk),
+            action_type="PERMISSION_CHANGED",
+        ).latest("created_at")
+        self.assertEqual(log.metadata["source"], "self_approved_change_request")
+        self.assertTrue(log.metadata["self_approved"])
 
     def test_restricted_approval_enforces_reviewer_grant_ceiling(self):
         restricted = make_permission(

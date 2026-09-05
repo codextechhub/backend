@@ -31,7 +31,7 @@ from vs_procurement.models import (
 )
 from vs_procurement.constants import (
     ProcApprovalState, RfqStatus,
-    WF_DEFAULT_MANAGER_ROLE, WF_DEFAULT_SENIOR_ROLE,
+    WF_DEFAULT_MANAGER_GROUP, WF_DEFAULT_SENIOR_GROUP,
 )
 from vs_procurement.contracts import (
     activate_contract, complete_milestone, mark_expired, renew_contract,
@@ -475,9 +475,9 @@ class Command(BaseCommand):
                 ).exists():
                     raise CommandError(
                         f"{payment.document_number or payment.reference} is parked: "
-                        f"{actor.email} cannot approve it. Assign them the "
-                        f"'{WF_DEFAULT_MANAGER_ROLE}' role (and "
-                        f"'{WF_DEFAULT_SENIOR_ROLE}' for high-value spend) first.",
+                        f"{actor.email} cannot approve it. Add them to the "
+                        f"'{WF_DEFAULT_MANAGER_GROUP}' approver group (and "
+                        f"'{WF_DEFAULT_SENIOR_GROUP}' for high-value spend) first.",
                     )
                 workflow_actions.record_action(
                     instance.id, actor, action,

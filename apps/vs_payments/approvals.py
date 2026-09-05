@@ -23,8 +23,8 @@ noted at the point it applies.
 from __future__ import annotations
 
 from .constants import (
-    WF_DEFAULT_APPROVE_ROLE,
-    WF_DEFAULT_HIGH_VALUE_ROLE,
+    WF_DEFAULT_APPROVE_GROUP,
+    WF_DEFAULT_HIGH_VALUE_GROUP,
     WF_DEFAULT_HIGH_VALUE_THRESHOLD,
     WF_DEFAULT_TEMPLATE_CODE,
 )
@@ -85,9 +85,9 @@ def payout_approval_template_gaps() -> list[dict]:
 
 
 def _default_stages_payload(
-    *, approve_role_key: str, high_value_role_key: str, high_value_threshold: int,
+    *, approve_group_code: str, high_value_group_code: str, high_value_threshold: int,
 ) -> list:
-    """The two-stage ladder shared by platform and per-tenant provisioning.
+    """The two-stage ladder a tenant is seeded with.
 
     The checker stage always runs. The senior stage runs when the batch total reaches
     the configured high-value threshold. Provider-bound enforcement independently
@@ -95,13 +95,13 @@ def _default_stages_payload(
 
     Two properties are carried over from procurement on purpose.
 
-    ``skip_if_no_approvers=False``: money must never approve itself. When nobody holds
-    the approving role the engine activates the stage with an empty approver
+    ``skip_if_no_approvers=False``: money must never approve itself. When the approver
+    group is empty the engine activates the stage with an empty approver
     snapshot and the batch *parks* rather than reaching a terminal APPROVED decision
     with no human involved. That is the safe failure, and it is the reason seeding is
     safe to run before anybody has been appointed. Parking is not a dead end: the
     engine's repair (:mod:`vs_workflow.services.parking`) makes the batch actionable as
-    soon as somebody is appointed. Payout handlers deliberately forbid continuing
+    soon as somebody joins the group. Payout handlers deliberately forbid continuing
     without a human vote.
 
     ``advance_rule="ANY"`` and ``on_rejection="TERMINAL"``: one holder's vote carries
@@ -119,8 +119,8 @@ def _default_stages_payload(
             "label": "Payout checker approval",
             "kind": "APPROVAL",
             "order": 10,
-            "approver_source": "ROLE",
-            "approver_role_key": approve_role_key,
+            "approver_source": "WORKFLOW_GROUP",
+            "approver_group_code": approve_group_code,
             # Batches carry no branch; see the docstring above.
             "approver_scope": "SCHOOL",
             "advance_rule": "ANY",
@@ -134,8 +134,8 @@ def _default_stages_payload(
             "label": "Senior payout approval",
             "kind": "APPROVAL",
             "order": 20,
-            "approver_source": "ROLE",
-            "approver_role_key": high_value_role_key,
+            "approver_source": "WORKFLOW_GROUP",
+            "approver_group_code": high_value_group_code,
             "approver_scope": "SCHOOL",
             "advance_rule": "ANY",
             "on_rejection": "TERMINAL",
@@ -148,23 +148,28 @@ def _default_stages_payload(
     ]
 
 
-def ensure_default_approval_templates(
-    *,
-    approve_role_key: str = WF_DEFAULT_APPROVE_ROLE,
-    high_value_role_key: str = WF_DEFAULT_HIGH_VALUE_ROLE,
-    high_value_threshold: int = WF_DEFAULT_HIGH_VALUE_THRESHOLD,
-    created_by=None,
-):
-    """Publish (idempotently) the **platform-wide** default payout-batch ladder.
+def ensure_default_approval_templates(*, created_by=None):
+    """Publish (idempotently) the **platform-wide** payout-batch route, with no steps.
 
-    The last-resort fallback, not a tenant's rules: platform-scoped
+    The last-resort route, not a ladder: platform-scoped
     (``tenant=None, branch=None``) so no entity is left with an unroutable batch, and
-    a tenant's own template overrides it through the engine's cascade. Since the stages
-    never auto-skip, falling back here parks a batch rather than paying it, so the
-    fallback is safe to keep in place.
+    a tenant's own template overrides it through the engine's cascade.
+
+    It takes no approver arguments because it publishes nobody to approve against. A
+    step here would have to name the same authority in every tenant at once, which
+    only a role key can do, and minting that role in every tenant is what this
+    stopped doing. What a tenant gets instead comes from
+    :func:`ensure_tenant_approval_templates`, whose steps name that tenant's own
+    approver groups.
+
+    A batch resolving here therefore finds no steps and is refused with
+    :class:`~vs_workflow.exceptions.ApprovalNotConfiguredError` rather than parked or
+    paid: the tenant either builds its ladder or confirms the post deliberately, and
+    the confirmation is recorded against whoever gives it.
 
     Re-running upserts one shared row that every tenant without its own template reads,
-    which is why only platform-level provisioning may call it. Returns the published :class:`~vs_workflow.models.WorkflowTemplate`.
+    which is why only platform-level provisioning may call it. Returns the published
+    :class:`~vs_workflow.models.WorkflowTemplate`.
     """
     from vs_workflow.services.templates import publish_template
 
@@ -173,41 +178,53 @@ def ensure_default_approval_templates(
         code=WF_DEFAULT_TEMPLATE_CODE, name=TEMPLATE_NAME,
         description=f"Default approval rule for a {TEMPLATE_LABEL}.",
         created_by=created_by,
-        stages_payload=_default_stages_payload(
-            approve_role_key=approve_role_key,
-            high_value_role_key=high_value_role_key,
-            high_value_threshold=high_value_threshold,
-        ),
+        # No steps, deliberately.
+        #
+        # The shared row is one template every tenant runs, so a step on it
+        # cannot name an approver group: a group belongs to one tenant. The only
+        # thing that can name the same authority everywhere is a role key, and
+        # minting a role in every tenant so a central ladder can resolve is what
+        # this stopped doing.
+        #
+        # So the shared row carries the document type and nothing else. A tenant
+        # that has not built its own ladder resolves to this, finds no steps, and
+        # is asked to confirm - ApprovalNotConfiguredError, recorded against
+        # whoever confirms. That is somebody deciding, rather than a seeded
+        # ladder deciding for them, and it is why the empty case had to stop
+        # being silent before this was safe.
+        stages_payload=[],
     )
 
 
 def ensure_tenant_approval_templates(
     tenant,
     *,
-    approve_role_key: str = WF_DEFAULT_APPROVE_ROLE,
-    high_value_role_key: str = WF_DEFAULT_HIGH_VALUE_ROLE,
+    approve_group_code: str = WF_DEFAULT_APPROVE_GROUP,
+    high_value_group_code: str = WF_DEFAULT_HIGH_VALUE_GROUP,
     high_value_threshold: int = WF_DEFAULT_HIGH_VALUE_THRESHOLD,
     created_by=None,
 ):
-    """Give one tenant its **own** payout-approval rules. Returns ``(template, created)``.
+    """Give one tenant its **own** payout-approval ladder. Returns ``(template, created)``.
 
-    Every tenant sharing one platform ladder means one tenant's administrator editing
-    the approving role changes how every other tenant's payouts are
-    approved. A tenant-scoped template (``tenant=<tenant>, branch=None``) wins over the
-    platform row through the engine's own cascade, and nothing outside this tenant can
-    reach it.
+    This is where a tenant's payout steps come from. The platform row carries none
+    (see :func:`ensure_default_approval_templates`), because a shared row cannot name
+    a tenant's approver group; a tenant-scoped template
+    (``tenant=<tenant>, branch=None``) wins over it through the engine's own cascade,
+    and nothing outside this tenant can reach it.
 
     **Non-destructive.** A tenant that already has its own ladder is left exactly as it
-    is and reported with ``created=False``: re-running after an administrator pointed
-    the stage at a different role must not quietly restore the defaults. (Contrast :func:`ensure_default_approval_templates`, which upserts,
-    because the platform row is provisioning's to own.)
+    is and reported with ``created=False``: re-running after an administrator repointed
+    a stage must not quietly restore the defaults. (Contrast
+    :func:`ensure_default_approval_templates`, which upserts, because the platform row
+    is provisioning's to own.)
 
-    **Seeded blocked, not seeded open.** The rules arrive with no approver attached, so
-    the first batch submitted parks and says so instead of paying itself out. Safe for
-    onboarding to call on every tenant creation, and for an administrator to call again.
+    **Seeded blocked, not seeded open.** Each step names an approver group that is
+    created empty, so the first batch submitted parks and says so instead of paying
+    itself out. Safe for onboarding to call on every tenant creation, and for an
+    administrator to call again.
     """
     from vs_workflow.models import WorkflowTemplate
-    from vs_workflow.services.roles import ensure_approver_role
+    from vs_workflow.services.groups import ensure_approver_group
     from vs_workflow.services.templates import publish_template
 
     if tenant is None:
@@ -223,17 +240,17 @@ def ensure_tenant_approval_templates(
     if existing is not None:
         return existing, False
 
-    # A tenant-scoped ROLE stage will not publish against a role key the tenant does
-    # not have, and a brand-new tenant has no roles at all. Create the role (holder-
-    # less) so seeding works on a fresh tenant without inventing approval authority.
-    for role_key, label in (
-        (approve_role_key, "payout batches"),
-        (high_value_role_key, "high-value payout batches"),
+    # A stage will not publish against a group the tenant does not have, and a
+    # brand-new tenant has none. Create them empty, so seeding works on a fresh
+    # tenant without inventing approval authority.
+    for group_code, label in (
+        (approve_group_code, "payout batches"),
+        (high_value_group_code, "high-value payout batches"),
     ):
-        ensure_approver_role(
-            tenant, role_key,
-            description=f"Approves {label}. Nobody holds it until an administrator "
-                        "assigns someone, so batches park until then.",
+        ensure_approver_group(
+            tenant, group_code,
+            description=f"Approves {label}. Empty until the tenant puts "
+                        "somebody in it, so batches park until then.",
         )
 
     return publish_template(
@@ -242,8 +259,8 @@ def ensure_tenant_approval_templates(
         description=f"Approval rule for a {TEMPLATE_LABEL}.",
         created_by=created_by,
         stages_payload=_default_stages_payload(
-            approve_role_key=approve_role_key,
-            high_value_role_key=high_value_role_key,
+            approve_group_code=approve_group_code,
+            high_value_group_code=high_value_group_code,
             high_value_threshold=high_value_threshold,
         ),
     ), True

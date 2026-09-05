@@ -12,8 +12,10 @@ from vs_finance.models import ExpenseClaim, FiscalPeriod, FiscalYear, LedgerEnti
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies
 from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
 from vs_tenants.models import Tenant
-from vs_workflow.constants import WorkflowStageAction
-from vs_workflow.models import WorkflowInstance, WorkflowStageApprover
+from vs_workflow.constants import GroupMemberKind, WorkflowStageAction
+from vs_workflow.models import (
+    WorkflowApproverGroupMember, WorkflowInstance, WorkflowStageApprover,
+)
 from vs_workflow.services.actions import record_action
 
 
@@ -73,16 +75,25 @@ class ExpenseClaimWorkflowTests(TestCase):
             status=PeriodStatus.OPEN,
         )
 
+        # The seeded stage names an approver group, which arrives empty. Filling it
+        # with a role - rather than with the person directly - is how a school
+        # ordinarily staffs one, and it is what keeps branch scoping meaningful: a
+        # role member is narrowed to the stage's branch where a named person is
+        # eligible tenant-wide.
         template, _created = ensure_tenant_expense_claim_template(tenant)
-        approval_role = TenantRoleTemplate.objects.get(
-            tenant=tenant,
-            key=template.stages.get().approver_role_key,
+        group = template.stages.get().approver_group
+        approval_role = TenantRoleTemplate.objects.create(
+            tenant=tenant, key="expense-claim-checker", name="Expense Claim Checker",
+            status="ACTIVE", is_system_role=True,
         )
         TenantUserRoleAssignment.objects.create(
             tenant=tenant,
             user=self.approver,
             role=approval_role,
             assignment_status="ACTIVE",
+        )
+        WorkflowApproverGroupMember.objects.create(
+            group=group, kind=GroupMemberKind.ROLE, role=approval_role,
         )
         self.client = TenantAPIClient(user=self.requester)
 

@@ -4,23 +4,28 @@ Every tenant sharing one platform-wide ladder means one tenant's settings decide
 every other tenant's spend is approved. This command is the operational half of the fix
 (``vs_procurement.approvals.ensure_tenant_approval_templates`` is the service half): it
 publishes a tenant-scoped ladder per approvable document type, which then wins over the
-platform fallback through the workflow engine's own cascade.
+platform row through the workflow engine's own cascade.
 
 Usage::
 
     python manage.py seed_procurement_approvals --tenant corona
     python manage.py seed_procurement_approvals --all-tenants
-    python manage.py seed_procurement_approvals --platform      # the shared fallback
+    python manage.py seed_procurement_approvals --platform      # the shared route
 
 Two guarantees, both deliberate:
 
 * **Never destructive.** A tenant that already has its own ladder for a document type
   is reported and skipped, so re-running after an administrator customised the
-  threshold or the approving roles cannot restore the defaults over them. Only
+  threshold or the approving groups cannot restore the defaults over them. Only
   ``--platform`` upserts, because that row is platform provisioning's to own.
-* **Seeded blocked.** The rules arrive with nobody holding the approving role, so
+* **Seeded blocked.** The stages name approver groups that are created empty, so
   the first document submitted parks and asks for an approver rather than approving
-  itself. Appoint holders of the approving role deliberately, per branch, afterwards.
+  itself. Fill the groups deliberately, per branch, afterwards.
+
+``--platform`` publishes one row per document type with no stages at all, and takes
+none of the ladder options: a shared row cannot name a tenant's approver group, so it
+carries the document type only. A document that resolves to it is refused as
+unconfigured rather than approved.
 
 Safe to re-run. ``--dry-run`` reports what would change and writes nothing.
 """
@@ -32,8 +37,8 @@ from vs_procurement.approvals import (
     ensure_tenant_approval_templates,
 )
 from vs_procurement.constants import (
-    WF_DEFAULT_MANAGER_ROLE,
-    WF_DEFAULT_SENIOR_ROLE,
+    WF_DEFAULT_MANAGER_GROUP,
+    WF_DEFAULT_SENIOR_GROUP,
     WF_DEFAULT_SENIOR_THRESHOLD,
 )
 
@@ -52,19 +57,20 @@ class Command(BaseCommand):
         )
         parser.add_argument(
             "--platform", action="store_true",
-            help="Publish the platform-wide fallback ladder (upserts in place).",
+            help="Publish the platform-wide route, which carries no stages "
+                 "(upserts in place). Ignores the ladder options below.",
         )
         parser.add_argument(
             "--threshold", type=int, default=WF_DEFAULT_SENIOR_THRESHOLD,
             help="Kobo at/above which the senior stage runs (new ladders only).",
         )
         parser.add_argument(
-            "--manager-role", default=WF_DEFAULT_MANAGER_ROLE,
-            help="Role key the first stage resolves approvers against.",
+            "--manager-group", default=WF_DEFAULT_MANAGER_GROUP, dest="manager_group",
+            help="Approver group code the first stage resolves against.",
         )
         parser.add_argument(
-            "--senior-role", default=WF_DEFAULT_SENIOR_ROLE,
-            help="Role key the threshold-gated second stage resolves against.",
+            "--senior-group", default=WF_DEFAULT_SENIOR_GROUP, dest="senior_group",
+            help="Approver group code the threshold-gated second stage resolves against.",
         )
         parser.add_argument(
             "--dry-run", action="store_true", help="Report what would change; write nothing.",
@@ -81,8 +87,8 @@ class Command(BaseCommand):
 
         ladder_kwargs = {
             "threshold": options["threshold"],
-            "manager_role_key": options["manager_role"],
-            "senior_role_key": options["senior_role"],
+            "manager_group_code": options["manager_group"],
+            "senior_group_code": options["senior_group"],
         }
 
         tenants = []
@@ -98,9 +104,11 @@ class Command(BaseCommand):
         # routing to its own ladder and others to the platform fallback.
         with transaction.atomic():
             if options["platform"]:
-                published = ensure_default_approval_templates(**ladder_kwargs)
+                published = ensure_default_approval_templates()
                 self.stdout.write(
-                    f"Platform fallback: {len(published)} ladder(s) published.",
+                    f"Platform route: {len(published)} row(s) published with no "
+                    "stages. A tenant resolving here is asked to configure its "
+                    "ladder or confirm.",
                 )
 
             for tenant in tenants:

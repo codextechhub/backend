@@ -721,12 +721,12 @@ PLATFORM_ENTITY_CODE = "CODEX"
 #: procurement and payouts so a tenant holds one mental model for approval.
 WF_DEFAULT_TEMPLATE_CODE = "standard"
 
-#: Roles the seeded adjustment stages name. Resolved inside whichever tenant raised
-#: the document, so one central definition serves every tenant. Created by the seed
-#: with nobody appointed: a ladder arrives blocked, not open.
-WF_ADJUSTMENT_APPROVER_ROLE = "finance-adjustment-approver"
-WF_SENIOR_ADJUSTMENT_APPROVER_ROLE = "finance-senior-adjustment-approver"
-WF_EXPENSE_CLAIM_APPROVER_ROLE = "finance-expense-claim-approver"
+#: Codes of the approver groups a tenant's seeded adjustment and expense-claim stages
+#: name. Each group is created empty by the seed, so a ladder arrives blocked rather
+#: than open: the first document parks until the tenant puts somebody in the group.
+WF_ADJUSTMENT_APPROVER_GROUP = "finance-adjustment-approver"
+WF_SENIOR_ADJUSTMENT_APPROVER_GROUP = "finance-senior-adjustment-approver"
+WF_EXPENSE_CLAIM_APPROVER_GROUP = "finance-expense-claim-approver"
 
 #: Kobo at or above which a concession or credit note needs a second person.
 #:

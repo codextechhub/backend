@@ -750,17 +750,17 @@ class TenantRoleTemplateDetailView(TenantScopedRBACMixin, RetrieveModelMixin, Up
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
-        super_admin = is_vision_super_admin(request.user)
-        if instance.is_locked and not super_admin:
-            return error_response(
-                message="This role is locked and cannot be modified.",
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        if instance.is_system_role and not super_admin:
-            return error_response(
-                message="System roles cannot be modified.",
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        # A school may shape every role it holds, including the ones CodeX set
+        # up for it. Those are a starting point, not a settlement: a school that
+        # wants its admin configuring a payment gateway should tick the box,
+        # not invent a second role to carry the one permission and assign it
+        # alongside. What a school may grant AT ALL is already decided by
+        # ``PermissionScope.TENANT`` and enforced on the grant models, so
+        # refusing the edit on top of that only decided that CodeX's first guess
+        # was final.
+        #
+        # ``is_system_role`` keeps its other jobs - it marks provenance, and the
+        # roles screen groups on it - and no longer means "read-only".
         return super().update(request, *args, **kwargs)
 
     def delete(self, request, *args, **kwargs):

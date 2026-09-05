@@ -46,15 +46,32 @@ class _ProcFixture(FALFixture):
         ).unwrap()
 
     def staff_the_approver_role(self, school, user, *, branch=None):
-        """Appoint somebody to the role the seeded ladder routes to."""
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
+        """Make ``user`` an approver for the seeded ladder, the way a school does.
+
+        The ladder names an approver group, and the ordinary way a school fills one is
+        "whoever holds this role", so this creates the role, assigns the user, and puts
+        the *role* in the group. Membership by role rather than by named person is what
+        keeps ``branch`` meaningful: ``resolve_group_users`` narrows role members to
+        the stage's branch, where a named person is eligible tenant-wide.
+        """
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_GROUP
         from vs_rbac.models import TenantRoleTemplate
         from vs_rbac.tests.helpers import make_assignment
+        from vs_workflow.constants import GroupMemberKind
+        from vs_workflow.models import WorkflowApproverGroup, WorkflowApproverGroupMember
 
-        role = TenantRoleTemplate.objects.get(
-            tenant=school.tenant, key=WF_DEFAULT_MANAGER_ROLE,
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=school.tenant, key="procurement-checker",
+            defaults={"name": "Procurement Checker", "status": "ACTIVE",
+                      "is_system_role": True},
         )
         make_assignment(school.tenant, user, role, branch=branch)
+        group = WorkflowApproverGroup.all_objects.get(
+            tenant=school.tenant, code=WF_DEFAULT_MANAGER_GROUP,
+        )
+        WorkflowApproverGroupMember.objects.get_or_create(
+            group=group, kind=GroupMemberKind.ROLE, role=role,
+        )
         return role
 
 

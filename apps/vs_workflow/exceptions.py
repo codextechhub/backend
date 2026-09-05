@@ -143,16 +143,16 @@ class ConditionFunctionAlreadyRegisteredError(WorkflowError):
 
 
 class ApprovalNotConfiguredError(WorkflowError):
-    """Posting a document whose school has a template but no stages in it.
+    """Posting a document whose tenant has a template but no stages in it.
 
     Not a failure and not a permission problem: it is the engine declining to
-    make a decision that belongs to a person. A school is given a template of
-    its own so it can choose its stages, and an empty one is *approval
-    undecided*, not approval-free - it also stands in front of the shared
-    platform ladder that would otherwise have caught the document.
+    make a decision that belongs to a person. A tenant chooses its own stages,
+    and an empty ladder is *approval undecided*, not approval-free. The shared
+    platform template carries no stages either, so a tenant that has configured
+    nothing lands here rather than on rules it never chose.
 
     409 rather than 400: the request is well formed, and it conflicts with the
-    state of the school's own configuration. The caller clears it by saying, in
+    state of the tenant's own configuration. The caller clears it by saying, in
     as many words, that this document goes out without approval - which is then
     recorded against their name.
     """

@@ -153,9 +153,10 @@ REFERENCE_PREFIX = "CXP"
 #: Template code for the seeded ladder. One per document type, matching procurement.
 WF_DEFAULT_TEMPLATE_CODE = "standard"
 
-#: Roles used by the default two-stage payout approval ladder.
-WF_DEFAULT_APPROVE_ROLE = "payout-approver"
-WF_DEFAULT_HIGH_VALUE_ROLE = "payout-senior-approver"
+#: Codes of the approver groups a tenant's two-stage payout ladder names. Created
+#: empty, so a seeded stage parks until the tenant puts somebody in it.
+WF_DEFAULT_APPROVE_GROUP = "payout-approver"
+WF_DEFAULT_HIGH_VALUE_GROUP = "payout-senior-approver"
 
 #: Batches at or above N500,000 require an additional, distinct senior approver.
 WF_DEFAULT_HIGH_VALUE_THRESHOLD = 50_000_000

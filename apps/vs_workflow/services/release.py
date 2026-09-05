@@ -201,10 +201,17 @@ def describe_park(instance) -> dict:
         "stage_code": stage.code,
         "stage_label": stage.label,
         "approver_source": stage.approver_source,
-        # Blank unless this stage really resolves by a named role; see the docstring.
+        # Each is blank unless this stage really resolves that way; see the
+        # docstring. They are what a client acts on - linking straight to the role or
+        # the group to fill - where ``requirement`` is only the sentence to show.
         "role_key": (
             approvers_service.stage_role_key(stage)
             if stage.approver_source == ApproverSource.ROLE else ""
+        ),
+        "approver_group_code": (
+            stage.approver_group.code
+            if stage.approver_source == ApproverSource.WORKFLOW_GROUP
+            and stage.approver_group_id else ""
         ),
         "requirement": stage_requirement(stage),
         "document_type": instance.document_type,

@@ -31,8 +31,8 @@ from vs_finance.constants import DocumentStatus, FinanceAuditAction
 
 from .constants import (
     ProcApprovalState,
-    WF_DEFAULT_MANAGER_ROLE,
-    WF_DEFAULT_SENIOR_ROLE,
+    WF_DEFAULT_MANAGER_GROUP,
+    WF_DEFAULT_SENIOR_GROUP,
     WF_DEFAULT_SENIOR_THRESHOLD,
     WF_DEFAULT_TEMPLATE_CODE,
 )
@@ -63,30 +63,30 @@ def _doc_models():
 
 
 def _default_stages_payload(
-    amount_field: str, *, threshold: int, manager_role_key: str, senior_role_key: str,
+    amount_field: str, *, threshold: int, manager_group_code: str, senior_group_code: str,
 ) -> list:
-    """The two-stage default ladder, shared by the platform and per-tenant seeds.
+    """The two-stage ladder a tenant is seeded with.
 
-    * **manager** - always runs; any holder of the ``manager_role_key`` role can approve.
+    * **manager** - always runs; anybody in the ``manager_group_code`` group approves.
     * **senior**  - gated by ``inclusion_condition`` ``amount >= threshold`` (kobo), so
-      only high-value documents escalate to a holder of the ``senior_role_key`` role.
+      only high-value documents escalate to the ``senior_group_code`` group.
 
-    Both stages name their approver by role *key* rather than by a role reference,
-    because the platform ladder is published without a tenant: the key is resolved
-    inside whichever tenant raised the document, so one definition reaches that
-    tenant's own approvers. A tenant may also repoint either stage to its own role or
-    approver group without cloning the template.
+    Both stages name their approver by approver *group*, which is why this ladder is
+    tenant-scoped and the platform row carries no steps at all: a group belongs to one
+    tenant, so a shared row could not name one. A tenant composes each group from its
+    own people, roles or org-chart positions, and changing who approves is one screen
+    rather than a permission-model conversation.
 
     Both stages set ``skip_if_no_approvers=False``: spend must never approve itself.
-    When nobody currently holds the approving role the engine activates the stage
-    with an empty approver snapshot and the document *parks* at IN_PROGRESS instead of
-    reaching a terminal APPROVED decision with no human involved. Parked work is made
-    reachable again by the workflow parking service once the role is filled.
+    When the approving group is empty the engine activates the stage with an empty
+    approver snapshot and the document *parks* at IN_PROGRESS instead of reaching a
+    terminal APPROVED decision with no human involved. Parked work is made reachable
+    again by the workflow parking service once somebody joins the group.
 
     Both stages are ``approver_scope="BRANCH"``, which is what makes a multi-site
-    tenant route correctly: the engine forwards the *document's own* branch to the role
-    lookup, so a request raised at one site resolves to that site's approvers plus
-    anybody holding the role tenant-wide, and never to another site's approvers. A
+    tenant route correctly: the engine forwards the *document's own* branch to the
+    approver lookup, so a request raised at one site resolves to that site's approvers
+    plus anybody eligible tenant-wide, and never to another site's approvers. A
     document with no branch (raised for the entity as a whole) forwards ``None`` and
     therefore resolves to tenant-wide holders only, which is also exactly what a
     tenant with no branches at all does.
@@ -97,8 +97,8 @@ def _default_stages_payload(
             "label": "Manager approval",
             "kind": "APPROVAL",
             "order": 10,
-            "approver_source": "ROLE",
-            "approver_role_key": manager_role_key,
+            "approver_source": "WORKFLOW_GROUP",
+            "approver_group_code": manager_group_code,
             # Route by the document's own branch - see the docstring above.
             "approver_scope": "BRANCH",
             "advance_rule": "ANY",
@@ -112,8 +112,8 @@ def _default_stages_payload(
             "label": "Senior approval",
             "kind": "APPROVAL",
             "order": 20,
-            "approver_source": "ROLE",
-            "approver_role_key": senior_role_key,
+            "approver_source": "WORKFLOW_GROUP",
+            "approver_group_code": senior_group_code,
             "approver_scope": "BRANCH",
             "advance_rule": "ANY",
             "on_rejection": "TERMINAL",
@@ -126,29 +126,27 @@ def _default_stages_payload(
     ]
 
 
-def ensure_default_approval_templates(
-    *,
-    threshold: int = WF_DEFAULT_SENIOR_THRESHOLD,
-    manager_role_key: str = WF_DEFAULT_MANAGER_ROLE,
-    senior_role_key: str = WF_DEFAULT_SENIOR_ROLE,
-    created_by=None,
-) -> list:
-    """The two-stage default ladder, shared by the platform and per-tenant seeds.
+def ensure_default_approval_templates(*, created_by=None) -> list:
+    """Publish the **platform-wide** route for each approvable type, with no steps.
 
-    * **manager** - always runs; any holder of the ``manager_role_key`` role can approve.
-    * **senior**  - gated by ``inclusion_condition`` ``amount >= threshold`` (kobo), so
-      only high-value documents escalate to a holder of the ``senior_role_key`` role.
+    One row per document type, platform-scoped (``tenant=None, branch=None``) so no
+    document is left unroutable; a branch- or tenant-scoped template wins over it
+    through the engine's branch → tenant → platform cascade.
 
-    Both stages name their approver by role *key*. These templates are central
-    (no tenant), so the key is resolved inside whichever tenant raised the
-    document; a tenant can repoint either stage to its own role or approver
-    group without cloning the template.
+    It takes no approver or threshold arguments because it publishes nobody to approve
+    against. A step here would have to name the same authority in every tenant at
+    once, which only a role key can do, and minting that role in every tenant is what
+    this stopped doing. A tenant's actual steps come from
+    :func:`ensure_tenant_approval_templates` and name that tenant's own approver
+    groups.
 
-    Templates are platform-scoped (``school=None, branch=None``) so they act as the
-    universal fallback; a branch- or school-specific template still wins via the engine's
-    branch → school → platform cascade. Re-running upserts in place (safe to seed often).
-    ``threshold`` is integer kobo, matching every model's workflow amount field. Returns
-    the published :class:`~vs_workflow.models.WorkflowTemplate` objects.
+    A document resolving here therefore finds no steps and is refused with
+    :class:`~vs_workflow.exceptions.ApprovalNotConfiguredError` rather than approved:
+    the tenant either builds its ladder or confirms the post deliberately, and the
+    confirmation is recorded against whoever gives it.
+
+    Re-running upserts in place, so it is safe to seed often. Returns the published
+    :class:`~vs_workflow.models.WorkflowTemplate` objects.
     """
     from vs_workflow.services.templates import publish_template
 
@@ -162,10 +160,12 @@ def ensure_default_approval_templates(
             code=WF_DEFAULT_TEMPLATE_CODE, name=name,
             description=f"Default threshold-gated approval ladder for a {label}.",
             created_by=created_by,
-            stages_payload=_default_stages_payload(
-                model.workflow_amount_field, threshold=threshold,
-                manager_role_key=manager_role_key, senior_role_key=senior_role_key,
-            ),
+            # No steps. A shared row is one template every tenant runs, and a
+            # step on it cannot name an approver group - a group belongs to one
+            # tenant. A tenant that has not built its own ladder resolves here,
+            # finds no steps, and is asked to confirm rather than approved by a
+            # ladder it never chose. See the note in vs_payments.approvals.
+            stages_payload=[],
         )
         published.append(template)
     return published
@@ -175,8 +175,8 @@ def ensure_tenant_approval_templates(
     tenant,
     *,
     threshold: int = WF_DEFAULT_SENIOR_THRESHOLD,
-    manager_role_key: str = WF_DEFAULT_MANAGER_ROLE,
-    senior_role_key: str = WF_DEFAULT_SENIOR_ROLE,
+    manager_group_code: str = WF_DEFAULT_MANAGER_GROUP,
+    senior_group_code: str = WF_DEFAULT_SENIOR_GROUP,
     created_by=None,
 ) -> list:
     """Give one tenant its **own** approval rules. Returns ``[(template, created), ...]``.
@@ -210,21 +210,21 @@ def ensure_tenant_approval_templates(
     call again later.
     """
     from vs_workflow.models import WorkflowTemplate
-    from vs_workflow.services.roles import ensure_approver_role
+    from vs_workflow.services.groups import ensure_approver_group
     from vs_workflow.services.templates import publish_template
 
     if tenant is None:
         raise ApprovalWorkflowError("A tenant is required to seed its approval rules.")
 
-    # A tenant-scoped ROLE stage will not publish against a role key the tenant does
-    # not have, and a brand-new tenant has no roles at all. Create both roles (holder-
-    # less) so seeding works on a fresh tenant without inventing approval authority.
-    for role_key, what in ((manager_role_key, "ordinary spend"),
-                           (senior_role_key, "high-value spend")):
-        ensure_approver_role(
-            tenant, role_key,
-            description=f"Approves {what}. Nobody holds it until an administrator "
-                        "assigns someone, so documents park until then.",
+    # A stage will not publish against a group the tenant does not have, and a
+    # brand-new tenant has none. Create them empty, so seeding works on a fresh
+    # tenant without inventing approval authority.
+    for group_code, what in ((manager_group_code, "ordinary spend"),
+                             (senior_group_code, "high-value spend")):
+        ensure_approver_group(
+            tenant, group_code,
+            description=f"Approves {what}. Empty until the tenant puts "
+                        "somebody in it, so documents park until then.",
         )
 
     document_types = [model.workflow_document_type for model in _doc_models()]
@@ -255,8 +255,8 @@ def ensure_tenant_approval_templates(
                 created_by=created_by,
                 stages_payload=_default_stages_payload(
                     model.workflow_amount_field, threshold=threshold,
-                    manager_role_key=manager_role_key,
-                    senior_role_key=senior_role_key,
+                    manager_group_code=manager_group_code,
+                    senior_group_code=senior_group_code,
                 ),
             ),
             True,
@@ -297,7 +297,7 @@ def submit_for_approval(document, *, actor_user, template_code: str | None = Non
     :class:`ApprovalWorkflowError` if the document is already PENDING or APPROVED.
 
     This is the single choke point every procurement submit view funnels through
-    (requisition, purchase order, vendor invoice, vendor payment), so the two
+    (requisition, purchase order, vendor invoice, vendor payment), so the three
     configuration outcomes are separated here once rather than in four views:
 
     * **No template at all** - a genuine configuration failure. The engine's
@@ -306,9 +306,14 @@ def submit_for_approval(document, *, actor_user, template_code: str | None = Non
       :class:`ApprovalTemplateMissingError`. Because it is raised inside this atomic
       block *after* the document write, the PENDING flip rolls back: a refused submit
       creates nothing.
-    * **A template exists but nobody holds the approving role** - not an error.
+    * **A template with no steps** - the tenant has not built its ladder and resolved
+      to the shared platform row, which carries none. The engine refuses with
+      :class:`~vs_workflow.exceptions.ApprovalNotConfiguredError` rather than treating
+      an empty ladder as approval. The caller may retry with an explicit confirmation,
+      which is recorded against whoever gives it.
+    * **A template whose steps nobody can currently satisfy** - not an error.
       The document is submitted and parks on its unstaffed stage at IN_PROGRESS until
-      somebody is assigned the role (see
+      somebody joins the approver group the stage names (see
       :mod:`vs_procurement.approval_parking`). Spend never approves itself.
 
     Returns the :class:`~vs_workflow.models.WorkflowInstance`.

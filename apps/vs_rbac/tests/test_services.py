@@ -278,6 +278,57 @@ class ApplySchoolTenantRoleChangeRequestTests(TestCase):
         self.assertEqual(log.metadata["approval_reference"], str(rcr.pk))
         self.assertEqual(log.metadata["source"], "approved_change_request")
 
+    def test_a_school_may_approve_its_own_request_and_the_log_says_so(self):
+        """Most schools cannot staff two approvers, so the rule is audit not refuse.
+
+        Holy Cross has one head teacher holding ``school.roles.approve``. She
+        raises the request that gives her bursar the power to bill a class, and
+        there is nobody else who can decide it. Refusing her does not produce a
+        second approver, it produces a request that sits pending until CodeX
+        reaches into the tenant. So it is allowed, and the audit records both
+        that it happened and who did it, under its own source so an auditor can
+        ask for exactly these.
+        """
+        rcr = make_role_change_request(self.school, self.admin, self.role)
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=self.perm_export,
+            operation=TenantRoleChangeDeltaItem.Operation.ADD,
+        )
+
+        apply_role_change_request(rcr, self.admin, "Sole approver at this school.")
+
+        rcr.refresh_from_db()
+        self.assertEqual(rcr.status, TenantRoleChangeRequest.Status.APPROVED)
+        self.assertIn("finance.invoice.export", self._granted())
+
+        log = RBACAuditLog.objects.filter(
+            entity_type="TenantRoleTemplate",
+            entity_id=str(self.role.pk),
+            action_type="PERMISSION_CHANGED",
+        ).latest("created_at")
+        self.assertEqual(log.metadata["source"], "self_approved_change_request")
+        self.assertTrue(log.metadata["self_approved"])
+        self.assertEqual(log.metadata["requested_by_id"], self.admin.pk)
+        self.assertEqual(log.metadata["reviewer_id"], self.admin.pk)
+
+    def test_a_second_person_approving_is_not_marked_as_self_approval(self):
+        """The flag has to distinguish, or filtering on it tells you nothing."""
+        rcr = make_role_change_request(self.school, self.admin, self.role)
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=self.perm_export,
+            operation=TenantRoleChangeDeltaItem.Operation.ADD,
+        )
+
+        apply_role_change_request(rcr, self.reviewer, "Approved")
+
+        log = RBACAuditLog.objects.filter(
+            entity_type="TenantRoleTemplate",
+            entity_id=str(self.role.pk),
+            action_type="PERMISSION_CHANGED",
+        ).latest("created_at")
+        self.assertEqual(log.metadata["source"], "approved_change_request")
+        self.assertFalse(log.metadata["self_approved"])
+
     def test_remove_permission(self):
         rcr = make_role_change_request(self.school, self.admin, self.role)
         TenantRoleChangeDeltaItem.objects.create(

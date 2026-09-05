@@ -1076,10 +1076,10 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
 
     # Verify initiate payout endpoint behavior.
     def test_initiate_payout_endpoint(self):
-        from vs_payments.approvals import ensure_default_approval_templates
+        from vs_payments.approvals import ensure_tenant_approval_templates
 
-        ensure_default_approval_templates()
         entity, _, vendor = self.build()
+        ensure_tenant_approval_templates(entity.tenant)
         resp = self.client.post(
             f"/v1/payments/payouts/?entity={entity.code}",
             {"amount": 60000, "vendor": vendor.pk},
@@ -1092,10 +1092,10 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
 
     # Verify create and submit payout batch endpoint behavior.
     def test_create_and_submit_payout_batch_endpoint(self):
-        from vs_payments.approvals import ensure_default_approval_templates
+        from vs_payments.approvals import ensure_tenant_approval_templates
 
-        ensure_default_approval_templates()
         entity, _, vendor = self.build()
+        ensure_tenant_approval_templates(entity.tenant)
         resp = self.client.post(
             f"/v1/payments/payout-batches/?entity={entity.code}",
             {"title": "Run", "submit": True,
@@ -1139,10 +1139,10 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
 
     # Verify payout batch summary queued reflects only in-flight children behavior.
     def test_payout_batch_summary_queued_counts_only_in_flight_children(self):
-        from vs_payments.approvals import ensure_default_approval_templates
+        from vs_payments.approvals import ensure_tenant_approval_templates
 
-        ensure_default_approval_templates()
         entity, _, vendor = self.build()
+        ensure_tenant_approval_templates(entity.tenant)
         flaky = _FlakyProvider(secret="test-secret", fail_amount=7000)  # Fails the 7,000 item at submit.
         registry.register("PAYSTACK", flaky)
         registry.register("FAKE", flaky)
@@ -1296,9 +1296,15 @@ class PayoutBatchApprovalTests(TestCase):
     A payout batch is the highest-risk cash-out path. Provider submission happens
     only after a matching workflow reaches terminal human approval, and a missing
     template fails closed.
+
+    One string names two things here, deliberately. The hand-built templates in this
+    fixture resolve by role, the seeded ladder resolves by approver group, and both use
+    ``payout-approver``: the group is filled with the role, so whichever ladder a test
+    publishes, the same person is eligible.
     """
 
     APPROVE_ROLE = "payout-approver"
+    APPROVE_GROUP = APPROVE_ROLE
 
     def setUp(self):
         import io
@@ -1453,27 +1459,49 @@ class PayoutBatchApprovalTests(TestCase):
                 "on_rejection": on_rejection, "skip_if_no_approvers": False,
             }])
 
+    def _put_role_in_its_group(self, role):
+        """Make ``role`` the membership of the approver group of the same code.
+
+        The seeded ladder names groups while the hand-built templates in this fixture
+        name roles, and both have to resolve to the same person. "Whoever holds this
+        role" is also how a school ordinarily fills a group, and it is what keeps
+        branch scoping intact: a role member is narrowed to the stage's branch, where
+        a named person would be eligible tenant-wide.
+        """
+        from vs_workflow.constants import GroupMemberKind
+        from vs_workflow.models import (
+            WorkflowApproverGroup, WorkflowApproverGroupMember,
+        )
+
+        group, _ = WorkflowApproverGroup.all_objects.get_or_create(
+            tenant=self.tenant, code=role.key,
+            defaults={"name": role.name or role.key},
+        )
+        WorkflowApproverGroupMember.objects.get_or_create(
+            group=group, kind=GroupMemberKind.ROLE, role=role,
+        )
+
     def _make_approver(self, email="apr-pba@test.com"):
         user = self.User.objects.create_user(
             email=email, password="pw", status="ACTIVE",
             first_name="Apr", last_name="Over", tenant=self.tenant,
         )
-        # The stage names this role directly, so staffing it is one assignment.
         role = self._ensure_approve_role()
         self.TenantUserRoleAssignment.objects.create(
             tenant=self.tenant, user=user, role=role, assignment_status="ACTIVE",
         )
+        self._put_role_in_its_group(role)
         return user
 
     def _make_senior_approver(self, email="senior-pba@test.com"):
-        from vs_payments.constants import WF_DEFAULT_HIGH_VALUE_ROLE
+        from vs_payments.constants import WF_DEFAULT_HIGH_VALUE_GROUP
 
         user = self.User.objects.create_user(
             email=email, password="pw", status="ACTIVE",
             first_name="Senior", last_name="Checker", tenant=self.tenant,
         )
         role, created = self.TenantRoleTemplate.objects.get_or_create(
-            tenant=self.tenant, key=WF_DEFAULT_HIGH_VALUE_ROLE,
+            tenant=self.tenant, key=WF_DEFAULT_HIGH_VALUE_GROUP,
             defaults={"name": "Payout Senior Approver", "status": "ACTIVE",
                       "is_system_role": True},
         )
@@ -1484,6 +1512,7 @@ class PayoutBatchApprovalTests(TestCase):
             tenant=self.tenant, user=user, role=role,
             assignment_status="ACTIVE",
         )
+        self._put_role_in_its_group(role)
         return user
 
     def _submit_for_approval(self, batch):
@@ -2018,13 +2047,18 @@ class PayoutBatchApprovalTests(TestCase):
 
         self._seed_tenant_ladder()
         approver = self._make_approver()
-        high_role = self.TenantRoleTemplate.objects.get(
+        # The same person in both groups: eligible for the checker stage and the
+        # senior one, which is precisely the collusion the distinct-actor rule stops.
+        high_role, _ = self.TenantRoleTemplate.objects.get_or_create(
             tenant=self.tenant, key="payout-senior-approver",
+            defaults={"name": "Payout Senior Approver", "status": "ACTIVE",
+                      "is_system_role": True},
         )
         self.TenantUserRoleAssignment.objects.create(
             tenant=self.tenant, user=approver, role=high_role,
             assignment_status="ACTIVE",
         )
+        self._put_role_in_its_group(high_role)
         batch = self._draft_batch(50_000_000)
         self._submit_for_approval(batch)
         instance = self._instance_for(batch)
@@ -2076,16 +2110,60 @@ class PayoutBatchApprovalTests(TestCase):
         """
         from vs_workflow.services.parking import ResolutionCache
 
+        from vs_workflow.constants import ApproverSource
+
         self._seed_tenant_ladder()
         batch = self._draft_batch(10_000)
         self._submit_for_approval(batch)
         instance = self._instance_for(batch)
         stage = instance.stage_instances.filter(status="ACTIVE").get().stage
+        # The seeded ladder is group-sourced, so the stage is turned into the
+        # role-sourced shape this test is about before its key is taken away.
+        stage.approver_source = ApproverSource.ROLE
         stage.approver_role_key = ""
         stage.approver_role = None
-        stage.save(update_fields=["approver_role_key", "approver_role"])
+        stage.save(update_fields=[
+            "approver_source", "approver_role_key", "approver_role"])
 
         self.assertTrue(ResolutionCache().has_candidates(stage, instance))
+
+    def test_a_group_stage_with_no_group_is_not_written_off(self):
+        """The same rule for the group source: misconfigured resolves live.
+
+        A group-sourced stage naming no group is a broken template, not a stage
+        nobody can ever satisfy. Answering "nobody" from the memo would make the
+        repair skip it, and a stage the repair skips is a document that parks and
+        never un-parks.
+        """
+        from vs_workflow.services.parking import ResolutionCache
+
+        self._seed_tenant_ladder()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        stage = instance.stage_instances.filter(status="ACTIVE").get().stage
+        stage.approver_group = None
+        stage.save(update_fields=["approver_group"])
+
+        self.assertTrue(ResolutionCache().has_candidates(stage, instance))
+
+    def test_a_staffed_group_stage_is_answered_from_the_memo(self):
+        """The group source earns its memo branch: a filled group resolves to its people.
+
+        Without this the branch could return "nobody" for a perfectly staffed group
+        and the memo would be worse than no memo at all.
+        """
+        from vs_workflow.services.parking import ResolutionCache
+
+        self._seed_tenant_ladder()
+        approver = self._make_approver()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        stage = instance.stage_instances.filter(status="ACTIVE").get().stage
+
+        self.assertTrue(ResolutionCache().has_candidates(stage, instance))
+        self.assertIn(approver.pk, ResolutionCache()._holder_ids(stage, instance))
 
     def test_the_warning_always_says_how_to_fix_it(self):
         """`requirement` is what the dialog renders, so it can never come back blank."""
@@ -2098,8 +2176,11 @@ class PayoutBatchApprovalTests(TestCase):
         stage = instance.stage_instances.filter(status="ACTIVE").get().stage
 
         park = release.describe_park(instance)
-        self.assertEqual(park["approver_source"], "ROLE")
-        self.assertIn(self.APPROVE_ROLE, park["requirement"])
+        # The seeded ladder resolves through an approver group, so the instruction
+        # has to name the group to fill rather than a role to assign.
+        self.assertEqual(park["approver_source"], "WORKFLOW_GROUP")
+        self.assertIn("approver group", park["requirement"])
+        self.assertIn(stage.approver_group.name, park["requirement"])
 
         # An approver model this code has never seen still yields an instruction.
         stage.approver_source = "GROUP_MEMBERSHIP"
@@ -2206,8 +2287,10 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertTrue(park["parked"])
         self.assertEqual(park["stage_label"], "Payout checker approval")
         self.assertFalse(park["can_continue_without_approval"])
-        # Names the role an administrator would fill, rather than just "no approver".
-        self.assertEqual(park["role_key"], self.APPROVE_ROLE)
+        # Names the group an administrator would fill, rather than just "no approver",
+        # and leaves role_key blank because no role decides this stage.
+        self.assertEqual(park["approver_group_code"], self.APPROVE_GROUP)
+        self.assertEqual(park["role_key"], "")
 
     def test_continuing_without_approval_is_refused_for_payouts(self):
         from vs_workflow.services import release
@@ -2616,10 +2699,11 @@ class PayoutApprovalSeedingTests(TestCase):
     """Provisioning the default payout approval policy.
 
     The provider boundary is mandatory independently of the template. These tests pin
-    the default two-stage ladder and its non-destructive provisioning behavior.
+    where the steps come from - a tenant's own ladder, never the shared row - and the
+    non-destructive provisioning that protects a ladder an administrator has changed.
     """
 
-    APPROVE_ROLE = "payout-approver"
+    APPROVE_GROUP = "payout-approver"
 
     def setUp(self):
         import io
@@ -2638,22 +2722,36 @@ class PayoutApprovalSeedingTests(TestCase):
 
     # --- shape ------------------------------------------------------------- #
 
-    def test_the_platform_fallback_publishes_the_two_stage_ladder(self):
+    def test_the_platform_row_carries_no_steps(self):
+        """The shared row routes; it never approves.
+
+        A step here would have to name the same authority in every tenant, which only
+        a role key can do, and minting that role in every tenant is what this stopped
+        doing. So the row exists (a batch is never unroutable) and is empty.
+        """
         from vs_payments.approvals import ensure_default_approval_templates
 
         template = ensure_default_approval_templates()
-        self.assertIsNone(template.tenant)  # Platform-scoped fallback.
+        self.assertIsNone(template.tenant)  # Platform-scoped route.
         self.assertIsNone(template.branch)
-        checker, senior = self._stages(template)
-        self.assertEqual(checker.approver_role_key, self.APPROVE_ROLE)
-        self.assertEqual(checker.approver_source, "ROLE")
-        self.assertIsNone(checker.inclusion_condition)  # Always runs.
-        self.assertEqual(checker.advance_rule, "ANY")
-        self.assertEqual(senior.approver_role_key, "payout-senior-approver")
-        self.assertEqual(
-            senior.inclusion_condition,
-            {"op": "gte", "field": "total_amount", "value": 50_000_000},
-        )
+        self.assertEqual(self._stages(template), [])
+
+    def test_migrations_leave_no_steps_on_the_platform_row(self):
+        """The historical seed migration published a two-stage ladder; nothing may survive it.
+
+        ``0006_seed_platform_payout_approval_fallback`` still creates that ladder when
+        the migration graph runs, because a migration is a record of what happened and
+        is not rewritten. The corrective migration removes it, so what a freshly built
+        database actually holds is what this asserts - not what either migration says
+        in isolation.
+        """
+        from vs_workflow.models import WorkflowStage, WorkflowTemplate
+
+        rows = WorkflowTemplate.all_objects.filter(
+            tenant=None, branch=None, document_type="payments.payout_batch")
+        self.assertFalse(
+            WorkflowStage.objects.filter(
+                template__in=rows, retired_at__isnull=True).exists())
 
     def test_no_stage_may_ever_auto_skip_itself(self):
         """The whole point: an unstaffed stage must park, not approve.
@@ -2662,20 +2760,30 @@ class PayoutApprovalSeedingTests(TestCase):
         without overriding it would sail a batch through while *appearing* approved,
         which is worse than no gate at all.
         """
-        from vs_payments.approvals import ensure_default_approval_templates
+        from vs_payments.approvals import ensure_tenant_approval_templates
 
-        stages = self._stages(ensure_default_approval_templates())
+        template, _created = ensure_tenant_approval_templates(self.tenant)
+        stages = self._stages(template)
         self.assertTrue(stages)
         for stage in stages:
             self.assertFalse(stage.skip_if_no_approvers, stage.code)
             self.assertEqual(stage.on_rejection, "TERMINAL", stage.code)
 
-    def test_the_approving_role_is_configurable(self):
+    def test_the_approving_group_is_configurable(self):
+        from vs_payments.approvals import ensure_tenant_approval_templates
+
+        template, _created = ensure_tenant_approval_templates(
+            self.tenant, approve_group_code="other-approvers")
+        checker, _senior = self._stages(template)
+        self.assertEqual(checker.approver_group.code, "other-approvers")
+        self.assertEqual(checker.approver_source, "WORKFLOW_GROUP")
+
+    def test_the_platform_row_takes_no_approver_arguments(self):
+        """A kwarg that silently does nothing is worse than one that is absent."""
         from vs_payments.approvals import ensure_default_approval_templates
 
-        template = ensure_default_approval_templates(approve_role_key="other-approver")
-        checker, _senior = self._stages(template)
-        self.assertEqual(checker.approver_role_key, "other-approver")
+        with self.assertRaises(TypeError):
+            ensure_default_approval_templates(approve_group_code="other-approvers")
 
     # --- provisioning semantics -------------------------------------------- #
 
@@ -2686,8 +2794,15 @@ class PayoutApprovalSeedingTests(TestCase):
         self.assertTrue(created)
         self.assertEqual(template.tenant_id, self.tenant.pk)
         self.assertEqual(len(self._stages(template)), 2)
-        self.assertTrue(self.tenant.role_templates.filter(
-            key="payout-senior-approver",
+        # Seeding creates the groups the stages name, and creates no role: a school
+        # composes who approves, rather than being handed a role it never asked for.
+        from vs_workflow.models import WorkflowApproverGroup
+
+        self.assertTrue(WorkflowApproverGroup.all_objects.filter(
+            tenant=self.tenant, code="payout-senior-approver",
+        ).exists())
+        self.assertFalse(self.tenant.role_templates.filter(
+            key__in=["payout-approver", "payout-senior-approver"],
         ).exists())
 
     def test_reseeding_a_tenant_never_overwrites_what_an_admin_configured(self):
@@ -2695,24 +2810,23 @@ class PayoutApprovalSeedingTests(TestCase):
         from vs_payments.approvals import ensure_tenant_approval_templates
 
         template, _ = ensure_tenant_approval_templates(
-            self.tenant, approve_role_key="other-approver")
+            self.tenant, approve_group_code="other-approvers")
         again, created = ensure_tenant_approval_templates(self.tenant)
         self.assertFalse(created)
         self.assertEqual(again.pk, template.pk)
         checker, _senior = self._stages(again)
-        self.assertEqual(checker.approver_role_key, "other-approver")  # Untouched.
+        self.assertEqual(checker.approver_group.code, "other-approvers")  # Untouched.
 
     def test_reseeding_the_platform_row_upserts_rather_than_duplicating(self):
         from vs_workflow.models import WorkflowTemplate
         from vs_payments.approvals import ensure_default_approval_templates
 
         ensure_default_approval_templates()
-        ensure_default_approval_templates(approve_role_key="other-approver")
+        ensure_default_approval_templates()
         rows = WorkflowTemplate.all_objects.filter(
             tenant=None, branch=None, document_type="payments.payout_batch")
         self.assertEqual(rows.count(), 1)  # One shared row, rewritten in place.
-        checker, _senior = self._stages(rows.get())
-        self.assertEqual(checker.approver_role_key, "other-approver")
+        self.assertEqual(self._stages(rows.get()), [])
 
     def test_a_tenant_is_required(self):
         from vs_payments.approvals import ensure_tenant_approval_templates
@@ -2751,15 +2865,24 @@ class PayoutApprovalSeedingTests(TestCase):
             {"op": "gte", "field": "total_amount", "value": 50_000_000},
         )
 
-    def test_the_backfill_migration_does_not_overwrite_platform_configuration(self):
-        """A platform policy that already exists remains administrator-owned."""
+    def test_the_backfill_migration_does_not_overwrite_an_existing_platform_row(self):
+        """A platform row that already exists remains administrator-owned.
+
+        The migration's ``get_or_create`` returns early on an existing row, so an
+        administrator who added steps to the shared row keeps them. That is a
+        deliberate escape hatch and separate from what provisioning publishes.
+        """
         import importlib
         from django.apps import apps
+        from vs_workflow.models import WorkflowStage
         from vs_payments.approvals import ensure_default_approval_templates
 
-        template = ensure_default_approval_templates(
-            approve_role_key="custom-checker",
-            high_value_threshold=75_000_000,
+        template = ensure_default_approval_templates()
+        WorkflowStage.objects.create(
+            template=template, code="hand-made", label="Hand-made step",
+            kind="APPROVAL", order=10, approver_source="ROLE",
+            approver_role_key="custom-checker", approver_scope="SCHOOL",
+            advance_rule="ANY", on_rejection="TERMINAL", skip_if_no_approvers=False,
         )
         migration = importlib.import_module(
             "vs_payments.migrations.0006_seed_platform_payout_approval_fallback",
@@ -2767,9 +2890,7 @@ class PayoutApprovalSeedingTests(TestCase):
         migration.seed_platform_payout_approval_fallback(apps, None)
 
         template.refresh_from_db()
-        checker, senior = self._stages(template)
-        self.assertEqual(checker.approver_role_key, "custom-checker")
-        self.assertEqual(senior.inclusion_condition["value"], 75_000_000)
+        self.assertEqual([s.code for s in self._stages(template)], ["hand-made"])
 
     # --- the command ------------------------------------------------------- #
 
@@ -3894,19 +4015,26 @@ class PayoutOnboardingSeedTests(TestCase):
         for stage in stages:
             self.assertFalse(stage.skip_if_no_approvers, stage.code)
 
-    def test_the_approving_role_exists_and_nobody_holds_it(self):
-        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
-        from vs_finance.provisioning import provision_entity
+    def test_the_approving_group_exists_and_nobody_is_in_it(self):
+        """Provisioning creates the group the ladder names, and appoints nobody.
 
-        from vs_payments.constants import WF_DEFAULT_APPROVE_ROLE
+        It creates no role either: a tenant that has just been provisioned should not
+        find a role on its roles screen that it never asked for and cannot delete.
+        """
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_finance.provisioning import provision_entity
+        from vs_workflow.models import WorkflowApproverGroup
+
+        from vs_payments.constants import WF_DEFAULT_APPROVE_GROUP
 
         tenant = self._tenant(slug="fir-onboard", code="FIRON")
         provision_entity(self._entity(tenant, "FIRBK"))
 
-        role = TenantRoleTemplate.objects.get(
-            tenant=tenant, key=WF_DEFAULT_APPROVE_ROLE)
-        self.assertFalse(
-            TenantUserRoleAssignment.objects.filter(role=role).exists())
+        group = WorkflowApproverGroup.all_objects.get(
+            tenant=tenant, code=WF_DEFAULT_APPROVE_GROUP)
+        self.assertFalse(group.members.exists())
+        self.assertFalse(TenantRoleTemplate.objects.filter(
+            tenant=tenant, key=WF_DEFAULT_APPROVE_GROUP).exists())
 
     def test_provisioning_a_second_entity_changes_nothing(self):
         from vs_finance.provisioning import provision_entity

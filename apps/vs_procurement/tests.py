@@ -6956,13 +6956,12 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
             document_type=WF_DOCTYPE_REQUISITION, code=WF_DEFAULT_TEMPLATE_CODE,
             tenant__isnull=True, branch__isnull=True,
         )
-        stages = list(WorkflowStage.objects.filter(template=req_tmpl).order_by("order"))
-        self.assertEqual([s.code for s in stages], ["manager", "senior"])
-        # The senior stage is threshold-gated on the document's amount field.
-        self.assertEqual(stages[1].inclusion_condition.get("op"), "gte")
-        self.assertEqual(stages[1].inclusion_condition.get("field"), "estimated_total")
+        # The shared row routes and never approves: a step on it would have to name
+        # the same authority in every tenant, and a tenant's approver group cannot be
+        # named from here. A document resolving here is refused as unconfigured.
+        self.assertFalse(WorkflowStage.objects.filter(template=req_tmpl).exists())
 
-        # Re-running upserts in place - still exactly four templates / two stages.
+        # Re-running upserts in place - still exactly four templates, still no stages.
         ensure_default_approval_templates()
         self.assertEqual(
             WorkflowTemplate.objects.filter(
@@ -6971,7 +6970,7 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
             ).count(),
             4,
         )
-        self.assertEqual(WorkflowStage.objects.filter(template=req_tmpl).count(), 2)
+        self.assertEqual(WorkflowStage.objects.filter(template=req_tmpl).count(), 0)
 
     # -- no approvers: park, never self-approve ----------------------------- #
 
@@ -6988,12 +6987,12 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         from vs_workflow.constants import WorkflowInstanceStatus
         from vs_procurement.approval_parking import is_document_parked
         from vs_procurement.approvals import (
-            ensure_default_approval_templates, submit_for_approval,
+            ensure_tenant_approval_templates, submit_for_approval,
         )
         from vs_procurement.constants import ProcApprovalState
 
         entity, _, _, _, _ = self.build_p2p()
-        ensure_default_approval_templates()
+        ensure_tenant_approval_templates(entity.tenant)
         req = self._make_requisition(entity, unit_price=10_000)  # below threshold
         actor = self._user("actor@t.com")
 
@@ -7007,12 +7006,12 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
 
     def test_double_submit_is_rejected(self):
         from vs_procurement.approvals import (
-            ensure_default_approval_templates, submit_for_approval,
+            ensure_tenant_approval_templates, submit_for_approval,
         )
         from vs_procurement.exceptions import ApprovalWorkflowError
 
         entity, _, _, _, _ = self.build_p2p()
-        ensure_default_approval_templates()
+        ensure_tenant_approval_templates(entity.tenant)
         req = self._make_requisition(entity, unit_price=10_000)
         actor = self._user("actor2@t.com")
         submit_for_approval(req, actor_user=actor)  # → PENDING (parked, no approvers)
@@ -7030,12 +7029,12 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         from vs_workflow.services import actions as wf_actions
         from vs_workflow.services.approvers import EligibleApprover
         from vs_procurement.approvals import (
-            ensure_default_approval_templates, submit_for_approval,
+            ensure_tenant_approval_templates, submit_for_approval,
         )
         from vs_procurement.constants import ProcApprovalState
 
         entity, _, _, _, _ = self.build_p2p()
-        ensure_default_approval_templates()
+        ensure_tenant_approval_templates(entity.tenant)
         req = self._make_requisition(entity, unit_price=10_000)  # below threshold
         actor = self._user("requester@t.com")
         manager = self._user("manager@t.com")
@@ -7064,14 +7063,14 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         from vs_workflow.services import actions as wf_actions
         from vs_workflow.services.approvers import EligibleApprover
         from vs_procurement.approvals import (
-            ensure_default_approval_templates, submit_for_approval,
+            ensure_tenant_approval_templates, submit_for_approval,
         )
         from vs_procurement.constants import (
             ProcApprovalState, WF_DEFAULT_SENIOR_THRESHOLD,
         )
 
         entity, _, _, _, _ = self.build_p2p()
-        ensure_default_approval_templates()
+        ensure_tenant_approval_templates(entity.tenant)
         # Above the senior threshold → the senior stage is included.
         req = self._make_requisition(entity, unit_price=WF_DEFAULT_SENIOR_THRESHOLD + 100)
         actor = self._user("requester2@t.com")
@@ -7106,12 +7105,12 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         from vs_workflow.services import actions as wf_actions
         from vs_workflow.services.approvers import EligibleApprover
         from vs_procurement.approvals import (
-            ensure_default_approval_templates, submit_for_approval,
+            ensure_tenant_approval_templates, submit_for_approval,
         )
         from vs_procurement.constants import ProcApprovalState
 
         entity, _, _, _, _ = self.build_p2p()
-        ensure_default_approval_templates()
+        ensure_tenant_approval_templates(entity.tenant)
         req = self._make_requisition(entity, unit_price=10_000)
         actor = self._user("requester3@t.com")
         manager = self._user("manager3@t.com")
@@ -7202,14 +7201,26 @@ class _ParkingFixtureMixin(_P2PFixtureMixin):
 
     @staticmethod
     def _appoint(user, role_key, *, tenant):
-        """Appoint ``user`` to ``tenant``'s ``role_key`` role, creating the role if new.
+        """Make ``user`` an approver for ``role_key`` in ``tenant``, the way a school does.
 
-        Approver resolution reads role *assignments*, so appointing someone is what
-        actually changes who can approve. Done through the real RBAC records rather
-        than by patching ``resolve_approvers``: the point of these tests is that the
-        *live* answer changes after the stage has already been frozen.
+        The seeded ladder names an approver *group*, and the ordinary way a school
+        fills one is "whoever holds this role". So this creates the role, assigns the
+        user to it, and puts the role in the group of the same code - three real RBAC
+        and workflow records rather than a patched ``resolve_approvers``, because the
+        point of these tests is that the *live* answer changes after the stage has
+        already been frozen.
+
+        Membership by role rather than by named person is what preserves branch
+        scoping: ``resolve_group_users`` narrows role members to the stage's branch
+        exactly as a ROLE-sourced stage does, while a named-person member is eligible
+        tenant-wide. A branch-scoped assignment therefore still reaches only its own
+        branch's documents.
         """
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_workflow.constants import GroupMemberKind
+        from vs_workflow.models import (
+            WorkflowApproverGroup, WorkflowApproverGroupMember,
+        )
 
         role, created = TenantRoleTemplate.objects.get_or_create(
             tenant=tenant, key=role_key,
@@ -7221,6 +7232,13 @@ class _ParkingFixtureMixin(_P2PFixtureMixin):
         TenantUserRoleAssignment.objects.get_or_create(
             tenant=tenant, user=user, role=role,
             defaults={"assignment_status": "ACTIVE"},
+        )
+        group, _ = WorkflowApproverGroup.all_objects.get_or_create(
+            tenant=tenant, code=role_key,
+            defaults={"name": role_key.replace("-", " ").title()},
+        )
+        WorkflowApproverGroupMember.objects.get_or_create(
+            group=group, kind=GroupMemberKind.ROLE, role=role,
         )
 
     def _requisition(self, entity, requester, *, unit_price=10_000):
@@ -7240,10 +7258,10 @@ class _ParkingFixtureMixin(_P2PFixtureMixin):
     def _park(self, entity, *, requester_email="parked-requester@t.com"):
         """Submit a requisition into a template nobody can currently approve."""
         from vs_procurement.approvals import (
-            ensure_default_approval_templates, submit_for_approval,
+            ensure_tenant_approval_templates, submit_for_approval,
         )
 
-        ensure_default_approval_templates()
+        ensure_tenant_approval_templates(entity.tenant)
         requester = self._user(requester_email, tenant=entity.tenant)
         req = self._requisition(entity, requester)
         instance = submit_for_approval(req, actor_user=requester)
@@ -7301,7 +7319,7 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         from vs_workflow.constants import WorkflowInstanceStatus
         from vs_workflow.models import WorkflowStageInstance
         from vs_procurement.constants import (
-            ProcApprovalState, WF_DEFAULT_MANAGER_ROLE,
+            ProcApprovalState, WF_DEFAULT_MANAGER_GROUP,
         )
 
         entity, _, _, _, _ = self.build_p2p()
@@ -7313,7 +7331,7 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         # Before the grant: parked, and invisible to everyone.
         self.assertEqual(client.get(queue_url).data["data"], [])
 
-        self._appoint(approver, WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant)
+        self._appoint(approver, WF_DEFAULT_MANAGER_GROUP, tenant=entity.tenant)
 
         listed = client.get(queue_url)
         self.assertEqual(listed.status_code, 200)
@@ -7346,12 +7364,12 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         from vs_workflow.services.approvers import EligibleApprover
         from vs_procurement.approval_parking import repair_workflows
         from vs_procurement.approvals import (
-            ensure_default_approval_templates, submit_for_approval,
+            ensure_tenant_approval_templates, submit_for_approval,
         )
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_GROUP
 
         entity, _, _, _, _ = self.build_p2p()
-        ensure_default_approval_templates()
+        ensure_tenant_approval_templates(entity.tenant)
         requester = self._user("frozen-requester@t.com", tenant=entity.tenant)
         original = self._user("frozen-approver@t.com", tenant=entity.tenant)
         req = self._requisition(entity, requester)
@@ -7366,7 +7384,7 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         )
         # Somebody else is granted the permission after the snapshot was frozen.
         newcomer = self._user("newcomer@t.com", tenant=entity.tenant)
-        self._appoint(newcomer, WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant)
+        self._appoint(newcomer, WF_DEFAULT_MANAGER_GROUP, tenant=entity.tenant)
 
         self.assertEqual(repair_workflows(tenant=entity.tenant), 0)
         self.assertEqual(
@@ -7382,13 +7400,13 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         from vs_workflow.constants import WorkflowInstanceStatus
         from vs_procurement.approval_parking import repair_workflows
         from vs_procurement.constants import (
-            ProcApprovalState, WF_DEFAULT_MANAGER_ROLE,
+            ProcApprovalState, WF_DEFAULT_MANAGER_GROUP,
         )
 
         entity, _, _, _, _ = self.build_p2p()
         req, instance, _ = self._park(entity)
         approver = self._user("passive-approver@t.com", tenant=entity.tenant)
-        self._appoint(approver, WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant)
+        self._appoint(approver, WF_DEFAULT_MANAGER_GROUP, tenant=entity.tenant)
 
         self.assertEqual(repair_workflows(tenant=entity.tenant), 1)
         instance.refresh_from_db()
@@ -7402,11 +7420,11 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
     def test_requester_as_sole_permission_holder_stays_parked(self):
         """``resolve_approvers`` excludes the requester, so self-approval cannot sneak in."""
         from vs_procurement.approval_parking import is_document_parked, repair_workflows
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_GROUP
 
         entity, _, _, _, _ = self.build_p2p()
         req, _, requester = self._park(entity)
-        self._appoint(requester, WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant)
+        self._appoint(requester, WF_DEFAULT_MANAGER_GROUP, tenant=entity.tenant)
 
         self.assertEqual(repair_workflows(tenant=entity.tenant), 0)
         self.assertTrue(is_document_parked(req))
@@ -7418,7 +7436,7 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         from vs_tenants.models import Tenant
         from vs_workflow.models import WorkflowStageApprover
         from vs_procurement.approval_parking import repair_workflows
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_GROUP
 
         entity, _, _, _, _ = self.build_p2p()
         other_tenant = Tenant.objects.create(name="Other Tenant", slug="other-tenant")
@@ -7435,11 +7453,11 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         # Both tenants staff the same role key.
         self._appoint(
             self._user("own-approver@t.com", tenant=entity.tenant),
-            WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant,
+            WF_DEFAULT_MANAGER_GROUP, tenant=entity.tenant,
         )
         self._appoint(
             self._user("other-approver@t.com", tenant=other_tenant),
-            WF_DEFAULT_MANAGER_ROLE, tenant=other_tenant,
+            WF_DEFAULT_MANAGER_GROUP, tenant=other_tenant,
         )
 
         self.assertEqual(repair_workflows(tenant=entity.tenant), 1)
@@ -7460,11 +7478,11 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         from core.test_utils import TenantAPIClient
         from vs_workflow.services.approvers import EligibleApprover
         from vs_procurement.approvals import (
-            ensure_default_approval_templates, submit_for_approval,
+            ensure_tenant_approval_templates, submit_for_approval,
         )
 
         entity, _, _, _, _ = self.build_p2p()
-        ensure_default_approval_templates()
+        ensure_tenant_approval_templates(entity.tenant)
         requester = self._user("list-requester@t.com", tenant=entity.tenant)
         parked = self._requisition(entity, requester)
         submit_for_approval(parked, actor_user=requester)
@@ -7549,11 +7567,11 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
 
         from vs_procurement.approval_parking import parked_document_ids
         from vs_procurement.approvals import (
-            ensure_default_approval_templates, submit_for_approval,
+            ensure_tenant_approval_templates, submit_for_approval,
         )
 
         entity, _, _, _, _ = self.build_p2p()
-        ensure_default_approval_templates()
+        ensure_tenant_approval_templates(entity.tenant)
         requester = self._user("healthy-requester@t.com", tenant=entity.tenant)
         approver = self._user("healthy-approver@t.com", tenant=entity.tenant)
         from vs_workflow.services.approvers import EligibleApprover
@@ -7591,13 +7609,13 @@ class ParkedApprovalTests(_ParkingFixtureMixin, TestCase):
         from vs_workflow.models import WorkflowStageApprover
         from vs_workflow.services.approvers import EligibleApprover
         from vs_procurement.approvals import (
-            ensure_default_approval_templates, submit_for_approval,
+            ensure_tenant_approval_templates, submit_for_approval,
         )
 
         from vs_procurement.models import PurchaseRequisition
 
         entity, _, _, _, _ = self.build_p2p()
-        ensure_default_approval_templates()
+        ensure_tenant_approval_templates(entity.tenant)
         requester = self._user("scale-requester@t.com", tenant=entity.tenant)
         approver = self._user("scale-approver@t.com", tenant=entity.tenant)
         client = TenantAPIClient(user=requester)
@@ -7916,7 +7934,7 @@ class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
         From that moment the answer is a decision, and the override must refuse - even
         though the approver has not voted and the stage snapshot was empty a moment ago.
         """
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_GROUP
         from vs_procurement.models import ApprovalOverride
 
         entity, _, _, _, _ = self.build_p2p()
@@ -7924,7 +7942,7 @@ class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
         actor = self._overrider(entity)
         self._appoint(
             self._user("real-approver@t.com", tenant=entity.tenant),
-            WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant,
+            WF_DEFAULT_MANAGER_GROUP, tenant=entity.tenant,
         )
 
         response = self._post_override(actor, entity, instance)
@@ -8085,7 +8103,7 @@ class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
         from core.test_utils import TenantAPIClient
         from vs_procurement.approval_override import is_document_overridden
         from vs_procurement.approvals import submit_for_approval
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_GROUP
 
         entity, _, _, _, _ = self.build_p2p()
         overridden, instance, requester = self._park(entity)
@@ -8094,7 +8112,7 @@ class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
 
         # A second requisition, decided the ordinary way by a real approver.
         approver = self._user("genuine-approver@t.com", tenant=entity.tenant)
-        self._appoint(approver, WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant)
+        self._appoint(approver, WF_DEFAULT_MANAGER_GROUP, tenant=entity.tenant)
         reviewed = self._requisition(entity, requester)
         reviewed_instance = submit_for_approval(reviewed, actor_user=requester)
         decision = TenantAPIClient(user=approver).post(
@@ -8187,15 +8205,15 @@ class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
         from vs_workflow.constants import WorkflowInstanceStatus, WorkflowStageStatus
         from vs_workflow.models import WorkflowStageApprover, WorkflowStageInstance
         from vs_procurement.approvals import (
-            ensure_default_approval_templates, submit_for_approval,
+            ensure_tenant_approval_templates, submit_for_approval,
         )
-        from vs_procurement.constants import WF_DEFAULT_SENIOR_ROLE
+        from vs_procurement.constants import WF_DEFAULT_SENIOR_GROUP
 
         entity, _, _, _, _ = self.build_p2p()
-        ensure_default_approval_templates()
+        ensure_tenant_approval_templates(entity.tenant)
         requester = self._user("big-spender@t.com", tenant=entity.tenant)
         senior = self._user("senior-approver@t.com", tenant=entity.tenant)
-        self._appoint(senior, WF_DEFAULT_SENIOR_ROLE, tenant=entity.tenant)
+        self._appoint(senior, WF_DEFAULT_SENIOR_GROUP, tenant=entity.tenant)
         # Above the senior threshold, so the second stage is included.
         req = self._requisition(entity, requester, unit_price=60_000_000)
         instance = submit_for_approval(req, actor_user=requester)
@@ -8227,13 +8245,13 @@ class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
         from vs_workflow.services.approvers import EligibleApprover
         from vs_procurement.approval_parking import is_document_parked, repair_workflows
         from vs_procurement.approvals import (
-            ensure_default_approval_templates, submit_for_approval,
+            ensure_tenant_approval_templates, submit_for_approval,
         )
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_GROUP
         from vs_workflow.models import WorkflowStageApprover, WorkflowStageInstance
 
         entity, _, _, _, _ = self.build_p2p()
-        ensure_default_approval_templates()
+        ensure_tenant_approval_templates(entity.tenant)
         released_req, released_instance, requester = self._park(entity)
 
         # A second document, still parked, and a third whose snapshot is populated.
@@ -8258,7 +8276,7 @@ class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
         # The repair still works afterwards, and still refuses to rewrite a populated
         # snapshot even though somebody new now holds the permission.
         newcomer = self._user("post-override-approver@t.com", tenant=entity.tenant)
-        self._appoint(newcomer, WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant)
+        self._appoint(newcomer, WF_DEFAULT_MANAGER_GROUP, tenant=entity.tenant)
         self.assertEqual(repair_workflows(tenant=entity.tenant), 1)
         self.assertFalse(is_document_parked(bystander))
         reviewed_stage = WorkflowStageInstance.objects.get(
@@ -8288,12 +8306,15 @@ class ParkedApprovalOverrideTests(_ParkingFixtureMixin, TestCase):
         self.assertEqual(
             TenantRolePermission.objects.filter(permission=permission).count(), 0,
         )
-        # Not a vacuous assertion: the ordinary approval key *was* granted by the
-        # same run, so the grant loop demonstrably executed.
+        # Not a vacuous assertion: other procurement keys *were* granted by the same
+        # run, so the grant loop demonstrably executed and the zero above is a
+        # deliberate exclusion rather than a loop that never ran. Asserted as "some
+        # other key" rather than by naming one, so retiring a key cannot silently
+        # turn this control back into a vacuous assertion.
         self.assertGreater(
             TenantRolePermission.objects.filter(
-                permission__key="procurement.approval.approve", granted=True,
-            ).count(),
+                permission__key__startswith="procurement.", granted=True,
+            ).exclude(permission=permission).count(),
             0,
         )
 
@@ -8331,10 +8352,10 @@ class ParkedOverrideAcrossDocumentTypesTests(_ParkingFixtureMixin, TestCase):
     def _park_document(self, document, requester):
         """Submit into the seeded ladder, which nobody is appointed to."""
         from vs_procurement.approvals import (
-            ensure_default_approval_templates, submit_for_approval,
+            ensure_tenant_approval_templates, submit_for_approval,
         )
 
-        ensure_default_approval_templates()
+        ensure_tenant_approval_templates(requester.tenant)
         return submit_for_approval(document, actor_user=requester)
 
     def _assert_released(self, instance, document, *, document_type, actor, amount):
@@ -8611,7 +8632,7 @@ class ParkedApprovalRaceTests(_ParkingFixtureMixin, TransactionTestCase):
         from vs_workflow.models import WorkflowStageApprover
         from vs_procurement.approval_override import release_parked_document
         from vs_procurement.approval_parking import repair_workflows
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_GROUP
         from vs_procurement.exceptions import ApprovalNotParkedError
         from vs_procurement.models import ApprovalOverride
 
@@ -8620,7 +8641,7 @@ class ParkedApprovalRaceTests(_ParkingFixtureMixin, TransactionTestCase):
         # Appointed *before* the race, so the repair has somebody to resolve; the
         # override still starts from a snapshot that is empty on disk.
         approver = self._user("race-approver@t.com", tenant=entity.tenant)
-        self._appoint(approver, WF_DEFAULT_MANAGER_ROLE, tenant=entity.tenant)
+        self._appoint(approver, WF_DEFAULT_MANAGER_GROUP, tenant=entity.tenant)
         breaker = self._overrider(entity, "race-breaker@t.com", "breakglass-race")
 
         def repair():
@@ -10625,7 +10646,7 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         approval templates start working the moment the branch is written. This
         asserts that behaviour without touching vs_workflow."""
         from vs_procurement.approvals import (
-            ensure_default_approval_templates, submit_for_approval,
+            ensure_tenant_approval_templates, submit_for_approval,
         )
         from vs_procurement.constants import (
             WF_DEFAULT_TEMPLATE_CODE, WF_DOCTYPE_REQUISITION,
@@ -10634,7 +10655,14 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         from vs_workflow.services.roles import ensure_approver_role
         from vs_workflow.services.templates import publish_template
 
-        ensure_default_approval_templates()
+        # Both rungs of the cascade are real ladders. The platform row underneath
+        # them carries no steps, so falling through to it is a refusal rather than a
+        # route, and a document reaching it would prove nothing about which scope won.
+        tenant_templates = dict(
+            (template.document_type, template)
+            for template, _created in ensure_tenant_approval_templates(
+                self.multi_school.tenant)
+        )
         # A tenant-scoped ROLE stage only publishes against a role the tenant has.
         ensure_approver_role(self.multi_school.tenant, "branch-manager")
         branch_template = publish_template(
@@ -10662,8 +10690,13 @@ class ProcurementBranchScopeTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(lekki_instance.template_id, branch_template.id)
         self.assertEqual(lekki_instance.branch_id, self.lekki.pk)
 
+        # The HQ requisition carries no branch, so the branch rung does not apply and
+        # the tenant's own ladder wins - not the branch one, and not the shared row.
         hq_instance = submit_for_approval(hq_req, actor_user=hq_client.test_user)
         self.assertNotEqual(hq_instance.template_id, branch_template.id)
+        self.assertEqual(
+            hq_instance.template_id, tenant_templates[WF_DOCTYPE_REQUISITION].id,
+        )
         self.assertIsNone(hq_instance.branch_id)
         self.assertEqual(
             WorkflowInstance.all_objects.filter(pk=lekki_instance.pk).count(), 1,
@@ -10796,11 +10829,19 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
     def appoint(user, role_key, *, tenant, branch=None):
         """Appoint ``user`` to ``role_key``, optionally scoped to one branch.
 
-        Approver resolution reads role assignments, so this - not a permission grant -
-        is what makes somebody eligible. The branch on the *assignment* is what
-        branch-scoped routing honours, which is exactly what these tests exercise.
+        The seeded stage names an approver group, and the ordinary way a school fills
+        one is "whoever holds this role", so this creates the role, assigns the user,
+        and puts the *role* in the group of the same code. Membership by role rather
+        than by named person is what keeps branch scoping alive:
+        ``resolve_group_users`` narrows role members to the stage's branch exactly as
+        a ROLE-sourced stage does, so the branch on the *assignment* is still what
+        branch-scoped routing honours - which is exactly what these tests exercise.
         """
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_workflow.constants import GroupMemberKind
+        from vs_workflow.models import (
+            WorkflowApproverGroup, WorkflowApproverGroupMember,
+        )
 
         role, created = TenantRoleTemplate.objects.get_or_create(
             tenant=tenant, key=role_key,
@@ -10813,6 +10854,13 @@ class _BranchTenantsFixture(_P2PFixtureMixin):
         TenantUserRoleAssignment.objects.get_or_create(
             tenant=tenant, user=user, role=role, branch=branch,
             defaults={"assignment_status": "ACTIVE"},
+        )
+        group, _ = WorkflowApproverGroup.all_objects.get_or_create(
+            tenant=tenant, code=role_key,
+            defaults={"name": role_key.replace("-", " ").title()},
+        )
+        WorkflowApproverGroupMember.objects.get_or_create(
+            group=group, kind=GroupMemberKind.ROLE, role=role,
         )
 
     # -- document builders --------------------------------------------------- #
@@ -11127,12 +11175,24 @@ class ProcurementTenantApprovalRulesTests(_BranchTenantsFixture, TestCase):
         )
         self.assertEqual(mine.template.tenant_id, self.multi_tenant.pk)
 
-        # A tenant with no rules of its own still routes, through the fallback.
+        # A tenant with no rules of its own still *routes* to the shared row - it is
+        # never unroutable - but that row has no steps, so it is asked to confirm
+        # rather than answered for. Resolving and approving are different questions,
+        # and only the first one the fallback exists to answer.
+        from vs_workflow.exceptions import ApprovalNotConfiguredError
+        from vs_workflow.services.resolution import resolve_template
+
         flat_requester = self.user_for(self.flat_tenant, "r3-fallback@t.com")
-        theirs = submit_for_approval(
-            self.requisition(self.flat, requester=flat_requester), actor_user=flat_requester,
+        flat_req = self.requisition(self.flat, requester=flat_requester)
+        resolved = resolve_template(
+            flat_req.workflow_document_type,
+            tenant=self.flat_tenant, branch=None,
         )
-        self.assertIsNone(theirs.template.tenant_id)
+        self.assertIsNotNone(resolved)
+        self.assertIsNone(resolved.tenant_id)
+
+        with self.assertRaises(ApprovalNotConfiguredError):
+            submit_for_approval(flat_req, actor_user=flat_requester)
 
     def test_a_seeded_tenant_is_blocked_until_it_appoints_an_approver(self):
         """Seeded rules with nobody behind them park the document, never approve it."""
@@ -11153,8 +11213,15 @@ class ProcurementTenantApprovalRulesTests(_BranchTenantsFixture, TestCase):
         self.assertNotEqual(req.status, DocumentStatus.APPROVED)
         self.assertTrue(is_document_parked(req))
 
-    def test_platform_fallback_parks_rather_than_self_approving(self):
-        from vs_procurement.approval_parking import is_document_parked
+    def test_platform_fallback_refuses_rather_than_self_approving(self):
+        """A tenant with no ladder of its own is asked, not answered for.
+
+        The shared row carries no steps, so there is nothing to park on and nothing to
+        approve. Silently approving would be the worst outcome and silently parking
+        the second worst, because neither tells the tenant what is missing. The refusal
+        names it, and leaves the requisition where it was.
+        """
+        from vs_workflow.exceptions import ApprovalNotConfiguredError
         from vs_procurement.approvals import (
             ensure_default_approval_templates, submit_for_approval,
         )
@@ -11167,10 +11234,11 @@ class ProcurementTenantApprovalRulesTests(_BranchTenantsFixture, TestCase):
             with self.subTest(tenant=label):
                 requester = self.user_for(tenant, f"r3-park-{books.entity.code}@t.com")
                 req = self.requisition(books, requester=requester)
-                submit_for_approval(req, actor_user=requester)
+                with self.assertRaises(ApprovalNotConfiguredError):
+                    submit_for_approval(req, actor_user=requester)
+                # The refusal rolls the PENDING flip back: nothing was written.
                 req.refresh_from_db()
-                self.assertEqual(req.approval_state, ProcApprovalState.PENDING)
-                self.assertTrue(is_document_parked(req))
+                self.assertEqual(req.approval_state, ProcApprovalState.NOT_SUBMITTED)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_setup_endpoint_seeds_the_callers_tenant_and_not_the_platform(self, _permission):
@@ -11235,7 +11303,7 @@ class ProcurementBranchRoutingTests(_BranchTenantsFixture, TestCase):
     eligibility "assigned at this branch, or assigned tenant-wide".
     """
 
-    #: The role the seeded manager stage names; see WF_DEFAULT_MANAGER_ROLE.
+    #: The role the seeded manager stage names; see WF_DEFAULT_MANAGER_GROUP.
     MANAGER_ROLE = "procurement-approver"
 
     def setUp(self):
@@ -11719,7 +11787,7 @@ class ParkedAndOverrideFilterBranchScopeTests(_BranchTenantsFixture, TestCase):
 class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
     """Who can approve spend here is answerable, and the gaps are named as gaps."""
 
-    #: The role the seeded manager stage names; see WF_DEFAULT_MANAGER_ROLE.
+    #: The role the seeded manager stage names; see WF_DEFAULT_MANAGER_GROUP.
     MANAGER_ROLE = "procurement-approver"
 
     def setUp(self):
@@ -11792,6 +11860,13 @@ class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
                 self.assertIn(holder.pk, [person["id"] for person in stage["approvers"]])
 
     def test_the_report_names_the_rules_it_is_reporting_on(self):
+        """A stage row says which scope's rules produced it.
+
+        Only a tenant's own ladder has stages to report. The shared row it would
+        otherwise fall through to has none, so a tenant with no rules of its own is
+        reported as unconfigured rather than as a ladder with no people - a distinction
+        an administrator has to see, because the two need different fixes.
+        """
         from vs_procurement.approvals import ensure_default_approval_templates
         from vs_procurement.constants import WF_DOCTYPE_REQUISITION
 
@@ -11802,11 +11877,15 @@ class ProcurementApprovalCoverageTests(_BranchTenantsFixture, TestCase):
         )
         self.assertEqual(tenant_rules["rules_source"], "TENANT")
 
-        fallback = self.stage(
-            self.coverage(self.flat_tenant), branch_id=None,
-            document_type=WF_DOCTYPE_REQUISITION, stage_code="manager",
+        fallback_scope = self.coverage(self.flat_tenant)["scopes"][0]
+        requisitions = next(
+            d for d in fallback_scope["documents"]
+            if d["document_type"] == WF_DOCTYPE_REQUISITION
         )
-        self.assertEqual(fallback["rules_source"], "PLATFORM")
+        self.assertEqual(requisitions["stages"], [])
+        self.assertFalse(requisitions["configured"])
+        self.assertIn(WF_DOCTYPE_REQUISITION,
+                      fallback_scope["unconfigured_document_types"])
 
     def test_a_tenant_with_no_rules_at_all_reports_them_as_unconfigured(self):
         report = self.coverage(self.foreign_tenant)
@@ -12752,13 +12831,18 @@ class ProcurementOnboardingSeedTests(TestCase):
             self.assertIn(document_type, published)
 
     def test_the_seeded_ladder_has_nobody_in_it(self):
-        """Seeded blocked, not seeded open: the role exists, unheld."""
-        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        """Seeded blocked, not seeded open: the group exists, empty.
+
+        And no role is created alongside it. A school that has just been provisioned
+        should not find a role on its roles screen that it never asked for.
+        """
+        from vs_rbac.models import TenantRoleTemplate
         from vs_finance.models import LedgerEntity
         from vs_finance.provisioning import provision_entity
+        from vs_workflow.models import WorkflowApproverGroup
         from schools.vs_schools.models import School
 
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_ROLE
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_GROUP
 
         school = School.objects.create(
             name="Ash", slug="ash-onboard", code="ASHON", status="ACTIVE")
@@ -12768,10 +12852,11 @@ class ProcurementOnboardingSeedTests(TestCase):
         )
         provision_entity(entity)
 
-        role = TenantRoleTemplate.objects.get(
-            tenant=school.tenant, key=WF_DEFAULT_MANAGER_ROLE)
-        self.assertFalse(
-            TenantUserRoleAssignment.objects.filter(role=role).exists())
+        group = WorkflowApproverGroup.all_objects.get(
+            tenant=school.tenant, code=WF_DEFAULT_MANAGER_GROUP)
+        self.assertFalse(group.members.exists())
+        self.assertFalse(TenantRoleTemplate.objects.filter(
+            tenant=school.tenant, key=WF_DEFAULT_MANAGER_GROUP).exists())
 
     def test_a_second_entity_in_one_tenant_does_not_republish(self):
         from vs_finance.models import LedgerEntity

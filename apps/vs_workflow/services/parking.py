@@ -151,14 +151,20 @@ class ResolutionCache:
     yields no approvers: a sole approver who is also the requester means parked. That
     lets the memo answer the common case outright and skip the live resolution entirely.
 
-    The memo is **opt-in per source, not opt-out**, and that direction matters. Only
-    ROLE stages carrying a key can be answered from a role-holder lookup; every other
-    source - approver groups, document-driven rules, the organogram - falls through to
-    the live path. The alternative default, treating an unrecognised
-    source as "provably nobody", would make the repair silently skip those stages, and a
-    stage the repair skips is a document that parks and never un-parks. That is the exact
-    failure this module exists to prevent, so an unknown source must cost a query rather
-    than a lost document.
+    The memo is **opt-in per source, not opt-out**, and that direction matters. Two
+    sources can be answered from a memoised lookup - a ROLE stage carrying a key, and a
+    WORKFLOW_GROUP stage carrying a group, both of which resolve to a fixed set of
+    people for a given tenant and branch. Every other source - document-driven rules,
+    the organogram - resolves relative to the document and falls through to the live
+    path. The alternative default, treating an unrecognised source as "provably
+    nobody", would make the repair silently skip those stages, and a stage the repair
+    skips is a document that parks and never un-parks. That is the exact failure this
+    module exists to prevent, so an unknown source must cost a query rather than a lost
+    document.
+
+    Groups earn a memo branch because the seeded ladders name them: without one, a
+    page of parked documents costs a group resolution per row rather than per stage
+    configuration, which is the per-row cost this cache exists to remove.
     """
 
     def __init__(self):
@@ -185,20 +191,45 @@ class ResolutionCache:
         ``None`` means "cannot answer from the memo, resolve it live", which is the
         safe answer for every source this function does not explicitly understand.
         """
-        if stage.approver_source != ApproverSource.ROLE:
+        if stage.approver_source not in (
+            ApproverSource.ROLE, ApproverSource.WORKFLOW_GROUP,
+        ):
             return None
+        # A tenant may have repointed this stage at its own role or group, in
+        # which case the stage's own configuration is not what will resolve.
+        if self._override_for(stage, instance.tenant) is not None:
+            return None
+        branch = (instance.branch
+                  if stage.approver_scope == ApproverScope.BRANCH else None)
+
+        if stage.approver_source == ApproverSource.WORKFLOW_GROUP:
+            group = stage.approver_group
+            if group is None:
+                # A group-sourced stage naming no group is misconfigured rather
+                # than unstaffable. Resolve it live so the engine's own resolver
+                # decides, instead of concluding here that nobody can approve it.
+                return None
+            key = (
+                stage.approver_source, group.pk,
+                stage.approver_scope, instance.tenant_id, instance.branch_id,
+            )
+            if key not in self._holders:
+                # The engine's own resolver, so a group's heterogeneous membership
+                # (named people, role holders, org-chart seats) is expanded in
+                # exactly one place and this memo can never disagree with routing.
+                self._holders[key] = frozenset(
+                    user.pk for user in approvers_service.resolve_group_users(
+                        group, instance.tenant, branch,
+                    )
+                )
+            return self._holders[key]
+
         role_key = approvers_service.stage_role_key(stage)
         if not role_key:
             # A role-sourced stage with no key is misconfigured rather than
             # unstaffable. Resolve it live so the engine's own resolver decides,
             # instead of concluding here that nobody can ever approve it.
             return None
-        # A tenant may have repointed this stage at its own role or group, in
-        # which case the stage's own key is not what will resolve. Fall through.
-        if self._override_for(stage, instance.tenant) is not None:
-            return None
-        branch = (instance.branch
-                  if stage.approver_scope == ApproverScope.BRANCH else None)
         key = (
             stage.approver_source, role_key,
             stage.approver_scope, instance.tenant_id, instance.branch_id,

@@ -1,18 +1,21 @@
-"""Provisioning the roles that ROLE-sourced approval stages name.
+"""The roles that ROLE-sourced approval stages name.
 
 A ROLE stage resolves its approvers through a role *key*, and publishing a
 tenant-scoped template refuses a key that names no role in that tenant
-(:func:`vs_workflow.services.templates._resolve_role`). That refusal is right for
-a human editing a template - a typo should not publish - but it makes seeding a
-brand-new tenant impossible: the tenant has no roles yet, so the very first seed
-fails.
+(:func:`vs_workflow.services.templates._resolve_role`). That refusal is right: a
+typo must not publish a stage nobody can ever satisfy. A tenant building a stage
+from its own roles list always passes it, because it picked a role that exists.
 
-The fix is not to relax the check but to make provisioning create what it
-depends on. :func:`ensure_approver_role` creates the role and nothing else: it
-assigns nobody. An unheld role still resolves to nobody, so a seeded ladder
-still parks its first document rather than approving it, which is exactly the
-"seeded blocked, not seeded open" contract the seed commands promise. Approval
-authority is only ever granted by a person.
+:func:`ensure_approver_role` is for the caller that has a key but no role behind
+it yet. It creates the role and nothing else: it assigns nobody. An unheld role
+resolves to nobody, so a stage naming it parks its first document rather than
+approving it, and approval authority is still only ever granted by a person.
+
+Nothing seeds through here. Provisioning gives a tenant approver *groups*
+(:mod:`vs_workflow.services.groups`), because a group is a list the tenant
+composes rather than a role it did not ask for and cannot delete. ROLE remains a
+first-class approver source a tenant may choose for any stage it builds, and this
+is what supports that choice.
 """
 from __future__ import annotations
 
@@ -78,8 +81,11 @@ def ensure_approver_role(tenant, key: str, *, description: str = ""):
     The role is created with ``is_system_role=True``, and that flag is the whole
     of what separates it from a role a tenant administrator typed the same name
     into. :func:`vs_workflow.services.approvers._users_for_role_key` resolves
-    only flagged roles, so provisioning an approver role is the single way a key
-    comes to confer approval authority.
+    only flagged roles, so passing through here is the single way a key comes to
+    confer approval authority. A group's ROLE member is resolved by reference
+    instead and needs no flag: naming a role in a group is already a deliberate
+    choice, where a key is a string that could collide with any role sharing its
+    name.
     """
     from vs_rbac.models import TenantRoleTemplate
 

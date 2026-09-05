@@ -333,7 +333,7 @@ def provision_role_from_prebuilt(*, tenant, branch=None, prebuilt_key: str, crea
             "name": name,
             "description": prebuilt.description,
             "is_system_role": True,
-            "is_locked": True,
+            "is_locked": False,
             "created_by": created_by,
         },
     )
@@ -377,8 +377,19 @@ def apply_role_change_request(obj: TenantRoleChangeRequest, reviewer, notes: str
         )
         if obj.status != TenantRoleChangeRequest.Status.PENDING:
             raise ValidationError(f"Request already decided ({obj.status}).")
-        if obj.requested_by_id == getattr(reviewer, "pk", None):
-            raise PermissionDenied("You cannot decide your own role change request.")
+
+        # A school may approve its own request, and the audit says so.
+        #
+        # Two people deciding a permission grant is the better arrangement and
+        # is not one most schools can staff: a school whose only holder of
+        # ``school.roles.approve`` is the head teacher who raised the request
+        # cannot complete it at all, and a rule that cannot be followed is
+        # followed by asking CodeX to reach into the tenant instead - which is
+        # a worse position than the one it was protecting against. So it is
+        # allowed and recorded: a distinct audit source and an explicit flag,
+        # both filterable, so "who approved their own grant" is a question the
+        # log answers rather than one it hides.
+        self_approved = obj.requested_by_id == getattr(reviewer, "pk", None)
 
         target_role = TenantRoleTemplate.objects.select_for_update().get(
             pk=obj.target_role_id,
@@ -427,10 +438,16 @@ def apply_role_change_request(obj: TenantRoleChangeRequest, reviewer, notes: str
             group_ids=attached_group_ids,
             approval_reference=obj.pk,
             allow_restricted=True,
-            source="approved_change_request",
+            source=(
+                "self_approved_change_request" if self_approved
+                else "approved_change_request"
+            ),
             audit_metadata={
                 "change_request_id": str(obj.pk),
                 "reviewer_notes": notes,
+                "self_approved": self_approved,
+                "requested_by_id": obj.requested_by_id,
+                "reviewer_id": getattr(reviewer, "pk", None),
             },
         )
 

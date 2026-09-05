@@ -1,6 +1,6 @@
 """Who can approve spend here, and where nobody can.
 
-An approval ladder is only as real as the people who hold its roles. A tenant can
+An approval ladder is only as real as the people behind it. A tenant can
 have perfectly good rules and still be unable to buy anything, because the stage that
 runs at one site resolves to nobody: the document then parks (see
 :mod:`vs_procurement.approval_parking`) and the administrator has to work out *why* from
@@ -12,16 +12,18 @@ It is a read-only projection of two things the engine already owns:
 * **the rules** - the template ``vs_workflow`` would resolve for a document in that
   scope, through the engine's own branch → tenant → platform cascade, so the screen
   reports the ladder that would actually run rather than the seeded defaults;
-* **the people** - resolved through
-  :func:`vs_workflow.services.approvers.role_holder_ids`, the engine's own
-  eligibility lookup. It is the same call routing makes, so this report and live
-  routing can never disagree about who is eligible.
+* **the people** - resolved through the engine's own eligibility lookups,
+  :func:`vs_workflow.services.approvers.role_holder_ids` for a role-sourced stage and
+  :func:`vs_workflow.services.approvers.resolve_group_users` for a group-sourced one.
+  They are the same calls routing makes, so this report and live routing can never
+  disagree about who is eligible.
 
 Nothing here writes, and nothing here re-implements scope resolution. Two costs are
-deliberately bounded: templates are loaded once for the whole tenant and cascaded in
-Python, and each ``(role key, scope, branch)`` holder lookup is memoised across
-document types, so a four-document, two-stage ladder over N branches costs at most
-``2 x (N + 1)`` RBAC queries, not ``8 x (N + 1)``.
+deliberately bounded: templates are loaded once for the whole tenant with their stages
+and approver groups joined, then cascaded in Python; and each
+``(source, key, scope, branch)`` approver lookup is memoised across document types, so
+a four-document, two-stage ladder over N branches costs at most ``2 x (N + 1)``
+approver lookups, not ``8 x (N + 1)``.
 
 One caveat is stated rather than hidden: eligibility is resolved *now*, and the engine
 freezes its own snapshot when a stage activates. A person listed here approves future
@@ -31,7 +33,9 @@ this report.
 from __future__ import annotations
 
 from vs_workflow.constants import ApproverScope, ApproverSource
-from vs_workflow.services.approvers import role_holder_ids, stage_role_key
+from vs_workflow.services.approvers import (
+    resolve_group_users, role_holder_ids, stage_role_key,
+)
 
 from .constants import (
     PROCUREMENT_APPROVAL_TYPES,
@@ -89,7 +93,13 @@ def _load_templates(tenant):
         .filter(Q(tenant=tenant) | Q(tenant__isnull=True))
         .prefetch_related(Prefetch(
             "stages",
-            queryset=WorkflowStage.objects.filter(retired_at__isnull=True).order_by("order", "id"),
+            queryset=(
+                WorkflowStage.objects.filter(retired_at__isnull=True)
+                # The group is read for every group-sourced row; joining it here
+                # keeps that off the per-stage path.
+                .select_related("approver_group")
+                .order_by("order", "id")
+            ),
             to_attr="active_stages",
         ))
     )
@@ -121,10 +131,12 @@ def _resolve_template(templates, tenant, branch, document_type):
 
 
 class _HolderCache:
-    """Memoised "who holds this key in this scope" over one report.
+    """Memoised "who can approve this, in this scope" over one report.
 
-    The same role key appears on the same stage of all four document ladders, so
-    without this the report would ask RBAC the identical question four times per branch.
+    The same role key or approver group appears on the same stage of all four document
+    ladders, so without this the report would ask the identical question four times per
+    branch. Roles and groups are memoised in one dict, keyed by which kind they are, so
+    a role and a group that happen to share a code can never be confused for each other.
     """
 
     def __init__(self, tenant):
@@ -137,7 +149,7 @@ class _HolderCache:
         # Branch only narrows the lookup for a branch-scoped stage; every other
         # scope counts tenant-wide holders, which is what the engine does.
         branch_arg = branch if scope == ApproverScope.BRANCH else None
-        key = (role_key, scope, getattr(branch_arg, "pk", None))
+        key = ("role", role_key, scope, getattr(branch_arg, "pk", None))
         if key not in self._holders:
             from django.contrib.auth import get_user_model
             ids = role_holder_ids(
@@ -151,31 +163,57 @@ class _HolderCache:
             ]
         return self._holders[key]
 
+    def group_members(self, *, group, scope: str, branch):
+        """The people a group-sourced stage would resolve to, memoised like roles."""
+        if group is None:
+            return []
+        branch_arg = branch if scope == ApproverScope.BRANCH else None
+        key = ("group", group.pk, scope, getattr(branch_arg, "pk", None))
+        if key not in self._holders:
+            users = resolve_group_users(group, self._tenant, branch_arg)
+            self._holders[key] = [
+                _person(user) for user in
+                sorted(users, key=lambda u: (u.first_name or "", u.last_name or "", str(u.pk)))
+            ]
+        return self._holders[key]
+
 
 def _stage_row(stage, *, branch, cache, rules_source) -> dict:
     """Project one stage into "who can approve this here", or the gap where nobody can."""
-    by_organogram = stage.approver_source == ApproverSource.ORGANOGRAM
-    # An organogram stage resolves relative to whoever raises the document, so there is
-    # no fixed list of people to report. Say that, rather than reporting a false gap.
-    # Only a role-sourced stage has a fixed list of people to report. Groups and
-    # document-driven rules resolve per document, like the organogram does.
+    # A stage has a fixed list of people to report when it names a role or an approver
+    # group. The seeded ladder names groups, so a group that nobody has joined is
+    # exactly the gap this screen exists to show: reporting it as "resolved per
+    # requester" would answer "who can approve here" with silence in the one case an
+    # administrator actually opens the screen for. Organogram and document-driven
+    # stages genuinely resolve relative to whoever raises the document, and are
+    # reported as such rather than as a false gap.
     by_role = stage.approver_source == ApproverSource.ROLE
-    approvers = cache.holders(
-        role_key=stage_role_key(stage),
-        scope=stage.approver_scope, branch=branch,
-    ) if by_role else []
+    by_group = stage.approver_source == ApproverSource.WORKFLOW_GROUP
+    if by_role:
+        approvers = cache.holders(
+            role_key=stage_role_key(stage),
+            scope=stage.approver_scope, branch=branch,
+        )
+    elif by_group:
+        approvers = cache.group_members(
+            group=stage.approver_group, scope=stage.approver_scope, branch=branch,
+        )
+    else:
+        approvers = []
+    fixed_list = by_role or by_group
     return {
         "stage_code": stage.code,
         "stage_label": stage.label,
         "role_key": stage_role_key(stage) if by_role else "",
+        "approver_group_code": stage.approver_group.code if by_group and stage.approver_group else "",
         "approver_scope": stage.approver_scope,
-        "resolved_per_requester": not by_role,
+        "resolved_per_requester": not fixed_list,
         "rules_source": rules_source,
         "approvers": approvers,
         "approver_count": len(approvers),
         # The whole point of the screen: a stage with nobody behind it blocks every
         # document that reaches it, and only an administrator can fix that.
-        "has_approver": bool(approvers) or not by_role,
+        "has_approver": bool(approvers) or not fixed_list,
     }
 
 
@@ -223,7 +261,13 @@ def approval_coverage(tenant, *, branches=None, include_entity_level=True) -> di
             document_rows.append({
                 "document_type": document_type,
                 "document_type_label": DOCUMENT_TYPE_LABELS[document_type],
-                "configured": template is not None,
+                # "Configured" means a ladder that will actually route this to
+                # somebody, which is why an empty template counts as unconfigured
+                # rather than configured-with-no-gaps. The shared platform row always
+                # resolves and always has no steps, so a tenant that has not built its
+                # own ladder resolves to it: reporting that as configured would show a
+                # clean screen for the one tenant whose every submit is refused.
+                "configured": template is not None and bool(stages),
                 "rules_source": rules_source,
                 "stages": stages,
             })
@@ -234,6 +278,7 @@ def approval_coverage(tenant, *, branches=None, include_entity_level=True) -> di
                 "stage_code": stage["stage_code"],
                 "stage_label": stage["stage_label"],
                 "role_key": stage["role_key"],
+                "approver_group_code": stage["approver_group_code"],
             }
             for row in document_rows for stage in row["stages"]
             if not stage["has_approver"]

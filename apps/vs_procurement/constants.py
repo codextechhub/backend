@@ -198,16 +198,15 @@ PROCUREMENT_APPROVAL_TYPES = (
 WF_DEFAULT_TEMPLATE_CODE = "standard"
 
 #: Default amount (kobo) at/above which the second (senior) approval stage is included.
-#: ₦500,000.00 - overridable per call to ``ensure_default_approval_templates``.
+#: ₦500,000.00 - overridable per call to ``ensure_tenant_approval_templates``.
 WF_DEFAULT_SENIOR_THRESHOLD = 50_000_000
 
-#: Default RBAC permission keys the seeded approval stages resolve approvers against.
-# Role keys the central approval ladder names. Resolution happens inside
-# whichever tenant raised the document, so every tenant needs a role with
-# these keys - seed_procurement_permissions creates them, and
-# check_workflow_role_coverage reports tenants that are missing one.
-WF_DEFAULT_MANAGER_ROLE = "procurement-approver"
-WF_DEFAULT_SENIOR_ROLE = "procurement-senior-approver"
+#: Codes of the approver groups a tenant's seeded ladder names. Each group is
+#: created empty by ``ensure_tenant_approval_templates``, so a seeded stage parks
+#: until the tenant puts somebody in it. The platform row names neither: it carries
+#: no stages, because a shared template cannot reference a tenant's group.
+WF_DEFAULT_MANAGER_GROUP = "procurement-approver"
+WF_DEFAULT_SENIOR_GROUP = "procurement-senior-approver"
 
 #: Permission key that may release a *parked* approval without a vote. Seeded by
 #: ``seed_procurement_permissions`` but deliberately granted to **no** role: it is a
