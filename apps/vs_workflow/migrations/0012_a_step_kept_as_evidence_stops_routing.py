@@ -25,11 +25,14 @@ are. A tenant whose every step is retired then reads as unconfigured and is
 refused with ``ApprovalNotConfiguredError``, which names the problem and offers a
 recorded way through, instead of parking silently for ever.
 
-Reversible: un-retiring restores the previous state exactly, which is the state
-this corrects rather than one worth returning to, but nothing is lost by allowing
-it.
+**Not reversible, deliberately.** Un-retiring by the same filter would clear
+``retired_at`` on every matching step, including ones an administrator retired
+themselves for reasons of their own, because nothing here records which rows this
+migration touched. Restoring a broken routing state and destroying somebody
+else's retirement to do it is worse than not going back, so the reverse is a
+no-op and the rows stay retired.
 """
-from django.db import migrations
+from django.db import migrations, models
 from django.utils import timezone
 
 APPROVER_ROLE_KEYS = [
@@ -46,27 +49,24 @@ def stop_them_routing(apps, schema_editor):
     Stage = apps.get_model("vs_workflow", "WorkflowStage")
     Role = apps.get_model("vs_rbac", "TenantRoleTemplate")
 
-    # Both the key and the anchor, because a step can carry one without the
-    # other, and the anchor may point at a role that survived because somebody
-    # holds it.
-    roles = Role.objects.filter(key__in=APPROVER_ROLE_KEYS)
-    stages = Stage.objects.filter(approver_role_key__in=APPROVER_ROLE_KEYS) | \
-        Stage.objects.filter(approver_role__in=roles)
+    # Primary keys rather than a queryset. ``approver_role`` resolves to whichever
+    # historical TenantRoleTemplate the *stage's* migration state carries, which is
+    # not always the one ``get_model`` hands back here, and Django refuses to
+    # compare the two ("Cannot use QuerySet for TenantRoleTemplate"). Ids are the
+    # same in every state.
+    role_ids = list(
+        Role.objects.filter(key__in=APPROVER_ROLE_KEYS).values_list("pk", flat=True)
+    )
 
-    Stage.objects.filter(
-        pk__in=stages.filter(retired_at__isnull=True).values("pk"),
-    ).update(retired_at=timezone.now())
-
-
-def let_them_route_again(apps, schema_editor):
-    Stage = apps.get_model("vs_workflow", "WorkflowStage")
-    Role = apps.get_model("vs_rbac", "TenantRoleTemplate")
-
-    roles = Role.objects.filter(key__in=APPROVER_ROLE_KEYS)
-    stages = Stage.objects.filter(approver_role_key__in=APPROVER_ROLE_KEYS) | \
-        Stage.objects.filter(approver_role__in=roles)
-
-    Stage.objects.filter(pk__in=stages.values("pk")).update(retired_at=None)
+    # Both the key and the anchor, because a step can carry one without the other,
+    # and the anchor may point at a role that survived because somebody holds it.
+    stages = Stage.objects.filter(retired_at__isnull=True).filter(
+        models.Q(approver_role_key__in=APPROVER_ROLE_KEYS)
+        | models.Q(approver_role_id__in=role_ids)
+    )
+    Stage.objects.filter(pk__in=list(stages.values_list("pk", flat=True))).update(
+        retired_at=timezone.now(),
+    )
 
 
 class Migration(migrations.Migration):
@@ -74,4 +74,6 @@ class Migration(migrations.Migration):
         ("vs_workflow", "0011_flag_provisioned_approver_roles"),
         ("vs_rbac", "0014_a_school_owns_the_roles_and_rules_codex_set_up"),
     ]
-    operations = [migrations.RunPython(stop_them_routing, let_them_route_again)]
+    operations = [
+        migrations.RunPython(stop_them_routing, migrations.RunPython.noop),
+    ]
