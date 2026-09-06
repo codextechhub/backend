@@ -74,7 +74,13 @@ def submit_for_approval(document, requested_by, *,
     # the document: nothing they can do makes it move. So the refusal is made
     # answerable here instead - a named code, and a way through that is recorded
     # rather than forbidden.
-    unconfigured = not template.stages.exists()
+    # Retired steps are history, not configuration. A step a real document ran
+    # through is kept as the record of how that document was approved, so a
+    # template can hold rows and still have nothing that will run. Counting them
+    # here would pass this gate and leave the router skipping each one in turn
+    # until it ran out and terminated the instance APPROVED, which is the exact
+    # outcome this refusal exists to prevent.
+    unconfigured = not template.stages.filter(retired_at__isnull=True).exists()
     if unconfigured:
         from vs_workflow.exceptions import ApprovalNotConfiguredError
         from vs_workflow.services.resolution import record_unapproved_post

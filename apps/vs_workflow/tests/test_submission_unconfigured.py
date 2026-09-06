@@ -78,6 +78,33 @@ class StagelessTemplateSubmissionTests(TestCase):
         with self.assertRaises(ApprovalNotConfiguredError):
             self._submit()
 
+    def test_a_ladder_whose_every_step_is_retired_refuses_too(self):
+        """Retired steps are history, not configuration, and must not read as it.
+
+        A template can reach this state without anybody meaning to: retiring the
+        last live step leaves the rows behind, because a step a real document ran
+        through records how that document was approved. Counting them as
+        configuration is worse than counting none at all - the submit passes this
+        gate, the router then skips every retired step in turn, finds no next one,
+        and terminates the instance APPROVED. A document nobody reviewed comes out
+        the far end marked approved, which is the one outcome this whole path
+        exists to prevent.
+        """
+        from django.utils import timezone
+        from vs_workflow.models import WorkflowStage
+
+        WorkflowStage.objects.create(
+            template=self.template, code="gone", label="Retired step",
+            kind="APPROVAL", order=10, approver_source="ROLE",
+            approver_role_key="somebody", approver_scope="SCHOOL",
+            advance_rule="ANY", on_rejection="TERMINAL",
+            skip_if_no_approvers=False, retired_at=timezone.now(),
+        )
+
+        with self.assertRaises(ApprovalNotConfiguredError):
+            self._submit()
+        self.assertEqual(WorkflowInstance.all_objects.count(), 0)
+
     def test_nothing_is_written_when_it_refuses(self):
         """A refusal that left an instance behind would be worse than none.
 

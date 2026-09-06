@@ -179,7 +179,10 @@ def approval_unconfigured(document, *, default_tenant=None,
     )
     if template is None:
         return False
-    return not template.stages.exists()
+    # Live steps only: a retired one records how a past document was approved
+    # and will never run again, so a template holding nothing else is as
+    # unconfigured as one holding no rows at all.
+    return not template.stages.filter(retired_at__isnull=True).exists()
 
 
 def record_unapproved_post(document, *, actor_user, reason: str, tenant=None):
