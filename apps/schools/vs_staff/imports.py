@@ -298,6 +298,23 @@ def create_staff_from_row(row: ResolvedRow, *, tenant, created_by, request=None)
     )
 
 
+def _payload_of(raw_row: dict, columns) -> dict:
+    """One uploaded row, keyed the way :func:`resolve_row` reads it.
+
+    **An uploaded row is keyed by the file's HEADERS**, not by the target
+    fields: ``{"First Name": "Ifeoma", "Email": "..."}``. The engine translates
+    at execution time with ``map_row_to_payload``, and the validator has to do
+    the same translation or the two passes look at the same row two different
+    ways.
+
+    Without it every lookup misses and every row reports its required fields as
+    empty, so a school downloading this template, filling it in and uploading it
+    back is told to fix twelve errors in a perfect file - and since errors block
+    a batch, nothing can ever be imported at all.
+    """
+    return {c.target_field: raw_row.get(c.column_name) for c in columns}
+
+
 def validate_rows(import_batch) -> list[dict]:
     """The validation pass, reading every row through :func:`resolve_row`.
 
@@ -307,20 +324,28 @@ def validate_rows(import_batch) -> list[dict]:
     """
     from schools.vs_staff.services.scoping import branch_dimension_applies
 
+    template = import_batch.template
+    if template is None:
+        return []
+
     tenant = import_batch.tenant
     multi = branch_dimension_applies(tenant)
+    columns = list(template.columns.all())
+    # Back the other way, for the issue's own label. A reader looking at their
+    # spreadsheet is looking for "First Name", not `first_name`.
+    header = {c.target_field: c.column_name for c in columns}
     seen: dict[str, int] = {}
     issues = []
 
-    for number, payload in enumerate(import_batch.preview_rows or [], start=1):
+    for number, raw_row in enumerate(import_batch.preview_rows or [], start=1):
         row = resolve_row(
-            payload, tenant=tenant, batch_branch=import_batch.branch,
-            multi_branch=multi,
+            _payload_of(raw_row, columns), tenant=tenant,
+            batch_branch=import_batch.branch, multi_branch=multi,
         )
         for issue in row.issues:
             issues.append({
                 "row_number": number,
-                "column_name": issue.field,
+                "column_name": header.get(issue.field, issue.field),
                 "value": issue.value,
                 "code": issue.code,
                 "message": issue.message,
@@ -330,7 +355,7 @@ def validate_rows(import_batch) -> list[dict]:
             if row.email in seen:
                 issues.append({
                     "row_number": number,
-                    "column_name": "email",
+                    "column_name": header.get("email", "email"),
                     "value": row.email,
                     "code": "duplicate_in_file",
                     "message": (
