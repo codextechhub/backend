@@ -1439,6 +1439,40 @@ class Command(BaseCommand):
                     templates_updated += 1
                     self.stdout.write(f"  [UPDATED] ImportTemplate → {code}")
 
+                # ----------------------------------------------------------
+                # A RENAMED CODE leaves the old template behind, ACTIVE.
+                #
+                # Columns are matched on (template, column_name) and stale ones
+                # are deleted above, so a renamed COLUMN is handled. A renamed
+                # template is not: update_or_create matches on `code`, so a new
+                # code creates a second row and the first one keeps answering.
+                # The picker then offers two templates with the same NAME, a
+                # school picks one, and half of them download a file whose
+                # columns the row handler does not read. That is exactly what
+                # happened to staff_v1 and staff_master_v1.
+                #
+                # Warned rather than retired automatically: a school could
+                # legitimately be offered two templates for one dataset, and a
+                # command that silently retired one on every deploy would be
+                # worse than one that says what it found.
+                # ----------------------------------------------------------
+                if template_data.get("status") == TemplateStatusChoices.ACTIVE:
+                    others = ImportTemplate.objects.filter(
+                        dataset_type=template_data["dataset_type"],
+                        status=TemplateStatusChoices.ACTIVE,
+                    ).exclude(pk=template.pk)
+                    for other in others:
+                        self.stdout.write(
+                            self.style.WARNING(
+                                f"  [WARNING] {other.code} is also an ACTIVE "
+                                f"{template_data['dataset_type']} template, so a "
+                                f"school is offered both. If it is a renamed "
+                                f"version of {code}, retire it: "
+                                f"ImportTemplate.objects.filter(code="
+                                f"'{other.code}').update(status='retired')"
+                            )
+                        )
+
                 # Delete stale columns whose target_field is no longer in the definition.
                 # This handles renames: the old column is removed before upserting the new one.
                 defined_target_fields = {c["target_field"] for c in columns_data}
