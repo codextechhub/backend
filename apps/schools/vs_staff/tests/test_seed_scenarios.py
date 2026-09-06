@@ -51,6 +51,14 @@ def _counts(tenant):
 class _Base(TestCase):
     @classmethod
     def setUpTestData(cls):
+        # Two branches and live, and the school the module is driven against:
+        # a posting means something here, a reach can be wider than it, and the
+        # academic structure behind it is deep enough for the coverage grid to
+        # be more than a handful of cells.
+        cls.multi_live = make_school(slug="holy-cross", name="Holy Cross College")
+        make_branch(cls.multi_live, name="Main", is_main=True)
+        make_branch(cls.multi_live, name="Annex", is_main=False)
+
         cls.multi = make_school(slug="brightfield-lekki", name="Brightfield Schools")
         make_branch(cls.multi, name="Lekki", is_main=True)
         make_branch(cls.multi, name="Ikeja", is_main=False)
@@ -68,7 +76,9 @@ class _Base(TestCase):
         # needs a role to invite people into: the seeder refuses by name rather
         # than inventing one, since a person created with no role is an account
         # that can sign in and reach nothing.
-        for index, school in enumerate((cls.multi, cls.solo_live, cls.solo)):
+        for index, school in enumerate(
+            (cls.multi_live, cls.multi, cls.solo_live, cls.solo),
+        ):
             make_school_admin(
                 None, email=f"staffseed{index}@example.test", tenant=school.tenant,
             )
@@ -80,7 +90,9 @@ class _Base(TestCase):
         # schools that have nothing to do with staff and refuse loudly when they
         # are absent. Asking only for the three built above keeps this fixture's
         # dependency to what it actually uses.
-        for slug in ("brightfield-lekki", "sunrise-academy", "st-monicas"):
+        for slug in (
+            "holy-cross", "brightfield-lekki", "sunrise-academy", "st-monicas",
+        ):
             call_command("seed_academic_scenarios", only=slug, verbosity=0)
 
     def test_the_cast_and_this_fixture_name_the_same_schools(self):
@@ -98,6 +110,15 @@ class _Base(TestCase):
             "these are in CAST but not built by this fixture",
         )
 
+    def cast(self):
+        """Every school this fixture builds, in CAST order.
+
+        Named once so a school added to CAST is exercised by the idempotence
+        tests rather than only by the tripwire above, which would otherwise pass
+        while nothing ever ran the seeder against the new school.
+        """
+        return (self.multi_live, self.multi, self.solo_live, self.solo)
+
     def seed(self, only=None):
         out = StringIO()
         call_command(
@@ -111,23 +132,16 @@ class IdempotenceTests(_Base):
     def test_it_builds_something_in_the_first_place(self):
         """Idempotence over an empty result would be trivially true."""
         self.seed()
-        for school in (self.multi, self.solo_live, self.solo):
+        for school in self.cast():
             with self.subTest(school=school.slug):
                 self.assertGreater(_counts(school.tenant)["staff"], 0)
 
     def test_running_it_twice_changes_nothing(self):
         self.seed()
-        first = {
-            s.slug: _counts(s.tenant)
-            for s in (self.multi, self.solo_live, self.solo)
-        }
+        first = {s.slug: _counts(s.tenant) for s in self.cast()}
         self.seed()
         self.assertEqual(
-            {
-                s.slug: _counts(s.tenant)
-                for s in (self.multi, self.solo_live, self.solo)
-            },
-            first,
+            {s.slug: _counts(s.tenant) for s in self.cast()}, first,
         )
 
     def test_an_unknown_school_is_refused_by_name(self):

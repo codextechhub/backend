@@ -4,12 +4,22 @@ A screen cannot be checked against an endpoint that returns nothing, and the
 states this module has to show cannot all exist in one person, let alone one
 school:
 
-    brightfield-lekki   Two branches and live. The full cast: every employment
-                        status, every account state that disagrees with one, a
-                        registrar posted school-wide, a teacher holding the same
-                        role at BOTH branches, a covered subject, a subject with
-                        assistants and no lead, and a subject nobody teaches.
-                        This is the school to drive the module against.
+    holy-cross          Two branches and live, with the deepest academic
+                        structure of the four and a ``teacher`` role template
+                        of its own. **This is the school to drive the module
+                        against.** It is the only live multi-branch school in
+                        the cast, which is the shape the module is designed for:
+                        a posting that means something, a reach that can be
+                        wider than it, and enough classes and offerings for the
+                        coverage grid to be more than a handful of cells.
+    brightfield-lekki   Two branches, still onboarding. The full cast of
+                        PEOPLE: every employment status, every account state
+                        that disagrees with one, and a registrar posted
+                        school-wide. Its role catalogue has no ``teacher`` in
+                        it, so everybody here is granted School Admin by the
+                        fallback below - which makes it the wrong school for
+                        reading a role column and the right one for the
+                        pre-live narrowing at a school with two branches.
     sunrise-academy     One branch and live. The recede case: the only place the
                         rule that the branch dimension disappears at a
                         one-branch school can actually be seen.
@@ -61,7 +71,9 @@ from schools.vs_staff.services import employment
 #: than a shared constant that does not.
 SEED_PASSWORD = "SchoolStaff@2026"
 
-CAST = ("brightfield-lekki", "sunrise-academy", "st-monicas")
+#: Ordered so the first entry is the one to drive the module against, and so
+#: that a bare run builds the richest school before the narrower ones.
+CAST = ("holy-cross", "brightfield-lekki", "sunrise-academy", "st-monicas")
 
 #: Split by gender so an honorific is never derived independently of the name.
 #: Picking a title and a name from two lists produces "Mrs. James Eze".
@@ -209,6 +221,12 @@ class Command(BaseCommand):
 
         from ...services import creation
 
+        # Teacher where the school has one, and School Admin where it does not.
+        # A school builds its own catalogue, so the prebuilt teacher template is
+        # not guaranteed to be there, and a seeder that insisted on it would
+        # refuse to put anybody on the list at all. The cost is visible and is
+        # named in the docstring: at a school without it, every row reads School
+        # Admin, so that school is the wrong one to read a role column at.
         role = self._role(tenant, "teacher") or self._role(tenant, "school_admin")
         if role is None:
             raise CommandError(
