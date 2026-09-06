@@ -364,6 +364,7 @@ class BulkLevelSerializer(serializers.Serializer):
 class SchoolClassSerializer(_ScopedSerializer):
     level_name = serializers.CharField(source="level.name", read_only=True)
     subject_count = serializers.SerializerMethodField()
+    class_teacher = serializers.SerializerMethodField()
 
     class Meta:
         model = SchoolClass
@@ -371,6 +372,7 @@ class SchoolClassSerializer(_ScopedSerializer):
             "id", "name", "code", "description", "arm", "capacity", "is_active",
             "level", "level_name",
             "branch", "branch_name", "scope_label", "subject_count",
+            "class_teacher",
         ]
 
     def get_subject_count(self, obj) -> int:
@@ -381,6 +383,35 @@ class SchoolClassSerializer(_ScopedSerializer):
         class's name.
         """
         return getattr(obj, "subject_count_annotated", 0)
+
+    def get_class_teacher(self, obj):
+        """The teacher responsible for this class, or nothing.
+
+        The column is M12's designation and lives here because uniqueness is a
+        property of the CLASS: one class has one class teacher, and enforcing
+        that from a row on the assignment would need a partial unique index
+        over a boolean that only ever means anything when it is true.
+
+        It was set by ``PUT /v1/i/me/staff/teaching/class-teacher/`` and read by
+        nothing, so the screen that sets it could not show what it had set and
+        a profile could not say which class somebody was responsible for. An id
+        and a display name, never an email: this rides on a list a whole school
+        reads.
+
+        Points at the STAFF RECORD rather than the login, so a class teacher who
+        has left the school stops being one when their record says so rather
+        than when somebody remembers to deactivate a password.
+        """
+        staff = obj.class_teacher
+        if staff is None:
+            return None
+        user = staff.user
+        return {
+            "staff_id": staff.pk,
+            "name": " ".join(
+                part for part in (user.first_name, user.last_name) if part
+            ).strip(),
+        }
 
 
 class SchoolClassWriteSerializer(serializers.ModelSerializer):

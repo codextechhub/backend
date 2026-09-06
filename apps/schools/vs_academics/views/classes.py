@@ -54,10 +54,15 @@ from .structure import _StructureBase
 
 
 def _classes_for(tenant):
-    """Classes, with the number of subjects taught at their level."""
+    """Classes, with the number of subjects taught at their level.
+
+    ``class_teacher__user`` is joined rather than left to the serializer: the
+    designation reads a name off the account, and a page of sixty classes would
+    otherwise be sixty extra queries for one column.
+    """
     return (
         SchoolClass.objects.filter(tenant=tenant)
-        .select_related("branch", "level")
+        .select_related("branch", "level", "class_teacher__user")
         .annotate(
             subject_count_annotated=Count("level__subject_offerings", distinct=True),
         )

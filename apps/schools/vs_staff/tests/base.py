@@ -57,7 +57,19 @@ ACCOUNT_KEYS = (
     "school.administrators.suspend",
     "school.administrators.reactivate",
 )
-OTHER_KEYS = ("school.roles.assign", "school.user_overrides.view")
+#: Keys other modules own that this one uses, and that a real school_admin
+#: holds. ``constants.py`` names all four for the same reason: this module reads
+#: classes and subjects to write a teaching duty, assigns roles it does not own,
+#: and renders per-user overrides it does not manage.
+#:
+#: ``academics.classes.view`` is here so the class-teacher designation can be
+#: read back from the screen that shows it. Without it a test of that round trip
+#: proves only that this fixture grants no academics key.
+OTHER_KEYS = (
+    "school.roles.assign",
+    "school.user_overrides.view",
+    "academics.classes.view",
+)
 ALL_KEYS = STAFF_KEYS + LEAVE_KEYS + ACCOUNT_KEYS + OTHER_KEYS
 
 #: What a teacher actually holds, per the seeder's own defaults. Kept in step

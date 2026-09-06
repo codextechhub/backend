@@ -198,6 +198,48 @@ class ClassTeacherTests(StaffFixture):
         field = SchoolClass._meta.get_field("class_teacher")
         self.assertEqual(field.related_model.__name__, "StaffProfile")
 
+    def test_the_designation_can_be_read_back(self):
+        """Set by this endpoint and read from the class list.
+
+        It was written by one endpoint and exposed by nothing, so the screen
+        that sets a class teacher could not show what it had set. An id and a
+        display name, and never an email: this rides on a list a whole school
+        reads.
+        """
+        self.put(
+            self.admin, "staff-class-teacher",
+            {"school_class": self.shared_class.pk, "staff": self.eze.pk},
+        )
+        response = self.client_for(self.admin).get(
+            "/v1/academics/classes/",
+            {"tenant": self.tenant.slug, "session": self.year.pk},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        row = next(
+            item for item in response.data["data"]
+            if item["id"] == self.shared_class.pk
+        )
+        self.assertEqual(row["class_teacher"]["staff_id"], self.eze.pk)
+        self.assertEqual(row["class_teacher"]["name"], "Chukwuemeka Eze")
+        self.assertNotIn("email", row["class_teacher"])
+
+    def test_a_class_with_nobody_reads_null_rather_than_a_blank_person(self):
+        """The common case, and it must not be an object with empty strings.
+
+        A screen testing truthiness on the object would draw a nameless chip on
+        every class in the school.
+        """
+        response = self.client_for(self.admin).get(
+            "/v1/academics/classes/",
+            {"tenant": self.tenant.slug, "session": self.year.pk},
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        row = next(
+            item for item in response.data["data"]
+            if item["id"] == self.shared_class.pk
+        )
+        self.assertIsNone(row["class_teacher"])
+
 
 class CoverageTests(StaffFixture):
     def test_an_uncovered_pairing_is_a_coverage_gap(self):
