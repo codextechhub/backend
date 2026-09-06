@@ -28,12 +28,26 @@ def counts(queryset, tenant):
     ``queryset`` is the caller's already-scoped staff queryset, so every figure
     here counts the same people the list does. A header that counted the school
     and a list that showed a branch would be a header nobody could reconcile.
+
+    **It arrives annotated and ordered for display, and neither survives being
+    counted.** Every figure below therefore goes through :func:`_countable`,
+    which strips the ordering, and counts ``pk`` distinctly. Both halves matter
+    and they fail in opposite directions: a ``.values(...).annotate(...)`` over
+    an ordered queryset adds the ordering columns to the GROUP BY, so each row
+    becomes its own group and a status held by seven people reports one; and the
+    ``teaching_load`` join multiplies a row once per assignment, so a school of
+    twelve reports fifteen. A header that overstates and understates at the same
+    time is worse than one that is merely wrong, because the two figures beside
+    each other look like a rounding difference rather than a defect.
     """
     from vs_user.models import User
 
+    countable = _countable(queryset)
     by_status = {
         row["employment_status"]: row["n"]
-        for row in queryset.values("employment_status").annotate(n=Count("pk"))
+        for row in countable.values("employment_status").annotate(
+            n=Count("pk", distinct=True),
+        )
     }
     total = sum(by_status.values())
     on_roll = total - sum(
@@ -41,11 +55,13 @@ def counts(queryset, tenant):
         for status in (EmploymentStatus.RESIGNED, EmploymentStatus.TERMINATED)
     )
 
-    aggregate = queryset.aggregate(
+    aggregate = countable.aggregate(
         with_teaching=Count(
             "pk", filter=Q(teaching_assignments__isnull=False), distinct=True,
         ),
-        locked=Count("pk", filter=Q(user__status=User.Status.LOCKED)),
+        locked=Count(
+            "pk", filter=Q(user__status=User.Status.LOCKED), distinct=True,
+        ),
     )
 
     payload = {
@@ -65,8 +81,23 @@ def counts(queryset, tenant):
         # nobody reads a lockout as an employment state.
         "locked_accounts": aggregate["locked"] or 0,
     }
-    payload.update(_side_breakdown(queryset, tenant))
+    payload.update(_side_breakdown(countable, tenant))
     return payload
+
+
+def _countable(queryset):
+    """The same people, with the display ordering removed.
+
+    One place, because the ordering is inherited from the list queryset and
+    every aggregate below would otherwise have to remember to drop it. Django
+    folds ``order_by`` columns into the GROUP BY of a ``.values().annotate()``,
+    so an ordering by ``created_at`` and ``id`` groups by the row itself.
+
+    The ``teaching_load`` annotation is left alone: dropping it would mean
+    rebuilding the queryset and losing the caller's scoping with it, and
+    counting ``pk`` distinctly answers the join it introduces.
+    """
+    return queryset.order_by()
 
 
 def _side_breakdown(queryset, tenant):
@@ -81,7 +112,7 @@ def _side_breakdown(queryset, tenant):
     if branch_dimension_applies(tenant):
         rows = (
             queryset.values("branch_id", "branch__name")
-            .annotate(n=Count("pk"))
+            .annotate(n=Count("pk", distinct=True))
             .order_by("branch__name")
         )
         return {

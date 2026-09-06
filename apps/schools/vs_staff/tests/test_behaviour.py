@@ -474,6 +474,61 @@ class DirectoryTests(StaffFixture):
         counts = self.get(self.admin, "staff-list").data["counts"]
         self.assertEqual(counts["currently_employed"], counts["total"] - 1)
 
+    def test_the_header_counts_people_and_not_groups(self):
+        """Absolute figures, checked against the row count rather than each other.
+
+        The header arrives from a queryset built for display: ordered by
+        ``created_at`` and ``id``, and annotated with a teaching load. Django
+        folds an ordering into the GROUP BY of a ``.values().annotate()``, so
+        every row became its own group and a status held by three people
+        reported one.
+
+        It survived because the tests around it compared two figures from the
+        same broken source. ``currently_employed == total - 1`` holds perfectly
+        when both are wrong by the same amount, so this asserts each number
+        against the number of staff rows that exist.
+        """
+        rows = StaffProfile.all_objects.filter(tenant=self.tenant).count()
+        counts = self.get(self.admin, "staff-list").data["counts"]
+
+        self.assertEqual(counts["total"], rows)
+        self.assertEqual(
+            sum(row["count"] for row in counts["by_employment_status"]), rows,
+        )
+        self.assertEqual(
+            sum(row["count"] for row in counts["breakdown"]), rows,
+        )
+        active = next(
+            row["count"] for row in counts["by_employment_status"]
+            if row["value"] == EmploymentStatus.ACTIVE
+        )
+        self.assertEqual(active, rows, "a status held by several reported one")
+
+    def test_a_teaching_duty_does_not_inflate_the_header(self):
+        """The other half of the same defect, failing the other way.
+
+        The ``teaching_load`` annotation joins the assignments table, so an
+        undistinct ``Count("pk")`` counts a person once per duty they hold. Two
+        duties for one person turned a school of three into a school of four,
+        and the branch panel and the total disagreed by exactly the number of
+        assignments nobody was looking at.
+        """
+        for subject in (self.maths, self.english):
+            TeachingAssignment.all_objects.create(
+                tenant=self.tenant, staff=self.eze,
+                school_class=self.shared_class, subject=subject,
+                session=self.year, part=TeachingPart.LEAD,
+            )
+        rows = StaffProfile.all_objects.filter(tenant=self.tenant).count()
+        counts = self.get(self.admin, "staff-list").data["counts"]
+
+        self.assertEqual(counts["total"], rows)
+        self.assertEqual(sum(row["count"] for row in counts["breakdown"]), rows)
+        # The one figure that SHOULD be a person count over a joined table, and
+        # was already distinct. Asserted here so the fix to its neighbours
+        # cannot quietly take it with them.
+        self.assertEqual(counts["with_teaching_duties"], 1)
+
     def test_the_locked_count_is_an_account_count(self):
         self.eze.user.status = User.Status.LOCKED
         self.eze.user.save(update_fields=["status"])
