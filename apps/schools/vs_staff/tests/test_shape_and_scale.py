@@ -149,7 +149,9 @@ class PendingTenantSurfaceTests(StaffFixture):
     def test_a_pending_school_is_refused_the_lifecycle(self):
         """Nobody resigns during onboarding, and the key is SENSITIVE."""
         response = self.post(
-            self.admin, "staff-status", {"to_status": "ON_LEAVE"}, pk=self.eze.pk,
+            self.admin, "staff-status",
+            {"to_status": "SUSPENDED", "reason": "Pending a review."},
+            pk=self.eze.pk,
         )
         self.assertEqual(response.status_code, 403, response.data)
 

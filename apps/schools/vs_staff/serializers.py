@@ -85,6 +85,22 @@ class StaffListSerializer(serializers.ModelSerializer):
     employment_status_label = serializers.CharField(
         source="get_employment_status_display", read_only=True,
     )
+    #: What the row READS as, which is not always what the column holds.
+    #:
+    #: Five stored values and one derived, the same split ``LeaveRequest``
+    #: already keeps: Completed is what an approved absence reads once its end
+    #: date has passed, and On Leave is what an employed person reads while one
+    #: is running. Nobody sets either, because a value stored beside the dates
+    #: it follows from is a second thing that can be wrong - and here it would
+    #: be wrong in a particular direction, since a leave ENDING fires no event
+    #: and nothing in this repository runs on a schedule to notice.
+    #:
+    #: The stored ``employment_status`` is kept beside it rather than replaced.
+    #: The history, the lifecycle strip and the transition rules all reason
+    #: about what a person DECIDED, and "she was moved to Suspended" is a
+    #: different sentence from "her leave was running that week".
+    display_employment_status = serializers.SerializerMethodField()
+    display_employment_status_label = serializers.SerializerMethodField()
     on_leave_today = serializers.SerializerMethodField()
     #: True exactly when the account is still waiting to be activated, which is
     #: the only state a resend applies to. The screen reads it to decide whether
@@ -100,7 +116,9 @@ class StaffListSerializer(serializers.ModelSerializer):
             # the finance engine is domain-neutral and knows nothing about
             # staff. Without it a bursar cannot tie a salary to a person.
             "id", "user_id", "full_name", "email", "staff_number", "job_title",
-            "employment_status", "employment_status_label", "employment_type",
+            "employment_status", "employment_status_label",
+            "display_employment_status", "display_employment_status_label",
+            "employment_type",
             "account_status", "account_flag", "roles", "branch_id",
             "branch_name", "posted_school_wide", "teaching_load",
             "on_leave_today", "hire_date", "can_resend", "invited_at",
@@ -137,12 +155,36 @@ class StaffListSerializer(serializers.ModelSerializer):
         return getattr(obj, "teaching_load", 0) or 0
 
     def get_on_leave_today(self, obj) -> bool:
-        """Approved leave covering today, whatever the employment status says.
+        """Approved leave covering today.
 
-        The two are separate facts and a school may set either, both or
-        neither, so this reports the disagreement rather than resolving it.
+        Reads the queryset annotation where there is one, so a list page
+        answers from the same expression it filtered and counted with. The
+        context set is the fallback for the few reads that serialize an
+        instance rather than a page.
         """
+        annotated = getattr(obj, "is_on_leave", None)
+        if annotated is not None:
+            return bool(annotated)
         return obj.pk in (self.context.get("on_leave_ids") or set())
+
+    def get_display_employment_status(self, obj) -> str:
+        """On Leave while it is running, and the stored value otherwise.
+
+        Only an ACTIVE person reads as On Leave. Somebody suspended, resigned
+        or terminated with a leave request still on the books is not away, they
+        are gone or stopped, and the heavier fact is the one the row must show.
+        """
+        if (
+            obj.employment_status == EmploymentStatus.ACTIVE
+            and self.get_on_leave_today(obj)
+        ):
+            return EmploymentStatus.ON_LEAVE
+        return obj.employment_status
+
+    def get_display_employment_status_label(self, obj) -> str:
+        return dict(EmploymentStatus.choices).get(
+            self.get_display_employment_status(obj), "",
+        )
 
     def get_can_resend(self, obj) -> bool:
         from vs_user.models import User

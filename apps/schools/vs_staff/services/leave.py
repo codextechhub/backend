@@ -221,13 +221,39 @@ def days_taken(staff, *, since=None, until=None):
     return [{"leave_type": row["leave_type"], "days": row["days"] or 0} for row in rows]
 
 
+def on_leave_expression(*, today=None):
+    """Is this person's leave running, as a queryset expression.
+
+    The same question :func:`on_leave_today` answers, in the one form that
+    composes: a set of ids cannot be filtered on, grouped by, or counted, and
+    the directory has to do all three. Every surface that decides whether
+    somebody reads as On Leave goes through this, so the row, the filter and
+    the header count cannot disagree about who is away.
+
+    APPROVED only. A pending request is somebody asking, and a rejected or
+    cancelled one is an absence that never happened.
+    """
+    from django.db.models import Exists, OuterRef
+
+    from ..models import LeaveRequest
+
+    today = today or timezone.localdate()
+    return Exists(
+        LeaveRequest.objects.filter(
+            staff=OuterRef("pk"), status=LeaveStatus.APPROVED,
+            start_date__lte=today, end_date__gte=today,
+        ),
+    )
+
+
 def on_leave_today(tenant, *, today=None):
     """Staff ids with approved leave covering today.
 
-    Feeds the directory warning: somebody whose leave is running and whose
-    employment status is not ON_LEAVE. The two are separate facts on purpose,
-    and a school may set either, both or neither, so this reports the
-    disagreement rather than resolving it.
+    The set form, for callers holding people rather than a queryset. It answers
+    the same question as :func:`on_leave_expression` and must keep answering it
+    the same way: this is what a person's employment status READS as, not a
+    warning about it disagreeing with one. Nobody sets On Leave by hand any
+    more, so there is no disagreement left to report.
     """
     from ..models import LeaveRequest
 

@@ -151,7 +151,13 @@ class IdempotenceTests(_Base):
 
 class ScenarioCoverageTests(_Base):
     def test_every_employment_status_the_screens_show_has_a_row_behind_it(self):
-        """A state with no row is a screen nobody can check."""
+        """A state with no row is a screen nobody can check.
+
+        ON_LEAVE is absent from this list because it is absent from the column:
+        nobody is stored On Leave any more, it is what an ACTIVE person reads as
+        while approved leave covers today. The test below is the one that keeps
+        the cast able to show it.
+        """
         self.seed()
         present = set(
             StaffProfile.all_objects.filter(tenant=self.multi.tenant)
@@ -159,11 +165,36 @@ class ScenarioCoverageTests(_Base):
         )
         for expected in (
             EmploymentStatus.INVITED, EmploymentStatus.ACTIVE,
-            EmploymentStatus.ON_LEAVE, EmploymentStatus.SUSPENDED,
-            EmploymentStatus.RESIGNED, EmploymentStatus.TERMINATED,
+            EmploymentStatus.SUSPENDED, EmploymentStatus.RESIGNED,
+            EmploymentStatus.TERMINATED,
         ):
             with self.subTest(status=expected):
                 self.assertIn(expected, present)
+        self.assertNotIn(
+            EmploymentStatus.ON_LEAVE, present,
+            "somebody is STORED On Leave, which nothing should be able to do",
+        )
+
+    def test_somebody_reads_as_on_leave_without_being_stored_that_way(self):
+        """The one row that makes the derived status visible on a screen.
+
+        Without it the On Leave chip, the directory facet and the header count
+        all have nothing behind them, and a state the module shows could not be
+        checked against the API at all.
+        """
+        from django.utils import timezone
+
+        from schools.vs_staff.services.leave import on_leave_today
+
+        self.seed()
+        away = on_leave_today(self.multi.tenant, today=timezone.localdate())
+        self.assertTrue(away, "nobody in the cast has leave running today")
+        for staff in StaffProfile.all_objects.filter(pk__in=away):
+            with self.subTest(staff=staff.pk):
+                self.assertEqual(
+                    staff.employment_status, EmploymentStatus.ACTIVE,
+                    "they are employed; the leave is what makes them away",
+                )
 
     def test_every_status_was_reached_through_a_logged_transition(self):
         """The reason the seeder drives services rather than writing rows.

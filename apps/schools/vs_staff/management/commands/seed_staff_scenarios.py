@@ -81,7 +81,11 @@ PEOPLE = [
     # (first, last, gender, job title, employment status, posting index)
     ("Chukwuemeka", "Eze", "MALE", "Lead Teacher", "ACTIVE", 0),
     ("Funke", "Adeyemi", "FEMALE", "Bursar", "ACTIVE", 0),
-    ("Tunde", "Bakare", "MALE", "Teacher", "ON_LEAVE", 1),
+    # ACTIVE, and reads as On Leave: _record_leave gives him an approved study
+    # leave covering today, and the status is derived from it. Driving him
+    # through a transition would be the old rule, and there is no longer one to
+    # drive.
+    ("Tunde", "Bakare", "MALE", "Teacher", "ACTIVE", 1),
     ("Ngozi", "Okafor", "FEMALE", "Teacher", "ACTIVE", 0),
     ("Samuel", "Adeyemo", "MALE", "Teacher", "INVITED", 1),
     # No posting at all: across the whole school, which is a first-class value
@@ -297,7 +301,6 @@ class Command(BaseCommand):
             profile, to_status=status, actor=actor,
             effective_date=dt.date(2025, 9, 15),
             reason={
-                EmploymentStatus.ON_LEAVE: "Study leave",
                 EmploymentStatus.SUSPENDED: "Pending an internal review",
                 EmploymentStatus.RESIGNED: "Moving abroad",
                 EmploymentStatus.TERMINATED: "Gross misconduct",
@@ -461,18 +464,24 @@ class Command(BaseCommand):
     def _record_leave(self, tenant, actor):
         """One approved absence and one still waiting, so both chips are real.
 
-        The approved one is written directly and this is the second of the two
-        places the command does that. Approving honestly needs a second person to
-        vote through the engine, and the point of this row is that the Leave tab
-        and the directory's on-leave warning have something to render, not that
-        the ladder works: ``test_leave.py`` proves the ladder.
+        The approved one is what PUTS somebody on leave: the employment status
+        is derived from it, so this row is why one person in the cast reads On
+        Leave rather than decoration beside a column that already said so.
+
+        It is written directly, which is the second of the two places this
+        command does that. Approving honestly needs a second person to vote
+        through the engine, and what this row is for is the Leave tab and the
+        directory chip having something real behind them; ``test_leave.py``
+        proves the ladder.
         """
         from ...constants import EmploymentStatus, LeaveStatus
         from ...models import LeaveRequest, StaffProfile
         from ...services import leave as leave_service
 
+        # Bakare by name rather than by status, because the status is now the
+        # consequence of this row and cannot be the way of finding who gets it.
         on_leave = StaffProfile.objects.filter(
-            tenant=tenant, employment_status=EmploymentStatus.ON_LEAVE,
+            tenant=tenant, user__last_name="Bakare",
         ).first()
         if on_leave is None or on_leave.leave_requests.exists():
             return
@@ -488,10 +497,18 @@ class Command(BaseCommand):
         )
 
         # And one filed the honest way, which lands PENDING and shows an
-        # approver something to decide.
-        active = StaffProfile.objects.filter(
-            tenant=tenant, employment_status=EmploymentStatus.ACTIVE,
-        ).exclude(user=actor).first()
+        # approver something to decide. Dated well ahead, so it is a request
+        # about the future rather than a second absence running today - which
+        # would put a second person on leave and blunt the one case the chip
+        # exists to show.
+        active = (
+            StaffProfile.objects.filter(
+                tenant=tenant, employment_status=EmploymentStatus.ACTIVE,
+            )
+            .exclude(user=actor)
+            .exclude(pk=on_leave.pk)
+            .first()
+        )
         if active is not None and not active.leave_requests.exists():
             try:
                 leave_service.file_request(

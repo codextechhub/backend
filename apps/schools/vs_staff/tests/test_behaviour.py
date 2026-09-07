@@ -159,6 +159,96 @@ class TwoStatusesTests(StaffFixture):
         employment.promote_on_activation(self.admin)
         self.assertEqual(StaffEmploymentEvent.all_objects.count(), before)
 
+    def test_on_leave_is_not_a_move_anybody_can_make(self):
+        """Nobody is put on leave; leave puts them there.
+
+        Offering the move would be a way in that nothing takes back out.
+        Approval is an event and code hangs off it, but a leave ENDING is not
+        one and there is no scheduler here to notice, so somebody set On Leave
+        on 17 August would still read On Leave the following March.
+        """
+        response = self.post(
+            self.admin, "staff-status", {"to_status": "ON_LEAVE"}, pk=self.eze.pk,
+        )
+        self.assertEqual(response.status_code, 422, response.data)
+        self.assertEqual(
+            response.data["error"]["code"], "INVALID_STATUS_TRANSITION",
+        )
+
+        options = self.get(self.admin, "staff-status", pk=self.eze.pk).data["data"]
+        self.assertNotIn(
+            EmploymentStatus.ON_LEAVE,
+            [row["value"] for row in options["options"]],
+            "the drawer offers a move the service refuses",
+        )
+
+    def test_running_leave_is_what_reads_as_on_leave(self):
+        """The derived status, in both directions, with no transition involved.
+
+        Mr. Eze is employed throughout. The only thing that changes is whether
+        an approved absence covers today, and the row follows it - which is the
+        half a stored column could never do, because a leave ending fires
+        nothing.
+        """
+        from schools.vs_staff.models import LeaveRequest
+
+        row = self.get(self.admin, "staff-detail", pk=self.eze.pk).data["data"]
+        self.assertEqual(row["display_employment_status"], EmploymentStatus.ACTIVE)
+
+        today = dt.date.today()
+        leave = LeaveRequest.all_objects.create(
+            tenant=self.tenant, staff=self.eze, leave_type="STUDY",
+            start_date=today - dt.timedelta(days=2),
+            end_date=today + dt.timedelta(days=2), days=5, status="APPROVED",
+        )
+        row = self.get(self.admin, "staff-detail", pk=self.eze.pk).data["data"]
+        self.assertEqual(
+            row["display_employment_status"], EmploymentStatus.ON_LEAVE,
+        )
+        # The stored column never moved, which is the point: the history says
+        # nothing happened to his employment, because nothing did.
+        self.assertEqual(row["employment_status"], EmploymentStatus.ACTIVE)
+
+        # And back, on the day it ends, with nobody doing anything.
+        leave.end_date = today - dt.timedelta(days=1)
+        leave.save(update_fields=["end_date"])
+        row = self.get(self.admin, "staff-detail", pk=self.eze.pk).data["data"]
+        self.assertEqual(row["display_employment_status"], EmploymentStatus.ACTIVE)
+
+    def test_the_on_leave_facet_and_its_count_agree_with_the_rows(self):
+        """One expression behind the chip, the filter and the header figure.
+
+        They were three separate readings once and the bar disagreed with the
+        list it filtered to. Asserted together so a change to any one of them
+        has to move the other two.
+        """
+        from schools.vs_staff.models import LeaveRequest
+
+        today = dt.date.today()
+        LeaveRequest.all_objects.create(
+            tenant=self.tenant, staff=self.eze, leave_type="STUDY",
+            start_date=today, end_date=today + dt.timedelta(days=3),
+            days=4, status="APPROVED",
+        )
+
+        page = self.get(self.admin, "staff-list").data
+        counts = {
+            row["value"]: row["count"] for row in page["counts"]["by_employment_status"]
+        }
+        self.assertEqual(counts.get(EmploymentStatus.ON_LEAVE), 1)
+
+        away = self.get(
+            self.admin, "staff-list", {"employment_status": "ON_LEAVE"},
+        ).data
+        self.assertEqual([r["id"] for r in away["data"]], [self.eze.pk])
+
+        # And he is NOT among the Active ones, or the facets would overlap and
+        # the bar would add up to more people than the school has.
+        active = self.get(
+            self.admin, "staff-list", {"employment_status": "ACTIVE"},
+        ).data
+        self.assertNotIn(self.eze.pk, [r["id"] for r in active["data"]])
+
     def test_a_terminal_status_is_terminal(self):
         self.post(
             self.admin, "staff-status",
@@ -243,7 +333,8 @@ class TwoStatusesTests(StaffFixture):
     def test_a_transition_writes_an_audit_event(self):
         self.post(
             self.admin, "staff-status",
-            {"to_status": "ON_LEAVE"}, pk=self.eze.pk,
+            {"to_status": "SUSPENDED", "reason": "Pending an internal review."},
+            pk=self.eze.pk,
         )
         self.assertTrue(
             AuditEvent.objects.filter(

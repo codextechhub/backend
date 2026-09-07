@@ -110,6 +110,8 @@ class StaffViewMixin:
                 "user__invitation",
             )
         )
+        from ..services.leave import on_leave_expression
+
         session = self.active_session
         return queryset.annotate(
             teaching_load=Count(
@@ -117,6 +119,12 @@ class StaffViewMixin:
                 filter=Q(teaching_assignments__session=session) if session else Q(),
                 distinct=True,
             ),
+            # Whether their leave is running, carried on every row. Annotated
+            # here rather than computed per serializer, because the row, the
+            # ?employment_status= filter and the header's count all have to read
+            # the same answer - and the two that are querysets cannot read a
+            # Python set.
+            is_on_leave=on_leave_expression(),
         # Ordered explicitly rather than relying on Meta: a paginated queryset
         # with no ORDER BY returns whatever the database felt like, so page two
         # can repeat a row from page one and drop another entirely.

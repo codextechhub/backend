@@ -16,7 +16,7 @@ FRD M12 v2.1, FR-002.
 """
 from __future__ import annotations
 
-from django.db.models import Count, Q
+from django.db.models import Case, CharField, Count, F, Q, Value, When
 
 from ..constants import EmploymentStatus
 from .scoping import branch_dimension_applies
@@ -43,11 +43,23 @@ def counts(queryset, tenant):
     from vs_user.models import User
 
     countable = _countable(queryset)
+    # Grouped on what each row READS as, so the bar, the chips and the facet
+    # they filter to are the same population. An Active person whose leave is
+    # running is counted under On Leave and nowhere else.
     by_status = {
-        row["employment_status"]: row["n"]
-        for row in countable.values("employment_status").annotate(
-            n=Count("pk", distinct=True),
+        row["reads_as"]: row["n"]
+        for row in countable.annotate(
+            reads_as=Case(
+                When(
+                    employment_status=EmploymentStatus.ACTIVE, is_on_leave=True,
+                    then=Value(EmploymentStatus.ON_LEAVE),
+                ),
+                default=F("employment_status"),
+                output_field=CharField(),
+            ),
         )
+        .values("reads_as")
+        .annotate(n=Count("pk", distinct=True))
     }
     total = sum(by_status.values())
     on_roll = total - sum(

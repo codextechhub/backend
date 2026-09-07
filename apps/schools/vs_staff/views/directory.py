@@ -16,7 +16,7 @@ from rest_framework.views import APIView
 
 from core.response import success_response
 
-from ..constants import PERM_CREATE, PERM_UPDATE, PERM_VIEW
+from ..constants import PERM_CREATE, PERM_UPDATE, PERM_VIEW, EmploymentStatus
 from ..exceptions import FieldNotSelfEditable
 from ..serializers import (
     SELF_EDITABLE_FIELDS,
@@ -79,7 +79,19 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
                 | Q(middle_name__icontains=search),
             )
         if value := params.get("employment_status"):
-            queryset = queryset.filter(employment_status=value)
+            # Filtered on what the row READS as, not on what the column holds,
+            # or the facet would disagree with the chip beside every name.
+            # Asking for On Leave asks whose leave is running; asking for
+            # anything else excludes them, so the facets stay disjoint and the
+            # header's figures still sum to the total.
+            if value == EmploymentStatus.ON_LEAVE:
+                queryset = queryset.filter(
+                    employment_status=EmploymentStatus.ACTIVE, is_on_leave=True,
+                )
+            else:
+                queryset = queryset.filter(employment_status=value).exclude(
+                    employment_status=EmploymentStatus.ACTIVE, is_on_leave=True,
+                )
         # A SEPARATE filter, never merged with the first. They answer different
         # questions and a single control would tell a school its locked-out
         # teacher had been suspended.

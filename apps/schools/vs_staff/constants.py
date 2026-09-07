@@ -55,6 +55,11 @@ class EmploymentStatus(models.TextChoices):
 
     INVITED = "INVITED", "Invited"
     ACTIVE = "ACTIVE", "Active"
+    #: **Derived, never set.** Nobody moves a person here: a member of staff is
+    #: on leave exactly while an approved leave request covers today, and the
+    #: serializer computes that at read time. The value stays in the vocabulary
+    #: because history rows written before the rule changed still name it, and
+    #: because the directory filter and the header count still speak it.
     ON_LEAVE = "ON_LEAVE", "On Leave"
     SUSPENDED = "SUSPENDED", "Suspended"
     RESIGNED = "RESIGNED", "Resigned"
@@ -68,10 +73,20 @@ class EmploymentStatus(models.TextChoices):
 #: administrator doing it on their behalf would move the employment status while
 #: the account stayed PENDING, leaving somebody who reads Active on every screen
 #: and cannot sign in.
+#: ON_LEAVE is absent as a TARGET, everywhere. Going on leave is not a decision
+#: an administrator takes about somebody's employment; it is what an approved
+#: leave request means while its dates are running. Offering the move as well
+#: would be a second way in that nothing takes back out: approval is an event
+#: and code can hang off it, but a leave ENDING is not one, and there is no
+#: scheduler in this repository to notice. Somebody set On Leave by hand on 17
+#: August is still On Leave the following March.
+#:
+#: It survives as a SOURCE so a row written under the old rule can be moved off
+#: it. The migration that came with this change empties that case, so the escape
+#: is a belt rather than a path anybody walks.
 EMPLOYMENT_TRANSITIONS: dict[str, tuple[str, ...]] = {
     EmploymentStatus.INVITED: (),
     EmploymentStatus.ACTIVE: (
-        EmploymentStatus.ON_LEAVE,
         EmploymentStatus.SUSPENDED,
         EmploymentStatus.RESIGNED,
         EmploymentStatus.TERMINATED,
