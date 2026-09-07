@@ -102,6 +102,8 @@ class StaffListSerializer(serializers.ModelSerializer):
     display_employment_status = serializers.SerializerMethodField()
     display_employment_status_label = serializers.SerializerMethodField()
     on_leave_today = serializers.SerializerMethodField()
+    #: The last day of the leave that is running, or null when none is.
+    on_leave_until = serializers.SerializerMethodField()
     #: True exactly when the account is still waiting to be activated, which is
     #: the only state a resend applies to. The screen reads it to decide whether
     #: to offer the control rather than offering one that 422s.
@@ -121,7 +123,8 @@ class StaffListSerializer(serializers.ModelSerializer):
             "employment_type",
             "account_status", "account_flag", "roles", "branch_id",
             "branch_name", "posted_school_wide", "teaching_load",
-            "on_leave_today", "hire_date", "can_resend", "invited_at",
+            "on_leave_today", "on_leave_until", "hire_date", "can_resend",
+            "invited_at",
         ]
 
     def get_full_name(self, obj) -> str:
@@ -166,6 +169,17 @@ class StaffListSerializer(serializers.ModelSerializer):
         if annotated is not None:
             return bool(annotated)
         return obj.pk in (self.context.get("on_leave_ids") or set())
+
+    def get_on_leave_until(self, obj):
+        """When they are back, for the chip that says they are away.
+
+        Null unless the leave is actually running: an end date without the flag
+        beside it would let a screen say somebody was away until a date that had
+        already passed.
+        """
+        if not self.get_on_leave_today(obj):
+            return None
+        return getattr(obj, "on_leave_until", None)
 
     def get_display_employment_status(self, obj) -> str:
         """On Leave while it is running, and the stored value otherwise.

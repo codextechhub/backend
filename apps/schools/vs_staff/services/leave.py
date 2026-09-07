@@ -246,6 +246,35 @@ def on_leave_expression(*, today=None):
     )
 
 
+def on_leave_until_expression(*, today=None):
+    """When the leave that is running today ends, as a queryset expression.
+
+    The companion to :func:`on_leave_expression`, and the answer to the question
+    a reader asks the moment they see the chip: until when. Without it a screen
+    can say somebody is away and not when they are back, which sends a head
+    teacher looking for cover to the Leave tab to find out.
+
+    The LATEST end date where two approved absences overlap today, because that
+    is the day they actually return. Two overlapping approvals are unusual and
+    are not refused - the filing warns rather than blocking - so the case has to
+    resolve to something, and the earlier date would say somebody was back while
+    the second absence was still running.
+    """
+    from django.db.models import OuterRef, Subquery
+
+    from ..models import LeaveRequest
+
+    today = today or timezone.localdate()
+    return Subquery(
+        LeaveRequest.objects.filter(
+            staff=OuterRef("pk"), status=LeaveStatus.APPROVED,
+            start_date__lte=today, end_date__gte=today,
+        )
+        .order_by("-end_date")
+        .values("end_date")[:1],
+    )
+
+
 def on_leave_today(tenant, *, today=None):
     """Staff ids with approved leave covering today.
 

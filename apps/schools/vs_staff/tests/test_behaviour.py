@@ -205,6 +205,8 @@ class TwoStatusesTests(StaffFixture):
         self.assertEqual(
             row["display_employment_status"], EmploymentStatus.ON_LEAVE,
         )
+        # And when he is back, because that is the next thing anybody asks.
+        self.assertEqual(str(row["on_leave_until"]), str(leave.end_date))
         # The stored column never moved, which is the point: the history says
         # nothing happened to his employment, because nothing did.
         self.assertEqual(row["employment_status"], EmploymentStatus.ACTIVE)
@@ -214,6 +216,30 @@ class TwoStatusesTests(StaffFixture):
         leave.save(update_fields=["end_date"])
         row = self.get(self.admin, "staff-detail", pk=self.eze.pk).data["data"]
         self.assertEqual(row["display_employment_status"], EmploymentStatus.ACTIVE)
+        # The date goes with the flag. An end date left behind would let a
+        # screen say somebody was away until a day that had already passed.
+        self.assertIsNone(row["on_leave_until"])
+
+    def test_two_overlapping_absences_report_the_later_return(self):
+        """Filing an overlap warns rather than refusing, so the case exists.
+
+        The earlier date would say somebody was back while the second absence
+        was still running, which is the one answer that is definitely wrong.
+        """
+        from schools.vs_staff.models import LeaveRequest
+
+        today = dt.date.today()
+        for days in (3, 9):
+            LeaveRequest.all_objects.create(
+                tenant=self.tenant, staff=self.eze, leave_type="SICK",
+                start_date=today - dt.timedelta(days=1),
+                end_date=today + dt.timedelta(days=days),
+                days=days + 2, status="APPROVED",
+            )
+        row = self.get(self.admin, "staff-detail", pk=self.eze.pk).data["data"]
+        self.assertEqual(
+            str(row["on_leave_until"]), str(today + dt.timedelta(days=9)),
+        )
 
     def test_the_on_leave_facet_and_its_count_agree_with_the_rows(self):
         """One expression behind the chip, the filter and the header figure.

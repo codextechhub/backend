@@ -110,7 +110,10 @@ class StaffViewMixin:
                 "user__invitation",
             )
         )
-        from ..services.leave import on_leave_expression
+        from ..services.leave import (
+            on_leave_expression,
+            on_leave_until_expression,
+        )
 
         session = self.active_session
         return queryset.annotate(
@@ -125,6 +128,9 @@ class StaffViewMixin:
             # the same answer - and the two that are querysets cannot read a
             # Python set.
             is_on_leave=on_leave_expression(),
+            # And when it ends, which is the next thing anybody asks. Carried on
+            # the row so the chip can say it without a second call per person.
+            on_leave_until=on_leave_until_expression(),
         # Ordered explicitly rather than relying on Meta: a paginated queryset
         # with no ORDER BY returns whatever the database felt like, so page two
         # can repeat a row from page one and drop another entirely.
