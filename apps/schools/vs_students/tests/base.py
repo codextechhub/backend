@@ -45,8 +45,11 @@ STUDENT_KEYS = (
     "school.students.import",
     "school.students.export",
 )
+#: Promoting the whole roll, split out of ``students.manage`` so it can be sold
+#: a depth deeper than transferring one child between branches.
+PROMOTE_KEYS = ("school.students.promote",)
 CLASS_KEYS = ("academics.classes.assign", "academics.classes.view")
-ALL_KEYS = STUDENT_KEYS + CLASS_KEYS
+ALL_KEYS = STUDENT_KEYS + PROMOTE_KEYS + CLASS_KEYS
 
 
 class StudentsFixture(TestCase):

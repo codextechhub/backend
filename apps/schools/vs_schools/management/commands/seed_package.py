@@ -11,16 +11,20 @@ keeps working.
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from schools.vs_schools.models import PackagePlan, BillingCycle
+from schools.vs_schools.models import CapabilityDepth, PackagePlan, BillingCycle
 
 
 # ---------------------------------------------------------------------------
 # Seed data
 # Each entry maps to one PackagePlan row.
 #
-# Capacity limits (max_*):
-#   None  → unlimited (no ceiling enforced)
-#   int   → hard cap validated in SchoolPackageSetup.clean()
+# `default_depth` is how far into every module the tier reaches:
+#   CORE     → the whole product, at its shallow end
+#   PLUS     → adds bulk work and multi-step approvals
+#   ADVANCED → adds payroll, analytics and the reporting tail
+#   None     → not depth-limited, which is what Enterprise means
+#
+# No tier caps a school's size. Size is priced, not fenced.
 #
 # `code` is the slug used in API payloads (e.g. package_plan="standard")
 # ---------------------------------------------------------------------------
@@ -34,10 +38,7 @@ PLANS = [
             "Covers core student and teacher management with limited capacity."
         ),
         "billing_cycle": BillingCycle.YEARLY,
-        "max_students": 200,
-        "max_teachers": 20,
-        "max_admins": 3,
-        "max_branch": 1,
+        "default_depth": CapabilityDepth.CORE,
         "is_active": True,
     },
     {
@@ -48,10 +49,7 @@ PLANS = [
             "Includes expanded capacity and access to additional modules."
         ),
         "billing_cycle": BillingCycle.YEARLY,
-        "max_students": 800,
-        "max_teachers": 60,
-        "max_admins": 10,
-        "max_branch": 5,
+        "default_depth": CapabilityDepth.PLUS,
         "is_active": True,
     },
     {
@@ -62,10 +60,7 @@ PLANS = [
             "high capacity, all modules, and priority support."
         ),
         "billing_cycle": BillingCycle.YEARLY,
-        "max_students": 3000,
-        "max_teachers": 200,
-        "max_admins": 30,
-        "max_branch": 20,
+        "default_depth": CapabilityDepth.ADVANCED,
         "is_active": True,
     },
     {
@@ -76,10 +71,7 @@ PLANS = [
             "schools. No capacity ceilings. Custom SLA and support."
         ),
         "billing_cycle": BillingCycle.YEARLY,
-        "max_students": None,   # unlimited
-        "max_teachers": None,   # unlimited
-        "max_admins": None,     # unlimited
-        "max_branch": None,     # unlimited
+        "default_depth": None,
         "is_active": True,
     },
 ]
@@ -122,40 +114,23 @@ class Command(BaseCommand):
                     "name": plan_data["name"],
                     "description": plan_data["description"],
                     "billing_cycle": plan_data["billing_cycle"],
-                    "max_students": plan_data["max_students"],
-                    "max_teachers": plan_data["max_teachers"],
-                    "max_admins": plan_data["max_admins"],
-                    "max_branch": plan_data["max_branch"],
+                    "default_depth": plan_data["default_depth"],
                     "is_active": plan_data["is_active"],
                 },
             )
 
-            # Build capacity display string
-            def cap(val):
-                return str(val) if val is not None else "unlimited"
+            depth = obj.get_default_depth_display() or "unlimited"
 
             if created:
                 created_count += 1
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f"  [CREATED]  {code:12s} → {obj.name:12s} | "
-                        f"students={cap(obj.max_students):10s} "
-                        f"teachers={cap(obj.max_teachers):10s} "
-                        f"admins={cap(obj.max_admins):10s} "
-                        f"branches={cap(obj.max_branch)}"
-                    )
-                )
+                self.stdout.write(self.style.SUCCESS(
+                    f"  [CREATED]  {code:12s} → {obj.name:12s} | depth={depth}"
+                ))
             else:
                 updated_count += 1
-                self.stdout.write(
-                    self.style.WARNING(
-                        f"  [UPDATED]  {code:12s} → {obj.name:12s} | "
-                        f"students={cap(obj.max_students):10s} "
-                        f"teachers={cap(obj.max_teachers):10s} "
-                        f"admins={cap(obj.max_admins):10s} "
-                        f"branches={cap(obj.max_branch)}"
-                    )
-                )
+                self.stdout.write(self.style.WARNING(
+                    f"  [UPDATED]  {code:12s} → {obj.name:12s} | depth={depth}"
+                ))
 
         # Optional: deactivate plans not in seed list
         if options["deactivate_unlisted"]:

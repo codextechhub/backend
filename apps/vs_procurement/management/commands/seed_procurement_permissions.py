@@ -54,6 +54,11 @@ PROCUREMENT_RESOURCES = [
                                                    ("email_vendor", "SENSITIVE")]),
     ("quotation",      "vendor quotations",     [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL"), ("submit", "SENSITIVE"), ("award", "SENSITIVE")]),
     ("report",         "procurement reports",   [("view", "NORMAL")]),
+    # Split from ``report`` because the two are sold at different depths: a
+    # category or catalogue insight is the shallow end, while spend analysis,
+    # AP and GRIR aging and vendor performance are the analytical tail. One key
+    # served both and could only ever be banded at one of them.
+    ("analytics",      "procurement analytics", [("view", "NORMAL")]),
     ("requisition",    "purchase requisitions", [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL"), ("submit", "SENSITIVE")]),
     ("rfq",            "requests for quotation", [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL"), ("issue", "SENSITIVE")]),
     ("stock",          "stock items",           [("view", "NORMAL"), ("manage", "SENSITIVE"), ("issue", "SENSITIVE"), ("adjust", "SENSITIVE")]),

@@ -22,6 +22,15 @@ PERM_TIMETABLE_UPDATE = "academics.timetable.update"
 PERM_TIMETABLE_MANAGE = "academics.timetable.manage"
 PERM_TIMETABLE_PUBLISH = "academics.timetable.publish"
 
+#: Exams have their own keys rather than borrowing the timetable's. Sharing
+#: them meant exam scheduling and the weekly class timetable could not be sold
+#: at different depths: one band had to cover both.
+PERM_EXAM_VIEW = "academics.exam.view"
+PERM_EXAM_CREATE = "academics.exam.create"
+PERM_EXAM_UPDATE = "academics.exam.update"
+PERM_EXAM_MANAGE = "academics.exam.manage"
+PERM_EXAM_PUBLISH = "academics.exam.publish"
+
 
 # ── Warning codes ──────────────────────────────────────────────────────────
 # A warning is not a refusal. It travels in ``data.warnings`` as a list of

@@ -51,6 +51,7 @@ ACTIONS: list[tuple[str, str]] = [
     ("import",     "Bulk-upload records from a file."),
     ("transfer",   "Move a record between owners, branches, or contexts."),
     ("assign",     "Link a resource to another entity (student → class, user → route, etc.)."),
+    ("promote",    "Move a cohort up a level or year in one deliberate, reversible run."),
 
     # ── Specialised write operations ──────────────────────────────────────────
     ("record",     "Log a transaction or event entry (payments, sick-bay visits, attendance)."),

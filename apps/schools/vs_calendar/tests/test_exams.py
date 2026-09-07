@@ -228,7 +228,7 @@ class ExamPublishTests(_ExamBase):
 
         self.paper()
         TenantRolePermission.objects.filter(
-            role=self.role, permission__key="academics.timetable.publish",
+            role=self.role, permission__key="academics.exam.publish",
         ).update(granted=False)
         response = self.post(
             self.admin, "calendar-exam-publish", exam_id=self.exam.pk,
@@ -303,7 +303,7 @@ class ExamSecurityTests(_ExamBase):
 
         created = self.paper()
         TenantRolePermission.objects.filter(
-            role=self.role, permission__key="academics.timetable.manage",
+            role=self.role, permission__key="academics.exam.manage",
         ).update(granted=False)
         response = self.delete(
             self.admin, "calendar-exam-slot-detail",

@@ -85,7 +85,7 @@ def _paginated_report(request, rows, data, *, key, render, message):
 
 class APAgingView(_ProcBase):
     """Age posted open AP by vendor and due-date bucket."""
-    rbac_permission = "procurement.report.view"
+    rbac_permission = "procurement.analytics.view"
 
     def get(self, request):
         """Return entity AP aging with explicit minor-unit money values."""
@@ -131,7 +131,7 @@ class APReconciliationView(_ProcBase):
     real "a posting bypassed the subledger" alarm this endpoint exists to raise. It
     carries no document rows, only the two entity totals and their difference.
     """
-    rbac_permission = "procurement.report.view"
+    rbac_permission = "procurement.analytics.view"
 
     def get(self, request):
         """Return subledger, control, and difference in explicit money units."""
@@ -162,7 +162,7 @@ class GRIRBalanceView(_ProcBase):
     branch dimension to slice. The branch-aware view of the same position is the GR/IR
     aging report, which walks the receipts rather than the ledger.
     """
-    rbac_permission = "procurement.report.view"
+    rbac_permission = "procurement.analytics.view"
 
     def get(self, request):
         """Return the entity control balance as explicit kobo/naira data."""
@@ -184,7 +184,7 @@ class GRIRBalanceView(_ProcBase):
 
 class APCashRequirementsView(_ProcBase):
     """Forecast posted unpaid invoice balances by future due window."""
-    rbac_permission = "procurement.report.view"
+    rbac_permission = "procurement.analytics.view"
 
     def get(self, request):
         """Return an entity/as-of cash forecast with explicit money objects."""
@@ -218,7 +218,7 @@ class APCashRequirementsView(_ProcBase):
 
 class GRIRAgingView(_ProcBase):
     """Age posted receipt value not yet cleared by vendor invoices."""
-    rbac_permission = "procurement.report.view"
+    rbac_permission = "procurement.analytics.view"
 
     def get(self, request):
         """Return GRN-grain clearing evidence and GL reconciliation totals."""
@@ -264,7 +264,7 @@ class APAgingVendorDetailView(_ProcBase):
     Per-vendor AP drawer: aging buckets + the vendor's open POSTED bills. Report-gated
     so a report viewer can open it without holding ``vendor_invoice.view``.
     """
-    rbac_permission = "procurement.report.view"
+    rbac_permission = "procurement.analytics.view"
 
     def get(self, request):
         """Return one entity vendor's report-scoped open-bill evidence."""
@@ -306,7 +306,7 @@ class GRIRGrnDetailView(_ProcBase):
     Per-GRN GR/IR drawer: the reconciliation figures + linked PO and matched invoices.
     Report-gated so a report viewer can open it without holding ``goods_receipt.view``.
     """
-    rbac_permission = "procurement.report.view"
+    rbac_permission = "procurement.analytics.view"
 
     def get(self, request):
         """Return one entity GRN's clearing evidence or an indistinguishable 404."""
@@ -352,7 +352,7 @@ class GRIRPoLinesView(_ProcBase):
     (quantity + kobo value) with a derived Cleared / Received>Invoiced / Invoiced>Received
     status. Feeds the prototype's PO-line GR/IR table. Report-gated, entity-scoped.
     """
-    rbac_permission = "procurement.report.view"
+    rbac_permission = "procurement.analytics.view"
 
     def get(self, request):
         """Return line-grain quantity and kobo reconciliation for one entity."""
@@ -388,7 +388,7 @@ class GRIRPoLineDetailView(_ProcBase):
     receipts and vendor invoices. Report-gated so a report viewer can open it without
     holding purchase_order/goods_receipt view keys; a foreign PO-line id 404s.
     """
-    rbac_permission = "procurement.report.view"
+    rbac_permission = "procurement.analytics.view"
 
     def get(self, request):
         """Return one entity PO line's posted receipt and invoice evidence."""
@@ -448,7 +448,7 @@ class ProcurementDashboardView(_ProcBase):
     branch-bound viewer's spend, order pipeline, overdue bills and approval cards
     reconcile with the lists they can actually open.
     """
-    rbac_permission = "procurement.report.view"
+    rbac_permission = "procurement.analytics.view"
 
     def get(self, request):
         """Delegate KPI composition while preserving user-dependent visibility."""
@@ -465,7 +465,7 @@ class ProcurementDashboardView(_ProcBase):
 
 class SpendAnalysisView(_ProcBase):
     """Analyze posted invoice spend across isolated date/category filters."""
-    rbac_permission = "procurement.report.view"
+    rbac_permission = "procurement.analytics.view"
 
     def get(self, request):
         """Apply one filter set consistently to vendor, category, period, and totals."""
@@ -539,7 +539,7 @@ class SpendAnalysisView(_ProcBase):
 
 class VendorPerformanceView(_ProcBase):
     """Compare computed fulfilment/payment evidence with recorded assessments."""
-    rbac_permission = "procurement.report.view"
+    rbac_permission = "procurement.analytics.view"
 
     def get(self, request):
         """Return entity vendor metrics for one isolated date window."""
@@ -594,7 +594,7 @@ class VendorPerformanceView(_ProcBase):
 
 class ProcurementCycleTimeView(_ProcBase):
     """Measure evidence-backed elapsed days between procurement lifecycle stages."""
-    rbac_permission = "procurement.report.view"
+    rbac_permission = "procurement.analytics.view"
 
     def get(self, request):
         """Return per-stage and end-to-end samples for one entity/date window."""

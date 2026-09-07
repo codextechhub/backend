@@ -254,7 +254,11 @@ class CapabilityEvaluationTests(TestCase):
         )
         CapabilityDependency.objects.create(capability=feature, requires=self.finance)
 
-        with self.assertNumQueries(4):
+        # Five: the catalogue, its dependency edges, entitlements, overrides
+        # and depth uplifts. The number is asserted because each one is a
+        # single query for the whole catalogue, and the failure this guards
+        # against is one of them quietly becoming a query per capability.
+        with self.assertNumQueries(5):
             result = bulk_effective_capabilities(tenant=self.tenant, branch=self.branch)
 
         states = {item["key"]: item["enabled"] for item in result}

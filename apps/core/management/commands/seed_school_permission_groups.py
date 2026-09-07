@@ -390,18 +390,21 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
     ),
     (
         "Student Bulk Data",
-        # Deliberately its own bundle rather than two more keys on Student
-        # Records. Loading a roll from a spreadsheet and taking one out of the
-        # building are the two operations in this module that act on every
-        # child at once, and a school that wants a registrar to enrol students
-        # one at a time does not thereby want them able to replace the whole
-        # roll or export it. SCHOOL_WIDE for the same reason: neither act is
-        # meaningfully narrowed to a branch.
+        # Deliberately its own bundle rather than more keys on Student
+        # Records. Loading a roll from a spreadsheet, taking one out of the
+        # building, and moving every child up a year are the operations in this
+        # module that act on every child at once, and a school that wants a
+        # registrar to enrol students one at a time does not thereby want them
+        # able to replace the whole roll, export it, or promote it.
+        # SCHOOL_WIDE for the same reason: none of the three is meaningfully
+        # narrowed to a branch.
         SCHOOL_WIDE,
-        "Load students in bulk from a spreadsheet, and export the roll.",
+        "Load students in bulk from a spreadsheet, export the roll, and run "
+        "promotions at the end of a year.",
         (
             "school.students.import",
             "school.students.export",
+            "school.students.promote",
         ),
     ),
     (
@@ -414,6 +417,16 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
             "school.teachers.update",
             "school.teachers.manage",
             "school.teachers.assign",
+        ),
+    ),
+    (
+        "Staff Qualifications & Documents",
+        BRANCH_SCOPABLE,
+        "Read and maintain a member of staff's certificates, qualifications "
+        "and uploaded documents.",
+        (
+            "school.staff_records.view",
+            "school.staff_records.update",
         ),
     ),
     (
@@ -483,14 +496,30 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
     (
         "Timetables & Rooms",
         BRANCH_SCOPABLE,
-        "Build the bell schedule, class timetables and exam schedules, and keep "
-        "the school's rooms. A branch keeps its own periods and rooms.",
+        "Build the bell schedule and class timetables, and keep the school's "
+        "rooms. A branch keeps its own periods and rooms.",
         (
             "academics.timetable.view",
             "academics.timetable.create",
             "academics.timetable.update",
             "academics.timetable.manage",
             "academics.timetable.publish",
+        ),
+    ),
+    (
+        # Its own bundle because exams carry their own keys. They used to share
+        # the timetable's, and a school that wants somebody to build the weekly
+        # timetable does not thereby want them setting the exam schedule.
+        "Exams",
+        BRANCH_SCOPABLE,
+        "Set exam schedules and their sittings, and publish them. A branch "
+        "keeps its own exam timetable.",
+        (
+            "academics.exam.view",
+            "academics.exam.create",
+            "academics.exam.update",
+            "academics.exam.manage",
+            "academics.exam.publish",
         ),
     ),
     (

@@ -93,6 +93,10 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         no new action was invented - a key whose action is not in the canonical
         list cannot be created at all.
 
+        77 = 69, plus the eight that came with splitting four keys that each
+        gated two depths: five for ``academics.exam``, two for
+        ``school.staff_records``, and ``school.students.promote``.
+
         69 = 64, plus five. Four are M12's: ``school.teachers.assign``, which
         decides who teaches what and who owns a class's marks, and the three
         ``school.leave`` keys, which are three rather than two because applying
@@ -110,7 +114,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         _run_school_seed()
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            69,
+            77,
         )
 
     def test_impersonation_keys_are_critical_and_restricted(self):
@@ -172,12 +176,13 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
     def test_school_admin_gets_all_keys(self):
         """A school admin holds every key in both modules.
 
-        69 = 64, plus M12's four and the structure importer's one. The 64 was
+        77 = 69, plus the eight from the key splits. 69 = 64, plus M12's four
+        and the structure importer's one. The 64 was
         62 plus M11's two: school.students.import and .export. The 62 was 57
         plus M14's five: academics.timetable view, create, update, manage and
         publish.
         """
-        self.assertEqual(len(self._defaults("school_admin")), 69)
+        self.assertEqual(len(self._defaults("school_admin")), 77)
 
     def test_only_school_admin_gets_impersonation_by_default(self):
         # The most powerful school keys must never be a branch_admin/teacher
@@ -234,13 +239,17 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         .manage stay with the school admin, and so does subject.manage, which
         deletes.
 
+        42 = 36, plus six of the eight split keys: a branch admin sets exam
+        schedules (view, create, update, publish) and reads and maintains staff
+        records, but does not delete an exam or promote the roll.
+
         36 = 32, plus M12's four. A branch admin holds every one of them: who
         teaches which class at their branch is a branch decision, and so is
         recording that somebody there is away. Only the employment lifecycle
         stays with the school admin, because terminating somebody is not.
         """
         branch_admin = self._defaults("branch_admin")
-        self.assertEqual(len(branch_admin), 36)
+        self.assertEqual(len(branch_admin), 42)
         self.assertIn("school.teachers.assign", branch_admin)
         self.assertIn("school.leave.manage", branch_admin)
         self.assertNotIn("school.teachers.manage", branch_admin)
@@ -254,7 +263,10 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         self.assertNotIn("school.profile.update", self._defaults("branch_admin"))
 
     def test_teacher_default_count(self):
-        """11 = 10, plus the one key M12 gives a teacher: school.leave.apply.
+        """12 = 11, plus academics.exam.view: a teacher reads the exam
+        schedule they are invigilating without being able to change it.
+
+        11 = 10, plus the one key M12 gives a teacher: school.leave.apply.
 
         The 10 was 9, plus the one read key M14 gives a teacher.
 
@@ -271,7 +283,7 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         this module took.
         """
         keys = self._defaults("teacher")
-        self.assertEqual(len(keys), 11)
+        self.assertEqual(len(keys), 12)
         # M12 gives a teacher exactly one key: applying for their own leave.
         # Reading a colleague's is not something every colleague may do, so
         # school.leave.view stops at the two admin roles.
@@ -325,8 +337,8 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        # school_admin defaults are all 69 keys.
-        self.assertEqual(len(keys), 69)
+        # school_admin defaults are all 77 keys.
+        self.assertEqual(len(keys), 77)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
         self.assertIn("school.roles.approve", keys)
@@ -378,7 +390,7 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=teacher_role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        self.assertEqual(len(keys), 11)
+        self.assertEqual(len(keys), 12)
         self.assertIn("school.students.view", keys)
         self.assertNotIn("school.students.create", keys)
 

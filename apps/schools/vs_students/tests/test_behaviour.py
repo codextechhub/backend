@@ -1022,13 +1022,19 @@ class PromotionTests(StudentsFixture):
             run.data["data"]["promoted"],
         )
 
-    def test_running_needs_the_assign_key_as_well_as_manage(self):
+    def test_running_needs_the_assign_key_as_well_as_promote(self):
+        """Previewing takes one key; running takes the placement key too.
+
+        ``promote`` rather than ``manage``: promoting the whole roll was split
+        away from the key that transfers one child between branches, so the two
+        can be sold at different depths.
+        """
         from vs_rbac.tests.helpers import (
             make_assignment, make_role, make_role_permission, make_school_admin,
         )
 
         role = make_role(self.school, name="Head", key="head")
-        for key in ("school.students.view", "school.students.manage"):
+        for key in ("school.students.view", "school.students.promote"):
             make_role_permission(role, self.permissions[key])
         head = make_school_admin(
             None, email="head2@brightfield.test", tenant=self.tenant,

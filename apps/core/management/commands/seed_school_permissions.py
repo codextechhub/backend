@@ -68,6 +68,10 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     # damage a school's records and is reversible only through the engine's
     # rollback. Export reaches branch_admin because a branch admin exports
     # their own branch's roll and cannot reach anybody else's.
+    # Promotion is a bulk act on the whole roll, and it used to ride on
+    # ``students.manage``, the same key that transfers one child between
+    # branches. One key could not sell the two at different depths.
+    ("school", "students", "promote",          _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("school", "students", "import",           _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("school", "students", "export",           _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
 
@@ -79,6 +83,12 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     # SENSITIVE because it decides who owns a class's marks, and branch_admin
     # holds it because staffing a branch's classes is a branch decision.
     ("school", "teachers", "assign",           _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+
+    # A member of staff's qualifications, certificates and documents. Split
+    # from the register because reading a directory and reading somebody's
+    # certificates are sold at different depths, and one key served both.
+    ("school", "staff_records", "view",        _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("school", "staff_records", "update",      _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
 
     # Leave is three keys rather than two because applying and deciding are
     # different acts. Every member of staff applies for their own; reading a
@@ -186,6 +196,16 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     # withholds it in a role template of its own, which is configuration.
     ("academics", "timetable", "publish",      _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
 
+    # Exams carry their own keys. They used to ride on the timetable's, which
+    # meant exam scheduling and the weekly class timetable could never be sold
+    # at different depths: banding the timetable key one way gave exams away,
+    # and the other way took the class timetable with it.
+    ("academics", "exam", "view",              _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
+    ("academics", "exam", "create",            _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("academics", "exam", "update",            _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+    ("academics", "exam", "manage",            _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("academics", "exam", "publish",           _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+
     ("academics", "subject", "view",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
     ("academics", "subject", "create",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
     ("academics", "subject", "update",         _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
@@ -207,6 +227,7 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     # Permission.key is a primary key that four tables point at and school-fe
     # checks by name; the description is a sentence.
     ("school", "teachers"):       "Staff records",
+    ("school", "staff_records"):  "Staff qualifications, certificates and documents",
     ("school", "leave"):          "Staff leave requests",
     ("school", "administrators"): "School administrator accounts",
     ("school", "fees"):           "Fees and billing",
@@ -220,7 +241,8 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("academics", "classes"):     "Classes",
     ("academics", "structure"):   "Academic structure - departments, programs and levels",
     ("academics", "subject"):     "Subjects and the levels they are offered at",
-    ("academics", "timetable"):   "Rooms, the bell schedule, class timetables and exams",
+    ("academics", "timetable"):   "Rooms, the bell schedule and class timetables",
+    ("academics", "exam"):        "Exams, exam slots and their publication",
 }
 
 

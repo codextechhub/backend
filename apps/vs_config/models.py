@@ -269,16 +269,33 @@ class Capability(models.Model):
     or a smaller FEATURE (bulk_import, email_alerts) - the ``kind`` field
     is the only distinction. Whether a capability is ON for a given
     school/branch is never stored here; it is computed by
-    ``services.capabilities.effective_capability`` from three inputs:
+    ``services.capabilities.effective_capability`` from four inputs:
 
         1. entitlement - is the school allowed to have it?
            (CapabilityEntitlement; skipped when ``requires_entitlement``
            is False)
-        2. dependencies - are all prerequisite capabilities effective?
+        2. depth - for a band, does the tenant's grant reach this far into
+           the module? (``services.depth.resolved_depth``)
+        3. dependencies - are all prerequisite capabilities effective?
            (CapabilityDependency)
-        3. override - has an operator toggled it at branch, school, or
+        4. override - has an operator toggled it at branch, school, or
            platform scope? (CapabilityOverride; most specific scope wins,
            falling back to ``default_enabled``)
+
+    Modules and bands
+        The catalogue is two levels deep and never more. A row with no
+        ``parent`` is a module, the thing a school is sold. A row with a
+        ``parent`` is a band of that module: the same product area, cut at
+        Core, Plus or Advanced. Every school holds every module it is
+        entitled to at some depth, so a band is never bought separately -
+        it becomes reachable when the tenant's depth for its parent reaches
+        it.
+
+        Which band a piece of functionality sits in is therefore one field
+        on one row. Moving online fee payment from Plus to Core is an edit
+        here, audited like any other configuration change, and every school
+        sees it on its next request. Nothing is materialized per tenant, so
+        nothing has to be rewritten when a line moves.
 
     Application code asks ``vs_config.conf.is_capability_enabled(key, ...)``;
     the frontend reads GET /v1/config/effective-capabilities/.
@@ -291,6 +308,13 @@ class Capability(models.Model):
         label: Human-readable name shown to administrators.
         description: Functional description of what the capability unlocks.
         kind: MODULE (sellable product area) or FEATURE (smaller toggle).
+        parent: The module this row is a band of, or null when the row is
+            itself a module. Two levels only; a band cannot have bands.
+        depth: CORE, PLUS or ADVANCED. Set on a band, null on a module.
+            Stored as an integer so "at most Plus" is a comparison rather
+            than a lookup table, and spaced by ten so a fourth level can be
+            inserted between two existing ones without renumbering rows
+            that entitlements already point at.
         requires_entitlement: When True (typical for modules), the school
             must hold a GRANTED entitlement before the capability can ever
             be effective. When False (typical for features), only
@@ -312,11 +336,22 @@ class Capability(models.Model):
         MODULE = "MODULE", "Module"
         FEATURE = "FEATURE", "Feature"
 
+    class Depth(models.IntegerChoices):
+        CORE = 10, "Core"
+        PLUS = 20, "Plus"
+        ADVANCED = 30, "Advanced"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     key = models.SlugField(max_length=100, unique=True)
     label = models.CharField(max_length=160)
     description = models.TextField(blank=True)
     kind = models.CharField(max_length=12, choices=Kind.choices, default=Kind.MODULE)
+    parent = models.ForeignKey(
+        "self", on_delete=models.CASCADE, null=True, blank=True, related_name="bands",
+    )
+    depth = models.PositiveSmallIntegerField(
+        choices=Depth.choices, null=True, blank=True, db_index=True,
+    )
     requires_entitlement = models.BooleanField(default=True)
     default_enabled = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True, db_index=True)
@@ -326,9 +361,56 @@ class Capability(models.Model):
 
     class Meta:
         ordering = ["kind", "label"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(parent__isnull=True, depth__isnull=True)
+                    | models.Q(parent__isnull=False, depth__isnull=False)
+                ),
+                name="capability_band_has_parent_and_depth",
+            ),
+        ]
 
     def __str__(self):
         return self.label
+
+    def clean(self):
+        """Keep the catalogue two levels deep, with depth only on bands.
+
+        A module carries no depth because it is not a slice of anything; a
+        band carries one because that is the whole of what it is. The
+        database enforces the pair through a check constraint, and this
+        adds the part SQL cannot see: that the parent is itself a module.
+        A third level would make ``resolved_depth`` ambiguous, since a band
+        would have two ancestors to compare against.
+        """
+        super().clean()
+        if self.parent_id:
+            if self.parent_id == self.pk:
+                raise ValidationError({"parent": "A capability cannot be a band of itself."})
+            if self.parent.parent_id:
+                raise ValidationError({
+                    "parent": "A band cannot be a band of another band.",
+                })
+            if self.depth is None:
+                raise ValidationError({"depth": "A band must name its depth."})
+        elif self.depth is not None:
+            raise ValidationError({
+                "depth": "Only a band carries a depth; a module is the whole of itself.",
+            })
+        if self.pk and self.parent_id and self.bands.exists():
+            raise ValidationError({
+                "parent": "A module that already has bands cannot become a band.",
+            })
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+    @property
+    def module(self):
+        """The module this row belongs to, which for a module is itself."""
+        return self.parent if self.parent_id else self
 
 
 class CapabilityDependency(models.Model):
@@ -430,6 +512,11 @@ class CapabilityEntitlement(models.Model):
             capability per scope and writes are upserts.
         state: GRANTED or DENIED. An explicit DENIED row at tenant level
             overrides a platform-wide GRANTED.
+        depth: How far into the module the grant reaches - the tier the
+            tenant pays for, written here by whoever owns the commercial
+            relationship. NULL means the grant is not depth-limited and the
+            tenant reaches every band, which is what every grant written
+            before depth existed means and why NULL cannot be read as Core.
         source: Where the decision came from - PACKAGE (school package
             setup), PLATFORM, MANUAL, or IMPORT (legacy migration).
         starts_at: Optional activation time; the grant is inert before it.
@@ -467,6 +554,9 @@ class CapabilityEntitlement(models.Model):
     )
     scope_key = models.CharField(max_length=80, editable=False, db_index=True)
     state = models.CharField(max_length=12, choices=State.choices)
+    depth = models.PositiveSmallIntegerField(
+        choices=Capability.Depth.choices, null=True, blank=True,
+    )
     source = models.CharField(max_length=12, choices=Source.choices)
     starts_at = models.DateTimeField(null=True, blank=True)
     ends_at = models.DateTimeField(null=True, blank=True)
@@ -495,6 +585,102 @@ class CapabilityEntitlement(models.Model):
 
     def save(self, *args, **kwargs):
         self.scope_key = f"tenant:{self.tenant_id}" if self.tenant_id else "platform"
+        return super().save(*args, **kwargs)
+
+
+class CapabilityDepthGrant(models.Model):
+    """One tenant reaching deeper into one module than its entitlement says.
+
+    The deal, kept apart from the contract. A tenant's ordinary depth is the
+    one on its CapabilityEntitlement, written from whatever plan it pays for.
+    This row says "for this module, until this date, treat them as deeper",
+    and it exists as its own row precisely so that it can end.
+
+    Storing the uplift on the entitlement itself would be smaller and wrong.
+    The entitlement's ``ends_at`` ends the grant, not the uplift, so an
+    expired deal written there would take the whole module away instead of
+    dropping it back to the tier that was actually paid for. A separate row
+    simply stops resolving, and the module returns to its plan depth without
+    anybody editing anything.
+
+    Only ever an uplift: resolution takes the deeper of this row and the
+    entitlement, so a grant that has fallen behind the tenant's own tier
+    after an upgrade is inert rather than a demotion.
+
+    Fields:
+        id: Stable UUID primary key.
+        capability: The module the uplift applies to. Bands are refused -
+            depth is a property of a module, and naming a band here would
+            mean two rows disagreeing about the same slice.
+        tenant: The tenant it applies to. Never platform-wide: a deal is
+            with somebody.
+        depth: CORE, PLUS or ADVANCED, the depth to read the module at.
+        starts_at: Optional activation time; inert before it.
+        ends_at: Optional exclusive expiry; inert from that moment, which is
+            how the deal expires without a job to run.
+        source: Where the uplift came from, reusing the entitlement's own
+            vocabulary so the two read the same way in an audit trail.
+        reason: Why it was given. Deals get argued about later.
+        updated_by: User who most recently changed it (nullable, SET_NULL).
+        created_at / updated_at: Timestamps.
+
+    Managers:
+        ``objects`` is tenant-aware; ``all_objects`` is the unscoped escape
+        hatch the evaluation service reads through.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    capability = models.ForeignKey(
+        Capability, on_delete=models.CASCADE, related_name="depth_grants",
+    )
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.CASCADE,
+        related_name="capability_depth_grants",
+    )
+    depth = models.PositiveSmallIntegerField(choices=Capability.Depth.choices)
+    starts_at = models.DateTimeField(null=True, blank=True)
+    ends_at = models.DateTimeField(null=True, blank=True)
+    source = models.CharField(
+        max_length=12, choices=CapabilityEntitlement.Source.choices,
+        default=CapabilityEntitlement.Source.MANUAL,
+    )
+    reason = models.TextField(blank=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="capability_depth_grants_updated",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["capability", "tenant"], name="uniq_capability_depth_grant",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "ends_at"], name="config_depth_tenant_end_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.capability.key} @ {self.get_depth_display()}"
+
+    def clean(self):
+        super().clean()
+        if self.capability_id and self.capability.parent_id:
+            raise ValidationError({
+                "capability": "Depth applies to a module, not to one of its bands.",
+            })
+        if self.starts_at and self.ends_at and self.starts_at >= self.ends_at:
+            raise ValidationError({"ends_at": "Expiry must be after activation."})
+
+    def save(self, *args, **kwargs):
+        self.clean()
         return super().save(*args, **kwargs)
 
 

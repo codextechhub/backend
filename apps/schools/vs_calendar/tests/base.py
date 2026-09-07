@@ -47,7 +47,18 @@ TIMETABLE_KEYS = (
     "academics.timetable.manage",
     "academics.timetable.publish",
 )
-ALL_KEYS = CALENDAR_KEYS + TIMETABLE_KEYS
+#: Exams hold their own keys. They used to ride on the timetable's, which meant
+#: exam scheduling could not be sold a depth deeper than the weekly class
+#: timetable. Granting both here mirrors the migration that carried every
+#: existing timetable grant onto the new exam key.
+EXAM_KEYS = (
+    "academics.exam.view",
+    "academics.exam.create",
+    "academics.exam.update",
+    "academics.exam.manage",
+    "academics.exam.publish",
+)
+ALL_KEYS = CALENDAR_KEYS + TIMETABLE_KEYS + EXAM_KEYS
 
 
 class _Base(TestCase):

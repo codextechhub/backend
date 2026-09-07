@@ -66,7 +66,7 @@ class VendorAssessmentListCreateView(_ProcBase):
         """Separate scorecard creation from report-level read access."""
         # Create is gated on the sensitive assessment key; listing rides report.view.
         return "procurement.vendor_assessment.create" if self.request.method == "POST" \
-            else "procurement.report.view"
+            else "procurement.analytics.view"
 
     def get(self, request):
         """List immutable entity scorecards, optionally for one resolved vendor."""

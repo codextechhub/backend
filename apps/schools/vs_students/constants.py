@@ -20,6 +20,11 @@ PERM_VIEW_SENSITIVE = "school.students.view_sensitive"
 PERM_IMPORT = "school.students.import"
 PERM_EXPORT = "school.students.export"
 
+#: Promotion is a bulk act on the whole roll. It used to ride on PERM_MANAGE,
+#: the key that also transfers one child between branches, so the two could
+#: never be sold at different depths.
+PERM_PROMOTE = "school.students.promote"
+
 PERM_CLASS_ASSIGN = "academics.classes.assign"
 PERM_CLASS_VIEW = "academics.classes.view"
 

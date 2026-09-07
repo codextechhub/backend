@@ -722,7 +722,10 @@ class VendorDetailView(_ProcBase):
 class VendorInsightsView(_ProcBase):
     """Authoritative spend and operational performance for one entity-scoped vendor."""
 
-    rbac_permission = "procurement.report.view"
+    # ``analytics`` rather than ``report``: per-vendor spend and performance is
+    # the analytical tail, while the category and list insights beside it are
+    # the shallow end. One key could not be banded for both.
+    rbac_permission = "procurement.analytics.view"
 
     def get(self, request, pk):
         """Return report-derived YTD spend, fulfilment, and payment metrics."""

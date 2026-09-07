@@ -308,6 +308,33 @@ class Permission(TimeStampedModel):
     is_restricted = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
 
+    #: The product capability a school must reach before this key does
+    #: anything, or null when the key is core and every school has it.
+    #:
+    #: Two vocabularies meet here, and they are not the same list. A
+    #: permission module is a namespace a key is filed under; a capability is
+    #: a thing a school is sold. They were joined by a hardcoded map, which
+    #: could only answer at module and resource level - so it could say
+    #: "Finance", never "the bulk generation inside Finance". Depth is sold at
+    #: the second granularity, so the join moved onto the row.
+    #:
+    #: Null is the safe direction and deliberate: an unclassified key stays
+    #: available to everybody. The opposite default would hide working routes
+    #: from paying schools the day a new module ships.
+    #:
+    #: Some keys must never be filled in. ``school.students.view_sensitive``
+    #: guards a child's blood group and allergies; who inside a school may
+    #: read that is a role decision, and selling it by tier would be
+    #: indefensible.
+    capability = models.ForeignKey(
+        "vs_config.Capability",
+        on_delete=models.SET_NULL,
+        db_constraint=False,
+        null=True,
+        blank=True,
+        related_name="permissions",
+    )
+
     class Meta:
         indexes = [
             models.Index(fields=["module", "action"]),

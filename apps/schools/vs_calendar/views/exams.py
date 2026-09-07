@@ -31,11 +31,11 @@ from vs_audit.models import AuditActionType, AuditModuleKey
 from vs_audit.services import emit_audit_event
 
 from ..constants import (
-    PERM_TIMETABLE_CREATE,
-    PERM_TIMETABLE_MANAGE,
-    PERM_TIMETABLE_PUBLISH,
-    PERM_TIMETABLE_UPDATE,
-    PERM_TIMETABLE_VIEW,
+    PERM_EXAM_CREATE,
+    PERM_EXAM_MANAGE,
+    PERM_EXAM_PUBLISH,
+    PERM_EXAM_UPDATE,
+    PERM_EXAM_VIEW,
 )
 from ..exceptions import (
     CalendarError,
@@ -73,8 +73,8 @@ class ExamListCreateView(CalendarViewMixin, generics.ListCreateAPIView):
 
     def get_permissions(self):
         self.rbac_permission = (
-            PERM_TIMETABLE_CREATE if self.request.method == "POST"
-            else PERM_TIMETABLE_VIEW
+            PERM_EXAM_CREATE if self.request.method == "POST"
+            else PERM_EXAM_VIEW
         )
         return super().get_permissions()
 
@@ -179,10 +179,10 @@ class ExamDetailView(CalendarViewMixin, generics.RetrieveUpdateDestroyAPIView):
 
     def get_permissions(self):
         self.rbac_permission = {
-            "PATCH": PERM_TIMETABLE_UPDATE,
-            "PUT": PERM_TIMETABLE_UPDATE,
-            "DELETE": PERM_TIMETABLE_MANAGE,
-        }.get(self.request.method, PERM_TIMETABLE_VIEW)
+            "PATCH": PERM_EXAM_UPDATE,
+            "PUT": PERM_EXAM_UPDATE,
+            "DELETE": PERM_EXAM_MANAGE,
+        }.get(self.request.method, PERM_EXAM_VIEW)
         return super().get_permissions()
 
     def get_queryset(self):
@@ -309,8 +309,8 @@ class ExamSlotListCreateView(_ExamScoped, generics.ListCreateAPIView):
 
     def get_permissions(self):
         self.rbac_permission = (
-            PERM_TIMETABLE_CREATE if self.request.method == "POST"
-            else PERM_TIMETABLE_VIEW
+            PERM_EXAM_CREATE if self.request.method == "POST"
+            else PERM_EXAM_VIEW
         )
         return super().get_permissions()
 
@@ -389,7 +389,7 @@ class ExamSlotPreviewView(_ExamScoped, APIView):
     docstring-name: Exam paper preview
     """
 
-    rbac_permission = PERM_TIMETABLE_CREATE
+    rbac_permission = PERM_EXAM_CREATE
     pagination_class = None
 
     def post(self, request, exam_id):
@@ -450,10 +450,10 @@ class ExamSlotDetailView(_ExamScoped, generics.RetrieveUpdateDestroyAPIView):
 
     def get_permissions(self):
         self.rbac_permission = {
-            "PATCH": PERM_TIMETABLE_UPDATE,
-            "PUT": PERM_TIMETABLE_UPDATE,
-            "DELETE": PERM_TIMETABLE_MANAGE,
-        }.get(self.request.method, PERM_TIMETABLE_VIEW)
+            "PATCH": PERM_EXAM_UPDATE,
+            "PUT": PERM_EXAM_UPDATE,
+            "DELETE": PERM_EXAM_MANAGE,
+        }.get(self.request.method, PERM_EXAM_VIEW)
         return super().get_permissions()
 
     def get_queryset(self):
@@ -537,7 +537,7 @@ class ExamPublishView(_ExamScoped, APIView):
     docstring-name: Publish an exam timetable
     """
 
-    rbac_permission = PERM_TIMETABLE_PUBLISH
+    rbac_permission = PERM_EXAM_PUBLISH
     pagination_class = None
 
     def post(self, request, exam_id):

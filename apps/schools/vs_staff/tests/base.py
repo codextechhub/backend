@@ -50,6 +50,10 @@ STAFF_KEYS = (
     "school.teachers.manage",
     "school.teachers.assign",
 )
+#: Qualifications, certificates and documents. Split out of the register keys
+#: so the two can be sold at different depths; granted here alongside them, the
+#: way the migration carried every existing register grant across.
+RECORD_KEYS = ("school.staff_records.view", "school.staff_records.update")
 LEAVE_KEYS = ("school.leave.apply", "school.leave.view", "school.leave.manage")
 ACCOUNT_KEYS = (
     "school.administrators.create",
@@ -70,7 +74,7 @@ OTHER_KEYS = (
     "school.user_overrides.view",
     "academics.classes.view",
 )
-ALL_KEYS = STAFF_KEYS + LEAVE_KEYS + ACCOUNT_KEYS + OTHER_KEYS
+ALL_KEYS = STAFF_KEYS + RECORD_KEYS + LEAVE_KEYS + ACCOUNT_KEYS + OTHER_KEYS
 
 #: What a teacher actually holds, per the seeder's own defaults. Kept in step
 #: with ``seed_school_permissions`` on purpose: a test that granted a teacher

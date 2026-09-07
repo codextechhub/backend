@@ -27,7 +27,7 @@ where before the ladder decided by naming a role nobody held.
 Not reversible. Restoring a stage means choosing its approver, and choosing is
 exactly what this hands back to the school.
 """
-from django.db import migrations
+from django.db import migrations, models
 
 APPROVER_ROLE_KEYS = [
     "finance-adjustment-approver",
@@ -51,12 +51,26 @@ def hand_it_over(apps, schema_editor):
     Assignment = apps.get_model("vs_rbac", "TenantUserRoleAssignment")
 
     roles = Role.objects.filter(key__in=APPROVER_ROLE_KEYS, tenant__kind="SCHOOL")
+    # Primary keys rather than a queryset, wherever a filter crosses from one
+    # app's historical model to another's. ``WorkflowStage.approver_role``
+    # resolves to whichever historical TenantRoleTemplate the *stage's*
+    # migration state carries, which is not always the one ``get_model`` hands
+    # back here, and Django refuses to compare the two ("Cannot use QuerySet
+    # for TenantRoleTemplate"). It only surfaces when the graph is rewound past
+    # this point, so the suite is where it shows up rather than a deploy. Ids
+    # mean the same thing in every state.
+    role_ids = list(roles.values_list("pk", flat=True))
+
     # Both the anchor and the key are matched, because a stage can carry one
     # without the other.
-    stages = Stage.objects.filter(approver_role__in=roles) | Stage.objects.filter(
-        approver_role_key__in=APPROVER_ROLE_KEYS
+    stage_ids = list(
+        Stage.objects.filter(
+            models.Q(approver_role_id__in=role_ids)
+            | models.Q(approver_role_key__in=APPROVER_ROLE_KEYS)
+        )
+        .values_list("pk", flat=True)
+        .distinct()
     )
-    stages = stages.distinct()
 
     # A stage a real document has run through is not configuration any more, it
     # is evidence: it records how that document came to be approved and by
@@ -67,17 +81,20 @@ def hand_it_over(apps, schema_editor):
     # stages anchor stay with it - a handful, against the many that no document
     # ever touched.
     used = set(
-        StageInstance.objects.filter(stage__in=stages).values_list("stage_id", flat=True)
+        StageInstance.objects.filter(stage_id__in=stage_ids)
+        .values_list("stage_id", flat=True)
     ) | set(
-        Instance.objects.filter(current_stage__in=stages)
+        Instance.objects.filter(current_stage_id__in=stage_ids)
         .values_list("current_stage_id", flat=True)
     )
-    Stage.objects.filter(pk__in=stages.exclude(pk__in=used).values("pk")).delete()
+    Stage.objects.filter(
+        pk__in=[pk for pk in stage_ids if pk not in used]
+    ).delete()
 
     # Whatever is left anchored is anchored by that history. PROTECT decides
     # which roles survive, rather than a list here that would go stale.
     still_anchored = set(
-        Stage.objects.filter(approver_role__in=roles)
+        Stage.objects.filter(approver_role_id__in=role_ids)
         .values_list("approver_role_id", flat=True)
     )
     # And a role somebody actually holds is somebody's access, whatever CodeX
@@ -86,9 +103,12 @@ def hand_it_over(apps, schema_editor):
     # for the school that assigned it. ``TenantUserRoleAssignment.role`` is
     # PROTECT for that reason and is left to make the call.
     held = set(
-        Assignment.objects.filter(role__in=roles).values_list("role_id", flat=True)
+        Assignment.objects.filter(role_id__in=role_ids).values_list("role_id", flat=True)
     )
-    roles.exclude(pk__in=still_anchored | held).delete()
+    keep = still_anchored | held
+    Role.objects.filter(
+        pk__in=[pk for pk in role_ids if pk not in keep]
+    ).delete()
 
 
 class Migration(migrations.Migration):

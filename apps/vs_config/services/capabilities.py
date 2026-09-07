@@ -6,10 +6,12 @@ from rest_framework.exceptions import ValidationError
 from ..exceptions import CapabilityDependencyError, CapabilityNotEntitled
 from ..models import (
     Capability,
+    CapabilityDepthGrant,
     CapabilityEntitlement,
     CapabilityOverride,
 )
 from .audit import record_configuration_event
+from .depth import UNLIMITED, depth_allows, resolved_depth
 from .scopes import normalize_scope
 
 
@@ -60,10 +62,27 @@ def entitlement_resolution(capability, tenant):
     return row, True, "active"
 
 
-# Resolve the final feature gate after entitlement, dependencies, and scoped overrides.
+# Resolve the final feature gate after entitlement, depth, dependencies, and scoped overrides.
 def effective_capability(capability, *, tenant=None, branch=None, _seen=None):
+    """Whether one capability answers for this scope.
+
+    A band is gated twice over. It has no entitlement of its own, so it
+    inherits its module's, and it is additionally out of reach unless the
+    tenant's resolved depth for that module reaches it. Both questions are
+    asked against the module, which is why a band with no parent module
+    effective for the scope is never evaluated further.
+    """
     tenant, branch = normalize_scope(tenant=tenant, branch=branch)
-    if not capability.is_active or not _active_entitlement(capability, tenant):
+    if not capability.is_active:
+        return False
+    if capability.parent_id:
+        # The band inherits the module's entitlement rather than holding one,
+        # so the module is evaluated in full before the depth comparison.
+        if not effective_capability(capability.parent, tenant=tenant, branch=branch):
+            return False
+        if not depth_allows(capability.depth, resolved_depth(capability, tenant)):
+            return False
+    elif not _active_entitlement(capability, tenant):
         return False
     # Track dependency traversal so cyclic capability graphs fail loudly.
     seen = set(_seen or ())
@@ -92,9 +111,10 @@ def effective_capability(capability, *, tenant=None, branch=None, _seen=None):
         state = overrides.get(key)
         if state and state != CapabilityOverride.State.INHERIT:
             return state == CapabilityOverride.State.ENABLED
-    # No concrete override, and the entitlement gate has passed: being in the
-    # plan is what switches a gated capability on.
-    if capability.requires_entitlement:
+    # No concrete override, and the gates above have passed. A band is on:
+    # reaching it is the whole permission, and ``requires_entitlement`` says
+    # nothing about a row that holds no entitlement of its own.
+    if capability.parent_id or capability.requires_entitlement:
         return True
     return capability.default_enabled
 
@@ -102,8 +122,17 @@ def effective_capability(capability, *, tenant=None, branch=None, _seen=None):
 # Update the grant that allows a tenant or platform scope to use a capability.
 @transaction.atomic
 def set_entitlement(
-    *, capability, tenant, state, source, actor, starts_at=None, ends_at=None, reason=""
+    *, capability, tenant, state, source, actor, starts_at=None, ends_at=None,
+    depth=UNSET, reason="",
 ):
+    """Write the grant, leaving depth alone unless the caller names one.
+
+    ``depth`` defaults to UNSET rather than None because None is a real
+    value here meaning "reaches every band". A caller that only wants to
+    change the state or the dates must not silently widen the tenant's
+    depth on the way past, and most callers have no opinion about depth at
+    all.
+    """
     scope_key = f"tenant:{tenant.pk}" if tenant else "platform"
     # Entitlements are tenant/platform only; branch enablement is handled by overrides.
     current = CapabilityEntitlement.all_objects.filter(
@@ -113,19 +142,23 @@ def set_entitlement(
     before = {
         "state": current.state,
         "source": current.source,
+        "depth": current.depth,
         "starts_at": current.starts_at.isoformat() if current.starts_at else None,
         "ends_at": current.ends_at.isoformat() if current.ends_at else None,
     } if current else {}
+    effective_depth = (current.depth if current else None) if depth is UNSET else depth
     row, _ = CapabilityEntitlement.all_objects.update_or_create(
         capability=capability, scope_key=scope_key,
         defaults={
             "tenant": tenant, "state": state, "source": source,
+            "depth": effective_depth,
             "starts_at": starts_at, "ends_at": ends_at, "updated_by": actor,
         },
     )
     after = {
         "state": state,
         "source": source,
+        "depth": effective_depth,
         "starts_at": starts_at.isoformat() if starts_at else None,
         "ends_at": ends_at.isoformat() if ends_at else None,
     }
@@ -223,6 +256,72 @@ def bulk_schedule_entitlements(
 
 
 @transaction.atomic
+def set_depth_grant(
+    *, capability, tenant, depth, actor, starts_at=None, ends_at=None,
+    source=CapabilityEntitlement.Source.MANUAL, reason="",
+):
+    """Give one tenant deeper reach into one module for a while.
+
+    The uplift a deal is made of. Takes the module even when handed a band,
+    so a caller working from the band a customer complained about does not
+    have to walk up to its module first.
+    """
+    module = capability.parent if capability.parent_id else capability
+    current = CapabilityDepthGrant.all_objects.filter(
+        capability=module, tenant=tenant,
+    ).first()
+    before = {
+        "depth": current.depth,
+        "source": current.source,
+        "starts_at": current.starts_at.isoformat() if current.starts_at else None,
+        "ends_at": current.ends_at.isoformat() if current.ends_at else None,
+    } if current else {}
+    row = current or CapabilityDepthGrant(capability=module, tenant=tenant)
+    row.depth = depth
+    row.source = source
+    row.starts_at = starts_at
+    row.ends_at = ends_at
+    row.reason = reason
+    row.updated_by = actor
+    row.save()
+    record_configuration_event(
+        action="config.depth_grant.updated", target=row, actor=actor, tenant=tenant,
+        before=before,
+        after={
+            "depth": depth,
+            "source": source,
+            "starts_at": starts_at.isoformat() if starts_at else None,
+            "ends_at": ends_at.isoformat() if ends_at else None,
+        },
+        reason=reason,
+    )
+    return row
+
+
+@transaction.atomic
+def clear_depth_grant(*, capability, tenant, actor, reason=""):
+    """Withdraw an uplift, returning the module to the tenant's own tier."""
+    module = capability.parent if capability.parent_id else capability
+    row = CapabilityDepthGrant.all_objects.filter(
+        capability=module, tenant=tenant,
+    ).first()
+    if row is None:
+        return False
+    before = {
+        "depth": row.depth,
+        "source": row.source,
+        "starts_at": row.starts_at.isoformat() if row.starts_at else None,
+        "ends_at": row.ends_at.isoformat() if row.ends_at else None,
+    }
+    row.delete()
+    record_configuration_event(
+        action="config.depth_grant.cleared", target=module, actor=actor,
+        tenant=tenant, before=before, after={}, reason=reason,
+    )
+    return True
+
+
+@transaction.atomic
 def clear_entitlement(*, capability, tenant, actor, reason=""):
     """Delete only the selected entitlement layer so its parent can take over."""
     scope_key = f"tenant:{tenant.pk}" if tenant else "platform"
@@ -279,7 +378,29 @@ class BulkCapabilityEvaluator:
                 capability_id__in=capability_ids, scope_key__in=self.scope_keys,
             )
         }
+        # One query for every live uplift this tenant holds, so a catalogue of
+        # thirty bands does not become thirty lookups.
+        self.depth_grants = {}
+        if self.tenant is not None:
+            now = timezone.now()
+            for row in CapabilityDepthGrant.all_objects.filter(
+                capability_id__in=capability_ids, tenant=self.tenant,
+            ):
+                if (row.starts_at and row.starts_at > now) or (
+                    row.ends_at and row.ends_at <= now
+                ):
+                    continue
+                self.depth_grants[row.capability_id] = row.depth
         self.memo = {}
+
+    def _resolved_depth(self, module_id):
+        """The tenant's depth for one module, from the rows already loaded."""
+        row = self.entitlements.get(module_id)
+        tier = row.depth if row is not None else UNLIMITED
+        deal = self.depth_grants.get(module_id)
+        if deal is None or tier is UNLIMITED:
+            return tier
+        return max(tier, deal)
 
     def _entitled(self, capability):
         if not capability.requires_entitlement:
@@ -301,7 +422,24 @@ class BulkCapabilityEvaluator:
         if capability_id in path:
             raise CapabilityDependencyError(f"Dependency cycle detected at '{capability.key}'.")
         path.add(capability_id)
-        if not capability.is_active or not self._entitled(capability):
+        if not capability.is_active:
+            self.memo[capability_id] = False
+            return False
+        if capability.parent_id:
+            # A band stands or falls with its module, then with the depth the
+            # tenant reaches into it. Mirrors effective_capability exactly.
+            # A band whose module was left out of the evaluated set cannot be
+            # answered, and fails closed rather than reporting itself on.
+            if capability.parent_id not in self.capabilities:
+                self.memo[capability_id] = False
+                return False
+            if not self.evaluate(capability.parent_id, path):
+                self.memo[capability_id] = False
+                return False
+            if not depth_allows(capability.depth, self._resolved_depth(capability.parent_id)):
+                self.memo[capability_id] = False
+                return False
+        elif not self._entitled(capability):
             self.memo[capability_id] = False
             return False
         for requirement_id in self.dependencies.get(capability_id, []):
@@ -314,7 +452,10 @@ class BulkCapabilityEvaluator:
                 result = state == CapabilityOverride.State.ENABLED
                 self.memo[capability_id] = result
                 return result
-        result = True if capability.requires_entitlement else capability.default_enabled
+        result = (
+            True if (capability.parent_id or capability.requires_entitlement)
+            else capability.default_enabled
+        )
         self.memo[capability_id] = result
         return result
 

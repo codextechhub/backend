@@ -92,6 +92,14 @@ DEFINITIONS = [
         "STRING", None, {},
     ),
     (
+        "platform.entitlements.enforce", "Enforce Plan Entitlements",
+        "Whether a request is refused when the school's plan does not reach "
+        "the capability behind the permission being used. Off by default and "
+        "readable per school, so enforcement arrives one school at a time "
+        "rather than for the whole platform on a deploy.",
+        "BOOLEAN", False, {},
+    ),
+    (
         "platform.onboarding.default_ownership_type", "Default School Ownership",
         "Ownership type preselected when a new school omits the field.",
         "CHOICE", "PUBLIC", {"choices": ["PUBLIC", "PRIVATE", "FAITH_BASED", "NGO"]},
@@ -141,27 +149,66 @@ SCHOOL_SCOPED_DEFINITIONS = [
     ),
 ]
 
-CAPABILITIES = [
-    ("students", "Students Management", "MODULE", True),
-    ("teachers", "Teachers Management", "MODULE", True),
-    ("parents", "Parents Management", "MODULE", True),
-    ("attendance", "Attendance Management", "MODULE", True),
-    ("finance", "Finance", "MODULE", True),
-    ("procurement", "Procurement", "MODULE", True),
-    ("vendors", "Vendors Management", "MODULE", True),
-    ("gradebook", "Gradebook and Assessments", "MODULE", True),
-    ("student_portal", "Student Portal", "MODULE", True),
-    ("parent_portal", "Parent and Guardian Portal", "MODULE", True),
-    ("bulk_import", "Bulk Data Import", "FEATURE", False),
-    ("data_export", "Data Export and Reporting", "FEATURE", False),
+#: The modules a school is sold. Every school is granted every one of them;
+#: the plan it pays for decides how far into each it reaches. Nothing here is
+#: withheld, which is why a school can see a module it has not paid to use in
+#: full and ask for more rather than waiting to be sold it.
+#:
+#: (key, label, requires_entitlement)
+MODULES = [
+    ("students", "Students Management", True),
+    ("teachers", "Teachers Management", True),
+    ("parents", "Parents Management", True),
+    ("attendance", "Attendance Management", True),
+    ("finance", "Finance", True),
+    ("procurement", "Procurement", True),
+    ("gradebook", "Gradebook and Assessments", True),
+    ("calendar", "Calendar and Timetable", True),
+    ("student_portal", "Student Portal", True),
+    ("parent_portal", "Parent and Guardian Portal", True),
+    # The cross-cutting services, held as one module so that a school reaching
+    # Plus reaches bulk import everywhere rather than module by module. A
+    # bursar who imported 900 students in January and is refused a 300-line
+    # vendor list in March cannot see why the same button stopped working.
+    ("platform", "Platform Services", True),
+]
+
+#: What each depth is called on the price list, per module. Three bands for
+#: every module, the same three everywhere, because the whole argument for
+#: selling depth rests on Plus meaning one thing.
+DEPTH_BANDS = [
+    ("CORE", "Core", "Every school, every tier"),
+    ("PLUS", "Plus", "Standard and above"),
+    ("ADVANCED", "Advanced", "Premium and above"),
+]
+
+#: Bands that carry their own key because something already refers to them by
+#: name - a permission map, a runtime check, or a line on the price list that
+#: is sold as itself rather than as "the Plus of that module".
+#:
+#: (key, label, module key, depth)
+NAMED_BANDS = [
+    ("bulk_import", "Bulk Data Import", "platform", "PLUS"),
+    ("data_export", "Data Export and Reporting", "platform", "PLUS"),
     # sms_alerts was removed 2026-07-12 - SMS is not part of the product.
     # Existing rows were archived (is_active=False), not deleted.
-    ("email_alerts", "Email Notification Alerts", "FEATURE", False),
+    ("email_alerts", "Email Notification Alerts", "platform", "CORE"),
 ]
+
 DEPENDENCIES = {
     "procurement": ["finance"],
     "parent_portal": ["student_portal"],
 }
+
+#: Capabilities that no longer describe anything sellable. Archived rather than
+#: deleted, the way sms_alerts was: entitlements, overrides and audit history
+#: point at these rows.
+#:
+#: ``vendors`` was a module, then briefly a Core band of Procurement. Vendor
+#: work is the shallow end of procurement rather than a separate purchase, and
+#: a second Core band beside ``procurement_core`` was a distinction nothing
+#: could act on: a school reaching one always reached the other.
+RETIRED = ["vendors"]
 
 
 class Command(BaseCommand):
@@ -193,18 +240,56 @@ class Command(BaseCommand):
             if not created and "school" not in (row.allowed_scopes or []):
                 row.allowed_scopes = sorted({*(row.allowed_scopes or []), "platform", "school"})
                 row.save(update_fields=["allowed_scopes"])
-        rows = {}
-        for key, label, kind, requires_entitlement in CAPABILITIES:
-            rows[key], _ = Capability.objects.update_or_create(
+        modules = {}
+        for key, label, requires_entitlement in MODULES:
+            modules[key], _ = Capability.objects.update_or_create(
                 key=key,
                 defaults={
-                    "label": label, "kind": kind,
+                    "label": label, "kind": Capability.Kind.MODULE,
+                    "parent": None, "depth": None,
                     "requires_entitlement": requires_entitlement, "is_active": True,
                 },
             )
+        bands = {}
+        for module_key, module in modules.items():
+            for depth_name, depth_label, description in DEPTH_BANDS:
+                band_key = f"{module_key}_{depth_name.lower()}"
+                bands[band_key], _ = Capability.objects.update_or_create(
+                    key=band_key,
+                    defaults={
+                        "label": f"{module.label}: {depth_label}",
+                        "description": description,
+                        "kind": Capability.Kind.FEATURE,
+                        "parent": module,
+                        "depth": Capability.Depth[depth_name],
+                        # A band holds no grant of its own; its module's depth
+                        # is what opens it.
+                        "requires_entitlement": False,
+                        "is_active": True,
+                    },
+                )
+        for key, label, module_key, depth_name in NAMED_BANDS:
+            bands[key], _ = Capability.objects.update_or_create(
+                key=key,
+                defaults={
+                    "label": label, "kind": Capability.Kind.FEATURE,
+                    "parent": modules[module_key],
+                    "depth": Capability.Depth[depth_name],
+                    "requires_entitlement": False, "is_active": True,
+                },
+            )
+        retired = Capability.objects.filter(key__in=RETIRED, is_active=True)
+        retired_count = retired.update(is_active=False)
         for key, requirements in DEPENDENCIES.items():
             for required_key in requirements:
                 CapabilityDependency.objects.get_or_create(
-                    capability=rows[key], requires=rows[required_key]
+                    capability=modules[key], requires=modules[required_key]
                 )
-        self.stdout.write(self.style.SUCCESS(f"Seeded {len(rows)} capabilities."))
+        self.stdout.write(self.style.SUCCESS(
+            f"Seeded {len(modules)} modules and {len(bands)} bands."
+        ))
+        if retired_count:
+            self.stdout.write(self.style.WARNING(
+                f"Archived {retired_count} retired capability row(s): "
+                f"{', '.join(RETIRED)}."
+            ))

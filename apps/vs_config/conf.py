@@ -18,7 +18,13 @@ def get_config(key, default=None, *, tenant=None, branch=None):
 
 # Expose capability gates as a boolean API for feature checks across modules.
 def is_capability_enabled(key, *, tenant=None, branch=None):
-    capability = Capability.objects.filter(key=key, is_active=True).first()
+    # ``parent`` is followed for every band, so fetching it here keeps a
+    # single check to one query instead of two.
+    capability = (
+        Capability.objects.select_related("parent")
+        .filter(key=key, is_active=True)
+        .first()
+    )
     if capability is None:
         return False
     # Unknown or inactive gates fail closed so callers do not accidentally expose features.

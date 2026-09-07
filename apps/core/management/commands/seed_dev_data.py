@@ -316,7 +316,8 @@ class Command(BaseCommand):
         from vs_tenants.models import Branch
 
         self.stdout.write(self.style.MIGRATE_HEADING("Schools and branches..."))
-        plan = PackagePlan.objects.order_by("-max_students").first()
+        # The deepest tier, so seeded schools exercise every band of every module.
+        plan = PackagePlan.objects.order_by("-default_depth").first()
         made = []
         for spec in SCHOOLS:
             school, _ = School.objects.get_or_create(
@@ -353,23 +354,22 @@ class Command(BaseCommand):
                         subscription_expires_at=self.now + timedelta(days=365),
                     ),
                 )
-                # Enable every module except the finance stack (user scope).
-                from vs_config.models import Capability, CapabilityEntitlement
-                from vs_config.services.capabilities import set_entitlement
-                modules = Capability.objects.filter(kind=Capability.Kind.MODULE).exclude(
-                    key__in=["finance", "procurement", "payments", "vendors"]
+                # Granted through the one service school creation uses, so a
+                # seeded school carries the same depths a real one gets. It
+                # used to hand out modules with no depth and skip the finance
+                # stack, which left dev data reaching everything and behaving
+                # unlike any school the product actually makes.
+                from schools.vs_schools.services.packages import (
+                    apply_plan_entitlements,
                 )
-                for capability in modules:
-                    # Entitlements are tenant-scoped and belong to vs_config's
-                    # service, which owns the scope key and the audit trail.
-                    set_entitlement(
-                        capability=capability,
-                        tenant=school.tenant,
-                        state=CapabilityEntitlement.State.GRANTED,
-                        source=CapabilityEntitlement.Source.PACKAGE,
-                        actor=None,
-                        reason="Development seed data",
-                    )
+
+                apply_plan_entitlements(
+                    school=school,
+                    plan=plan,
+                    expires_at=setup.subscription_expires_at,
+                    actor=None,
+                    reason="Development seed data",
+                )
             contact, _ = ContactInfo.objects.get_or_create(
                 email=f"admin@{spec['slug']}.example.com",
                 defaults=dict(full_name=f"{spec['name']} Administrator", phone="+2348000000000"),

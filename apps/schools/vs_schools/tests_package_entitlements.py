@@ -1,24 +1,34 @@
-"""School package setup, and the entitlements it grants through vs_config.
+"""The plan a school pays for, and the grants it produces.
 
-The onboarding wizard's package step is the only place in the school app that
-grants capabilities. It used to write ``CapabilityEntitlement`` rows itself,
-with a ``school=`` field the model does not have and a ``school:<pk>`` scope
-key nothing else looks for. Both halves were broken:
+Onboarding's package step is the only place in the school app that grants
+capabilities, and what it grants changed shape twice.
 
-* the read (``get_enabled_modules``) raised ``FieldError``, so school detail
-  blew up for any school that had a package setup at all;
-* the write raised before it could store anything.
+It first wrote ``CapabilityEntitlement`` rows itself, with a ``school=`` field
+the model does not have and a ``school:<pk>`` scope key nothing else looks for.
+Both halves were broken, so the write raised and the read blew up school
+detail. The write moved to ``vs_config.services.capabilities.set_entitlement``,
+which owns the ``tenant:<pk>`` scope key and the audit trail, and the tests
+below still pin that: a grant written by school onboarding has to be the same
+row vs_config's own evaluation reads back. Asserting only "a row exists" would
+have passed against the old scope key too.
 
-The write now goes through ``vs_config.services.capabilities.set_entitlement``,
-which owns the ``tenant:<pk>`` scope key and the audit trail. These tests pin
-the thing that actually matters: a grant written by school onboarding has to be
-the same row vs_config's own evaluation reads back. Asserting only "a row
-exists" would have passed against the old scope key too.
+It then stopped picking modules. A wizard list decided what a school got, which
+made the plan and the product two unrelated facts about the same school: a
+school on the cheapest tier could be ticked into everything, and a school never
+saw a module nobody thought to sell it. Now every school is granted every
+module and the plan decides how deep, so what these tests assert is a depth,
+not a set.
+
+Two of them cover defects rather than design. A grant used to be written with
+no end date while the subscription expiry sat unread on the row above, so a
+school that stopped paying kept the product. And a plan used to cap how many
+branches a school could open, which is a ceiling on a dial that is now priced
+rather than fenced.
 
 Creating a school with ``package_setup_data`` is the main creation path, so it
 has to be exercised here rather than assumed.
 """
-from datetime import timedelta
+from datetime import date, timedelta
 
 from django.test import TestCase
 from django.urls import reverse
@@ -35,13 +45,20 @@ from vs_config.services.capabilities import (
     effective_capability,
 )
 from vs_rbac.tests.helpers import make_branch, make_school, make_vision_user
-from vs_tenants.models import BranchStatus
+from vs_tenants.models import Branch, BranchStatus
 
-from .models import PackagePlan, School, SchoolPackageSetup
+from .models import (
+    CapabilityDepth,
+    PackagePlan,
+    PackagePlanModuleDepth,
+    School,
+    SchoolPackageSetup,
+    SchoolStatus,
+)
 
 
-class SchoolPackageEntitlementTests(TestCase):
-    """Creating a school with a package, and reading it back."""
+class _PackageFixture(TestCase):
+    """Three modules, their bands, and an operator who can create schools."""
 
     @classmethod
     def setUpTestData(cls):
@@ -49,17 +66,18 @@ class SchoolPackageEntitlementTests(TestCase):
             email="package-entitlements@example.com", super_admin=True
         )
 
-        cls.plan = PackagePlan.objects.create(
-            name="Entitlement Test Plan",
-            code="entitlement-test",
-            max_students=5000,
-            max_teachers=500,
-            max_admins=50,
+        cls.basic = PackagePlan.objects.create(
+            name="Entitlement Test Basic", code="entitlement-basic",
+            default_depth=CapabilityDepth.CORE,
+        )
+        cls.premium = PackagePlan.objects.create(
+            name="Entitlement Test Premium", code="entitlement-premium",
+            default_depth=CapabilityDepth.ADVANCED,
         )
 
-        # procurement requires finance: the wizard may send only procurement,
-        # and finance still has to end up granted or procurement would be
-        # entitled-but-off.
+        # procurement requires finance. The dependency is still worth having
+        # under a plan that grants both, because an operator can deny finance
+        # for one school and procurement has to follow it off.
         cls.finance = Capability.objects.create(
             key="ent-finance", label="Finance", kind=Capability.Kind.MODULE,
         )
@@ -72,35 +90,48 @@ class SchoolPackageEntitlementTests(TestCase):
         CapabilityDependency.objects.create(
             capability=cls.procurement, requires=cls.finance,
         )
+        cls.finance_core = Capability.objects.create(
+            key="ent-finance-core", label="Finance Core", parent=cls.finance,
+            depth=CapabilityDepth.CORE, requires_entitlement=False,
+        )
+        cls.finance_plus = Capability.objects.create(
+            key="ent-finance-plus", label="Finance Plus", parent=cls.finance,
+            depth=CapabilityDepth.PLUS, requires_entitlement=False,
+        )
+        cls.finance_advanced = Capability.objects.create(
+            key="ent-finance-advanced", label="Finance Advanced", parent=cls.finance,
+            depth=CapabilityDepth.ADVANCED, requires_entitlement=False,
+        )
 
     def _client(self):
         client = APIClient()
         client.force_authenticate(user=self.vision_user)
         return client
 
-    def _payload(self, name, slug, modules, branches=None):
-        payload = {
+    def _branch(self, name, slug, index=0):
+        return {
+            "name": f"{name} Branch {index}" if index else f"{name} Main Branch",
+            "_type": "Main" if not index else "Branch",
+            "state": "Lagos",
+            "is_main": index == 0,
+            "primary_admin_data": {
+                "full_name": f"{name} Head {index}",
+                "email": f"head{index}@{slug}.test",
+            },
+        }
+
+    def _payload(self, name, slug, *, plan=None, modules=None, branches=1, expires=None):
+        package = {"package_plan": (plan or self.basic).code}
+        if modules is not None:
+            package["enabled_modules"] = modules
+        if expires is not None:
+            package["subscription_expires_at"] = expires.isoformat()
+        return {
             "name": name,
             "slug": slug,
-            "package_setup_data": {
-                "package_plan": self.plan.code,
-                "enabled_modules": modules,
-            },
-            # Every school is created with its main branch. These tests are
-            # about entitlements, so the branch is scenery, but it has to be
-            # there for the payload to be accepted at all.
-            "branches": branches if branches is not None else [{
-                "name": f"{name} Main Branch",
-                "_type": "Main",
-                "state": "Lagos",
-                "is_main": True,
-                "primary_admin_data": {
-                    "full_name": f"{name} Head",
-                    "email": f"head@{slug}.test",
-                },
-            }],
+            "package_setup_data": package,
+            "branches": [self._branch(name, slug, i) for i in range(branches)],
         }
-        return payload
 
     def _create(self, *args, **kwargs):
         response = self._client().post(
@@ -109,21 +140,45 @@ class SchoolPackageEntitlementTests(TestCase):
         self.assertEqual(response.status_code, 201, response.data)
         return response
 
-    # --- the write --------------------------------------------------------
+    def _rows(self, school):
+        return CapabilityEntitlement.all_objects.filter(tenant=school.tenant)
 
-    def test_creating_a_school_with_a_package_grants_its_modules(self):
-        """The path that used to raise before it wrote anything."""
-        self._create("Grant School", "ent-grant", ["ent-students"])
 
+class PlanGrantsEveryModuleTests(_PackageFixture):
+    """Every school gets every module. The plan decides how far in."""
+
+    def test_a_plan_grants_every_sellable_module(self):
+        self._create("Grant School", "ent-grant")
         school = School.objects.get(slug="ent-grant")
-        rows = CapabilityEntitlement.all_objects.filter(tenant=school.tenant)
-
         self.assertEqual(
-            {row.capability.key for row in rows}, {"ent-students"},
+            {row.capability.key for row in self._rows(school)},
+            {"ent-finance", "ent-procurement", "ent-students"},
         )
-        row = rows.get()
-        self.assertEqual(row.state, CapabilityEntitlement.State.GRANTED)
-        self.assertEqual(row.source, CapabilityEntitlement.Source.PACKAGE)
+
+    def test_a_module_the_wizard_did_not_tick_is_granted_anyway(self):
+        # The point of the change. A school that never asked for procurement
+        # can still raise a requisition in week one and find out it wants it.
+        self._create("Untick School", "ent-untick", modules=["ent-students"])
+        school = School.objects.get(slug="ent-untick")
+        self.assertIn(
+            "ent-procurement", {row.capability.key for row in self._rows(school)},
+        )
+
+    def test_an_empty_module_list_no_longer_grants_nothing(self):
+        # A frontend that has not caught up keeps working rather than
+        # silently creating a school with no product at all.
+        self._create("Empty School", "ent-empty", modules=[])
+        school = School.objects.get(slug="ent-empty")
+        self.assertEqual(self._rows(school).count(), 3)
+
+    def test_bands_are_not_granted_separately(self):
+        # Granting a band would be a second answer to a question the module's
+        # depth already settles, and the two would drift.
+        self._create("Band School", "ent-band")
+        school = School.objects.get(slug="ent-band")
+        self.assertFalse(
+            self._rows(school).filter(capability__parent__isnull=False).exists()
+        )
 
     def test_the_grant_uses_the_tenant_scope_key_vs_config_looks_for(self):
         """The assertion the old ``school:<pk>`` key would have failed.
@@ -132,514 +187,331 @@ class SchoolPackageEntitlementTests(TestCase):
         capability, so counting rows proves nothing. This is the check that
         the grant is visible to the module that owns entitlements.
         """
-        self._create("Scope School", "ent-scope", ["ent-students"])
+        self._create("Scope School", "ent-scope")
         school = School.objects.get(slug="ent-scope")
-
-        row = CapabilityEntitlement.all_objects.get(tenant=school.tenant)
-        self.assertEqual(row.scope_key, f"tenant:{school.tenant.pk}")
-
-    def test_vs_config_evaluates_the_granted_capability_as_effective(self):
-        """End to end: onboarding grants it, vs_config switches it on."""
-        self._create("Effective School", "ent-effective", ["ent-students"])
-        school = School.objects.get(slug="ent-effective")
-
-        self.assertTrue(
-            effective_capability(self.students, tenant=school.tenant)
-        )
-        # A module that was never in the package stays off.
-        self.assertFalse(
-            effective_capability(self.finance, tenant=school.tenant)
+        self.assertEqual(
+            set(self._rows(school).values_list("scope_key", flat=True)),
+            {f"tenant:{school.tenant_id}"},
         )
 
-        states = {
-            item["key"]: item["enabled"]
-            for item in bulk_effective_capabilities(tenant=school.tenant)
-        }
-        self.assertTrue(states["ent-students"])
-        self.assertFalse(states["ent-finance"])
+    def test_the_grant_is_marked_as_coming_from_the_package(self):
+        self._create("Source School", "ent-source")
+        school = School.objects.get(slug="ent-source")
+        for row in self._rows(school):
+            self.assertEqual(row.state, CapabilityEntitlement.State.GRANTED)
+            self.assertEqual(row.source, CapabilityEntitlement.Source.PACKAGE)
 
     def test_the_package_setup_row_is_still_created(self):
-        self._create("Setup School", "ent-setup", ["ent-students"])
+        self._create("Setup School", "ent-setup")
         school = School.objects.get(slug="ent-setup")
-
         setup = SchoolPackageSetup.objects.get(school=school)
-        self.assertEqual(setup.package_plan, self.plan)
-        # Not supplied, so it defaults a year out rather than staying null.
-        self.assertIsNotNone(setup.subscription_expires_at)
+        self.assertEqual(setup.package_plan, self.basic)
 
-    def test_a_grant_is_audited_by_the_service(self):
-        """Routing through ``set_entitlement`` is what produces this row;
-        the hand-rolled ``update_or_create`` never wrote one."""
-        from vs_config.models import ConfigurationAuditEvent
 
-        self._create("Audit School", "ent-audit", ["ent-students"])
-        school = School.objects.get(slug="ent-audit")
+class PlanDepthTests(_PackageFixture):
+    """Which bands a school reaches, and how a plan bends for one module."""
 
-        self.assertTrue(
-            ConfigurationAuditEvent.objects.filter(
-                action="config.entitlement.updated", tenant=school.tenant,
-            ).exists()
+    def test_a_shallow_plan_reaches_core_only(self):
+        self._create("Core School", "ent-core")
+        school = School.objects.get(slug="ent-core")
+        tenant = school.tenant
+        self.assertTrue(effective_capability(self.finance_core, tenant=tenant))
+        self.assertFalse(effective_capability(self.finance_plus, tenant=tenant))
+        self.assertFalse(effective_capability(self.finance_advanced, tenant=tenant))
+
+    def test_the_deepest_plan_reaches_everything(self):
+        self._create("Deep School", "ent-deep", plan=self.premium)
+        tenant = School.objects.get(slug="ent-deep").tenant
+        self.assertTrue(effective_capability(self.finance_advanced, tenant=tenant))
+
+    def test_a_plan_exception_overrides_its_own_default(self):
+        # Standard everywhere, Advanced Finance. The shape a deal takes when
+        # it is the plan that differs rather than the school.
+        PackagePlanModuleDepth.objects.create(
+            plan=self.basic, capability_key="ent-finance",
+            depth=CapabilityDepth.ADVANCED,
         )
+        self._create("Exception School", "ent-exception")
+        tenant = School.objects.get(slug="ent-exception").tenant
+        self.assertTrue(effective_capability(self.finance_advanced, tenant=tenant))
 
-    # --- dependency expansion ---------------------------------------------
-
-    def test_a_required_capability_is_granted_even_when_not_picked(self):
-        """procurement was ticked, finance was not; both must be entitled."""
-        self._create("Dependency School", "ent-dependency", ["ent-procurement"])
-        school = School.objects.get(slug="ent-dependency")
-
-        granted = {
-            row.capability.key
-            for row in CapabilityEntitlement.all_objects.filter(tenant=school.tenant)
+    def test_an_exception_does_not_leak_into_other_modules(self):
+        PackagePlanModuleDepth.objects.create(
+            plan=self.basic, capability_key="ent-finance",
+            depth=CapabilityDepth.ADVANCED,
+        )
+        self._create("Narrow School", "ent-narrow")
+        school = School.objects.get(slug="ent-narrow")
+        depths = {
+            row.capability.key: row.depth for row in self._rows(school)
         }
-        self.assertEqual(granted, {"ent-procurement", "ent-finance"})
+        self.assertEqual(depths["ent-finance"], CapabilityDepth.ADVANCED)
+        self.assertEqual(depths["ent-students"], CapabilityDepth.CORE)
 
-    def test_the_dependent_capability_evaluates_as_effective(self):
-        """The point of expanding: procurement is actually usable, which it
-        would not be if finance had been left ungranted."""
-        self._create("Usable School", "ent-usable", ["ent-procurement"])
-        school = School.objects.get(slug="ent-usable")
-
+    def test_a_branch_scoped_check_inherits_the_tenant_depth(self):
+        self._create("Branch Depth School", "ent-branch-depth", branches=2)
+        school = School.objects.get(slug="ent-branch-depth")
+        branch = Branch.all_objects.filter(tenant=school.tenant).first()
         self.assertTrue(
-            effective_capability(self.procurement, tenant=school.tenant)
+            effective_capability(self.finance_core, tenant=school.tenant, branch=branch)
         )
-
-    def test_an_empty_module_list_grants_nothing(self):
-        self._create("Bare School", "ent-bare", [])
-        school = School.objects.get(slug="ent-bare")
-
         self.assertFalse(
-            CapabilityEntitlement.all_objects.filter(tenant=school.tenant).exists()
+            effective_capability(self.finance_plus, tenant=school.tenant, branch=branch)
         )
 
-    # --- the read ---------------------------------------------------------
 
-    def test_school_detail_returns_the_enabled_modules(self):
-        """The read that raised ``FieldError`` for every school with a
-        package. A 200 here is the whole regression."""
-        self._create("Detail School", "ent-detail", ["ent-students"])
+class SubscriptionExpiryTests(_PackageFixture):
+    """The expiry that was recorded and never enforced."""
 
-        response = self._client().get(
-            reverse("school-detail", kwargs={"slug": "ent-detail"})
-        )
+    def test_the_grant_carries_the_subscription_expiry(self):
+        expires = date.today() + timedelta(days=90)
+        self._create("Expiry School", "ent-expiry", expires=expires)
+        school = School.objects.get(slug="ent-expiry")
+        for row in self._rows(school):
+            self.assertIsNotNone(
+                row.ends_at, "a grant with no end date is a product given away",
+            )
+            self.assertEqual(row.ends_at.date(), expires + timedelta(days=1))
 
-        self.assertEqual(response.status_code, 200, response.data)
-        modules = response.data["data"]["package_setup"]["enabled_modules"]
-        self.assertEqual({row["key"] for row in modules}, {"ent-students"})
+    def test_the_school_keeps_the_product_on_its_last_paid_day(self):
+        # ``ends_at`` is exclusive and the expiry is a date, so a school paid
+        # up to the 31st must still work on the 31st.
+        expires = date.today()
+        self._create("Last Day School", "ent-last-day", expires=expires)
+        tenant = School.objects.get(slug="ent-last-day").tenant
+        self.assertTrue(effective_capability(self.finance, tenant=tenant))
+        self.assertTrue(effective_capability(self.finance_core, tenant=tenant))
 
-    def test_school_detail_lists_dependency_expanded_modules_too(self):
-        self._create("Detail Dep School", "ent-detail-dep", ["ent-procurement"])
+    def test_an_expired_subscription_closes_the_modules_and_their_bands(self):
+        self._create("Lapsed School", "ent-lapsed")
+        school = School.objects.get(slug="ent-lapsed")
+        self._rows(school).update(ends_at=timezone.now() - timedelta(days=1))
+        self.assertFalse(effective_capability(self.finance, tenant=school.tenant))
+        self.assertFalse(effective_capability(self.finance_core, tenant=school.tenant))
+        states = {
+            row["key"]: row["enabled"]
+            for row in bulk_effective_capabilities(tenant=school.tenant)
+        }
+        self.assertFalse(states["ent-finance"])
+        self.assertFalse(states["ent-finance-core"])
 
-        response = self._client().get(
-            reverse("school-detail", kwargs={"slug": "ent-detail-dep"})
-        )
 
-        self.assertEqual(response.status_code, 200, response.data)
-        modules = response.data["data"]["package_setup"]["enabled_modules"]
-        self.assertEqual(
-            {row["key"] for row in modules}, {"ent-procurement", "ent-finance"},
-        )
+class NoSizeCeilingTests(_PackageFixture):
+    """A plan prices size; it does not fence it.
 
-    def test_school_detail_without_a_package_still_works(self):
-        """The branch that was never broken, kept honest: no package setup
-        means no nested payload and certainly no crash."""
+    A ceiling on branches used to be enforced on both creation paths. It is
+    gone on purpose: refusing a proprietor the fourth site she planned for
+    months, on the cheapest tier, made the product the reason a school could
+    not open. Size is charged for instead, and the only wall left is a depth
+    wall the school can see and ask about.
+    """
+
+    def test_the_cheapest_plan_may_be_onboarded_with_several_branches(self):
+        self._create("Wide School", "ent-wide", branches=4)
+        school = School.objects.get(slug="ent-wide")
+        self.assertEqual(Branch.all_objects.filter(tenant=school.tenant).count(), 4)
+
+    def test_a_school_may_open_another_branch_after_creation(self):
+        self._create("Growing School", "ent-growing")
+        school = School.objects.get(slug="ent-growing")
+        # The standalone endpoint serves live schools only. A school arrives
+        # PENDING from the wizard, which is a different gate from the ceiling
+        # this test is about.
+        school.status = SchoolStatus.ACTIVE
+        school.save(update_fields=["status"])
         response = self._client().post(
-            reverse("school-create"),
+            reverse("branch-create", kwargs={"slug": school.slug}),
             {
-                "name": "No Package School",
-                "slug": "ent-nopackage",
-                "branches": [{
-                    "name": "No Package Main", "_type": "Main", "state": "Lagos",
-                    "is_main": True,
-                    "primary_admin_data": {
-                        "full_name": "No Package Head",
-                        "email": "head@ent-nopackage.test",
-                    },
-                }],
+                "name": "Ikeja Branch",
+                "_type": "Branch",
+                "state": "Lagos",
+                "is_main": False,
+                "primary_admin_data": {
+                    "full_name": "Ikeja Head",
+                    "email": "ikeja-head@ent-growing.test",
+                },
             },
             format="json",
         )
         self.assertEqual(response.status_code, 201, response.data)
-
-        response = self._client().get(
-            reverse("school-detail", kwargs={"slug": "ent-nopackage"})
-        )
-        self.assertEqual(response.status_code, 200, response.data)
-        self.assertIsNone(response.data["data"]["package_setup"])
-
-    # --- who gets recorded as the actor -----------------------------------
-
-    def test_the_actor_is_recorded_on_the_entitlement(self):
-        self._create("Actor School", "ent-actor", ["ent-students"])
-        school = School.objects.get(slug="ent-actor")
-
-        row = CapabilityEntitlement.all_objects.get(tenant=school.tenant)
-        self.assertEqual(row.updated_by, self.vision_user)
-
-    def test_a_string_actor_id_in_context_does_not_reach_updated_by(self):
-        """``context["actor_id"]`` is not reliably a user.
-
-        The API views put a User object in it, but the bulk school importer
-        (``vs_import_data.services.import_executor``) puts ``str(user.id)``.
-        ``updated_by`` is a FK, so the old ``updated_by=context["actor_id"]``
-        would raise ValueError on every imported school with a package and
-        roll the import back. The actor now comes from ``request.user``,
-        which is a real user on both paths.
-        """
-        from types import SimpleNamespace
-
-        from .serializers import SchoolCreateSerializer
-
-        serializer = SchoolCreateSerializer(
-            data=self._payload("Import School", "ent-import", ["ent-students"]),
-            context={
-                "request": SimpleNamespace(user=self.vision_user),
-                "actor_id": str(self.vision_user.id),
-            },
-        )
-        self.assertTrue(serializer.is_valid(), serializer.errors)
-        school = serializer.save()
-
-        row = CapabilityEntitlement.all_objects.get(tenant=school.tenant)
-        self.assertEqual(row.updated_by, self.vision_user)
-        self.assertEqual(row.scope_key, f"tenant:{school.tenant.pk}")
-
-        # Same root cause, second victim: emit_audit_event never raises, so a
-        # string actor silently produced no school-creation audit row at all.
-        from vs_audit.models import AuditEvent
-
-        self.assertTrue(
-            AuditEvent.objects.filter(
-                entity_type="School", entity_id=str(school.pk),
-                actor_user=self.vision_user,
-            ).exists()
-        )
-
-    # --- tenant isolation -------------------------------------------------
-
-    def test_one_schools_detail_never_shows_another_schools_modules(self):
-        """Entitlements are keyed by tenant, and the read filters on the
-        school's own tenant. Two schools with different packages must not
-        bleed into each other - and ``all_objects`` is unscoped, so nothing
-        but that explicit filter is holding the line.
-        """
-        self._create("Isolation A", "ent-iso-a", ["ent-students"])
-        self._create("Isolation B", "ent-iso-b", ["ent-procurement"])
-
-        response = self._client().get(
-            reverse("school-detail", kwargs={"slug": "ent-iso-a"})
-        )
-
-        self.assertEqual(response.status_code, 200, response.data)
-        modules = {
-            row["key"]
-            for row in response.data["data"]["package_setup"]["enabled_modules"]
-        }
-        self.assertEqual(modules, {"ent-students"})
-        self.assertNotIn("ent-procurement", modules)
-        self.assertNotIn("ent-finance", modules)
-
-    def test_a_platform_wide_grant_is_not_reported_as_this_schools_package(self):
-        """A NULL-tenant row means "every tenant", not "this school bought
-        it". The package read must stay tenant-specific or it would claim
-        platform grants as the school's own."""
-        self._create("Platform School", "ent-platform", ["ent-students"])
-
-        CapabilityEntitlement.objects.create(
-            capability=self.finance, tenant=None,
-            state=CapabilityEntitlement.State.GRANTED,
-            source=CapabilityEntitlement.Source.PACKAGE,
-        )
-
-        response = self._client().get(
-            reverse("school-detail", kwargs={"slug": "ent-platform"})
-        )
-
-        self.assertEqual(response.status_code, 200, response.data)
-        modules = {
-            row["key"]
-            for row in response.data["data"]["package_setup"]["enabled_modules"]
-        }
-        self.assertEqual(modules, {"ent-students"})
-
-    # --- both tenant shapes -----------------------------------------------
-
-    def test_a_multi_branch_school_grants_and_reads_the_same_way(self):
-        """Entitlements sit at the tenant, so branches must not change the
-        answer - the multi-branch shape has to behave like the bare one."""
-        self._create(
-            "Multi Branch School", "ent-multi", ["ent-students"],
-            branches=[
-                {
-                    "name": "HQ", "_type": "Secondary", "is_main": True,
-                    "primary_admin_data": {
-                        "full_name": "HQ Head",
-                        "email": "ent-multi-hq@example.com",
-                    },
-                },
-                {
-                    "name": "Annex", "_type": "Secondary", "is_main": False,
-                    "primary_admin_data": {
-                        "full_name": "Annex Head",
-                        "email": "ent-multi-annex@example.com",
-                    },
-                },
-            ],
-        )
-        school = School.objects.get(slug="ent-multi")
-        self.assertEqual(school.tenant.branches.count(), 2)
-
-        row = CapabilityEntitlement.all_objects.get(tenant=school.tenant)
-        self.assertEqual(row.scope_key, f"tenant:{school.tenant.pk}")
-
-        response = self._client().get(
-            reverse("school-detail", kwargs={"slug": "ent-multi"})
-        )
-        self.assertEqual(response.status_code, 200, response.data)
-        modules = response.data["data"]["package_setup"]["enabled_modules"]
-        self.assertEqual({row["key"] for row in modules}, {"ent-students"})
-
-    def test_a_branch_scoped_capability_check_inherits_the_tenant_grant(self):
-        """A branch of an entitled tenant is entitled: nothing about the
-        grant is branch-specific."""
-        self._create("Branch Check School", "ent-branchcheck", ["ent-students"])
-        school = School.objects.get(slug="ent-branchcheck")
-        # Not main: the school already has the main branch it was created with.
-        branch = make_branch(
-            school, name="Later Branch", is_main=False, status=BranchStatus.ACTIVE,
-        )
-
-        self.assertTrue(
-            effective_capability(
-                self.students, tenant=school.tenant, branch=branch,
-            )
-        )
-
-    def test_creating_a_second_school_does_not_disturb_the_first(self):
-        """``set_entitlement`` upserts on (capability, scope_key). Two
-        tenants picking the same module must get two rows, not one
-        overwritten one - the unique constraint spans the scope key, and a
-        scope key that ignored the tenant would collapse them."""
-        self._create("First School", "ent-first", ["ent-students"])
-        self._create("Second School", "ent-second", ["ent-students"])
-
-        first = School.objects.get(slug="ent-first")
-        second = School.objects.get(slug="ent-second")
-
         self.assertEqual(
-            CapabilityEntitlement.all_objects.filter(
-                capability=self.students,
+            Branch.all_objects.filter(
+                tenant=school.tenant, status__in=[BranchStatus.ACTIVE, BranchStatus.PENDING],
             ).count(),
             2,
         )
-        self.assertTrue(effective_capability(self.students, tenant=first.tenant))
-        self.assertTrue(effective_capability(self.students, tenant=second.tenant))
+
+    def test_a_plan_carries_no_capacity_columns_at_all(self):
+        field_names = {f.name for f in PackagePlan._meta.get_fields()}
+        self.assertFalse(
+            field_names & {"max_students", "max_teachers", "max_admins", "max_branch"},
+            "a ceiling nobody enforces is a sales promise the product breaks quietly",
+        )
 
 
-class PlanBranchCeilingTests(TestCase):
-    """``PackagePlan.max_branch``, and the creation paths that must read it.
+class PackageIsolationTests(_PackageFixture):
+    """One school's package never becomes another's."""
 
-    ``seed_package`` fills the column with real numbers - Starter 1, Standard 5,
-    Premium 20 - and the plans screen shows them, so a creation path that does
-    not look lets Bright Star sign for one site and open four.
-    That is not a limit a school worked around, it is a promise the product made
-    on its own pricing page and then broke by itself.
+    def test_creating_a_second_school_does_not_disturb_the_first(self):
+        self._create("First School", "ent-first")
+        self._create("Second School", "ent-second", plan=self.premium)
+        first = School.objects.get(slug="ent-first")
+        second = School.objects.get(slug="ent-second")
+        self.assertEqual(
+            {row.depth for row in self._rows(first)}, {CapabilityDepth.CORE},
+        )
+        self.assertEqual(
+            {row.depth for row in self._rows(second)}, {CapabilityDepth.ADVANCED},
+        )
 
-    Both ways in are covered, because they fail differently. The standalone
-    endpoint adds a site to a school that already has some; school creation
-    arrives with the whole list at once and could walk straight past the ceiling
-    in a single request without ever adding a second branch to anything.
+    def test_a_deep_school_does_not_open_a_shallow_school_s_bands(self):
+        self._create("Shallow School", "ent-shallow")
+        self._create("Deep Neighbour", "ent-neighbour", plan=self.premium)
+        shallow = School.objects.get(slug="ent-shallow").tenant
+        deep = School.objects.get(slug="ent-neighbour").tenant
+        self.assertTrue(effective_capability(self.finance_advanced, tenant=deep))
+        self.assertFalse(effective_capability(self.finance_advanced, tenant=shallow))
+
+    def test_school_detail_returns_the_granted_modules(self):
+        self._create("Detail School", "ent-detail")
+        school = School.objects.get(slug="ent-detail")
+        response = self._client().get(
+            reverse("school-detail", kwargs={"slug": school.slug})
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        setup = response.data["data"]["package_setup"]
+        self.assertEqual(
+            {row["key"] for row in setup["enabled_modules"]},
+            {"ent-finance", "ent-procurement", "ent-students"},
+        )
+
+    def test_one_schools_detail_never_shows_another_schools_modules(self):
+        self._create("Own School", "ent-own")
+        other = make_school(slug="ent-outsider")
+        make_branch(other)
+        response = self._client().get(
+            reverse("school-detail", kwargs={"slug": "ent-own"})
+        )
+        keys = {
+            row["key"]
+            for row in response.data["data"]["package_setup"]["enabled_modules"]
+        }
+        self.assertEqual(keys, {"ent-finance", "ent-procurement", "ent-students"})
+        self.assertFalse(
+            CapabilityEntitlement.all_objects.filter(tenant=other.tenant).exists()
+        )
+
+    def test_school_detail_without_a_package_still_works(self):
+        school = make_school(slug="ent-packageless")
+        make_branch(school)
+        response = self._client().get(
+            reverse("school-detail", kwargs={"slug": school.slug})
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIsNone(response.data["data"].get("package_setup"))
+
+
+class PackageAuditTests(_PackageFixture):
+    """Every grant is written through the service that audits it."""
+
+    def test_a_grant_is_audited_by_the_service(self):
+        from vs_config.models import ConfigurationAuditEvent
+
+        self._create("Audit School", "ent-audit")
+        school = School.objects.get(slug="ent-audit")
+        events = ConfigurationAuditEvent.objects.filter(
+            tenant=school.tenant, action="config.entitlement.updated",
+        )
+        self.assertEqual(events.count(), 3)
+
+    def test_the_actor_is_recorded_on_the_entitlement(self):
+        self._create("Actor School", "ent-actor")
+        school = School.objects.get(slug="ent-actor")
+        for row in self._rows(school):
+            self.assertEqual(row.updated_by, self.vision_user)
+
+
+class ApplyPlansCommandTests(_PackageFixture):
+    """Bringing schools created before the plan decided anything onto it.
+
+    The interesting case is a school whose grants predate depth. Those rows
+    carry no depth, which means the school reaches every band - correct, and
+    also the reason nothing can be sold to it. Applying its plan is what makes
+    the plan and the product one fact.
     """
 
-    @classmethod
-    def setUpTestData(cls):
-        cls.vision_user = make_vision_user(
-            email="branch-ceiling@example.com", super_admin=True,
+    def _apply(self, **options):
+        from io import StringIO
+        from django.core.management import call_command
+
+        out = StringIO()
+        call_command("apply_plans", stdout=out, **options)
+        return out.getvalue()
+
+    def test_a_school_with_depthless_grants_is_moved_onto_its_plan(self):
+        self._create("Legacy School", "ent-legacy")
+        school = School.objects.get(slug="ent-legacy")
+        self._rows(school).update(depth=None)
+        self.assertTrue(effective_capability(self.finance_advanced, tenant=school.tenant))
+
+        self._apply()
+        self.assertEqual(
+            {row.depth for row in self._rows(school)}, {CapabilityDepth.CORE},
         )
-        cls.starter = PackagePlan.objects.create(
-            name="Starter", code="ceiling-starter",
-            max_students=500, max_teachers=50, max_admins=5, max_branch=1,
+        self.assertFalse(effective_capability(self.finance_advanced, tenant=school.tenant))
+
+    def test_a_missing_module_is_granted(self):
+        self._create("Partial School", "ent-partial")
+        school = School.objects.get(slug="ent-partial")
+        self._rows(school).filter(capability=self.procurement).delete()
+        self.assertEqual(self._rows(school).count(), 2)
+
+        self._apply()
+        self.assertEqual(self._rows(school).count(), 3)
+
+    def test_a_dry_run_writes_nothing(self):
+        self._create("Dry School", "ent-dry")
+        school = School.objects.get(slug="ent-dry")
+        self._rows(school).update(depth=None)
+        output = self._apply(dry_run=True)
+        self.assertIn("DRY RUN", output)
+        self.assertEqual({row.depth for row in self._rows(school)}, {None})
+
+    def test_one_school_can_be_applied_alone(self):
+        self._create("Target School", "ent-target")
+        self._create("Bystander School", "ent-bystander")
+        target = School.objects.get(slug="ent-target")
+        bystander = School.objects.get(slug="ent-bystander")
+        self._rows(target).update(depth=None)
+        self._rows(bystander).update(depth=None)
+
+        self._apply(slug="ent-target")
+        self.assertEqual({row.depth for row in self._rows(target)}, {CapabilityDepth.CORE})
+        self.assertEqual({row.depth for row in self._rows(bystander)}, {None})
+
+    def test_a_deal_survives_the_plan_being_re_applied(self):
+        # An uplift lives in its own table precisely so that re-applying the
+        # tier underneath it does not take it away.
+        from vs_config.services.capabilities import set_depth_grant
+
+        self._create("Deal School", "ent-deal")
+        school = School.objects.get(slug="ent-deal")
+        set_depth_grant(
+            capability=self.finance, tenant=school.tenant,
+            depth=CapabilityDepth.ADVANCED, actor=self.vision_user,
+            reason="Signed on the promise of payroll.",
         )
-        cls.standard = PackagePlan.objects.create(
-            name="Standard", code="ceiling-standard",
-            max_students=5000, max_teachers=500, max_admins=50, max_branch=3,
+        self._apply()
+        # The tier underneath is still Core, and the uplift still carries the
+        # school past it to Advanced, which reaches Plus on the way.
+        self.assertEqual(
+            {row.depth for row in self._rows(school)}, {CapabilityDepth.CORE},
         )
-        cls.unlimited = PackagePlan.objects.create(
-            name="Enterprise", code="ceiling-enterprise",
-            max_students=None, max_teachers=None, max_admins=None, max_branch=None,
-        )
+        self.assertTrue(effective_capability(self.finance_plus, tenant=school.tenant))
+        self.assertTrue(effective_capability(self.finance_advanced, tenant=school.tenant))
 
-    def _client(self):
-        client = APIClient()
-        client.force_authenticate(user=self.vision_user)
-        return client
-
-    def _school_on(self, plan, *, slug, name, branches=("Ikeja",)):
-        """An ACTIVE school with a plan and some sites already open.
-
-        Built through the ORM rather than the create endpoint because that
-        endpoint leaves a school PENDING and the branch endpoint serves only
-        ACTIVE ones - which is the state a school is in for every branch it
-        opens after onboarding, and therefore the state this ceiling is
-        actually enforced in.
-        """
-        school = make_school(slug=slug, name=name)
-        for index, branch_name in enumerate(branches):
-            make_branch(
-                school, name=branch_name, is_main=index == 0,
-                status=BranchStatus.ACTIVE,
-            )
-        if plan is not None:
-            SchoolPackageSetup.objects.create(
-                school=school,
-                package_plan=plan,
-                subscription_expires_at=timezone.localdate() + timedelta(days=365),
-            )
-        return school
-
-    def _add_branch(self, school, *, name, expect):
-        response = self._client().post(
-            reverse("branch-create", kwargs={"slug": school.slug}),
-            {
-                "name": name,
-                "state": "Lagos",
-                "is_main": False,
-                "primary_admin_data": {
-                    "full_name": f"{name} Head",
-                    "email": f"{name.lower().replace(' ', '-')}@{school.slug}.test",
-                },
-            },
-            format="json",
-        )
-        self.assertEqual(response.status_code, expect, response.data)
-        return response
-
-    def _onboard(self, *, slug, plan, branch_names, expect):
-        payload = {
-            "name": slug.replace("-", " ").title(),
-            "slug": slug,
-            "branches": [
-                {
-                    "name": name,
-                    "state": "Lagos",
-                    "is_main": index == 0,
-                    "primary_admin_data": {
-                        "full_name": f"{name} Head",
-                        "email": f"head-{index}@{slug}.test",
-                    },
-                }
-                for index, name in enumerate(branch_names)
-            ],
-        }
-        if plan is not None:
-            payload["package_setup_data"] = {
-                "package_plan": plan.code,
-                "enabled_modules": [],
-            }
-        response = self._client().post(
-            reverse("school-create"), payload, format="json",
-        )
-        self.assertEqual(response.status_code, expect, response.data)
-        return response
-
-    # --- the standalone endpoint ------------------------------------------
-
-    def test_a_starter_school_cannot_open_a_second_branch(self):
-        school = self._school_on(
-            self.starter, slug="ceiling-bright-star", name="Ceiling Bright Star",
-        )
-
-        response = self._add_branch(school, name="Lekki", expect=400)
-
-        self.assertIn("Starter allows 1 branch", str(response.data))
-        self.assertEqual(school.tenant.branches.count(), 1)
-
-    def test_a_standard_school_may_open_branches_up_to_its_ceiling(self):
-        """The refusal must not be a blanket one."""
-        school = self._school_on(
-            self.standard, slug="ceiling-greenfield", name="Ceiling Greenfield",
-        )
-
-        self._add_branch(school, name="Lekki", expect=201)
-        self._add_branch(school, name="Yaba", expect=201)
-        self._add_branch(school, name="Surulere", expect=400)
-
-        self.assertEqual(school.tenant.branches.count(), 3)
-
-    def test_an_unlimited_plan_has_no_ceiling(self):
-        """``max_branch=None`` is what Enterprise means by unlimited."""
-        school = self._school_on(
-            self.unlimited, slug="ceiling-corona", name="Ceiling Corona",
-        )
-
-        for name in ["Lekki", "Yaba", "Surulere", "Apapa"]:
-            self._add_branch(school, name=name, expect=201)
-
-        self.assertEqual(school.tenant.branches.count(), 5)
-
-    def test_a_school_with_no_package_setup_has_no_ceiling(self):
-        """A school onboarded before its plan is chosen is not on plan zero."""
-        school = self._school_on(
-            None, slug="ceiling-nosetup", name="Ceiling No Setup",
-        )
-
-        self._add_branch(school, name="Lekki", expect=201)
-
-    def test_a_closed_branch_gives_its_seat_back(self):
-        """Closing Ikeja and opening Yaba is a replacement, not growth.
-
-        CLOSED is terminal - the site is gone. Counting it would mean a school
-        on a one-site plan that shuts its only site can never open another,
-        only ever buy a bigger plan.
-        """
-        school = self._school_on(
-            self.starter, slug="ceiling-closed", name="Ceiling Closed",
-        )
-        make_branch(
-            school, name="Old Yaba", is_main=False, status=BranchStatus.CLOSED,
-        )
-
-        response = self._add_branch(school, name="New Yaba", expect=400)
-        self.assertIn("Starter allows 1 branch", str(response.data))
-
-        school.tenant.branches.filter(name="Ikeja").update(
-            status=BranchStatus.CLOSED,
-        )
-        self._add_branch(school, name="New Yaba", expect=201)
-
-    def test_a_suspended_branch_keeps_its_seat(self):
-        """A site expected back is still a site the school is paying for."""
-        school = self._school_on(
-            self.starter, slug="ceiling-suspended", name="Ceiling Suspended",
-        )
-        school.tenant.branches.update(status=BranchStatus.SUSPENDED)
-
-        self._add_branch(school, name="Lekki", expect=400)
-
-    # --- onboarding, where the whole list arrives at once -------------------
-
-    def test_a_starter_school_cannot_be_onboarded_with_two_branches(self):
-        """The loophole that made the endpoint check alone worth nothing."""
-        response = self._onboard(
-            slug="ceiling-multi", plan=self.starter,
-            branch_names=["Ikeja", "Lekki"], expect=400,
-        )
-
-        self.assertIn("Starter allows 1 branch", str(response.data))
-        self.assertFalse(School.objects.filter(slug="ceiling-multi").exists())
-
-    def test_a_standard_school_may_be_onboarded_with_three(self):
-        self._onboard(
-            slug="ceiling-three", plan=self.standard,
-            branch_names=["Ikeja", "Lekki", "Yaba"], expect=201,
-        )
-
-        school = School.objects.get(slug="ceiling-three")
-        self.assertEqual(school.tenant.branches.count(), 3)
-
-    def test_a_school_onboarded_without_a_package_is_not_refused(self):
-        """The package step is optional; no plan is no ceiling, not zero."""
-        self._onboard(
-            slug="ceiling-planless", plan=None,
-            branch_names=["Ikeja", "Lekki"], expect=201,
-        )
+    def test_a_school_with_no_package_is_left_alone(self):
+        school = make_school(slug="ent-nopackage")
+        make_branch(school)
+        self._apply()
+        self.assertFalse(self._rows(school).exists())

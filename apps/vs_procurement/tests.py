@@ -3842,17 +3842,17 @@ class VendorAssessmentTests(_P2PFixtureMixin, TestCase):
 
     @patch("vs_rbac.permissions.is_vision_super_admin", return_value=False)
     @patch("vs_rbac.permissions.has_permission")
-    def test_create_needs_assessment_key_but_list_rides_report_view(self, mock_has, _super):
+    def test_create_needs_assessment_key_but_list_rides_analytics_view(self, mock_has, _super):
         entity, _, vendor, _, _ = self.build_p2p()
         client = self._client(self._user(entity, "assess-gate@test.com"))
         e = f"?entity={entity.code}"
-        # Without the create key, POST is denied but GET (report.view) still works.
+        # Without the create key, POST is denied but GET (analytics.view) still works.
         mock_has.side_effect = _deny_keys("procurement.vendor_assessment.create")
         denied = client.post(f"/v1/procurement/vendor-assessments/{e}", self._payload(vendor), format="json")
         self.assertEqual(denied.status_code, 403)
         self.assertEqual(client.get(f"/v1/procurement/vendor-assessments/{e}").status_code, 200)
-        # Deny report.view instead → listing is 403.
-        mock_has.side_effect = _deny_keys("procurement.report.view")
+        # Deny analytics.view instead → listing is 403.
+        mock_has.side_effect = _deny_keys("procurement.analytics.view")
         self.assertEqual(client.get(f"/v1/procurement/vendor-assessments/{e}").status_code, 403)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
@@ -3990,10 +3990,13 @@ class AnalyticsDrawerEndpointTests(_P2PFixtureMixin, TestCase):
 
     @patch("vs_rbac.permissions.is_vision_super_admin", return_value=False)
     @patch("vs_rbac.permissions.has_permission")
-    def test_drawer_endpoints_require_report_view(self, mock_has, _super):
+    def test_drawer_endpoints_require_analytics_view(self, mock_has, _super):
         entity, _, vendor, _, _ = self.build_p2p()
         client = self._client(self._user(entity, "drawer-gate@test.com"))
-        mock_has.side_effect = _deny_keys("procurement.report.view")
+        # ``analytics`` rather than ``report``: aging drawers are the analytical
+        # tail, sold a depth below the category and catalogue insights that
+        # kept the report key.
+        mock_has.side_effect = _deny_keys("procurement.analytics.view")
         e = f"?entity={entity.code}"
         for url in (
             f"/v1/procurement/reports/ap-aging/vendor/{e}&vendor={vendor.code}",
@@ -4246,10 +4249,10 @@ class GRIRPoLinesTests(_P2PFixtureMixin, TestCase):
 
     @patch("vs_rbac.permissions.is_vision_super_admin", return_value=False)
     @patch("vs_rbac.permissions.has_permission")
-    def test_grir_lines_require_report_view(self, mock_has, _super):
+    def test_grir_lines_require_analytics_view(self, mock_has, _super):
         entity, _, _, _, _ = self.build_p2p()
         client = self._client(self._user(entity, "grir-lines-gate@test.com"))
-        mock_has.side_effect = _deny_keys("procurement.report.view")
+        mock_has.side_effect = _deny_keys("procurement.analytics.view")
         e = f"?entity={entity.code}"
         for url in (
             f"/v1/procurement/reports/grir-lines/{e}",

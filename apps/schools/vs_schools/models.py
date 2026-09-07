@@ -6,6 +6,13 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from vs_config.models import Capability
+
+#: The three depths, taken from the capability catalogue rather than restated
+#: here. A plan and a band have to mean the same thing by "Plus", and two
+#: copies of the list is how they would eventually stop doing so.
+CapabilityDepth = Capability.Depth
+
 
 # -----------------------------------------------------------------------------
 # Shared base + helpers
@@ -62,23 +69,6 @@ class InviteStatus(models.TextChoices):
 class OperationOutcome(models.TextChoices):
     SUCCEEDED = "SUCCEEDED", "Succeeded"
     FAILED = "FAILED", "Failed"
-
-
-class PlanTier(models.TextChoices):
-    BASIC = "BASIC", "Basic"
-    STANDARD = "STANDARD", "Standard"
-    PREMIUM = "PREMIUM", "Premium"
-    ENTERPRISE = "ENTERPRISE", "Enterprise"
-
-
-class Modules(models.TextChoices):
-    STUDENTS = "STUDENTS", "Students Management"
-    TEACHERS = "TEACHERS", "Teachers Management"
-    PARENTS = "PARENTS", "Parents Management"
-    ATTENDANCE = "ATTENDANCE", "Attendance Tracking"
-    FINANCE = "FINANCE", "Finance"
-    PROCUREMENT = "PROCUREMENT", "Procurement"
-    VENDORS = "VENDORS", "Vendors Management"
 
 
 class OwnershipType(models.TextChoices):
@@ -486,11 +476,31 @@ class SchoolBranding(TimeStampedModel):
 
 
 class PackagePlan(TimeStampedModel):
-    """
-    Catalog entry describing an available subscription package.
+    """One tier a school can buy: a depth, and the price of reaching it.
 
-    Holds display data (`name`, `code`, `description`), billing cadence, seat caps,
-    and an `is_active` flag so deprecated plans can be hidden while keeping history.
+    A tier says how deep into the product a school may go, and nothing else.
+    Every school gets every module; the plan decides whether it sees the Core
+    of them, or Plus, or Advanced. That is what ``default_depth`` is, and for
+    almost every school it is the only thing about the plan that matters.
+
+    Nothing here caps a school's size. Four columns once did - a ceiling on
+    students, teachers, admins and branches - and they were the wrong dial.
+    Size is priced, not fenced: a school that doubles pays twice as much and
+    is never refused a child at the desk or a site it planned for months. The
+    only thing that moves a school up a tier is reaching a wall it can see,
+    which is a depth wall.
+
+    Fields:
+        name / code / description: The catalogue entry. ``code`` is the slug
+            API payloads carry (``package_plan="standard"``).
+        billing_cycle: The cadence the plan is invoiced on.
+        default_depth: How far into every module this tier reaches, as a
+            :class:`vs_config.models.Capability.Depth` value. Modules that
+            differ from it are named in :class:`PackagePlanModuleDepth`, and
+            a null means the plan is not depth-limited at all, which is what
+            Enterprise means by "everything".
+        is_active: Deprecated plans are hidden rather than deleted, because
+            schools still point at them.
     """
     name = models.CharField(max_length=120, unique=True)
     code = models.SlugField(max_length=100, unique=True)
@@ -502,10 +512,9 @@ class PackagePlan(TimeStampedModel):
         default=BillingCycle.YEARLY,
     )
 
-    max_students = models.PositiveIntegerField(null=True, blank=True)
-    max_teachers = models.PositiveIntegerField(null=True, blank=True)
-    max_admins = models.PositiveIntegerField(null=True, blank=True)
-    max_branch = models.PositiveIntegerField(null=True, blank=True)
+    default_depth = models.PositiveSmallIntegerField(
+        choices=CapabilityDepth.choices, null=True, blank=True,
+    )
 
     is_active = models.BooleanField(default=True)
 
@@ -517,6 +526,52 @@ class PackagePlan(TimeStampedModel):
     def __str__(self) -> str:
         return self.name
 
+    def depth_for(self, capability_key: str):
+        """The depth this plan reaches into one module.
+
+        The exception if the plan names one for that module, the plan's own
+        default otherwise. Callers pass a module key; a band key would be
+        asking the wrong question, since a band is not something a plan
+        grants.
+        """
+        exception = self.module_depths.filter(capability_key=capability_key).first()
+        return exception.depth if exception else self.default_depth
+
+
+class PackagePlanModuleDepth(TimeStampedModel):
+    """One module this plan reaches differently from the rest.
+
+    The exceptions table, and deliberately only that. A plan that sold every
+    module at its own depth would need no rows here at all, and most do not.
+    Listing every module against every plan instead would mean four more rows
+    each time a module is seeded, and a forgotten one would silently sell
+    nothing rather than failing loudly.
+
+    ``capability_key`` is the module's slug rather than a foreign key, because
+    ``vs_config`` is an engine and this is a school table: the plan catalogue
+    points at capabilities by the name they are seeded under, the same way
+    package setup already grants them.
+    """
+
+    plan = models.ForeignKey(
+        PackagePlan, on_delete=models.CASCADE, related_name="module_depths",
+    )
+    capability_key = models.SlugField(max_length=100)
+    depth = models.PositiveSmallIntegerField(choices=CapabilityDepth.choices)
+
+    class Meta:
+        ordering = ["capability_key"]
+        verbose_name = "Package Plan Module Depth"
+        verbose_name_plural = "Package Plan Module Depths"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["plan", "capability_key"], name="uniq_plan_module_depth",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.plan.code}: {self.capability_key} at {self.get_depth_display()}"
+
 
 class SchoolPackageSetup(TimeStampedModel):
     """
@@ -527,13 +582,16 @@ class SchoolPackageSetup(TimeStampedModel):
     past. The one-to-one relationship guarantees at most one active setup per
     school.
 
-    It does NOT record seat capacities. Three columns held a declared number of
-    students, teachers and admins, checked at registration against the plan's
-    own maximums and never again: nothing compared them to how many people a
-    school actually had, so a school with a 500-student capacity enrolled its
-    501st with nothing in the way. They described an intention, in a place that
-    reads like a limit. A plan still carries `max_students` and its siblings,
-    which describe the PLAN rather than any school on it.
+    `subscription_expires_at` is not a note. It is written onto every
+    capability grant this plan produces, as the moment they stop covering
+    anything, so a school that stops paying stops having the product rather
+    than keeping it switched on indefinitely. Changing the date here means
+    re-applying the plan, which is what
+    `services.packages.apply_plan_entitlements` is for.
+
+    It records no capacities, and the plan it points at sets no ceilings.
+    Size is priced rather than fenced: a school that grows pays more and is
+    never refused a child or a branch it planned for.
     """
     school = models.OneToOneField(
         School,

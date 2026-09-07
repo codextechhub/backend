@@ -21,6 +21,12 @@ PERM_UPDATE = "school.teachers.update"
 PERM_MANAGE = "school.teachers.manage"
 PERM_ASSIGN = "school.teachers.assign"
 
+#: Qualifications, certificates and documents. Separate from the register keys
+#: because reading a staff directory and reading somebody's certificates are
+#: sold at different depths, and one key cannot answer for both.
+PERM_RECORDS_VIEW = "school.staff_records.view"
+PERM_RECORDS_UPDATE = "school.staff_records.update"
+
 PERM_LEAVE_APPLY = "school.leave.apply"
 PERM_LEAVE_VIEW = "school.leave.view"
 PERM_LEAVE_MANAGE = "school.leave.manage"

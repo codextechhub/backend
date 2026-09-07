@@ -26,3 +26,8 @@ class CapabilityNotEntitled(ConfigurationError):
 # Raised when capability dependency evaluation detects an invalid graph.
 class CapabilityDependencyError(ConfigurationError):
     error_code = "CAPABILITY_DEPENDENCY_ERROR"
+
+
+# Raised when a tenant holds the module but not the band the caller asked for.
+class CapabilityDepthNotGranted(ConfigurationError):
+    error_code = "PLAN_DEPTH_REQUIRED"

@@ -6,7 +6,7 @@ from rest_framework.views import APIView
 
 from core.response import success_response
 
-from ..constants import PERM_CLASS_ASSIGN, PERM_MANAGE, PromotionOutcome
+from ..constants import PERM_CLASS_ASSIGN, PERM_PROMOTE, PromotionOutcome
 from ..models import StudentPromotionBatch
 from ..serializers import PromotionBatchSerializer, PromotionRunSerializer
 from ..services import promotion as promotion_service
@@ -90,7 +90,7 @@ class PromotionPreviewView(_PromotionBase):
     """
 
     def get_permissions(self):
-        self.rbac_permission = PERM_MANAGE
+        self.rbac_permission = PERM_PROMOTE
         return super().get_permissions()
 
     def post(self, request):
@@ -114,12 +114,14 @@ class PromotionRunView(_PromotionBase):
     """
 
     def get_permissions(self):
-        self.rbac_permission = PERM_MANAGE
+        self.rbac_permission = PERM_PROMOTE
         return super().get_permissions()
 
     def post(self, request):
         # Two keys: the run writes placements, and placing is vs_academics'.
-        self.assert_holds(PERM_MANAGE, PERM_CLASS_ASSIGN)
+        # ``promote`` rather than ``manage``: promoting the whole roll and
+        # moving one child between branches are sold at different depths.
+        self.assert_holds(PERM_PROMOTE, PERM_CLASS_ASSIGN)
 
         data = self._payload(request)
         from_session, to_session = self._sessions(data)
@@ -142,7 +144,7 @@ class PromotionBatchView(StudentsViewMixin, APIView):
     """
 
     def get_permissions(self):
-        self.rbac_permission = PERM_MANAGE
+        self.rbac_permission = PERM_PROMOTE
         return super().get_permissions()
 
     def get(self, request, pk):

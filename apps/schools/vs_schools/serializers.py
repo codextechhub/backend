@@ -64,50 +64,6 @@ def _slug_is_unique(slug: str, exclude_school_slug: Optional[str] = None) -> boo
     return not qs.filter(slug=slug).exists()
 
 
-#: Branch states that still occupy a seat on the school's plan. CLOSED is
-#: terminal and the site is gone, so a school that shuts Ikeja gets that seat
-#: back and can open Yaba in its place; a merely suspended or inactive site is
-#: expected to come back and keeps its seat. Counting closed sites would mean a
-#: school on a two-site plan could never replace one, only ever pay for more.
-BRANCH_STATES_AGAINST_PLAN = [
-    BranchStatus.ACTIVE,
-    BranchStatus.PENDING,
-    BranchStatus.SUSPENDED,
-    BranchStatus.INACTIVE,
-]
-
-
-def branch_ceiling_refusal(*, plan, existing: int, adding: int = 1) -> str:
-    """The refusal for a plan's branch ceiling, or "" when there is room.
-
-    ``PackagePlan.max_branch`` was stored, seeded with real numbers (Starter 1,
-    Standard 5, Premium 20) and shown on the plans screen, and nothing in the
-    codebase ever read it: Bright Star signed for one site and opened four,
-    which made the ceiling a sales promise the product quietly broke. It is
-    checked here rather than in each caller so the two ways a school gains a
-    branch - the standalone create endpoint and the nested list inside school
-    creation - cannot answer the question differently.
-
-    ``max_branch=None`` is unlimited, which is what the Enterprise plan means by
-    it, and a school with no package setup at all has no ceiling to breach.
-    """
-    limit = getattr(plan, "max_branch", None) if plan else None
-    if limit is None:
-        return ""
-    if existing + adding <= limit:
-        return ""
-    plan_name = getattr(plan, "name", "") or "this plan"
-    seats = "branch" if limit == 1 else "branches"
-    if existing:
-        have = f"This school already has {existing}."
-    else:
-        have = f"This request would create {adding}."
-    return (
-        f"{plan_name} allows {limit} {seats}. {have} "
-        f"Upgrade the package plan to add more."
-    )
-
-
 def full_clean_as_field_errors(instance, *, wrote: Optional[Iterable[str]] = None) -> None:
     """``instance.full_clean()``, with its refusal renamed into DRF's shape.
 
@@ -269,10 +225,16 @@ class BranchLifecycleSerializer(serializers.ModelSerializer):
 # ---------------------------------------------------------------
 
 class PackagePlanSerializer(serializers.ModelSerializer):
+    """Read-only representation of a PackagePlan catalog entry.
+
+    Used for listing available plans in the Package Plan dropdown. Carries the
+    depth the tier reaches and the modules it reaches differently, because
+    those two are now the whole of what distinguishes one plan from another.
     """
-    Read-only representation of a PackagePlan catalog entry.
-    Used for listing available plans in the Package Plan dropdown.
-    """
+
+    default_depth_label = serializers.SerializerMethodField()
+    module_depths = serializers.SerializerMethodField()
+
     class Meta:
         model = PackagePlan
         fields = [
@@ -281,13 +243,25 @@ class PackagePlanSerializer(serializers.ModelSerializer):
             "code",
             "description",
             "billing_cycle",
-            "max_students",
-            "max_teachers",
-            "max_admins",
-            "max_branch",
+            "default_depth",
+            "default_depth_label",
+            "module_depths",
             "is_active",
         ]
         read_only_fields = fields
+
+    def get_default_depth_label(self, obj) -> str:
+        return obj.get_default_depth_display() or "Unlimited"
+
+    def get_module_depths(self, obj) -> list:
+        return [
+            {
+                "capability_key": row.capability_key,
+                "depth": row.depth,
+                "depth_label": row.get_depth_display(),
+            }
+            for row in obj.module_depths.all()
+        ]
 
 
 class XVSModuleSerializer(serializers.ModelSerializer):
@@ -382,16 +356,35 @@ class SchoolPackageSetupReadSerializer(serializers.ModelSerializer):
     enabled_modules = serializers.SerializerMethodField()
 
     def get_enabled_modules(self, obj):
-        # Entitlements are tenant-scoped, never school-scoped: the school
-        # reaches its own tenant. Filtering on the tenant (not a NULL-tenant
-        # platform grant) keeps one school from reading another's package.
-        capability_ids = CapabilityEntitlement.all_objects.filter(
+        """The modules this school holds, each with the depth it reaches.
+
+        Every school holds every module now, so the list alone says nothing
+        about what a school bought and the depth beside each row is the whole
+        of the answer. It is carried here rather than on
+        :class:`XVSModuleSerializer`, which also backs the operator's module
+        picker, where no school is in scope and a depth would be meaningless.
+
+        Entitlements are tenant-scoped, never school-scoped: the school
+        reaches its own tenant. Filtering on the tenant (not a NULL-tenant
+        platform grant) keeps one school from reading another's package.
+        """
+        rows = CapabilityEntitlement.all_objects.filter(
             tenant_id=obj.school.tenant_id,
             state=CapabilityEntitlement.State.GRANTED,
             source=CapabilityEntitlement.Source.PACKAGE,
-        ).values_list("capability_id", flat=True)
-        capabilities = Capability.objects.filter(pk__in=capability_ids, is_active=True)
-        return XVSModuleSerializer(capabilities, many=True).data
+        ).select_related("capability")
+        depths = {row.capability_id: row.depth for row in rows}
+        capabilities = Capability.objects.filter(
+            pk__in=list(depths), is_active=True,
+        ).prefetch_related("dependency_links__requires")
+        payload = XVSModuleSerializer(capabilities, many=True).data
+        for item, capability in zip(payload, capabilities):
+            depth = depths.get(capability.pk)
+            item["depth"] = depth
+            item["depth_label"] = (
+                Capability.Depth(depth).label if depth is not None else "Unlimited"
+            )
+        return payload
 
     class Meta:
         model = SchoolPackageSetup
@@ -592,27 +585,6 @@ class BranchCreateSerializer(serializers.ModelSerializer):
         if school and is_main:
             if Branch.all_objects.filter(tenant=school.tenant, is_main=True).exists():
                 raise serializers.ValidationError({"is_main": "This school already has a main branch."})
-
-        # The plan's branch ceiling, checked before anything is written.
-        if school:
-            setup = SchoolPackageSetup.objects.filter(
-                school=school
-            ).select_related("package_plan").first()
-            if setup:
-                refusal = branch_ceiling_refusal(
-                    plan=setup.package_plan,
-                    # ``all_objects``, not ``objects``: the latter is
-                    # tenant-scoped to the caller, and the caller here is
-                    # usually a CodeX operator adding a branch on the school's
-                    # behalf. Scoped, they would count zero sites and every
-                    # plan would look empty.
-                    existing=Branch.all_objects.filter(
-                        tenant=school.tenant,
-                        status__in=BRANCH_STATES_AGAINST_PLAN,
-                    ).count(),
-                )
-                if refusal:
-                    raise serializers.ValidationError({"non_field_errors": [refusal]})
 
         primary_admin_data = attrs.get("primary_admin_data")
         if primary_admin_data:
@@ -1190,22 +1162,6 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 "branches": "Only one branch can be marked as is_main=true."
             })
-
-        # Rule 3: the submitted branches must fit the plan being signed for.
-        # Checked here as well as on the standalone branch endpoint, because
-        # onboarding is the one moment a school can arrive with several sites
-        # at once - refusing the fourth branch later while letting all four in
-        # at creation would leave the ceiling enforced everywhere except the
-        # one path that can breach it in a single request.
-        package_setup_data = attrs.get("package_setup_data") or {}
-        refusal = branch_ceiling_refusal(
-            plan=package_setup_data.get("package_plan"),
-            existing=0,
-            adding=len(branches),
-        )
-        if refusal:
-            raise serializers.ValidationError({"branches": refusal})
-
         return attrs
 
     @transaction.atomic
@@ -1355,7 +1311,11 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         
         # --- 5. Optional package setup ---
         if package_setup_data:
-            enabled_modules = package_setup_data.pop("enabled_modules", [])
+            # The wizard still sends a module list and it no longer narrows
+            # anything: the plan grants every module, and decides how deep.
+            # Accepted rather than refused so a frontend that has not caught
+            # up yet keeps working; see services.packages for the reasoning.
+            package_setup_data.pop("enabled_modules", None)
 
             # subscription_expires_at defaults to 1 year if not provided
             expires_at = package_setup_data.pop("subscription_expires_at", None)
@@ -1370,31 +1330,16 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 **package_setup_data,
             )
 
-            # Close the grant set under capability dependencies (transitively):
-            # a picked module must not end up entitled-but-off because its
-            # requirement wasn't ticked (e.g. procurement needs finance). The
-            # wizard mirrors this expansion client-side; this is the guarantee.
-            to_grant = {c.pk: c for c in enabled_modules}
-            stack = list(enabled_modules)
-            while stack:
-                for link in stack.pop().dependency_links.select_related("requires"):
-                    required = link.requires
-                    if required.pk not in to_grant and required.is_active:
-                        to_grant[required.pk] = required
-                        stack.append(required)
+            # One choke point for the plan-to-grants translation, so this path
+            # and a later plan change cannot answer it differently.
+            from .services.packages import apply_plan_entitlements
 
-            # vs_config owns entitlement writes: it computes the canonical
-            # "tenant:<id>" scope key and audits every grant. Writing rows
-            # here directly is what let this path drift out of step with it.
-            for capability in to_grant.values():
-                set_entitlement(
-                    capability=capability,
-                    tenant=school.tenant,
-                    state=CapabilityEntitlement.State.GRANTED,
-                    source=CapabilityEntitlement.Source.PACKAGE,
-                    actor=actor,
-                    reason=f"School package setup for {school.name}",
-                )
+            apply_plan_entitlements(
+                school=school,
+                plan=setup.package_plan,
+                expires_at=setup.subscription_expires_at,
+                actor=actor,
+            )
 
         # --- 6. Set of books (best effort, never fatal) ---
         # Every school gets books, entitled to finance or not: adding them later

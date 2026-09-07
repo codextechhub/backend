@@ -22,7 +22,7 @@ from rest_framework.views import APIView
 
 from core.response import success_response
 
-from ..constants import PERM_UPDATE, PERM_VIEW
+from ..constants import PERM_RECORDS_UPDATE, PERM_RECORDS_VIEW
 from ..models import StaffDocument, StaffQualification
 from ..serializers import (
     DocumentCreateSerializer,
@@ -69,7 +69,10 @@ class _StaffChildView(StaffViewMixin, APIView):
     @property
     def rbac_permission(self):
         method = (getattr(self.request, "method", "") or "").upper()
-        return PERM_VIEW if method in ("GET", "HEAD", "OPTIONS") else PERM_UPDATE
+        return (
+            PERM_RECORDS_VIEW if method in ("GET", "HEAD", "OPTIONS")
+            else PERM_RECORDS_UPDATE
+        )
 
 
 class QualificationListCreateView(_StaffChildView):
@@ -107,7 +110,7 @@ class QualificationDetailView(StaffViewMixin, APIView):
     docstring-name: One qualification
     """
 
-    rbac_permission = PERM_UPDATE
+    rbac_permission = PERM_RECORDS_UPDATE
     pending_tenant_surface = True
 
     def _row(self, pk):
@@ -185,7 +188,7 @@ class DocumentDetailView(StaffViewMixin, APIView):
     docstring-name: One staff document
     """
 
-    rbac_permission = PERM_UPDATE
+    rbac_permission = PERM_RECORDS_UPDATE
     pending_tenant_surface = True
 
     @transaction.atomic

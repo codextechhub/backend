@@ -3,6 +3,7 @@ from __future__ import annotations
 from django.core.exceptions import ImproperlyConfigured
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission, SAFE_METHODS
+from .exceptions import PlanUpgradeRequired
 from .evaluator import (
     ANY_BRANCH,
     _group_permission_keys,
@@ -384,6 +385,17 @@ class HasRBACPermission(BasePermission):
 
             if not has_all_permissions(u, perm_keys, tenant=tenant):
                 passed = False
+
+        # The plan gate, asked only of a caller whose role already allows the
+        # request. Asking it first would tell a school which modules it has
+        # not bought through endpoints its staff may not use at all, and would
+        # answer "upgrade your plan" to someone whose real problem is a role.
+        if passed and rbac_perms:
+            from .plan_gate import plan_refusal
+
+            refusal = plan_refusal(rbac_perms, tenant)
+            if refusal:
+                raise PlanUpgradeRequired(refusal)
 
         return passed
 
