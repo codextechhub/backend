@@ -378,6 +378,7 @@ class TenantRoleTemplateDetailSerializer(
                 )
         self._reject_out_of_scope_keys(attrs, tenant)
         self._reject_restricted_additions(attrs)
+        self._reject_last_way_in(attrs, tenant)
         if "permission_keys" in attrs or "group_ids" in attrs:
             reason = (attrs.get("reason") or "").strip()
             if not reason:
@@ -386,6 +387,61 @@ class TenantRoleTemplateDetailSerializer(
                 })
             attrs["reason"] = reason
         return attrs
+
+    def _reject_last_way_in(self, attrs, tenant):
+        """Refuse the change that would leave a tenant with no way back in.
+
+        Taking a role out of use is an ordinary thing to do and stays ordinary.
+        It is only refused when the role being retired is the only remaining way
+        anybody in the tenant can administer roles at all:
+
+            Holy Cross has one head teacher, holding School Admin. She opens the
+            roles screen, takes School Admin out of use to see what it does, and
+            the next request she makes is refused - including the one that would
+            put it back. Nothing on any screen can undo it, because every screen
+            that could is behind the role she just switched off. The tenant is
+            locked out until CodeX edits the database.
+
+        So the check is the invariant rather than the symptom: after this save,
+        somebody active must still hold an active role carrying a role-update
+        key. That covers the head teacher retiring her own role, and equally an
+        administrator retiring the only *other* role that could have let anyone
+        back in.
+        """
+        if self.instance is None:
+            return
+        status = attrs.get("status")
+        if status is None or status == self.instance.status:
+            return
+        if status == TenantRoleTemplate.Status.ACTIVE:
+            return
+
+        from ..views import ROLE_UPDATE_KEYS
+
+        # Roles that would still be active and still carry a way back in.
+        survivors = (
+            TenantRoleTemplate.objects.filter(
+                tenant=tenant,
+                status=TenantRoleTemplate.Status.ACTIVE,
+                role_permissions__permission_id__in=ROLE_UPDATE_KEYS,
+                role_permissions__granted=True,
+            )
+            .exclude(pk=self.instance.pk)
+            .distinct()
+        )
+        # A role nobody holds is not a way back in, so holders are part of the
+        # question rather than a separate one.
+        still_reachable = TenantUserRoleAssignment.objects.filter(
+            role__in=survivors, assignment_status="ACTIVE",
+        ).exists()
+        if not still_reachable:
+            raise serializers.ValidationError({
+                "status": (
+                    "This is the only role left that can administer roles here, "
+                    "and nobody would be able to switch it back on. Give somebody "
+                    "else a role that can manage roles first, then retire this one."
+                ),
+            })
 
     def _reject_restricted_additions(self, attrs):
         """Keep direct saves from activating a new restricted permission."""

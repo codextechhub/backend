@@ -409,6 +409,67 @@ class TenantRoleTemplateViewTests(TestCase):
             "Teachers now maintain student profiles.",
         )
 
+    def test_a_school_cannot_retire_its_only_way_back_in(self):
+        """The head teacher who switches off her own role locks the school out.
+
+        Holy Cross has one head teacher holding School Admin. Taking it out of
+        use refuses every later request, including the one that would put it
+        back, because every screen that could is behind the role she just
+        switched off. Nothing short of CodeX editing the database recovers it.
+
+        The admin's own grant role is the one retired here, because that is the
+        shape of the real case: the only role carrying a way in is the one its
+        only holder is switching off.
+        """
+        own = TenantRoleTemplate.objects.get(
+            tenant=self.school.tenant, name__startswith="grant-role-",
+        )
+
+        resp = _token_client(self.admin).patch(
+            self._detail_url(own.key),
+            {"status": "INACTIVE", "reason": "Seeing what this does."},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("status", resp.data["error"]["detail"])
+        own.refresh_from_db()
+        self.assertEqual(own.status, "ACTIVE")
+
+    def test_a_role_can_be_retired_while_another_still_lets_somebody_in(self):
+        """The guard is the invariant, not a ban on retiring roles."""
+        spare = make_role(self.school, name="Deputy Head")
+        make_role_permission(spare, make_permission("school.roles.update"))
+
+        resp = _token_client(self.admin).patch(
+            self._detail_url(spare.key),
+            {"status": "INACTIVE", "reason": "Not needed this term."},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        spare.refresh_from_db()
+        self.assertEqual(spare.status, "INACTIVE")
+
+    def test_a_role_nobody_holds_is_not_a_way_back_in(self):
+        """An unheld role reaches nobody, so it cannot be what keeps a school in."""
+        own = TenantRoleTemplate.objects.get(
+            tenant=self.school.tenant, name__startswith="grant-role-",
+        )
+        # Active, carries the key, assigned to nobody: not a way back in.
+        unheld = make_role(self.school, name="Spare Admin")
+        make_role_permission(unheld, make_permission("school.roles.update"))
+
+        resp = _token_client(self.admin).patch(
+            self._detail_url(own.key),
+            {"status": "INACTIVE", "reason": "Tidying up."},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        own.refresh_from_db()
+        self.assertEqual(own.status, "ACTIVE")
+
     def test_update_permissions_requires_reason(self):
         role = make_role(self.school, name="Teacher")
         original = make_permission("students.profile.view")
