@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import mimetypes
-import os
 
 from django.http import FileResponse, HttpResponse, Http404
 from django.shortcuts import get_object_or_404
@@ -646,9 +645,16 @@ class ImportBatchFileDownloadView(ImportBatchContextMixin, APIView):
     """
     GET -> stream the uploaded batch file as an attachment.
 
-    Works in both DEBUG and non-DEBUG environments because it reads
-    the file from MEDIA_ROOT and serves it directly rather than
-    redirecting to a media URL.
+    Read through the file's own storage rather than off the filesystem, and
+    served here rather than as a redirect to a media URL, so the bytes come
+    back through the same authenticated request that asked for them.
+
+    The storage matters. ``FileField.path`` is only implemented by filesystem
+    storages, and this project stores uploads in the database
+    (``core.storage.DatabaseStorage``), so reading a path raised
+    NotImplementedError and every download of an uploaded file answered 500.
+    ``storage.open`` is the API every backend implements, which is what
+    vs_exports already uses to serve a produced file.
 
     docstring-name: Download an import file
     """
@@ -672,20 +678,22 @@ class ImportBatchFileDownloadView(ImportBatchContextMixin, APIView):
         if not batch.file:
             raise Http404("No file attached to this batch.")
 
-        file_path = batch.file.path
-        if not os.path.exists(file_path):
-            raise Http404("File not found on server.")
+        storage = batch.file.storage
+        if not storage.exists(batch.file.name):
+            raise Http404("File not found in storage.")
 
-        content_type, _ = mimetypes.guess_type(file_path)
+        # Guessed from the name the school uploaded, not from the stored key:
+        # the stored name carries a uniqueness suffix and the extension is what
+        # decides whether a browser offers to open the file in a spreadsheet.
+        content_type, _ = mimetypes.guess_type(batch.original_filename)
         content_type = content_type or "application/octet-stream"
 
-        response = FileResponse(
-            open(file_path, "rb"),
+        return FileResponse(
+            storage.open(batch.file.name, "rb"),
             content_type=content_type,
             as_attachment=True,
             filename=batch.original_filename,
         )
-        return response
 
 
 # =========================================================

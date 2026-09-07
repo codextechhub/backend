@@ -77,7 +77,19 @@ class DatabaseStorage(Storage):
                 f"File type '{ext or 'unknown'}' is not accepted - only "
                 f"spreadsheets (csv/xlsx), images and PDFs are stored."
             )
-        data = content.read()
+        # Read through chunks(), never a bare read(). A caller that has already
+        # inspected the upload leaves the stream at EOF, and read() then returns
+        # nothing at all: the row is written with zero bytes while the model
+        # beside it records the true size from the upload handler, so the file
+        # looks present everywhere until somebody downloads it. The import
+        # engine parses a spreadsheet for its preview before saving it, which is
+        # exactly that shape.
+        #
+        # File.chunks() rewinds first, which is why Django's own storages never
+        # had the problem and why this matches them rather than patching the
+        # callers one at a time. Storage.save() wraps anything without chunks()
+        # in a File before calling here, so it is always available.
+        data = b"".join(content.chunks())
         max_bytes = getattr(settings, "MEDIA_DB_MAX_BYTES", MAX_BYTES_DEFAULT)
         if len(data) > max_bytes:
             raise ValidationError(
