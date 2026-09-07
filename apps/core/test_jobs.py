@@ -82,6 +82,54 @@ class TrackedTaskTests(TestCase):
         self.assertIn("Probe job", note.body)
         self.assertEqual(note.tenant_id, self.owner.tenant_id)
 
+    def test_target_reaches_the_notification_that_links_back_to_it(self):
+        """The job's subject travels from the call site to the bell entry.
+
+        A label is prose. Without the target beside it the notification can
+        report that an import finished and offer no way to reach what it did,
+        which is the whole reason the field exists.
+        """
+        _job_probe_ok.delay(
+            7,
+            _job_owner_id=str(self.owner.id),
+            _job_label="Import: staff-import.csv",
+            _job_kind="import",
+            _job_target_id="7f3c9e10-0000-4000-8000-000000000001",
+        )
+        job = BackgroundJob.objects.get(owner=self.owner)
+        self.assertEqual(job.target_id, "7f3c9e10-0000-4000-8000-000000000001")
+
+        from vs_notifications.constants import ChannelChoices
+        from vs_notifications.models import Notification
+        from vs_notifications.services.routing import notification_action_url
+        note = Notification.objects.get(
+            recipient=self.owner, channel=ChannelChoices.IN_APP,
+        )
+        self.assertEqual(
+            notification_action_url(note),
+            "/data-imports/batches/7f3c9e10-0000-4000-8000-000000000001/view",
+        )
+
+    def test_untargeted_job_still_notifies(self):
+        """A job with nothing to point at keeps its bell entry and loses only
+        the link. Tracking must never depend on a caller supplying a target."""
+        _job_probe_ok.delay(
+            3,
+            _job_owner_id=str(self.owner.id),
+            _job_label="Probe job",
+            _job_kind="import",
+        )
+        job = BackgroundJob.objects.get(owner=self.owner)
+        self.assertEqual(job.target_id, "")
+
+        from vs_notifications.constants import ChannelChoices
+        from vs_notifications.models import Notification
+        from vs_notifications.services.routing import notification_action_url
+        note = Notification.objects.get(
+            recipient=self.owner, channel=ChannelChoices.IN_APP,
+        )
+        self.assertEqual(notification_action_url(note), "")
+
     def test_failure_recorded_with_error(self):
         with self.assertRaises(RuntimeError):
             _job_probe_boom.delay(

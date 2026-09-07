@@ -9,6 +9,7 @@ rejections), and the empty-list response shape.
 Runs on Postgres, the only engine the platform uses - so the conditional
 UniqueConstraints here are exercised the way production enforces them.
 """
+from types import SimpleNamespace
 from unittest import mock
 
 from django.contrib.auth import get_user_model
@@ -17,11 +18,12 @@ from django.core.checks.registry import registry as check_registry
 from django.core import mail
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from schools.vs_schools.models import School
 
 from .constants import ChannelChoices, NotificationErrorCode, NotificationPermission, NotificationStatus
+from .services.routing import notification_action_url, notification_route_q
 from .models import (
     Notification,
     NotificationEventType,
@@ -2554,4 +2556,63 @@ class EagerDeliveryAcrossTenantsTests(_NotifFixture):
         self.assertTrue(
             any(self.cx.email in message.to for message in mail.outbox),
             [message.to for message in mail.outbox],
+        )
+
+
+class BackgroundJobActionUrlTests(SimpleTestCase):
+    """Where the generic background-job bell sends a reader.
+
+    Every other rule in ``routing`` reads the event key, because the key names
+    the subject: ``ticket.assigned`` is about a ticket. ``task.completed`` names
+    only the outcome, so the destination has to come from the job's own kind and
+    target instead. Without them the notification is unfollowable, which is the
+    state an import lands in: "Import: staff-import.csv finished successfully"
+    with nowhere to read which rows were skipped.
+    """
+
+    @staticmethod
+    def _notification(key, metadata):
+        return SimpleNamespace(
+            event_type=SimpleNamespace(key=key), metadata=metadata,
+        )
+
+    def test_import_job_links_to_its_batch(self):
+        url = notification_action_url(self._notification(
+            "task.completed",
+            {"job_kind": "import", "job_target_id": "abc-123"},
+        ))
+        self.assertEqual(url, "/data-imports/batches/abc-123/view")
+
+    def test_rollback_lands_on_the_same_batch(self):
+        url = notification_action_url(self._notification(
+            "task.failed",
+            {"job_kind": "import_rollback", "job_target_id": "abc-123"},
+        ))
+        self.assertEqual(url, "/data-imports/batches/abc-123/view")
+
+    def test_kind_with_no_record_page_stays_unlinked(self):
+        """An email job has no page of its own, so it offers no dead link."""
+        url = notification_action_url(self._notification(
+            "task.completed", {"job_kind": "email", "job_target_id": "42"},
+        ))
+        self.assertEqual(url, "")
+
+    def test_missing_target_stays_unlinked(self):
+        """A job queued without a target cannot name a batch, so it says so
+        rather than routing to ``/data-imports/batches//view``."""
+        url = notification_action_url(self._notification(
+            "task.completed", {"job_kind": "import"},
+        ))
+        self.assertEqual(url, "")
+
+    def test_no_metadata_at_all(self):
+        url = notification_action_url(
+            self._notification("task.completed", None)
+        )
+        self.assertEqual(url, "")
+
+    def test_batch_route_filters_the_jobs_about_that_batch(self):
+        """The reverse direction, so a batch page can ask for its own post."""
+        self.assertIsNotNone(
+            notification_route_q("/data-imports/batches/abc-123/view")
         )

@@ -130,6 +130,14 @@ class BackgroundJob(models.Model):
         max_length=255, blank=True, default="",
         help_text="Human description shown in the queue UI.",
     )
+    target_id = models.CharField(
+        max_length=64, blank=True, default="",
+        help_text=(
+            "Primary key of the record this job is about, as text. The label "
+            "names the work in prose and cannot be followed; this is what lets "
+            "a completion notification link back to the thing it finished."
+        ),
+    )
     task_name = models.CharField(max_length=255, blank=True, default="")
     celery_task_id = models.CharField(max_length=64, unique=True)
     status = models.CharField(

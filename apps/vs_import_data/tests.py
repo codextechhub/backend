@@ -484,3 +484,68 @@ class ImportDoesNotWriteARoleLabelTests(TestCase):
         self.assertEqual(issues[0]["code"], "column_unknown")
         self.assertEqual(issues[0]["severity"], "warning")
         self.assertEqual(issues[0]["column_name"], "role_label")
+
+
+class OnboardingImportSurfaceTests(TestCase):
+    """What a school still being set up may reach of the import engine.
+
+    Loading initial data is a step on the school's own checklist, so the whole
+    upload-check-import path has to work while the tenant is PENDING. The
+    school app drives that path with the same import wizard it uses once live,
+    and the wizard reads a template's instructions and columns before it will
+    accept a file - so a surface that opens the template LIST and closes the
+    template DETAIL lets a school pick a template and not read the rules for
+    the file it is being asked to build.
+
+    That gap was invisible for as long as the onboarding screen kept its own
+    copy of the upload flow, because the copy only ever listed. These assert
+    the surface is coherent for the flow that actually runs on it.
+    """
+
+    def setUp(self):
+        self.school = make_school(slug="pending-import-school", status="PENDING")
+        self.branch = make_branch(self.school)
+        self.user = make_school_admin(self.branch, email="pending-import@test.com")
+        role = make_role(self.school.tenant, name="School admin")
+        for key in ("import.templates.view", "import.batches.view"):
+            make_role_permission(role, make_permission(key))
+        make_assignment(self.school.tenant, self.user, role)
+        self.client = TenantAPIClient(user=self.user)
+        self.template = ImportTemplate.objects.create(
+            code="pending-onboarding-template",
+            name="Students",
+            dataset_type=DatasetTypeChoices.CX_USERS,
+            default_file_format=FileFormatChoices.CSV,
+            instructions="One row per student. Class must already exist.",
+        )
+
+    def test_a_school_being_set_up_can_read_a_templates_rules(self):
+        response = self.client.get(
+            f"/v1/import/system-import-templates/{self.template.pk}/"
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIn("instructions", response.data["data"])
+
+    def test_the_list_it_picks_from_is_open_too(self):
+        response = self.client.get("/v1/import/system-import-templates/")
+
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_its_own_batches_are_readable_while_it_is_still_pending(self):
+        response = self.client.get("/v1/import/batches/")
+
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_template_authoring_stays_shut_to_a_pending_school(self):
+        """The read is open; the write on the same view is not, and the verb is
+        named on the flag rather than left to the permission alone."""
+        response = self.client.patch(
+            f"/v1/import/system-import-templates/{self.template.pk}/",
+            {"name": "Renamed by a school"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403, response.content)
+        self.template.refresh_from_db()
+        self.assertEqual(self.template.name, "Students")

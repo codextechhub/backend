@@ -266,6 +266,17 @@ class SystemImportTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, gener
 
     docstring-name: Import templates
     """
+    # GET only, and for the same reason the list above is open: loading initial
+    # data is a step on the school's own checklist, and this is where the
+    # template's instructions and column definitions come from. Without it a
+    # school still setting up can list templates, download one, upload against
+    # it, validate and import - and cannot read the rules for the file it is
+    # being asked to build.
+    #
+    # PATCH and PUT stay shut. They are template authoring, which no school role
+    # holds (see SCHOOL_ADMIN_IMPORT_KEYS), and naming the verb here means a
+    # surface flag can never open what the key refuses.
+    pending_tenant_surface = ("get",)
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     lookup_url_kwarg = "template_id"
 
@@ -889,6 +900,7 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
                     _job_tenant_id=str(import_batch.tenant_id),
                     _job_label=f"Import: {import_batch.original_filename or import_batch.dataset_type}",
                     _job_kind="import",
+                    _job_target_id=str(import_batch.id),
                 )
             except Exception as exc:
                 # With CELERY_TASK_ALWAYS_EAGER + CELERY_TASK_EAGER_PROPAGATES,
@@ -1020,6 +1032,7 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
                     _job_tenant_id=str(job.import_batch.tenant_id),
                     _job_label=f"Rollback: {job.import_batch.original_filename or job.id}",
                     _job_kind="import_rollback",
+                    _job_target_id=str(job.import_batch_id),
                 )
             except Exception as exc:
                 # Eager execution propagates a task failure to here. Release the

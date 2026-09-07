@@ -13,7 +13,14 @@ so task signatures stay untouched::
         _job_tenant_id=request.user.tenant_id,
         _job_label=f"Import: {batch.file_name}",
         _job_kind="import",
+        _job_target_id=str(batch.id),
     )
+
+``_job_target_id`` is the record the work is about. A label is prose and
+cannot be followed, so a job that notifies its owner without one produces a
+bell entry that reports an outcome and offers no way to reach it: "Import:
+staff-import.csv finished successfully" with nowhere to read which three rows
+were skipped. Any task whose kind notifies should pass it.
 
 ``_job_owner_id`` is the ACTOR who triggered the work - never the subject the
 work is *about*. An invitation email to Jane, queued by admin Ada, is owned by
@@ -46,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 _JOB_KWARGS = (
     "_job_owner_id", "_job_tenant_id", "_job_label",
-    "_job_kind", "_job_notify",
+    "_job_kind", "_job_notify", "_job_target_id",
 )
 
 # These categories produce a user-visible result that is not already announced
@@ -110,6 +117,7 @@ class TrackedTask(Task):
                     tenant_id=_resolve_job_tenant_id(meta),
                     label=meta["_job_label"] or "",
                     kind=kind,
+                    target_id=str(meta["_job_target_id"] or "")[:64],
                     task_name=self.name or "",
                     status=BackgroundJob.Status.QUEUED,
                     notify_owner=_should_notify_owner(kind, meta["_job_notify"]),
@@ -280,6 +288,9 @@ class TrackedTask(Task):
                 },
                 recipients=[job.owner],
                 tenant=job.tenant,
+                # What the job was about, so the bell entry can be followed
+                # back to it. Routing reads these two; the body only says.
+                metadata={"job_kind": job.kind, "job_target_id": job.target_id},
             )
         except Exception:  # pragma: no cover
             # Best-effort: any failure (including UnknownEventTypeError when the
