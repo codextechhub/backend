@@ -264,6 +264,79 @@ class PackagePlanSerializer(serializers.ModelSerializer):
         ]
 
 
+class ChangeSchoolPlanSerializer(serializers.Serializer):
+    """Move a school onto another plan.
+
+    Takes the plan's code rather than its primary key, matching every other
+    package payload and the dropdown that emits it. Refuses a move to the plan
+    the school is already on: a no-op that re-grants every module and writes an
+    audit event for each reads, later, as a change somebody made.
+    """
+
+    package_plan = serializers.SlugField(max_length=100)
+    subscription_expires_at = serializers.DateField(required=False, allow_null=True)
+    reason = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate_package_plan(self, code):
+        plan = PackagePlan.objects.filter(code=code, is_active=True).first()
+        if plan is None:
+            raise serializers.ValidationError(
+                f"No active package plan is named '{code}'."
+            )
+        school = self.context["school"]
+        setup = getattr(school, "package_setup", None)
+        if setup is None:
+            raise serializers.ValidationError(
+                "This school has no package setup to move. It was created "
+                "without one, so there is no plan to change."
+            )
+        if setup.package_plan_id == plan.pk:
+            raise serializers.ValidationError(
+                f"{school.name} is already on {plan.name}."
+            )
+        return plan
+
+    def validate_subscription_expires_at(self, value):
+        if value and value < timezone.localdate():
+            raise serializers.ValidationError("Subscription expiry cannot be in the past.")
+        return value
+
+
+class SchoolPlanUpliftSerializer(serializers.Serializer):
+    """Give one school deeper reach into one module, for a while.
+
+    ``reason`` is required rather than optional. An uplift is a commercial
+    exception somebody will ask about months later, usually when it expires and
+    a school notices something has gone; a blank reason makes that conversation
+    guesswork.
+    """
+
+    capability = serializers.SlugField(max_length=100)
+    depth = serializers.ChoiceField(choices=Capability.Depth.choices)
+    starts_at = serializers.DateTimeField(required=False, allow_null=True)
+    ends_at = serializers.DateTimeField(required=False, allow_null=True)
+    reason = serializers.CharField()
+
+    def validate_capability(self, key):
+        row = Capability.objects.filter(key=key, is_active=True).first()
+        if row is None:
+            raise serializers.ValidationError(f"No active capability is named '{key}'.")
+        if row.parent_id:
+            raise serializers.ValidationError(
+                f"'{key}' is a band of {row.parent.key}. Depth applies to the "
+                f"module, so name '{row.parent.key}' instead."
+            )
+        return row
+
+    def validate(self, attrs):
+        starts_at, ends_at = attrs.get("starts_at"), attrs.get("ends_at")
+        if ends_at and ends_at <= timezone.now():
+            raise serializers.ValidationError({"ends_at": "Expiry must be in the future."})
+        if starts_at and ends_at and starts_at >= ends_at:
+            raise serializers.ValidationError({"ends_at": "Expiry must be after activation."})
+        return attrs
+
+
 class XVSModuleSerializer(serializers.ModelSerializer):
     """
     Read-only representation of a platform module.

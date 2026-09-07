@@ -2,6 +2,11 @@ from django.urls import path
 
 from .views.my_branches import MyBranchDetailView, MyBranchListView
 from .views.package import PackagePlanListView, XVSModuleListView
+from .views.plan import (
+    SchoolPlanUpliftDetailView,
+    SchoolPlanUpliftView,
+    SchoolPlanView,
+)
 from .views.school import (
     SchoolCreateView,
     SchoolDetailView,
@@ -61,6 +66,15 @@ urlpatterns = [
     path("<str:slug>/", SchoolDetailView.as_view(), name="school-detail"),
     path("<str:slug>/update/", SchoolUpdateView.as_view(), name="school-update"),
     path("<str:slug>/reset-config/", SchoolResetConfigView.as_view(), name="school-reset-config"),
+
+    # --------- What the school pays for ---------
+    path("<str:slug>/plan/", SchoolPlanView.as_view(), name="school-plan"),
+    path("<str:slug>/plan/uplifts/", SchoolPlanUpliftView.as_view(), name="school-plan-uplift"),
+    path(
+        "<str:slug>/plan/uplifts/<slug:capability>/",
+        SchoolPlanUpliftDetailView.as_view(),
+        name="school-plan-uplift-detail",
+    ),
     path("<str:slug>/service-state/", SchoolServiceStateView.as_view(), name="school-service-state"),
 
     # --------- Branches ---------

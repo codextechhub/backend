@@ -208,7 +208,22 @@ DEPENDENCIES = {
 #: work is the shallow end of procurement rather than a separate purchase, and
 #: a second Core band beside ``procurement_core`` was a distinction nothing
 #: could act on: a school reaching one always reached the other.
-RETIRED = ["vendors"]
+#:
+#: An empty band is not by itself a reason to retire one. Attendance, Gradebook
+#: and the portals have empty bands because nobody has built them, and those
+#: are the price list's shape for what is coming. The bands here are different:
+#: their keys live in named siblings at the same depth, so they would stay
+#: empty however much gets built.
+RETIRED = [
+    "vendors",
+    # The platform module's keys all sit in named bands - email alerts at
+    # Core, bulk import and data export at Plus - so its generic bands hold
+    # nothing and structurally never will. Two rows at one depth of one module
+    # cannot be told apart, and a school's plan page listed "Core, Core".
+    "platform_core",
+    "platform_plus",
+    "platform_advanced",
+]
 
 
 class Command(BaseCommand):

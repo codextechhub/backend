@@ -143,6 +143,9 @@ class TenantSurfaceAllowed(BasePermission):
     composes), and in :class:`HasRBACPermission` / :class:`HasAnyModuleAccess`
     (for views that pair those with a bare ``IsAuthenticated``).
 
+    A platform actor is exempt while acting as itself: see the comment in
+    ``has_permission``. Working on a school is not the same as being one.
+
     Either returns True or raises ``TenantNotLive``; it never returns False, so
     the refusal carries its own error code rather than DRF's generic one.
     """
@@ -163,6 +166,27 @@ class TenantSurfaceAllowed(BasePermission):
         # be governed in both cases.
         tenant = getattr(request, "tenant", None) or getattr(u, "tenant", None)
         if getattr(tenant, "status", None) != Tenant.Status.PENDING:
+            return True
+
+        # A platform actor working ON a school is not the school. This gate
+        # exists to stop a school using a platform it has not been activated
+        # on, and it was reading the tenant being operated on, so a CodeX
+        # operator who asserted a pending school in order to configure it was
+        # refused and told to complete that school's onboarding. The console's
+        # whole job is the school that is not live yet: its entitlements, its
+        # capabilities and its plan are set before it goes anywhere.
+        #
+        # Narrow deliberately. It reads the REAL actor's own tenant, and it
+        # does not apply while an impersonation session rides: proxied into a
+        # school account the caller is the school for that request, and the
+        # rule above applies to them in full. That is the same reasoning
+        # PlatformDecisionAllowed uses, and for the same reason - an exemption
+        # that can be laundered through a proxy session is not a boundary.
+        actor = getattr(request, "actor_user", None) or u
+        if getattr(request, "impersonation_session", None) is None and (
+            getattr(getattr(actor, "tenant", None), "kind", None)
+            == Tenant.Kind.PLATFORM
+        ):
             return True
 
         if _view_opens_to_pending_tenant(view, request):
