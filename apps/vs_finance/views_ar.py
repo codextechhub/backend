@@ -1178,14 +1178,23 @@ class FeeStructureListCreateView(_FinanceBase):
     def post(self, request):
         entity = resolve_entity(request)
         body = request.data or {}
-        code = str(body.get("code", "")).strip().upper()
-        if not code:
-            raise ValidationError({"code": "A fee structure code is required."})
-        if FeeStructure.objects.filter(entity=entity, code=code).exists():
-            raise ValidationError({"code": f"A fee structure with code '{code}' already exists."})
         name = str(body.get("name", "")).strip()
         if not name:
             raise ValidationError({"name": "A fee structure name is required."})
+
+        # A code the caller chose is theirs and must be honoured exactly,
+        # including the refusal when it is taken: a bursar who types a code is
+        # matching one her school already uses on paper, so quietly substituting
+        # a generated one would put the wrong reference on every invoice.
+        # Supplying nothing is a different statement - "I do not run codes" -
+        # and is answered by deriving one from the name.
+        code = str(body.get("code", "")).strip().upper()
+        if code:
+            if FeeStructure.objects.filter(entity=entity, code=code).exists():
+                raise ValidationError(
+                    {"code": f"A fee structure with code '{code}' already exists."})
+        else:
+            code = FeeStructure.generate_code(entity, name)
         structure = FeeStructure.objects.create(
             entity=entity, code=code, name=name,
             # ``shared_when_ambiguous=True``: a fee structure is a template a
@@ -1257,7 +1266,7 @@ class FeeStructureDetailView(_FinanceBase):
 class FeeStructureDuplicateView(_FinanceBase):
     """Clone a fee structure (code + lines) into a new **draft** structure.
 
-    Body: ``{code, name?}`` - a new unique code is required; the clone copies
+    Body: ``{code?, name?}`` - a code is derived from the name when omitted; the clone copies
     applies_to, description and every line (incl. fee code / optional flag) and is
     created **inactive** so it can be reviewed before use.
 
@@ -1272,18 +1281,25 @@ class FeeStructureDuplicateView(_FinanceBase):
         entity = resolve_entity(request)
         source = _resolve_fee_structure(request, entity, pk)
         body = request.data or {}
+        new_name = str(body.get("name", "")).strip() or f"{source.name} (copy)"
+        # Same rule as creating one outright: a code the caller chose is honoured
+        # and its collision refused, and no code at all is derived from the name.
+        # A clone is where this matters most - duplicating "JSS1 Tuition" to amend
+        # it for next term should not stop to demand a code nobody has decided on.
         new_code = str(body.get("code", "")).strip().upper()
-        if not new_code:
-            raise ValidationError({"code": "A code for the new structure is required."})
-        if FeeStructure.objects.filter(entity=entity, code=new_code).exists():
-            raise ValidationError({"code": f"A fee structure with code '{new_code}' already exists."})
+        if new_code:
+            if FeeStructure.objects.filter(entity=entity, code=new_code).exists():
+                raise ValidationError(
+                    {"code": f"A fee structure with code '{new_code}' already exists."})
+        else:
+            new_code = FeeStructure.generate_code(entity, new_name)
         clone = FeeStructure.objects.create(
             entity=entity, code=new_code,
             # A clone continues the source template's chain, so it starts life in
             # the same scope as what it was copied from - and the caller cannot
             # widen a branch template into a school-wide one by duplicating it.
             branch_id=_inherited_branch_id(request, source),
-            name=str(body.get("name", "")).strip() or f"{source.name} (copy)",
+            name=new_name,
             applies_to=source.applies_to, description=source.description,
             is_active=False, created_by=request.user,
         )

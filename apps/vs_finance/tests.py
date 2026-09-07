@@ -5722,6 +5722,91 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(patched.json()["data"]["applies_to"], "STAFF")
 
     # Verify fee structure lines carry code optional and tax breakdown behavior.
+    def test_a_structure_created_without_a_code_gets_one_from_its_name(self):
+        """Codes are the bursar's option, not her homework.
+
+        The code goes on every invoice as ``FEE:<code>``, so it is derived from
+        the name rather than serialised: a statement reading
+        ``FEE:JSS1-TUITION-2026-27`` says which template billed the child.
+        """
+        entity, _, _ = self.build_books()
+
+        created = self.client.post(
+            f"/v1/finance/fee-structures/?entity={entity.code}",
+            {"name": "JSS1 Tuition 2026/27", "items": [
+                {"code": "TUITION", "description": "Tuition",
+                 "revenue_account": "4100", "amount": 10000000},
+            ]}, format="json")
+
+        self.assertEqual(created.status_code, 201, created.content)
+        self.assertEqual(created.json()["data"]["code"], "JSS1-TUITION-2026-27")
+
+    def test_a_second_structure_of_the_same_name_is_suffixed_not_refused(self):
+        entity, _, _ = self.build_books()
+        body = {"name": "Boarding", "items": [
+            {"code": "BOARD", "description": "Boarding",
+             "revenue_account": "4100", "amount": 5000000},
+        ]}
+        url = f"/v1/finance/fee-structures/?entity={entity.code}"
+
+        first = self.client.post(url, body, format="json")
+        second = self.client.post(url, body, format="json")
+
+        self.assertEqual(first.json()["data"]["code"], "BOARDING")
+        self.assertEqual(second.status_code, 201, second.content)
+        self.assertEqual(second.json()["data"]["code"], "BOARDING-2")
+
+    def test_a_code_the_caller_typed_is_still_honoured_and_still_refused(self):
+        """Supplying a code means matching one the school already uses on paper.
+
+        Substituting a generated one because the typed one clashed would put a
+        reference on every invoice that does not match the school's own records,
+        so the clash is still an error rather than a silent correction.
+        """
+        entity, _, _ = self.build_books()
+        body = {"code": "fs-mine", "name": "Mine", "items": [
+            {"code": "X", "description": "X", "revenue_account": "4100",
+             "amount": 100},
+        ]}
+        url = f"/v1/finance/fee-structures/?entity={entity.code}"
+
+        first = self.client.post(url, body, format="json")
+        self.assertEqual(first.json()["data"]["code"], "FS-MINE")
+
+        clash = self.client.post(url, body, format="json")
+        self.assertEqual(clash.status_code, 400, clash.content)
+
+    def test_a_generated_code_never_outgrows_its_column(self):
+        """The suffix eats into the base rather than overflowing past 32."""
+        from vs_finance.models.ar import FeeStructure
+
+        entity, _, _ = self.build_books()
+        long_name = "Senior Secondary Boarding And Transport Combined Levy"
+        FeeStructure.objects.create(
+            entity=entity, code=FeeStructure.generate_code(entity, long_name),
+            name=long_name,
+        )
+        second = FeeStructure.generate_code(entity, long_name)
+
+        self.assertLessEqual(len(second), 32)
+        self.assertTrue(second.endswith("-2"), second)
+
+    def test_a_duplicate_without_a_code_derives_one_too(self):
+        entity, _, _ = self.build_books()
+        source = self.client.post(
+            f"/v1/finance/fee-structures/?entity={entity.code}",
+            {"name": "Day Fees", "items": [
+                {"code": "DAY", "description": "Day", "revenue_account": "4100",
+                 "amount": 100},
+            ]}, format="json").json()["data"]
+
+        cloned = self.client.post(
+            f"/v1/finance/fee-structures/{source['id']}/duplicate/"
+            f"?entity={entity.code}", {}, format="json")
+
+        self.assertEqual(cloned.status_code, 201, cloned.content)
+        self.assertEqual(cloned.json()["data"]["code"], "DAY-FEES-COPY")
+
     def test_fee_structure_lines_carry_code_optional_and_tax_breakdown(self):
         entity, _, _ = self.build_books()
         vat = TaxCode.objects.create(

@@ -389,6 +389,9 @@ class FeeStructure(TimeStampedModel):
         "vs_tenants.Branch", on_delete=models.PROTECT,
         related_name="finance_fee_structures", null=True, blank=True,
     )
+    #: Optional on the way in. A caller that supplies nothing gets one derived
+    #: from the name; see :meth:`generate_code` for why it is derived rather than
+    #: serial.
     code = models.CharField(max_length=32, help_text="Unique within the entity.")
     name = models.CharField(max_length=200)
     applies_to = models.CharField(
@@ -413,6 +416,46 @@ class FeeStructure(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.code} · {self.name}"
+
+    #: How many suffixed candidates to try before giving up. Far beyond any real
+    #: collision; a bound rather than a limit, so a bug cannot spin for ever.
+    _CODE_ATTEMPTS = 500
+
+    @classmethod
+    def generate_code(cls, entity, name: str) -> str:
+        """A code derived from ``name``, unique within ``entity``.
+
+        Derived rather than serial because the code is not an internal id: it is
+        stamped on every invoice raised from the structure as ``FEE:<code>``, and
+        that reference is what a bursar reads on a statement and what the usage
+        panel matches on. ``FEE:JSS1-TUITION-2026-27`` says which template billed
+        a child; ``FEE:00042`` sends her to a lookup table.
+
+        Uniqueness is per entity, which is what the table's constraint says, so
+        two schools may both hold ``JSS1-TUITION`` and neither is asked to
+        rename. Collisions within one entity take a numeric suffix, and the base
+        is trimmed to make room for it so the result always fits the column.
+        """
+        import re
+
+        base = re.sub(r"[^A-Za-z0-9]+", "-", name or "").strip("-").upper()
+        max_length = cls._meta.get_field("code").max_length
+        base = base[:max_length].rstrip("-") or "FEE"
+
+        taken = set(
+            cls.objects.filter(entity=entity)
+            .values_list("code", flat=True)
+        )
+        if base not in taken:
+            return base
+        for n in range(2, cls._CODE_ATTEMPTS):
+            suffix = f"-{n}"
+            candidate = f"{base[:max_length - len(suffix)].rstrip('-')}{suffix}"
+            if candidate not in taken:
+                return candidate
+        raise ValueError(
+            f"Could not build a unique fee structure code from {name!r}."
+        )
 
     @property
     def total(self) -> int:
