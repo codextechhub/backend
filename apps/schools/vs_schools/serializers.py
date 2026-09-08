@@ -369,13 +369,16 @@ class SchoolPackageSetupWriteSerializer(serializers.Serializer):
 
     Accepts `package_plan` as the PackagePlan `code` (slug) - more stable
     than a numeric PK and matches what the dropdown naturally emits.
-    Accepts `enabled_modules` as a list of Capability `key` strings.
+
+    There is no module list. A school is granted every module and the plan
+    decides how deep it reaches into each, so a list of modules narrows
+    nothing: the same school comes out of creation whichever boxes were
+    ticked. Asking the question anyway invited an operator to think they had
+    turned Procurement off. A payload that still carries one is ignored rather
+    than refused, so a frontend that has not caught up keeps working.
 
     Validation enforces:
     - package_plan must exist and be active.
-    - All module keys must exist and be active.
-    - Capacities must be >= 1.
-    - Capacities must not exceed plan limits.
     - subscription_expires_at must not be in the past.
     """
 
@@ -383,18 +386,6 @@ class SchoolPackageSetupWriteSerializer(serializers.Serializer):
         slug_field="code",
         queryset=PackagePlan.objects.filter(is_active=True),
         help_text="The `code` of the PackagePlan to assign. E.g. 'basic', 'premium'.",
-    )
-
-    enabled_modules = serializers.ListField(
-        child=serializers.SlugRelatedField(
-            slug_field="key",
-            queryset=Capability.objects.filter(
-                is_active=True, kind=Capability.Kind.MODULE
-            ),
-        ),
-        required=False,
-        default=list,
-        help_text="List of module `key` strings to enable. E.g. ['students', 'attendance'].",
     )
 
     subscription_expires_at = serializers.DateField(
@@ -1355,20 +1346,27 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                     invite_queued_at=timezone.now(),
                     invite_sent_at=None,
                 )
-                if school_admin_email and branch_admin_email == school_admin_email:
-                    # Same person as school admin - link is recorded but no new user or email
-                    branch_admin_link.invite_status = InviteStatus.SENT
-                    branch_admin_link.invite_sent_at = timezone.now()
-                    branch_admin_link.save(update_fields=["invite_status", "invite_sent_at"])
-                else:
-                    provision_admin_user(
-                        contact=contact,
-                        admin_link=branch_admin_link,
-                        school=school,
-                        branch=branch,
-                        role=branch_admin_role.key if branch_admin_role else "",
-                        actor=actor,
-                    )
+                # The head teacher who also runs the only site is one person
+                # with two jobs, and both have to be written down. Skipping the
+                # call because the account already exists stamped the link SENT
+                # and never granted the branch role: she signed in able to do
+                # everything a school admin does and nothing a branch admin
+                # does, with nothing on the record saying why. That is the same
+                # fault ``provision_admin_user`` documents for two branches
+                # sharing an admin, reached by a path that never got there.
+                #
+                # It is idempotent and knows this case: it finds the account
+                # inside this tenant, adds the grant that is genuinely
+                # per-posting, and neither makes a second account nor sends a
+                # second invitation.
+                provision_admin_user(
+                    contact=contact,
+                    admin_link=branch_admin_link,
+                    school=school,
+                    branch=branch,
+                    role=branch_admin_role.key if branch_admin_role else "",
+                    actor=actor,
+                )
         
             # branch audit trail for creation
             _branch_snap = AuditDiffService.from_instances(
@@ -1401,12 +1399,6 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         
         # --- 5. Optional package setup ---
         if package_setup_data:
-            # The wizard still sends a module list and it no longer narrows
-            # anything: the plan grants every module, and decides how deep.
-            # Accepted rather than refused so a frontend that has not caught
-            # up yet keeps working; see services.packages for the reasoning.
-            package_setup_data.pop("enabled_modules", None)
-
             # subscription_expires_at defaults to 1 year if not provided
             expires_at = package_setup_data.pop("subscription_expires_at", None)
             if not expires_at:

@@ -183,6 +183,119 @@ class ANewSchoolGetsTheRolesCodeXShipsTests(TestCase):
         )
 
 
+class OnePersonWearingSeveralHatsTests(TestCase):
+    """The head teacher who is also her own branch admin, in one create request.
+
+    A small school names the same person at the top and at its only site,
+    because there is only one person. Two branches of a bigger one are often run
+    by the same deputy. Neither is a mistake to refuse: the address is the same
+    human, and what differs is what they are allowed to do where.
+
+    The cross-tenant guard cannot see any of this. ``email_refusal`` is called
+    with ``tenant=None`` during creation, because the tenant does not exist yet,
+    which makes its same-tenant rule vacuous by construction. What keeps these
+    right is the reuse in ``provision_admin_user``: one account, one invitation,
+    and a grant per posting.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="hats@example.com", super_admin=True,
+        )
+        _seed_prebuilt_roles()
+
+    def _create(self, slug, school_admin_email, branches):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        with mock.patch("vs_user.tasks.send_invitation_email_task.delay") as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                response = client.post(
+                    reverse("school-create"),
+                    {
+                        "name": slug.replace("-", " ").title(),
+                        "slug": slug,
+                        "primary_admin_data": {
+                            "full_name": "Ngozi Eze",
+                            "email": school_admin_email,
+                        },
+                        "branches": branches,
+                    },
+                    format="json",
+                )
+        return response, delay
+
+    def test_the_head_teacher_is_also_the_admin_of_the_only_branch(self):
+        response, delay = self._create(
+            "small-school",
+            "ngozi@small.ng",
+            [{
+                "name": "Main Branch", "state": "Lagos", "is_main": True,
+                "primary_admin_data": {
+                    "full_name": "Ngozi Eze", "email": "ngozi@small.ng",
+                },
+            }],
+        )
+
+        self.assertIn(response.status_code, (200, 201), response.data)
+        tenant = Tenant.objects.get(slug="small-school")
+
+        # One account, not two.
+        holders = User.objects.filter(email="ngozi@small.ng", tenant=tenant)
+        self.assertEqual(holders.count(), 1, "the same address made two accounts")
+
+        # Both hats, on the one account.
+        keys = set(
+            TenantUserRoleAssignment.objects
+            .filter(user=holders.get(), role__tenant=tenant)
+            .values_list("role__key", flat=True)
+        )
+        self.assertIn("school_admin", keys)
+        self.assertTrue(
+            any(k.startswith("branch_admin") for k in keys),
+            f"no branch posting was granted: {keys}",
+        )
+
+        # And she is asked to activate once, not once per hat.
+        self.assertEqual(delay.call_count, 1, "invited more than once")
+
+    def test_one_person_runs_every_branch_and_the_school(self):
+        response, delay = self._create(
+            "three-hats",
+            "solo@three.ng",
+            [
+                {
+                    "name": "Ikeja", "state": "Lagos", "is_main": True,
+                    "primary_admin_data": {
+                        "full_name": "Solo Head", "email": "solo@three.ng",
+                    },
+                },
+                {
+                    "name": "Lekki", "state": "Lagos",
+                    "primary_admin_data": {
+                        "full_name": "Solo Head", "email": "solo@three.ng",
+                    },
+                },
+            ],
+        )
+
+        self.assertIn(response.status_code, (200, 201), response.data)
+        tenant = Tenant.objects.get(slug="three-hats")
+
+        user = User.objects.get(email="solo@three.ng", tenant=tenant)
+        keys = set(
+            TenantUserRoleAssignment.objects
+            .filter(user=user, role__tenant=tenant)
+            .values_list("role__key", flat=True)
+        )
+        self.assertIn("school_admin", keys)
+        # A posting at each site, because the grant is the per-branch part.
+        self.assertEqual(
+            len([k for k in keys if k.startswith("branch_admin-")]), 2, keys,
+        )
+        self.assertEqual(delay.call_count, 1, "invited more than once")
+
+
 class SharedAdminAcrossBranchesTests(TestCase):
     """Two branches, one admin address, in a single create request."""
 
