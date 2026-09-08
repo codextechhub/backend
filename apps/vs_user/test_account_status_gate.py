@@ -603,9 +603,10 @@ class ActivationTellsYouWhyItRefusedTests(_Fixture):
 
         self.assertEqual(resp.status_code, 400)
         body = resp.json()
-        self.assertEqual(body["error"]["error_code"], "PASSWORD_POLICY_VIOLATION")
-        # And the reasons survive alongside it, for the box they belong under.
-        self.assertTrue(body["error"]["password"])
+        self.assertEqual(body["error"]["code"], "PASSWORD_POLICY_VIOLATION")
+        # Under `detail`, which is where the clients look for a complaint that
+        # belongs beneath a particular box.
+        self.assertTrue(body["error"]["detail"]["password"])
 
     def test_a_good_password_still_activates(self):
         import json
@@ -648,7 +649,7 @@ class ActivationTellsYouWhyItRefusedTests(_Fixture):
         self.assertIn("already been used", resp.json()["message"])
         self.assertEqual(
             resp.json()["error"]["error_code"], "INVITATION_ALREADY_USED",
-        )
+        )  # the service's own payload, passed through as it composed it
 
 
 # ─────────────────────────────────────────────────────────────────────────────

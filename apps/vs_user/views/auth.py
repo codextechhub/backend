@@ -432,9 +432,15 @@ class ActivationView(APIView):
             # fail policy, so its failure gets the code the client already maps.
             code = ("PASSWORD_POLICY_VIOLATION" if "password" in ser.errors
                     else "VALIDATION_ERROR")
+            # `{code, detail}` is the shape every other refusal uses and the
+            # shape the clients read: field errors go UNDER `detail`, not beside
+            # the code. Spread flat, they were invisible to the helper that puts
+            # a complaint beneath the box it belongs to, so the screen fell back
+            # to a sentence that named no requirement at all - which is how
+            # "at least 12 characters" reached nobody.
             return error_response(
-                message="Invalid request.",
-                error={"error_code": code, **ser.errors},
+                message="That password does not meet the requirements.",
+                error={"code": code, "detail": ser.errors},
             )
 
         if ser.validated_data['password'] != ser.validated_data['confirm_password']:
