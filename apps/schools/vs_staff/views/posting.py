@@ -93,7 +93,13 @@ class StaffRosterView(StaffViewMixin, APIView):
     at Ikeja; she is at the school, and she appears in every branch's roster.
 
     Only the first group is movable, because a posting is the only one of the
-    three this screen can change.
+    three this screen can change. The other two carry ``change_it``, which says
+    where they ARE changed: a group labelled only as not this screen's to move
+    tells a reader they cannot do the thing without telling them who can.
+
+    People who have left are not on it. A roster answers who works at a branch,
+    and somebody terminated in March does not - listing them says they do, and
+    ticking them offers to move a posting that no longer means anything.
 
     docstring-name: A branch's staff roster
     """
@@ -124,18 +130,25 @@ class StaffRosterView(StaffViewMixin, APIView):
                 {
                     "key": "posted_here",
                     "title": "Posted here",
-                    "note": f"Based at {branch.name}. This is the fact you can change.",
+                    "note": (
+                        f"Based at {branch.name}. Tick anybody here to move them "
+                        f"to another branch."
+                    ),
                     "movable": True,
+                    "change_it": "",
                     "rows": StaffListSerializer(posted, many=True, context=context).data,
                 },
                 {
                     "key": "reaching_here",
                     "title": "Reaching here through a role",
                     "note": (
-                        "Based at another branch, but their role grants extend "
-                        "to this one."
+                        "Based at another branch, but a role they hold is pinned "
+                        "to this one, so they reach it as well. To stop that, "
+                        "change which branch that role reaches on their Access "
+                        "tab."
                     ),
                     "movable": False,
+                    "change_it": "Change it on their roles",
                     "rows": StaffListSerializer(
                         reaching, many=True, context=context,
                     ).data,
@@ -144,10 +157,12 @@ class StaffRosterView(StaffViewMixin, APIView):
                     "key": "school_wide",
                     "title": "School-wide",
                     "note": (
-                        "No single base. They belong to the school and appear in "
-                        "every branch's roster."
+                        "No single base, so they belong to the school and appear "
+                        "on every branch's roster. Give them one from their own "
+                        "record."
                     ),
                     "movable": False,
+                    "change_it": "Change it on their record",
                     "rows": StaffListSerializer(
                         school_wide, many=True, context=context,
                     ).data,

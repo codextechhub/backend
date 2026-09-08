@@ -105,8 +105,6 @@ def _grant_scope(user, tenant):
         # refused by entity scoping, which this change does not touch.
         return _SILENT
 
-    from vs_tenants.models import Branch
-
     # Deliberately *not* filtered by branch liveness in SQL. "This person holds
     # no grants" and "every branch this person was granted has since been
     # withdrawn" are different answers - the first falls back to their home
@@ -121,6 +119,19 @@ def _grant_scope(user, tenant):
             role__status="ACTIVE",
         ).values_list("branch_id", "branch__status")
     )
+    return _scope_from_rows(rows)
+
+
+def _scope_from_rows(rows):
+    """Read one person's grant rows into a scope.
+
+    Split out so the bulk reader below cannot interpret the same rows a
+    different way from the single one. ``rows`` is an iterable of
+    ``(branch_id, branch_status)``.
+    """
+    from vs_tenants.models import Branch
+
+    rows = set(rows)
     if not rows:
         return _SILENT  # No grants: overrides may still admit them.
     if any(branch_id is None for branch_id, _ in rows):
@@ -134,6 +145,51 @@ def _grant_scope(user, tenant):
         branch_id for branch_id, status in rows
         if status in Branch.IN_SERVICE_STATES
     )
+
+
+def visible_branch_ids_for(users, tenant):
+    """:func:`visible_branch_ids` for many people, in one query.
+
+    Returns ``{user_id: WHOLE_TENANT | frozenset}``.
+
+    The single version memoises on the user INSTANCE, which is exactly right
+    for ``request.user`` and useless for a loop over other people: each row
+    carries its own user object, so the cache never hits and a screen asking
+    the question about every member of staff ran a query per member of staff.
+    A branch roster is the one that found it.
+
+    The rule is not restated here. The rows are read by ``_scope_from_rows``,
+    the same function the single version uses, and the no-grants fallback to
+    the holder's home posting is the same fallback for the same reason.
+    """
+    users = list(users)
+    if not users or tenant is None:
+        return {}
+
+    by_user = {}
+    rows = TenantUserRoleAssignment.objects.filter(
+        tenant=tenant,
+        user__in=users,
+        assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+        role__status="ACTIVE",
+    ).values_list("user_id", "branch_id", "branch__status")
+    for user_id, branch_id, status in rows:
+        by_user.setdefault(user_id, set()).add((branch_id, status))
+
+    answer = {}
+    for user in users:
+        # Branch grants only exist inside the holder's own tenant, so somebody
+        # from another one is silent here - the same answer the single version
+        # gives, reached the same way.
+        if getattr(user, "tenant_id", None) != tenant.pk:
+            scope = _SILENT
+        else:
+            scope = _scope_from_rows(by_user.get(user.pk, ()))
+        if scope is _SILENT:
+            own_id = getattr(user, "branch_id", None)
+            scope = WHOLE_TENANT if own_id is None else frozenset({own_id})
+        answer[user.pk] = scope
+    return answer
 
 
 def visible_branch_ids(user, tenant=None) -> Optional[FrozenSet[int]]:

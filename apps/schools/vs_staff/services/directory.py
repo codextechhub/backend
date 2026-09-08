@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from django.db.models import Case, CharField, Count, F, Q, Value, When
 
-from ..constants import EmploymentStatus
+from ..constants import OFF_ROLL_STATUSES, EmploymentStatus
 from .scoping import branch_dimension_applies
 
 
@@ -63,8 +63,7 @@ def counts(queryset, tenant):
     }
     total = sum(by_status.values())
     on_roll = total - sum(
-        by_status.get(status, 0)
-        for status in (EmploymentStatus.RESIGNED, EmploymentStatus.TERMINATED)
+        by_status.get(status, 0) for status in OFF_ROLL_STATUSES
     )
 
     aggregate = countable.aggregate(

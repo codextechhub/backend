@@ -101,14 +101,12 @@ class StaffViewMixin:
         from django.db.models import Count, Q
 
         from ..models import StaffProfile
+        from ..serializers import STAFF_LIST_PREFETCH
 
         queryset = (
             StaffProfile.objects.filter(tenant=self.tenant)
             .select_related("user", "branch")
-            .prefetch_related(
-                "user__tenant_role_assignments__role",
-                "user__invitation",
-            )
+            .prefetch_related(*STAFF_LIST_PREFETCH)
         )
         from ..services.leave import (
             on_leave_expression,

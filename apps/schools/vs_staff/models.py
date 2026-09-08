@@ -38,6 +38,7 @@ from .constants import (
     EmploymentType,
     LeaveStatus,
     LeaveType,
+    OFF_ROLL_STATUSES,
     TeachingPart,
 )
 
@@ -182,9 +183,7 @@ class StaffProfile(_Owned):
     @property
     def is_on_roll(self) -> bool:
         """Still employed. Not a statement about signing in."""
-        return self.employment_status not in (
-            EmploymentStatus.RESIGNED, EmploymentStatus.TERMINATED,
-        )
+        return self.employment_status not in OFF_ROLL_STATUSES
 
 
 class StaffEmploymentEvent(_Owned):

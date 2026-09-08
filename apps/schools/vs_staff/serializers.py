@@ -65,6 +65,19 @@ class AccountStateSerializer(serializers.Serializer):
         return obj.get_status_display()
 
 
+#: The relations :class:`StaffListSerializer` reads off every row.
+#:
+#: Named once because two places build a queryset for this serializer - the
+#: directory's base queryset and the branch roster - and the roster forgot the
+#: invitation, which is one query per person on a screen that lists everybody
+#: at a branch. A list of relations kept in two heads drifts; this one is kept
+#: beside the serializer that needs it.
+STAFF_LIST_PREFETCH = (
+    "user__tenant_role_assignments__role",
+    "user__invitation",
+)
+
+
 class StaffListSerializer(serializers.ModelSerializer):
     """One row of the directory.
 

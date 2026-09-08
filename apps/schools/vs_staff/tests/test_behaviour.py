@@ -529,6 +529,76 @@ class PostingTests(StaffFixture):
         self.assertTrue(groups["posted_here"]["movable"])
         self.assertFalse(groups["school_wide"]["movable"])
 
+    def test_each_group_says_where_it_is_changed_when_it_is_not_here(self):
+        """A group nobody can act on has to name who can.
+
+        "Not this screen's to move" told a reader they could not do the thing
+        and not a word about who could.
+        """
+        response = self.get(
+            self.admin, "staff-roster", {"branch": self.lekki.pk},
+        )
+        groups = {group["key"]: group for group in response.data["data"]["groups"]}
+        self.assertEqual(groups["posted_here"]["change_it"], "")
+        self.assertIn("roles", groups["reaching_here"]["change_it"])
+        self.assertIn("record", groups["school_wide"]["change_it"])
+
+    def test_somebody_who_has_left_is_not_on_the_roster(self):
+        """A roster answers who works here.
+
+        Listing Mrs. Bello a term after she was terminated says she still does,
+        and the posted group is selectable, so it also offered to move a
+        posting that no longer means anything.
+        """
+        gone = self.make_staff(
+            "gone@lekki.example.com", "Rukayat", "Bello", branch=self.lekki,
+            status=EmploymentStatus.TERMINATED,
+        )
+        still_here = self.make_staff(
+            "held@lekki.example.com", "Gbenga", "Fashola", branch=self.lekki,
+            status=EmploymentStatus.SUSPENDED,
+        )
+        response = self.get(
+            self.admin, "staff-roster", {"branch": self.lekki.pk},
+        )
+        names = {
+            row["full_name"]
+            for group in response.data["data"]["groups"]
+            for row in group["rows"]
+        }
+        self.assertNotIn("Rukayat Bello", names)
+        # Suspended is still employed. Dropping them would read as a dismissal.
+        self.assertIn("Gbenga Fashola", names)
+        self.assertEqual(gone.employment_status, EmploymentStatus.TERMINATED)
+        self.assertEqual(still_here.employment_status, EmploymentStatus.SUSPENDED)
+
+    def test_the_roster_does_not_cost_a_query_per_member_of_staff(self):
+        """It read every person's branch reach one person at a time.
+
+        The single reader memoises on the user INSTANCE, which never hits in a
+        loop over other people, so a school of a hundred and nine ran a hundred
+        and nine queries to draw one roster. The bound here is deliberately
+        loose: what it pins is that adding staff does not add queries.
+        """
+        before = self._roster_queries()
+        for index in range(6):
+            self.make_staff(
+                f"crowd{index}@lekki.example.com", "Crowd", f"Member{index}",
+                branch=self.lekki,
+            )
+        self.assertEqual(self._roster_queries(), before)
+
+    def _roster_queries(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as captured:
+            response = self.get(
+                self.admin, "staff-roster", {"branch": self.lekki.pk},
+            )
+            self.assertEqual(response.status_code, 200, response.data)
+        return len(captured)
+
     def test_the_registrar_appears_as_school_wide_and_not_as_posted_here(self):
         """She is not at Lekki. She is at the school."""
         response = self.get(

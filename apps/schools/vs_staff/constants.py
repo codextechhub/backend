@@ -106,6 +106,17 @@ EMPLOYMENT_TRANSITIONS: dict[str, tuple[str, ...]] = {
     EmploymentStatus.TERMINATED: (),
 }
 
+#: The two statuses that mean somebody no longer works here.
+#:
+#: Written out in three places before this existed, which is two places for it
+#: to fall out of step with itself. "Off roll" is not "cannot sign in" and not
+#: "absent": a suspended teacher is still employed and still on the roll, and
+#: somebody on approved leave is at their post next month.
+OFF_ROLL_STATUSES = frozenset({
+    EmploymentStatus.RESIGNED,
+    EmploymentStatus.TERMINATED,
+})
+
 #: Transitions that must say why. Suspending, resigning and terminating are the
 #: three a school is asked to account for later.
 REASON_REQUIRED_FOR = frozenset({

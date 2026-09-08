@@ -16,10 +16,15 @@ from __future__ import annotations
 
 from django.db import transaction
 
-from vs_rbac.scoping import WHOLE_TENANT, visible_branch_ids
+from vs_rbac.scoping import (
+    WHOLE_TENANT,
+    visible_branch_ids,
+    visible_branch_ids_for,
+)
 from vs_tenants.models import Branch
 from vs_tenants.references import resolve_branch_reference
 
+from ..constants import OFF_ROLL_STATUSES
 from ..exceptions import BranchNotInService
 from . import audit
 
@@ -110,17 +115,33 @@ def roster(tenant, user, branch):
     She is not at Ikeja, she is at the school, and she appears in every branch's
     roster for a reason that is not the same as being posted there.
 
+    **People who have left are not on it.** A roster answers who works at a
+    branch, and somebody terminated in March does not: listing them says they
+    do, and the posted group is selectable, so it also offered to move a posting
+    that no longer means anything. Suspended and on-leave staff stay - both are
+    still employed, and a suspension that removed somebody from their branch's
+    roster would read as a dismissal.
+
     Returns ``(posted_here, reaching_here, school_wide)``. Only the first is
     movable, and the caller says so, because moving a posting is the only one of
     the three facts this screen can change.
     """
     from ..models import StaffProfile
+    from ..serializers import STAFF_LIST_PREFETCH
 
     people = list(
         StaffProfile.objects.filter(tenant=tenant)
+        .exclude(employment_status__in=OFF_ROLL_STATUSES)
         .select_related("user", "branch")
-        .prefetch_related("user__tenant_role_assignments__role")
+        .prefetch_related(*STAFF_LIST_PREFETCH)
     )
+
+    # One query for everybody's reach rather than one per person. The single
+    # reader memoises on the user INSTANCE, which is right for request.user and
+    # useless here: each row carries its own, so the cache never hit and a
+    # hundred-and-nine-strong school ran a hundred and nine queries to draw one
+    # roster.
+    reach = visible_branch_ids_for([person.user for person in people], tenant)
 
     posted_here, reaching_here, school_wide = [], [], []
     for person in people:
@@ -128,14 +149,13 @@ def roster(tenant, user, branch):
             posted_here.append(person)
         elif person.branch_id is None:
             school_wide.append(person)
-        elif _reaches(person, branch.pk):
+        elif _reaches(reach.get(person.user_id), branch.pk):
             reaching_here.append(person)
     return posted_here, reaching_here, school_wide
 
 
-def _reaches(staff, branch_id) -> bool:
-    """Whether this person's grants extend to a branch they are not posted to."""
-    visible = visible_branch_ids(staff.user, staff.tenant)
+def _reaches(visible, branch_id) -> bool:
+    """Whether one person's already-resolved scope extends to a branch."""
     if visible is WHOLE_TENANT:
         return True
     return branch_id in (visible or ())
