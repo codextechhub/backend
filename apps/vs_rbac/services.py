@@ -308,6 +308,9 @@ def provision_role_from_prebuilt(*, tenant, branch=None, prebuilt_key: str, crea
     found.
     """
     from django.contrib.auth import get_user_model
+
+    from vs_tenants.models import Branch
+
     User = get_user_model()
     if not isinstance(created_by, User):
         created_by = None
@@ -316,14 +319,24 @@ def provision_role_from_prebuilt(*, tenant, branch=None, prebuilt_key: str, crea
     if not prebuilt:
         return None
 
-    # Branch-scoped roles get a per-branch key/name so several branches can each
-    # carry their own copy without violating the per-tenant key/name uniqueness.
+    # Branch-scoped roles get a per-branch KEY so several branches can each carry
+    # their own copy without violating per-tenant uniqueness. The key is
+    # machinery and always carries the branch.
+    #
+    # The NAME is what a person reads, and it names the branch only where the
+    # branch tells them something. A school with one site had "Branch Admin -
+    # Main Branch" on its roles screen: the suffix repeats what the row above it
+    # already says, and repeats the word "Branch" while doing so. Where a school
+    # has one branch the dimension recedes, the same way a switcher with one
+    # entry or a filter with one option does; where it has several, the name
+    # says which, because there it changes meaning.
     if branch is None:
         key = prebuilt.key
         name = prebuilt.name
     else:
         key = f"{prebuilt.key}-{branch.pk}"
-        name = f"{prebuilt.name} - {branch.name}"
+        siblings = Branch.all_objects.filter(tenant=tenant).count()
+        name = prebuilt.name if siblings <= 1 else f"{prebuilt.name} - {branch.name}"
 
     role, created = TenantRoleTemplate.objects.get_or_create(
         tenant=tenant,
@@ -337,6 +350,18 @@ def provision_role_from_prebuilt(*, tenant, branch=None, prebuilt_key: str, crea
             "created_by": created_by,
         },
     )
+
+    # A school that has just gained its second branch has a role named for no
+    # branch sitting beside one named for a branch, and no way to tell which
+    # site the first one runs. The moment the dimension starts to mean
+    # something, every sibling says which branch it is for.
+    if branch is not None and siblings > 1:
+        for sibling in TenantRoleTemplate.objects.filter(
+            tenant=tenant, key__startswith=f"{prebuilt.key}-",
+            name=prebuilt.name, branch__isnull=False,
+        ).exclude(pk=role.pk).select_related("branch"):
+            sibling.name = f"{prebuilt.name} - {sibling.branch.name}"
+            sibling.save(update_fields=["name"])
 
     if created:
         permission_keys = list(PrebuiltRolePermission.objects.filter(

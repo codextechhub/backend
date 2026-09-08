@@ -136,15 +136,51 @@ class ANewSchoolGetsTheRolesCodeXShipsTests(TestCase):
         # ...and the branch-scoped one, which is keyed per branch.
         self.assertTrue(any(k.startswith("branch_admin-") for k in keys), keys)
 
-    def test_the_branch_role_is_named_for_its_branch(self):
-        """Whatever the school called the branch is what the role says."""
-        self._create("riverbank-two", "Ikeja")
+    def test_one_branch_means_the_role_does_not_name_it(self):
+        """The suffix repeats what the row already says, so it is not there.
+
+        "Branch Admin - Main Branch" on a school with one site says "Branch"
+        twice and tells nobody anything. Where a school has one branch the
+        dimension recedes, the same way a switcher with one entry does.
+        """
+        self._create("riverbank-two", "Main Branch")
 
         tenant = Tenant.objects.get(slug="riverbank-two")
-        branch_role = TenantRoleTemplate.objects.get(
+        role = TenantRoleTemplate.objects.get(
             tenant=tenant, key__startswith="branch_admin-",
         )
-        self.assertEqual(branch_role.name, "Branch Admin - Ikeja")
+        self.assertEqual(role.name, "Branch Admin")
+
+    def test_a_second_branch_makes_every_sibling_say_which(self):
+        """And the first one is renamed, so neither is ambiguous.
+
+        Leaving it plain beside "Branch Admin - Lekki" would leave a reader
+        guessing which site the unlabelled one runs.
+        """
+        from vs_rbac.services import provision_role_from_prebuilt
+
+        self._create("two-sites", "Ikeja")
+        tenant = Tenant.objects.get(slug="two-sites")
+        first = TenantRoleTemplate.objects.get(
+            tenant=tenant, key__startswith="branch_admin-",
+        )
+        self.assertEqual(first.name, "Branch Admin")
+
+        lekki = Branch.all_objects.create(
+            tenant=tenant, name="Lekki", state="Lagos", status="ACTIVE",
+        )
+        provision_role_from_prebuilt(
+            tenant=tenant, branch=lekki, prebuilt_key="branch_admin",
+        )
+
+        first.refresh_from_db()
+        self.assertEqual(first.name, "Branch Admin - Ikeja")
+        self.assertEqual(
+            TenantRoleTemplate.objects.get(
+                tenant=tenant, key=f"branch_admin-{lekki.pk}",
+            ).name,
+            "Branch Admin - Lekki",
+        )
 
 
 class SharedAdminAcrossBranchesTests(TestCase):
