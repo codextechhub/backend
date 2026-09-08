@@ -14,6 +14,7 @@ FRD M11 v2.4 FR-005 and FR-021.
 """
 from __future__ import annotations
 
+from core.search import search as core_search
 from django.db import transaction
 from django.db.models import Q
 from rest_framework.exceptions import ValidationError
@@ -248,12 +249,11 @@ def guardian_directory(tenant, user, *, search="", include_unlinked=False,
     from ..models import Student
 
     qs = Guardian.objects.filter(tenant=tenant)
-    search = (search or "").strip()
-    if search:
-        qs = qs.filter(
-            Q(full_name__icontains=search) | Q(phone__icontains=search)
-            | Q(email__icontains=search),
-        )
+    # Loosely and ranked, like every other directory. A guardian is stored as
+    # ONE full name rather than parts, so the old whole-string match worked for
+    # a full name and failed for "ada okeye" typed the other way round, or for
+    # a surname and a first initial.
+    qs = core_search(qs, search, fields=GUARDIAN_SEARCH_FIELDS)
     if not include_unlinked:
         visible_students = scope_students(
             Student.objects.filter(tenant=tenant), user, tenant,
@@ -273,7 +273,19 @@ def guardian_directory(tenant, user, *, search="", include_unlinked=False,
     # another entirely - and the reader has no way to tell. Name then pk: the
     # name is what the list is read by, the pk breaks ties between the several
     # households that share a surname.
+    # Rank first where a search ran, so a three-letter coincidence cannot sort
+    # alphabetically above the guardian whose name was typed in full. The
+    # annotation is absent when nothing was typed, and the plain order stands.
+    if (search or "").strip():
+        return qs.order_by("search_blob_rank", "full_name", "pk")
     return qs.order_by("full_name", "pk")
+
+
+#: What a typed query is matched against, joined into one string.
+#:
+#: The phone number is in here because "who do we call about this family" is
+#: often asked from a missed call rather than from a name.
+GUARDIAN_SEARCH_FIELDS = ("full_name", "phone", "email")
 
 
 #: The guardian's own details, as opposed to their link to any one student.

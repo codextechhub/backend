@@ -7,6 +7,7 @@ from rest_framework import generics
 from rest_framework.views import APIView
 
 from core.response import success_response
+from core.search import search as core_search
 from vs_audit.models import AuditActionType
 from vs_audit.services import emit_audit_event
 from vs_audit.models import AuditModuleKey
@@ -80,6 +81,16 @@ def _list_queryset(tenant, session=None):
     )
 
 
+#: What a typed query is matched against, joined into one string.
+#:
+#: The admission number sits with the names because a registrar holding a
+#: paper form types the number, and a box that searched only names would
+#: answer nothing for them.
+STUDENT_SEARCH_FIELDS = (
+    "first_name", "middle_name", "last_name", "student_number",
+)
+
+
 class StudentListCreateView(StudentsViewMixin, generics.ListCreateAPIView):
     """GET, POST /v1/students/
 
@@ -113,16 +124,15 @@ class StudentListCreateView(StudentsViewMixin, generics.ListCreateAPIView):
             # school" means on the screen that says so.
             qs = qs.filter(status__in=DEFAULT_LIST_STATUSES)
 
-        search = (params.get("search") or "").strip()
-        if search:
-            # Must tolerate a student with no number rather than excluding
-            # them, which an inner join on the number would do.
-            qs = qs.filter(
-                Q(first_name__icontains=search)
-                | Q(last_name__icontains=search)
-                | Q(middle_name__icontains=search)
-                | Q(student_number__icontains=search),
-            )
+        # Matched loosely and ranked, the same way every other directory in the
+        # product now matches: each field used to be searched for the WHOLE
+        # query, so typing a child's full name returned nothing at all. The
+        # helper coalesces, so a child with no middle name and no admission
+        # number is still findable rather than dropping out of every search.
+        qs = core_search(
+            qs, params.get("search"),
+            fields=STUDENT_SEARCH_FIELDS, then=("first_name", "last_name", "pk"),
+        )
 
         klass = (params.get("class") or "").strip()
         if klass:

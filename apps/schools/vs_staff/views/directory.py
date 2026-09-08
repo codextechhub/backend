@@ -15,6 +15,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.views import APIView
 
 from core.response import success_response
+from core.search import search as core_search
 
 from ..constants import PERM_CREATE, PERM_UPDATE, PERM_VIEW, EmploymentStatus
 from ..exceptions import FieldNotSelfEditable
@@ -29,6 +30,16 @@ from ..services import creation, posting, roles
 from ..services.directory import counts
 from ..services.scoping import is_self
 from .base import StaffViewMixin
+
+#: What a typed query is matched against, joined into one string.
+#:
+#: The staff number is in here with the names on purpose: a school that files by
+#: number types a number, and a box that only searched names would answer
+#: nothing for the half of a school that does.
+SEARCH_FIELDS = (
+    "user__first_name", "middle_name", "user__last_name", "user__email",
+    "staff_number",
+)
 
 #: The only roles a school may hand out before it goes live.
 #:
@@ -70,14 +81,14 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
         queryset = self.scoped_staff()
         params = self.request.query_params
 
-        if search := (params.get("search") or "").strip():
-            queryset = queryset.filter(
-                Q(user__first_name__icontains=search)
-                | Q(user__last_name__icontains=search)
-                | Q(user__email__icontains=search)
-                | Q(staff_number__icontains=search)
-                | Q(middle_name__icontains=search),
-            )
+        # Matched loosely and RANKED, not field by field against the whole
+        # string. The old shape searched each column for the entire query, so
+        # the thing a reader tries first - typing somebody's full name -
+        # returned nothing, because "Sunday Ekpo" sits in no single field.
+        queryset = core_search(
+            queryset, params.get("search"),
+            fields=SEARCH_FIELDS, then=("-created_at", "-id"),
+        )
         if value := params.get("employment_status"):
             # Filtered on what the row READS as, not on what the column holds,
             # or the facet would disagree with the chip beside every name.
@@ -407,9 +418,9 @@ class StaffDetailView(StaffViewMixin, APIView):
 class StaffSearchView(StaffViewMixin, APIView):
     """GET /v1/i/me/staff/search/?q= - the command palette's staff hits.
 
-    Reads the same three fields the directory's ``?search=`` reads, through the
-    same scoping, so the palette can never find somebody the directory cannot
-    open. Capped small, because it renders in a dropdown and a hundred rows is a
+    Reads the same fields through the same matcher and the same scoping, so the
+    palette can never find somebody the directory cannot open, and never miss
+    somebody it would have found. Capped small, because it renders in a dropdown and a hundred rows is a
     scroll nobody reads, and it carries no email address: this is the most
     casually visible surface in the module.
 
@@ -429,11 +440,11 @@ class StaffSearchView(StaffViewMixin, APIView):
         if len(query) < self.MIN_QUERY:
             return success_response(data=[])
 
-        rows = self.scoped_staff().filter(
-            Q(user__first_name__icontains=query)
-            | Q(user__last_name__icontains=query)
-            | Q(user__email__icontains=query)
-            | Q(staff_number__icontains=query),
+        # The same matcher the directory uses, so the palette can never find
+        # somebody the directory cannot, and never fail to find somebody it can.
+        rows = core_search(
+            self.scoped_staff(), query,
+            fields=SEARCH_FIELDS, then=("user__first_name", "user__last_name"),
         )[: self.LIMIT]
 
         return success_response(data=[
