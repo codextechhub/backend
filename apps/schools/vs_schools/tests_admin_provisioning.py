@@ -65,6 +65,88 @@ def _seed_prebuilt_roles():
     )
 
 
+class ANewSchoolGetsTheRolesCodeXShipsTests(TestCase):
+    """Every tenant-wide prebuilt role, on the day the school is created.
+
+    Creation provisioned School Admin and a Branch Admin per branch, and nothing
+    else. Teacher, Finance Admin and Procurement Admin reached a school only if
+    an operator remembered to run ``adopt_console_admin_roles`` afterwards, so
+    schools created days apart carried different sets and a school opening its
+    roles screen on its first day found two rows where the product is built
+    around five.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="full-set@example.com", super_admin=True,
+        )
+        _seed_prebuilt_roles()
+        for key, name in (
+            ("teacher", "Teacher"),
+            ("finance_admin", "Finance Admin"),
+            ("procurement_admin", "Procurement Admin"),
+        ):
+            PrebuiltRoleTemplate.objects.update_or_create(
+                key=key,
+                defaults={"name": name, "scope": "institution", "tier": "A"},
+            )
+
+    def _create(self, slug, branch_name):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        with mock.patch("vs_user.tasks.send_invitation_email_task.delay"):
+            with self.captureOnCommitCallbacks(execute=True):
+                return client.post(
+                    reverse("school-create"),
+                    {
+                        "name": slug.replace("-", " ").title(),
+                        "slug": slug,
+                        "branches": [
+                            {
+                                "name": branch_name,
+                                "state": "Lagos",
+                                "is_main": True,
+                                "primary_admin_data": {
+                                    "full_name": "Ada Obi",
+                                    "email": f"admin@{slug}.ng",
+                                },
+                            },
+                        ],
+                    },
+                    format="json",
+                )
+
+    def test_the_full_set_is_provisioned_without_anybody_running_a_command(self):
+        response = self._create("holy-trinity", "Main Branch")
+        self.assertIn(response.status_code, (200, 201), response.data)
+
+        tenant = Tenant.objects.get(slug="holy-trinity")
+        keys = set(
+            TenantRoleTemplate.objects.filter(tenant=tenant)
+            .values_list("key", flat=True)
+        )
+
+        # The four that belong to the school as a whole...
+        self.assertTrue(
+            {"school_admin", "teacher", "finance_admin", "procurement_admin"}
+            <= keys,
+            keys,
+        )
+        # ...and the branch-scoped one, which is keyed per branch.
+        self.assertTrue(any(k.startswith("branch_admin-") for k in keys), keys)
+
+    def test_the_branch_role_is_named_for_its_branch(self):
+        """Whatever the school called the branch is what the role says."""
+        self._create("riverbank-two", "Ikeja")
+
+        tenant = Tenant.objects.get(slug="riverbank-two")
+        branch_role = TenantRoleTemplate.objects.get(
+            tenant=tenant, key__startswith="branch_admin-",
+        )
+        self.assertEqual(branch_role.name, "Branch Admin - Ikeja")
+
+
 class SharedAdminAcrossBranchesTests(TestCase):
     """Two branches, one admin address, in a single create request."""
 

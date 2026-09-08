@@ -1259,13 +1259,30 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
 
         actor = self.context["request"].user
 
-        # Provision school_admin role template for this school before any email is sent
-        school_admin_role = provision_role_from_prebuilt(
-            tenant=school.tenant,
-            branch=None,
-            prebuilt_key="school_admin",
-            created_by=actor,
-        )
+        # Every tenant-wide role CodeX ships, not only the one the first invite
+        # needs. A school opening its roles screen on day one should find the
+        # set the product is built around - somebody to run the school, teach in
+        # it, keep its books and buy for it - rather than one role and a blank
+        # page, with the rest arriving later only if an operator remembers to
+        # run adopt_console_admin_roles by hand. That is how schools created
+        # days apart ended up with different sets.
+        #
+        # ``branch_admin`` is not here: it is branch-scoped and provisioned per
+        # branch below, because each branch carries its own copy.
+        #
+        # Each is a get_or_create keyed on the role key, so this stays correct
+        # if the library grows and is re-run.
+        provisioned = {
+            key: provision_role_from_prebuilt(
+                tenant=school.tenant,
+                branch=None,
+                prebuilt_key=key,
+                created_by=actor,
+            )
+            for key in ("school_admin", "teacher", "finance_admin",
+                        "procurement_admin")
+        }
+        school_admin_role = provisioned["school_admin"]
 
         school_admin_email = None
 
