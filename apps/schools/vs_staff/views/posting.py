@@ -12,6 +12,7 @@ from core.response import success_response
 
 from ..constants import PERM_ROLES_ASSIGN, PERM_UPDATE, PERM_VIEW
 from ..serializers import BulkPostingSerializer, BulkRoleSerializer, StaffListSerializer
+from ..exceptions import StaffHasLeft
 from ..services import posting, roles
 from .base import StaffViewMixin
 
@@ -22,6 +23,11 @@ class StaffBulkPostingView(StaffViewMixin, APIView):
     **A posting change never touches a role grant**, and the response says so as
     well as the confirmation. A bulk action that quietly re-pinned grants would
     change what people may do while claiming to change where they sit.
+
+    **Refuses to move somebody who has left.** They are still on the roster,
+    because dropping them would hide that they were ever at the branch, and the
+    screen draws them as finished and will not tick them - but a greyed row is a
+    courtesy and this refusal is what makes it true.
 
     Warns and never refuses where somebody teaches at the branch they are
     leaving: a school moving a teacher mid-term is doing it deliberately, and a
@@ -81,7 +87,18 @@ class StaffBulkPostingView(StaffViewMixin, APIView):
         missing = [pk for pk in staff_ids if pk not in found]
         if missing:
             raise NotFound("No such person at this school.")
-        return [found[pk] for pk in staff_ids]
+
+        people = [found[pk] for pk in staff_ids]
+        # Named rather than refused blankly, because the caller ticked rows and
+        # is owed which of them stopped the move.
+        gone = [person for person in people if not person.is_on_roll]
+        if gone:
+            raise StaffHasLeft(
+                f"{', '.join(_name(person) for person in gone)} no longer "
+                f"{'work' if len(gone) > 1 else 'works'} here, so their posting "
+                f"cannot be moved. Nobody was moved."
+            )
+        return people
 
 
 class StaffRosterView(StaffViewMixin, APIView):
@@ -92,14 +109,16 @@ class StaffRosterView(StaffViewMixin, APIView):
     would tell an Ikeja administrator that the registrar is theirs. She is not
     at Ikeja; she is at the school, and she appears in every branch's roster.
 
-    Only the first group is movable, because a posting is the only one of the
-    three this screen can change. The other two carry ``change_it``, which says
-    where they ARE changed: a group labelled only as not this screen's to move
-    tells a reader they cannot do the thing without telling them who can.
+    Posted here and school-wide are both movable: one changes which branch
+    somebody is based at, the other gives a base to somebody who has none, and
+    both are the same act through the same drawer. Reaching here is not, because
+    those people are carried by a role rather than by a posting, so their row
+    names the role and opening it goes to where that role is changed.
 
-    People who have left are not on it. A roster answers who works at a branch,
-    and somebody terminated in March does not - listing them says they do, and
-    ticking them offers to move a posting that no longer means anything.
+    People who have left stay on it and carry ``on_roll: false``. Dropping them
+    would hide from the only screen that answers who is at a branch that
+    somebody ever was; drawing them as finished, and refusing to move them,
+    says both things at once.
 
     docstring-name: A branch's staff roster
     """
@@ -119,10 +138,20 @@ class StaffRosterView(StaffViewMixin, APIView):
         if branch is None:
             raise NotFound("Say which branch.")
 
-        posted, reaching, school_wide = posting.roster(
+        posted, reaching, school_wide, via = posting.roster(
             self.tenant, request.user, branch,
         )
         context = self.serializer_context()
+
+        # The role that carries somebody here rides on their row rather than in
+        # the group's note, because it differs per person: Mr. Sule reaches
+        # Ikeja as its Head Teacher and Mrs. Eze reaches it school-wide, and one
+        # sentence over both would have to name neither.
+        reaching_rows = StaffListSerializer(
+            reaching, many=True, context=context,
+        ).data
+        for row in reaching_rows:
+            row["via_roles"] = via.get(row["id"], [])
         return success_response(data={
             "branch": {"id": branch.pk, "name": branch.name},
             "total": len(posted) + len(reaching) + len(school_wide),
@@ -142,27 +171,26 @@ class StaffRosterView(StaffViewMixin, APIView):
                     "key": "reaching_here",
                     "title": "Reaching here through a role",
                     "note": (
-                        "Based at another branch, but a role they hold is pinned "
-                        "to this one, so they reach it as well. To stop that, "
-                        "change which branch that role reaches on their Access "
-                        "tab."
+                        f"Based at another branch, and carried here by a role "
+                        f"rather than by a posting. Each row names the role and "
+                        f"says whether it is pinned to {branch.name} or is a "
+                        f"school-wide one that reaches every branch. Open a row "
+                        f"to change it."
                     ),
                     "movable": False,
-                    "change_it": "Change it on their roles",
-                    "rows": StaffListSerializer(
-                        reaching, many=True, context=context,
-                    ).data,
+                    "change_it": "Open a row to see the role",
+                    "rows": reaching_rows,
                 },
                 {
                     "key": "school_wide",
                     "title": "School-wide",
                     "note": (
                         "No single base, so they belong to the school and appear "
-                        "on every branch's roster. Give them one from their own "
-                        "record."
+                        "on every branch's roster. Tick anybody here to give "
+                        "them one branch instead."
                     ),
-                    "movable": False,
-                    "change_it": "Change it on their record",
+                    "movable": True,
+                    "change_it": "",
                     "rows": StaffListSerializer(
                         school_wide, many=True, context=context,
                     ).data,
@@ -233,3 +261,7 @@ class StaffBulkRoleView(StaffViewMixin, APIView):
                 "already_held": named(already),
             },
         )
+
+
+def _name(person) -> str:
+    return f"{person.user.first_name} {person.user.last_name}".strip()

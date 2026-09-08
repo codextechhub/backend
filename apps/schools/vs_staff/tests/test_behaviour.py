@@ -526,8 +526,13 @@ class PostingTests(StaffFixture):
         self.assertEqual(
             set(groups), {"posted_here", "reaching_here", "school_wide"},
         )
+        # School-wide is movable too: giving somebody with no base one branch
+        # is the same act through the same drawer as moving between two.
         self.assertTrue(groups["posted_here"]["movable"])
-        self.assertFalse(groups["school_wide"]["movable"])
+        self.assertTrue(groups["school_wide"]["movable"])
+        # Reaching here is not, because a role carries them rather than a
+        # posting, so moving where they are based would change nothing.
+        self.assertFalse(groups["reaching_here"]["movable"])
 
     def test_each_group_says_where_it_is_changed_when_it_is_not_here(self):
         """A group nobody can act on has to name who can.
@@ -539,38 +544,92 @@ class PostingTests(StaffFixture):
             self.admin, "staff-roster", {"branch": self.lekki.pk},
         )
         groups = {group["key"]: group for group in response.data["data"]["groups"]}
+        # The two movable groups need no such label; the one that is not
+        # points at the role that carries these people here.
         self.assertEqual(groups["posted_here"]["change_it"], "")
-        self.assertIn("roles", groups["reaching_here"]["change_it"])
-        self.assertIn("record", groups["school_wide"]["change_it"])
+        self.assertEqual(groups["school_wide"]["change_it"], "")
+        self.assertIn("role", groups["reaching_here"]["change_it"])
 
-    def test_somebody_who_has_left_is_not_on_the_roster(self):
-        """A roster answers who works here.
+    def test_somebody_who_has_left_stays_on_the_roster_and_says_so(self):
+        """Dropping them would lose that they were ever at the branch.
 
-        Listing Mrs. Bello a term after she was terminated says she still does,
-        and the posted group is selectable, so it also offered to move a
-        posting that no longer means anything.
+        This is the only screen that answers who is at Lekki, so a school
+        looking up last year's arrangement has nowhere else to look. They stay,
+        carrying ``on_roll: false``, which is what the screen fades and refuses
+        to tick.
         """
-        gone = self.make_staff(
+        self.make_staff(
             "gone@lekki.example.com", "Rukayat", "Bello", branch=self.lekki,
             status=EmploymentStatus.TERMINATED,
         )
-        still_here = self.make_staff(
+        self.make_staff(
             "held@lekki.example.com", "Gbenga", "Fashola", branch=self.lekki,
             status=EmploymentStatus.SUSPENDED,
         )
         response = self.get(
             self.admin, "staff-roster", {"branch": self.lekki.pk},
         )
-        names = {
-            row["full_name"]
+        rows = {
+            row["full_name"]: row
             for group in response.data["data"]["groups"]
             for row in group["rows"]
         }
-        self.assertNotIn("Rukayat Bello", names)
-        # Suspended is still employed. Dropping them would read as a dismissal.
-        self.assertIn("Gbenga Fashola", names)
-        self.assertEqual(gone.employment_status, EmploymentStatus.TERMINATED)
-        self.assertEqual(still_here.employment_status, EmploymentStatus.SUSPENDED)
+        self.assertIn("Rukayat Bello", rows)
+        self.assertFalse(rows["Rukayat Bello"]["on_roll"])
+        # Suspended is still employed, and reads that way.
+        self.assertTrue(rows["Gbenga Fashola"]["on_roll"])
+
+    def test_moving_somebody_who_has_left_is_refused_and_names_them(self):
+        """The greyed row is a courtesy; this is what makes it true.
+
+        A caller who ticked rows is owed which of them stopped the move, and
+        nobody at all is moved - a partial bulk would leave a school guessing
+        which half went through.
+        """
+        gone = self.make_staff(
+            "left@lekki.example.com", "Kola", "Ayanwale", branch=self.lekki,
+            status=EmploymentStatus.RESIGNED,
+        )
+        response = self.post(
+            self.admin, "staff-bulk-posting",
+            {"staff_ids": [self.eze.pk, gone.pk], "branch": self.ikeja.pk},
+        )
+        self.assertEqual(response.status_code, 422, response.data)
+        self.assertEqual(response.data["error"]["code"], "STAFF_HAS_LEFT")
+        self.assertIn("Kola Ayanwale", response.data["message"])
+        self.eze.refresh_from_db()
+        self.assertEqual(self.eze.branch_id, self.lekki.pk)
+
+    def test_a_reaching_row_names_the_role_and_says_which_kind_it_is(self):
+        """"Reaching through a role" without the role is unactionable.
+
+        And the two kinds need different acts: a role pinned to this branch is
+        unpinned and they stop reaching it, while a school-wide one reaches
+        every branch by being pinned to none, so narrowing it takes them off
+        every other roster at the same time.
+        """
+        response = self.get(
+            self.admin, "staff-roster", {"branch": self.lekki.pk},
+        )
+        groups = {group["key"]: group for group in response.data["data"]["groups"]}
+        for row in groups["reaching_here"]["rows"]:
+            self.assertTrue(row["via_roles"], row["full_name"])
+            for role in row["via_roles"]:
+                self.assertIn("name", role)
+                self.assertIn("school_wide", role)
+
+    def test_school_wide_people_can_be_given_a_branch_from_here(self):
+        """They have no base, and giving them one is the same act.
+
+        The group was unmovable, so the one thing a reader would want to do to
+        the registrar - put her at Ikeja - was the one thing the screen would
+        not offer.
+        """
+        response = self.get(
+            self.admin, "staff-roster", {"branch": self.lekki.pk},
+        )
+        groups = {group["key"]: group for group in response.data["data"]["groups"]}
+        self.assertTrue(groups["school_wide"]["movable"])
 
     def test_the_roster_does_not_cost_a_query_per_member_of_staff(self):
         """It read every person's branch reach one person at a time.

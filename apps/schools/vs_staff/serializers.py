@@ -112,6 +112,10 @@ class StaffListSerializer(serializers.ModelSerializer):
     #: The history, the lifecycle strip and the transition rules all reason
     #: about what a person DECIDED, and "she was moved to Suspended" is a
     #: different sentence from "her leave was running that week".
+    #: Still employed. Read from the model property so the two statuses that
+    #: mean "has left" are decided in one place rather than re-derived by every
+    #: screen that wants to draw a finished row differently.
+    on_roll = serializers.BooleanField(source="is_on_roll", read_only=True)
     display_employment_status = serializers.SerializerMethodField()
     display_employment_status_label = serializers.SerializerMethodField()
     on_leave_today = serializers.SerializerMethodField()
@@ -131,7 +135,7 @@ class StaffListSerializer(serializers.ModelSerializer):
             # the finance engine is domain-neutral and knows nothing about
             # staff. Without it a bursar cannot tie a salary to a person.
             "id", "user_id", "full_name", "email", "staff_number", "job_title",
-            "employment_status", "employment_status_label",
+            "employment_status", "employment_status_label", "on_roll",
             "display_employment_status", "display_employment_status_label",
             "employment_type",
             "account_status", "account_flag", "roles", "branch_id",

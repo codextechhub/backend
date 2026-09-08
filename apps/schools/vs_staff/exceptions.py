@@ -81,6 +81,23 @@ class BranchNotInService(StaffError):
     http_status = 422
 
 
+class StaffHasLeft(StaffError):
+    """Moving the posting of somebody who no longer works here.
+
+    The roster shows them, because hiding them would lose that they were ever
+    at the branch, and it draws them as finished and will not tick them. This
+    is the same rule at the door: a screen that greys a row is a courtesy, and
+    the refusal is what makes it true.
+    """
+
+    error_code = "STAFF_HAS_LEFT"
+    default_message = (
+        "They no longer work here, so their posting cannot be moved. Reinstate "
+        "them first if they are coming back."
+    )
+    http_status = 422
+
+
 class LeadAlreadySet(StaffError):
     """Promoting somebody where the pairing already has a lead.
 

@@ -24,7 +24,6 @@ from vs_rbac.scoping import (
 from vs_tenants.models import Branch
 from vs_tenants.references import resolve_branch_reference
 
-from ..constants import OFF_ROLL_STATUSES
 from ..exceptions import BranchNotInService
 from . import audit
 
@@ -115,23 +114,26 @@ def roster(tenant, user, branch):
     She is not at Ikeja, she is at the school, and she appears in every branch's
     roster for a reason that is not the same as being posted there.
 
-    **People who have left are not on it.** A roster answers who works at a
-    branch, and somebody terminated in March does not: listing them says they
-    do, and the posted group is selectable, so it also offered to move a posting
-    that no longer means anything. Suspended and on-leave staff stay - both are
-    still employed, and a suspension that removed somebody from their branch's
-    roster would read as a dismissal.
+    **People who have left stay on it, and say so.** Dropping them would hide
+    that Mrs. Bello was ever at Lekki from the only screen that answers who is,
+    and a school looking for last year's arrangements would find nothing. Their
+    row carries ``on_roll: false`` instead, so a screen can draw them as
+    finished and refuse to move a posting that no longer means anything.
 
-    Returns ``(posted_here, reaching_here, school_wide)``. Only the first is
-    movable, and the caller says so, because moving a posting is the only one of
-    the three facts this screen can change.
+    Returns ``(posted_here, reaching_here, school_wide, via)``. ``via`` maps a
+    reaching person's staff id to the roles that carry them here, because
+    "reaching through a role" without naming the role leaves a reader with
+    nothing to go and change.
+
+    The first and third groups are movable and the caller says so. The middle
+    one is not: somebody reaching Ikeja through a branch-pinned grant is moved
+    by changing that grant, not by moving where they are based.
     """
     from ..models import StaffProfile
     from ..serializers import STAFF_LIST_PREFETCH
 
     people = list(
         StaffProfile.objects.filter(tenant=tenant)
-        .exclude(employment_status__in=OFF_ROLL_STATUSES)
         .select_related("user", "branch")
         .prefetch_related(*STAFF_LIST_PREFETCH)
     )
@@ -144,6 +146,7 @@ def roster(tenant, user, branch):
     reach = visible_branch_ids_for([person.user for person in people], tenant)
 
     posted_here, reaching_here, school_wide = [], [], []
+    via = {}
     for person in people:
         if person.branch_id == branch.pk:
             posted_here.append(person)
@@ -151,7 +154,39 @@ def roster(tenant, user, branch):
             school_wide.append(person)
         elif _reaches(reach.get(person.user_id), branch.pk):
             reaching_here.append(person)
-    return posted_here, reaching_here, school_wide
+            via[person.pk] = _via_roles(person, branch.pk)
+    return posted_here, reaching_here, school_wide, via
+
+
+def _via_roles(staff, branch_id) -> list:
+    """The roles that carry one person to a branch they are not posted to.
+
+    Read off the grants the roster already prefetched, so naming them costs no
+    query.
+
+    Each says whether it is pinned to THIS branch or holds no pin at all, and
+    the two are not the same problem. A pinned grant is unpinned and the person
+    stops reaching here. A school-wide grant reaches every branch by being
+    pinned to none, so narrowing it takes them off every other branch's roster
+    at the same time - and a screen that told an administrator to "change which
+    branch that role reaches" without saying which kind they were looking at
+    would have them do the second while intending the first.
+    """
+    seen = {}
+    for grant in staff.user.tenant_role_assignments.all():
+        if grant.assignment_status != "ACTIVE":
+            continue
+        if grant.branch_id not in (branch_id, None):
+            continue
+        role = getattr(grant, "role", None)
+        if role is None:
+            continue
+        name = role.name or role.key
+        # A role held both ways reaches here on its own pin, which is the one
+        # somebody would change, so the narrower reading wins.
+        if name not in seen or grant.branch_id is not None:
+            seen[name] = {"name": name, "school_wide": grant.branch_id is None}
+    return [seen[name] for name in sorted(seen)]
 
 
 def _reaches(visible, branch_id) -> bool:
