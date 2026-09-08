@@ -422,7 +422,20 @@ class ActivationView(APIView):
     def post(self, request, token):
         ser = ActivationSerializer(data=request.data)
         if not ser.is_valid():
-            return error_response(message="Invalid request.", error=ser.errors)
+            # Carry a code, because the activation screen is pre-authentication
+            # and renders only mapped codes and allowlisted sentences - never a
+            # raw payload. Without one, the four reasons a password was refused
+            # ("too common", "at least 12 characters", "an uppercase letter", "a
+            # special character") sat unread in the body while the screen said
+            # "Activation failed. Please try again.", which names nothing the
+            # person can act on. The password is the only field here that can
+            # fail policy, so its failure gets the code the client already maps.
+            code = ("PASSWORD_POLICY_VIOLATION" if "password" in ser.errors
+                    else "VALIDATION_ERROR")
+            return error_response(
+                message="Invalid request.",
+                error={"error_code": code, **ser.errors},
+            )
 
         if ser.validated_data['password'] != ser.validated_data['confirm_password']:
             return error_response(
@@ -438,7 +451,14 @@ class ActivationView(APIView):
             )
         except ValueError as e:
             payload = e.args[0] if e.args else {}
-            message = payload.get('detail', 'Activation failed.') if isinstance(payload, dict) else str(payload)
+            # The service writes `message`; this read `detail`, so every
+            # sentence it composed - "This invitation link has already been
+            # used. Please log in." and its siblings - was thrown away and
+            # replaced by the generic line below. `detail` is still honoured
+            # for anything that raises in DRF's own shape.
+            message = (
+                payload.get('message') or payload.get('detail') or 'Activation failed.'
+            ) if isinstance(payload, dict) else str(payload)
             return error_response(message=message, error=payload)
 
         return success_response(message="Account activated successfully.", data=result)

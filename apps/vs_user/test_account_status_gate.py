@@ -567,6 +567,90 @@ class InvitationActivationStatusTests(_Fixture):
         self.assertTrue(fresh.check_password(NEW_PW))
 
 
+class ActivationTellsYouWhyItRefusedTests(_Fixture):
+    """A refusal a person can act on, not "Activation failed. Please try again."
+
+    The activation screen is pre-authentication, so it renders only error codes
+    it recognises and never a raw payload. A serializer refusal carried no code,
+    so the four sentences saying exactly what was wrong with the password went
+    unread and the screen showed its generic fallback. A branch admin at a
+    brand-new school was told her activation had failed, with nothing naming
+    the password as the reason and nothing saying what to change.
+    """
+
+    def _token_for_pending(self):
+        from vs_user.services.invitation import InvitationService
+
+        user = self.user(User.Status.PENDING)
+        _invitation, token = InvitationService.create(
+            user=user, invited_by=self.admin(),
+        )
+        return user, token
+
+    def test_a_weak_password_is_refused_with_a_code_the_screen_can_read(self):
+        import json
+
+        from django.test import Client
+
+        _user, token = self._token_for_pending()
+
+        resp = Client().post(
+            f"/v1/user/auth/activate/{token}/",
+            data=json.dumps({"password": "school123",
+                             "confirm_password": "school123"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
+        self.assertEqual(body["error"]["error_code"], "PASSWORD_POLICY_VIOLATION")
+        # And the reasons survive alongside it, for the box they belong under.
+        self.assertTrue(body["error"]["password"])
+
+    def test_a_good_password_still_activates(self):
+        import json
+
+        from django.test import Client
+
+        user, token = self._token_for_pending()
+
+        resp = Client().post(
+            f"/v1/user/auth/activate/{token}/",
+            data=json.dumps({"password": NEW_PW, "confirm_password": NEW_PW}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(User.objects.get(pk=user.pk).status, User.Status.ACTIVE)
+
+    def test_a_used_link_says_so_instead_of_saying_nothing(self):
+        """The service composes a sentence; the view used to discard it.
+
+        It read `detail` while the service writes `message`, so every reason it
+        gave was replaced by the generic line.
+        """
+        import json
+
+        from django.test import Client
+
+        from vs_user.services.invitation import InvitationService
+
+        user, token = self._token_for_pending()
+        InvitationService.activate(token=token, password=NEW_PW)
+
+        resp = Client().post(
+            f"/v1/user/auth/activate/{token}/",
+            data=json.dumps({"password": NEW_PW, "confirm_password": NEW_PW}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("already been used", resp.json()["message"])
+        self.assertEqual(
+            resp.json()["error"]["error_code"], "INVITATION_ALREADY_USED",
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # The grant that outlives the account
 # ─────────────────────────────────────────────────────────────────────────────
