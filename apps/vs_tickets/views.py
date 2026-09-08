@@ -40,6 +40,7 @@ from .serializers import (
     TicketDetailSerializer,
     GuideAnalyticsEventSerializer,
     TicketSerializer,
+    TicketEscalateSerializer,
     TicketTransitionSerializer,
     TicketUpdateSerializer,
     TicketUserSerializer,
@@ -78,6 +79,10 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     RBAC_ACTION_KEYS = {
         "assign": TicketPermission.ASSIGN,
         "transition": TicketPermission.MANAGE,
+        # Escalating is a triage decision, so it takes the triage grant. The
+        # person who works the school's queue is the one who decides a thing is
+        # beyond it.
+        "escalate": TicketPermission.MANAGE,
         "audit": TicketPermission.AUDIT_VIEW,
         "eligible_assignees": TicketPermission.ASSIGN,
     }
@@ -230,6 +235,23 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         ticket = ticket_svc.transition_ticket(ticket, actor=request.user, status=serializer.validated_data["status"])
         return success_response(
             message="Ticket status updated successfully.",
+            data=TicketDetailSerializer(ticket, context={"request": request}).data,
+        )
+
+    # Hand a school ticket up to CodeX. The school triages first; this is the
+    # school saying it cannot solve the thing itself.
+    @action(detail=True, methods=["post"])
+    def escalate(self, request, pk=None):
+        ticket = self.get_object()
+        serializer = TicketEscalateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        ticket = ticket_svc.escalate_ticket(
+            ticket,
+            actor=request.user,
+            note=serializer.validated_data.get("note", ""),
+        )
+        return success_response(
+            message="Ticket escalated to CodeX support.",
             data=TicketDetailSerializer(ticket, context={"request": request}).data,
         )
 

@@ -110,8 +110,24 @@ def visible_tickets_qs(user):
 
     # Platform support (tickets.ticket.manage on the platform tenant) works the
     # cross-tenant support console - the one deliberate span over all tenants.
+    #
+    # That span is no longer "every ticket". A school's staff raise tickets to
+    # their own school first, and a school's own business - the projector in
+    # Room 3, a timetable clash - is not CodeX's to read or to work. A desk
+    # that receives all of it stops being read, and the ones that were meant
+    # for CodeX go down with the rest.
+    #
+    # So the desk spans three things: CodeX's own tickets, the school tickets a
+    # school has explicitly sent up, and anything a support user is personally
+    # on. The last arm matters because a CX user assigned to a ticket must not
+    # lose it if the escalation is ever withdrawn.
     if is_support_user(user):
-        return qs
+        return qs.filter(
+            Q(tenant__kind="PLATFORM")
+            | Q(escalated_at__isnull=False)
+            | Q(requester=user)
+            | Q(assignee=user)
+        )
 
     qs = qs.filter(tenant=user.tenant)
 
@@ -137,7 +153,15 @@ def can_view_ticket(user, ticket: Ticket) -> bool:
     if not user or not getattr(user, "is_authenticated", False):
         return False
     if is_support_user(user):
-        return True
+        # The same three arms the list spans, in the same order. A support user
+        # who could open an unescalated school ticket by id would be reading a
+        # school's internal business through a door their own list had closed.
+        return (
+            getattr(ticket.tenant, "kind", None) == "PLATFORM"
+            or ticket.escalated_at is not None
+            or ticket.requester_id == user.pk
+            or ticket.assignee_id == user.pk
+        )
     if ticket.tenant_id != user.tenant_id:
         # Non-support users never cross tenant boundaries.
         return False

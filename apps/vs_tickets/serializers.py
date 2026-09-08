@@ -69,6 +69,7 @@ class TicketSerializer(serializers.ModelSerializer):
     comments_count = serializers.IntegerField(read_only=True)
     attachments_count = serializers.IntegerField(read_only=True)
     context = serializers.SerializerMethodField()
+    escalated_by = TicketUserSerializer(read_only=True)
 
     def get_context(self, obj):
         # Read through the same allowlist the write path validates against, so
@@ -84,10 +85,16 @@ class TicketSerializer(serializers.ModelSerializer):
             "status", "source", "context", "requester", "assignee", "tenant",
             "branch", "branch_name", "resolved_at", "closed_at", "comments_count",
             "attachments_count", "created_at", "updated_at",
+            # Null means the ticket is still the school's own. Both apps read
+            # this: the school shows whether it has passed the thing on, and
+            # the platform desk exists only for the rows where it is set.
+            "escalated_at", "escalated_by",
         ]
         read_only_fields = [
             "ticket_number", "status", "source", "context", "requester", "assignee",
             "resolved_at", "closed_at", "created_at", "updated_at",
+            # Set by the escalate action alone, never by a field write.
+            "escalated_at", "escalated_by",
         ]
 
 
@@ -122,17 +129,36 @@ class TicketDetailSerializer(TicketSerializer):
         return TicketAttachmentSerializer(attachments, many=True, context=self.context).data
 
     def get_capabilities(self, obj):
+        """What this reader may do with THIS ticket, decided here.
+
+        Sent per ticket rather than left to the client to infer from a
+        permission, because access is not a permission alone: the person who
+        raised a ticket may reply to it whatever keys they hold, and a triager's
+        reach is narrowed by branch. A screen that worked it out for itself
+        would be a second opinion that can disagree with the one that counts.
+        """
         from .services.visibility import (
             can_attach_to_ticket,
             can_comment_on_ticket,
+            can_manage_ticket,
             can_update_ticket_fields,
         )
 
         user = self.context["request"].user
+        can_manage = can_manage_ticket(user, obj)
         return {
             "can_comment": can_comment_on_ticket(user, obj),
             "can_attach": can_attach_to_ticket(user, obj),
             "can_update": can_update_ticket_fields(user, obj),
+            "can_manage": can_manage,
+            # Mirrors escalate_ticket's own guards, so the control is offered
+            # exactly when the action would be accepted. Offering a button that
+            # answers "already escalated" is worse than not offering one.
+            "can_escalate": (
+                can_manage
+                and obj.escalated_at is None
+                and getattr(obj.tenant, "kind", None) != "PLATFORM"
+            ),
         }
 
     def get_is_following(self, obj):
@@ -219,6 +245,18 @@ class TicketAssignSerializer(serializers.Serializer):
 
 class TicketTransitionSerializer(serializers.Serializer):
     status = serializers.ChoiceField(choices=TicketStatus.choices)
+
+
+class TicketEscalateSerializer(serializers.Serializer):
+    """What a school says when it hands a ticket to CodeX.
+
+    The note is optional but wanted: CodeX arrives to the whole thread, and one
+    line of "what we already tried" is the difference between reading it and
+    re-asking it. Posted publicly, so the person who raised the ticket sees
+    their school passed it on.
+    """
+
+    note = serializers.CharField(required=False, allow_blank=True, max_length=2000)
 
 
 class TicketCommentCreateSerializer(serializers.Serializer):

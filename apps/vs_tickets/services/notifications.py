@@ -30,20 +30,62 @@ def _unique_recipients(users, *, exclude=None):
     return out
 
 
-# Resolve the active platform users who should see new unassigned ticket activity.
-def support_recipients():
-    """Active platform-tenant users who hold a ticket triage key through an active
-    platform role - not every platform user. Mirrors the platform-role branch of
-    vs_rbac.permissions.user_has_rbac_permission."""
+def _triage_recipients_in(tenant):
+    """Active users of ``tenant`` who hold a ticket triage key through an active role.
+
+    Mirrors the role branch of vs_rbac.permissions.user_has_rbac_permission
+    rather than calling it per user, so a queue notification costs one query
+    instead of one per member of staff.
+    """
     return list(
         User.objects.filter(
-            tenant__kind="PLATFORM",
+            tenant=tenant,
             status=User.Status.ACTIVE,
             tenant_role_assignments__assignment_status="ACTIVE",
             tenant_role_assignments__role__role_permissions__permission_id__in=TRIAGE_PERMISSION_KEYS,
             tenant_role_assignments__role__role_permissions__granted=True,
         ).distinct()
     )
+
+
+# Resolve the active platform users who should see new unassigned ticket activity.
+def support_recipients():
+    """Active platform-tenant users who hold a ticket triage key through an active
+    platform role - not every platform user."""
+    from vs_tenants.models import Tenant
+
+    return list(
+        User.objects.filter(
+            tenant__kind=Tenant.Kind.PLATFORM,
+            status=User.Status.ACTIVE,
+            tenant_role_assignments__assignment_status="ACTIVE",
+            tenant_role_assignments__role__role_permissions__permission_id__in=TRIAGE_PERMISSION_KEYS,
+            tenant_role_assignments__role__role_permissions__granted=True,
+        ).distinct()
+    )
+
+
+# Resolve whoever owns an unassigned ticket's queue right now.
+def triage_recipients(ticket):
+    """The people to tell about activity on a ticket nobody has picked up.
+
+    Which queue that is depends on where the ticket sits. A school's ticket is
+    the school's own until they escalate it, so it is their triage staff who
+    need to know somebody raised it, not CodeX. After escalation, and for
+    CodeX's own tickets, it is the platform desk.
+
+    Getting this wrong is silent in the worst way. ``_eligible_recipients``
+    drops anybody who cannot view the ticket, so paging the platform desk about
+    an unescalated school ticket does not send a wrong email - it sends none at
+    all, and the ticket sits unread with nobody aware it exists.
+    """
+    from vs_tenants.models import Tenant
+
+    if ticket.escalated_at is not None:
+        return support_recipients()
+    if getattr(ticket.tenant, "kind", None) == Tenant.Kind.PLATFORM:
+        return support_recipients()
+    return _triage_recipients_in(ticket.tenant)
 
 
 # Build the template context shared by ticket notification events.
@@ -128,13 +170,43 @@ def dispatch_ticket_event(
     return recipients
 
 
+def notify_escalated(ticket, actor=None):
+    """Tell the platform desk that a school has handed them a ticket.
+
+    Without this, escalation is silent to the side that gains the work: the row
+    joins the desk's list and nothing announces it. The next comment would
+    eventually route there through ``triage_recipients``, but only if somebody
+    happens to write one, and the school escalated precisely because they were
+    waiting.
+
+    Addressed to the desk alone. The school already knows - the reader who
+    escalated did it, and the note posted alongside it is what tells the person
+    who raised the ticket.
+
+    The school's name is passed here rather than added to ``context_for``: this
+    is the one ticket message that arrives from somewhere else, and every other
+    one would pay for the lookup without using it.
+    """
+    return dispatch_ticket_event(
+        "ticket.escalated",
+        ticket=ticket,
+        actor=actor,
+        recipients=support_recipients(),
+        context=context_for(
+            ticket,
+            actor_name=getattr(actor, "full_name", ""),
+            school_name=getattr(ticket.tenant, "name", "") or "",
+        ),
+    )
+
+
 # Notify the support queue when a new ticket needs triage.
 def notify_created(ticket, actor=None):
     return dispatch_ticket_event(
         "ticket.created",
         ticket=ticket,
         actor=actor,
-        recipients=support_recipients(),
+        recipients=triage_recipients(ticket),
         context=context_for(ticket, actor_name=getattr(actor, "full_name", "")),
     )
 
@@ -189,7 +261,7 @@ def notify_commented(comment, actor=None):
             comment.ticket.assignee_id is None
             and comment.author_id == comment.ticket.requester_id
         ):
-            recipients.extend(support_recipients())
+            recipients.extend(triage_recipients(comment.ticket))
     return dispatch_ticket_event(
         "ticket.commented",
         ticket=comment.ticket,
@@ -216,7 +288,7 @@ def notify_attachment_added(attachment, actor=None):
         attachment.ticket.assignee_id is None
         and attachment.uploaded_by_id == attachment.ticket.requester_id
     ):
-        recipients.extend(support_recipients())
+        recipients.extend(triage_recipients(attachment.ticket))
     return dispatch_ticket_event(
         "ticket.attachment_added",
         ticket=attachment.ticket,

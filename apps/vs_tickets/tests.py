@@ -130,6 +130,29 @@ class TicketFixtureMixin:
             (TicketPermission.MANAGE,), role_name="CX Support Tier 2",
         )
 
+    def escalate(self, ticket):
+        """Send a school's ticket up, so CodeX may act on it.
+
+        A school triages its own tickets first, so CodeX is only ever on a
+        ticket that was escalated. Tests whose subject is what support does
+        once it is involved - notifying collaborators, following, assigning -
+        have to start from that state rather than from a ticket the school has
+        not passed on. See tests_escalation.py for the rule itself.
+
+        The triager is re-fetched because the effective permission set is
+        memoised on the user instance for the life of a request, and a grant
+        made after the instance was first used would otherwise not be seen.
+        """
+        if not getattr(self, "_triage_granted", False):
+            _grant(
+                self.school_a, self.peer,
+                (TicketPermission.MANAGE,), role_name="Alpha Triage",
+            )
+            self._triage_granted = True
+        return ticket_svc.escalate_ticket(
+            ticket, actor=User.objects.get(pk=self.peer.pk),
+        )
+
 
 class GuideAnalyticsTests(TicketFixtureMixin, TestCase):
     def setUp(self):
@@ -476,6 +499,12 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
         self.assertIn("onboarding_student_name", str(response.json()))
 
     def test_requester_reply_on_unassigned_ticket_notifies_support_queue(self):
+        # The school's own triage person. Before escalation this is the queue
+        # that owns the ticket.
+        _grant(
+            self.school_a, self.peer,
+            (TicketPermission.MANAGE,), role_name="Alpha Triage",
+        )
         ticket = ticket_svc.create_ticket(
             actor=self.requester,
             title="Still locked out",
@@ -497,9 +526,12 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
 
         send.assert_called_once()
         recipients = send.call_args.kwargs["recipients"]
+        # Nobody has picked it up, and it has not been escalated, so the queue
+        # that owns it is the school's own triage staff - not CodeX, who cannot
+        # even see it yet.
         self.assertEqual(
             {user.pk for user in recipients},
-            {self.support.pk, self.other_support.pk},
+            {self.peer.pk},
         )
 
     def test_commenters_follow_and_receive_later_public_comments(self):
@@ -510,6 +542,8 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
             category="HELP",
             priority="MEDIUM",
         )
+        # CodeX only ever joins a ticket the school sent up.
+        self.escalate(ticket)
         ticket_svc.add_comment(
             ticket,
             actor=self.support,
@@ -548,6 +582,8 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
             category="HELP",
             priority="MEDIUM",
         )
+        # CodeX only ever joins a ticket the school sent up.
+        self.escalate(ticket)
         ticket_svc.add_comment(
             ticket,
             actor=self.support,
@@ -579,6 +615,8 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
             category="HELP",
             priority="MEDIUM",
         )
+        # CodeX only ever joins a ticket the school sent up.
+        self.escalate(ticket)
         ticket_svc.add_comment(
             ticket,
             actor=self.support,
@@ -610,6 +648,8 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
             category="HELP",
             priority="MEDIUM",
         )
+        # CodeX only ever joins a ticket the school sent up.
+        self.escalate(ticket)
         TicketSubscription.objects.create(
             ticket=ticket,
             user=self.outsider,
@@ -640,6 +680,8 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
             category="HELP",
             priority="MEDIUM",
         )
+        # CodeX only ever joins a ticket the school sent up.
+        self.escalate(ticket)
         ticket_svc.add_comment(
             ticket,
             actor=self.support,
@@ -689,6 +731,8 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
             category="HELP",
             priority="MEDIUM",
         )
+        # CodeX only ever joins a ticket the school sent up.
+        self.escalate(ticket)
         client = APIClient()
         client.force_authenticate(self.support)
         self.assertFalse(
@@ -717,8 +761,15 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
 
         self.assertNotIn(mine, visibility.visible_tickets_qs(self.peer))
         self.assertNotIn(other, visibility.visible_tickets_qs(self.peer))
+
+        # The platform span reaches escalated tickets, not every ticket: a
+        # school triages its own first. See tests_escalation.py.
+        self.assertNotIn(mine, visibility.visible_tickets_qs(self.support))
+        self.assertNotIn(other, visibility.visible_tickets_qs(self.support))
+
+        self.escalate(mine)
         self.assertIn(mine, visibility.visible_tickets_qs(self.support))
-        self.assertIn(other, visibility.visible_tickets_qs(self.support))
+        self.assertNotIn(other, visibility.visible_tickets_qs(self.support))
 
     def test_school_manage_grant_does_not_leak_cross_tenant(self):
         # A SCHOOL user holding tickets.ticket.manage manages tickets inside
@@ -925,6 +976,9 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
         self.assertEqual(response.status_code, 403)
 
     def test_assignment_options_include_only_active_ticket_handlers(self):
+        # Support picks an assignee for a ticket it can see, which means one
+        # the school escalated.
+        self.escalate(self.ticket)
         non_handler = _user(
             "observer@cx.test", "Olivia", "Observer",
         )

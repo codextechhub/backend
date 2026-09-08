@@ -169,6 +169,69 @@ def transition_ticket(ticket: Ticket, *, actor, status: str) -> Ticket:
         return ticket
 
 
+def escalate_ticket(ticket: Ticket, *, actor, note: str = "") -> Ticket:
+    """Hand a school's ticket up to CodeX, without moving it.
+
+    The school triages first: their staff raise tickets to their own school,
+    and whoever holds ``tickets.ticket.manage`` there works them. Escalating is
+    that person saying "we cannot solve this".
+
+    It stamps the same row rather than opening a second ticket. The reference
+    the teacher was given still resolves, the thread they have been reading
+    still grows, and CodeX arrives to the whole history instead of a summary
+    somebody retyped. What changes is who can see it: the platform desk lists
+    escalated tickets, so this is the moment it appears there.
+
+    Escalating twice is refused rather than silently repeated. "It is already
+    with CodeX" is the useful answer; a second identical audit entry is not.
+
+    The note, when given, is posted as a PUBLIC comment. Public because the
+    person who raised the ticket should be able to see that their school passed
+    it on and why - a school escalating behind the reporter's back is how a
+    ticket goes quiet from their side for a week.
+    """
+    if not can_manage_ticket(actor, ticket):
+        raise PermissionDenied("You cannot escalate this ticket.")
+    if getattr(ticket.tenant, "kind", None) == "PLATFORM":
+        raise ValidationError("A CodeX ticket is already with CodeX.")
+    if ticket.escalated_at is not None:
+        raise ValidationError("This ticket has already been escalated to CodeX.")
+
+    with transaction.atomic():
+        before = snapshot_ticket(ticket)
+        ticket.escalated_at = timezone.now()
+        ticket.escalated_by = actor
+        ticket.full_clean()
+        ticket.save(update_fields=["escalated_at", "escalated_by", "updated_at"])
+
+        if note and note.strip():
+            add_comment(
+                ticket,
+                actor=actor,
+                body=note.strip(),
+                visibility=CommentVisibility.PUBLIC,
+            )
+
+        record_ticket_audit(
+            ticket=ticket,
+            action=TicketAuditAction.ESCALATED,
+            actor=actor,
+            summary=(
+                f"{actor.full_name} escalated ticket {ticket.ticket_number} "
+                f"to CodeX support."
+            ),
+            before_data=before,
+            after_data=snapshot_ticket(ticket),
+            metadata={"note": bool(note and note.strip())},
+        )
+
+        # The desk that just gained the ticket is told it has. Everything above
+        # changes what the row means; without this, nothing says so to the only
+        # audience whose work it becomes.
+        notify_svc.notify_escalated(ticket, actor=actor)
+        return ticket
+
+
 # Add a public reply or internal note and notify the right audience.
 def add_comment(ticket: Ticket, *, actor, body: str, visibility: str) -> TicketComment:
     if not can_comment_on_ticket(actor, ticket):

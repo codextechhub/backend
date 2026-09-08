@@ -222,6 +222,18 @@ EVENT_TYPE_REGISTRY = [
         "default_enabled": True,
     },
     {
+        "key": "ticket.escalated",
+        "label": "Ticket escalated to CodeX",
+        "description": (
+            "Fires when a school hands one of its own tickets up to CodeX "
+            "support. Addressed to the platform desk, which is the audience "
+            "that gains the ticket at that moment."
+        ),
+        "source_module": "vs_tickets",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
         "key": "ticket.commented",
         "label": "Ticket commented",
         "description": "Fires when a visible comment is added to a ticket.",

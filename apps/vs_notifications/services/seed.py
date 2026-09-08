@@ -455,6 +455,27 @@ def _build_default_templates() -> dict:
             "subject": "Ticket status updated - {{ ticket_number }}",
             "body": "Ticket {{ ticket_number }} ({{ ticket_title }}) moved from {{ old_status }} to {{ new_status }}.",
         },
+        # Names the school, which the desk's other ticket messages never need
+        # to: every other one is about a ticket the reader already had, and this
+        # is the one that arrives from somewhere.
+        ("ticket.escalated", C.IN_APP): {
+            "subject": "",
+            "body": (
+                "{{ school_name }} escalated ticket {{ ticket_number }} to "
+                "CodeX: {{ ticket_title }}"
+            ),
+        },
+        ("ticket.escalated", C.EMAIL): {
+            "subject": "Escalated to CodeX - {{ ticket_number }}",
+            "body": (
+                "{{ actor_name }} at {{ school_name }} has escalated a support "
+                "ticket to CodeX.\n\n"
+                "Ticket: {{ ticket_number }}\n"
+                "Title: {{ ticket_title }}\n"
+                "Priority: {{ ticket_priority }}\n"
+                "Requester: {{ requester_name }}\n"
+            ),
+        },
         ("ticket.commented", C.IN_APP): {
             "subject": "",
             "body": "{{ actor_name }} commented on ticket {{ ticket_number }}: {{ comment_body }}",

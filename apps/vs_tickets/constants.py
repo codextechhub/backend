@@ -60,6 +60,7 @@ class TicketAuditAction(models.TextChoices):
     COMMENTED = "COMMENTED", "Commented"
     INTERNAL_NOTE_ADDED = "INTERNAL_NOTE_ADDED", "Internal note added"
     ATTACHMENT_ADDED = "ATTACHMENT_ADDED", "Attachment added"
+    ESCALATED = "ESCALATED", "Escalated to CodeX"
 
 
 # Closed product-analytics vocabulary for the Console how-to system.

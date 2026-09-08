@@ -108,6 +108,29 @@ class Ticket(TimeStampedModel):
     resolved_at = models.DateTimeField(null=True, blank=True)
     closed_at = models.DateTimeField(null=True, blank=True)
 
+    # ── Escalation: who this ticket is now addressed to ─────────────────────
+    #
+    # A ticket starts as the school's own. Their staff raise it, and whoever
+    # holds ``tickets.ticket.manage`` inside that school triages it - the
+    # projector in Room 3 is not CodeX's to fix, and a support desk that
+    # receives it stops being read.
+    #
+    # Escalating is the school saying "we cannot solve this". It does not move
+    # the ticket or copy it: the same row, the same thread and the same
+    # reference travel up, so the teacher who raised it watches the one ticket
+    # progress rather than losing it into a second one they cannot see.
+    #
+    # Null is therefore a real answer meaning "still the school's", and it is
+    # what the platform desk filters on. See services/visibility.py.
+    escalated_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    escalated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="escalated_tickets",
+    )
+
     objects = TenantAwareManager()
     all_objects = models.Manager()
 
@@ -121,6 +144,9 @@ class Ticket(TimeStampedModel):
             models.Index(fields=["requester", "status"]),
             models.Index(fields=["assignee", "status"]),
             models.Index(fields=["tenant", "status"]),
+            # The platform desk's whole list is "escalated, by state", so the
+            # column it filters on leads.
+            models.Index(fields=["escalated_at", "status"]),
             models.Index(fields=["category", "created_at"]),
             models.Index(fields=["created_at"]),
         ]
