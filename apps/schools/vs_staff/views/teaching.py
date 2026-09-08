@@ -292,17 +292,31 @@ class TeachingCoverageView(StaffViewMixin, _SessionMixin, APIView):
         }
 
     def _headline(self, coverage_gaps, lead_gaps) -> str:
+        """The two counts as a sentence somebody can act on.
+
+        Each clause names its own subject rather than leaning on the first.
+        "34 pairs have nobody and 1 has no lead" left a reader working out what
+        the 1 was one of, on top of guessing what a pair and a lead were.
+        """
         if not coverage_gaps and not lead_gaps:
-            return "Every subject is covered, and each has a lead."
+            return "Every subject has a teacher, and each one has a main teacher."
         parts = []
         if coverage_gaps:
             parts.append(
                 f"{coverage_gaps} "
-                + ("pair has nobody" if coverage_gaps == 1 else "pairs have nobody"),
+                + (
+                    "subject has no teacher at all"
+                    if coverage_gaps == 1
+                    else "subjects have no teacher at all"
+                ),
             )
         if lead_gaps:
             parts.append(
                 f"{lead_gaps} "
-                + ("has no lead" if lead_gaps == 1 else "have no lead"),
+                + (
+                    "subject is taught with no main teacher"
+                    if lead_gaps == 1
+                    else "subjects are taught with no main teacher"
+                ),
             )
         return " and ".join(parts)

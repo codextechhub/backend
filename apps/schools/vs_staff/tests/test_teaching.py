@@ -274,8 +274,8 @@ class CoverageTests(StaffFixture):
             subject=self.maths, session=self.year, part=TeachingPart.ASSISTANT,
         )
         response = self.get(self.admin, "staff-teaching-coverage")
-        self.assertIn("pairs have nobody", response.data["headline"])
-        self.assertIn("has no lead", response.data["headline"])
+        self.assertIn("subjects have no teacher at all", response.data["headline"])
+        self.assertIn("taught with no main teacher", response.data["headline"])
 
     def test_removing_an_assignment_makes_the_pairing_a_gap_again(self):
         row = TeachingAssignment.all_objects.create(

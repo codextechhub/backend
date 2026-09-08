@@ -202,16 +202,23 @@ LEAVE_LIVE_STATUSES = frozenset({LeaveStatus.PENDING, LeaveStatus.APPROVED})
 
 
 class TeachingPart(models.TextChoices):
-    """Whether this person owns the subject in this class, or helps with it.
+    """Whether this person carries the subject in this class, or helps with it.
 
-    At most one lead per (session, class, subject), enforced by a partial unique
-    constraint. Assistants are unbounded. A pairing with assistants and no lead
-    is being taught and unowned, which is a different problem from nobody
-    teaching it, and FR-017 counts the two separately.
+    The main teacher is the one who enters the subject's results for that class.
+    At most one per (session, class, subject), enforced by a partial unique
+    constraint; the people assisting are unbounded. A class subject with people
+    assisting and no main teacher is being taught and unaccounted for, which is
+    a different problem from nobody teaching it, and FR-017 counts the two
+    separately.
+
+    The stored values stay LEAD and ASSISTANT. Only the labels read as a school
+    speaks: "lead" and "class teacher" both sounded like "the one responsible
+    for this class" and were routinely read as the same designation, which they
+    are not - one carries a subject, the other looks after the class itself.
     """
 
-    LEAD = "LEAD", "Lead"
-    ASSISTANT = "ASSISTANT", "Assistant"
+    LEAD = "LEAD", "Main teacher"
+    ASSISTANT = "ASSISTANT", "Assisting"
 
 
 # ── Workflow ───────────────────────────────────────────────────────────────
