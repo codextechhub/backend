@@ -1,36 +1,29 @@
 """Browser refresh-cookie handling and CSRF enforcement."""
 
-from urllib.parse import urlsplit
+import re
 
 from django.conf import settings
 from rest_framework.authentication import CSRFCheck
 from rest_framework.exceptions import PermissionDenied
 
 
-BROWSER_AUTH_MODE = "cookie"
-
-
-def browser_cookie_mode_requested(request) -> bool:
-    """Return whether login explicitly requested the browser-cookie contract."""
-    return request.headers.get("X-Auth-Mode", "").strip().lower() == BROWSER_AUTH_MODE
-
-
 def enforce_browser_origin(request) -> None:
-    """Limit browser-cookie login to the configured Console origin.
+    """Limit browser login to the configured first-party application origins.
 
-    The API also serves tenant applications whose origins are CORS-allowed. A
-    cookie login is deliberately narrower: otherwise a compromised tenant
-    origin could create or drive a Console session through the shared API host.
-    Non-browser clients omit Origin and remain usable for operational access.
+    Exact origins cover the Console and bare development server. Regular
+    expressions cover one school slug per production or local hostname.
+    Non-browser clients omit Origin and remain usable with a cookie jar.
     """
     origin = request.headers.get("Origin")
     if not origin:
         return
 
-    expected = urlsplit(settings.FRONTEND_BASE_URL)
-    supplied = urlsplit(origin)
-    if (supplied.scheme, supplied.netloc) != (expected.scheme, expected.netloc):
-        raise PermissionDenied("Browser authentication is not available from this origin.")
+    allowed = set(settings.AUTH_BROWSER_ALLOWED_ORIGINS)
+    if origin in allowed:
+        return
+    if any(re.fullmatch(pattern, origin) for pattern in settings.AUTH_BROWSER_ALLOWED_ORIGIN_REGEXES):
+        return
+    raise PermissionDenied("Browser authentication is not available from this origin.")
 
 
 def enforce_csrf(request) -> None:

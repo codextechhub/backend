@@ -340,6 +340,11 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 
+# Browser authentication is limited to the same first-party origins that may
+# call the API with credentials. Local settings replace these production hosts.
+AUTH_BROWSER_ALLOWED_ORIGINS = list(CORS_ALLOWED_ORIGINS)
+AUTH_BROWSER_ALLOWED_ORIGIN_REGEXES = list(CORS_ALLOWED_ORIGIN_REGEXES)
+
 # Proxy requests carry the audited session id in a custom header. Browsers
 # preflight custom headers even when the origin itself is allowed, so this must
 # be present in every environment (including production).

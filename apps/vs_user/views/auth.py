@@ -41,7 +41,6 @@ from ..services.invitation import InvitationService
 from ..services.audit      import log_auth_event
 from ..throttles import CardIdentifierThrottle, CardPreviewIdentifierThrottle
 from ..browser_session import (
-    browser_cookie_mode_requested,
     clear_refresh_cookie,
     enforce_browser_origin,
     enforce_csrf,
@@ -61,14 +60,15 @@ class CsrfCookieView(APIView):
     authentication_classes = []
 
     def get(self, request):
-        get_token(request)
-        return success_response(message="CSRF cookie ready.")
+        token = get_token(request)
+        return success_response(message="CSRF cookie ready.", data={"csrf_token": token})
 
 
 class LoginView(APIView):
     """
     POST /auth/login/
-    Authenticates a user and returns a JWT token pair.
+    Authenticates a user, returns a short-lived access token, and stores the
+    rotating refresh credential in an HttpOnly cookie.
     Handles lockout checks, session creation and audit logging - all via
     LoginService.
 
@@ -93,9 +93,7 @@ class LoginView(APIView):
     throttle_classes = [ScopedRateThrottle, CardIdentifierThrottle]
 
     def post(self, request):
-        cookie_mode = browser_cookie_mode_requested(request)
-        if cookie_mode:
-            enforce_browser_origin(request)
+        enforce_browser_origin(request)
 
         ser = LoginRequestSerializer(data=request.data)
         if not ser.is_valid():
@@ -125,16 +123,10 @@ class LoginView(APIView):
 
         refresh_token = result.pop('refresh')
         response = success_response(message="Login successful.", data=result)
-        if cookie_mode:
-            # Ensure the sibling Console host can send the double-submit token
-            # on later refresh and logout requests.
-            get_token(request)
-            set_refresh_cookie(response, refresh_token)
-        else:
-            # Non-browser clients retain the bearer refresh contract. A
-            # cookie-authenticated request cannot reach this response branch,
-            # so Console script cannot downgrade its own browser session.
-            result['refresh'] = refresh_token
+        # The readable CSRF token is shared with first-party app hosts. The
+        # rotating refresh credential remains host-only and outside JavaScript.
+        get_token(request)
+        set_refresh_cookie(response, refresh_token)
         return response
 
 
@@ -189,11 +181,10 @@ class SpecialLoginPreviewView(APIView):
 class LogoutView(APIView):
     """
     POST /auth/logout/
-    Blacklists the submitted refresh token, ending the current session.
+    Blacklists the refresh cookie, ending the current session.
     Idempotent - always returns 200 even if the token is already blacklisted.
 
-    A browser session is authenticated by its refresh cookie and protected by
-    CSRF. Legacy clients may continue submitting the refresh token in the body.
+    The session is authenticated by its refresh cookie and protected by CSRF.
     RBAC: system.session.access.authenticate
 
     docstring-name: Log out
@@ -206,12 +197,9 @@ class LogoutView(APIView):
     pending_tenant_surface = True
 
     def post(self, request):
-        cookie_refresh = refresh_cookie_value(request)
-        cookie_mode = bool(cookie_refresh)
-        if cookie_mode:
-            enforce_csrf(request)
+        enforce_csrf(request)
 
-        refresh_token = cookie_refresh or request.data.get('refresh')
+        refresh_token = refresh_cookie_value(request)
         if not refresh_token:
             return error_response(message="Refresh token is required.")
 
@@ -223,15 +211,13 @@ class LogoutView(APIView):
             jti = token.get('jti', '')
         except TokenError:
             response = success_response(message="Logged out successfully.")
-            if cookie_mode:
-                clear_refresh_cookie(response)
+            clear_refresh_cookie(response)
             return response
 
         token_user = User.objects.filter(pk=token_user_id).first()
         if token_user is None:
             response = success_response(message="Logged out successfully.")
-            if cookie_mode:
-                clear_refresh_cookie(response)
+            clear_refresh_cookie(response)
             return response
 
         # Scope the logout to THIS session only: blacklist the submitted
@@ -262,8 +248,7 @@ class LogoutView(APIView):
         )
 
         response = success_response(message="Logged out successfully.")
-        if cookie_mode:
-            clear_refresh_cookie(response)
+        clear_refresh_cookie(response)
         return response
 
 
@@ -278,19 +263,14 @@ class TokenRefreshView(APIView):
     docstring-name: Refresh access token
     """
     permission_classes = [AllowAny]
-    # Operates purely on the submitted refresh token - token validity is the
-    # gate, so ?tenant= is not required (clients send a Bearer header here,
-    # which would otherwise trip the mandatory tenant assertion).
+    # Operates purely on the refresh cookie, so ?tenant= is not required.
     tenant_param_required = False
     pending_tenant_surface = True  # A pending school must be able to stay signed in (FR-012).
 
     def post(self, request):
-        cookie_refresh = refresh_cookie_value(request)
-        cookie_mode = bool(cookie_refresh)
-        if cookie_mode:
-            enforce_csrf(request)
+        enforce_csrf(request)
 
-        refresh_token = cookie_refresh or request.data.get('refresh', '')
+        refresh_token = refresh_cookie_value(request)
         ser = TokenRefreshSerializer(data={'refresh': refresh_token})
 
         def invalid_response(*, message, error):
@@ -299,8 +279,7 @@ class TokenRefreshView(APIView):
                 error=error,
                 status=status.HTTP_401_UNAUTHORIZED,
             )
-            if cookie_mode:
-                clear_refresh_cookie(response)
+            clear_refresh_cookie(response)
             return response
 
         # SimpleJWT's TokenRefreshSerializer.validate() raises TokenError /
@@ -378,14 +357,11 @@ class TokenRefreshView(APIView):
                 # Bookkeeping failed but the new tokens are valid - the client
                 # can still use them. Don't fail the whole request.
                 pass
-            if not cookie_mode:
-                response_data['refresh'] = new_refresh_str
-
         if session_id is not None:
             response_data['session_id'] = session_id
 
         response = success_response(message="Token refreshed successfully.", data=response_data)
-        if cookie_mode and new_refresh_str:
+        if new_refresh_str:
             set_refresh_cookie(response, new_refresh_str)
         return response
 

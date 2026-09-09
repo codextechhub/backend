@@ -981,13 +981,18 @@ class SessionScopedLogoutTests(TestCase):
         )
 
     def _client(self, login_result):
-        client = APIClient()
-        client.credentials(HTTP_AUTHORIZATION=f"Bearer {login_result['access']}")
+        client = APIClient(enforce_csrf_checks=True)
+        client.cookies["refresh_token"] = login_result["refresh"]
+        client.get("/v1/user/auth/csrf/")
+        client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {login_result['access']}",
+            HTTP_X_CSRFTOKEN=client.cookies["csrftoken"].value,
+        )
         return client
 
     def test_logout_ends_only_the_submitted_session(self):
         resp = self._client(self.device_a).post(
-            "/v1/user/auth/logout/", {"refresh": self.device_a["refresh"]},
+            "/v1/user/auth/logout/", {},
             format="json",
         )
         self.assertEqual(resp.status_code, 200)
@@ -1000,7 +1005,7 @@ class SessionScopedLogoutTests(TestCase):
         session_b_before = LoginSession.objects.get(pk=self.device_b["session_id"])
 
         resp = self._client(self.device_a).post(
-            "/v1/user/auth/token/refresh/", {"refresh": self.device_a["refresh"]},
+            "/v1/user/auth/token/refresh/", {},
             format="json",
         )
         self.assertEqual(resp.status_code, 200)

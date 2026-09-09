@@ -9,7 +9,10 @@ assert ALLOWED_HOSTS, "ALLOWED_HOSTS must be set in production."
 FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="https://intranet.codexng.com")
 CSRF_TRUSTED_ORIGINS = [
     origin.strip()
-    for origin in config("CSRF_TRUSTED_ORIGINS", default=FRONTEND_BASE_URL).split(",")
+    for origin in config(
+        "CSRF_TRUSTED_ORIGINS",
+        default=f"{FRONTEND_BASE_URL},https://*.xvs.codexng.com",
+    ).split(",")
     if origin.strip()
 ]
 # The Console and API use sibling hosts. Only the non-secret CSRF token is

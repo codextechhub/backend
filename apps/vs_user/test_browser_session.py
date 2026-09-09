@@ -16,11 +16,7 @@ class BrowserSessionContractTests(TestCase):
         cache.clear()
         self.user = make_cx_user(password=self.password)
 
-    def _login(self, client, *, cookie_mode=True):
-        headers = {
-            "HTTP_ORIGIN": self.origin,
-            **({"HTTP_X_AUTH_MODE": "cookie"} if cookie_mode else {}),
-        }
+    def _login(self, client, *, origin=None):
         return client.post(
             "/v1/user/auth/login/",
             {
@@ -29,7 +25,7 @@ class BrowserSessionContractTests(TestCase):
                 "tenant": self.user.tenant.slug,
             },
             format="json",
-            **headers,
+            HTTP_ORIGIN=origin or self.origin,
         )
 
     def test_cookie_login_hides_refresh_token_and_sets_hardened_cookie(self):
@@ -104,7 +100,15 @@ class BrowserSessionContractTests(TestCase):
         self.assertEqual(response.cookies["refresh_token"]["max-age"], 0)
         self.assertFalse(LoginSession.objects.get(pk=session_id).is_active)
 
-    def test_cookie_login_rejects_another_allowed_cors_origin(self):
+    def test_school_origin_can_use_cookie_login(self):
+        client = APIClient()
+        response = self._login(client, origin="http://bright-star.localhost:5174")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertNotIn("refresh", response.json()["data"])
+        self.assertIn("refresh_token", response.cookies)
+
+    def test_cookie_login_rejects_an_untrusted_origin(self):
         client = APIClient()
         response = client.post(
             "/v1/user/auth/login/",
@@ -114,8 +118,7 @@ class BrowserSessionContractTests(TestCase):
                 "tenant": self.user.tenant.slug,
             },
             format="json",
-            HTTP_X_AUTH_MODE="cookie",
-            HTTP_ORIGIN="https://bright-star.xvs.codexng.com",
+            HTTP_ORIGIN="https://attacker.example",
         )
 
         self.assertEqual(response.status_code, 403, response.content)
@@ -144,18 +147,30 @@ class BrowserSessionContractTests(TestCase):
         self.assertEqual(restored["id"], session.pk)
         self.assertEqual(restored["target"]["id"], target.pk)
 
-    def test_legacy_body_contract_remains_available_without_cookie_credentials(self):
+    def test_login_without_mode_header_never_exposes_refresh(self):
         client = APIClient()
-        login = self._login(client, cookie_mode=False)
+        login = self._login(client)
         self.assertEqual(login.status_code, 200, login.content)
-        refresh = login.json()["data"]["refresh"]
-        self.assertNotIn("refresh_token", login.cookies)
+        self.assertNotIn("refresh", login.json()["data"])
+        self.assertIn("refresh_token", login.cookies)
+
+    def test_body_refresh_token_is_not_an_authentication_path(self):
+        login_client = APIClient()
+        login = self._login(login_client)
+        self.assertEqual(login.status_code, 200, login.content)
+        refresh = login_client.cookies["refresh_token"].value
+
+        client = APIClient(enforce_csrf_checks=True)
+        csrf = client.get("/v1/user/auth/csrf/", HTTP_ORIGIN=self.origin)
+        self.assertEqual(csrf.status_code, 200, csrf.content)
 
         response = client.post(
             "/v1/user/auth/token/refresh/",
             {"refresh": refresh},
             format="json",
+            HTTP_ORIGIN=self.origin,
+            HTTP_X_CSRFTOKEN=client.cookies["csrftoken"].value,
         )
 
-        self.assertEqual(response.status_code, 200, response.content)
-        self.assertIn("refresh", response.json()["data"])
+        self.assertEqual(response.status_code, 401, response.content)
+        self.assertNotIn("refresh", response.json().get("data", {}))
