@@ -20,6 +20,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.test import APIClient
 
 from vs_rbac.tests.helpers import make_permission, make_role, make_role_permission, make_assignment
+from vs_user.models import User
 
 from .constants import CommentVisibility, TicketAuditAction, TicketPermission
 from .models import Ticket, TicketAuditLog
@@ -272,3 +273,211 @@ class EscalationTests(TicketFixtureMixin, TestCase):
         self.assertIn(response.status_code, (403, 404), response.content)
         self.ticket.refresh_from_db()
         self.assertIsNone(self.ticket.escalated_at)
+
+
+class TicketOwnershipTests(TicketFixtureMixin, TestCase):
+    """Who may name a ticket's owner, and which tickets may have one.
+
+    Two rules meet here, and assignment is the write that has to satisfy both.
+
+    **The desk names its own owners.** Every assignee is CodeX support staff,
+    so assigning is CodeX deciding which of its people works a thing. A school
+    escalating has already made the decision that is theirs to make.
+
+    **CodeX may only own what was sent up.** An assignee is a participant, and
+    the participant arm admits them to the ticket, its thread and its internal
+    notes for good. Without a gate on the ticket's own state, naming an owner
+    is escalation done quietly: no ``ESCALATED`` audit row, no notification to
+    the desk, and none of the triage grant that escalating asks for.
+
+    The tests that drive the API use the person who raised the ticket, because
+    reaching the endpoint at all means the ticket is already in the caller's
+    visible set, and a requester's own ticket always is.
+    """
+
+    def setUp(self):
+        self.build_users()
+        self.client = APIClient()
+
+        # Granted deliberately, to show the refusal is about who the caller is
+        # and not about a key they were missing.
+        _grant(
+            self.school_a, self.requester,
+            (TicketPermission.ASSIGN,), role_name="Alpha Requester Assigner",
+        )
+        # Re-fetched because the effective permission set is memoised on the
+        # instance, and this grant was made after build_users used it.
+        self.school_assigner = User.objects.get(pk=self.requester.pk)
+
+        self.ticket = Ticket.objects.create(
+            title="Mr Adeyemi is being investigated over the S3 fees",
+            description="Internal, and not CodeX's business.",
+            requester=self.requester,
+            tenant=self.school_a.tenant,
+        )
+
+    # ── the desk names its own owners ───────────────────────────────────────
+
+    def test_a_school_cannot_name_the_owner_even_after_escalating(self):
+        # Escalation is the school's decision and the end of it. Which of
+        # CodeX's people picks the ticket up is CodeX's rota, not theirs.
+        self.escalate(self.ticket)
+
+        with self.assertRaises(PermissionDenied):
+            ticket_svc.assign_ticket(
+                self.ticket, actor=self.school_assigner, assignee=self.support,
+            )
+
+        self.ticket.refresh_from_db()
+        self.assertIsNone(self.ticket.assignee_id)
+
+    def test_the_endpoint_refuses_a_school_actor(self):
+        self.escalate(self.ticket)
+        self.client.force_authenticate(user=self.school_assigner)
+
+        response = self.client.post(
+            f"/v1/support/tickets/{self.ticket.pk}/assign/",
+            {"assignee_id": self.support.pk},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403, response.content)
+        self.ticket.refresh_from_db()
+        self.assertIsNone(self.ticket.assignee_id)
+
+    def test_a_school_cannot_open_the_assignee_picker(self):
+        # The list names CodeX's support staff. A school that cannot choose
+        # among them has no reason to be given their names.
+        self.escalate(self.ticket)
+        self.client.force_authenticate(user=self.school_assigner)
+
+        response = self.client.get(
+            f"/v1/support/tickets/{self.ticket.pk}/eligible-assignees/",
+        )
+
+        self.assertEqual(response.status_code, 403, response.content)
+
+    def test_a_school_cannot_take_the_owner_off_either(self):
+        # Removing CodeX's owner is the same rota decision in reverse, and it
+        # would drop a ticket somebody is mid-way through working.
+        self.escalate(self.ticket)
+        ticket_svc.assign_ticket(
+            self.ticket, actor=self.support, assignee=self.support,
+        )
+
+        with self.assertRaises(PermissionDenied):
+            ticket_svc.assign_ticket(
+                self.ticket, actor=self.school_assigner, assignee=None,
+            )
+
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.assignee_id, self.support.pk)
+
+    # ── CodeX may only own what was sent up ─────────────────────────────────
+
+    def test_codex_cannot_take_an_unescalated_school_ticket(self):
+        # The desk assigning itself a ticket nobody sent it. Ada would be
+        # reading Mr Adeyemi's disciplinary thread through a door the school
+        # never opened.
+        with self.assertRaises(ValidationError):
+            ticket_svc.assign_ticket(
+                self.ticket, actor=self.support, assignee=self.support,
+            )
+
+        self.ticket.refresh_from_db()
+        self.assertIsNone(self.ticket.assignee_id)
+        self.assertIsNone(self.ticket.escalated_at)
+        # The point of the refusal, stated as the thing it protects.
+        self.assertFalse(visibility.can_view_ticket(self.support, self.ticket))
+        self.assertNotIn(
+            self.ticket.pk,
+            [t.pk for t in visibility.visible_tickets_qs(self.support)],
+        )
+
+    def test_the_refusal_is_not_an_escalation_in_disguise(self):
+        # A refusal that quietly escalated to make the assignment legal would
+        # pass the test above and still hand the ticket over.
+        with self.assertRaises(ValidationError):
+            ticket_svc.assign_ticket(
+                self.ticket, actor=self.support, assignee=self.support,
+            )
+
+        for action in (TicketAuditAction.ESCALATED, TicketAuditAction.ASSIGNED):
+            self.assertFalse(
+                TicketAuditLog.objects.filter(
+                    ticket=self.ticket, action=action,
+                ).exists(),
+                action,
+            )
+
+    def test_the_picker_names_nobody_on_an_unescalated_ticket(self):
+        # The picker and the write answer through the same predicate, so a
+        # list can never offer a name the service would then refuse.
+        self.assertEqual(
+            list(visibility.eligible_support_users_qs(self.ticket)), [],
+        )
+
+        self.escalate(self.ticket)
+
+        self.assertIn(
+            self.support.pk,
+            {u.pk for u in visibility.eligible_support_users_qs(self.ticket)},
+        )
+
+    def test_the_desk_owns_it_once_the_school_sends_it_up(self):
+        # The good case, in full: the school escalates, CodeX picks the owner.
+        self.escalate(self.ticket)
+
+        ticket = ticket_svc.assign_ticket(
+            self.ticket, actor=self.support, assignee=self.other_support,
+        )
+
+        self.assertEqual(ticket.assignee_id, self.other_support.pk)
+        self.assertTrue(visibility.can_view_ticket(self.other_support, ticket))
+
+    def test_codexs_own_ticket_is_assignable_without_escalation(self):
+        # CodeX never escalates to itself - escalate_ticket refuses it - so a
+        # gate reading the timestamp alone would close the platform desk.
+        own = Ticket.objects.create(
+            title="Internal: rotate the staging key",
+            description="Housekeeping.",
+            requester=self.support,
+            tenant=self.support.tenant,
+        )
+
+        ticket = ticket_svc.assign_ticket(
+            own, actor=self.support, assignee=self.other_support,
+        )
+
+        self.assertEqual(ticket.assignee_id, self.other_support.pk)
+        self.assertIn(
+            self.support.pk,
+            {u.pk for u in visibility.eligible_support_users_qs(own)},
+        )
+
+    def test_the_desk_can_hand_a_ticket_back_to_its_queue(self):
+        # Unassigning is never gated on the ticket's state: the owner already
+        # has it, and refusing would strand it with them.
+        self.escalate(self.ticket)
+        ticket_svc.assign_ticket(
+            self.ticket, actor=self.support, assignee=self.support,
+        )
+
+        ticket = ticket_svc.assign_ticket(
+            self.ticket, actor=self.support, assignee=None,
+        )
+
+        self.assertIsNone(ticket.assignee_id)
+
+    def test_the_desk_cannot_work_a_ticket_it_cannot_open(self):
+        # The same boundary on the authority predicates: an unescalated school
+        # ticket is not CodeX's to manage or to write internal notes on, so no
+        # caller holding one fetched another way is told otherwise.
+        self.assertFalse(visibility.can_manage_ticket(self.support, self.ticket))
+        self.assertFalse(visibility.can_add_internal_note(self.support, self.ticket))
+        self.assertFalse(visibility.can_view_internal_notes(self.support, self.ticket))
+
+        self.escalate(self.ticket)
+
+        self.assertTrue(visibility.can_manage_ticket(self.support, self.ticket))
+        self.assertTrue(visibility.can_add_internal_note(self.support, self.ticket))

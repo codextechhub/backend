@@ -206,7 +206,7 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         serializer = TicketAssignSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         assignee_id = serializer.validated_data.get("assignee_id")
-        # The service validates that a selected assignee is support-capable.
+        # The service validates both the assignee and the ticket's own state.
         assignee = User.objects.get(pk=assignee_id) if assignee_id else None
         ticket = ticket_svc.assign_ticket(ticket, actor=request.user, assignee=assignee)
         return success_response(
@@ -214,13 +214,13 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             data=TicketDetailSerializer(ticket, context={"request": request}).data,
         )
 
-    # Return support-capable users for assignment pickers.
+    # Return the users this particular ticket may be assigned to.
     @action(detail=True, methods=["get"], url_path="eligible-assignees")
     def eligible_assignees(self, request, pk=None):
         ticket = self.get_object()
         if not visibility.can_assign_ticket(request.user, ticket):
             raise PermissionDenied("You cannot assign this ticket.")
-        users = visibility.eligible_support_users_qs()
+        users = visibility.eligible_support_users_qs(ticket)
         return success_response(
             message="Eligible ticket assignees retrieved successfully.",
             data=TicketUserSerializer(users, many=True).data,

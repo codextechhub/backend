@@ -13,7 +13,10 @@ from .visibility import can_view_internal_notes, can_view_ticket
 
 logger = logging.getLogger("vs_tickets.notifications")
 
-# Holding either triage key marks a CX user as working the support queue.
+#: Holding either key marks somebody as working a ticket queue. Inside a school
+#: that resolves to ``manage`` alone, because ``assign`` is CodeX's own key: the
+#: desk chooses which of its people owns a ticket, and a school's say is
+#: escalation.
 TRIAGE_PERMISSION_KEYS = (TicketPermission.MANAGE, TicketPermission.ASSIGN)
 
 
