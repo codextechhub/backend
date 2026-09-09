@@ -381,7 +381,6 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
 
     Package setup
         package_plan            optional – PackagePlan code e.g. basic / standard / premium
-        enabled_modules         optional – comma-separated module keys e.g. "students,attendance"
         subscription_expires_at optional – YYYY-MM-DD
     """
     from types import SimpleNamespace
@@ -451,12 +450,10 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
     package_plan_code = _s("package_plan")
     package_setup_data = None
     if package_plan_code:
-        raw_modules = _s("enabled_modules")
-        enabled_modules = [m.strip() for m in raw_modules.split(",") if m.strip()] if raw_modules else []
-        package_setup_data = {
-            "package_plan": package_plan_code,
-            "enabled_modules": enabled_modules,
-        }
+        # The plan is the whole of the answer: it grants every module and sets
+        # how deep the school reaches into each, so there is no module list to
+        # carry.
+        package_setup_data = {"package_plan": package_plan_code}
         sub_expires = _s("subscription_expires_at")
         if sub_expires:
             package_setup_data["subscription_expires_at"] = sub_expires

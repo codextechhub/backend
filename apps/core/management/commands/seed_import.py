@@ -448,17 +448,6 @@ TEMPLATES: list[dict] = [
                 "column_order":  25,
             },
             {
-                "column_name":   "Enabled Modules",
-                "target_field":  "enabled_modules",
-                "display_name":  "Enabled Modules",
-                "help_text":     "Comma-separated list of module keys to enable. Example: students,attendance,finance.",
-                "data_type":     TemplateColumnDataTypeChoices.STRING,
-                "is_required":   False,
-                "is_unique":     False,
-                "sample_value":  "students,attendance",
-                "column_order":  29,
-            },
-            {
                 "column_name":   "Subscription Expires At",
                 "target_field":  "subscription_expires_at",
                 "display_name":  "Subscription Expires At",

@@ -265,7 +265,6 @@ def _validate_dataset_specific_rules(import_batch) -> list[dict]:
 def _validate_schools_rules(import_batch) -> list[dict]:
     from datetime import date as date_type
     from django.utils.text import slugify
-    from vs_config.models import Capability
     from schools.vs_schools.models import RESERVED_TENANT_SLUGS, PackagePlan, School
     from vs_user.email_normalization import normalize_email
     from vs_user.services.email_availability import email_refusal
@@ -281,9 +280,6 @@ def _validate_schools_rules(import_batch) -> list[dict]:
     valid_plan_codes = set(
         PackagePlan.objects.filter(is_active=True).values_list("code", flat=True)
     )
-    valid_module_keys = set(Capability.objects.filter(
-        is_active=True, kind=Capability.Kind.MODULE
-    ).values_list("key", flat=True))
     existing_slugs = set(School.objects.values_list("slug", flat=True))
     today = timezone.now().date()
 
@@ -366,20 +362,6 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                 "column_name": _col("package_plan"),
                 "raw_value": plan_code,
             })
-
-        # --- enabled_modules: each key must exist and be active ---
-        raw_modules = _s("enabled_modules")
-        if raw_modules:
-            for key in [m.strip() for m in raw_modules.split(",") if m.strip()]:
-                if key not in valid_module_keys:
-                    issues.append({
-                        "severity": "error",
-                        "code": "invalid_choice",
-                        "message": f"Module key '{key}' does not exist or is not active.",
-                        "row_number": row_number,
-                        "column_name": _col("enabled_modules"),
-                        "raw_value": raw_modules,
-                    })
 
         # --- subscription_expires_at: YYYY-MM-DD and must be future ---
         expires_raw = _s("subscription_expires_at")
