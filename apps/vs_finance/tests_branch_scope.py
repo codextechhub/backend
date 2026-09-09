@@ -579,3 +579,181 @@ class EveryBranchBearingListNarrowsTests(_FinanceBranchFixture):
                     {at_ikeja.pk, at_lekki.pk, shared.pk} - everything, set(),
                     f"{path} did not list all three rows for an unbound caller",
                 )
+
+
+class BankAccountReachedByIdNarrowsTests(_FinanceBranchFixture):
+    """What the bank list withholds, the routes that take an id must not hand over.
+
+    The bank account is the one finance model whose list was narrowed while every
+    route reaching it by id was not, so a bursar covering Ikeja could not see
+    Lekki's account on her screen and could still read its number and balance,
+    rename it, pull its statement lines, import onto it and reconcile it, by
+    typing its id into the address.
+
+    Every route is asserted rather than a sample of them, because the defect was
+    never that one endpoint was wrong: it was that the check lived in each
+    endpoint instead of in the resolver they share, so the file drifted one
+    endpoint at a time.
+
+    The statement-line routes are not nested under the account at all
+    (``/statement-lines/<id>/ignore/``), which is why a line has to answer the
+    branch question through the account it belongs to rather than by being
+    reached through one.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.ikeja_account = self.bank("Ikeja Collections", self.ikeja, "20")
+        self.lekki_account = self.bank("Lekki Collections", self.lekki, "21")
+        self.shared_account = self.bank("GTBank Operations", None, "22")
+        self.client = TenantAPIClient(user=self.grant(
+            self.user_for(self.tenant, "bursar-ikeja@corona.test"),
+            "finance.bankaccount.view", "finance.bankaccount.update",
+            "finance.bankaccount.import", "finance.bankaccount.reconcile",
+            tenant=self.tenant, role_key="bursar_ikeja", branch=self.ikeja,
+        ))
+
+    def bank(self, name, branch, tag):
+        from vs_finance.models import BankAccount
+
+        return BankAccount.objects.create(
+            entity=self.books, name=name, branch=branch,
+            gl_account=self._cash_account(self.books, tag),
+        )
+
+    def _cash_account(self, entity, tag):
+        """A distinct GL account per bank row: BankAccount holds a OneToOne to one."""
+        return Account.objects.create(
+            entity=entity, code=f"11{tag}", name=f"Cash {tag}",
+            account_type=Account.objects.get(entity=entity, code="1000").account_type,
+            is_postable=True,
+        )
+
+    def line_on(self, account):
+        from vs_finance.models import BankStatementLine
+
+        return BankStatementLine.objects.create(
+            bank_account=account, txn_date=datetime.date(2026, 1, 12), amount=50_000,
+        )
+
+    def call(self, method, path):
+        url = f"/v1/finance/{path}?entity={self.books.code}"
+        if method == "GET":
+            return self.client.get(url)
+        if method == "PATCH":
+            return self.client.patch(url, {}, format="json")
+        if method == "DELETE":
+            return self.client.delete(url)
+        return self.client.post(url, {}, format="json")
+
+    #: Every route that takes a bank account id, as (method, path template).
+    ACCOUNT_ROUTES = (
+        ("GET", "bank-accounts/{pk}/"),
+        ("PATCH", "bank-accounts/{pk}/"),
+        ("GET", "bank-accounts/{pk}/statement-lines/"),
+        ("POST", "bank-accounts/{pk}/statement-lines/"),
+        ("GET", "bank-accounts/{pk}/statement-imports/template/"),
+        ("POST", "bank-accounts/{pk}/statement-imports/"),
+        ("GET", "bank-accounts/{pk}/book-lines/"),
+        ("POST", "bank-accounts/{pk}/auto-reconcile/"),
+        ("POST", "bank-accounts/{pk}/reconcile/complete/"),
+        ("POST", "bank-accounts/{pk}/split-match/"),
+    )
+
+    def test_her_own_site_opens(self):
+        response = self.call("GET", f"bank-accounts/{self.ikeja_account.pk}/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["name"], "Ikeja Collections")
+
+    def test_the_school_wide_account_opens_from_her_site(self):
+        """The one operations account the whole school pays into.
+
+        It carries no branch, and withholding it would read as the school's own
+        bank having disappeared rather than as a permission working.
+        """
+        response = self.call("GET", f"bank-accounts/{self.shared_account.pk}/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["name"], "GTBank Operations")
+
+    def test_no_route_into_another_sites_account_answers(self):
+        for method, path in self.ACCOUNT_ROUTES:
+            with self.subTest(route=f"{method} {path}"):
+                response = self.call(method, path.format(pk=self.lekki_account.pk))
+                self.assertEqual(response.status_code, 404, f"{method} {path}")
+
+    def test_the_same_routes_do_answer_for_her_own_site(self):
+        """The contrast that makes the refusals above mean anything.
+
+        Without it a route that 404s because it is misspelled, unregistered or
+        broken would read as a narrowing that works.
+        """
+        for method, path in self.ACCOUNT_ROUTES:
+            with self.subTest(route=f"{method} {path}"):
+                response = self.call(method, path.format(pk=self.ikeja_account.pk))
+                self.assertNotEqual(response.status_code, 404, f"{method} {path}")
+
+    def test_renaming_another_sites_account_changes_nothing(self):
+        url = f"/v1/finance/bank-accounts/{self.lekki_account.pk}/?entity={self.books.code}"
+
+        response = self.client.patch(url, {"name": "Taken Over"}, format="json")
+
+        self.assertEqual(response.status_code, 404, response.data)
+        self.lekki_account.refresh_from_db()
+        self.assertEqual(self.lekki_account.name, "Lekki Collections")
+
+    def test_a_statement_of_another_sites_account_is_not_readable(self):
+        from vs_finance.models import BankStatement
+
+        statement = BankStatement.objects.create(
+            bank_account=self.lekki_account, statement_date=datetime.date(2026, 1, 31),
+            opening_balance=0, closing_balance=50_000,
+        )
+
+        response = self.call(
+            "GET",
+            f"bank-accounts/{self.lekki_account.pk}/statements/{statement.pk}/",
+        )
+
+        self.assertEqual(response.status_code, 404, response.data)
+
+    def test_a_line_on_another_sites_account_is_not_actionable(self):
+        """The line routes take a line id and no account id.
+
+        So a line answers the branch question through the account it belongs to,
+        or it does not answer it at all.
+        """
+        theirs = self.line_on(self.lekki_account)
+        mine = self.line_on(self.ikeja_account)
+
+        for method, path in (
+            ("POST", "statement-lines/{pk}/ignore/"),
+            ("POST", "statement-lines/{pk}/unmatch/"),
+            ("DELETE", "statement-lines/{pk}/"),
+        ):
+            with self.subTest(route=f"{method} {path}"):
+                self.assertEqual(
+                    self.call(method, path.format(pk=theirs.pk)).status_code, 404,
+                    f"{method} {path}",
+                )
+                self.assertNotEqual(
+                    self.call(method, path.format(pk=mine.pk)).status_code, 404,
+                    f"{method} {path}",
+                )
+
+    def test_the_list_and_the_detail_route_agree(self):
+        """One question asked from both ends.
+
+        A row the list withholds and the detail route serves is exactly the shape
+        this defect took, and it is invisible from either side alone.
+        """
+        listed = self.ids(self.client, "bank-accounts/", self.books)
+
+        self.assertEqual(
+            listed, {self.ikeja_account.pk, self.shared_account.pk},
+        )
+        for pk in listed:
+            self.assertEqual(
+                self.call("GET", f"bank-accounts/{pk}/").status_code, 200,
+            )

@@ -32,7 +32,6 @@ from ..serializers import (
     BankStatementSerializer,
 )
 
-
 from .base import (
     _FinanceBase,
     _bool,
@@ -45,6 +44,61 @@ from .base import (
     _resolve_currency,
     _signed_money,
 )
+
+
+# --------------------------------------------------------------------------- #
+# Resolving one account, statement or line for the caller in front of you     #
+# --------------------------------------------------------------------------- #
+#
+# These take the ``request`` rather than the entity alone, and that is the whole
+# point of them. Entity scoping answers "whose books?" and never "whose site?",
+# so an account reached by id is not narrowed by the fact that the list withheld
+# it: a bursar covering Ikeja could read Lekki's account number and balance,
+# rename it, import statements onto it and reconcile them, by naming its id.
+#
+# Doing the check per endpoint is what lets it drift. There are eleven ways into
+# a bank account in this file and one of them is the list, so the resolver is
+# shared and the other ten do not each get a chance to forget it.
+#
+# ``include_shared=True`` throughout, because that is what a null branch means
+# here: the single operations account a school runs for every site stays
+# reachable from all of them. Statements and lines carry no branch of their own
+# and take the account's, through the ``bank_account__`` prefix, so an account a
+# caller may open and the rows hanging off it cannot give different answers.
+#
+# A row belonging to another site answers with the same message as one that does
+# not exist, so an id cannot be used to find out that another site holds it.
+# That is why these raise NotFound rather than PermissionDenied, and it matches
+# the AR resolvers and procurement's ``_document_or_404``.
+
+
+def _bank_or_404(request, pk, *, entity=None, active_only=False):
+    """The bank account behind *pk* that this caller may work in.
+
+    ``active_only`` narrows to a live account and says so in the refusal, which
+    is what the import surfaces need: a closed account is not a place to file a
+    new statement, and the reason a caller sees should name which of the two
+    stopped them.
+    """
+    filters = {
+        "entity": entity if entity is not None else resolve_entity(request),
+        "pk": pk,
+    }
+    if active_only:
+        filters["is_active"] = True
+    bank = (
+        BankAccount.objects
+        .filter(branch_q(request, include_shared=True), **filters)
+        .select_related("gl_account", "branch")
+        .first()
+    )
+    if bank is None:
+        raise NotFound(
+            "Active bank account not found for this entity." if active_only
+            else "Bank account not found for this entity."
+        )
+    return bank
+
 
 # --------------------------------------------------------------------------- #
 # Banking + reconciliation                                                    #
@@ -134,11 +188,7 @@ class BankAccountDetailView(_FinanceBase):
 
     # Support the bank workflow.
     def _bank(self, request, pk):
-        bank = (BankAccount.objects.filter(entity=resolve_entity(request), pk=pk)
-                .select_related("gl_account").first())
-        if bank is None:
-            raise NotFound("Bank account not found for this entity.")
-        return bank
+        return _bank_or_404(request, pk)
 
     # Support the transactions workflow.
     def _transactions(self, bank, *, book_balance, limit=50):
@@ -253,10 +303,7 @@ class BankStatementLineView(_FinanceBase):
 
     # Support the bank workflow.
     def _bank(self, request, pk):
-        bank = BankAccount.objects.filter(entity=resolve_entity(request), pk=pk).first()
-        if bank is None:
-            raise NotFound("Bank account not found for this entity.")
-        return bank
+        return _bank_or_404(request, pk)
 
     # Handle GET requests for this endpoint.
     def get(self, request, pk):
@@ -333,7 +380,10 @@ class BankStatementLineDetailView(_FinanceBase):
             line = (
                 BankStatementLine.objects.select_for_update()
                 .select_related("bank_account__entity")
-                .filter(pk=pk, bank_account__entity=entity)
+                .filter(
+                    branch_q(request, "bank_account__", include_shared=True),
+                    pk=pk, bank_account__entity=entity,
+                )
                 .first()
             )
             if line is None:
@@ -533,6 +583,7 @@ class BankStatementDetailView(_FinanceBase):
         )
         queryset = (
             BankStatement.objects.filter(
+                branch_q(request, "bank_account__", include_shared=True),
                 pk=statement_id,
                 bank_account_id=pk,
                 bank_account__entity=entity,
@@ -713,13 +764,7 @@ class BankStatementImportTemplateView(_FinanceBase):
             generate_template_xlsx,
         )
 
-        bank = BankAccount.objects.filter(
-            entity=resolve_entity(request),
-            pk=pk,
-            is_active=True,
-        ).first()
-        if bank is None:
-            raise NotFound("Active bank account not found for this entity.")
+        bank = _bank_or_404(request, pk, active_only=True)
         template = ImportTemplate.objects.filter(
             code="bank_statements_v1",
             status=TemplateStatusChoices.ACTIVE,
@@ -768,21 +813,15 @@ class BankStatementImportWizardView(_FinanceBase):
         from ..money import to_kobo
 
         entity = resolve_entity(request)
-        bank = (
-            BankAccount.objects
-            .select_related("branch")
-            .filter(entity=entity, pk=pk, is_active=True)
-            .first()
-        )
-        if bank is None:
-            raise NotFound("Active bank account not found for this entity.")
+        bank = _bank_or_404(request, pk, entity=entity, active_only=True)
 
         # A statement continues the account's chain, so the account names the
         # batch's branch and the person uploading does not: the school's own
         # GTBank statement stays school-wide however it arrives, and Lekki's
         # collection account keeps its statements to Lekki even when an
-        # administrator covering both sites uploads one. The resolver also
-        # refuses a branch-pinned caller continuing a chain outside their sites.
+        # administrator covering both sites uploads one. Whether this caller may
+        # touch this account at all was settled by the resolver above; what is
+        # left here is only which branch the batch is filed under.
         statement_branch_id = _inherited_branch_id(request, bank)
         statement_branch = bank.branch if statement_branch_id is not None else None
 
@@ -880,9 +919,7 @@ class BankAutoReconcileView(_FinanceBase):
         from ..banking import auto_reconcile
 
         entity = resolve_entity(request)
-        bank = BankAccount.objects.filter(entity=entity, pk=pk).first()
-        if bank is None:
-            raise NotFound("Bank account not found for this entity.")
+        bank = _bank_or_404(request, pk, entity=entity)
         body = request.data or {}
         from ..banking_settings import resolve_finance_banking_settings
         policy = resolve_finance_banking_settings(entity)
@@ -926,9 +963,7 @@ class BankBookLinesView(_FinanceBase):
         from ..models import Customer
 
         entity = resolve_entity(request)
-        bank = BankAccount.objects.filter(entity=entity, pk=pk).select_related("gl_account").first()
-        if bank is None:
-            raise NotFound("Bank account not found for this entity.")
+        bank = _bank_or_404(request, pk, entity=entity)
 
         # Posting bakes the customer *code* into line descriptions ("Receipt: CUST-002").
         # Resolve it to the human name for the reconciliation view.
@@ -966,9 +1001,7 @@ class BankReconcileCompleteView(_FinanceBase):
         from ..banking import complete_reconciliation
 
         entity = resolve_entity(request)
-        bank = BankAccount.objects.filter(entity=entity, pk=pk).select_related("gl_account").first()
-        if bank is None:
-            raise NotFound("Bank account not found for this entity.")
+        bank = _bank_or_404(request, pk, entity=entity)
         recon = complete_reconciliation(bank, actor_user=request.user)
         return success_response(
             "Reconciliation recorded.",
@@ -983,7 +1016,10 @@ class _StatementLineActionBase(_FinanceBase):
         entity = resolve_entity(request)
         line = (
             BankStatementLine.objects
-            .filter(pk=pk, bank_account__entity=entity)
+            .filter(
+                branch_q(request, "bank_account__", include_shared=True),
+                pk=pk, bank_account__entity=entity,
+            )
             .select_related("bank_account").first()
         )
         if line is None:
@@ -1066,9 +1102,7 @@ class BankSplitMatchView(_FinanceBase):
         from ..banking import split_match
 
         entity = resolve_entity(request)
-        bank = BankAccount.objects.filter(entity=entity, pk=pk).select_related("gl_account").first()
-        if bank is None:
-            raise NotFound("Bank account not found for this entity.")
+        bank = _bank_or_404(request, pk, entity=entity)
         body = request.data or {}
         jl_ref = body.get("journal_line")
         jl = (JournalLine.objects.filter(pk=jl_ref, entry__entity=entity).select_related("entry").first()
