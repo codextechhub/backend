@@ -29,3 +29,26 @@ class PlanUpgradeRequired(Exception):
         self.message = message or self.default_message
         self.extra = extra or {}
         super().__init__(self.message)
+
+
+class RestrictedNeedsApprovalError(Exception):
+    """A restricted permission would land on the actor's own access.
+
+    Carried as a typed exception rather than a field error so the client can act
+    on the code: the roles screen turns Save into "Raise for approval" and builds
+    the request from ``restricted_additions``, which a sentence buried in a field
+    error cannot be read from reliably.
+
+    409 rather than 400 for the reason ``ApprovalNotConfiguredError`` uses it:
+    the request is well formed, and it conflicts with a rule about who may
+    decide, not with the shape of what was sent. ``http_status`` is the name the
+    handler reads.
+    """
+
+    error_code = "RESTRICTED_NEEDS_APPROVAL"
+    http_status = 409
+
+    def __init__(self, message, *, restricted_additions):
+        super().__init__(message)
+        self.message = message
+        self.extra = {"restricted_additions": sorted(restricted_additions)}

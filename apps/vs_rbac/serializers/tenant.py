@@ -444,7 +444,25 @@ class TenantRoleTemplateDetailSerializer(
             })
 
     def _reject_restricted_additions(self, attrs):
-        """Keep direct saves from activating a new restricted permission."""
+        """Refuse a restricted addition that would land on the actor's own role.
+
+        The rule this enforces is not "restricted permissions need approval". It
+        is "nobody approves their own increase in power", and those are the same
+        sentence only when the person editing holds the role.
+
+        A head teacher adding ``finance.account.create`` to **Bursar**, a role
+        she does not hold, is doing the job ``school.roles.update`` exists for.
+        Refusing her and telling her to raise a request she would then approve
+        herself is ceremony: it produces a second record of the same decision by
+        the same person, and the school still ends up with the bursar able to
+        create accounts. Adding it to a role she DOES hold is the thing the
+        restriction is for, and that still goes through approval.
+
+        The other way to reach the same place is assignment, and it is guarded
+        alongside this one: see ``TenantUserRoleAssignmentSerializer``. Editing a
+        role you do not hold and then giving it to yourself would otherwise be
+        this rule with one extra step.
+        """
         if "permission_keys" not in attrs and "group_ids" not in attrs:
             return
 
@@ -478,13 +496,32 @@ class TenantRoleTemplateDetailSerializer(
         added_restricted.update(
             restricted_permission_keys(group_permission_keys(newly_attached_groups))
         )
-        if added_restricted:
-            raise serializers.ValidationError({
-                "permission_keys": [
-                    RESTRICTED_ROLE_CHANGE_MESSAGE,
-                    f"Restricted additions: {', '.join(sorted(added_restricted))}.",
-                ],
-            })
+        if added_restricted and self._actor_holds_this_role():
+            from ..exceptions import RestrictedNeedsApprovalError
+
+            # Typed, so the client can turn Save into "Raise for approval" on
+            # the code and build the request from the keys, rather than parsing
+            # a sentence out of a field error.
+            raise RestrictedNeedsApprovalError(
+                RESTRICTED_ROLE_CHANGE_MESSAGE,
+                restricted_additions=added_restricted,
+            )
+
+    def _actor_holds_this_role(self) -> bool:
+        """Whether the person saving would be granting this to themselves."""
+        if self.instance is None:
+            return False
+        request = self.context.get("request")
+        actor = getattr(request, "user", None)
+        if actor is None or not getattr(actor, "is_authenticated", False):
+            # No actor to reason about. Refuse, because the safe reading of "we
+            # cannot tell whose hand this is" is that it might be their own.
+            return True
+        return TenantUserRoleAssignment.objects.filter(
+            role=self.instance,
+            user=actor,
+            assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+        ).exists()
 
     def _reject_out_of_scope_keys(self, attrs, tenant):
         """Report a platform key in a tenant role as a 400, not a 500.
@@ -619,6 +656,12 @@ class TenantRoleTemplateDetailSerializer(
                 "role": instance,
                 "actor": actor,
                 "reason": reason,
+                # The question was already answered in validate(): a restricted
+                # addition to somebody else's role is ordinary administration
+                # and was let through there, so the service must not refuse it
+                # again on the way past. Its own guard stays for callers that
+                # have not asked whose role this is.
+                "allow_restricted": not self._actor_holds_this_role(),
             }
             if permission_keys is not None:
                 kwargs["permission_keys"] = permission_keys
@@ -640,6 +683,13 @@ class TenantUserRoleAssignmentSerializer(
     Every reference is resolved inside the assignment's tenant, so a user, role
     or branch belonging to another tenant is reported exactly like one that does
     not exist. Nothing is ever accepted across a tenant boundary.
+
+    Assignment carries its own restricted rule and does not need a second one
+    here: ``missing_restricted_grant_authority`` refuses a role whose restricted
+    keys the assigner does not already hold, whoever the role is being given to.
+    That covers giving it to yourself, which is why this serializer has no
+    self-assignment clause of its own - a duplicate would be a second place for
+    the same rule to drift.
     """
 
     user = TenantScopedRelatedField(

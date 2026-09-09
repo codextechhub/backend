@@ -470,6 +470,93 @@ class TenantRoleTemplateViewTests(TestCase):
         own.refresh_from_db()
         self.assertEqual(own.status, "ACTIVE")
 
+    def test_a_restricted_addition_to_a_role_the_actor_holds_is_refused(self):
+        """The rule is "nobody approves their own increase in power"."""
+        role = TenantRoleTemplate.objects.get(
+            tenant=self.school.tenant, name__startswith="grant-role-",
+        )
+        make_permission("finance.account.create", is_restricted=True)
+
+        resp = _token_client(self.admin).patch(
+            self._detail_url(role.key),
+            {"permission_keys": ROLE_KEYS + ["finance.account.create"],
+             "reason": "Bursar cover."},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 409, resp.data)
+        self.assertEqual(resp.data["error"]["code"], "RESTRICTED_NEEDS_APPROVAL")
+        self.assertEqual(
+            resp.data["error"]["detail"]["restricted_additions"],
+            ["finance.account.create"],
+        )
+
+    def test_the_same_addition_to_somebody_elses_role_goes_through(self):
+        """Doing the job `school.roles.update` exists for.
+
+        Refusing this and telling the head teacher to raise a request she would
+        approve herself produces a second record of the same decision by the
+        same person, and the bursar ends up able to create accounts either way.
+        """
+        bursar = make_role(self.school, name="Bursar")
+        make_role_permission(bursar, make_permission("students.profile.view"))
+        perm = make_permission("finance.account.create", is_restricted=True)
+
+        resp = _token_client(self.admin).patch(
+            self._detail_url(bursar.key),
+            {"permission_keys": ["students.profile.view", perm.key],
+             "reason": "The bursar posts our fee journals."},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.assertIn(
+            perm.key,
+            set(bursar.role_permissions.filter(granted=True)
+                .values_list("permission_id", flat=True)),
+        )
+
+    def test_giving_yourself_that_role_is_still_refused_by_the_grant_ceiling(self):
+        """The other half of the door, and it was already shut.
+
+        Editing a role you do not hold is allowed; handing it to yourself is
+        not, unless you already hold what it carries.
+        ``missing_restricted_grant_authority`` is the rule - "a restricted grant
+        may be approved or assigned only by somebody who already holds that key"
+        - and it answers for every recipient, so it covers the actor too.
+        """
+        bursar = make_role(self.school, name="Bursar")
+        make_role_permission(
+            bursar, make_permission("finance.account.create", is_restricted=True),
+        )
+
+        resp = _token_client(self.admin).post(
+            _q(reverse("rbac-assignment-list-create",
+                       kwargs={"tenant_slug": self.slug}), self.slug),
+            {"user": self.admin.pk, "role": bursar.pk},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.data)
+        self.assertIn("grant authority", str(resp.data["message"]))
+
+    def test_giving_it_to_somebody_else_is_refused_by_the_same_ceiling(self):
+        """The ceiling is about what the ASSIGNER holds, not who receives it."""
+        bursar = make_role(self.school, name="Bursar")
+        make_role_permission(
+            bursar, make_permission("finance.account.create", is_restricted=True),
+        )
+        colleague = make_staff_user(self.branch, email="bursar@test.com")
+
+        resp = _token_client(self.admin).post(
+            _q(reverse("rbac-assignment-list-create",
+                       kwargs={"tenant_slug": self.slug}), self.slug),
+            {"user": colleague.pk, "role": bursar.pk},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.data)
+
     def test_update_permissions_requires_reason(self):
         role = make_role(self.school, name="Teacher")
         original = make_permission("students.profile.view")
