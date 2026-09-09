@@ -83,7 +83,7 @@ class CatalogueMatchesTheGateTests(TestCase):
                     ).isoformat(),
                 },
                 "branches": [{
-                    "name": "Main", "_type": "Main", "state": "Lagos",
+                    "name": "Main", "state": "Lagos",
                     "is_main": True,
                     "primary_admin_data": {
                         "full_name": "Bright Star Head", "email": f"head@{slug}.test",

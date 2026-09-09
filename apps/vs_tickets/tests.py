@@ -53,7 +53,7 @@ def _school(slug, name):
 
 def _branch(school, name):
     return Branch.objects.create(
-        tenant=school.tenant, name=name, _type="Primary", is_main=True,
+        tenant=school.tenant, name=name, is_main=True,
     )
 
 

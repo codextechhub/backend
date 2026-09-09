@@ -27,15 +27,15 @@ class BranchTransitionMainGuardTests(TestCase):
 
         cls.corona = make_school(slug="mg-corona", name="Corona Secondary")
         cls.vi = make_branch(
-            cls.corona, name="Victoria Island", is_main=True, _type="Main",
+            cls.corona, name="Victoria Island", is_main=True,
         )
         cls.lekki = make_branch(
-            cls.corona, name="Lekki", is_main=False, _type="Annex",
+            cls.corona, name="Lekki", is_main=False,
         )
 
         cls.bright_star = make_school(slug="mg-bright-star", name="Bright Star")
         cls.only_branch = make_branch(
-            cls.bright_star, name="Bright Star Main", is_main=True, _type="Main",
+            cls.bright_star, name="Bright Star Main", is_main=True,
         )
 
     def _client(self):

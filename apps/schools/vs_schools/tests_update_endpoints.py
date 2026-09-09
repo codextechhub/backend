@@ -7,7 +7,7 @@ can reach is a rule nobody can satisfy.
   ``School.save()`` since 474a01c - but ``SchoolUpdateSerializer`` exposed no
   ``slug``, so the typo correction that rule exists to permit could only be
   made from a shell.
-* ``Branch._type`` called itself "optional freeform" and was declared
+* A Branch column called itself "optional freeform" and was declared
   ``CharField(max_length=80)`` with no ``blank``. Every row created outside the
   serializers stored ``""``, and ``BranchUpdateSerializer.update()`` runs
   ``full_clean()`` over the whole instance, so those rows could never be
@@ -335,10 +335,10 @@ class BranchUpdateBlankFieldTests(TestCase):
             kwargs={"slug": self.school.slug, "code": branch.code},
         )
 
-    def _row_with_blank_type(self, name="Legacy Branch"):
+    def _row_made_outside_the_serializer(self, name="Legacy Branch"):
         """A branch made the way ``seed_import``, a data migration and the
-        shell make one: straight through the manager, no serializer, so
-        ``_type`` is never supplied."""
+        shell make one: straight through the manager, with no serializer to
+        fill in what the caller left out."""
         return Branch.objects.create(
             tenant=self.school.tenant,
             name=name,
@@ -346,48 +346,9 @@ class BranchUpdateBlankFieldTests(TestCase):
             status=BranchStatus.ACTIVE,
         )
 
-    def test_a_row_created_outside_the_serializer_has_a_blank_type(self):
-        """The premise. If this ever stops being true the tests below stop
-        testing anything."""
-        branch = self._row_with_blank_type()
 
-        self.assertEqual(branch._type, "")
 
-    def test_a_branch_with_a_blank_type_can_be_updated(self):
-        branch = self._row_with_blank_type()
 
-        response = self._client().patch(
-            self._url(branch), {"address": "14 Admiralty Way, Lekki"}, format="json",
-        )
-
-        self.assertEqual(response.status_code, 200, response.data)
-        branch.refresh_from_db()
-        self.assertEqual(branch.address, "14 Admiralty Way, Lekki")
-
-    def test_such_a_branch_can_also_be_given_a_type(self):
-        branch = self._row_with_blank_type(name="Typed Branch")
-
-        response = self._client().patch(
-            self._url(branch), {"_type": "Secondary"}, format="json",
-        )
-
-        self.assertEqual(response.status_code, 200, response.data)
-        branch.refresh_from_db()
-        self.assertEqual(branch._type, "Secondary")
-
-    def test_a_type_may_be_cleared_again(self):
-        """``blank=True`` has to mean it on the way in as well as on the way
-        out, or the field is merely optional once."""
-        branch = self._row_with_blank_type(name="Clearable Branch")
-        Branch.all_objects.filter(pk=branch.pk).update(_type="Nursery")
-
-        response = self._client().patch(
-            self._url(branch), {"_type": ""}, format="json",
-        )
-
-        self.assertEqual(response.status_code, 200, response.data)
-        branch.refresh_from_db()
-        self.assertEqual(branch._type, "")
 
     # --- the field that is genuinely required -------------------------------
 
@@ -404,7 +365,7 @@ class BranchUpdateBlankFieldTests(TestCase):
         when somebody actually tries to unname a branch - see
         ``PartialUpdateValidatesOnlyWhatItWasSentTests`` for the other half.
         """
-        branch = self._row_with_blank_type(name="Nameless Branch")
+        branch = self._row_made_outside_the_serializer(name="Nameless Branch")
 
         response = self._client().patch(
             self._url(branch), {"name": ""}, format="json",
@@ -419,7 +380,7 @@ class BranchUpdateBlankFieldTests(TestCase):
         nothing on this path was translating it, so the caller was told a field
         could not be blank on an endpoint that writes eight of them - and never
         which one."""
-        branch = self._row_with_blank_type(name="Unnamed Branch")
+        branch = self._row_made_outside_the_serializer(name="Unnamed Branch")
 
         response = self._client().patch(
             self._url(branch), {"name": "   "}, format="json",
@@ -435,7 +396,7 @@ class BranchUpdateBlankFieldTests(TestCase):
         """``BranchCreateSerializer`` writes ``from_state=""`` for a creation
         event, which has no state to come from, and ``Branch.transition``
         writes ``actor_id=""`` for a system-driven move. Both columns were
-        non-blank with no default - the same shape as ``_type``, and the
+        non-blank with no default - the same shape as that column, and the
         leftovers of the sweep that stopped at ``reason``."""
         from vs_tenants.models import BranchLifecycle
 
@@ -696,7 +657,6 @@ class SchoolTrailIsKeyedOnThePrimaryKeyTests(TestCase):
                 "status": SchoolStatus.PENDING,
                 "branches": [{
                     "name": f"{name} Main Branch",
-                    "_type": "Main",
                     "state": "Lagos",
                     "is_main": True,
                     "primary_admin_data": {
@@ -925,7 +885,6 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
                 "slug": slug,
                 "branches": [{
                     "name": f"{name} Main Branch",
-                    "_type": "Main",
                     "state": "Lagos",
                     "is_main": True,
                     "primary_admin_data": {
@@ -954,7 +913,6 @@ class BranchTrailIsKeyedOnThePrimaryKeyTests(TestCase):
             reverse("branch-create", kwargs={"slug": school.slug}),
             {
                 "name": name,
-                "_type": "Annex",
                 "state": "Lagos",
                 "primary_admin_data": {
                     "full_name": f"{name} Head",
@@ -1193,7 +1151,7 @@ class PartialUpdateValidatesOnlyWhatItWasSentTests(TestCase):
     to fix a blank column is to fill it, filling it is an update, and the update
     is what is being refused. The row is unpatchable through the API for ever.
 
-    ``Branch._type`` reached exactly that dead end and was given ``blank=True``
+    A Branch column reached exactly that dead end and was given ``blank=True``
     to escape it (vs_tenants 0007), which fixed one column. These tests pin the
     rule that stops the next one: full_clean sees the fields the request named
     and nothing else.

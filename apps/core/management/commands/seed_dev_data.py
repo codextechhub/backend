@@ -342,7 +342,6 @@ class Command(BaseCommand):
                         country="Nigeria", state="Lagos",
                         email=f"{btag.lower()}@{spec['slug']}.example.com",
                         activated_at=self.now,
-                        _type="Secondary",
                     ),
                 )
             SchoolBranding.objects.get_or_create(school=school)

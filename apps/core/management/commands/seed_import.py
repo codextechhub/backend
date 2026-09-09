@@ -106,7 +106,6 @@ TEMPLATES: list[dict] = [
                 "School Admin Phone":    "08051234567",
                 "School Admin Role":     "IT Head",
                 "Branch Name":           "Greenfield Academy - Main Branch",
-                "Branch Type":           "Combined",
                 "Branch Address":        "14 Admiralty Way, Lekki Phase 1, Lagos",
                 "Branch Email":          "main@greenfieldacademy.edu.ng",
                 "Branch Country":        "Nigeria",
@@ -323,19 +322,6 @@ TEMPLATES: list[dict] = [
                 "column_order":  15,
             },
             {
-                "column_name":   "Branch Type",
-                "target_field":  "branch_type",
-                "display_name":  "Branch Type",
-                "help_text":     "Free-form descriptor for the branch level. Example: Primary, Secondary, Combined. Defaults to Combined.",
-                "data_type":     TemplateColumnDataTypeChoices.STRING,
-                "is_required":   False,
-                "is_unique":     False,
-                "max_length":    80,
-                "sample_value":  "Combined",
-                "default_value": "Combined",
-                "column_order":  16,
-            },
-            {
                 "column_name":   "Branch Address",
                 "target_field":  "branch_address",
                 "display_name":  "Branch Address",
@@ -494,7 +480,6 @@ TEMPLATES: list[dict] = [
             "sample_row_data": {
                 "School Slug":     "greenfield-academy",
                 "Branch Name":          "Lekki Branch",
-                "Branch Type":          "Secondary",
                 "Is Main Branch":       "TRUE",
                 "Address":              "14 Admiralty Way, Lekki Phase 1, Lagos",
                 "Email":                "lekki@greenfieldacademy.edu.ng",
@@ -545,21 +530,6 @@ TEMPLATES: list[dict] = [
                 "max_length":    255,
                 "sample_value":  "Lekki Branch",
                 "column_order":  2,
-            },
-            {
-                "column_name":   "Branch Type",
-                "target_field":  "_type",
-                "display_name":  "Branch Type",
-                "help_text": (
-                    "Free-form descriptor for the branch level. "
-                    "Common values: Primary, Secondary, Nursery, Tertiary, Mixed."
-                ),
-                "data_type":     TemplateColumnDataTypeChoices.STRING,
-                "is_required":   False,
-                "is_unique":     False,
-                "max_length":    80,
-                "sample_value":  "Secondary",
-                "column_order":  3,
             },
             {
                 "column_name":   "Is Main Branch",

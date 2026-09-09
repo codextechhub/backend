@@ -82,7 +82,6 @@ class OneSchoolMeetsTheWallTests(TestCase):
                 },
                 "branches": [{
                     "name": "Bright Star Main Branch",
-                    "_type": "Main",
                     "state": "Lagos",
                     "is_main": True,
                     "primary_admin_data": {

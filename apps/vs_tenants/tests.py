@@ -122,7 +122,7 @@ class TenantAuthorityTests(TestCase):
         user = User.objects.create_user(
             email="staff@persona.test", password="pw", first_name="No", last_name="Role",
             tenant=school.tenant,
-            branch=school.branches.create(name="Main", code=1, is_main=True, _type="Main"),
+            branch=school.branches.create(name="Main", code=1, is_main=True),
             status=User.Status.ACTIVE, is_active=True,
         )
         from vs_rbac.evaluator import get_effective_permissions
@@ -155,7 +155,7 @@ class ReconcileTenantsInvariantTests(TestCase):
             name="Reconcile School", slug="reconcile-school", code="RECON",
             status=SchoolStatus.ACTIVE,
         )
-        school.branches.create(name="Main", code=1, is_main=True, _type="Main")
+        school.branches.create(name="Main", code=1, is_main=True)
 
         self.assertIn("passed", self._run())
 
@@ -171,7 +171,7 @@ class ReconcileTenantsInvariantTests(TestCase):
             name="Recon B", slug="recon-b", code="RECONB", status=SchoolStatus.ACTIVE,
         )
         rival_branch = rival.branches.create(
-            name="Main", code=1, is_main=True, _type="Main",
+            name="Main", code=1, is_main=True,
         )
         # Written straight to the table: the model's clean() refuses this, and
         # the command exists precisely to find rows that got in anyway.
@@ -190,7 +190,7 @@ class ReconcileTenantsInvariantTests(TestCase):
         school = School.objects.create(
             name="Recon C", slug="recon-c", code="RECONC", status=SchoolStatus.ACTIVE,
         )
-        branch = school.branches.create(name="Main", code=1, is_main=True, _type="Main")
+        branch = school.branches.create(name="Main", code=1, is_main=True)
         TenantRoleTemplate.objects.create(
             tenant=school.tenant, key="recon-ok", name="Recon Ok",
             status="ACTIVE", branch=branch,
@@ -331,7 +331,7 @@ class BranchDatabaseConstraintTests(TestCase):
                 status=BranchStatus.ACTIVE):
         return Branch(
             tenant=tenant, name=name, code=code, is_main=is_main,
-            _type="Main" if is_main else "Sub", status=status,
+            status=status,
         )
 
     def _insert(self, *branches):
@@ -516,7 +516,7 @@ class MainBranchLifecycleGuardTests(TestCase):
     def _branch(self, tenant, *, name, is_main=False, status=BranchStatus.ACTIVE):
         return Branch.all_objects.create(
             tenant=tenant, name=name, is_main=is_main,
-            _type="Main" if is_main else "Sub", status=status,
+            status=status,
         )
 
     # --- the refusal --------------------------------------------------------

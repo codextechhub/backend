@@ -316,7 +316,7 @@ class NumberingTests(TestCase):
     def setUp(self):
         self.school = School.objects.create(name="Test Org", slug="test-org")
         self.branch = Branch.objects.create(
-            tenant=self.school.tenant, name="HQ", _type="Main",
+            tenant=self.school.tenant, name="HQ",
         )
         self.entity = LedgerEntity.objects.create(
             name="Test Org Books", code="LEKKI",

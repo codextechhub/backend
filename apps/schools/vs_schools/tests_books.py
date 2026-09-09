@@ -87,7 +87,6 @@ class _SchoolCreationMixin:
     def _branch(name, *, is_main, email):
         return {
             "name": name,
-            "_type": "Main" if is_main else "Annex",
             "state": "Lagos",
             "is_main": is_main,
             "primary_admin_data": {"full_name": f"{name} Head", "email": email},

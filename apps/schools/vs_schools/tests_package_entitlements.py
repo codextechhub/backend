@@ -111,7 +111,6 @@ class _PackageFixture(TestCase):
     def _branch(self, name, slug, index=0):
         return {
             "name": f"{name} Branch {index}" if index else f"{name} Main Branch",
-            "_type": "Main" if not index else "Branch",
             "state": "Lagos",
             "is_main": index == 0,
             "primary_admin_data": {
@@ -323,7 +322,6 @@ class NoSizeCeilingTests(_PackageFixture):
             reverse("branch-create", kwargs={"slug": school.slug}),
             {
                 "name": "Ikeja Branch",
-                "_type": "Branch",
                 "state": "Lagos",
                 "is_main": False,
                 "primary_admin_data": {

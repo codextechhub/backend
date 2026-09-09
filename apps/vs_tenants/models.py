@@ -307,7 +307,6 @@ class Branch(models.Model):
         name: Display label such as "Lekki Branch".
         code: Integer code unique within the tenant; filled on first save.
         is_main: Boolean marker for the canonical site (constraint enforces 1).
-        _type: Optional free-form descriptor (e.g., Primary, Secondary).
         address / email / country / state: Contact + location metadata.
         status: Lifecycle state (BranchStatus choices, indexed).
         opened_at / closed_at / activated_at / deactivated_at: Lifecycle stamps.
@@ -327,12 +326,12 @@ class Branch(models.Model):
     site that is suspended, deactivated or - permanently, since CLOSED is
     terminal - shut. Hand `is_main` over with `promote_to_main()` first.
 
-    `_type` is optional in the schema as well as in prose. Rows created outside
-    the serializers - by an import, a data migration, the shell, a test factory
-    - store `""`, and `BranchUpdateSerializer` runs `full_clean()` over the
-    whole instance, so a `_type` that is required in the schema makes every one
-    of those rows permanently unpatchable through the API over a field nobody
-    touched.
+    What a site TEACHES is not recorded here. A branch is a place; the stages
+    running at it are :class:`schools.vs_academics.Program` rows, which are
+    branch-aware and plural - a school runs Nursery, Primary and both Secondary
+    stages school-wide and Vocational at its Annex alone. A single descriptor on
+    the branch could not say that, and the one that used to sit here said
+    "Secondary" for a site running four stages.
 
     Every database this repo runs on supports partial unique indexes
     (PostgreSQL locally, in CI and in staging; SQLite under
@@ -361,7 +360,6 @@ class Branch(models.Model):
 
     # Free-form site label: "Primary", "Secondary", "Nursery". Nothing branches
     # on it, and it must stay `blank=True`. See the class docstring.
-    _type = models.CharField(max_length=80, blank=True, default="")
 
     # Branch contact/location info
     address = models.CharField(max_length=255, blank=True, default="")

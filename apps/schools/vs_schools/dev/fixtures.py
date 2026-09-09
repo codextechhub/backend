@@ -145,7 +145,7 @@ def build_school(
         tenant=tenant, name=f"{name} Main Branch",
         defaults=dict(
             is_main=True, status="ACTIVE", country="Nigeria", state="Lagos",
-            _type="Secondary", email=f"main@{slug}.example.com",
+            email=f"main@{slug}.example.com",
             address=main_address,
         ),
     )
@@ -154,7 +154,7 @@ def build_school(
             tenant=tenant, name=f"{name} Annex",
             defaults=dict(
                 is_main=False, status="ACTIVE", country="Nigeria", state="Lagos",
-                _type="Primary", email=f"annex@{slug}.example.com",
+                email=f"annex@{slug}.example.com",
                 address=annex_address,
             ),
         )

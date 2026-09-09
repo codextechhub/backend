@@ -67,7 +67,7 @@ def _slug_is_unique(slug: str, exclude_school_slug: Optional[str] = None) -> boo
 def full_clean_as_field_errors(instance, *, wrote: Optional[Iterable[str]] = None) -> None:
     """``instance.full_clean()``, with its refusal renamed into DRF's shape.
 
-    A model ``ValidationError`` is keyed by field - ``{"_type": ["This field
+    A model ``ValidationError`` is keyed by field - ``{"address": ["This field
     cannot be blank."]}`` - but nothing on the update path was translating it,
     so it travelled all the way to ``core.exceptions.custom_exception_handler``
     and came back as the bare sentence with no field attached. The caller was
@@ -86,8 +86,8 @@ def full_clean_as_field_errors(instance, *, wrote: Optional[Iterable[str]] = Non
     answers "This field cannot be blank" to a request that only changed the
     address, and the row is then unpatchable through the API for ever - the
     field cannot be corrected either, because correcting it is an update and
-    the update is what is being refused. ``Branch._type`` reached exactly that
-    dead end (vs_tenants 0007 gave it ``blank=True`` to escape), and giving one
+    the update is what is being refused. A Branch column reached exactly that
+    dead end once and was given ``blank=True`` to escape it, and giving one
     column a default fixes one column; excluding the untouched ones is what
     stops the next column doing it again.
 
@@ -563,7 +563,6 @@ class BranchListSerializer(serializers.ModelSerializer):
             "school_slug",
             "name",
             "is_main",
-            "_type",
             "status",
             "country",
             "state",
@@ -586,7 +585,6 @@ class BranchDetailSerializer(serializers.ModelSerializer):
             "school_slug",
             "name",
             "is_main",
-            "_type",
 
             "address",
             "email",
@@ -625,7 +623,6 @@ class BranchCreateSerializer(serializers.ModelSerializer):
         fields = [
             "name",
             "is_main",
-            "_type",
 
             "address",
             "email",
@@ -791,7 +788,6 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
         fields = [
             "name",
             "is_main",
-            "_type",
 
             "address",
             "email",
@@ -1031,12 +1027,6 @@ class BranchInlineCreateSerializer(serializers.Serializer):
     """
 
     name = serializers.CharField(max_length=255)
-    # Optional, to match the column and the other branch write paths. This was
-    # the one place a free-form descriptor was mandatory, and it made a school
-    # impossible to create over an import row that had no branch type.
-    _type = serializers.CharField(
-        max_length=80, required=False, allow_blank=True, default="",
-    )
     address = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
     email = serializers.EmailField(required=False, allow_blank=True, default="")
     country = serializers.CharField(max_length=80, required=False)
@@ -2079,7 +2069,6 @@ class SchoolBranchSerializer(serializers.ModelSerializer):
     it yet.
     """
 
-    branch_type = serializers.CharField(source="_type", read_only=True)
     students_count = serializers.SerializerMethodField()
     teachers_count = serializers.SerializerMethodField()
     classes_count = serializers.SerializerMethodField()
@@ -2106,7 +2095,6 @@ class SchoolBranchSerializer(serializers.ModelSerializer):
             "code",
             "name",
             "is_main",
-            "branch_type",
             "status",
             "address",
             "email",

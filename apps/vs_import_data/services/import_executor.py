@@ -367,7 +367,6 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
 
     Main branch  (one branch per row, always marked is_main=True)
         branch_name             optional – defaults to "<school name> - Main Branch"
-        branch_type             optional – defaults to "Combined"
         branch_address          optional – falls back to school address
         branch_email            optional
         branch_country          optional – defaults to "Nigeria"
@@ -437,7 +436,6 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
     branch_name = _s("branch_name") or f"{_s('name')} - Main Branch"
     branch = {
         "name": branch_name,
-        "_type": _s("branch_type") or "Combined",
         "address": _s("branch_address") or _s("address"),
         "email": _s("branch_email"),
         "country": _s("branch_country") or "Nigeria",
@@ -520,7 +518,6 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
 
     Branch identity
         name                    required
-        branch_type             optional – defaults to "Combined"
         address                 optional
         email                   optional
         country                 optional – defaults to "Nigeria"
@@ -583,7 +580,6 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
     is_main_raw = _s("is_main").lower()
     branch_payload = {
         "name": branch_name,
-        "_type": _s("_type") or "Combined",
         "is_main": is_main_raw in ("true", "1", "yes"),
         "primary_admin_data": branch_admin_data,
     }
