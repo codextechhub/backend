@@ -15,10 +15,12 @@ from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, 
 from core.response import success_response, error_response
 
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
-# ``include_shared=True`` spelled out at each call site. A batch with no branch
-# was uploaded for the school as a whole, which is the normal shape for a
-# tenant-wide import, and it must stay visible to a branch admin.
-from vs_rbac.scoping import branch_q
+# ``include_shared=True`` spelled out at each ``branch_q`` call site. A batch
+# with no branch was uploaded for the school as a whole, which is a normal shape
+# for an import, and it must stay visible from every branch. ``raised_branch``
+# is the other half of the same rule, deciding which branch a new batch is filed
+# under: a narrowing nothing writes to narrows nothing.
+from vs_rbac.scoping import branch_q, raised_branch
 
 from .constants import ImportPermission
 from .permissions import HasImportBatchRBACPermission
@@ -421,6 +423,22 @@ class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.L
             queryset = queryset.filter(template_id=template_id)
 
         return queryset
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        if self.request.method == "POST":
+            # ``shared_when_ambiguous=True``: an import is as often the school's
+            # own spine as one site's roll - the branch list itself, the class
+            # structure, the subject catalogue - and the upload carries no branch
+            # field for a caller covering two sites to answer with, so asking
+            # them would raise an error they have no way to clear. A caller
+            # pinned to a single site still stamps it, which is the case the
+            # narrowing exists for.
+            context["branch"] = raised_branch(
+                self.request, self.request.tenant, self.request.data,
+                shared_when_ambiguous=True,
+            )
+        return context
 
     def get_serializer_class(self):
         if self.request.method == "POST":

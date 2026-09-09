@@ -37,6 +37,7 @@ from .base import (
     _FinanceBase,
     _bool,
     _date,
+    _inherited_branch_id,
     _int,
     _raised_branch,
     _require_lines,
@@ -767,9 +768,23 @@ class BankStatementImportWizardView(_FinanceBase):
         from ..money import to_kobo
 
         entity = resolve_entity(request)
-        bank = BankAccount.objects.filter(entity=entity, pk=pk, is_active=True).first()
+        bank = (
+            BankAccount.objects
+            .select_related("branch")
+            .filter(entity=entity, pk=pk, is_active=True)
+            .first()
+        )
         if bank is None:
             raise NotFound("Active bank account not found for this entity.")
+
+        # A statement continues the account's chain, so the account names the
+        # batch's branch and the person uploading does not: the school's own
+        # GTBank statement stays school-wide however it arrives, and Lekki's
+        # collection account keeps its statements to Lekki even when an
+        # administrator covering both sites uploads one. The resolver also
+        # refuses a branch-pinned caller continuing a chain outside their sites.
+        statement_branch_id = _inherited_branch_id(request, bank)
+        statement_branch = bank.branch if statement_branch_id is not None else None
 
         metadata = _BankStatementWizardUploadSerializer(data=request.data)
         metadata.is_valid(raise_exception=True)
@@ -799,7 +814,7 @@ class BankStatementImportWizardView(_FinanceBase):
                 "header_row_index": values.get("header_row_index", 1),
                 "notes": values.get("notes", ""),
             },
-            context={"request": request},
+            context={"request": request, "branch": statement_branch},
         )
         upload.is_valid(raise_exception=True)
 

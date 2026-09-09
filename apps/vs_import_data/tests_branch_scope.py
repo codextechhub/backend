@@ -1,4 +1,4 @@
-"""One batch id, one answer: the branches the caller may work in.
+"""Which branch an import belongs to, and who may read it afterwards.
 
 Every batch endpoint resolves its id through
 ``ImportBatchContextMixin.get_import_batch``, which narrows to the caller's
@@ -15,6 +15,11 @@ Two independent gates decide a batch request, and both are exercised here:
 ``HasImportBatchRBACPermission`` runs first and may admit a caller on their
 module's own import key, and the view's lookup runs second. Narrowing one and
 not the other leaves the pair disagreeing about the same id.
+
+The write half is here too, because reading and writing are one rule seen from
+either end. A narrowing that nothing ever writes to narrows nothing: every
+batch would carry no branch, every batch would be school-wide, and the reads
+above would pass while showing each site all of the others.
 """
 from __future__ import annotations
 
@@ -226,3 +231,152 @@ class ImportBatchModuleKeyBranchScopeTests(_BranchScopeFixture):
             self.download(UNKNOWN_BATCH_ID).status_code,
         )
 
+
+class ImportBatchUploadBranchTests(TestCase):
+    """The branch a new batch is filed under, and who it is visible to next.
+
+    The uploader decides it, through ``raised_branch``: an import is something a
+    person does at a place. What the file goes on to create is a separate
+    question with its own rules - a student row lands in the branch its own
+    column names - and this is only about the batch, its issues and the file.
+    """
+
+    def setUp(self):
+        self.school = make_school(slug="upload-branch-school", name="Bright Star School")
+        self.ikeja = make_branch(self.school, name="Ikeja Branch", is_main=False)
+        self.lekki = make_branch(self.school, name="Lekki Branch", is_main=False)
+        self.template = ImportTemplate.objects.create(
+            code="upload-branch-students",
+            name="Students",
+            dataset_type=DatasetTypeChoices.STUDENTS,
+            default_file_format=FileFormatChoices.CSV,
+        )
+
+    def uploader(self, email, *, home, granted):
+        """A staff account holding the upload key, posted and granted as given.
+
+        Both sources matter. An unpinned grant falls back to the holder's home
+        posting, so a school-wide uploader needs ``home`` and ``granted`` both
+        left empty.
+        """
+        user = make_school_admin(home, email=email, tenant=self.school.tenant)
+        role = make_role(self.school.tenant, name=f"Import uploader {email}")
+        make_role_permission(role, make_permission(ImportPermission.BATCH_CREATE))
+        for branch in granted or [None]:
+            make_assignment(self.school.tenant, user, role, branch=branch)
+        return user
+
+    def upload(self, user, **extra):
+        payload = {
+            "template_id": self.template.pk,
+            "file": SimpleUploadedFile("roll.csv", b"Name\nTunde Bello\n"),
+            **extra,
+        }
+        return TenantAPIClient(user=user).post(
+            "/v1/import/batches/", payload, format="multipart",
+        )
+
+    def test_an_uploader_posted_to_one_site_files_it_there(self):
+        ada = self.uploader(
+            "ada.okoye@upload.test", home=self.ikeja, granted=[self.ikeja],
+        )
+
+        response = self.upload(ada)
+
+        self.assertEqual(response.status_code, 201, response.content)
+        batch = ImportBatch.objects.get(pk=response.json()["data"]["id"])
+        self.assertEqual(batch.branch, self.ikeja)
+
+    def test_a_school_wide_uploader_files_it_school_wide(self):
+        """No branch is a real answer, not missing data.
+
+        It is what every school looks like today, and the shape the reads treat
+        as shared, so an unbound uploader must keep producing it.
+        """
+        obi = self.uploader("obi.eze@upload.test", home=None, granted=[])
+
+        response = self.upload(obi)
+
+        self.assertEqual(response.status_code, 201, response.content)
+        batch = ImportBatch.objects.get(pk=response.json()["data"]["id"])
+        self.assertIsNone(batch.branch)
+
+    def test_an_uploader_covering_two_sites_files_it_school_wide(self):
+        """The ambiguous case is answered, not raised as an error.
+
+        An import is as often the school's own spine as one site's roll, and the
+        upload carries no branch field for her to answer a question with.
+        """
+        nkechi = self.uploader(
+            "nkechi.ade@upload.test", home=None, granted=[self.ikeja, self.lekki],
+        )
+
+        response = self.upload(nkechi)
+
+        self.assertEqual(response.status_code, 201, response.content)
+        batch = ImportBatch.objects.get(pk=response.json()["data"]["id"])
+        self.assertIsNone(batch.branch)
+
+    def test_naming_another_site_is_refused_rather_than_retargeted(self):
+        ada = self.uploader(
+            "ada.names-lekki@upload.test", home=self.ikeja, granted=[self.ikeja],
+        )
+
+        response = self.upload(ada, branch=self.lekki.pk)
+
+        self.assertEqual(response.status_code, 403, response.content)
+        self.assertFalse(ImportBatch.objects.filter(branch=self.lekki).exists())
+
+    def test_what_one_site_uploads_the_other_cannot_download(self):
+        """The two halves meeting, which is the only place the rule is visible.
+
+        Ada administers Ikeja and uploads its roll. Chidi administers Lekki. The
+        file holds four hundred children's home addresses and their guardians'
+        telephone numbers, and it is not his to open.
+        """
+        ada = self.uploader(
+            "ada.uploads@upload.test", home=self.ikeja, granted=[self.ikeja],
+        )
+        chidi = make_school_admin(
+            self.lekki, email="chidi.eze@upload.test", tenant=self.school.tenant,
+        )
+        role = make_role(self.school.tenant, name="Lekki import viewer")
+        make_role_permission(role, make_permission(ImportPermission.BATCH_VIEW))
+        make_assignment(self.school.tenant, chidi, role, branch=self.lekki)
+
+        created = self.upload(ada)
+        self.assertEqual(created.status_code, 201, created.content)
+        batch_id = created.json()["data"]["id"]
+
+        refused = TenantAPIClient(user=chidi).get(
+            f"/v1/import/batches/{batch_id}/download/",
+        )
+
+        self.assertEqual(refused.status_code, 404)
+
+    def test_a_call_site_that_names_no_branch_is_a_wiring_error(self):
+        """The silent default is what made the narrowing inert in the first place.
+
+        ``context.get("branch")`` returned None for every caller that never set
+        it, and None reads as school-wide, so a new upload path could publish one
+        site's roll to the whole school and look correct doing it.
+        """
+        from django.core.exceptions import ImproperlyConfigured
+
+        from .serializers import ImportBatchUploadSerializer
+
+        ada = self.uploader(
+            "ada.raw-serializer@upload.test", home=self.ikeja, granted=[self.ikeja],
+        )
+        request = type("_Request", (), {"tenant": self.school.tenant, "user": ada})()
+        serializer = ImportBatchUploadSerializer(
+            data={
+                "template_id": self.template.pk,
+                "file": SimpleUploadedFile("roll.csv", b"Name\nTunde Bello\n"),
+            },
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+
+        with self.assertRaises(ImproperlyConfigured):
+            serializer.save()

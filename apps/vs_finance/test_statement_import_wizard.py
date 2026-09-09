@@ -744,6 +744,41 @@ class BankStatementImportWizardTests(_Phase4FixtureMixin, TestCase):
         )
         self.assertEqual(correction.status_code, 404, correction.content)
 
+    def test_the_batch_takes_the_branch_of_the_account_it_continues(self):
+        """A statement belongs where its account does, not where its uploader is.
+
+        The batch carries the raw statement file, so who may read it afterwards
+        is the same question as who may read the account: Lekki's collection
+        account keeps its statements to Lekki however they arrive.
+        """
+        from vs_rbac.tests.helpers import make_branch, make_school
+
+        school = make_school(slug="statement-branch-school", name="Bright Star School")
+        lekki = make_branch(school, name="Lekki Branch", is_main=False)
+        self.bank.branch = lekki
+        self.bank.save(update_fields=["branch"])
+
+        response = self._upload(self._balanced_rows())
+
+        self.assertEqual(response.status_code, 201, response.content)
+        batch = ImportBatch.objects.get(pk=response.json()["data"]["id"])
+        self.assertEqual(batch.branch, lekki)
+
+    def test_a_school_wide_account_keeps_its_statements_school_wide(self):
+        """The one operations account the whole school pays into.
+
+        It carries no branch, and the statements against it must not acquire one
+        from whoever happens to upload them, or every other site loses sight of
+        the school's own bank.
+        """
+        self.assertIsNone(self.bank.branch)
+
+        response = self._upload(self._balanced_rows())
+
+        self.assertEqual(response.status_code, 201, response.content)
+        batch = ImportBatch.objects.get(pk=response.json()["data"]["id"])
+        self.assertIsNone(batch.branch)
+
 
 class ImportFileParserSafetyTests(SimpleTestCase):
     def test_row_limit_is_explicit_instead_of_silent_truncation(self):
