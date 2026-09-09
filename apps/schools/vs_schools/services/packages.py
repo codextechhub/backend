@@ -120,7 +120,89 @@ def change_plan(*, school, plan, actor, reason="", expires_at=None):
         reason=reason or f"Moved from {previous.name} to {plan.name}.",
     )
     _top_up_onboarding(school, actor)
+    # After the entitlements, because it asks what the school can now reach.
+    revoke_grants_the_plan_no_longer_reaches(
+        school, actor,
+        reason=f"Moved from {previous.name} to {plan.name}.",
+    )
     return setup, previous, rows
+
+
+def revoke_grants_the_plan_no_longer_reaches(school, actor, *, reason=""):
+    """Take back the role grants the school's new tier does not include.
+
+    Entitlements decide what the product offers; role grants are what a school
+    handed to its own people, and moving down a tier does not rewrite those on
+    its own. Left alone, Corona drops from Premium to Standard and its bursar
+    still holds every Advanced payroll key: the menu is gone, the picker no
+    longer lists them, and the keys are still there - refused at the door by the
+    plan gate, invisible to the administrator who would remove them, and back in
+    force the moment the school moves up again for an unrelated reason.
+
+    So the grants go with the tier. What a school may do and what its roles say
+    it may do are kept the same fact.
+
+    Runs after :func:`apply_plan_entitlements`, never before: it asks what the
+    school can now reach, and that is only true once the new entitlements are
+    written.
+
+    Through ``set_role_access`` rather than deleting rows, so each revocation
+    takes the role's lock, bumps its version and writes an audit entry naming
+    the plan change that caused it. A permission that vanished from somebody's
+    account with no record of why is the question this system exists to answer.
+    """
+    from vs_rbac.models import TenantRolePermission, TenantRoleTemplate
+    from vs_rbac.plan_gate import plan_reader
+    from vs_rbac.services import set_role_access
+
+    tenant = school.tenant
+    read_plan = plan_reader(tenant)
+    roles = TenantRoleTemplate.objects.filter(tenant=tenant)
+    revoked = {}
+
+    for role in roles:
+        granted = list(
+            TenantRolePermission.objects.filter(role=role, granted=True)
+            .select_related("permission")
+            .values_list("permission_id", flat=True)
+        )
+        if not granted:
+            continue
+        from vs_rbac.models import Permission
+
+        rows = Permission.objects.filter(key__in=granted).select_related(
+            "capability", "capability__parent",
+        )
+        keep, lost = [], []
+        for permission in rows:
+            _capability, allowed, _why = read_plan(permission)
+            (keep if allowed else lost).append(permission.key)
+        if not lost:
+            continue
+
+        set_role_access(
+            role=role,
+            actor=actor,
+            reason=(
+                reason
+                or "The school's plan no longer reaches these permissions."
+            ),
+            permission_keys=keep,
+            # Groups are left exactly as they are. A group is a named set the
+            # school composed, and emptying one because of a tier change would
+            # edit the school's own vocabulary rather than its access; the keys
+            # a group carries are filtered by the same gate when they resolve.
+            allow_restricted=True,
+            source="plan_downgrade",
+        )
+        revoked[role.key] = sorted(lost)
+
+    if revoked:
+        logger.info(
+            "Plan change revoked out-of-plan grants for %s: %s",
+            school.slug, revoked,
+        )
+    return revoked
 
 
 def _top_up_onboarding(school, actor):

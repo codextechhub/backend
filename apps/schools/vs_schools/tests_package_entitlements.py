@@ -259,6 +259,114 @@ class PlanDepthTests(_PackageFixture):
         )
 
 
+class MovingDownATierTakesTheGrantsWithItTests(_PackageFixture):
+    """What a school may do and what its roles say it may do stay one fact.
+
+    Entitlements decide what the product offers; role grants are what the school
+    handed its own people, and a tier change does not rewrite those on its own.
+    Left alone, the bursar keeps every Advanced key after the school drops to
+    Core: refused at the door, invisible in the picker, and back in force the
+    moment the school moves up again for an unrelated reason.
+    """
+
+    def _permission_on(self, capability, key):
+        """A permission governed by one of the fixture's own bands.
+
+        The fixture invents its capabilities, so nothing in the real catalogue
+        points at them. Looking for an existing permission found none and the
+        tests skipped, which reads as passing and proves nothing.
+        """
+        from vs_rbac.models import (
+            Permission, PermissionAction, PermissionModule, PermissionResource,
+        )
+
+        module, _ = PermissionModule.objects.get_or_create(
+            name="entfin", defaults={"is_active": True},
+        )
+        resource, _ = PermissionResource.objects.get_or_create(
+            module=module, name=key.split(".")[1], defaults={"is_active": True},
+        )
+        action, _ = PermissionAction.objects.get_or_create(
+            name=key.rsplit(".", 1)[1], defaults={"is_active": True},
+        )
+        return Permission.objects.create(
+            key=key, module=module, resource=resource, action=action,
+            capability=capability, description=key, is_active=True,
+            sensitivity_level="NORMAL", scope="TENANT",
+        )
+
+    def _bursar_with(self, school, *keys):
+        from vs_rbac.models import (
+            Permission, TenantRolePermission, TenantRoleTemplate,
+        )
+
+        role = TenantRoleTemplate.objects.create(
+            tenant=school.tenant, key="bursar", name="Bursar", status="ACTIVE",
+        )
+        for key in keys:
+            TenantRolePermission.objects.create(
+                role=role, permission=Permission.objects.get(key=key), granted=True,
+            )
+        return role
+
+    def _granted(self, role):
+        from vs_rbac.models import TenantRolePermission
+
+        return set(
+            TenantRolePermission.objects.filter(role=role, granted=True)
+            .values_list("permission_id", flat=True)
+        )
+
+    def test_a_downgrade_revokes_what_the_new_tier_cannot_reach(self):
+        from vs_rbac.models import Permission
+        from schools.vs_schools.services.packages import change_plan
+
+        self._create("Dropping School", "ent-drop", plan=self.premium)
+        school = School.objects.get(slug="ent-drop")
+
+        core_key = self._permission_on(self.finance_core, "entfin.ledger.view")
+        deep_key = self._permission_on(self.finance_advanced, "entfin.payroll.pay")
+        role = self._bursar_with(school, core_key.key, deep_key.key)
+
+        change_plan(school=school, plan=self.basic, actor=self.vision_user)
+
+        held = self._granted(role)
+        self.assertIn(core_key.key, held, "core survived the drop")
+        self.assertNotIn(deep_key.key, held, "the Advanced key outlived the tier")
+
+    def test_it_leaves_alone_what_the_new_tier_still_reaches(self):
+        from vs_rbac.models import Permission
+        from schools.vs_schools.services.packages import change_plan
+
+        self._create("Staying School", "ent-stay", plan=self.premium)
+        school = School.objects.get(slug="ent-stay")
+
+        core_key = self._permission_on(self.finance_core, "entfin.ledger.view")
+        role = self._bursar_with(school, core_key.key)
+
+        change_plan(school=school, plan=self.basic, actor=self.vision_user)
+
+        self.assertIn(core_key.key, self._granted(role))
+
+    def test_the_revocation_is_recorded_against_the_plan_change(self):
+        """A permission that vanished with no record of why is the question
+        this system exists to answer."""
+        from vs_rbac.models import Permission, RBACAuditLog
+        from schools.vs_schools.services.packages import change_plan
+
+        self._create("Audited School", "ent-audited", plan=self.premium)
+        school = School.objects.get(slug="ent-audited")
+        deep_key = self._permission_on(self.finance_advanced, "entfin.payroll.pay")
+        role = self._bursar_with(school, deep_key.key)
+
+        change_plan(school=school, plan=self.basic, actor=self.vision_user)
+
+        entry = RBACAuditLog.objects.filter(
+            entity_type="TenantRoleTemplate", entity_id=str(role.pk),
+        ).latest("created_at")
+        self.assertEqual(entry.metadata["source"], "plan_downgrade")
+
+
 class SubscriptionExpiryTests(_PackageFixture):
     """The expiry that was recorded and never enforced."""
 
