@@ -738,6 +738,22 @@ class _FlakyProvider(FakeProvider):
 
 # Group tests for Payout Batch Tests.
 class PayoutBatchTests(_PaymentsFixtureMixin, TestCase):
+    # Verify every batch status is classified as either terminal or dispatchable.
+    def test_every_batch_status_is_terminal_or_dispatchable(self):
+        """A status in neither set is one the recovery sweep silently skips.
+
+        The sweep sends money only against a dispatchable batch, so a status added to
+        the enum and to neither set stops the sweep finishing those batches without
+        anything failing to say so.
+        """
+        from .constants import PAYOUT_BATCH_DISPATCHABLE, PAYOUT_BATCH_TERMINAL
+
+        self.assertEqual(PAYOUT_BATCH_DISPATCHABLE & PAYOUT_BATCH_TERMINAL, frozenset())
+        self.assertEqual(
+            PAYOUT_BATCH_DISPATCHABLE | PAYOUT_BATCH_TERMINAL,
+            frozenset(PayoutBatchStatus.values),
+        )
+
     # Support the items workflow.
     def _items(self, vendor, *amounts):
         return [
@@ -2676,6 +2692,57 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
         self.assertTrue(
             all(p.status == PayoutStatus.PROCESSING for p in batch.instructions.all())
+        )
+
+    def test_the_sweep_finishes_a_batch_whose_first_payment_already_landed(self):
+        """A batch turning PROCESSING is not a batch that finished sending.
+
+        Cedar approves a batch paying Supplier A and Supplier B. The worker sends A and
+        dies before B, and A's webhook then confirms. That single confirmation
+        recomputes the parent to PROCESSING, so a sweep keyed on a DRAFT parent walks
+        past the batch from then on and Supplier B is never paid.
+        """
+        batch, _ = self._approved_batch(10000, 20000)
+        supplier_a, supplier_b = list(batch.instructions.order_by("pk"))
+        supplier_a.status = PayoutStatus.PAID  # Sent, and settled by its own webhook.
+        supplier_a.save(update_fields=["status", "updated_at"])
+        services._recompute_batch_status(batch)  # What confirming a child does to the parent.
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
+
+        with patch.object(
+            self.fake, "create_transfer", side_effect=self.fake.create_transfer,
+        ) as sent:
+            summary = services.sweep_undispatched_payout_batches()
+
+        self.assertEqual(summary["dispatched"], 1)
+        # Only the unsent sibling reaches the provider; Supplier A is not paid twice.
+        self.assertEqual(
+            [call.kwargs["amount"] for call in sent.call_args_list], [20000],
+        )
+        supplier_a.refresh_from_db()
+        supplier_b.refresh_from_db()
+        self.assertEqual(supplier_a.status, PayoutStatus.PAID)
+        self.assertEqual(supplier_b.status, PayoutStatus.PROCESSING)
+
+    def test_the_sweep_leaves_a_settled_batch_alone(self):
+        """A batch whose record says it is finished never moves money again.
+
+        Widening the sweep past DRAFT makes the parent status the only thing between a
+        stray PENDING row on a closed batch and a transfer, so the terminal states are
+        excluded rather than merely unreached.
+        """
+        batch, _ = self._approved_batch(10000, 20000)
+        batch.status = PayoutBatchStatus.COMPLETED
+        batch.save(update_fields=["status", "updated_at"])
+
+        with patch.object(self.fake, "create_transfer") as sent:
+            summary = services.sweep_undispatched_payout_batches()
+
+        sent.assert_not_called()
+        self.assertEqual(summary["dispatched"], 0)
+        self.assertTrue(
+            all(p.status == PayoutStatus.PENDING for p in batch.instructions.all())
         )
 
     def test_the_sweep_leaves_an_unapproved_batch_alone(self):

@@ -104,6 +104,18 @@ PAYOUT_BATCH_TERMINAL = frozenset(
      PayoutBatchStatus.FAILED}
 )
 
+#: Batch states in which a batch may still owe an unsent instruction, and against
+#: which money may therefore still move. The complement of the terminal set, and the
+#: two together cover the enum: a status in neither is one nobody has decided about,
+#: so add every new status to exactly one of them.
+#:
+#: A batch turns PROCESSING as soon as a single child is accepted or settled, so a
+#: batch that was sent halfway through and still holds PENDING instructions sits here
+#: rather than in DRAFT. Anything looking for undispatched work must accept both.
+PAYOUT_BATCH_DISPATCHABLE = frozenset(
+    {PayoutBatchStatus.DRAFT, PayoutBatchStatus.PROCESSING}
+)
+
 
 # Define Virtual Account Status values.
 class VirtualAccountStatus(models.TextChoices):

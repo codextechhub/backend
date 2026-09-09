@@ -31,6 +31,7 @@ from . import audit
 from .constants import (
     CollectionChannel,
     CollectionStatus,
+    PAYOUT_BATCH_DISPATCHABLE,
     PaymentAuditAction,
     PaymentProvider,
     PayoutBatchStatus,
@@ -1127,13 +1128,21 @@ def sweep_undispatched_payout_batches():
     loop all leave an approved batch sitting on undispatched instructions with nothing
     driving it. This is what closes that gap, and it is why the handler is allowed to
     treat a failed enqueue as a logged warning rather than a lost payout.
+
+    What makes a batch owed money is a fact about its **instructions**, so that is what
+    selects it. The parent status cannot answer the question: it is an aggregate over
+    the children, and one child reaching the provider is enough to turn the batch
+    PROCESSING while its siblings sit unsent. Selecting on DRAFT alone would drop a
+    half-sent batch out of the sweep the moment its first beneficiary settled, which is
+    the batch that most needs finishing. The parent status is consulted only for what it
+    does answer - whether money may still move against this batch at all.
     """
     from vs_workflow.constants import WorkflowInstanceStatus
     from vs_workflow.models import WorkflowInstance
 
     stale = (
         PayoutBatch.objects
-        .filter(status=PayoutBatchStatus.DRAFT,
+        .filter(status__in=PAYOUT_BATCH_DISPATCHABLE,
                 metadata__approval_status="APPROVED",
                 instructions__status=PayoutStatus.PENDING)
         .distinct()
