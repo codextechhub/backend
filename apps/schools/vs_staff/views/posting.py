@@ -171,11 +171,12 @@ class StaffRosterView(StaffViewMixin, APIView):
                     "key": "reaching_here",
                     "title": "Reaching here through a role",
                     "note": (
-                        f"Based at another branch, and carried here by a role "
-                        f"rather than by a posting. Each row names the role and "
-                        f"says whether it is pinned to {branch.name} or is a "
-                        f"school-wide one that reaches every branch. Open a row "
-                        f"to change it."
+                        f"Based at another branch, and here because of a role "
+                        f"rather than a posting. A role says what somebody may "
+                        f"see; the reach chosen when it was granted says where. "
+                        f"Each row names the role and whether its reach is "
+                        f"{branch.name} alone or the whole school. Open a row "
+                        f"to narrow one that should only reach where they work."
                     ),
                     "movable": False,
                     "change_it": "Open a row to see the role",
