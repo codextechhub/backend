@@ -198,11 +198,20 @@ class Command(BaseCommand):
                         # table with no tenant column and no platform guard. So
                         # CREATING one is platform-only. Reading stays tenant-
                         # holdable: a school's finance module needs the list.
+                        #
+                        # A set of books is the same shape of decision. CodeX
+                        # gives a school its books when the school is created,
+                        # and a school keeps one set: it never creates a second,
+                        # the school app does not route the screen that would,
+                        # and the settings nav hides the section for it. Reading
+                        # stays tenant-holdable, because a school's finance
+                        # module shows which entity it is working in.
                         scope=(
                             PermissionScope.PLATFORM
                             if expected_key in (
                                 "finance.currency.create",
                                 "finance.fxrate.create",
+                                "finance.entity.create",
                             )
                             else PermissionScope.TENANT
                         ),

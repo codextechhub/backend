@@ -84,7 +84,15 @@ class Command(BaseCommand):
                         is_restricted=is_restricted,
                         sensitivity_level="SENSITIVE" if is_restricted else "NORMAL",
                         is_active=True,
-                        scope=PermissionScope.TENANT,
+                        # Platform-only. vs_todo is CodeX's own accountability
+                        # tracker - "one accountable item, owned by exactly one
+                        # CX staff member" - and its queryset has no tenant
+                        # column at all: it scopes by the CX organogram, through
+                        # ``TodoHierarchy.area_user_ids``. A school user holding
+                        # these keys would be asking a hierarchy they are not in,
+                        # while the roles screen offered their bursar a module
+                        # the school does not have.
+                        scope=PermissionScope.PLATFORM,
                     )
                     perm.save()
                     created_count += 1
