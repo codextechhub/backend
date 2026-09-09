@@ -5,10 +5,14 @@ CC and the subject - so nobody puts a document in a customer's inbox without see
 where it is going. ``POST`` sends it. A fourth pair lists the delivery history for a
 document and retries a failed attempt.
 
-Every view resolves its subject **within the caller's entity** (``?entity=``), so an id
-from another entity's books is a 404 rather than a send. That is the only tenant
-boundary that matters here: an email endpoint that leaked across entities would post
-one customer's figures to another's address.
+Every view resolves its subject **within the caller's entity** (``?entity=``) and
+within the branches that caller works in, so an id from another entity's books or
+another site's is a 404 rather than a send. Both matter, and for the same reason:
+an email endpoint reachable by a guessed id would put one family's figures in
+front of somebody who administers a different site, and then in their inbox.
+
+``include_shared=True``, finance's reading throughout: an invoice raised for the
+school as a whole carries no branch and stays sendable from any site.
 
 The services in :mod:`vs_finance.document_email` own recipients, rendering, queueing
 and outcome; these views only resolve, authorize and translate.
@@ -20,6 +24,7 @@ import datetime
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from core.response import success_response
+from vs_rbac.scoping import branch_q
 
 from .constants import FinanceDeliveryDocument
 from .document_email import preview as build_preview
@@ -94,7 +99,9 @@ class InvoiceEmailView(_DocumentEmailBase):
 
     def resolve(self, request, pk):
         entity = resolve_entity(request)
-        invoice = Invoice.objects.filter(entity=entity, pk=pk).select_related("customer").first()
+        invoice = Invoice.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk,
+        ).select_related("customer").first()
         if invoice is None:
             raise NotFound("Invoice not found for this entity.")
         return entity, invoice, invoice.customer
@@ -119,7 +126,9 @@ class PaymentEmailView(_DocumentEmailBase):
 
     def resolve(self, request, pk):
         entity = resolve_entity(request)
-        payment = Payment.objects.filter(entity=entity, pk=pk).select_related("customer").first()
+        payment = Payment.objects.filter(
+            branch_q(request, include_shared=True), entity=entity, pk=pk,
+        ).select_related("customer").first()
         if payment is None:
             raise NotFound("Receipt not found for this entity.")
         return entity, payment, payment.customer

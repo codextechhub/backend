@@ -757,3 +757,84 @@ class BankAccountReachedByIdNarrowsTests(_FinanceBranchFixture):
             self.assertEqual(
                 self.call("GET", f"bank-accounts/{pk}/").status_code, 200,
             )
+
+
+class DocumentEmailNarrowsTests(_FinanceBranchFixture):
+    """Sending a document is a read of it first, and both are somebody's.
+
+    The email views were written apart from views_ar.py and inherited none of
+    its narrowing, so an invoice or a receipt could be previewed and then put
+    in a family's inbox by a bursar who administers a different site.
+    """
+
+    EMAIL_KEYS = (
+        "finance.invoice.view", "finance.invoice.email",
+        "finance.payment.view", "finance.payment.email",
+    )
+
+    def setUp(self):
+        super().setUp()
+        self.ikeja_payer = self.customer(self.books, "IKJ-01", self.ikeja)
+        self.lekki_payer = self.customer(self.books, "LEK-01", self.lekki)
+        self.shared_payer = self.customer(self.books, "SHR-01", None)
+
+        self.ikeja_bill = self.invoice(self.books, self.ikeja_payer, self.ikeja)
+        self.lekki_bill = self.invoice(self.books, self.lekki_payer, self.lekki)
+        self.shared_bill = self.invoice(self.books, self.shared_payer, None)
+
+        self.client = TenantAPIClient(user=self.grant(
+            self.user_for(self.tenant, "bursar-ikeja-email@corona.test"),
+            *self.EMAIL_KEYS,
+            tenant=self.tenant, role_key="bursar_ikeja_email", branch=self.ikeja,
+        ))
+
+    def receipt(self, branch):
+        from vs_finance.models import Payment
+
+        return Payment.objects.create(
+            entity=self.books, customer=self.customer(
+                self.books, f"P{branch.pk if branch else 0}", branch,
+            ),
+            branch=branch, payment_date=datetime.date(2026, 1, 20),
+        )
+
+    def preview(self, path):
+        return self.client.get(f"/v1/finance/{path}?entity={self.books.code}")
+
+    def test_another_sites_invoice_cannot_be_previewed_or_sent(self):
+        """A preview is the leak and the send is the harm, in that order.
+
+        The preview names the family's email address; the POST beside it puts
+        the invoice there. Neither is the Ikeja bursar's to do with Lekki's
+        bill, and the list she works from has never shown it to her.
+        """
+        path = f"invoices/{self.lekki_bill.pk}/email/"
+
+        self.assertEqual(self.preview(path).status_code, 404)
+        self.assertEqual(
+            self.client.post(
+                f"/v1/finance/{path}?entity={self.books.code}", {}, format="json",
+            ).status_code,
+            404,
+        )
+
+    def test_her_own_sites_invoice_previews(self):
+        response = self.preview(f"invoices/{self.ikeja_bill.pk}/email/")
+
+        self.assertNotEqual(response.status_code, 404, response.data)
+
+    def test_a_school_wide_invoice_previews(self):
+        """No branch means the school raised it, and any site may send it."""
+        response = self.preview(f"invoices/{self.shared_bill.pk}/email/")
+
+        self.assertNotEqual(response.status_code, 404, response.data)
+
+    def test_another_sites_receipt_cannot_be_previewed(self):
+        response = self.preview(f"payments/{self.receipt(self.lekki).pk}/email/")
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_her_own_sites_receipt_previews(self):
+        response = self.preview(f"payments/{self.receipt(self.ikeja).pk}/email/")
+
+        self.assertNotEqual(response.status_code, 404, response.data)

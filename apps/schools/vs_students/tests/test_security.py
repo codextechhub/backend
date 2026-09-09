@@ -244,6 +244,54 @@ class BranchIsolationTests(StudentsFixture):
         self.assertEqual(response.data["data"]["total"], 1)
 
 
+class PromotionRunReachTests(StudentsFixture):
+    """A promotion run belongs to whoever it moved.
+
+    Inclusive here, unlike the student reads above: a run with no branch rolled
+    the whole school forward, so it moved a branch head's children too and its
+    record is theirs to read. A run pinned to one site is that site's.
+    """
+
+    def batch(self, branch):
+        from ..models import StudentPromotionBatch
+
+        return StudentPromotionBatch.objects.create(
+            tenant=self.tenant, branch=branch,
+            from_session=self.year, to_session=self.next_year,
+            total=40, promoted=36, repeated=3, held=1,
+        )
+
+    def test_another_branchs_run_answers_404(self):
+        """What a run records is which children were held back, by name.
+
+        Lekki's head opening Ikeja's roll-forward learns which of Ikeja's
+        children repeated the year, which is the single most sensitive fact
+        the screen carries and none of her business.
+        """
+        response = self.get(
+            self.lekki_head, "student-promotion-batch",
+            pk=self.batch(self.ikeja).pk,
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_her_own_branchs_run_opens(self):
+        response = self.get(
+            self.lekki_head, "student-promotion-batch",
+            pk=self.batch(self.lekki).pk,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_a_whole_school_run_opens_from_any_branch(self):
+        """It moved her children, so hiding it would hide her own roll-forward."""
+        response = self.get(
+            self.lekki_head, "student-promotion-batch", pk=self.batch(None).pk,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+
+
 class SensitiveFieldTests(StudentsFixture):
     """Medical detail is gated on the profile and absent from every list.
 

@@ -10,6 +10,7 @@ from ..constants import PERM_CLASS_ASSIGN, PERM_PROMOTE, PromotionOutcome
 from ..models import StudentPromotionBatch
 from ..serializers import PromotionBatchSerializer, PromotionRunSerializer
 from ..services import promotion as promotion_service
+from ..services.scoping import scope_to_visible_branches
 from .base import StudentsViewMixin
 
 
@@ -148,8 +149,14 @@ class PromotionBatchView(StudentsViewMixin, APIView):
         return super().get_permissions()
 
     def get(self, request, pk):
-        batch = StudentPromotionBatch.objects.filter(
-            tenant=self.tenant, pk=pk,
+        # Inclusive, unlike the student reads in this module: a run with no
+        # branch rolled the whole school forward, so it moved this caller's
+        # children too and is theirs to read. A run pinned to one site is that
+        # site's, and its record of who repeated and who was held back is not
+        # another site's to open by naming its id.
+        batch = scope_to_visible_branches(
+            StudentPromotionBatch.objects.filter(tenant=self.tenant, pk=pk),
+            request.user, self.tenant,
         ).select_related("from_session", "to_session").first()
         if batch is None:
             raise NotFound("No such promotion run at this school.")

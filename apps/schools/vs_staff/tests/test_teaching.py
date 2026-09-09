@@ -241,6 +241,77 @@ class ClassTeacherTests(StaffFixture):
         self.assertIsNone(row["class_teacher"])
 
 
+class BranchReachTests(StaffFixture):
+    """A class and a subject named in a body are still somebody's.
+
+    Both come from the request rather than the URL, which is what made them
+    easy to miss: the screens that list them narrow, and these two resolvers
+    checked the school and stopped.
+    """
+
+    def test_another_branchs_class_cannot_be_given_a_teacher(self):
+        """The head of Lekki does not staff Ikeja's classrooms.
+
+        Ibrahim Sule teaches at Ikeja and Chukwuemeka Eze at Lekki. Without
+        this, Lekki's head names Ikeja's JSS1 C in the body and Eze is that
+        class's teacher on Monday morning, forty minutes' drive away, with
+        Ikeja's head never having been asked.
+        """
+        response = self.put(
+            self.lekki_head, "staff-class-teacher",
+            {"school_class": self.ikeja_class.pk, "staff": self.eze.pk},
+        )
+
+        self.assertEqual(response.status_code, 404, response.data)
+        self.ikeja_class.refresh_from_db()
+        self.assertIsNone(self.ikeja_class.class_teacher_id)
+
+    def test_the_school_wide_class_is_still_theirs_to_staff(self):
+        """A class with no branch belongs to every branch."""
+        response = self.put(
+            self.lekki_head, "staff-class-teacher",
+            {"school_class": self.shared_class.pk, "staff": self.eze.pk},
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_another_branchs_subject_cannot_be_taught(self):
+        """The other half of the same resolver, which narrowed one and not both.
+
+        The class was already checked; the subject beside it was not, so a
+        subject Ikeja owns could be hung on a Lekki class and appear on Lekki's
+        coverage grid as a duty nobody at Ikeja agreed to.
+        """
+        from schools.vs_academics.models import Subject, SubjectOffering
+
+        ikeja_subject = Subject.all_objects.create(
+            tenant=self.tenant, name="Further Mathematics", code="FMT",
+            branch=self.ikeja,
+        )
+        SubjectOffering.all_objects.create(
+            tenant=self.tenant, subject=ikeja_subject, level=self.jss1,
+        )
+
+        response = self.post(
+            self.lekki_head, "staff-teaching",
+            {"school_class": self.lekki_class.pk, "subject": ikeja_subject.pk,
+             "part": "LEAD"},
+            pk=self.eze.pk,
+        )
+
+        self.assertEqual(response.status_code, 404, response.data)
+
+    def test_a_school_wide_subject_stays_teachable(self):
+        response = self.post(
+            self.lekki_head, "staff-teaching",
+            {"school_class": self.lekki_class.pk, "subject": self.maths.pk,
+             "part": "LEAD"},
+            pk=self.eze.pk,
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+
+
 class CoverageTests(StaffFixture):
     def test_an_uncovered_pairing_is_a_coverage_gap(self):
         response = self.get(self.admin, "staff-teaching-coverage")

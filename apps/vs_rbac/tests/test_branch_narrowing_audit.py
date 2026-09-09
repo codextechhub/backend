@@ -140,39 +140,43 @@ SETTLED_ELSEWHERE = {
     "vs_workflow/views.py::compare::WorkflowTemplate":
         "The other version of the template already open, pinned to its code, "
         "document type and tenant, so only its own history is reachable.",
+    "schools/vs_calendar/views/teachers.py::get::User":
+        "Whose timetable to show. Deliberately school-wide, and narrowing it "
+        "would break the case the screen exists for: a teacher works at two "
+        "sites, so ``teaching_users`` is unnarrowed on purpose and says why, "
+        "and a grid narrower than the picker would make them unschedulable at "
+        "the second site.",
+    "schools/vs_staff/views/directory.py::_is_own_record::StaffProfile":
+        "Whether this record is the caller's own, filtered on their own user "
+        "id. It decides which permission key applies, and there is nobody else "
+        "in the question for a branch to narrow.",
+    "schools/vs_staff/views/leave.py::_is_own::StaffProfile":
+        "The same self-check, deciding between applying for leave and "
+        "approving somebody else's.",
+    "schools/vs_staff/views/records.py::_is_own::StaffProfile":
+        "The same self-check again, on the records screens.",
     "vs_tickets/views.py::assign::User":
         "The person a ticket is being handed to. A support desk assigns across "
         "sites by design, and assign_ticket validates the assignee.",
 }
 
 #: Flagged lookups nothing answers. Open holes, recorded so the next one fails.
+#:
+#: Both are procurement master data, and both are waiting on the same decision
+#: rather than on somebody finding the time. Procurement's own helpers -
+#: ``_document_or_404`` and ``_branch_visible`` - read an absent branch as a
+#: scope of its own that a branch-pinned caller is not in, which is right for a
+#: purchase and wrong for a catalogue: applied here they would hide the school's
+#: central store and its school-wide vendors from every site. Narrowing these
+#: means first saying whether procurement's master data takes the catalogue
+#: reading that vs_academics and vs_calendar take.
 UNNARROWED = {
-    "vs_finance/views_document_email.py::resolve::Invoice":
-        "Emailing an invoice. views_ar.py narrows every other invoice lookup; "
-        "this file was written separately and narrows none, so a bursar at one "
-        "site can send another site's invoice to the family on it.",
-    "vs_finance/views_document_email.py::resolve::Payment":
-        "The receipt half of the same view, with the same gap.",
     "vs_procurement/views/stock.py::_location::StockLocation":
-        "The resolver behind stock location read and manage. The list narrows "
-        "and this does not, so another site's store is readable and editable "
-        "by id.",
+        "The resolver behind stock location read and manage, so another site's "
+        "store is readable and editable by id. Its list is not narrowed either, "
+        "so this is the whole model rather than a detail route that drifted.",
     "vs_procurement/views/vendors.py::get::Vendor":
-        "Per-vendor spend and performance. Whether a vendor is a site's or the "
-        "school's needs deciding before this can be narrowed.",
-    "schools/vs_students/views/promotion.py::get::StudentPromotionBatch":
-        "One promotion run, read by id. Another site's roll-forward, including "
-        "which children moved and which were held back.",
-    "schools/vs_staff/views/teaching.py::put::SchoolClass":
-        "Assigning a class teacher. The class comes from the body and is "
-        "checked against the tenant only, so a teacher can be put in front of "
-        "another site's class.",
-    "schools/vs_calendar/views/exams.py::create::CalendarEvent":
-        "The exam period an exam sits inside, named in the body. Tenant and "
-        "session are checked; the site is not.",
-    "schools/vs_calendar/views/teachers.py::get::User":
-        "Whose timetable to show. The slots below are scoped, so what leaks is "
-        "the existence and name of a colleague at another site.",
+        "Per-vendor spend and performance for a vendor named by id.",
 }
 
 
@@ -195,12 +199,25 @@ def branch_carrying_models() -> set[str]:
 
 
 def _request_handlers(tree: ast.AST):
-    """Functions taking a ``request``, which is what makes a lookup a decision."""
+    """Functions serving a request, which is what makes a lookup a decision.
+
+    Both spellings count. A plain view method takes ``request`` as an argument;
+    a mixin helper reaches it as ``self.request`` and takes only the id, and
+    the school apps are written that way throughout. Reading the argument list
+    alone would skip every one of them, which is most of a resolver layer.
+    """
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            argument_names = {a.arg for a in node.args.args + node.args.kwonlyargs}
-            if "request" in argument_names:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        argument_names = {a.arg for a in node.args.args + node.args.kwonlyargs}
+        if "request" in argument_names:
+            yield node
+            continue
+        for inner in ast.walk(node):
+            if (isinstance(inner, ast.Attribute) and inner.attr == "request"
+                    and isinstance(inner.value, ast.Name) and inner.value.id == "self"):
                 yield node
+                break
 
 
 def _looked_up_model(call: ast.Call) -> str | None:
