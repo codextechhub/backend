@@ -14,10 +14,11 @@ from __future__ import annotations
 import logging
 
 from django.db import transaction
+from django.middleware.csrf import get_token
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError, ExpiredTokenError, InvalidToken
@@ -38,6 +39,14 @@ from ..serializers import (
 from ..services.auth       import LoginService
 from ..services.invitation import InvitationService
 from ..services.audit      import log_auth_event
+from ..browser_session import (
+    browser_cookie_mode_requested,
+    clear_refresh_cookie,
+    enforce_browser_origin,
+    enforce_csrf,
+    refresh_cookie_value,
+    set_refresh_cookie,
+)
 
 
 logger = logging.getLogger('vs_user.auth')
@@ -46,6 +55,17 @@ logger = logging.getLogger('vs_user.auth')
 # =============================================================================
 # # AUTH VIEWS
 # =============================================================================
+
+class CsrfCookieView(APIView):
+    """Issue the readable double-submit token used by browser auth requests."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        get_token(request)
+        return success_response(message="CSRF cookie ready.")
+
 
 class LoginView(APIView):
     """
@@ -74,6 +94,10 @@ class LoginView(APIView):
     throttle_scope = 'login'
 
     def post(self, request):
+        cookie_mode = browser_cookie_mode_requested(request)
+        if cookie_mode:
+            enforce_browser_origin(request)
+
         ser = LoginRequestSerializer(data=request.data)
         if not ser.is_valid():
             return error_response(message="Invalid request.", error=ser.errors)
@@ -99,7 +123,19 @@ class LoginView(APIView):
             message = payload.get('detail', 'Authentication failed.') if isinstance(payload, dict) else str(payload)
             return error_response(message=message, error=payload, status=http_status)
 
-        return success_response(message="Login successful.", data=result)
+        refresh_token = result.pop('refresh')
+        response = success_response(message="Login successful.", data=result)
+        if cookie_mode:
+            # Ensure the sibling Console host can send the double-submit token
+            # on later refresh and logout requests.
+            get_token(request)
+            set_refresh_cookie(response, refresh_token)
+        else:
+            # Non-browser clients retain the bearer refresh contract. A
+            # cookie-authenticated request cannot reach this response branch,
+            # so Console script cannot downgrade its own browser session.
+            result['refresh'] = refresh_token
+        return response
 
 
 class SpecialLoginPreviewView(APIView):
@@ -209,34 +245,47 @@ class LogoutView(APIView):
     Blacklists the submitted refresh token, ending the current session.
     Idempotent - always returns 200 even if the token is already blacklisted.
 
-    Permission: IsAuthenticated (any logged-in user can log themselves out).
+    A browser session is authenticated by its refresh cookie and protected by
+    CSRF. Legacy clients may continue submitting the refresh token in the body.
     RBAC: system.session.access.authenticate
 
     docstring-name: Log out
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
     # Logs the caller out of their own session - no tenant-scoped input, so
     # ?tenant= is not required.
     tenant_param_required = False
     # Self-scoped, so it stays open to a tenant that has not gone live (FR-012).
-    # Declared explicitly rather than relied on: this view's bare
-    # IsAuthenticated happens to skip the surface gate today, and the intent
-    # must survive that being tightened.
     pending_tenant_surface = True
 
     def post(self, request):
-        refresh_token = request.data.get('refresh')
+        cookie_refresh = refresh_cookie_value(request)
+        cookie_mode = bool(cookie_refresh)
+        if cookie_mode:
+            enforce_csrf(request)
+
+        refresh_token = cookie_refresh or request.data.get('refresh')
         if not refresh_token:
             return error_response(message="Refresh token is required.")
 
         try:
             token = RefreshToken(refresh_token)
             token_user_id = token.get('user_id')
-            if str(token_user_id) != str(request.user.id):
+            if request.user.is_authenticated and str(token_user_id) != str(request.user.id):
                 return error_response(message="Token does not belong to the current user.", status=status.HTTP_400_BAD_REQUEST)
             jti = token.get('jti', '')
         except TokenError:
-            return success_response(message="Logged out successfully.")
+            response = success_response(message="Logged out successfully.")
+            if cookie_mode:
+                clear_refresh_cookie(response)
+            return response
+
+        token_user = User.objects.filter(pk=token_user_id).first()
+        if token_user is None:
+            response = success_response(message="Logged out successfully.")
+            if cookie_mode:
+                clear_refresh_cookie(response)
+            return response
 
         # Scope the logout to THIS session only: blacklist the submitted
         # refresh token and end the session that carries its JTI. Other
@@ -248,24 +297,27 @@ class LogoutView(APIView):
             except TokenError:
                 pass  # already blacklisted - logout stays idempotent
             LoginSession.objects.filter(
-                user=request.user, refresh_jti=str(jti), is_active=True,
+                user=token_user, refresh_jti=str(jti), is_active=True,
             ).update(
                 is_active=False,
                 ended_at=timezone.now(),
                 end_reason='LOGOUT',
             )
             from vs_admin_console.services import end_impersonations_for_user
-            end_impersonations_for_user(request.user)
+            end_impersonations_for_user(token_user)
 
         log_auth_event(
-            actor=request.user,
-            subject=request.user,
-            tenant=request.user.tenant,
+            actor=token_user,
+            subject=token_user,
+            tenant=token_user.tenant,
             event=AuthEventLog.Event.TOKEN_REVOKED,
             request=request,
         )
 
-        return success_response(message="Logged out successfully.")
+        response = success_response(message="Logged out successfully.")
+        if cookie_mode:
+            clear_refresh_cookie(response)
+        return response
 
 
 class TokenRefreshView(APIView):
@@ -286,7 +338,23 @@ class TokenRefreshView(APIView):
     pending_tenant_surface = True  # A pending school must be able to stay signed in (FR-012).
 
     def post(self, request):
-        ser = TokenRefreshSerializer(data=request.data)
+        cookie_refresh = refresh_cookie_value(request)
+        cookie_mode = bool(cookie_refresh)
+        if cookie_mode:
+            enforce_csrf(request)
+
+        refresh_token = cookie_refresh or request.data.get('refresh', '')
+        ser = TokenRefreshSerializer(data={'refresh': refresh_token})
+
+        def invalid_response(*, message, error):
+            response = error_response(
+                message=message,
+                error=error,
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+            if cookie_mode:
+                clear_refresh_cookie(response)
+            return response
 
         # SimpleJWT's TokenRefreshSerializer.validate() raises TokenError /
         # InvalidToken when the refresh token is bad - they are not DRF
@@ -295,41 +363,37 @@ class TokenRefreshView(APIView):
         try:
             ser.is_valid(raise_exception=True)
         except ExpiredTokenError:
-            return error_response(
+            return invalid_response(
                 message="Your session has expired. Please log in again.",
                 error={'error_code': 'TOKEN_EXPIRED'},
-                status=status.HTTP_401_UNAUTHORIZED,
             )
         except (TokenError, InvalidToken) as e:
             msg = str(e).lower()
             if 'blacklisted' in msg or 'revoked' in msg:
-                return error_response(
+                return invalid_response(
                     message="This session has been revoked. Please log in again.",
                     error={'error_code': 'TOKEN_REVOKED'},
-                    status=status.HTTP_401_UNAUTHORIZED,
                 )
             if 'expired' in msg:
-                return error_response(
+                return invalid_response(
                     message="Your session has expired. Please log in again.",
                     error={'error_code': 'TOKEN_EXPIRED'},
-                    status=status.HTTP_401_UNAUTHORIZED,
                 )
-            return error_response(
+            return invalid_response(
                 message="Invalid token. Please log in again.",
                 error={'error_code': 'TOKEN_INVALID'},
-                status=status.HTTP_401_UNAUTHORIZED,
             )
         except ValidationError:
             # Missing/empty 'refresh' field - treat as invalid.
-            return error_response(
+            return invalid_response(
                 message="Invalid token. Please log in again.",
                 error={'error_code': 'TOKEN_INVALID'},
-                status=status.HTTP_401_UNAUTHORIZED,
             )
 
         new_refresh_str = ser.validated_data.get('refresh')  # present when ROTATE_REFRESH_TOKENS=True
         response_data = {'access': ser.validated_data['access']}
 
+        session_id = None
         if new_refresh_str:
             # Rotation happened: register the new token in OutstandingToken so that
             # blacklist_all_user_tokens() (called on logout/suspend) can reach it.
@@ -352,24 +416,31 @@ class TokenRefreshView(APIView):
                 # that owned the OLD token; other devices keep their own JTIs.
                 old_jti = ''
                 try:
-                    old_jti = RefreshToken(
-                        request.data.get('refresh', ''), verify=False
-                    ).get('jti', '')
+                    old_jti = RefreshToken(refresh_token, verify=False).get('jti', '')
                 except TokenError:
                     pass
-                LoginSession.objects.filter(
+                session = LoginSession.objects.filter(
                     user=token_user, refresh_jti=str(old_jti), is_active=True,
-                ).update(
-                    refresh_jti=str(jti),
-                    last_seen_at=timezone.now(),
-                )
+                ).first()
+                if session is not None:
+                    session.refresh_jti = str(jti)
+                    session.last_seen_at = timezone.now()
+                    session.save(update_fields=['refresh_jti', 'last_seen_at'])
+                    session_id = session.pk
             except (TokenError, User.DoesNotExist):
                 # Bookkeeping failed but the new tokens are valid - the client
                 # can still use them. Don't fail the whole request.
                 pass
-            response_data['refresh'] = new_refresh_str
+            if not cookie_mode:
+                response_data['refresh'] = new_refresh_str
 
-        return success_response(message="Token refreshed successfully.", data=response_data)
+        if session_id is not None:
+            response_data['session_id'] = session_id
+
+        response = success_response(message="Token refreshed successfully.", data=response_data)
+        if cookie_mode and new_refresh_str:
+            set_refresh_cookie(response, new_refresh_str)
+        return response
 
 
 # =============================================================================

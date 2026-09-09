@@ -220,6 +220,15 @@ SIMPLE_JWT = {
     "TOKEN_OBTAIN_SERIALIZER": "vs_user.tokens.CustomTokenObtainPairSerializer",
 }
 
+# Browser sessions keep the rotating credential in a host-only HttpOnly
+# cookie. Path "/" keeps one browser-wide value instead of allowing duplicate
+# credentials under narrower request paths.
+AUTH_REFRESH_COOKIE_NAME = "refresh_token"
+AUTH_REFRESH_COOKIE_PATH = "/"
+AUTH_REFRESH_COOKIE_MAX_AGE = int(SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"].total_seconds())
+AUTH_REFRESH_COOKIE_SECURE = config("AUTH_REFRESH_COOKIE_SECURE", default=True, cast=bool)
+AUTH_REFRESH_COOKIE_SAMESITE = "Strict"
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -338,6 +347,7 @@ CORS_ALLOW_HEADERS = (
     *default_headers,
     "x-impersonation-session",
     "idempotency-key",
+    "x-auth-mode",
     # The public vendor quotation portal authenticates with its verified session
     # token in this header, so every portal call after email verification is a
     # preflighted cross-origin request.

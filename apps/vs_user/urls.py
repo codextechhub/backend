@@ -17,6 +17,7 @@ from .views.jobs import MyTasksSummaryView, MyTasksView
 from .views import (
     # Auth
     LoginView,
+    CsrfCookieView,
     LogoutView,
     SpecialLoginPreviewView,
     PasswordResetPreviewView,
@@ -72,6 +73,7 @@ router.register(r'organogram/matrix-reports', MatrixReportViewSet,      basename
 urlpatterns = [
 
     # ── Authentication ────────────────────────────────────────────────────────
+    path('auth/csrf/',                          CsrfCookieView.as_view(),          name='auth-csrf'),
     path('auth/login/',                         LoginView.as_view(),               name='auth-login'),
     path('auth/logout/',                        LogoutView.as_view(),               name='auth-logout'),
     path('auth/token/refresh/',                 TokenRefreshView.as_view(),         name='auth-token-refresh'),

@@ -55,18 +55,45 @@ class CurrentUserView(APIView):
         permissions = sorted(
             get_effective_permissions(request.user, tenant=tenant)
         )
+        data = {
+            "user": UserReadSerializer(request.user).data,
+            # Same builder as the login response: the console skips its
+            # /me sync straight after a login, so the two must not drift.
+            "tenant": tenant_context_block(tenant),
+            "school": school_public_info(
+                getattr(tenant, "school_profile", None), request, user=request.user,
+            ),
+            "permissions": permissions,
+        }
+
+        # Browser reloads deliberately persist no proxy credential. Tell the
+        # actor about their own active session so the client can restore it in
+        # memory, then re-run /me with the audited proxy header. The proxied
+        # request itself omits this field because its effective context is
+        # already established by TenantJWTAuthentication.
+        if not request.META.get("HTTP_X_IMPERSONATION_SESSION"):
+            from vs_admin_console.models import ImpersonationSession
+            from vs_admin_console.serializers import ImpersonationTargetSerializer
+
+            active = (
+                ImpersonationSession.objects
+                .select_related(
+                    "tenant", "target_user__tenant", "target_user__tenant__school_profile",
+                )
+                .filter(staff_user=request.user, status="ACTIVE")
+                .order_by("-started_at", "-pk")
+                .first()
+            )
+            if active is not None:
+                data["active_impersonation"] = {
+                    "id": active.pk,
+                    "tenant_slug": active.tenant.slug,
+                    "target": ImpersonationTargetSerializer(active.target_user).data,
+                }
+
         return success_response(
             message="Current user retrieved successfully.",
-            data={
-                "user": UserReadSerializer(request.user).data,
-                # Same builder as the login response: the console skips its
-                # /me sync straight after a login, so the two must not drift.
-                "tenant": tenant_context_block(tenant),
-                "school": school_public_info(
-                    getattr(tenant, "school_profile", None), request, user=request.user,
-                ),
-                "permissions": permissions,
-            },
+            data=data,
         )
 
 
@@ -131,4 +158,3 @@ def _get_date_param(params, key):
     if parsed is None:
         raise ValidationError({key: f'"{raw}" is not a valid date. Use YYYY-MM-DD format.'})
     return parsed
-

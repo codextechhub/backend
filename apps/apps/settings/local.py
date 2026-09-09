@@ -74,6 +74,7 @@ CELERY_TASK_EAGER_PROPAGATES = True
 
 # Frontend URL - must point to the React dev server, not the Django backend
 FRONTEND_BASE_URL = 'http://localhost:5173'  # Console (console-fe)
+CSRF_TRUSTED_ORIGINS = [FRONTEND_BASE_URL]
 # The school app, where a paying parent goes. Its slug is inserted as a
 # subdomain at call time: corona.localhost:5174 resolves to 127.0.0.1 without
 # any hosts-file entry, which is the same shape the onboarding seeder prints.
