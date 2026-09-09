@@ -22,6 +22,7 @@ Expiry
     switched on. The capability evaluator has always honoured ``ends_at``; it
     was simply never given one.
 """
+import logging
 from datetime import datetime, time
 
 from django.db import transaction
@@ -29,6 +30,8 @@ from django.utils import timezone
 
 from vs_config.models import Capability, CapabilityEntitlement
 from vs_config.services.capabilities import set_entitlement
+
+logger = logging.getLogger("vs_schools")
 
 
 def subscription_ends_at(expires_at):
@@ -116,7 +119,37 @@ def change_plan(*, school, plan, actor, reason="", expires_at=None):
         actor=actor,
         reason=reason or f"Moved from {previous.name} to {plan.name}.",
     )
+    _top_up_onboarding(school, actor)
     return setup, previous, rows
+
+
+def _top_up_onboarding(school, actor):
+    """Give a school still in onboarding any step its new plan has opened.
+
+    Some checklist steps exist only for schools whose plan can perform them, so
+    a school that moves up mid-onboarding has earned a card it was not given at
+    creation. Provisioning adds and never removes, so this cannot cost a school
+    a step it has already completed, and a school that moves down keeps what it
+    has done.
+
+    Skipped once a school is live: the checklist is a record of how it got
+    there, and adding a card to it afterwards would reopen a finished thing.
+    Best effort, like provisioning itself - a plan change must not fail because
+    of a checklist.
+    """
+    from schools.vs_onboarding.constants import ReadinessState
+    from schools.vs_onboarding.models import OnboardingProgress
+    from schools.vs_onboarding.services.provisioning import provision_onboarding
+
+    progress = OnboardingProgress.all_objects.filter(tenant=school.tenant).first()
+    if progress is None or progress.readiness_state == ReadinessState.LIVE:
+        return
+    try:
+        provision_onboarding(school.tenant, actor=actor)
+    except Exception:  # noqa: BLE001 - a checklist must not cost a plan change
+        logger.exception(
+            "change_plan: could not top up onboarding for %s", school.slug,
+        )
 
 
 def plan_overview(school):

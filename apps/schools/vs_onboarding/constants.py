@@ -92,10 +92,8 @@ class CatalogEntry:
     different question from ``is_required``. A school that cannot ever perform a
     step does not have an optional step it may ignore, it has no such step at
     all: the control room must not show a column the school will never fill in.
-    No entry uses it today, and the honest reason is that the one that did (the
-    branch step) turned out to apply to every school, so it stopped being a step
-    rather than becoming an unconditional one. The seam stays because the
-    question it answers is real and provisioning already routes through it.
+    Uploading initial datasets is the entry that uses it, because loading data
+    from a file is sold by depth and a school on a shallow plan cannot do it.
 
     ``is_required`` means the step must be DONE before the school goes live and
     that it cannot be skipped either. There is no third setting for "required
@@ -116,6 +114,32 @@ class CatalogEntry:
         if self.applies_to is None:
             return True
         return bool(self.applies_to(tenant, school))
+
+
+def plan_includes_bulk_import(tenant) -> bool:
+    """Whether this school's plan lets it load data from a file.
+
+    Answers True for anything it cannot be sure about, and the three states it
+    must not confuse are the whole reason it is a function rather than a lookup.
+    A capability row that is absent means the catalogue has not been seeded on
+    this deployment; a school with no package grants at all was never given its
+    plan; neither is a school that declined to buy bulk import, and only the
+    third should cost it a card.
+
+    Imported lazily inside the body: this module is the vocabulary the whole
+    app's onboarding reads, and it must not pull the configuration services in
+    at import time.
+    """
+    from vs_config.models import Capability
+    from vs_config.services.capabilities import effective_capability
+    from vs_rbac.plan_gate import tenant_is_provisioned
+
+    capability = Capability.objects.filter(
+        key="bulk_import", is_active=True,
+    ).first()
+    if capability is None or not tenant_is_provisioned(tenant):
+        return True
+    return bool(effective_capability(capability, tenant=tenant))
 
 
 #: The canonical catalog, in display order, and the five cards the approved
@@ -145,6 +169,7 @@ TASK_CATALOG: tuple[CatalogEntry, ...] = (
         title="Upload Initial Datasets",
         is_required=False,
         order_index=4,
+        applies_to=lambda tenant, school: plan_includes_bulk_import(tenant),
     ),
     CatalogEntry(
         key=TaskKey.STAFF_INVITATIONS,
