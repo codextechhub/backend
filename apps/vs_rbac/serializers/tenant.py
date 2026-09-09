@@ -291,6 +291,13 @@ class TenantRoleTemplateDetailSerializer(
         allow_null=True,
     )
 
+    #: Whether the reader holds this role themselves. The roles screen needs it
+    #: before anything is saved: a restricted addition to your own role goes
+    #: through approval and to anybody else's does not, so the button has to say
+    #: which it will be while the boxes are still being ticked. Computed here
+    #: because the client cannot: a person may hold several roles, and the token
+    #: carries one.
+    held_by_me = serializers.SerializerMethodField()
     role_permissions = TenantRolePermissionSerializer(many=True, read_only=True)
     role_groups = TenantRoleGroupAttachmentSerializer(many=True, read_only=True)
 
@@ -332,18 +339,30 @@ class TenantRoleTemplateDetailSerializer(
             "permission_keys",
             "group_ids",
             "reason",
+            "held_by_me",
             "created_at",
             "updated_at",
         ]
         read_only_fields = [
             "id",
             "key",
+            "held_by_me",
             "is_system_role",
             "version",
             "created_by",
             "created_at",
             "updated_at",
         ]
+
+    def get_held_by_me(self, obj) -> bool:
+        request = self.context.get("request")
+        actor = getattr(request, "user", None)
+        if actor is None or not getattr(actor, "is_authenticated", False):
+            return False
+        return TenantUserRoleAssignment.objects.filter(
+            role=obj, user=actor,
+            assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+        ).exists()
 
     def validate_branch(self, value):
         """Fallback tenancy check for a branch the field resolved unscoped.
