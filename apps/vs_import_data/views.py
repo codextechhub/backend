@@ -645,16 +645,23 @@ class ImportBatchFileDownloadView(ImportBatchContextMixin, APIView):
     """
     GET -> stream the uploaded batch file as an attachment.
 
+    The batch is resolved through the mixin's choke point rather than by a
+    lookup of its own, so this endpoint is narrowed to the caller's branches as
+    well as to their tenant. The raw spreadsheet is the most revealing thing a
+    batch holds - one file carries every row a site uploaded, home addresses and
+    guardian phone numbers included - so a lookup here that knew only about
+    tenants would hand a branch administrator the file behind a batch they
+    cannot open, list, validate or read a single issue from.
+
     Read through the file's own storage rather than off the filesystem, and
     served here rather than as a redirect to a media URL, so the bytes come
     back through the same authenticated request that asked for them.
 
-    The storage matters. ``FileField.path`` is only implemented by filesystem
-    storages, and this project stores uploads in the database
-    (``core.storage.DatabaseStorage``), so reading a path raised
-    NotImplementedError and every download of an uploaded file answered 500.
-    ``storage.open`` is the API every backend implements, which is what
-    vs_exports already uses to serve a produced file.
+    The storage matters. ``FileField.path`` is implemented only by filesystem
+    storages, and this project keeps uploads in the database
+    (``core.storage.DatabaseStorage``), where there is no path to read and
+    asking for one raises NotImplementedError. ``storage.open`` is the API every
+    backend implements, and is what vs_exports uses to serve a produced file.
 
     docstring-name: Download an import file
     """
@@ -669,11 +676,7 @@ class ImportBatchFileDownloadView(ImportBatchContextMixin, APIView):
     rbac_permission = ImportPermission.BATCH_VIEW
 
     def get(self, request, **_kwargs):
-        tenant = self.scope_tenant()
-        qs = ImportBatch.objects.only("id", "tenant", "file", "original_filename")
-        if tenant is not None:
-            qs = qs.filter(tenant=tenant)
-        batch = get_object_or_404(qs, id=_kwargs["batch_id"])
+        batch = self.get_import_batch()
 
         if not batch.file:
             raise Http404("No file attached to this batch.")

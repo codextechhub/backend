@@ -1,4 +1,7 @@
 from vs_rbac.permissions import HasRBACPermission, has_permission
+# ``include_shared=True`` throughout: a batch with no branch was uploaded for
+# the school as a whole and stays reachable from every site.
+from vs_rbac.scoping import branch_q
 
 #: ``dataset_type`` -> the owning module's own import key.
 #:
@@ -31,8 +34,16 @@ class HasImportBatchRBACPermission(HasRBACPermission):
     bank-statement wizard, and a school administrator should not need it to
     load their students. The fallback stays deliberately object-aware: it
     applies only to a batch of the dataset the key belongs to, resolved against
-    the request's asserted tenant, so holding one module's import key never
-    opens another module's file.
+    the request's asserted tenant and against the branches the caller is
+    entitled to work in, so holding one module's import key never opens another
+    module's file and never reaches across sites.
+
+    The branch narrowing is the same rule the views apply when they resolve a
+    batch, spelled again here because this runs first and on its own: an
+    unreachable batch must be refused at the gate rather than admitted to a
+    lookup that then has to catch it. Both halves therefore answer alike, and
+    a caller who reaches this fallback cannot tell an id they may not see from
+    one that was never there - each is the same refusal.
     """
 
     def has_permission(self, request, view):
@@ -48,7 +59,9 @@ class HasImportBatchRBACPermission(HasRBACPermission):
 
         from .models import ImportBatch
 
-        batch = ImportBatch.all_objects.filter(pk=batch_id, tenant=tenant).first()
+        batch = ImportBatch.all_objects.filter(
+            branch_q(request, include_shared=True), pk=batch_id, tenant=tenant,
+        ).first()
         if batch is None:
             return False
 
@@ -61,6 +74,7 @@ class HasImportBatchRBACPermission(HasRBACPermission):
         # batch row alone does not prove which set of books it touches.
         if batch.dataset_type == "bank_statements":
             return ImportBatch.all_objects.filter(
+                branch_q(request, include_shared=True),
                 pk=batch_id, tenant=tenant,
                 bank_statement_context__bank_account__entity__tenant=tenant,
             ).exists()
