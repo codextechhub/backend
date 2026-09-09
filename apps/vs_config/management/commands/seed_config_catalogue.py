@@ -195,7 +195,11 @@ NAMED_BANDS = [
     # It also sits on the onboarding checklist, so putting it out of reach put
     # a step there that most new schools could not take.
     ("bulk_import", "Bulk Data Import", "platform", "CORE"),
-    ("data_export", "Data Export and Reporting", "platform", "PLUS"),
+    # Core for the same reason as bulk import, read in the other direction. A
+    # school's records are its own, and taking them out is not a feature it
+    # grows into: a bursar exporting a filtered debtor list is doing ordinary
+    # work, and a school that cannot get its data out is one that cannot leave.
+    ("data_export", "Data Export and Reporting", "platform", "CORE"),
     # sms_alerts was removed 2026-07-12 - SMS is not part of the product.
     # Existing rows were archived (is_active=False), not deleted.
     ("email_alerts", "Email Notification Alerts", "platform", "CORE"),

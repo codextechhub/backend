@@ -107,6 +107,18 @@ class BandedPermissionsTests(_Seeded):
         band = Capability.objects.get(key="bulk_import")
         self.assertEqual(band.depth, Capability.Depth.CORE)
 
+    def test_data_export_is_on_every_plan(self):
+        """A school's records are its own, whatever it pays.
+
+        The mirror of bulk import: getting data in and getting it out are the
+        same promise read in two directions, and a school that cannot export
+        is a school that cannot leave. Pinned so moving it up is deliberate.
+        """
+        from vs_config.models import Capability
+
+        band = Capability.objects.get(key="data_export")
+        self.assertEqual(band.depth, Capability.Depth.CORE)
+
     def test_a_verb_that_only_looks_like_the_export_product_is_left_alone(self):
         # ``config.audit.export`` ends in the same word and is a different
         # thing: reading your own configuration history is not data export.
