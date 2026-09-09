@@ -114,11 +114,27 @@ class MyCapabilitiesTests(TestCase):
         ).update(depth=Capability.Depth.PLUS)
         self.assertTrue(self._states(self._get(self.admin))["finance_plus"])
 
-    def test_a_school_that_bought_nothing_reaches_no_band(self):
+    def test_a_school_that_was_never_given_its_plan_reaches_everything(self):
+        """"Not provisioned" and "did not buy" are different facts.
+
+        Every school created before grants were written reliably holds no
+        PACKAGE entitlement at all. Reading that as "bought nothing" answers
+        no to every capability, and the navigation that trusts this endpoint
+        then hides Finance, Procurement and the Export Centre from schools
+        already using them. The plan gate has always made this distinction;
+        this endpoint has to make the same one, or the menu disagrees with the
+        product.
+        """
         CapabilityEntitlement.objects.filter(tenant=self.tenant).delete()
         states = self._states(self._get(self.admin))
-        self.assertFalse(states["finance_core"])
-        self.assertFalse(states["finance_plus"])
+        self.assertTrue(states["finance"])
+        self.assertTrue(states["finance_core"])
+        self.assertTrue(states["finance_plus"])
+
+    def test_a_school_that_was_given_a_shallow_plan_is_still_held_to_it(self):
+        # The rule above must not become a way to reach past a real plan: one
+        # PACKAGE row is enough to make the school provisioned.
+        self.assertFalse(self._states(self._get(self.admin))["finance_plus"])
 
     def test_a_pending_school_can_read_it(self):
         # Onboarding is where the nav is first drawn.

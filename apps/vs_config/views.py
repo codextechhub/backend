@@ -57,6 +57,7 @@ from .serializers import (
 from .services.audit import record_configuration_event
 from .services.capabilities import (
     bulk_effective_capabilities,
+    self_effective_capabilities,
     bulk_schedule_entitlements,
     clear_entitlement,
     entitlement_resolution,
@@ -964,7 +965,7 @@ class MyCapabilitiesView(APIView):
 
     def get(self, request):
         tenant, branch = resolve_request_scope(request)
-        data = bulk_effective_capabilities(tenant=tenant, branch=branch)
+        data = self_effective_capabilities(tenant=tenant, branch=branch)
         return success_response("Effective capabilities retrieved.", data)
 
 

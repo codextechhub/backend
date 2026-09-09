@@ -466,7 +466,13 @@ class BulkCapabilityEvaluator:
 
 
 def bulk_effective_capabilities(*, tenant=None, branch=None):
-    """Return all active capability states without request-per-row evaluation."""
+    """Return all active capability states without request-per-row evaluation.
+
+    The literal answer, including for a tenant that was never given a plan.
+    Callers deciding what to SHOW somebody want
+    :func:`self_effective_capabilities` instead, which distinguishes a school
+    that bought nothing from one nobody has provisioned.
+    """
     capabilities = list(
         Capability.objects.all().prefetch_related("dependency_links")
     )
@@ -475,6 +481,42 @@ def bulk_effective_capabilities(*, tenant=None, branch=None):
         {"key": item.key, "enabled": evaluator.evaluate(item.pk)}
         for item in capabilities if item.is_active
     ]
+
+
+def tenant_is_provisioned(tenant):
+    """Whether this tenant has been given its plan's grants at all.
+
+    The distinction the whole platform turns on: a school with no PACKAGE
+    entitlement did not buy nothing, it was never given a plan. Every school
+    created before grants were written reliably is in that state, so reading
+    it as "bought nothing" takes away a product the school is already paying
+    for. The rule retires itself - the moment a plan is applied the school has
+    grants and the ordinary answer takes over.
+    """
+    if tenant is None:
+        return False
+    return CapabilityEntitlement.all_objects.filter(
+        tenant=tenant, source=CapabilityEntitlement.Source.PACKAGE,
+    ).exists()
+
+
+def self_effective_capabilities(*, tenant=None, branch=None):
+    """What to show a member of this tenant, rather than what the rows say.
+
+    Identical to :func:`bulk_effective_capabilities` for a provisioned tenant.
+    For one that was never given a plan it reports everything on, because the
+    alternative is a navigation that hides Finance, Procurement and the Export
+    Centre from a school that has been using all three.
+
+    This is the same rule the plan gate applies before refusing anything, and
+    it lives here so the two cannot answer differently: a menu that disagrees
+    with the product is the defect this endpoint exists to prevent, and having
+    two readers of one fact is how it got introduced.
+    """
+    rows = bulk_effective_capabilities(tenant=tenant, branch=branch)
+    if tenant is not None and not tenant_is_provisioned(tenant):
+        return [{"key": row["key"], "enabled": True} for row in rows]
+    return rows
 
 
 # Update a scoped capability override after confirming entitlement constraints.

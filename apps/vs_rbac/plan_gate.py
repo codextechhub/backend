@@ -54,10 +54,11 @@ What this does not cover
     reach something sold by depth.
 """
 from vs_config.conf import get_config
-from vs_config.models import Capability, CapabilityEntitlement
+from vs_config.models import Capability
 from vs_config.services.capabilities import (
     BulkCapabilityEvaluator,
     effective_capability,
+    tenant_is_provisioned as _tenant_is_provisioned,
 )
 from vs_config.services.depth import resolved_depth
 
@@ -70,11 +71,10 @@ def enforcement_enabled():
     return bool(get_config(ENFORCEMENT_KEY, default=False))
 
 
-def tenant_is_provisioned(tenant):
-    """Whether this school has been given its plan's grants at all."""
-    return CapabilityEntitlement.all_objects.filter(
-        tenant=tenant, source=CapabilityEntitlement.Source.PACKAGE,
-    ).exists()
+#: Re-exported so this module's readers keep one import. The rule itself lives
+#: in vs_config beside the entitlements it reads, because the capability
+#: endpoint a school's navigation reads has to apply the same one.
+tenant_is_provisioned = _tenant_is_provisioned
 
 
 def capability_for_row(permission, cache=None):
