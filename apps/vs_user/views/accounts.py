@@ -27,7 +27,7 @@ from core.mixins import (
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
 from ..models import (
-    Position, User,
+    AuthEventLog, Position, User,
 )
 from ..serializers import (
     UserReadSerializer, UserListSerializer, UserCreateSerializer, UserUpdateSerializer,
@@ -35,6 +35,7 @@ from ..serializers import (
 )
 from ..account_scope import administrable_user, administrable_users
 from ..services.user       import UserCreationService, EmailChangeService, UserStatusService
+from ..services.audit import log_auth_event
 from vs_workflow.services.submission import submit_for_approval as _wf_submit
 from vs_workflow.serializers import WorkflowInstanceListSerializer as _WFInstanceSerializer
 
@@ -210,6 +211,7 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             'retrieve':       'platform.team.view',
             'create':         'platform.team.create',
             'submit':         'platform.team.create',
+            'rotate_card_login': 'platform.team.update',
             'update':         'platform.team.update',
             'partial_update': 'platform.team.update',
             'destroy':        'platform.team.delete',
@@ -338,6 +340,27 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         if wf_instance is not None:
             payload["workflow_instance"] = _WFInstanceSerializer(wf_instance).data
         return Response(payload, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="card-login/rotate")
+    def rotate_card_login(self, request, *args, **kwargs):
+        """Replace a platform staff member's ID-card login key."""
+        user = self.get_object()
+        if not user.is_platform_user:
+            return error_response(
+                message="User not found.", status=status.HTTP_404_NOT_FOUND,
+            )
+        user.rotate_card_login_id()
+        log_auth_event(
+            actor=request.user,
+            subject=user,
+            tenant=user.tenant,
+            event=AuthEventLog.Event.CARD_LOGIN_ROTATED,
+            request=request,
+        )
+        return success_response(
+            message="ID-card login replaced successfully.",
+            data={"card_login_id": str(user.card_login_id)},
+        )
 
     def perform_destroy(self, instance):
         # Never hard-delete. Records and audit history are always preserved.

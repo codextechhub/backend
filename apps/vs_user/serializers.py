@@ -131,6 +131,7 @@ class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         fields = (
             'id',
             'uid',
+            'card_login_id',
             'email',
             'first_name',
             'last_name',
@@ -542,7 +543,8 @@ class ActivationPreviewSerializer(serializers.ModelSerializer):
 # =============================================================================
 
 class LoginRequestSerializer(serializers.Serializer):
-    email            = serializers.EmailField()
+    email            = serializers.EmailField(required=False)
+    card_id          = serializers.CharField(required=False, allow_blank=True, default='')
     password         = serializers.CharField(write_only=True, trim_whitespace=False)
     # The slug of the tenant the caller is signing in to, which the frontend
     # reads off the subdomain it is served from: a school's page at
@@ -561,9 +563,13 @@ class LoginRequestSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         email = normalize_email(attrs.get('email'))
-        if not email:
-            raise serializers.ValidationError({'email': 'Email is required.'})
+        card_id = str(attrs.get('card_id') or '').strip().lower()
+        if bool(email) == bool(card_id):
+            raise serializers.ValidationError({
+                'credentials': 'Provide either an email address or an ID card identifier.',
+            })
         attrs['email'] = email
+        attrs['card_id'] = card_id
         attrs['tenant'] = (attrs.get('tenant') or '').strip().lower()
         return attrs
 

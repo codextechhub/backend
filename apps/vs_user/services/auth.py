@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from django.db import transaction
 from django.utils import timezone
 
@@ -18,7 +20,13 @@ from .sign_in_scope import resolve_sign_in_account
 class LoginService:
 
     @staticmethod
-    def login(email: str, password: str, tenant: str | None = None, request=None) -> dict:
+    def login(
+        email: str = "",
+        password: str = "",
+        tenant: str | None = None,
+        request=None,
+        card_id: str = "",
+    ) -> dict:
         """
         Authenticates a user and returns tokens + user data.
 
@@ -36,6 +44,10 @@ class LoginService:
         ambiguous email lookup. The tenant is resolved BEFORE the account
         lookup and the lookup is scoped to it.
 
+        A card sign-in supplies ``card_id`` instead of ``email``. The random,
+        revocable identifier resolves only inside the platform tenant. The
+        account email remains server-side throughout the card flow.
+
         Steps:
           1. Resolve the asserted tenant, then find the user inside it
           2. Refuse a non-platform user whose tenant has no school profile
@@ -48,12 +60,18 @@ class LoginService:
           7. Write audit logs
         """
         email = email.lower().strip()
+        card_id = str(card_id or "").strip().lower()
 
         # 1. Resolve the tenant first, then find the user within it. The name
         # ``tenant`` is deliberately rebound here: it arrives as an asserted
         # slug and leaves as the row that slug resolved to, so every later step
         # reads the checked object and never the caller's raw claim.
-        user, tenant, scope_failure = resolve_sign_in_account(email=email, tenant=tenant)
+        if card_id:
+            user, tenant = LoginService._resolve_card_login_account(card_id)
+            email = user.email if user else ""
+            scope_failure = None
+        else:
+            user, tenant, scope_failure = resolve_sign_in_account(email=email, tenant=tenant)
 
         if scope_failure:
             # The refusal is indistinguishable from a wrong password to the
@@ -174,6 +192,22 @@ class LoginService:
         }
 
     # ── Private helpers ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _resolve_card_login_account(card_id: str):
+        """Resolve one opaque card key without exposing malformed or stale keys."""
+        tenant = Tenant.objects.filter(
+            slug="codex", kind=Tenant.Kind.PLATFORM,
+        ).first()
+        try:
+            identifier = UUID(card_id)
+        except (TypeError, ValueError, AttributeError):
+            return None, tenant
+        user = User.objects.select_related("tenant", "branch").filter(
+            card_login_id=identifier,
+            tenant__kind=Tenant.Kind.PLATFORM,
+        ).first()
+        return user, user.tenant if user else tenant
 
     @staticmethod
     def _check_status(user: User) -> dict | None:

@@ -204,9 +204,11 @@ REST_FRAMEWORK = {
         # than to pace a browser.
         "school_brand":      "240/hour",
         "guide_analytics": "120/minute",
-        # Public barcode-login preview - throttled hard because it confirms
-        # whether an email belongs to a known account (enumeration surface).
-        "login_preview":  "10/minute",
+        # ID-card login is bounded by both the caller IP and the random card
+        # identifier, so distributed callers cannot work one copied card.
+        "login_preview":      "10/minute",
+        "card_login_preview": "10/minute",
+        "card_login":         "5/minute",
     },
     "DATETIME_FORMAT": "%Y-%m-%dT%H:%M:%S.%fZ",
     "DATE_FORMAT":     "%Y-%m-%d",

@@ -77,17 +77,18 @@ class ThrottleScopeTests(SimpleTestCase):
             + repr(missing),
         )
 
-    def test_the_pay_an_invoice_routes_are_among_the_scopes_this_covers(self):
+    def test_security_sensitive_public_routes_are_among_the_scopes_this_covers(self):
         """A walk that silently finds nothing would pass this file forever.
 
-        The public pay routes are the ones the guard exists for, so their scopes
-        are named here: if the walk stops reaching views, this fails rather than
-        the whole file quietly asserting nothing.
+        Public pay and ID-card login are the routes this guard protects, so
+        their scopes are named here. If the walk stops reaching views, this
+        fails rather than the whole file quietly asserting nothing.
         """
         found = {scope for view in _view_classes() for scope in _scopes(view)}
 
         self.assertLessEqual(
             {"invoice_pay", "invoice_pay_start",
-             "invoice_pay_link", "invoice_pay_link_read"},
+             "invoice_pay_link", "invoice_pay_link_read",
+             "login_preview", "card_login_preview", "card_login"},
             found,
         )

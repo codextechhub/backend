@@ -10,6 +10,7 @@ Covers the security-review fixes:
 from io import StringIO
 from datetime import timedelta
 from unittest import mock
+from uuid import uuid4
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.management import call_command
@@ -20,7 +21,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
-from vs_user.models import AccountLockout, AuthAttempt, LoginSession, User
+from vs_user.models import AccountLockout, AuthAttempt, AuthEventLog, LoginSession, User
 from vs_user.services.auth import LoginService
 
 
@@ -2708,14 +2709,8 @@ class PasswordResetTenantScopeTests(TestCase):
         self.assertFalse(self._resets().exists())
 
 
-class BarcodePreviewIsPlatformOnlyTests(TestCase):
-    """The unauthenticated barcode preview answers only for the CodeX tenant.
-
-    Unscoped it was a name-and-existence oracle over every parent, student and
-    teacher on the platform: anyone who could reach the URL could learn whether
-    ada.okoye@example.test held an account, what her account's state was, and -
-    if it was active - her full name.
-    """
+class BarcodePreviewPrivacyTests(TestCase):
+    """The public preview reveals identity only for an active random card key."""
 
     URL = "/v1/user/auth/special_login/preview/"
 
@@ -2728,48 +2723,179 @@ class BarcodePreviewIsPlatformOnlyTests(TestCase):
         self.cx = make_cx_user(email="ops@codex.test")
         self.client = APIClient()
 
-    def _get(self, email):
-        return self.client.get(self.URL, {"email": email})
+    def _get(self, card_id=None):
+        params = {} if card_id is None else {"card_id": card_id}
+        return self.client.get(self.URL, params)
 
-    def test_cx_staff_address_still_previews(self):
-        response = self._get(self.cx.email)
+    def test_active_platform_staff_card_previews(self):
+        response = self._get(self.cx.card_login_id)
 
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(response.json()["data"]["full_name"], self.cx.full_name)
+        self.assertNotContains(response, self.cx.email)
 
-    def test_customer_tenant_address_is_a_404(self):
-        response = self._get(self.ada.email)
+    def test_email_address_is_not_a_supported_lookup(self):
+        response = self.client.get(self.URL, {"email": self.cx.email})
 
         self.assertEqual(response.status_code, 404, response.content)
 
-    def test_customer_404_is_identical_to_an_unknown_address(self):
-        known = self._get(self.ada.email)
-        unknown = self._get("nobody@example.test")
+    def test_missing_malformed_unknown_and_customer_identifiers_are_identical(self):
+        responses = [
+            self._get(),
+            self._get("not-a-card-id"),
+            self._get(uuid4()),
+            self._get(self.ada.card_login_id),
+        ]
 
-        self.assertEqual(known.status_code, unknown.status_code)
+        self.assertEqual([response.status_code for response in responses], [404] * 4)
         self.assertEqual(
-            known.json()["message"].replace(self.ada.email, "EMAIL"),
-            unknown.json()["message"].replace("nobody@example.test", "EMAIL"),
+            {response.content for response in responses},
+            {responses[0].content},
         )
 
-    def test_suspended_customer_user_gets_404_not_403(self):
-        """403 would confirm the account exists and disclose its state."""
-        self.ada.status = User.Status.SUSPENDED
-        self.ada.save(update_fields=["status", "updated_at"])
+    def test_inactive_platform_states_are_indistinguishable_from_unknown_cards(self):
+        unknown = self._get(uuid4())
 
-        response = self._get(self.ada.email)
+        for account_status in (
+            User.Status.PENDING,
+            User.Status.LOCKED,
+            User.Status.SUSPENDED,
+            User.Status.DEACTIVATED,
+        ):
+            self.cx.status = account_status
+            self.cx.save(update_fields=["status", "updated_at"])
+            response = self._get(self.cx.card_login_id)
 
-        self.assertEqual(response.status_code, 404, response.content)
+            self.assertEqual(response.status_code, unknown.status_code)
+            self.assertEqual(response.content, unknown.content)
 
-    def test_suspended_cx_staff_still_gets_the_status_message(self):
-        self.cx.status = User.Status.SUSPENDED
-        self.cx.save(update_fields=["status", "updated_at"])
+    def test_rotating_the_identifier_revokes_the_old_card(self):
+        old_identifier = self.cx.card_login_id
+        new_identifier = self.cx.rotate_card_login_id()
 
-        response = self._get(self.cx.email)
+        self.assertNotEqual(old_identifier, new_identifier)
+        self.assertEqual(self._get(old_identifier).status_code, 404)
+        self.assertEqual(self._get(new_identifier).status_code, 200)
+
+    def test_card_identifier_and_password_complete_login_without_an_email(self):
+        response = self.client.post(
+            "/v1/user/auth/login/",
+            {"card_id": str(self.cx.card_login_id), "password": "Str0ng!pass123"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["data"]["user"]["id"], self.cx.id)
+
+    def test_unknown_card_login_is_a_generic_credentials_failure(self):
+        response = self.client.post(
+            "/v1/user/auth/login/",
+            {"card_id": str(uuid4()), "password": "Str0ng!pass123"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 401, response.content)
+        self.assertEqual(response.json()["error"]["code"], "INVALID_CREDENTIALS")
+
+
+class CardLoginRateLimitTests(TestCase):
+    """One caller and one card each have an independent preview budget."""
+
+    URL = "/v1/user/auth/special_login/preview/"
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.addCleanup(cache.clear)
+
+    def test_one_card_is_bounded_across_different_ip_addresses(self):
+        from vs_user.throttles import CardPreviewIdentifierThrottle
+
+        card_id = str(uuid4())
+        with mock.patch.object(
+            CardPreviewIdentifierThrottle,
+            "THROTTLE_RATES",
+            {"card_login_preview": "3/hour"},
+        ):
+            statuses = [
+                APIClient().get(
+                    self.URL,
+                    {"card_id": card_id},
+                    REMOTE_ADDR=f"192.0.2.{index}",
+                ).status_code
+                for index in range(1, 5)
+            ]
+
+        self.assertEqual(statuses[:3], [404] * 3)
+        self.assertEqual(statuses[-1], 429)
+
+    def test_one_ip_is_bounded_across_different_card_identifiers(self):
+        from rest_framework.throttling import ScopedRateThrottle
+
+        with mock.patch.object(
+            ScopedRateThrottle,
+            "THROTTLE_RATES",
+            {"login_preview": "3/hour"},
+        ):
+            client = APIClient()
+            statuses = [
+                client.get(
+                    self.URL,
+                    {"card_id": str(uuid4())},
+                    REMOTE_ADDR="192.0.2.50",
+                ).status_code
+                for _ in range(4)
+            ]
+
+        self.assertEqual(statuses[:3], [404] * 3)
+        self.assertEqual(statuses[-1], 429)
+
+
+class CardLoginRotationEndpointTests(TestCase):
+    """Only authorized platform staff can replace another staff member's card key."""
+
+    def setUp(self):
+        from vs_rbac.tests.helpers import (
+            make_assignment, make_permission, make_role, make_role_permission,
+        )
+
+        self.actor = make_cx_user(email="card.admin@codex.test")
+        self.target = make_cx_user(email="card.holder@codex.test")
+        role = make_role(self.actor.tenant, name="Card administrator")
+        make_role_permission(role, make_permission("platform.team.update"))
+        make_assignment(self.actor.tenant, self.actor, role)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.actor)
+        self.url = f"/v1/user/users/{self.target.id}/card-login/rotate/"
+
+    def test_authorized_rotation_revokes_the_old_key_and_writes_an_audit_event(self):
+        from vs_audit.models import AuditEvent
+
+        old_identifier = self.target.card_login_id
+
+        response = self.client.post(self.url, {}, format="json")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.target.refresh_from_db()
+        self.assertNotEqual(self.target.card_login_id, old_identifier)
+        self.assertTrue(AuditEvent.objects.filter(
+            actor_user=self.actor,
+            entity_id=str(self.target.id),
+            metadata__auth_event=AuthEventLog.Event.CARD_LOGIN_ROTATED,
+        ).exists())
+
+    def test_rotation_requires_the_backend_update_permission(self):
+        from vs_rbac.models import TenantUserRoleAssignment
+
+        TenantUserRoleAssignment.objects.filter(user=self.actor).delete()
+        old_identifier = self.target.card_login_id
+
+        response = self.client.post(self.url, {}, format="json")
 
         self.assertEqual(response.status_code, 403, response.content)
-        self.assertIn("suspended", response.json()["message"].lower())
-
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.card_login_id, old_identifier)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Phase 2: email case
@@ -3915,15 +4041,8 @@ class ScopedEmailLookupTests(TestCase):
         self.assertEqual(result.instance.tenant_id, hiring_manager.tenant_id)
         self.assertNotEqual(result.instance.pk, self.ada.pk)
 
-    # ── the barcode preview's single-platform-tenant assumption ──────────────
-
-    def test_the_barcode_preview_refuses_rather_than_choosing_a_platform_row(self):
-        """Its ``.first()`` is only correct while ONE tenant has kind=PLATFORM.
-
-        That is an assumption, not a constraint, so it is asserted: a second
-        platform tenant must make the endpoint answer 404 rather than hand a
-        scanner whichever of two people's names came back first.
-        """
+    def test_card_preview_is_unambiguous_across_platform_tenants(self):
+        """Globally unique card keys do not depend on one platform tenant existing."""
         from django.core.cache import cache
         from django.test import Client
 
@@ -3935,25 +4054,32 @@ class ScopedEmailLookupTests(TestCase):
             status=Tenant.Status.ACTIVE,
         )
         with _tenant_required():
-            User.objects.create_user(
+            first = User.objects.create_user(
                 email="scanner@codex.test", password="Str0ng!pass123",
                 status="ACTIVE", first_name="Chidi",
                 last_name="One", tenant=Tenant.objects.get(slug="codex"),
             )
-            User.objects.create_user(
+            second = User.objects.create_user(
                 email="scanner@codex.test", password="Str0ng!pass123",
                 status="ACTIVE", first_name="Nkechi",
                 last_name="Two", tenant=second_platform,
             )
 
-        response = Client().get(
+        first_response = Client().get(
             "/v1/user/auth/special_login/preview/",
-            {"email": "scanner@codex.test"},
+            {"card_id": first.card_login_id},
+        )
+        second_response = Client().get(
+            "/v1/user/auth/special_login/preview/",
+            {"card_id": second.card_login_id},
         )
 
-        self.assertEqual(response.status_code, 404)
-        self.assertNotIn("Chidi", response.content.decode())
-        self.assertNotIn("Nkechi", response.content.decode())
+        self.assertEqual(first_response.status_code, 200)
+        self.assertContains(first_response, "Chidi")
+        self.assertNotContains(first_response, "Nkechi")
+        self.assertEqual(second_response.status_code, 200)
+        self.assertContains(second_response, "Nkechi")
+        self.assertNotContains(second_response, "Chidi")
 
 
 class ScopedEmailLookupCommandTests(TestCase):

@@ -14,6 +14,7 @@ Contents (in order):
 from __future__ import annotations
 
 import hashlib
+import uuid
 from datetime import timedelta
 
 from django.conf import settings
@@ -238,6 +239,12 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     # a school is one tenant, not the key - and unique across all CX staff.
     # Starts at 10.
     uid = models.PositiveIntegerField(null=True, blank=True, editable=False)
+
+    # Random lookup key printed on platform staff ID cards. Replacing it makes
+    # every previously printed or copied card URL stop resolving immediately.
+    card_login_id = models.UUIDField(
+        null=True, blank=True, unique=True, editable=False,
+    )
 
     # ── Status ────────────────────────────────────────────────────────────────
 
@@ -559,6 +566,11 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             ]})
         if self.branch_id and self.branch.tenant_id != self.tenant_id:
             raise ValidationError("User branch must belong to the user's tenant.")
+        if self.card_login_id is None and self.is_platform_user:
+            self.card_login_id = uuid.uuid4()
+            update_fields = kwargs.get('update_fields')
+            if update_fields is not None and 'card_login_id' not in update_fields:
+                kwargs['update_fields'] = list(update_fields) + ['card_login_id']
         # Backstop for the many writers that never call full_clean().
         self._guard_cross_tenant_email(update_fields=kwargs.get('update_fields'))
         if self.uid is None:
@@ -663,6 +675,14 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         account on", which is a different question and the only one it answers.
         """
         return getattr(self.tenant, 'kind', None) == PLATFORM_TENANT_KIND
+
+    def rotate_card_login_id(self):
+        """Replace the platform staff card key and invalidate the old card."""
+        if not self.is_platform_user:
+            raise ValidationError('Card login is available only to platform staff.')
+        self.card_login_id = uuid.uuid4()
+        self.save(update_fields=['card_login_id', 'updated_at'])
+        return self.card_login_id
 
     def mark_password_change(self):
         self.password_changed_at = timezone.now()
@@ -1008,6 +1028,7 @@ class AuthEventLog(TimeStampedModel):
         PASSWORD_RESET_COMPLETED = 'PASSWORD_RESET_COMPLETED', 'Password Reset Completed'
         PASSWORD_CHANGED         = 'PASSWORD_CHANGED',         'Password Changed'
         EMAIL_CHANGED            = 'EMAIL_CHANGED',            'Email Changed'
+        CARD_LOGIN_ROTATED       = 'CARD_LOGIN_ROTATED',       'Card Login Rotated'
 
     # Who performed the action - could be the user themselves or an admin.
     actor = models.ForeignKey(

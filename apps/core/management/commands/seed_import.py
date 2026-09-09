@@ -86,6 +86,9 @@ TEMPLATES: list[dict] = [
                 "Ownership Type must be one of: PUBLIC, PRIVATE, FAITH_BASED, NGO. "
                 "Term Structure must be one of: 3_TERMS, 2_SEMESTERS. "
                 "Currency must be one of: NGN, USD. "
+                "Package Plan must be one of: basic, standard, premium, enterprise, "
+                "and decides how deep the school reaches into every module rather "
+                "than which modules it gets - every school gets all of them. "
                 "Date columns must follow the format YYYY-MM-DD. "
                 "Import this file before the Branches template."
             ),
@@ -115,10 +118,6 @@ TEMPLATES: list[dict] = [
                 "Branch Admin Phone":    "08061234567",
                 "Branch Admin Role":     "Head Teacher",
                 "Package Plan":          "basic",
-                "Student Capacity":      "500",
-                "Teacher Capacity":      "50",
-                "Admin Capacity":        "10",
-                "Enabled Modules":       "students,attendance",
                 "Subscription Expires At": "2027-12-31",
             },
             "validation_rules": {
@@ -425,7 +424,16 @@ TEMPLATES: list[dict] = [
                 "column_name":   "Package Plan",
                 "target_field":  "package_plan",
                 "display_name":  "Package Plan",
-                "help_text":     "Package plan code to assign to this school. Example: basic, standard, premium. Leave blank to skip package setup.",
+                "help_text": (
+                    "Package plan code. One of: basic, standard, premium, "
+                    "enterprise. The plan sets how deep this school reaches "
+                    "into every module - every school gets every module, and "
+                    "the tier decides whether it sees Core, Plus or Advanced. "
+                    "It sets no ceiling on students, staff or branches. Leave "
+                    "blank and the school is created with no plan and no "
+                    "entitlements, which means nobody can use anything until "
+                    "one is applied."
+                ),
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   False,
                 "is_unique":     False,
@@ -437,7 +445,13 @@ TEMPLATES: list[dict] = [
                 "column_name":   "Subscription Expires At",
                 "target_field":  "subscription_expires_at",
                 "display_name":  "Subscription Expires At",
-                "help_text":     "Subscription expiry date in YYYY-MM-DD format. Leave blank for no expiry.",
+                "help_text": (
+                    "Subscription expiry in YYYY-MM-DD. Leave blank and it is "
+                    "set to one year from the import date - there is no such "
+                    "thing as no expiry, and the date is written onto every "
+                    "entitlement the plan grants as the moment they stop "
+                    "covering anything."
+                ),
                 "data_type":     TemplateColumnDataTypeChoices.DATE,
                 "is_required":   False,
                 "is_unique":     False,
