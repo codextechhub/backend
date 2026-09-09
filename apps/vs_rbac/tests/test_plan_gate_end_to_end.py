@@ -115,9 +115,31 @@ class OneSchoolMeetsTheWallTests(TestCase):
         school = self._create_school("gate-demo-refused", self.basic)
         refusal = plan_refusal(["finance.feestructure.generate"], school.tenant)
         self.assertNotEqual(refusal, "", "a Basic school reached a Plus key")
-        self.assertIn("Plus", refusal)
-        self.assertIn("Core", refusal)
         self.assertIn("Finance", refusal)
+        # The tier is structured data on the refusal, never words in it.
+        self.assertNotIn("Plus", refusal)
+
+    def test_a_basic_school_can_still_load_its_own_data(self):
+        """The step every school starts on, on the plan most of them start on.
+
+        Every import.* key answers to one band, so pricing that band above the
+        cheapest plan took the whole engine away from a Basic school - not just
+        the upload. Its onboarding step rendered with an empty template table,
+        because the list itself was refused, and the school could see neither
+        what it was meant to upload nor why it could not.
+        """
+        school = self._create_school("gate-demo-import", self.basic)
+        for key in (
+            "import.templates.view",
+            "import.batches.view",
+            "import.batches.create",
+            "school.students.import",
+        ):
+            with self.subTest(key=key):
+                self.assertEqual(
+                    plan_refusal([key], school.tenant), "",
+                    "a school on the cheapest plan cannot load its own roll",
+                )
 
     def test_the_same_school_keeps_every_core_key(self):
         school = self._create_school("gate-demo-core", self.basic)

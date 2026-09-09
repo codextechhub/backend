@@ -393,8 +393,13 @@ class BulkCapabilityEvaluator:
                 self.depth_grants[row.capability_id] = row.depth
         self.memo = {}
 
-    def _resolved_depth(self, module_id):
-        """The tenant's depth for one module, from the rows already loaded."""
+    def resolved_depth(self, module_id):
+        """The tenant's depth for one module, from the rows already loaded.
+
+        Public because a caller that has already paid for this evaluator's
+        preloading should not go back to the database to say, in a refusal,
+        which depth the school actually reaches.
+        """
         row = self.entitlements.get(module_id)
         tier = row.depth if row is not None else UNLIMITED
         deal = self.depth_grants.get(module_id)
@@ -436,7 +441,7 @@ class BulkCapabilityEvaluator:
             if not self.evaluate(capability.parent_id, path):
                 self.memo[capability_id] = False
                 return False
-            if not depth_allows(capability.depth, self._resolved_depth(capability.parent_id)):
+            if not depth_allows(capability.depth, self.resolved_depth(capability.parent_id)):
                 self.memo[capability_id] = False
                 return False
         elif not self._entitled(capability):

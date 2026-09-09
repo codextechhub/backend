@@ -94,6 +94,19 @@ class BandedPermissionsTests(_Seeded):
         self.assertEqual(students.capability.key, "bulk_import")
         self.assertEqual(batches.capability.key, "bulk_import")
 
+    def test_bulk_import_is_on_every_plan(self):
+        """Loading a roll from a file is how a school arrives, not a upsell.
+
+        A new school on the shallowest plan has four hundred students in a
+        spreadsheet and no other way in, and the step sits on its onboarding
+        checklist. Priced above them, the cheapest plan became the hardest one
+        to start on. Pinned here so moving it back up is a deliberate act.
+        """
+        from vs_config.models import Capability
+
+        band = Capability.objects.get(key="bulk_import")
+        self.assertEqual(band.depth, Capability.Depth.CORE)
+
     def test_a_verb_that_only_looks_like_the_export_product_is_left_alone(self):
         # ``config.audit.export`` ends in the same word and is a different
         # thing: reading your own configuration history is not data export.

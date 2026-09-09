@@ -926,6 +926,48 @@ class EffectiveCapabilitiesView(ConfigAPIView):
         return success_response("Effective capabilities retrieved.", data)
 
 
+class MyCapabilitiesView(APIView):
+    """GET /config/my-capabilities/ - what the caller's own tenant reaches.
+
+    The same states :class:`EffectiveCapabilitiesView` reports, for the caller's
+    own scope only, and without a permission key.
+
+    Why it exists beside that view rather than relaxing it: every ``config.*``
+    key is PLATFORM-scoped, so no school role holds one and the grant guard
+    would refuse to give it one. A school therefore had no way at all to learn
+    its own plan, and its screens fell back to asking a role question instead -
+    which is always true for an administrator and says nothing about what the
+    school bought.
+
+    Why no key of its own. The answer is not a secret kept from a school's
+    staff, and every screen needs it, a teacher's included. Requiring any key
+    would make the navigation render differently for two people on the same
+    plan, for a reason unrelated to the plan. What makes that safe is the
+    scope, not a permission: the tenant comes from the assertion the
+    authentication layer has already validated against the caller, so naming a
+    rival school's slug is refused before this view runs.
+
+    It reports states and nothing else. The entitlement rows, the overrides and
+    the depth grants that produce them stay on the platform endpoint.
+
+    docstring-name: My capabilities
+    """
+
+    permission_classes = [IsAuthenticatedAndActive]
+    # The caller's own tenant, which they may always assert. Optional so the
+    # platform layer answers for a CodeX operator who asserts nothing.
+    tenant_param_required = False
+    # A school configures itself while PENDING, and its navigation is drawn
+    # then. A nav that renders nothing during onboarding is broken exactly when
+    # it is first seen.
+    pending_tenant_surface = ("get",)
+
+    def get(self, request):
+        tenant, branch = resolve_request_scope(request)
+        data = bulk_effective_capabilities(tenant=tenant, branch=branch)
+        return success_response("Effective capabilities retrieved.", data)
+
+
 def _scoped_audit_queryset(request):
     tenant, branch = resolve_request_scope(request)
     return scoped_configuration_audit_queryset(tenant=tenant, branch=branch)

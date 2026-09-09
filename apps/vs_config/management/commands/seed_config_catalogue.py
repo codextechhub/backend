@@ -166,10 +166,10 @@ MODULES = [
     ("calendar", "Calendar and Timetable", True),
     ("student_portal", "Student Portal", True),
     ("parent_portal", "Parent and Guardian Portal", True),
-    # The cross-cutting services, held as one module so that a school reaching
-    # Plus reaches bulk import everywhere rather than module by module. A
-    # bursar who imported 900 students in January and is refused a 300-line
-    # vendor list in March cannot see why the same button stopped working.
+    # The cross-cutting services, held as one module so that a school reaches
+    # bulk import everywhere at once rather than module by module. A bursar who
+    # imported 900 students in January and is refused a 300-line vendor list in
+    # March cannot see why the same button stopped working.
     ("platform", "Platform Services", True),
 ]
 
@@ -188,7 +188,13 @@ DEPTH_BANDS = [
 #:
 #: (key, label, module key, depth)
 NAMED_BANDS = [
-    ("bulk_import", "Bulk Data Import", "platform", "PLUS"),
+    # Core, not Plus. Loading a roll from a spreadsheet is how a school arrives
+    # rather than something it grows into: a new school on the shallowest plan
+    # has four hundred students in a file and no other way in, and pricing the
+    # only door above them makes the cheapest plan the hardest one to start on.
+    # It also sits on the onboarding checklist, so putting it out of reach put
+    # a step there that most new schools could not take.
+    ("bulk_import", "Bulk Data Import", "platform", "CORE"),
     ("data_export", "Data Export and Reporting", "platform", "PLUS"),
     # sms_alerts was removed 2026-07-12 - SMS is not part of the product.
     # Existing rows were archived (is_active=False), not deleted.

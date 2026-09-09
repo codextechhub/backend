@@ -596,6 +596,20 @@ class TenantPermissionCatalogueView(TenantScopedRBACMixin, APIView):
     vocabulary, not a list of records, and a picker that has to page through
     its own options in order to tick two boxes is not a picker.
 
+    ``available`` is read through :func:`vs_rbac.plan_gate.plan_reader`, the
+    same function the plan gate itself resolves a capability with. That is the
+    point rather than a convenience: the two answered the question separately
+    once, the picker asking only whether the school had Finance and the gate
+    asking which band of it, so a school on Core was offered a hundred and
+    forty-eight keys that refused the first person who used one. Anything this
+    marks available, the gate allows. The reverse is not promised - a
+    permission may be withheld for reasons that have nothing to do with a plan.
+
+    ``band``, ``depth_label`` and ``unavailable_reason`` exist so a dimmed box
+    can say what it is waiting on. A picker that only greys a row leaves the
+    administrator to guess whether they misconfigured something or their school
+    never bought it.
+
     docstring-name: Permission catalogue
     """
 
@@ -611,75 +625,29 @@ class TenantPermissionCatalogueView(TenantScopedRBACMixin, APIView):
         self.rbac_permission = ROLE_VIEW_KEYS
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
-    def _capability_reader(self, tenant):
-        """A function answering "is this capability on for this school?".
-
-        Two things it is careful about.
-
-        **It asks the capability service, not the entitlement table.** Whether a
-        capability is on is computed from entitlement AND dependencies AND
-        operator overrides AND its own default; reading the entitlement rows
-        directly would disagree with the rest of the platform.
-
-        **A school with nothing switched on is treated as having everything.**
-        Entitlements are not granted at provisioning yet, so today every school
-        answers False to every capability. "Not provisioned" and "not bought"
-        are different facts and only one of them should hide a permission - and
-        with no way to tell them apart, hiding would empty this screen for every
-        school on the platform. So when a tenant has no capability on at all,
-        the catalogue offers everything and flags nothing. The moment
-        provisioning starts granting entitlements, the flags become real with no
-        change here.
-        """
-        from vs_config.conf import is_capability_enabled
-        from vs_config.models import Capability
-
-        cache: dict[str, bool] = {}
-
-        def enabled(key: str) -> bool:
-            if key not in cache:
-                try:
-                    cache[key] = bool(is_capability_enabled(key, tenant=tenant))
-                except Exception:  # noqa: BLE001 - a broken graph must not 500 a picker
-                    cache[key] = False
-            return cache[key]
-
-        anything_on = any(
-            enabled(key)
-            for key in Capability.objects.filter(is_active=True)
-            .values_list("key", flat=True)
-        )
-
-        def is_on(capability: str | None) -> bool:
-            if capability is None:
-                return True
-            if not anything_on:
-                return True
-            return enabled(capability)
-
-        return is_on
-
     def get(self, request, *args, **kwargs):
-        from .capability_map import capability_for
         from .models import PermissionScope, tenant_is_platform
-        
+        from .plan_gate import plan_reader
+
         tenant = self.get_tenant()
 
         permissions = (
             Permission.objects.filter(is_active=True)
-            .select_related("module", "resource", "action")
+            .select_related(
+                "module", "resource", "action", "capability", "capability__parent",
+            )
             .order_by("module_id", "resource_id", "action_id")
         )
         if not tenant_is_platform(tenant):
             permissions = permissions.filter(scope=PermissionScope.TENANT)
 
-        is_on = self._capability_reader(tenant)
+        read_plan = plan_reader(tenant)
 
         modules: dict[str, dict] = {}
         for permission in permissions:
             resource = permission.resource.name if permission.resource_id else ""
-            capability = capability_for(permission.module_id, resource)
-            available = is_on(capability)
+            capability, available, reason = read_plan(permission)
+            band = capability if capability and capability.parent_id else None
 
             bucket = modules.setdefault(
                 permission.module_id,
@@ -699,10 +667,16 @@ class TenantPermissionCatalogueView(TenantScopedRBACMixin, APIView):
                 # Flagged so the picker can say so. These flow through an
                 # approval rather than taking effect on save.
                 "is_restricted": permission.is_restricted,
-                # Which product this permission belongs to, and whether the
-                # school has it. Null capability means core: every school.
-                "capability": capability,
+                # What governs this permission, and what the school may do with
+                # it. A null capability is core to every school; a capability
+                # with no band is a whole module, sold or not sold.
+                "capability": capability.key if capability else None,
+                "band": band.key if band else None,
+                "depth_label": band.get_depth_display() if band else None,
                 "available": available,
+                # Present only when something is closed, and phrased for the
+                # person who can open it rather than for the one who cannot.
+                "unavailable_reason": reason or None,
             })
 
         return success_response(

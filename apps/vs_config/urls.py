@@ -22,6 +22,7 @@ urlpatterns = [
     path("entitlements/<slug:capability>/", views.EntitlementResetView.as_view(), name="config-entitlement-reset"),
     path("overrides/", views.OverrideListSetView.as_view(), name="config-override-list"),
     path("effective-capabilities/", views.EffectiveCapabilitiesView.as_view(), name="config-effective-capabilities"),
+    path("my-capabilities/", views.MyCapabilitiesView.as_view(), name="config-my-capabilities"),
     path("audit-events/", views.AuditEventListView.as_view(), name="config-audit-list"),
     path("audit-events/facets/", views.AuditEventFacetsView.as_view(), name="config-audit-facets"),
     path("audit-events/export/", views.AuditEventExportView.as_view(), name="config-audit-export"),

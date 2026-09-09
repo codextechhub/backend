@@ -111,8 +111,8 @@ class GateRefusesOnlyWhatThePlanDoesNotReachTests(_GateFixture):
         self.grant(Capability.Depth.CORE)
         refusal = plan_refusal([self.plus_key], self.tenant)
         self.assertNotEqual(refusal, "")
-        self.assertIn("Plus", refusal)
-        self.assertIn("Core", refusal)
+        # Names the product and not the tier - see
+        # ``test_the_message_names_the_product_and_never_the_tier``.
         self.assertIn("Finance", refusal)
 
     def test_a_core_school_keeps_its_core_keys(self):
@@ -171,12 +171,22 @@ class RefusalIsDistinguishableTests(_GateFixture):
         # authenticated and the school may be fully paid up on a shallow tier.
         self.assertEqual(PlanUpgradeRequired.http_status, 403)
 
-    def test_the_message_names_the_depth_needed_and_the_depth_held(self):
+    def test_the_message_names_the_product_and_never_the_tier(self):
+        """A school reads a refusal, not a price list.
+
+        Corona's bursar is refused mid-task. "Bulk Data Import is not part of
+        this school's plan" tells her who to ask. "This school reaches Core"
+        teaches her a word from our pricing and leaves her no better off, and
+        it appears on a screen a parent could be standing beside.
+        """
         self.switch_on()
         self.grant(Capability.Depth.CORE)
         message = plan_refusal([self.plus_key], self.tenant)
-        self.assertIn("Finance Plus", message)
-        self.assertIn("This school reaches Core", message)
+        self.assertIn("Finance", message)
+        self.assertIn("Contact CodeX", message)
+        for tier in ("Core", "Plus", "Advanced", "depth"):
+            with self.subTest(tier=tier):
+                self.assertNotIn(tier, message)
 
 
 class CapabilityLookupTests(_GateFixture):
@@ -235,7 +245,8 @@ class RefusalReachesTheClientTests(_GateFixture):
         response = self.client.get("/gated/")
         self.assertEqual(response.status_code, 403, response.data)
         self.assertEqual(response.data["error"]["code"], "PLAN_UPGRADE_REQUIRED")
-        self.assertIn("Finance Plus", response.data["message"])
+        self.assertIn("Finance", response.data["message"])
+        self.assertNotIn("Plus", response.data["message"])
 
     def test_a_deep_school_reaches_the_view(self):
         self.grant(Capability.Depth.ADVANCED)

@@ -325,6 +325,16 @@ class OnboardingRolesSurfaceTests(TestCase):
         )
 
 
+def make_capability(key, label):
+    """A sellable product row, for the tests that assert on the picker's flags."""
+    from vs_config.models import Capability
+
+    capability, _ = Capability.objects.get_or_create(
+        key=key, defaults={"label": label, "kind": Capability.Kind.MODULE},
+    )
+    return capability
+
+
 class PermissionCatalogueCapabilityTests(TestCase):
     """Which product each permission belongs to, and whether the school has it.
 
@@ -348,6 +358,14 @@ class PermissionCatalogueCapabilityTests(TestCase):
         make_permission("school.students.view", scope=PermissionScope.TENANT)
         make_permission("finance.invoice.view", scope=PermissionScope.TENANT)
         make_permission("procurement.vendor.view", scope=PermissionScope.TENANT)
+
+        # The products those permissions are filed under. They are built here
+        # rather than read from the seeded catalogue because the catalogue
+        # names a capability it can evaluate, not a string from a code map:
+        # a product with no row is a product no school can be said to lack.
+        cls.finance = make_capability("finance", "Finance")
+        cls.procurement = make_capability("procurement", "Procurement")
+        cls.students = make_capability("students", "Students")
 
         role = make_role(cls.school, name="School Admin", key="school_admin")
         make_role_permission(role, cls.view_perm)
@@ -399,27 +417,11 @@ class PermissionCatalogueCapabilityTests(TestCase):
 
     def test_once_a_school_has_a_module_the_others_are_flagged(self):
         """The flags become real the moment provisioning grants anything."""
-        from vs_config.models import Capability, CapabilityEntitlement
+        from vs_config.models import CapabilityEntitlement
 
-        # Built here rather than read from the seeded catalogue: a test that
-        # skips itself when the catalogue is absent proves nothing on the run
-        # that matters, and the two capabilities this asserts on are named in
-        # ``capability_map`` anyway.
-        finance, _ = Capability.objects.get_or_create(
-            key="finance",
-            defaults={"label": "Finance", "kind": Capability.Kind.MODULE},
-        )
-        Capability.objects.get_or_create(
-            key="procurement",
-            defaults={"label": "Procurement", "kind": Capability.Kind.MODULE},
-        )
-        Capability.objects.get_or_create(
-            key="students",
-            defaults={"label": "Students", "kind": Capability.Kind.MODULE},
-        )
         CapabilityEntitlement.objects.create(
             tenant=self.tenant,
-            capability=finance,
+            capability=self.finance,
             state=CapabilityEntitlement.State.GRANTED,
             source=CapabilityEntitlement.Source.PACKAGE,
         )
