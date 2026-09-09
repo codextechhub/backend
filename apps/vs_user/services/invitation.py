@@ -5,6 +5,7 @@ InvitationService handles:
   - Validating the invitation by user_id (not token)
   - Activating the account when the user submits their password
   - Resending an invitation (resets expiry, dispatches new email)
+  - Re-sending invitations whose email reached nobody, on a beat schedule
 """
 from __future__ import annotations
 
@@ -22,6 +23,15 @@ from ..services.audit import log_auth_event
 from ..tokens import CodeXRefreshToken
 
 logger = logging.getLogger(__name__)
+
+# An invitation whose email keeps failing is a bad address rather than a bad
+# moment, and a mailbox that does not exist would otherwise be written to every
+# quarter of an hour until the link expired.
+_MAX_DELIVERY_ATTEMPTS = 5
+
+# One sweep's worth. The window repeats, so a backlog drains over several runs
+# instead of holding a worker for the whole of it.
+_RETRY_BATCH_SIZE = 200
 
 
 class InvitationService:
@@ -273,6 +283,7 @@ class InvitationService:
         queue_invitation_email(
             invitation_id=invitation.pk,
             token=token,
+            user=user,
             owner_id=str(requested_by.id) if requested_by else None,
             label=f"Invitation email to {user.email}",
         )
@@ -286,3 +297,115 @@ class InvitationService:
         )
 
         return invitation
+
+    # ── Recovery ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def retry_failed_deliveries(
+        *, max_attempts: int = _MAX_DELIVERY_ATTEMPTS, limit: int = _RETRY_BATCH_SIZE,
+    ) -> dict:
+        """Re-send the invitations whose email reached nobody.
+
+        FAILED is the only status swept, and it is terminal on both routes that
+        can produce it: the notification engine writes it after exhausting its
+        own retries, and ``queue_invitation_email`` writes it when the broker
+        refuses the hand-off outright. Neither can still be in flight, so
+        nothing here can race a delivery that is about to succeed. PENDING is
+        deliberately left alone for the same reason - it is what an invitation
+        looks like while its worker has yet to run.
+
+        A used or expired invitation is not re-sent: the first has been
+        accepted and the second advertises a link that would be refused.
+
+        Returns a count of what it did, which is what the beat task logs.
+        """
+        base = UserInvitation.objects.filter(
+            email_status=UserInvitation.EmailStatus.FAILED,
+            is_used=False,
+            expires_at__gt=timezone.now(),
+        )
+        # Reported rather than retried: these need a human to look at the
+        # address, and a silent cap is a backlog nobody knows about.
+        exhausted = base.filter(email_attempts__gte=max_attempts).count()
+        owed = list(
+            base.filter(email_attempts__lt=max_attempts)
+            .order_by('pk')
+            .values_list('pk', flat=True)[:limit]
+        )
+
+        retried = skipped = 0
+        for invitation_id in owed:
+            if InvitationService._redispatch(invitation_id, max_attempts=max_attempts):
+                retried += 1
+            else:
+                skipped += 1
+
+        return {'retried': retried, 'skipped': skipped, 'exhausted': exhausted}
+
+    @staticmethod
+    def _redispatch(invitation_id: int, *, max_attempts: int) -> bool:
+        """Rotate one invitation's token and queue its email again.
+
+        Rotating is not a choice. Only the token's digest is stored, so the link
+        that was going to be emailed cannot be recovered and a re-send has to
+        carry a new one. It costs nothing: the row is only reachable here
+        because its email reached nobody, so there is no live link being killed.
+
+        The row is re-read under its own lock and re-checked against the
+        conditions that selected it, because an administrator clicking Resend
+        can reach the same invitation in the same moment.
+
+        ``reset()`` is deliberately not used. It would zero the attempt count,
+        so a mailbox that does not exist would be retried forever, and it would
+        push the expiry out on every sweep, so a link would outlive the window
+        it was issued with.
+
+        One invitation that cannot be re-sent must not stop the rest of the
+        sweep, so a failure here is logged and counted rather than raised.
+        """
+        from ..tasks import queue_invitation_email
+
+        try:
+            with transaction.atomic():
+                invitation = (
+                    UserInvitation.objects.select_for_update()
+                    .select_related('user')
+                    .filter(
+                        pk=invitation_id,
+                        email_status=UserInvitation.EmailStatus.FAILED,
+                        is_used=False,
+                        expires_at__gt=timezone.now(),
+                        email_attempts__lt=max_attempts,
+                    )
+                    .first()
+                )
+                if invitation is None:
+                    return False
+
+                token, token_hash = issue_invitation_token()
+                invitation.token_hash = token_hash
+                invitation.email_status = UserInvitation.EmailStatus.PENDING
+                invitation.save(update_fields=[
+                    'token_hash', 'email_status', 'updated_at',
+                ])
+
+                queue_invitation_email(
+                    invitation_id=invitation.pk,
+                    token=token,
+                    user=invitation.user,
+                    # The queue row belongs to whoever asked for the invitation
+                    # in the first place; a recovery sweep has no actor of its
+                    # own and must not invent one.
+                    owner_id=(
+                        str(invitation.invited_by_id)
+                        if invitation.invited_by_id else None
+                    ),
+                    label=f'Invitation email to {invitation.user.email}',
+                )
+            return True
+        except Exception:
+            logger.exception(
+                'retry_failed_deliveries: invitation %s could not be re-sent',
+                invitation_id,
+            )
+            return False

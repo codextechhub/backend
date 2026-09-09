@@ -46,6 +46,18 @@ app.conf.beat_schedule = {
         "schedule": crontab(hour=2, minute=45),
     },
 
+    # --- vs_user (invitation delivery) ------------------------------------
+    # An invitation is asked for inside a transaction and handed to the broker
+    # after it commits, so a broker outage leaves an account that was invited
+    # and an email nobody sent. The refusal is recorded as a failed delivery on
+    # the invitation; this is what turns that record back into an email.
+    # Idempotent: a re-send rotates the token, and a link that was used or has
+    # expired is not re-sent at all.
+    "user-retry-failed-invitation-emails": {
+        "task": "vs_user.retry_failed_invitation_emails",
+        "schedule": crontab(minute="*/15"),
+    },
+
     # --- vs_finance (dunning) --------------------------------------------
     # Daily: generate the day's overdue reminders and dispatch every PENDING
     # notice. Idempotent per (invoice, level) and per run date.

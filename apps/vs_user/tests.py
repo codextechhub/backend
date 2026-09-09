@@ -5256,3 +5256,228 @@ class AuthEventLogTenantIsolationTests(TestCase):
 
         platform_side = self.get(TenantAPIClient(self.cx_officer))
         self.assertIn(str(orphan.pk), self._ids(platform_side))
+
+
+class ABrokerOutageMustNotLookLikeASentInvitationTests(TestCase):
+    """Greenfield is created while Redis is unavailable.
+
+    The account is made, the invitation row is written, and the enqueue that
+    should have produced the principal's email is refused by a broker that is
+    not there. Nothing about the refusal can reach the caller: it happens in an
+    ``on_commit`` callback, after provisioning has returned its 201. So the
+    refusal has to be written down where a later process can find it, and it
+    has to be turned back into an email without anyone noticing it was missing.
+
+    Delivery itself is mocked throughout. These tests are about the hand-off to
+    the broker and what is recorded when it does not happen.
+    """
+
+    class _BrokerDown(Exception):
+        """Stands in for the broker's connection error, which is not the point."""
+
+    def _invited(self, email="principal@greenfield.test"):
+        from vs_user.services.invitation import InvitationService
+
+        user = make_cx_user(email=email)
+        invitation, token = InvitationService.create(user=user, invited_by=user)
+        return user, invitation, token
+
+    def _queue(self, user, invitation, token, *, refused=False):
+        """Run one hand-off to the end of the transaction that asked for it."""
+        from vs_user import tasks
+
+        with mock.patch.object(
+            tasks.send_invitation_email_task, "delay",
+            side_effect=self._BrokerDown("Error 111 connecting to redis:6379") if refused else None,
+        ) as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                tasks.queue_invitation_email(
+                    invitation_id=invitation.pk,
+                    token=token,
+                    user=user,
+                    owner_id=None,
+                    label=f"Invitation email to {user.email}",
+                )
+        invitation.refresh_from_db()
+        return delay
+
+    def _sweep(self, **kwargs):
+        """Run the recovery sweep and return its summary and the enqueue mock."""
+        from vs_user import tasks
+        from vs_user.services.invitation import InvitationService
+
+        with mock.patch.object(tasks.send_invitation_email_task, "delay") as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                summary = InvitationService.retry_failed_deliveries(**kwargs)
+        return summary, delay
+
+    # ── the refusal is written down ───────────────────────────────────────────
+
+    def test_a_refused_hand_off_is_recorded_as_a_failed_delivery(self):
+        from vs_user.models import UserInvitation
+
+        user, invitation, token = self._invited()
+
+        self._queue(user, invitation, token, refused=True)
+
+        self.assertEqual(invitation.email_status, UserInvitation.EmailStatus.FAILED)
+        self.assertEqual(invitation.email_attempts, 1)
+
+    def test_the_recorded_reason_carries_no_broker_credentials(self):
+        """``email_last_error`` outlives the outage; a broker URL must not.
+
+        The exception a dead broker raises quotes the URL it could not reach,
+        credentials and all, and this column is read back by staff screens.
+        """
+        user, invitation, token = self._invited()
+
+        self._queue(user, invitation, token, refused=True)
+
+        self.assertIn("DISPATCH_REFUSED", invitation.email_last_error)
+        self.assertIn("_BrokerDown", invitation.email_last_error)
+        self.assertNotIn("redis", invitation.email_last_error)
+
+    def test_an_accepted_hand_off_leaves_the_delivery_status_alone(self):
+        """PENDING means the worker has yet to answer, and that is the truth here."""
+        from vs_user.models import UserInvitation
+
+        user, invitation, token = self._invited()
+
+        delay = self._queue(user, invitation, token)
+
+        self.assertEqual(delay.call_count, 1)
+        self.assertEqual(invitation.email_status, UserInvitation.EmailStatus.PENDING)
+        self.assertEqual(invitation.email_attempts, 0)
+
+    def test_a_refusal_does_not_overwrite_a_real_delivery_failure(self):
+        """Under eager mode the send has already run and already been judged.
+
+        Its reason is the useful one - a rejected mailbox, an unreachable SMTP
+        host - and replacing it with the enqueue's own exception would lose it.
+        """
+        from vs_user.models import UserInvitation
+
+        user, invitation, token = self._invited()
+        UserInvitation.objects.filter(pk=invitation.pk).update(
+            email_status=UserInvitation.EmailStatus.FAILED,
+            email_last_error="smtp.zoho.com unreachable",
+            email_attempts=1,
+        )
+
+        self._queue(user, invitation, token, refused=True)
+
+        self.assertEqual(invitation.email_last_error, "smtp.zoho.com unreachable")
+        self.assertEqual(invitation.email_attempts, 1)
+
+    # ── and turned back into an email ─────────────────────────────────────────
+
+    def test_the_sweep_re_sends_what_the_broker_never_took(self):
+        from vs_user.models import UserInvitation
+
+        user, invitation, token = self._invited()
+        self._queue(user, invitation, token, refused=True)
+
+        summary, delay = self._sweep()
+
+        self.assertEqual(summary["retried"], 1)
+        self.assertEqual(delay.call_count, 1)
+        invitation.refresh_from_db()
+        self.assertEqual(invitation.email_status, UserInvitation.EmailStatus.PENDING)
+
+    def test_the_re_send_carries_a_new_token_and_kills_the_old_one(self):
+        """Only the digest is stored, so the lost link cannot be repeated.
+
+        Nothing is broken by rotating it: the row is only swept because its
+        email reached nobody, so there is no live link to invalidate.
+        """
+        from vs_user.action_tokens import invitation_token_digest
+
+        user, invitation, token = self._invited()
+        self._queue(user, invitation, token, refused=True)
+
+        _, delay = self._sweep()
+
+        invitation.refresh_from_db()
+        reissued = delay.call_args.kwargs["token"]
+        self.assertNotEqual(reissued, token)
+        self.assertEqual(invitation_token_digest(reissued), invitation.token_hash)
+        self.assertNotEqual(invitation_token_digest(token), invitation.token_hash)
+
+    def test_the_sweep_leaves_an_invitation_still_in_flight_alone(self):
+        """PENDING is what a queued invitation looks like before its worker runs.
+
+        Sweeping it would rotate the token out from under a delivery that is
+        about to succeed, so only the terminal FAILED state is picked up.
+        """
+        user, invitation, token = self._invited()
+        self._queue(user, invitation, token)
+
+        summary, delay = self._sweep()
+
+        self.assertEqual(summary["retried"], 0)
+        self.assertEqual(delay.call_count, 0)
+
+    def test_an_accepted_invitation_is_not_re_sent(self):
+        user, invitation, token = self._invited()
+        self._queue(user, invitation, token, refused=True)
+        invitation.consume()
+
+        summary, delay = self._sweep()
+
+        self.assertEqual(summary["retried"], 0)
+        self.assertEqual(delay.call_count, 0)
+
+    def test_an_expired_invitation_is_not_re_sent(self):
+        """The link it advertises would be refused, so sending it helps nobody."""
+        from vs_user.models import UserInvitation
+
+        user, invitation, token = self._invited()
+        self._queue(user, invitation, token, refused=True)
+        UserInvitation.objects.filter(pk=invitation.pk).update(
+            expires_at=timezone.now() - timedelta(days=1),
+        )
+
+        summary, delay = self._sweep()
+
+        self.assertEqual(summary["retried"], 0)
+        self.assertEqual(delay.call_count, 0)
+
+    def test_a_mailbox_that_never_accepts_is_reported_rather_than_retried_forever(self):
+        """A bad address is not a bad moment, and the cap must not be silent."""
+        from vs_user.models import UserInvitation
+
+        user, invitation, token = self._invited()
+        self._queue(user, invitation, token, refused=True)
+        UserInvitation.objects.filter(pk=invitation.pk).update(email_attempts=5)
+
+        summary, delay = self._sweep()
+
+        self.assertEqual(summary["retried"], 0)
+        self.assertEqual(summary["exhausted"], 1)
+        self.assertEqual(delay.call_count, 0)
+        invitation.refresh_from_db()
+        self.assertEqual(invitation.email_status, UserInvitation.EmailStatus.FAILED)
+
+    def test_each_sweep_counts_one_attempt_so_the_cap_is_reachable(self):
+        """The retry must not reset the counter it is bounded by."""
+        user, invitation, token = self._invited()
+        self._queue(user, invitation, token, refused=True)
+
+        for _ in range(4):
+            from vs_user import tasks
+
+            with mock.patch.object(
+                tasks.send_invitation_email_task, "delay",
+                side_effect=self._BrokerDown("still down"),
+            ):
+                with self.captureOnCommitCallbacks(execute=True):
+                    from vs_user.services.invitation import InvitationService
+                    InvitationService.retry_failed_deliveries()
+
+        invitation.refresh_from_db()
+        self.assertEqual(invitation.email_attempts, 5)
+
+        summary, delay = self._sweep()
+        self.assertEqual(summary["retried"], 0)
+        self.assertEqual(summary["exhausted"], 1)
+        self.assertEqual(delay.call_count, 0)

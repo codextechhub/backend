@@ -1196,9 +1196,19 @@ class PrimaryAdminHasNoRoleLabelTests(TestCase):
         return client
 
     def _create(self, payload, *, expect=201):
-        response = self._client().post(
-            reverse("school-create"), payload, format="json",
-        )
+        """Create a school and run the callbacks its creation registers.
+
+        The invitation email is handed to the broker after the creation
+        transaction commits, and the admin link's invite status is written from
+        whether that hand-off was taken. Without executing the callbacks the
+        link stays QUEUED, which is the truth mid-transaction and not the truth
+        a caller ever sees.
+        """
+        with mock.patch("vs_user.tasks.send_invitation_email_task.delay"):
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self._client().post(
+                    reverse("school-create"), payload, format="json",
+                )
         self.assertEqual(response.status_code, expect, response.data)
         return response
 

@@ -235,6 +235,7 @@ class UserCreationService:
         queue_invitation_email(
             invitation_id=invitation.pk,
             token=token,
+            user=user,
             owner_id=str(requested_by.id) if requested_by else None,
             label=f"Invitation email to {user.email}",
         )

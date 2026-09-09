@@ -821,3 +821,104 @@ class ProvisioningInviteWaitsForCommitTests(TestCase):
         self.assertFalse(
             User.objects.filter(email="head@commit-school.test").exists(),
         )
+
+
+class TheAdminLinkNeverClaimsAnInvitationNobodySentTests(TestCase):
+    """Greenfield Academy is created while Redis is unavailable.
+
+    The account is made and its grant is written, and then the enqueue that
+    should have produced the principal's invitation email is refused by a broker
+    that is not there. The link was stamped SENT inside the creation
+    transaction, before the enqueue had even been attempted, so the console
+    reported an invitation that no task existed for and no email carried. Ada
+    could not activate Greenfield, and nothing on the record said why.
+
+    The link is written from the hand-off's outcome now, and written again when
+    a retry succeeds - a school does not stay marked Failed for an invitation
+    that has since gone out.
+    """
+
+    class _BrokerDown(Exception):
+        """Stands in for the broker's connection error, which is not the point."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.actor = make_vision_user(
+            email="broker-outage@example.com", super_admin=True,
+        )
+
+    def _greenfield(self):
+        """A school, its branch, the branch admin role, and a queued admin link."""
+        school = make_school(slug="greenfield", name="Greenfield Academy")
+        branch = make_branch(school, name="Main Branch")
+        role = TenantRoleTemplate.objects.create(
+            tenant=school.tenant, key=f"branch_admin-{branch.pk}",
+            name="Branch Admin - Main Branch", branch=branch, status="ACTIVE",
+        )
+        contact = ContactInfo.objects.create(
+            full_name="Ada Okoye", email="principal@greenfield.test",
+        )
+        link = BranchPrimaryAdmin.objects.create(
+            branch=branch, contact=contact, branch_role="Head Teacher",
+            invite_status=InviteStatus.QUEUED,
+        )
+        return school, branch, role, link
+
+    def _provision(self, *, refused):
+        from .services.admin_provisioning import provision_admin_user
+
+        school, branch, role, link = self._greenfield()
+        with mock.patch(
+            "vs_user.tasks.send_invitation_email_task.delay",
+            side_effect=self._BrokerDown("connection refused") if refused else None,
+        ):
+            with self.captureOnCommitCallbacks(execute=True):
+                user = provision_admin_user(
+                    contact=link.contact, admin_link=link, school=school,
+                    branch=branch, role=role.key, actor=self.actor,
+                )
+        link.refresh_from_db()
+        return link, user, role, school
+
+    def test_the_link_is_marked_failed_when_the_broker_refuses(self):
+        link, _, _, _ = self._provision(refused=True)
+
+        self.assertEqual(link.invite_status, InviteStatus.FAILED)
+        self.assertIsNone(link.invite_sent_at)
+
+    def test_the_link_is_marked_sent_only_once_the_broker_has_the_job(self):
+        link, _, _, _ = self._provision(refused=False)
+
+        self.assertEqual(link.invite_status, InviteStatus.SENT)
+        self.assertIsNotNone(link.invite_sent_at)
+
+    def test_the_account_and_its_grant_survive_the_outage(self):
+        """The school is still created. Only the email is owed.
+
+        Rolling the provisioning back would be worse: the account, the role and
+        the branch would all have to be made again, and the one thing actually
+        missing is recoverable on its own.
+        """
+        link, user, role, school = self._provision(refused=True)
+
+        self.assertEqual(user.email, "principal@greenfield.test")
+        self.assertTrue(
+            TenantUserRoleAssignment.objects.filter(
+                tenant=school.tenant, user=user, role=role,
+                assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+            ).exists()
+        )
+
+    def test_a_successful_retry_clears_the_failed_badge(self):
+        from vs_user.services.invitation import InvitationService
+
+        link, _, _, _ = self._provision(refused=True)
+
+        with mock.patch("vs_user.tasks.send_invitation_email_task.delay"):
+            with self.captureOnCommitCallbacks(execute=True):
+                summary = InvitationService.retry_failed_deliveries()
+
+        self.assertEqual(summary["retried"], 1)
+        link.refresh_from_db()
+        self.assertEqual(link.invite_status, InviteStatus.SENT)
+        self.assertIsNotNone(link.invite_sent_at)

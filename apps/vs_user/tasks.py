@@ -11,6 +11,10 @@ two reasons the call sites depend on:
 Nothing enqueues these tasks directly. Callers go through the queue_* helpers
 below, which hold the enqueue until the caller's transaction commits - see
 queue_invitation_email for why enqueuing any earlier silently loses emails.
+That ordering puts the enqueue beyond the caller's reach, so the helper records
+its own outcome rather than reporting it: a refused hand-off becomes a FAILED
+delivery on the invitation row and a broadcast on invitation_dispatch_settled,
+and retry_failed_invitation_emails re-sends what the broker never took.
 
 The engine renders DB templates, creates the Notification record, and sends
 the email inside vs_notifications.deliver_email_notification. Invitation email
@@ -22,7 +26,8 @@ SECTION 1 - INVITATION EMAIL
 ─────────────────────────────────────────────────────────────────────────────
 Dispatched when a new user account is created or when an admin resends.
 The invitation link contains a one-time invitation-family token. Only its
-HMAC-SHA-256 digest is stored on UserInvitation.
+HMAC-SHA-256 digest is stored on UserInvitation, which is why a re-send issues
+a new token rather than repeating the one that was lost.
 
 SECTION 2 - PASSWORD RESET EMAIL
 ─────────────────────────────────────────────────────────────────────────────
@@ -161,7 +166,70 @@ def send_invitation_email_task(self, invitation_id: int, token: str):
     logger.info('Invitation email dispatched for %s', user.email)
 
 
-def queue_invitation_email(*, invitation_id, token, owner_id=None, label):
+def _record_refused_dispatch(invitation_id, exc) -> None:
+    """Write a hand-off the broker would not take onto the invitation row.
+
+    This is the durable half of the failure. The row is already committed by
+    the time the enqueue runs, so it is the one place a refused hand-off can be
+    recorded where a later process can find it - which is what makes
+    :func:`retry_failed_invitation_emails` possible at all.
+
+    Conditional on PENDING so it can only fill in an unanswered invitation.
+    Under ``CELERY_TASK_ALWAYS_EAGER`` the send runs inline and the receivers in
+    :mod:`vs_user.receivers` have already written the real delivery outcome;
+    overwriting that would replace the reason the message actually failed with
+    a less useful one.
+
+    Only the exception's type is stored. A broker connection error carries the
+    broker URL, credentials included, and ``email_last_error`` is a database
+    column that outlives the outage. The full exception goes to the log, where
+    it belongs.
+    """
+    from django.db.models import F
+
+    from .models import UserInvitation
+
+    try:
+        UserInvitation.objects.filter(
+            pk=invitation_id, email_status=UserInvitation.EmailStatus.PENDING,
+        ).update(
+            email_status=UserInvitation.EmailStatus.FAILED,
+            email_last_error=f'DISPATCH_REFUSED: {type(exc).__name__}',
+            email_attempts=F('email_attempts') + 1,
+            updated_at=timezone.now(),
+        )
+    except Exception:
+        logger.exception(
+            'Could not record the refused invitation dispatch for invitation %s',
+            invitation_id,
+        )
+
+
+def _announce_dispatch(invitation_id, user, *, accepted: bool) -> None:
+    """Publish the hand-off outcome to whoever keeps their own record of it.
+
+    ``send_robust`` because a receiver belongs to another module and the
+    dispatch is already done: a school's admin link failing to update must not
+    turn a queued email into an exception in the callback that queued it.
+    """
+    from .models import UserInvitation
+    from .signals import invitation_dispatch_settled
+
+    for receiver, response in invitation_dispatch_settled.send_robust(
+        sender=UserInvitation,
+        invitation_id=invitation_id,
+        user=user,
+        accepted=accepted,
+    ):
+        if isinstance(response, Exception):
+            logger.error(
+                'invitation_dispatch_settled receiver %s failed for invitation %s',
+                getattr(receiver, '__qualname__', receiver), invitation_id,
+                exc_info=response,
+            )
+
+
+def queue_invitation_email(*, invitation_id, token, user, owner_id=None, label):
     """Queue the invitation email for after the caller's transaction commits.
 
     Every caller writes the invitation row inside a transaction and then asks
@@ -176,11 +244,21 @@ def queue_invitation_email(*, invitation_id, token, owner_id=None, label):
     caller rolls back, which is right too: the invitation it advertises does
     not exist.
 
-    A broker failure is logged and swallowed. The row is already committed by
-    the time this runs, so raising could not undo it; the invitation stands and
-    can be resent.
+    The price of that ordering is that the enqueue happens after the caller has
+    returned, so the caller cannot see it fail. Calling this function therefore
+    proves only that an invitation is owed, never that one was sent, and
+    nothing may record delivery on the strength of it. The outcome is written
+    on the invitation row and announced through ``invitation_dispatch_settled``
+    once it is known, and that is what a record of "sent" must be built from.
+
+    Raising is not an option and never was: the row is committed by the time
+    this runs, so an exception could not undo it. What a refusal gets instead
+    is an explicit FAILED delivery state that
+    :func:`retry_failed_invitation_emails` sweeps up, rather than a log line
+    nobody reads and an invitation nobody sends.
     """
     def _dispatch():
+        accepted = True
         try:
             send_invitation_email_task.delay(
                 invitation_id=invitation_id,
@@ -194,14 +272,28 @@ def queue_invitation_email(*, invitation_id, token, owner_id=None, label):
                 # Fan-out plumbing: one bell notification per invited row is spam.
                 _job_notify=False,
             )
-        except Exception:
+        except Exception as exc:
+            accepted = False
             logger.error(
-                'Failed to dispatch invitation email for invitation %s - it will '
-                'need to be resent manually.',
+                'Failed to dispatch invitation email for invitation %s - recorded '
+                'as a failed delivery for the retry sweep to pick up.',
                 invitation_id, exc_info=True,
             )
+            _record_refused_dispatch(invitation_id, exc)
+        _announce_dispatch(invitation_id, user, accepted=accepted)
 
     transaction.on_commit(_dispatch)
+
+
+@shared_task(name="vs_user.retry_failed_invitation_emails")
+def retry_failed_invitation_emails():
+    """Re-send invitations whose email reached nobody. Runs on a beat schedule."""
+    from .services.invitation import InvitationService
+
+    summary = InvitationService.retry_failed_deliveries()
+    if summary["retried"] or summary["exhausted"]:
+        logger.warning("retry_failed_invitation_emails: %s", summary)
+    return summary
 
 
 # =============================================================================

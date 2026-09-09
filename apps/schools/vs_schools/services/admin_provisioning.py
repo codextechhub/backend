@@ -2,13 +2,21 @@
 admin_provisioning.py
 
 Converts ContactInfo + BranchPrimaryAdmin / SchoolPrimaryAdmin records
-(created with invite_status=QUEUED) into real User accounts and dispatches
-the invitation email.
+(created with invite_status=QUEUED) into real User accounts and asks for the
+invitation email.
 
 Call provision_admin_user() immediately after creating either admin link
 record inside the school/branch creation transaction. A failure rolls back the
 service savepoint and then escapes so the parent school or branch transaction
 also rolls back. A creation response must never outlive its required admin.
+
+Where an account is created, the link is left QUEUED. Asking for the email and
+the email being handed to a broker are two different moments, and this is the
+earlier of them, so a status written now could only be a guess. The receiver in
+:mod:`schools.vs_schools.signals` writes SENT or FAILED once the hand-off has
+settled, and writes it again when a retry succeeds, which is why the answer does
+not live here. The existing-account path below stamps SENT itself, because no
+email is owed on it and there is nothing to wait for.
 """
 from __future__ import annotations
 
@@ -197,18 +205,18 @@ def provision_admin_user(
             queue_invitation_email(
                 invitation_id=invitation.pk,
                 token=token,
+                user=user,
                 owner_id=str(invited_by.id) if invited_by else None,
                 label=f"Invitation email to {user.email}",
             )
 
-            # Mark the admin link record so it is not re-processed.
-            admin_link.invite_status = InviteStatus.SENT
-            admin_link.invite_sent_at = timezone.now()
-            admin_link.save(update_fields=["invite_status", "invite_sent_at"])
+            # The link stays QUEUED. Nothing here knows yet whether an email
+            # is on its way, and the module docstring says where the answer is
+            # written from.
 
             logger.info(
                 "provision_admin_user: created User %s (role=%s, branch=%s) "
-                "and dispatched invite",
+                "and queued the invitation",
                 email,
                 role_obj.key,
                 getattr(branch, "pk", None),
