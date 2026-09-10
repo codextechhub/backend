@@ -26,7 +26,7 @@ from urllib.parse import urlencode
 from django.db import transaction
 
 from vs_workflow.constants import WorkflowStageAction as StageActionEnum
-from vs_workflow.exceptions import InvalidInstanceStateError
+from vs_workflow.exceptions import InvalidInstanceStateError, ReversalNotAllowedError
 from vs_workflow.handlers import BaseWorkflowHandler, register_handler
 
 logger = logging.getLogger("vs_payments.workflow_handlers")  # Diagnostics for the dispatch hand-off.
@@ -170,3 +170,50 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
 
     def on_returned(self, instance, context) -> None:
         self._set_approval_status(instance, "DRAFT")  # Requester amends and resubmits.
+
+    def validate_reversal(self, instance, context) -> None:
+        """Refuse the reversal once any instruction has been claimed for the provider.
+
+        For every other document type, undoing an approval is the whole of the
+        change. A payout is different: approval hands the batch to a worker, and
+        from the moment an instruction is claimed the money is either with the
+        provider or on its way to the beneficiary. Reopening the approval then
+        produces a batch that reads as awaiting a decision while it is being paid,
+        and an administrator looking at "In progress" has no way to know the
+        transfer already left. A payout that has gone out is unwound as a payout,
+        by settling or reversing the instructions themselves.
+
+        Locking the instructions is what makes this hold rather than usually hold.
+        A dispatch claiming a row takes the same lock and re-checks the approval
+        inside that claim, so the two serialise: a reversal that arrives first
+        stops the send, and a send that starts first refuses the reversal.
+        """
+        from .constants import PayoutBatchStatus, PayoutStatus
+
+        batch = self._load(instance)  # Row-locked batch.
+        statuses = set(  # Locks every instruction, not only the ones read back.
+            batch.instructions.select_for_update().values_list("status", flat=True)
+        )
+        if (statuses - {PayoutStatus.PENDING}
+                or batch.status != PayoutBatchStatus.DRAFT
+                or batch.submitted_at is not None):
+            raise ReversalNotAllowedError(
+                "This payout batch has already been sent to the provider, so its "
+                "approval cannot be undone. Settle or reverse the payouts "
+                "themselves instead.",
+                batch_reference=batch.reference,
+                batch_status=batch.status,
+            )
+
+    def on_action_reversed(self, instance, context) -> None:
+        """Return an undispatched batch to the queue it was approved out of.
+
+        ``validate_reversal`` has already refused anything that reached the
+        provider, so what is left is a batch still sitting on pending
+        instructions. Its ``approval_status`` marker still says APPROVED, and the
+        sweep that re-dispatches lost hand-offs selects on exactly that marker;
+        only the instance status stops it. Putting the marker back keeps the two
+        records agreeing, so a batch whose approval was undone does not depend on
+        a single check to stay unsent.
+        """
+        self._set_approval_status(instance, "PENDING_APPROVAL")  # Awaiting a decision again.

@@ -204,10 +204,15 @@ def _activate_stage(instance: WorkflowInstance, stage: WorkflowStage,
                     attempt: int) -> WorkflowStageInstance:
     """Activate a stage and snapshot the current eligible approver list.
 
-    The approver snapshot is written once at activation. Re-running this on
-    resubmit (new attempt) produces a fresh snapshot, so approver list changes
-    between attempts take effect without touching the previous attempt's history.
-    get_or_create is used so double-calling on the same attempt is idempotent.
+    The approver snapshot is written at activation. Re-running this on resubmit
+    (new attempt) produces a fresh snapshot, so approver list changes between
+    attempts take effect without touching the previous attempt's history.
+
+    Activating the same attempt twice is idempotent in both halves. The stage row
+    is fetched with get_or_create, and the snapshot is replaced rather than added
+    to: a stage the engine re-enters after a reversal rolled it back would
+    otherwise carry two copies of every eligible approver, and an ALL_OF stage
+    counting a doubled list can never reach its own threshold again.
     """
     stage_instance, _ = WorkflowStageInstance.objects.get_or_create(
         instance=instance, stage=stage, attempt=attempt,
@@ -221,6 +226,8 @@ def _activate_stage(instance: WorkflowInstance, stage: WorkflowStage,
 
     eligible = approvers_service.resolve_approvers(stage, instance)
     # Freeze eligibility so later RBAC or org-chart changes do not alter this attempt.
+    WorkflowStageApprover.objects.filter(
+        stage_instance=stage_instance, attempt=attempt).delete()
     WorkflowStageApprover.objects.bulk_create([
         WorkflowStageApprover(stage_instance=stage_instance, user=ea.user,
                               on_behalf_of=ea.on_behalf_of, attempt=attempt)
@@ -269,9 +276,15 @@ def _skip_stage(instance: WorkflowInstance, stage: WorkflowStage, attempt: int,
     )
     if si.status != WorkflowStageStatus.SKIPPED:
         si.status = WorkflowStageStatus.SKIPPED
+        # Stamp when the engine reached it, not only when it first created the
+        # row. Stage rows are ordered against each other by activated_at, which
+        # is how a reversal works out which stages ran after the one it reopens,
+        # and a stage the engine walks past a second time has to take its place
+        # in that order rather than keep a blank.
+        si.activated_at = timezone.now()
         si.resolved_at = timezone.now()
         si.skip_reason = reason_detail
-        si.save(update_fields=["status", "resolved_at", "skip_reason"])
+        si.save(update_fields=["status", "activated_at", "resolved_at", "skip_reason"])
     audit_service.write(instance, reason_event, stage_instance=si, context={
         "stage_code": stage.code, "attempt": attempt, "detail": reason_detail,
     })

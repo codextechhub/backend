@@ -1,6 +1,13 @@
 """
 Action recording - record_action, withdraw, cancel, reverse_action, resubmit.
 Every function acquires select_for_update on the instance (F2 - pessimistic locking).
+
+Each of these hands the outcome to the module that owns the document, through the
+handler contract in ``vs_workflow.handlers.base``, because the engine's record of a
+decision and the document's own state have to say the same thing. Reversal is the
+only one that asks first as well as tells afterwards: it is the operation that
+declares a recorded outcome untrue, and a decision already acted on outside the
+engine cannot be undone by editing the engine's account of it.
 """
 
 import logging
@@ -225,9 +232,137 @@ def cancel(instance_id, admin, reason: str) -> WorkflowInstance:
         return instance
 
 
-# Reverse a prior approver action and reopen its stage when needed.
+# Resolve the handler that has to agree before a decision is undone.
+def _reversal_handler(instance):
+    """Return the document handler, refusing the reversal when there is none.
+
+    Cancellation and withdrawal tolerate a missing handler because they are the
+    escape hatches that must work on a stuck instance. Reversal is the opposite
+    case: it declares a recorded outcome untrue, and the only party that knows
+    whether that outcome has already been acted on is the module that owns the
+    document. With nobody to ask, the answer is no.
+    """
+    try:
+        return get_handler(instance.document_type)
+    except UnknownDocumentTypeError as exc:
+        raise ReversalNotAllowedError(
+            f"No handler is registered for document type "
+            f"'{instance.document_type}', so nothing can confirm this decision "
+            f"is safe to undo.",
+            document_type=instance.document_type,
+        ) from exc
+
+
+# Void one action row and append the reversal that records it.
+def _void_action(action: WorkflowStageAction, admin, reason: str,
+                 comment: str) -> WorkflowStageAction:
+    """Reverse a single recorded vote, append-only.
+
+    The original keeps its own text and gains reversed_at/reversed_by; a new row
+    records the reversal against the admin who ordered it. Nothing is deleted,
+    so the trail still answers who voted what and who undid it.
+    """
+    action.reversed_at = timezone.now()
+    action.reversed_by = admin
+    action.reversal_reason = reason
+    action.save(update_fields=["reversed_at", "reversed_by", "reversal_reason"])
+    return WorkflowStageAction.objects.create(
+        stage_instance=action.stage_instance, actor=admin,
+        action=action.action, comment=comment,
+        attempt=action.attempt, is_reversal_of=action,
+    )
+
+
+# Decide whether the reversed vote is what resolved its own stage.
+def _vote_resolved_its_stage(stage_instance: WorkflowStageInstance,
+                             original: WorkflowStageAction) -> bool:
+    """Report whether reopening the stage is the honest consequence of the reversal.
+
+    A rejection or a return resolves a stage by itself, so undoing it always
+    reopens the stage. An approval only resolved the stage if the stage no longer
+    meets its threshold without it: reversing one approval of two on an ANY stage,
+    or one of three where two still make quorum, takes away a vote that was never
+    load-bearing, and reopening a stage that is still satisfied would knock the
+    workflow backwards for nothing.
+
+    Called after the vote has been voided, so the threshold count already excludes it.
+    """
+    if original.action == StageActionEnum.APPROVED:
+        return (stage_instance.status == WorkflowStageStatus.APPROVED
+                and not _stage_fully_approved(stage_instance))
+    if original.action == StageActionEnum.REJECTED:
+        return stage_instance.status == WorkflowStageStatus.REJECTED
+    return stage_instance.status == WorkflowStageStatus.RETURNED
+
+
+# Roll back every stage that only ran because the reopened one had completed.
+def _undo_downstream_stages(instance: WorkflowInstance,
+                            from_stage_instance: WorkflowStageInstance,
+                            admin, reason: str) -> list:
+    """Return the codes of the later stages this reversal rolls back to PENDING.
+
+    A later stage exists only because an earlier one completed. Leaving those
+    rows APPROVED while their reason for running is withdrawn produces a workflow
+    nobody can finish: re-approving the reopened stage walks straight back into a
+    stage that already holds a live vote, its approver is refused as a duplicate,
+    and the instance sits ACTIVE with no one able to move it.
+
+    So each of them returns to PENDING with its votes voided and its approver
+    snapshot cleared, and re-approval activates it as a genuinely fresh run that
+    resolves eligibility again. The audit log keeps every activation and vote that
+    happened, and each voided row keeps the reason it was undone.
+
+    The engine runs one stage at a time, so "later" is "activated after this one".
+    """
+    if from_stage_instance.activated_at is None:
+        return []
+    undone = []
+    downstream = (WorkflowStageInstance.objects.select_for_update()
+                  .filter(instance=instance,
+                          activated_at__gt=from_stage_instance.activated_at)
+                  .exclude(pk=from_stage_instance.pk)
+                  .order_by("activated_at"))
+    for si in downstream:
+        live_votes = WorkflowStageAction.objects.select_for_update().filter(
+            stage_instance=si, attempt=si.attempt,
+            is_reversal_of__isnull=True, reversed_at__isnull=True)
+        for vote in live_votes:
+            _void_action(
+                vote, admin, reason,
+                comment=(f"Undone with the reversal on stage "
+                         f"{from_stage_instance.stage.code}: {reason}"),
+            )
+        WorkflowStageApprover.objects.filter(stage_instance=si, attempt=si.attempt).delete()
+        si.status = WorkflowStageStatus.PENDING
+        si.activated_at = None
+        si.resolved_at = None
+        si.skip_reason = ""
+        si.save(update_fields=["status", "activated_at", "resolved_at", "skip_reason"])
+        undone.append(si.stage.code)
+    return undone
+
+
+# Reverse a prior approver action and unwind whatever that action decided.
 def reverse_action(action_id, admin, reason: str) -> WorkflowStageAction:
-    """Admin reverses a recorded approver vote. Re-activates the stage."""
+    """Admin reverses a recorded approver vote and unwinds what it decided.
+
+    Three things happen, in this order, inside one transaction:
+
+    1. the module that owns the document is asked whether the decision can still
+       be undone (``validate_reversal``). It runs before any write, so a refusal
+       leaves the approval intact;
+    2. the vote is voided; if it is what resolved its stage, that stage reopens
+       and every stage that ran afterwards is rolled back to PENDING with its own
+       votes voided;
+    3. the same module is told to put the document back (``on_action_reversed``),
+       inside this transaction, so a handler that cannot comply rolls the whole
+       reversal back rather than leaving the two descriptions disagreeing.
+
+    A vote that did not resolve its stage is voided and nothing else moves: no
+    stage reopens, and the document is not asked to change either. The owning
+    module is still consulted first, because whether the decision may be touched
+    at all does not depend on how many votes were behind it.
+    """
     if not reason.strip():
         raise ReversalNotAllowedError("Reversal reason is required.")
     with transaction.atomic():
@@ -242,35 +377,69 @@ def reverse_action(action_id, admin, reason: str) -> WorkflowStageAction:
             raise ReversalNotAllowedError(
                 f"Cannot reverse on instance in status {instance.status}.")
 
-        original.reversed_at = timezone.now()
-        original.reversed_by = admin
-        original.reversal_reason = reason
-        original.save(update_fields=["reversed_at", "reversed_by", "reversal_reason"])
+        si = WorkflowStageInstance.objects.select_for_update().get(
+            pk=original.stage_instance_id)
+        # A vote from a superseded attempt describes a run the workflow has
+        # already left. Reopening it would put the instance back on a stage the
+        # requester has since resubmitted past.
+        if WorkflowStageInstance.objects.filter(
+                instance=instance, stage=si.stage, attempt__gt=si.attempt).exists():
+            raise ReversalNotAllowedError(
+                "This stage has run again since that vote, so reversing it would "
+                "not describe where the workflow now stands.",
+                stage=si.stage.code, attempt=si.attempt)
 
-        reversal = WorkflowStageAction.objects.create(
-            stage_instance=original.stage_instance, actor=admin,
-            action=original.action, comment=f"Admin reversal: {reason}",
-            attempt=original.attempt, is_reversal_of=original,
-        )
-        audit_service.write(instance, AuditEventType.ACTION_REVERSED, actor=admin,
-                            stage_instance=original.stage_instance,
-                            context={"reversed_action_id": str(original.id),
-                                     "original_action": original.action, "reason": reason})
+        handler = _reversal_handler(instance)
+        context = {
+            "action_id": str(original.id),
+            "original_action": original.action,
+            "stage_code": si.stage.code,
+            "attempt": original.attempt,
+            "reason": reason,
+            "actor_id": str(admin.pk),
+            "was_final_approval": instance.status == WorkflowInstanceStatus.APPROVED,
+        }
+        # Ask before writing: the engine can undo its record of a decision, never
+        # the decision's effect in the world.
+        handler.validate_reversal(instance, context)
 
-        # Reactivate the stage if it resolved because of this vote.
-        si = original.stage_instance
-        if si.status in {WorkflowStageStatus.APPROVED, WorkflowStageStatus.REJECTED}:
+        reversal = _void_action(original, admin, reason,
+                                comment=f"Admin reversal: {reason}")
+
+        unwound = []
+        reopened = None
+        if _vote_resolved_its_stage(si, original):
+            unwound = _undo_downstream_stages(instance, si, admin, reason)
             si.status = WorkflowStageStatus.ACTIVE
             si.resolved_at = None
             si.save(update_fields=["status", "resolved_at"])
+            reopened = si.stage
             instance.current_stage = si.stage
-            if instance.status == WorkflowInstanceStatus.APPROVED:
-                # Reopening a fully approved instance puts it back into active review.
+            if instance.status in {WorkflowInstanceStatus.APPROVED,
+                                   WorkflowInstanceStatus.RETURNED}:
+                # A decided instance goes back into active review at this stage.
                 instance.status = WorkflowInstanceStatus.IN_PROGRESS
                 instance.completed_at = None
             instance.state_version += 1
             instance.save(update_fields=["status", "current_stage", "completed_at",
                                           "state_version", "updated_at"])
+
+        audit_service.write(instance, AuditEventType.ACTION_REVERSED, actor=admin,
+                            stage_instance=si,
+                            context={"reversed_action_id": str(original.id),
+                                     "original_action": original.action,
+                                     "reason": reason,
+                                     "reopened_stage": reopened.code if reopened else None,
+                                     "unwound_stages": unwound})
+
+        if reopened is not None:
+            # Only a reversal that changed the workflow's outcome is one the
+            # document has to follow. A vote the stage did not need is voided
+            # and the stage still stands, so telling the owning module to put
+            # its document back would move a document nothing has moved.
+            context["reopened_stage_code"] = reopened.code
+            context["unwound_stages"] = unwound
+            handler.on_action_reversed(instance, context)
         return reversal
 
 

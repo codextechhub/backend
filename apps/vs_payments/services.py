@@ -753,15 +753,19 @@ def _dispatch_transfer(
     _validate_instruction_snapshot(payout, vendor)
     client = client or get_provider(payout.provider)  # Allow callers to reuse or lazily resolve the PSP client.
 
-    # Claim the row and re-check the destination in one committed transaction. The
-    # re-read is not belt-and-braces: the caller validated against a vendor row it read
-    # before the locks were released, and the destination that matters is the one that
-    # is true at the moment of the send.
+    # Claim the row, re-check the approval, and re-check the destination in one
+    # committed transaction. The re-reads are not belt-and-braces: the caller
+    # validated against rows it read before the locks were released, and what
+    # matters is what is true at the moment of the send. The approval is re-read
+    # here because an administrator can reverse it while the batch is mid-flight;
+    # the reversal takes this same row lock, so whichever runs first, the other
+    # sees the finished state instead of a stale one.
     with transaction.atomic():
         payout = PayoutInstruction.objects.select_for_update().get(pk=payout.pk)
         if payout.status != PayoutStatus.PENDING:
             # Another dispatch already claimed it. Never send twice.
             return payout
+        _validate_approved_instance(batch, approved_instance)
         _validate_instruction_snapshot(
             payout, Vendor.objects.select_for_update().get(pk=vendor.pk),
         )

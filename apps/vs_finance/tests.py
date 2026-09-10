@@ -8188,6 +8188,90 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
         self.assertTrue(AccountBalance.objects.filter(
             account__entity=self.entity, period=self.period).exists())
 
+    # --- reversing an approval the ledger has already acted on ------------- #
+
+    def _live_approval_of(self, instance):
+        """The recorded approving vote an administrator would reverse."""
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.models import WorkflowStageAction
+
+        return WorkflowStageAction.objects.get(
+            stage_instance__instance=instance, action=ActionEnum.APPROVED,
+            is_reversal_of__isnull=True, reversed_at__isnull=True,
+        )
+
+    def test_reversal_is_refused_once_the_journal_has_posted(self):
+        """An entry in the ledger is undone by a reversing entry, not by an edit.
+
+        Undoing the approval record would leave the balances moved with nothing on
+        file saying anybody authorised the movement.
+        """
+        from vs_workflow.constants import WorkflowInstanceStatus
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.exceptions import ReversalNotAllowedError
+        from vs_workflow.services import actions as wf_actions
+
+        self._publish_standard_template()
+        approver = self._make_approver()
+        entry = self._make_draft()
+        self._submit(entry)
+        instance = self._instance_for(entry)
+        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+
+        action = self._live_approval_of(instance)
+        with self.assertRaises(ReversalNotAllowedError):
+            wf_actions.reverse_action(action.id, self.requester, reason="wrong period")
+
+        action.refresh_from_db()
+        entry.refresh_from_db()
+        instance.refresh_from_db()
+        self.assertIsNone(action.reversed_at)
+        self.assertEqual(entry.status, DocumentStatus.POSTED)
+        self.assertEqual(instance.status, WorkflowInstanceStatus.APPROVED)
+
+    def test_reversal_of_an_unposted_stage_returns_the_journal_to_the_queue(self):
+        """Two stages, one vote in: nothing has posted, so the vote can be undone."""
+        from vs_workflow.constants import WorkflowInstanceStatus
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.services.roles import ensure_approver_role
+        from vs_workflow.services.templates import publish_template
+
+        ensure_approver_role(self.school.tenant, self.APPROVE_ROLE)
+        stage = {
+            "kind": "APPROVAL", "approver_source": "ROLE",
+            "approver_role_key": self.APPROVE_ROLE, "approver_scope": "SCHOOL",
+            "advance_rule": "ANY", "on_rejection": "RETURN_TO_REQUESTER",
+            "skip_if_no_approvers": False,
+        }
+        publish_template(
+            tenant=self.school.tenant, branch=None,
+            document_type="finance.journal", code="standard",
+            name="Two-step journal approval",
+            stages_payload=[
+                stage | {"code": "checker", "label": "Checker approval", "order": 1},
+                stage | {"code": "second", "label": "Second approval", "order": 2},
+            ],
+        )
+        first = self._make_approver()
+        entry = self._make_draft()
+        self._submit(entry)
+        instance = self._instance_for(entry)
+        wf_actions.record_action(instance.id, first, ActionEnum.APPROVED)
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, DocumentStatus.PENDING_APPROVAL)  # Nothing posted.
+
+        wf_actions.reverse_action(
+            self._live_approval_of(instance).id, self.requester,
+            reason="checked against the wrong schedule",
+        )
+
+        entry.refresh_from_db()
+        instance.refresh_from_db()
+        self.assertEqual(entry.status, DocumentStatus.PENDING_APPROVAL)
+        self.assertEqual(instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        self.assertEqual(instance.current_stage.code, "checker")
+
     # --- 5. Reject → DRAFT and Return → DRAFT ------------------------------ #
 
     # Verify reject returns journal to draft behavior.

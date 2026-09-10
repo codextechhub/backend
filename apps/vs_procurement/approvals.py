@@ -7,9 +7,10 @@ runs when the document's amount clears a configurable bar), resolves approvers v
 collects their votes, and - on a terminal decision - calls back into the registered
 handler (see :mod:`vs_procurement.workflow_handlers`). Those callbacks land here:
 
-* :func:`apply_approved`  - the workflow fully approved the document.
-* :func:`apply_rejected`  - the workflow terminally rejected it.
-* :func:`reset_pending`   - the requester withdrew / an admin cancelled it.
+* :func:`apply_approved`   - the workflow fully approved the document.
+* :func:`apply_rejected`   - the workflow terminally rejected it.
+* :func:`reset_pending`    - the requester withdrew / an admin cancelled it.
+* :func:`reset_to_pending` - an admin reversed a vote and the decision is undone.
 
 :func:`submit_for_approval` is the hand-off the API calls.
 :func:`ensure_tenant_approval_templates` gives one tenant its own approval rules, and
@@ -400,6 +401,36 @@ def apply_rejected(document, *, reason: str = "", actor_user=None) -> None:
     if isinstance(document, PurchaseOrder):
         from .po_email import cancel_awaiting
         cancel_awaiting(document, reason=reason or "Approval was rejected.", actor_user=actor_user)
+
+
+def reset_to_pending(document) -> None:
+    """Return a decided document to PENDING after its approving vote is reversed.
+
+    The mirror of :func:`apply_approved` and :func:`apply_rejected`: those wrote a
+    decision onto the document, and an administrator reversing the vote behind it
+    withdraws that decision. Without this the overlay keeps saying APPROVED while
+    the workflow shows the document back under review, and the PO-creation gate
+    reads the stale half.
+
+    Distinct from :func:`reset_pending`, which unwinds the *submission* and leaves
+    the document NOT_SUBMITTED. Here the instance is still in flight, so the
+    document goes back to waiting on it.
+    """
+    from .models import PurchaseOrder, PurchaseRequisition
+
+    if getattr(document, "approval_state", None) not in (
+        ProcApprovalState.APPROVED, ProcApprovalState.REJECTED,
+    ):
+        return
+    update_fields = ["approval_state", "updated_at"]
+    document.approval_state = ProcApprovalState.PENDING
+    # A requisition's ledger status moved with the decision, so it moves back.
+    if isinstance(document, (PurchaseRequisition, PurchaseOrder)) and document.status in (
+        DocumentStatus.APPROVED, DocumentStatus.CANCELLED,
+    ):
+        document.status = DocumentStatus.PENDING_APPROVAL
+        update_fields.append("status")
+    document.save(update_fields=update_fields)
 
 
 def reset_pending(document) -> None:

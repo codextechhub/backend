@@ -196,6 +196,29 @@ class DecisionTests(LeaveFixture):
         row.refresh_from_db()
         self.assertEqual(row.status, LeaveStatus.REJECTED)
 
+    def test_reversing_the_decision_puts_the_request_back_to_pending(self):
+        """The status is written from the instance, so it follows the instance back.
+
+        Otherwise Mrs Eze's profile keeps showing approved leave after the
+        approval behind it has been withdrawn, and the school schedules cover for
+        days nobody currently allows her to take.
+        """
+        from vs_workflow.models import WorkflowStageAction
+        from vs_workflow.services import actions
+
+        row = self._file()
+        instance = self._instance(row)
+        actions.record_action(instance.id, self.lekki_head, "APPROVED", "Fine.")
+        vote = WorkflowStageAction.objects.get(
+            stage_instance__instance=instance,
+            is_reversal_of__isnull=True, reversed_at__isnull=True)
+
+        actions.reverse_action(vote.id, self.admin, reason="approved by the wrong head")
+
+        row.refresh_from_db()
+        self.assertEqual(row.status, LeaveStatus.PENDING)
+        self.assertIsNone(row.decided_at)
+
     def test_a_decision_writes_its_own_audit_event(self):
         """Separate from the filing: who asked and who allowed it are two questions."""
         from vs_workflow.services import actions

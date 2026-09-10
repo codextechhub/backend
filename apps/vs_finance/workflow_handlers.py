@@ -33,7 +33,9 @@ from urllib.parse import urlencode
 from django.db import transaction
 
 from vs_workflow.constants import WorkflowStageAction as StageActionEnum
-from vs_workflow.exceptions import InvalidInstanceStateError
+from vs_workflow.exceptions import (
+    InvalidInstanceStateError, ReversalNotAllowedError,
+)
 from vs_workflow.handlers import BaseWorkflowHandler, register_handler
 
 from .constants import DocumentStatus
@@ -157,6 +159,49 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
             doc = self._load(instance)  # Lock the concrete finance document.
             doc.status = DocumentStatus.DRAFT  # Returned documents become editable drafts.
             doc.save(update_fields=["status", "updated_at"])
+
+    #: The only statuses from which an approval decision can still be withdrawn.
+    #: Approval posts, and posting is what each document type's own service
+    #: drives the status to, so the safe set is named by what approval leaves
+    #: behind rather than by what posting produces: a document type whose
+    #: posting service lands somewhere unexpected then fails closed instead of
+    #: being reversed after its entry is already in the ledger.
+    REVERSIBLE_STATUSES = frozenset({
+        DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL,
+    })
+
+    # Refuse a reversal the ledger cannot honour.
+    def validate_reversal(self, instance, context) -> None:
+        """Refuse once the document has moved past waiting for a decision.
+
+        The engine can withdraw its record of an approval; it cannot withdraw a
+        journal. A posted document has moved balances that later documents and
+        closed periods have already been measured against, and finance undoes that
+        with a reversing entry that leaves both sides visible. Editing the approval
+        instead would leave the entry in the ledger with nothing on record saying
+        it was ever authorised.
+        """
+        doc = self._load(instance)  # Lock the concrete finance document.
+        if doc.status not in self.REVERSIBLE_STATUSES:
+            raise ReversalNotAllowedError(
+                "This document has already been posted, so its approval cannot be "
+                "undone. Post a reversing entry instead.",
+                document_status=doc.status,
+            )
+
+    # Put an undecided document back in the approval queue.
+    def on_action_reversed(self, instance, context) -> None:
+        """Return the document to PENDING_APPROVAL after a decision is undone.
+
+        Rejection and return each dropped the document back to DRAFT. Undoing the
+        vote that caused that has to undo the write as well, or the requester finds
+        an editable draft of something the workflow shows as still under review.
+        """
+        with transaction.atomic():
+            doc = self._load(instance)  # Lock the concrete finance document.
+            if doc.status == DocumentStatus.DRAFT:
+                doc.status = DocumentStatus.PENDING_APPROVAL  # Back under review.
+                doc.save(update_fields=["status", "updated_at"])
 
     # --- document-type hooks (subclasses implement) ------------------------- #
     # pragma: no cover - abstract  # Subclasses validate without writes.

@@ -638,10 +638,12 @@ class WorkflowStageInstance(models.Model):
 class WorkflowStageApprover(models.Model):
     """Point-in-time snapshot of who was eligible to act on a stage at activation.
 
-    Rows are written once when a stage is activated and never updated thereafter.
+    Rows are written when a stage is activated and are not amended while it runs.
     This preserves the eligible approver list as it existed at that exact moment,
     even if RBAC roles change later. Active delegation entries are expanded and
-    included here as separate rows with on_behalf_of set.
+    included here as separate rows with on_behalf_of set. A stage the engine
+    activates again on the same attempt, after a reversal rolled it back, is a
+    fresh run and gets a fresh snapshot in place of the old one.
 
     Attributes:
         stage_instance: The stage activation this snapshot belongs to.
@@ -702,9 +704,14 @@ class WorkflowStageAction(models.Model):
 
     class Meta:
         constraints = [
+            # "Live" means not a reversal row and not itself reversed. Excluding
+            # only reversal rows would make the constraint disagree with the
+            # feature above it: an approver whose vote an admin reversed has to
+            # be able to vote again on the same stage attempt, and the reversed
+            # row is still sitting there under the same three columns.
             models.UniqueConstraint(
                 fields=["stage_instance", "actor", "attempt"],
-                condition=Q(is_reversal_of__isnull=True),
+                condition=Q(is_reversal_of__isnull=True) & Q(reversed_at__isnull=True),
                 name="uniq_live_action_per_actor_per_attempt",
             ),
         ]

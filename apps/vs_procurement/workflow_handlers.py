@@ -15,6 +15,7 @@ from __future__ import annotations
 from urllib.parse import urlencode
 
 from vs_finance.money import format_naira
+from vs_workflow.exceptions import ReversalNotAllowedError
 from vs_workflow.handlers import BaseWorkflowHandler, register_handler
 
 from . import approvals
@@ -74,6 +75,38 @@ class _ProcApprovalHandler(BaseWorkflowHandler):
 
     def on_cancelled(self, instance, context) -> None:
         approvals.reset_pending(instance.document)
+
+    # --- reversal ----------------------------------------------------------- #
+    def validate_reversal(self, instance, context) -> None:
+        """Refuse once approval has put the document in front of the vendor.
+
+        Approving a purchase order releases its email to the supplier, and a
+        supplier who has read "your order is approved" is already acting on it.
+        Undoing the approval record afterwards changes nothing they can see, so
+        the order is stopped by cancelling it, where the vendor is told.
+        """
+        from .constants import PurchaseOrderVendorDeliveryStatus
+        from .models import PurchaseOrder, PurchaseOrderVendorDelivery
+
+        document = instance.document
+        if not isinstance(document, PurchaseOrder):
+            return None
+        released = PurchaseOrderVendorDelivery.objects.filter(
+            purchase_order=document,
+            status__in=(PurchaseOrderVendorDeliveryStatus.PENDING,
+                        PurchaseOrderVendorDeliveryStatus.SENT),
+        ).exists()
+        if released:
+            raise ReversalNotAllowedError(
+                "This purchase order has already gone to the vendor, so its "
+                "approval cannot be undone. Cancel the order instead.",
+                document_number=document.document_number or str(document.pk),
+            )
+        return None
+
+    def on_action_reversed(self, instance, context) -> None:
+        """Put the document back in the approval queue it was decided out of."""
+        approvals.reset_to_pending(instance.document)
 
 
 @register_handler(WF_DOCTYPE_REQUISITION)
