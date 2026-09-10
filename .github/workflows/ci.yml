@@ -1,8 +1,15 @@
 name: CI
 
+# main only. Staging is not a branch anybody commits to: it is reset to main and
+# force-pushed by the deploy script, so a staging run tests a tree main has
+# already tested, twice as slowly and for the same answer.
+#
+# The one case this gives up is a commit pushed straight to staging without
+# going through main. That is not how this repo deploys, and a direct push to
+# staging is a mistake CI ought not to be the thing that catches.
 on:
   push:
-    branches: [main, staging]
+    branches: [main]
   pull_request:
 
 jobs:
