@@ -158,7 +158,7 @@ class ContractListCreateView(_ProcBase):
         """Create a draft contract and optional integer-kobo milestones atomically."""
         entity = resolve_entity(request)
         body = request.data
-        vendor = _resolve_vendor(entity, body.get("vendor"))
+        vendor = _resolve_vendor(request, entity, body.get("vendor"))
         from ..purchasing import vendor_purchase_block_reason
         if reason := vendor_purchase_block_reason(vendor):
             raise ValidationError({"vendor": reason})

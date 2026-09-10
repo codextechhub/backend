@@ -272,7 +272,7 @@ class APAgingVendorDetailView(_ProcBase):
 
         entity = resolve_entity(request)
         # Entity-scoped vendor resolution - a foreign vendor 404s rather than leaking.
-        vendor = _resolve_vendor(entity, request.query_params.get("vendor"))
+        vendor = _resolve_vendor(request, entity, request.query_params.get("vendor"))
         as_of = _date(request.query_params.get("as_of"), "as_of")
         detail = ap_vendor_open_bills(
             entity, vendor, as_of=as_of, branch_scope=_scope(request, entity),

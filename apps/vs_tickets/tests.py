@@ -357,6 +357,7 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
         )
         self.assertEqual(ticket.requester_id, self.norole.pk)
 
+        self.escalate(ticket)
         ticket_svc.assign_ticket(ticket, actor=self.support, assignee=self.support)
         ticket_svc.add_comment(
             ticket, actor=self.support, body="We are on it.", visibility=CommentVisibility.PUBLIC,
@@ -803,6 +804,7 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
         ticket = ticket_svc.create_ticket(
             actor=self.requester, title="Broken page", description="x", category="BUG", priority="HIGH",
         )
+        self.escalate(ticket)
         ticket_svc.assign_ticket(ticket, actor=self.support, assignee=self.other_support)
         ticket.refresh_from_db()
         self.assertEqual(ticket.assignee_id, self.other_support.pk)
@@ -819,6 +821,7 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
         ticket = ticket_svc.create_ticket(
             actor=self.requester, title="Need help", description="x", category="HELP", priority="MEDIUM",
         )
+        self.escalate(ticket)
         ticket_svc.assign_ticket(ticket, actor=self.support, assignee=self.support)
         ticket_svc.add_comment(ticket, actor=self.requester, body="public", visibility=CommentVisibility.PUBLIC)
         ticket_svc.add_comment(ticket, actor=self.support, body="internal", visibility=CommentVisibility.INTERNAL)
@@ -895,6 +898,7 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
         self.assertEqual(self.ticket.title, "Requester clarified the export failure")
 
     def test_assigned_resolver_cannot_edit_requester_details(self):
+        self.escalate(self.ticket)
         ticket_svc.assign_ticket(
             self.ticket,
             actor=self.support,
@@ -1015,6 +1019,7 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
         self.assertEqual(response.status_code, 403)
 
     def test_internal_note_attachment_hidden_from_requester(self):
+        self.escalate(self.ticket)
         ticket_svc.assign_ticket(self.ticket, actor=self.support, assignee=self.support)
         note = ticket_svc.add_comment(
             self.ticket, actor=self.support, body="internal", visibility=CommentVisibility.INTERNAL,
@@ -1125,11 +1130,16 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
         self.assertEqual(data["by_status"][TicketStatus.OPEN], 1)
 
     def _assigned_to_support(self, title, status):
-        """One ticket assigned to ``self.support``, parked at *status*."""
+        """One escalated ticket owned by ``self.support``, parked at *status*.
+
+        Escalated first because CodeX only owns a school's ticket once the
+        school has sent it up.
+        """
         ticket = ticket_svc.create_ticket(
             actor=self.requester, title=title, description="x",
             category="SUPPORT", priority="LOW",
         )
+        self.escalate(ticket)
         ticket = ticket_svc.assign_ticket(ticket, actor=self.support, assignee=self.support)
         if status != TicketStatus.ASSIGNED:
             ticket = ticket_svc.transition_ticket(ticket, actor=self.support, status=status)
@@ -1196,6 +1206,26 @@ class TicketPermissionSeedTests(TestCase):
                 prebuilt_role=teacher,
                 permission_id="tickets.ticket.view",
             ).exists()
+        )
+
+    def test_assignment_is_a_key_no_school_is_offered(self):
+        """Assigning is the desk choosing which of its own people works a
+        ticket. A school's say is escalation, so a roles screen that listed
+        this key would offer a choice that changes nothing."""
+        call_command("seed_actions", verbosity=0)
+        call_command("seed_prebuilt_role_templates", verbosity=0)
+        call_command("seed_ticket_permissions", verbosity=0)
+
+        assign = Permission.objects.get(key="tickets.ticket.assign")
+        self.assertEqual(assign.scope, "PLATFORM")
+        self.assertFalse(
+            PrebuiltRolePermission.objects.filter(
+                permission_id="tickets.ticket.assign",
+            ).exists()
+        )
+        # Its neighbours stay a school's: managing and triaging are theirs.
+        self.assertEqual(
+            Permission.objects.get(key="tickets.ticket.manage").scope, "TENANT",
         )
 
 

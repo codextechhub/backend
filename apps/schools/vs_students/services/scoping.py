@@ -25,6 +25,15 @@ from vs_tenants.references import resolve_branch_reference
 
 from ..exceptions import BranchScopeConflict
 
+# The inclusive rule, for the rows in this module that are not students. A
+# promotion run with no branch rolled the whole school forward and belongs to
+# every branch that took part, which is the catalogue answer rather than the
+# student one. Re-exported rather than reimplemented, for the same reason
+# ``scope_classes`` reads through it: one rule, one implementation.
+from schools.vs_academics.services.scoping import (  # noqa: F401  (re-exported)
+    scope_to_visible_branches,
+)
+
 
 def scope_students(queryset, user, tenant, field="branch"):
     """Narrow *queryset* to the caller's own branches. Exclusive: no null term."""

@@ -50,6 +50,7 @@ from ..models import CalendarEvent, Exam, ExamSlot, EventType, PublishState
 from ..serializers import ExamSerializer, ExamSlotSerializer, ExamSlotWriteSerializer
 from ..services.clashes import SITTING_RANK, exam_clashes, exam_slot_warnings
 from ..services.publishing import publish_exam
+from ..services.scoping import scope_to_visible_branches
 from ..services.teachers import assert_is_teacher
 from .base import CalendarViewMixin
 from .timetable import _visible_classes
@@ -127,8 +128,14 @@ class ExamListCreateView(CalendarViewMixin, generics.ListCreateAPIView):
             raise ValidationError({
                 "calendar_event": "Say which exam period this sits inside.",
             })
-        event = CalendarEvent.objects.filter(
-            tenant=self.tenant, session=session, pk=event_id,
+        # The exam period is named in the body, so the site has to be asked
+        # here: without it a branch administrator hangs their exams off another
+        # site's period and every date on their timetable answers to it.
+        event = scope_to_visible_branches(
+            CalendarEvent.objects.filter(
+                tenant=self.tenant, session=session, pk=event_id,
+            ),
+            request.user, self.tenant,
         ).first()
         if event is None:
             raise NotFound("No such calendar entry in this year.")

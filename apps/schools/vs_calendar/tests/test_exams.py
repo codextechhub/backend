@@ -286,6 +286,39 @@ class ExamShapeTests(_ExamBase):
 
 
 class ExamSecurityTests(_ExamBase):
+    def test_another_branchs_exam_period_cannot_be_built_on(self):
+        """The period is named in the body, so the branch has to be asked here.
+
+        Without it the head of Ikeja opens the exam screen, names Lekki's mock
+        period, and every paper they schedule takes its dates from a timetable
+        Lekki controls: Lekki moves its mocks a week and Ikeja's exams move
+        with them, with nothing on the Ikeja screen to say why.
+        """
+        lekki_mocks = CalendarEvent.all_objects.create(
+            tenant=self.tenant, session=self.year, branch=self.lekki,
+            name="Lekki Mock Examinations", event_type=EventType.EXAM_PERIOD,
+            start_date=dt.date(2025, 12, 1), end_date=dt.date(2025, 12, 12),
+        )
+
+        response = self.post(self.ikeja_admin, "calendar-exam-list", {
+            "calendar_event": lekki_mocks.pk,
+        })
+
+        self.assertEqual(response.status_code, 404, response.data)
+        self.assertFalse(Exam.all_objects.filter(calendar_event=lekki_mocks).exists())
+
+    def test_a_school_wide_exam_period_is_still_every_branchs_to_build_on(self):
+        """A period with no branch is the school's own examination diary.
+
+        Withholding it would leave a branch head unable to schedule the exams
+        their whole school sits, which reads as the screen being broken.
+        """
+        response = self.post(self.ikeja_admin, "calendar-exam-list", {
+            "calendar_event": self.period_event.pk,
+        })
+
+        self.assertNotEqual(response.status_code, 404, response.data)
+
     def test_another_tenants_exam_answers_404(self):
         theirs_event = CalendarEvent.all_objects.create(
             tenant=self.other.tenant, session=self.other_year, name="Theirs",

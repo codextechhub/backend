@@ -275,7 +275,7 @@ class PurchaseOrderListCreateView(_ProcBase):
         # copies it); this only refuses a caller who may not work in that branch.
         # Deliberately no ``branch`` input here - the source document decides.
         _inherited_branch_id(request, req)
-        vendor = _resolve_vendor(entity, body.get("vendor"))
+        vendor = _resolve_vendor(request, entity, body.get("vendor"))
         # Optional explicit call-off link; validated against this PO's own vendor.
         contract = _resolve_po_contract(entity, vendor, body.get("contract"))
         from ..settings import resolve_procurement_settings
@@ -340,7 +340,7 @@ class PurchaseOrderDetailView(_ProcBase):
 
         body = request.data
         if "vendor" in body:
-            candidate = _resolve_vendor(entity, body.get("vendor"))
+            candidate = _resolve_vendor(request, entity, body.get("vendor"))
             if reason := purchasing.vendor_purchase_block_reason(candidate):
                 raise ValidationError({"vendor": reason})
             po.vendor = candidate
@@ -544,16 +544,17 @@ def _validate_rfq_dates(issue_date, response_due_date):
         raise ValidationError({"response_due_date": "Response due date cannot be before the issue date."})
 
 
-def _resolve_invited_vendors(entity, raw):
+def _resolve_invited_vendors(request, entity, raw):
     """Resolve an ``invited_vendors`` payload (list of codes or ids) to Vendor objects.
 
-    Each reference is resolved inside ``entity`` (unknown/cross-entity → 400 via
-    ``_resolve_vendor``); eligibility + de-duplication are enforced downstream by
-    :func:`vs_procurement.sourcing.set_rfq_invitations`.
+    Each reference is resolved inside ``entity`` and inside the caller's own sites
+    (unknown, cross-entity and another site's are all 400 via ``_resolve_vendor``,
+    and all report the same thing); eligibility and de-duplication are enforced
+    downstream by :func:`vs_procurement.sourcing.set_rfq_invitations`.
     """
     if not isinstance(raw, list):
         raise ValidationError({"invited_vendors": "Expected a list of vendor codes or ids."})
-    return [_resolve_vendor(entity, ref) for ref in raw]
+    return [_resolve_vendor(request, entity, ref) for ref in raw]
 
 
 def _budget_estimate(value, field="budget_estimate"):
@@ -627,7 +628,7 @@ class RfqListCreateView(_ProcBase):
         # validate + persist any provided so the draft carries its addressee list.
         if "invited_vendors" in body:
             sourcing.set_rfq_invitations(
-                rfq, _resolve_invited_vendors(entity, body["invited_vendors"]),
+                rfq, _resolve_invited_vendors(request, entity, body["invited_vendors"]),
                 actor_user=request.user,
             )
         rfq = _rfq_detail_queryset(entity).get(pk=rfq.pk)
@@ -690,7 +691,7 @@ class RfqDetailView(_ProcBase):
         # Replacing the invite set is subject to the responded-vendor protection in the service.
         if "invited_vendors" in body:
             sourcing.set_rfq_invitations(
-                rfq, _resolve_invited_vendors(entity, body["invited_vendors"]),
+                rfq, _resolve_invited_vendors(request, entity, body["invited_vendors"]),
                 actor_user=request.user,
             )
         rfq = _rfq_detail_queryset(entity).get(pk=rfq.pk)
@@ -886,7 +887,7 @@ class QuotationListCreateView(_ProcBase):
         if rfq.rfq_status != RfqStatus.ISSUED:
             raise ValidationError(
                 {"rfq": f"Quotations can only be captured against an ISSUED RFQ (this one is '{rfq.rfq_status}')."})
-        vendor = _resolve_vendor(entity, body.get("vendor"))
+        vendor = _resolve_vendor(request, entity, body.get("vendor"))
         # Governance gate: an inactive / on-hold / KYC-rejected vendor cannot enter contention.
         if reason := purchasing.vendor_purchase_block_reason(vendor):
             raise ValidationError({"vendor": reason})

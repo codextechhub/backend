@@ -33,9 +33,12 @@ the Celery layer is `import_tasks_notifications_audit`.
   `tenant.school_profile` (`models.py:311-317`), which is `None` for the `codex`
   tenant. Every service and view reads it, and two Celery tasks try to
   `select_related` through it, which does not work (§8).
-- **`branch` is a column nothing ever sets.** The upload serializer reads it
-  from a serializer-context key no view supplies (`serializers.py:825`), so the
-  whole branch dimension of this module is inert (§8).
+- **`branch` says which site the upload was made for.** The serializer takes it
+  from a required context key, and the two upload paths resolve it differently:
+  the batch endpoint from the uploader (`raised_branch`), the bank statement
+  wizard from the account the statement continues (`inherited_branch_id`). A
+  null branch means the school as a whole and stays readable from every site;
+  anything else is readable only from that site and from a school-wide role.
 - **Scoping is doubled, and the second copy wins.** Views filter by tenant
   explicitly *and* read through a `TenantAwareManager`
   (`models.py:288`), so the platform-wide path the mixin promises does not
@@ -57,7 +60,7 @@ the Celery layer is `import_tasks_notifications_audit`.
 | Field | Meaning |
 |---|---|
 | `tenant` | FK, PROTECT, **not null**. Back-filled from `uploaded_by.tenant_id` on save |
-| `branch` | FK, CASCADE, nullable - **never populated** (§8) |
+| `branch` | FK, CASCADE, nullable - the site the upload was made for; null means school-wide |
 | `uploaded_by` | FK, PROTECT |
 | `template` | FK, PROTECT, nullable - required in practice by the upload serializer |
 | `dataset_type` | Copied from the template at upload (`serializers.py:828`) |
@@ -372,8 +375,8 @@ its record. The upload path is the widest gap: `serializer.save()` commits, then
 
 Audit rows are `module_key = IMPORT` with the action taken from `_ACTION_MAP`
 (`services/audit_service.py:8-25`), and `tenant` derived from the batch's branch
-or school (`services/audit_service.py:77-81`). Since `branch` is always `None`
-and `school` is `None` for the `codex` tenant, a CX-run schools or cx_users
+or school (`services/audit_service.py:77-81`). A CX operator holds no branch and
+`school` is `None` for the `codex` tenant, so a CX-run schools or cx_users
 import writes audit rows with `tenant = NULL`.
 
 Reading writes nothing: no access log, no last-viewed stamp, no download record.
@@ -473,10 +476,11 @@ belonging to this slice:
 - **The field-level security on `file` and `preview_rows` protects nothing** -
   both are gated on `BATCH_VIEW`, the key the endpoint already requires
   (`serializers.py:598-601`; issues §10).
-- **`branch` is never set on any batch.** `self.context.get("branch")`
-  (`serializers.py:825`) reads a key no view supplies, stranding the FK, the
-  `(branch, status)` index, the branch storage path, eight audit calls and the
-  branch narrowing in cross-reference validation (issues §18).
+- **A batch created without a branch is readable from every site.** That is the
+  right answer for a school-wide import and the wrong one for a single site's
+  roll, so the context key is required rather than defaulted: a new upload path
+  that omits it raises `ImproperlyConfigured` instead of quietly filing the
+  batch school-wide.
 - **`.xls` is accepted at upload and cannot be parsed** - openpyxl does not
   read the legacy format, and the failure surfaces as "Could not read file"
   (`serializers.py:745`, `services/file_parser.py:125-126`; issues §17).

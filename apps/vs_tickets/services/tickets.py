@@ -19,6 +19,7 @@ from . import notifications as notify_svc
 from . import subscriptions as subscription_svc
 from .audit import record_ticket_audit, snapshot_ticket
 from .visibility import (
+    accepts_platform_assignment,
     can_add_internal_note,
     can_assign_ticket,
     can_attach_to_ticket,
@@ -93,14 +94,32 @@ def update_ticket(ticket: Ticket, *, actor, **updates) -> Ticket:
         return ticket
 
 
-# Assign or clear support ownership and synchronize the open/assigned status.
 def assign_ticket(ticket: Ticket, *, actor, assignee: User | None) -> Ticket:
+    """Give the ticket a support owner, or return it to the unassigned queue.
+
+    Every owner is a CodeX support user, so an owner is only ever named on a
+    ticket CodeX may have: its own, or a school's after that school escalated.
+    Escalation is the one way a school ticket reaches the desk, and it is a
+    decision with a name on it - a triage grant, an audit entry, a notification.
+    Assignment must not be a second, quieter way to the same place, which is
+    what it becomes if it only asks who the assignee is and never asks whose
+    ticket this still is.
+
+    Clearing an owner is never blocked. The ticket is already open to whoever
+    held it, and refusing to unassign would strand it with them.
+    """
     if not can_assign_ticket(actor, ticket):
         raise PermissionDenied("You cannot assign this ticket.")
     if assignee is not None and not is_support_user(assignee):
         # Assignees must be support-capable; customers cannot become ticket owners.
         raise ValidationError({
             "assignee_id": ["Tickets can only be assigned to active staff who can manage tickets."],
+        })
+    if assignee is not None and not accepts_platform_assignment(ticket):
+        raise ValidationError({
+            "assignee_id": [
+                "Escalate this ticket to CodeX support before assigning it to them.",
+            ],
         })
 
     with transaction.atomic():

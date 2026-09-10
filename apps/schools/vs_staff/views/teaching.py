@@ -14,6 +14,8 @@ from rest_framework.views import APIView
 from core.pagination import XVSPagination
 from core.response import success_response
 
+from schools.vs_academics.services.scoping import scope_to_visible_branches
+
 from ..constants import PERM_ASSIGN, PERM_VIEW, TeachingPart
 from ..models import TeachingAssignment
 from ..serializers import (
@@ -105,9 +107,9 @@ class StaffTeachingView(StaffViewMixin, _SessionMixin, APIView):
     def _resolve_pair(self, class_id, subject_id, session):
         """A class and a subject, both inside this school and this year.
 
-        The class is narrowed by the caller's branches, inclusive of the shared
+        Both are narrowed by the caller's branches, inclusive of the shared
         ones, so a branch administrator cannot staff another branch's class by
-        posting its id.
+        posting its id, nor teach it a subject another branch owns.
         """
         from schools.vs_academics.models import Subject
 
@@ -118,7 +120,10 @@ class StaffTeachingView(StaffViewMixin, _SessionMixin, APIView):
         )
         if school_class is None:
             raise NotFound("No such class at this school.")
-        subject = Subject.objects.filter(tenant=self.tenant, pk=subject_id).first()
+        subject = scope_to_visible_branches(
+            Subject.objects.filter(tenant=self.tenant, pk=subject_id),
+            self.request.user, self.tenant,
+        ).first()
         if subject is None:
             raise NotFound("No such subject at this school.")
         return school_class, subject
@@ -185,11 +190,14 @@ class ClassTeacherView(StaffViewMixin, APIView):
 
         from schools.vs_academics.models import SchoolClass
 
-        school_class = (
-            SchoolClass.objects.filter(tenant=self.tenant, pk=data["school_class"])
-            .select_related("session")
-            .first()
-        )
+        # The class comes from the body, so the tenant check alone leaves a
+        # branch administrator naming another site's class and putting a teacher
+        # in front of children at a site they do not run. Inclusive, because a
+        # school-wide class belongs to every branch.
+        school_class = scope_to_visible_branches(
+            SchoolClass.objects.filter(tenant=self.tenant, pk=data["school_class"]),
+            request.user, self.tenant,
+        ).select_related("session").first()
         if school_class is None:
             raise NotFound("No such class at this school.")
         teaching.assert_session_open(school_class.session)

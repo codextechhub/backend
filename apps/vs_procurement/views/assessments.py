@@ -79,7 +79,7 @@ class VendorAssessmentListCreateView(_ProcBase):
         vendor_ref = request.query_params.get("vendor")
         if vendor_ref:
             # _resolve_vendor is entity-scoped - a foreign vendor 404s rather than leaking.
-            qs = qs.filter(vendor=_resolve_vendor(entity, vendor_ref))
+            qs = qs.filter(vendor=_resolve_vendor(request, entity, vendor_ref))
         # Model Meta already orders newest-first (-assessment_date, -id).
         return success_response(
             "Vendor assessments retrieved.",
@@ -91,7 +91,7 @@ class VendorAssessmentListCreateView(_ProcBase):
         entity = resolve_entity(request)
         body = request.data
         # Entity-scoped vendor resolution rejects assessing another entity's vendor.
-        vendor = _resolve_vendor(entity, body.get("vendor"))
+        vendor = _resolve_vendor(request, entity, body.get("vendor"))
         assessment = VendorAssessment.objects.create(
             entity=entity, vendor=vendor, assessor=request.user,
             assessment_date=_date(body.get("assessment_date"), "assessment_date")

@@ -15,10 +15,12 @@ from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, 
 from core.response import success_response, error_response
 
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
-# ``include_shared=True`` spelled out at each call site. A batch with no branch
-# was uploaded for the school as a whole, which is the normal shape for a
-# tenant-wide import, and it must stay visible to a branch admin.
-from vs_rbac.scoping import branch_q
+# ``include_shared=True`` spelled out at each ``branch_q`` call site. A batch
+# with no branch was uploaded for the school as a whole, which is a normal shape
+# for an import, and it must stay visible from every branch. ``raised_branch``
+# is the other half of the same rule, deciding which branch a new batch is filed
+# under: a narrowing nothing writes to narrows nothing.
+from vs_rbac.scoping import branch_q, raised_branch
 
 from .constants import ImportPermission
 from .permissions import HasImportBatchRBACPermission
@@ -422,6 +424,22 @@ class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.L
 
         return queryset
 
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        if self.request.method == "POST":
+            # ``shared_when_ambiguous=True``: an import is as often the school's
+            # own spine as one site's roll - the branch list itself, the class
+            # structure, the subject catalogue - and the upload carries no branch
+            # field for a caller covering two sites to answer with, so asking
+            # them would raise an error they have no way to clear. A caller
+            # pinned to a single site still stamps it, which is the case the
+            # narrowing exists for.
+            context["branch"] = raised_branch(
+                self.request, self.request.tenant, self.request.data,
+                shared_when_ambiguous=True,
+            )
+        return context
+
     def get_serializer_class(self):
         if self.request.method == "POST":
             return ImportBatchUploadSerializer
@@ -645,16 +663,23 @@ class ImportBatchFileDownloadView(ImportBatchContextMixin, APIView):
     """
     GET -> stream the uploaded batch file as an attachment.
 
+    The batch is resolved through the mixin's choke point rather than by a
+    lookup of its own, so this endpoint is narrowed to the caller's branches as
+    well as to their tenant. The raw spreadsheet is the most revealing thing a
+    batch holds - one file carries every row a site uploaded, home addresses and
+    guardian phone numbers included - so a lookup here that knew only about
+    tenants would hand a branch administrator the file behind a batch they
+    cannot open, list, validate or read a single issue from.
+
     Read through the file's own storage rather than off the filesystem, and
     served here rather than as a redirect to a media URL, so the bytes come
     back through the same authenticated request that asked for them.
 
-    The storage matters. ``FileField.path`` is only implemented by filesystem
-    storages, and this project stores uploads in the database
-    (``core.storage.DatabaseStorage``), so reading a path raised
-    NotImplementedError and every download of an uploaded file answered 500.
-    ``storage.open`` is the API every backend implements, which is what
-    vs_exports already uses to serve a produced file.
+    The storage matters. ``FileField.path`` is implemented only by filesystem
+    storages, and this project keeps uploads in the database
+    (``core.storage.DatabaseStorage``), where there is no path to read and
+    asking for one raises NotImplementedError. ``storage.open`` is the API every
+    backend implements, and is what vs_exports uses to serve a produced file.
 
     docstring-name: Download an import file
     """
@@ -669,11 +694,7 @@ class ImportBatchFileDownloadView(ImportBatchContextMixin, APIView):
     rbac_permission = ImportPermission.BATCH_VIEW
 
     def get(self, request, **_kwargs):
-        tenant = self.scope_tenant()
-        qs = ImportBatch.objects.only("id", "tenant", "file", "original_filename")
-        if tenant is not None:
-            qs = qs.filter(tenant=tenant)
-        batch = get_object_or_404(qs, id=_kwargs["batch_id"])
+        batch = self.get_import_batch()
 
         if not batch.file:
             raise Http404("No file attached to this batch.")

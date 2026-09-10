@@ -34,8 +34,10 @@ from ..serializers import (
 
 
 from .base import (
+    _catalogue_or_404,
+    _catalogue_visible,
     _kobo,
-    _resolve_branch_reference,
+    _raised_branch,
     _ProcBase,
     _date,
     _nonneg_qty,
@@ -96,17 +98,21 @@ def _flag(raw, field, default=False):
     raise ValidationError({field: "Enter a valid boolean value."})
 
 
-def _resolve_location(entity, raw, field="location"):
-    """Resolve a caller-supplied location reference inside this entity.
+def _resolve_location(request, entity, raw, field="location"):
+    """Resolve a caller-supplied location reference inside this entity and their sites.
 
     Accepts a primary key or a code, like the other entity-safe resolvers here, and
-    refuses one belonging to another entity before any service sees it. ``None`` is
-    returned when nothing was given, so the stock service applies its own defaulting.
+    refuses one belonging to another entity, or to a site this caller does not work
+    in, before any service sees it. Both are reported the same way, so neither can
+    be discovered by trying references. ``None`` is returned when nothing was given,
+    so the stock service applies its own defaulting.
     """
     if raw in (None, ""):
         return None
     lookup = {"pk": raw} if str(raw).isdigit() else {"code": str(raw)}
-    location = StockLocation.objects.filter(entity=entity, **lookup).first()
+    location = _catalogue_visible(
+        request, StockLocation.objects.filter(entity=entity),
+    ).filter(**lookup).first()
     if location is None:
         raise ValidationError({field: "No such stock location in this entity."})
     return location
@@ -132,7 +138,9 @@ class StockLocationListCreateView(_ProcBase):
     def get(self, request):
         """List this entity's locations, newest default first."""
         entity = resolve_entity(request)
-        qs = StockLocation.objects.filter(entity=entity).select_related("branch")
+        qs = _catalogue_visible(
+            request, StockLocation.objects.filter(entity=entity),
+        ).select_related("branch")
         if (active := request.query_params.get("is_active")) not in (None, ""):
             qs = qs.filter(is_active=_flag(active, "is_active"))
         return self.paginate(
@@ -145,7 +153,12 @@ class StockLocationListCreateView(_ProcBase):
         body = request.data or {}
         serializer = StockLocationSerializer(data=body)
         serializer.is_valid(raise_exception=True)
-        branch = _resolve_branch_reference(entity, body.get("branch"))
+        # ``shared_when_ambiguous=True``: a central store belongs to the whole
+        # school and is the ordinary shape for a school with one, so a caller
+        # covering several sites who names none is filing one of those rather
+        # than being asked which site it sits at. Naming a site they do not work
+        # in is refused rather than quietly retargeted.
+        branch = _raised_branch(request, entity, body, shared_when_ambiguous=True)
 
         # The first location an entity has must be its default, otherwise nothing
         # resolves for a caller that names none and the entity cannot move stock.
@@ -184,10 +197,10 @@ class StockLocationDetailView(_ProcBase):
 
     def _location(self, request, pk):
         entity = resolve_entity(request)
-        location = StockLocation.objects.filter(entity=entity, pk=pk).first()
-        if location is None:
-            raise NotFound("No such stock location in this entity.")
-        return entity, location
+        return entity, _catalogue_or_404(
+            request, StockLocation.objects.filter(entity=entity), pk,
+            "No such stock location in this entity.",
+        )
 
     def get(self, request, pk):
         _entity, location = self._location(request, pk)
@@ -203,7 +216,9 @@ class StockLocationDetailView(_ProcBase):
             if field in body:
                 setattr(location, field, _text(body[field], field, limit))
         if "branch" in body:
-            location.branch = _resolve_branch_reference(entity, body.get("branch"))
+            location.branch = _raised_branch(
+                request, entity, body, shared_when_ambiguous=True,
+            )
         if "is_default" in body and _strict_bool(body["is_default"], "is_default"):
             StockLocation.objects.filter(entity=entity, is_default=True).exclude(
                 pk=location.pk).update(is_default=False)
@@ -246,7 +261,7 @@ class StockBalanceListView(_ProcBase):
         if (item_ref := request.query_params.get("stock_item")):
             qs = qs.filter(stock_item_id=item_ref) if str(item_ref).isdigit() \
                 else qs.filter(stock_item__code=item_ref)
-        if (loc := _resolve_location(entity, request.query_params.get("location"))):
+        if (loc := _resolve_location(request, entity, request.query_params.get("location"))):
             qs = qs.filter(location=loc)
         if _flag(request.query_params.get("held_only"), "held_only"):
             qs = qs.exclude(on_hand_qty=0, stock_value=0)
@@ -281,7 +296,7 @@ class StockItemListCreateView(_ProcBase):
         school short of, that this branch happens to stock".
         """
         entity = resolve_entity(request)
-        location = _resolve_location(entity, request.query_params.get("location"))
+        location = _resolve_location(request, entity, request.query_params.get("location"))
         qs = StockItem.objects.filter(entity=entity).select_related(
             "inventory_account", "default_expense_account", "catalog_item")
         if (active := request.query_params.get("is_active")) in ("true", "false"):
@@ -469,7 +484,7 @@ class StockIssueView(_ProcBase):
             or datetime.date.today(),
             # Which store it left. Optional for an entity with one; required once it
             # has more, so nobody has to guess which branch the stock came from.
-            location=_resolve_location(entity, body.get("location")),
+            location=_resolve_location(request, entity, body.get("location")),
             # An override expense account, if given, must be an active postable EXPENSE.
             expense_account=_resolve_expense_account(
                 entity, body.get("expense_account"), "expense_account"),
@@ -511,7 +526,7 @@ class StockAdjustView(_ProcBase):
             movement_date=_date(body.get("movement_date"), "movement_date")
             or datetime.date.today(),
             # A count corrects one shelf; say which.
-            location=_resolve_location(entity, body.get("location")),
+            location=_resolve_location(request, entity, body.get("location")),
             # Adjustment account, if given, must be active postable EXPENSE (defaults to 5150).
             adjustment_account=_resolve_expense_account(
                 entity, body.get("adjustment_account"), "adjustment_account"),
@@ -547,7 +562,7 @@ class StockItemSummaryView(_ProcBase):
     def get(self, request):
         """Return stock counts and carried value in integer kobo, entity or store."""
         entity = resolve_entity(request)
-        location = _resolve_location(entity, request.query_params.get("location"))
+        location = _resolve_location(request, entity, request.query_params.get("location"))
         # ONE aggregate either way - conditional counts avoid loading any rows.
         # low_stock: active, at/below its reorder level but still holding something;
         # out_of_stock: active with nothing on hand. total_value sums the carried kobo.
@@ -610,6 +625,6 @@ class StockMovementListView(_ProcBase):
                 else qs.filter(stock_item__code=item_ref)
         if (mtype := request.query_params.get("movement_type")):
             qs = qs.filter(movement_type=mtype)
-        if (loc := _resolve_location(entity, request.query_params.get("location"))):
+        if (loc := _resolve_location(request, entity, request.query_params.get("location"))):
             qs = qs.filter(location=loc)
         return self.paginate(request, qs.order_by("-id"), StockMovementSerializer)

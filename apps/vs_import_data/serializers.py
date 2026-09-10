@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 
+from django.core.exceptions import ImproperlyConfigured
 from django.utils import timezone
 from rest_framework import serializers
 from vs_rbac.fls import FieldSecurityMixin
@@ -733,13 +734,22 @@ class ImportBatchDetailSerializer(
 
 
 class ImportBatchUploadSerializer(serializers.ModelSerializer):
-    """
-    Used when uploading a new import batch.
+    """Uploading a new import batch against a system template.
 
-    In the new system-template-only flow:
-    - template is required
-    - file is required
-    - school and uploaded_by come from context
+    A template and a file are both required. Tenant, branch and uploader come
+    from the context rather than from the body, because none of the three is
+    the uploader's to assert.
+
+    ``branch`` is required in the context and deliberately has no default. It
+    decides who may read the batch afterwards, and a batch with no branch is
+    readable from every site in the school, so a call site that simply forgot
+    would publish one site's roll school-wide with nothing looking wrong. Which
+    rule supplies it belongs to the call site: an upload a person raises takes
+    the uploader's branch (:func:`vs_rbac.scoping.raised_branch`), one that
+    continues an existing record takes that record's
+    (:func:`vs_rbac.scoping.inherited_branch_id`). ``None`` stays a real answer
+    - the batch belongs to the school as a whole - but it has to be chosen
+    rather than fallen into.
     """
     file = serializers.FileField(write_only=True)
     template_id = serializers.IntegerField(write_only=True)
@@ -861,7 +871,12 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
             })
 
         validated_data["tenant"] = self.context["request"].tenant
-        validated_data["branch"] = self.context.get("branch")
+        if "branch" not in self.context:
+            raise ImproperlyConfigured(
+                "ImportBatchUploadSerializer needs 'branch' in its context; see "
+                "the class docstring for which scoping rule supplies it.",
+            )
+        validated_data["branch"] = self.context["branch"]
         validated_data["uploaded_by"] = self.context["request"].user
         validated_data["template"] = template
         validated_data["dataset_type"] = template.dataset_type

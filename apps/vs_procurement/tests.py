@@ -117,6 +117,7 @@ from vs_procurement.stock import (
     issue_stock,
 )
 from vs_procurement.exceptions import InsufficientStockError, StockError
+from rest_framework.exceptions import ValidationError as DRFValidationError
 
 
 def _platform_tenant():
@@ -13733,6 +13734,10 @@ class SharedBranchScopeAgreementTests(_BranchTenantsFixture, TestCase):
     The one thing procurement is *allowed* to differ on is which reading of a null
     branch it takes, and that difference is deliberate, named at the call site, and
     pinned below - not left to be rediscovered from a query plan.
+
+    It takes both readings, and which one depends on the row rather than on the
+    module: a document exclusively, master data inclusively.
+    ``ProcurementCatalogueReadingTests`` pins the other half.
     """
 
     def test_the_caller_lookup_is_the_platform_one_not_a_copy(self):
@@ -13822,6 +13827,180 @@ class SharedBranchScopeAgreementTests(_BranchTenantsFixture, TestCase):
         self.assertIn("branch_id__in", rendered)
         self.assertIn("branch", rendered)
         self.assertIn("AND", rendered)
+
+
+class ProcurementCatalogueReadingTests(_BranchTenantsFixture, TestCase):
+    """Vendors and stock locations are the catalogue, not the spend.
+
+    Procurement reads a null branch on a *document* exclusively: a purchase
+    raised for the school as a whole is a scope of its own that a branch-pinned
+    storekeeper is not in. Applied to master data that reading empties the
+    screen, because a school buys from one stationer for every site and keeps
+    one central store, both recorded with no branch precisely because they
+    belong to all of them. So master data takes the inclusive reading instead,
+    and what it withholds is the row another site pinned to itself.
+
+    Both halves are asserted here. A narrowing that hides the shared rows is as
+    much a defect as one that shows another site's, and it is the one that gets
+    reported as the module being broken.
+    """
+
+    def setUp(self):
+        super().setUp()
+        entity = self.multi.entity
+        self.shared_vendor = self.multi.vendor          # the seeded one, no branch
+        self.lekki_vendor = Vendor.objects.create(
+            entity=entity, code="LEKSTAT", name="Lekki Stationers", branch=self.lekki,
+            payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"),
+            kyc_status="VERIFIED",
+        )
+        self.central_store = StockLocation.objects.create(
+            entity=entity, code="CENTRAL", name="Central Store", is_default=True,
+        )
+        self.lekki_store = StockLocation.objects.create(
+            entity=entity, code="LEKSTORE", name="Lekki Store", branch=self.lekki,
+        )
+        self.ikeja_store = StockLocation.objects.create(
+            entity=entity, code="IKJSTORE", name="Ikeja Store", branch=self.ikeja,
+        )
+
+        self.client = self.client_for(
+            self.multi_tenant, "ikeja-store@t.com", branch=self.ikeja,
+        )
+        for key in ("procurement.vendor.view", "procurement.vendor.update",
+                    "procurement.stock.view", "procurement.stock.manage",
+                    "procurement.analytics.view"):
+            self.grant(
+                self.client.test_user, key, tenant=self.multi_tenant,
+                role_key="ikeja-store-role", branch=self.ikeja,
+            )
+
+    def call(self, path, method="get", body=None):
+        url = f"/v1/procurement/{path}?entity={self.multi.entity.code}"
+        if method == "get":
+            return self.client.get(url)
+        return getattr(self.client, method)(url, body or {}, format="json")
+
+    # -- the shared rows must survive ---------------------------------------- #
+
+    def test_the_school_wide_vendor_is_still_orderable_from_every_site(self):
+        """One stationer for the whole school is the ordinary arrangement.
+
+        Withholding it would leave the Ikeja storekeeper with nobody to raise a
+        purchase against, which is reported as procurement being broken rather
+        than as a permission working.
+        """
+        response = self.call(f"vendors/{self.shared_vendor.pk}/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_the_central_store_is_still_reachable_from_every_site(self):
+        response = self.call(f"stock-locations/{self.central_store.pk}/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_both_lists_carry_the_shared_row_and_this_site_and_no_other(self):
+        vendors = self.call("vendors/")
+        stores = self.call("stock-locations/")
+
+        self.assertEqual(vendors.status_code, 200, vendors.data)
+        self.assertEqual(stores.status_code, 200, stores.data)
+        self.assertEqual(
+            {row["id"] for row in vendors.data["data"]},
+            {self.shared_vendor.pk},
+        )
+        self.assertEqual(
+            {row["id"] for row in stores.data["data"]},
+            {self.central_store.pk, self.ikeja_store.pk},
+        )
+
+    # -- another site's row must not ----------------------------------------- #
+
+    def test_another_sites_vendor_is_not_readable_by_id(self):
+        response = self.call(f"vendors/{self.lekki_vendor.pk}/")
+
+        self.assertEqual(response.status_code, 404, response.data)
+
+    def test_another_sites_vendor_is_not_editable_by_id(self):
+        response = self.call(
+            f"vendors/{self.lekki_vendor.pk}/", "patch", {"name": "Taken Over"},
+        )
+
+        self.assertEqual(response.status_code, 404, response.data)
+        self.lekki_vendor.refresh_from_db()
+        self.assertEqual(self.lekki_vendor.name, "Lekki Stationers")
+
+    def test_another_sites_vendor_insights_are_not_readable(self):
+        """The route the audit flagged: a year of another site's spend."""
+        response = self.call(f"vendors/{self.lekki_vendor.pk}/insights/")
+
+        self.assertEqual(response.status_code, 404, response.data)
+
+    def test_another_sites_store_is_not_readable_or_editable_by_id(self):
+        path = f"stock-locations/{self.lekki_store.pk}/"
+
+        self.assertEqual(self.call(path).status_code, 404)
+        self.assertEqual(
+            self.call(path, "patch", {"name": "Taken Over"}).status_code, 404,
+        )
+        self.lekki_store.refresh_from_db()
+        self.assertEqual(self.lekki_store.name, "Lekki Store")
+
+    def test_a_purchase_cannot_be_raised_against_another_sites_vendor(self):
+        """The reference resolver, which every document body goes through.
+
+        Reading Lekki's stationer is one thing; committing the school's money to
+        them from Ikeja is the thing that matters, and it is a different code
+        path from the detail route above.
+        """
+        from vs_procurement.views.base import _resolve_vendor
+
+        request = types.SimpleNamespace(
+            user=self.client.test_user, query_params={},
+        )
+
+        with self.assertRaises(DRFValidationError):
+            _resolve_vendor(request, self.multi.entity, self.lekki_vendor.code)
+
+        self.assertEqual(
+            _resolve_vendor(request, self.multi.entity, self.shared_vendor.code),
+            self.shared_vendor,
+        )
+
+    def test_the_unknown_and_the_unentitled_are_reported_alike(self):
+        """Or the resolver becomes a way of finding out which sites hold what."""
+        from vs_procurement.views.base import _resolve_vendor
+
+        request = types.SimpleNamespace(
+            user=self.client.test_user, query_params={},
+        )
+
+        messages = []
+        for reference in (self.lekki_vendor.code, "NO-SUCH-VENDOR"):
+            with self.assertRaises(DRFValidationError) as caught:
+                _resolve_vendor(request, self.multi.entity, reference)
+            messages.append(str(caught.exception.detail["vendor"]).replace(
+                reference, "<ref>",
+            ))
+
+        self.assertEqual(messages[0], messages[1])
+
+    # -- the two readings are both real -------------------------------------- #
+
+    def test_master_data_renders_the_inclusive_predicate_and_spend_does_not(self):
+        """The difference is in one argument, so assert it rather than assume it."""
+        from vs_procurement.views.base import _branch_q
+
+        request = types.SimpleNamespace(
+            user=self.client.test_user, query_params={},
+        )
+
+        catalogue = str(_branch_q(request, include_shared=True))
+        document = str(_branch_q(request))
+
+        self.assertIn("isnull", catalogue)
+        self.assertNotIn("isnull", document)
 
 
 class SharedBranchWriteRuleAgreementTests(_BranchTenantsFixture, TestCase):

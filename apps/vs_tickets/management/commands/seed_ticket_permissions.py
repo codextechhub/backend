@@ -4,6 +4,11 @@ The ticket module is a cross-cutting support surface. Platform roles receive all
 keys. School prebuilt roles receive request-side defaults (school-wide viewing,
 commenting, attachments). Ticket *creation* is deliberately keyless - any
 authenticated active user may file a ticket.
+
+One key is CodeX's alone. Every assignee is support staff, so assigning is the
+desk choosing which of its own people works a ticket; a school's say is
+escalation, and it stops there. ``tickets.ticket.assign`` is therefore seeded
+``PLATFORM`` so a school's roles screen never offers it.
 """
 import re
 
@@ -26,6 +31,9 @@ SCHOOL_ADMIN_EXTRA_KEYS = {
     "tickets.report.view",
 }
 _RESTRICTED = {"SENSITIVE", "CRITICAL"}
+#: Keys a school may never hold, whatever module they sit in. See the module
+#: docstring, and vs_rbac migration 0019 for the rows already granted.
+PLATFORM_ONLY_KEYS = {"tickets.ticket.assign"}
 
 TICKET_RESOURCES = [
     ("ticket", "support tickets", [
@@ -98,7 +106,11 @@ class Command(BaseCommand):
                         sensitivity_level=sensitivity,
                         is_restricted=sensitivity in _RESTRICTED,
                         is_active=True,
-                        scope=PermissionScope.TENANT,
+                        scope=(
+                            PermissionScope.PLATFORM
+                            if expected_key in PLATFORM_ONLY_KEYS
+                            else PermissionScope.TENANT
+                        ),
                     )
                     perm.save()
                     created_perms += 1

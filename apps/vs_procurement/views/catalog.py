@@ -18,7 +18,7 @@ from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 from ..models import CatalogItem, PurchaseOrderLine, Vendor, VendorCategory
 from ..purchasing import vendor_purchase_block_reason
 from ..serializers import CatalogItemSerializer
-from .base import _ProcBase, _resolve_account, _resolve_tax
+from .base import _catalogue_visible, _ProcBase, _resolve_account, _resolve_tax
 
 
 def _has_permission(request, permission):
@@ -84,11 +84,16 @@ def _resolve_category(entity, ref, *, current_id=None):
     return category
 
 
-def _resolve_optional_vendor(entity, ref, field="preferred_vendor", *, current_id=None):
-    """Resolve a purchase-eligible preferred vendor without breaking legacy links."""
+def _resolve_optional_vendor(request, entity, ref, field="preferred_vendor", *,
+                             current_id=None):
+    """Resolve a purchase-eligible preferred vendor without breaking legacy links.
+
+    Narrowed to this caller's sites like every other vendor reference, so an item
+    cannot be pointed at a vendor another site keeps to itself.
+    """
     if ref in (None, ""):
         return None
-    qs = Vendor.objects.filter(entity=entity)
+    qs = _catalogue_visible(request, Vendor.objects.filter(entity=entity))
     vendor = qs.filter(pk=int(ref)).first() if str(ref).isdigit() else qs.filter(code__iexact=str(ref)).first()
     if vendor is None:
         raise ValidationError({field: f"No vendor '{ref}' in this entity."})
@@ -244,7 +249,7 @@ class CatalogItemListCreateView(_ProcBase):
                 entity=entity, code=code, name=name, description=description,
                 unit_of_measure=unit,
                 category=_resolve_category(entity, body.get("category")),
-                preferred_vendor=_resolve_optional_vendor(entity, body.get("preferred_vendor")),
+                preferred_vendor=_resolve_optional_vendor(request, entity, body.get("preferred_vendor")),
                 default_expense_account=_resolve_expense(entity, body.get("default_expense_account")),
                 default_tax_code=_resolve_purchase_tax(entity, body.get("default_tax_code")),
                 lead_time_days=_lead_time(body.get("lead_time_days")),
@@ -301,7 +306,7 @@ class CatalogItemDetailView(_ProcBase):
             item.category = _resolve_category(entity, body.get("category"), current_id=item.category_id)
         if "preferred_vendor" in body:
             item.preferred_vendor = _resolve_optional_vendor(
-                entity, body.get("preferred_vendor"), current_id=item.preferred_vendor_id,
+                request, entity, body.get("preferred_vendor"), current_id=item.preferred_vendor_id,
             )
         if "default_expense_account" in body:
             item.default_expense_account = _resolve_expense(

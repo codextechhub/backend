@@ -24,9 +24,38 @@ def is_support_user(user) -> bool:
     return user_has_rbac_permission(user, TicketPermission.MANAGE, tenant=user.tenant)
 
 
-# Return active CX users who can be assigned support tickets.
-def eligible_support_users_qs():
+# Decide whether the platform desk may take ownership of a ticket.
+def accepts_platform_assignment(ticket) -> bool:
+    """Whether ``ticket`` may have a platform support owner.
+
+    Ownership is the same door as visibility. An assignee is a participant, so
+    :func:`visible_tickets_qs` and :func:`can_view_ticket` admit them to the
+    ticket, its thread and its internal notes, and go on admitting them.
+    Naming a CodeX user as the owner of a school's ticket therefore hands the
+    desk exactly what escalating hands it, while skipping the escalation's
+    audit entry, the notification that tells the desk it has gained work, and
+    the ``manage`` grant escalating asks for. ``assign`` is the weaker key of
+    the two, so without this the short route needs less authority than the
+    declared one.
+
+    CodeX's own tickets are never escalated - :func:`escalate_ticket` refuses
+    them, the desk already owns them - so the platform arm stands on the tenant
+    rather than on the timestamp.
+    """
+    if getattr(ticket.tenant, "kind", None) == "PLATFORM":
+        return True
+    return ticket.escalated_at is not None
+
+
+# Return active CX users who can be assigned this ticket.
+def eligible_support_users_qs(ticket):
     """Active platform users whose effective RBAC grants ticket management.
+
+    Empty while the ticket is a school's own. The picker and the write answer
+    that through the same :func:`accepts_platform_assignment`, because a list
+    offering a name that ``assign_ticket`` then refuses invites a school to do
+    something the service denies, and on an unescalated ticket the list also
+    names CodeX's support staff to a school that has raised nothing with them.
 
     Branch reach is matched with ``ANY_BRANCH`` rather than by requiring a null
     branch, so this asks exactly the question :func:`is_support_user` asks. The
@@ -37,6 +66,9 @@ def eligible_support_users_qs():
     makes somebody support staff, so a second filter on the user would only
     create a way for the two to disagree.
     """
+    if not accepts_platform_assignment(ticket):
+        return User.objects.none()
+
     # Match effective tenant-level roles without pulling every role into Python.
     from vs_rbac.evaluator import ANY_BRANCH, _assignment_branch_q
 
@@ -180,8 +212,16 @@ def can_view_ticket(user, ticket: Ticket) -> bool:
 
 # Decide who can perform support-owner actions on a ticket.
 def can_manage_ticket(user, ticket: Ticket) -> bool:
+    """Whether ``user`` may drive ``ticket`` as its resolver.
+
+    Support authority is wide but not unconditional: it reaches the tickets a
+    support user may read, and stops where their list stops. Answering yes for
+    a school's own unescalated ticket would leave the boundary resting on the
+    viewset alone, so any future caller holding a ticket it fetched another way
+    would be told CodeX may work a ticket CodeX may not open.
+    """
     if is_support_user(user):
-        return True
+        return can_view_ticket(user, ticket)
     if ticket.assignee_id == getattr(user, "pk", None):
         # Assignees can progress the ticket even without broader tenant management.
         return True
@@ -198,9 +238,24 @@ def can_update_ticket_fields(user, ticket: Ticket) -> bool:
 
 # Decide who can assign or unassign ticket ownership.
 def can_assign_ticket(user, ticket: Ticket) -> bool:
-    if is_support_user(user):
-        return True
-    return has_ticket_permission(user, TicketPermission.ASSIGN, tenant=ticket.tenant)
+    """Whether ``user`` may name this ticket's owner.
+
+    The desk names its own owners, on its own tickets and on the ones sent up
+    to it. Every assignee is CodeX support staff, so assigning is CodeX
+    deciding which of its people works a thing: a rota decision that needs to
+    know who is on leave, who carries the case already, and what else is in
+    their queue. A school knows none of that, and a school's choice would only
+    be undone by the person who does.
+
+    A school's say is escalation, and it stops there. That decision is the one
+    the school is placed to make - whether this is beyond them - and it is
+    already the decision that gives CodeX the ticket.
+
+    ``tickets.ticket.assign`` therefore grants nothing inside a school tenant,
+    which is why the key is platform-scoped and a school's roles screen does
+    not offer it.
+    """
+    return is_support_user(user)
 
 
 # Decide who can add public replies to a ticket thread.
@@ -224,7 +279,17 @@ def can_attach_to_ticket(user, ticket: Ticket) -> bool:
 
 # Decide who can add support-only internal notes.
 def can_add_internal_note(user, ticket: Ticket) -> bool:
-    if is_support_user(user) or ticket.assignee_id == getattr(user, "pk", None):
+    """Whether ``user`` may write, and so also read, this ticket's internal notes.
+
+    The support arm is bounded by the same visibility rule the rest of the desk
+    obeys. This answer is also the internal-note *read* gate, through
+    :func:`can_view_internal_notes`, which the detail serializer and the
+    notification recipient filter both consult - so an unbounded yes here would
+    put note bodies in front of the platform desk on tickets its own list omits.
+    """
+    if is_support_user(user):
+        return can_view_ticket(user, ticket)
+    if ticket.assignee_id == getattr(user, "pk", None):
         return True
     return has_ticket_permission(user, TicketPermission.INTERNAL_NOTE, tenant=ticket.tenant)
 
