@@ -364,6 +364,27 @@ def _override_base_users(override, stage: WorkflowStage, instance: WorkflowInsta
 
 
 # Build the frozen approver snapshot for a stage activation.
+def requester_may_self_approve(instance: WorkflowInstance) -> bool:
+    """Whether this document type lets the person who raised it also decide it.
+
+    Read from the owning module's handler rather than from the stage, because it
+    is a property of what the document IS. A template builder configuring a
+    ladder is choosing who approves, not whether separation of duties applies -
+    that answer belongs with the module that knows why its documents exist.
+
+    An unregistered document type answers False. A type the engine cannot
+    identify is not one that has argued for the exemption.
+    """
+    from vs_workflow.exceptions import UnknownDocumentTypeError
+    from vs_workflow.handlers import get_handler
+
+    try:
+        handler = get_handler(instance.document_type)
+    except UnknownDocumentTypeError:
+        return False
+    return bool(getattr(handler, "allows_requester_self_approval", False))
+
+
 def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[EligibleApprover]:
     """Build the full eligible approver list for a stage at the moment it activates.
 
@@ -449,8 +470,16 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     base_users = _tenant_members(base_users, instance.tenant_id)
 
     # Self-approval is barred on every source, so the filter lives here once
-    # rather than being repeated (and one day forgotten) per branch.
-    base_users = [u for u in base_users if u is not None and u.pk != instance.requested_by_id]
+    # rather than being repeated (and one day forgotten) per branch. The one
+    # document type that opts out says so on its handler, which is also the one
+    # place to look for which types those are - see
+    # ``BaseWorkflowHandler.allows_requester_self_approval``.
+    if not requester_may_self_approve(instance):
+        base_users = [
+            u for u in base_users if u is not None and u.pk != instance.requested_by_id
+        ]
+    else:
+        base_users = [u for u in base_users if u is not None]
 
     base_ids = {u.pk for u in base_users}
 
@@ -463,7 +492,9 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
         delegator_id__in=base_ids,
     ).filter(
         Q(document_type="") | Q(document_type=instance.document_type),
-    ).exclude(delegate_id=instance.requested_by_id).select_related("delegator", "delegate"))
+    ).select_related("delegator", "delegate"))
+    if not requester_may_self_approve(instance):
+        delegations = [d for d in delegations if d.delegate_id != instance.requested_by_id]
 
     # The second door, running the same filter. See the docstring.
     contained_delegate_ids = {

@@ -1142,6 +1142,21 @@ class TenantRoleChangeRequestDecisionView(TenantScopedRBACMixin, APIView):
         "notes": "optional approval notes / required denial reason"
     }
 
+    **The decision belongs to the workflow engine; this is the roles screen's
+    door to it.** The request was submitted to an ``rbac.role_change`` ladder
+    when it was raised, and this records a vote on that ladder's active stage.
+    Eligibility, quorum, the audit trail, delegation and reversal are all the
+    engine's, so nothing here re-decides who may approve: a caller who is not on
+    the frozen approver list is refused by ``record_action``, whatever role keys
+    they hold.
+
+    The endpoint stays rather than sending the screen to the engine's own action
+    routes because it is the roles screen's vocabulary - approve or turn down one
+    role change - and because those routes are gated on ``workflow.instance.*``,
+    which is a different question from who administers roles. The RBAC gate here
+    is the coarse one: may this caller decide role changes at all. The engine's
+    answer is the precise one: is this caller an approver of THIS request.
+
     docstring-name: Decide a role change request
     """
 
@@ -1152,9 +1167,19 @@ class TenantRoleChangeRequestDecisionView(TenantScopedRBACMixin, APIView):
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def post(self, request, tenant_slug: str, request_id: str):
+        from vs_workflow.constants import WorkflowStageAction
+        from vs_workflow.models import WorkflowInstance
+        from vs_workflow.services.actions import record_action
+
         tenant = self.tenant
         action = (request.data.get("action") or "").upper().strip()
         notes = (request.data.get("notes") or "").strip()
+
+        if action not in {"APPROVE", "DENY"}:
+            return error_response(
+                message="Invalid action. Must be APPROVE or DENY.",
+                error={"action": ["Must be APPROVE or DENY."]},
+            )
 
         try:
             obj = TenantRoleChangeRequest.objects.select_related("target_role", "tenant").get(
@@ -1172,59 +1197,54 @@ class TenantRoleChangeRequestDecisionView(TenantScopedRBACMixin, APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        if action == "DENY":
-            if not notes:
-                return error_response(
-                    message="Denial reason is required.",
-                    error={"notes": ["Denial reason is required."]},
-                )
-            obj.mark_denied(reviewer=request.user, notes=notes)
-            obj.save(update_fields=[
-                "status", "reviewer", "reviewer_notes", "decided_at", "updated_at",
-            ])
-            return success_response(
-                message="Role change request denied.",
-                data=TenantRoleChangeRequestSerializer(
-                    obj, context={"request": request, "tenant": tenant}
-                ).data,
+        # The engine requires a comment to reject. Saying so here puts the
+        # message beside the box rather than letting it come back as a 422.
+        if action == "DENY" and not notes:
+            return error_response(
+                message="Denial reason is required.",
+                error={"notes": ["Denial reason is required."]},
             )
 
-        if action == "APPROVE":
-            try:
-                with transaction.atomic():
-                    from .services import apply_role_change_request
-                    apply_role_change_request(obj=obj, reviewer=request.user, notes=notes)
-                obj.refresh_from_db()
-            except PermissionDenied as exc:
-                return error_response(
-                    message=str(exc.detail),
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-            except ValidationError as exc:
-                return error_response(
-                    message=str(exc.detail),
-                    status=status.HTTP_409_CONFLICT,
-                )
-            except Exception as exc:
-                obj.mark_apply_failed(reviewer=request.user, notes=str(exc))
-                obj.save(update_fields=[
-                    "status", "reviewer", "reviewer_notes", "decided_at", "updated_at",
-                ])
-                return error_response(
-                    message="Approval failed while applying changes.",
-                    error={"error": str(exc)},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                )
-            return success_response(
-                message="Role change request approved.",
-                data=TenantRoleChangeRequestSerializer(
-                    obj, context={"request": request, "tenant": tenant}
-                ).data,
+        instance = (
+            WorkflowInstance.objects.for_document(obj).order_by("-created_at").first()
+        )
+        if instance is None:
+            # A request raised before this document type had a ladder, or one
+            # whose instance was removed. It cannot be decided here, and saying
+            # so plainly beats a 500 from the engine.
+            return error_response(
+                message=(
+                    "This request has no approval to act on. Raise it again so "
+                    "it goes through the current approval steps."
+                ),
+                code="APPROVAL_MISSING",
+                status=status.HTTP_409_CONFLICT,
             )
 
-        return error_response(
-            message="Invalid action. Must be APPROVE or DENY.",
-            error={"action": ["Must be APPROVE or DENY."]},
+        # Every refusal below is a typed workflow error and renders itself
+        # through the global handler with its own code: not an eligible
+        # approver, already voted, stage not active, requester cannot approve.
+        # Catching them here to rewrite the message would lose the code the
+        # screens branch on.
+        record_action(
+            instance.id,
+            request.user,
+            WorkflowStageAction.APPROVED if action == "APPROVE"
+            else WorkflowStageAction.REJECTED,
+            comment=notes,
+        )
+        obj.refresh_from_db()
+        return success_response(
+            message=(
+                "Role change request approved."
+                if obj.status == TenantRoleChangeRequest.Status.APPROVED
+                else "Role change request recorded."
+                if action == "APPROVE"
+                else "Role change request denied."
+            ),
+            data=TenantRoleChangeRequestSerializer(
+                obj, context={"request": request, "tenant": tenant}
+            ).data,
         )
 
 

@@ -8,6 +8,28 @@ class BaseWorkflowHandler:
     # Most document types may use the generic release for an unstaffed stage. A
     # handler can turn it off when terminal approval is itself a safety boundary.
     allows_continue_without_approval: bool = True
+    #: Whether the person who raised the document may also decide it.
+    #:
+    #: False everywhere else, and deliberately: separation of duties is the
+    #: reason an approval ladder exists, and a document whose requester can
+    #: sign it off has an approval step in name only.
+    #:
+    #: It is True for exactly one document type, and the reason is arithmetic
+    #: rather than preference. A role change is raised by whoever administers
+    #: roles, and in most schools that is one person - the head teacher, who
+    #: also holds the only key that can approve one. Excluding her leaves the
+    #: stage with nobody on it, and the two ways out are both worse than
+    #: letting her act: an auto-skipping stage approves restricted grants with
+    #: nobody looking, and a parked one leaves a request no one in the building
+    #: can ever close, which ends with CodeX reaching into the tenant by hand.
+    #:
+    #: So the ladder still runs, still resolves its approvers from the role,
+    #: still records who acted and when, and a second admin - where the school
+    #: has one - decides in the ordinary way. Where there is no second admin the
+    #: work does not stop. ``WorkflowInstance.requested_by`` and the acting
+    #: approver are both on the record, so "who signed off their own request" is
+    #: a question the audit answers by comparing two columns.
+    allows_requester_self_approval: bool = False
 
     # Choose the template code when the submitter does not provide one.
     def resolve_default_template_code(self, document: Any) -> str:

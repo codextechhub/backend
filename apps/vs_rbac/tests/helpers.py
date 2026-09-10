@@ -252,8 +252,36 @@ def make_assignment(school_or_tenant, user, role, **kwargs):
     )
 
 
-def make_role_change_request(school_or_tenant, user, role, justification="Test justification", **kwargs):
+def make_role_change_request(school_or_tenant, user, role,
+                             justification="Test justification",
+                             deltas=None, **kwargs):
+    """A role change request, with or without the approval that decides it.
+
+    Pass ``deltas`` - permission keys, or ``(key, operation)`` pairs - to get
+    what the API produces: the request, its delta items, and a live workflow
+    instance waiting on its first stage. That is the only shape a request
+    reaches production in, so a test about deciding one wants this.
+
+    Omitting them leaves a bare row with no instance, which is right for tests
+    about the model, the queryset or a status the engine would refuse to submit.
+    Such a row cannot be decided through the API, exactly as it could not be in
+    production.
+    """
     tenant = _as_tenant(school_or_tenant)
+    if deltas:
+        from vs_rbac.services import raise_role_change_request
+
+        return raise_role_change_request(
+            tenant=tenant,
+            requested_by=user,
+            target_role=role,
+            justification=justification,
+            deltas=[
+                {"permission_key": d, "operation": "ADD"} if isinstance(d, str)
+                else {"permission_key": d[0], "operation": d[1]}
+                for d in deltas
+            ],
+        )
     defaults = {"status": "PENDING"}
     defaults.update(kwargs)
     return TenantRoleChangeRequest.objects.create(

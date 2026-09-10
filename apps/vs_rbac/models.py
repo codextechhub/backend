@@ -1100,7 +1100,19 @@ class TenantRoleChangeRequest(TimeStampedModel):
 
     Helper methods:
         mark_denied/mark_approved/mark_apply_failed: status transitions.
+
+    **Who decides one is the workflow engine's answer, not this model's.** A
+    request is submitted to a ``rbac.role_change`` ladder the moment it is
+    raised, and the engine resolves the approvers, records their votes and fires
+    the callback that applies the delta. The statuses here are the roles
+    screen's summary of that - PENDING while the ladder runs, APPROVED once it
+    completed, DENIED if it did not - and the instance holds the detail: which
+    stage, who was eligible, who acted and when. See
+    :mod:`vs_rbac.workflow_handlers`.
     """
+
+    #: Routes through the approval engine, like a refund or a purchase order.
+    workflow_document_type = "rbac.role_change"
 
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"

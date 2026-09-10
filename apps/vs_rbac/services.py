@@ -29,7 +29,7 @@ from .models import (
     TenantRoleTemplate,
     TenantUserRoleAssignment,
 )
-from .validators import missing_restricted_grant_authority, validate_role_permissions
+from .validators import validate_role_permissions
 
 
 SUPER_ADMIN_ROLE_KEY = "xvs_super_admin"
@@ -380,6 +380,45 @@ def provision_role_from_prebuilt(*, tenant, branch=None, prebuilt_key: str, crea
     return role
 
 
+# Raise a role change request and start its approval ladder.
+@transaction.atomic
+def raise_role_change_request(*, tenant, requested_by, target_role, justification,
+                              deltas) -> TenantRoleChangeRequest:
+    """Create a role change request and submit it for approval, as one act.
+
+    Raising a request and starting its ladder are not two steps a caller may do
+    separately. A request with no workflow instance is one nobody can decide:
+    the roles screen lists it as waiting and the engine has never heard of it,
+    and no amount of pressing Approve will move it. So they are written in one
+    transaction, and a ladder that cannot be resolved refuses the whole thing
+    rather than leaving the row behind.
+
+    ``deltas`` is an iterable of ``{"permission_key": str, "operation": "ADD" |
+    "REMOVE"}``. Submission happens after they are written because the handler
+    validates against them: a request naming no permission is not a request.
+
+    Raises whatever the engine raises - :class:`TemplateNotFoundError` when the
+    document type has no ladder, :class:`ApprovalNotConfiguredError` when the
+    one it finds has no steps.
+    """
+    from vs_workflow.services.submission import submit_for_approval
+
+    request = TenantRoleChangeRequest.objects.create(
+        tenant=tenant,
+        requested_by=requested_by,
+        target_role=target_role,
+        justification=justification,
+    )
+    for delta in deltas:
+        TenantRoleChangeDeltaItem.objects.create(
+            request=request,
+            permission_id=delta["permission_key"],
+            operation=delta.get("operation", TenantRoleChangeDeltaItem.Operation.ADD),
+        )
+    submit_for_approval(request, requested_by)
+    return request
+
+
 # Apply an approved tenant role permission-change request.
 def apply_role_change_request(obj: TenantRoleChangeRequest, reviewer, notes: str = ""):
     """
@@ -391,6 +430,11 @@ def apply_role_change_request(obj: TenantRoleChangeRequest, reviewer, notes: str
     3. Bumps role version
     4. Marks request as approved
     5. Creates audit trail
+
+    Who was allowed to decide this is settled before the call: the workflow
+    engine resolved the approvers, recorded their votes and only then fired the
+    callback that lands here. So this applies the delta and does not re-litigate
+    the decision - see :mod:`vs_rbac.workflow_handlers`.
 
     Raises if validation fails or apply fails.
     """
@@ -420,13 +464,13 @@ def apply_role_change_request(obj: TenantRoleChangeRequest, reviewer, notes: str
             pk=obj.target_role_id,
         )
 
-        # Snapshot current grants so the durable audit shows the exact before/after set.
+        # The role's grants as they stand, to replay the delta against.
+        # ``set_role_access`` writes its own before/after into the durable audit.
         current_keys = set(
             TenantRolePermission.objects.filter(
                 role=target_role, granted=True
             ).values_list("permission_id", flat=True)
         )
-        before_keys = sorted(current_keys)
 
         # Replay the requested delta in memory before replacing stored grants.
         delta_items = list(obj.delta_items.select_related("permission").all())
@@ -435,19 +479,6 @@ def apply_role_change_request(obj: TenantRoleChangeRequest, reviewer, notes: str
                 current_keys.add(item.permission_id)
             elif item.operation == TenantRoleChangeDeltaItem.Operation.REMOVE:
                 current_keys.discard(item.permission_id)
-
-        added_keys = {
-            item.permission_id
-            for item in delta_items
-            if item.operation == TenantRoleChangeDeltaItem.Operation.ADD
-            and item.permission_id not in before_keys
-        }
-        missing = missing_restricted_grant_authority(reviewer, added_keys)
-        if missing:
-            raise PermissionDenied(
-                "You cannot approve restricted permissions outside your grant "
-                f"authority: {', '.join(sorted(missing))}."
-            )
 
         # Include group-derived permissions when the shared service validates
         # the final set.

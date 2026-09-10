@@ -7,3 +7,4 @@ class VsRbacConfig(AppConfig):
 
     def ready(self):
         import vs_rbac.signals  # noqa: F401
+        import vs_rbac.workflow_handlers  # noqa: F401 - registers rbac.role_change handler

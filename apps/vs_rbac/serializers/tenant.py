@@ -1021,6 +1021,7 @@ class TenantRoleChangeRequestSerializer(
         not_found=ROLE_NOT_FOUND,
     )
     delta_items = TenantRoleChangeDeltaItemSerializer(many=True)
+    approval = serializers.SerializerMethodField()
 
     class Meta:
         model = TenantRoleChangeRequest
@@ -1037,6 +1038,7 @@ class TenantRoleChangeRequestSerializer(
             "decided_at",
             "impact_summary",
             "delta_items",
+            "approval",
             "created_at",
             "updated_at",
         ]
@@ -1048,9 +1050,51 @@ class TenantRoleChangeRequestSerializer(
             "reviewer_notes",
             "submitted_at",
             "decided_at",
+            "approval",
             "created_at",
             "updated_at",
         ]
+
+    def get_approval(self, obj):
+        """Where the request has got to in its ladder, and whether you may act.
+
+        The status field says PENDING or APPROVED; this says who it is waiting
+        on. A screen that can only show "waiting" cannot tell somebody whether
+        they are the person being waited for, and at a school with two
+        administrators that is the whole question.
+
+        ``can_act`` reads the frozen approver snapshot rather than re-resolving
+        the role, because that snapshot is what the engine will actually check
+        when the button is pressed. Anything else offers a button that refuses.
+        """
+        from vs_workflow.models import WorkflowInstance, WorkflowStageApprover
+
+        instance = WorkflowInstance.objects.for_document(obj).order_by("-created_at").first()
+        if instance is None:
+            return None
+
+        request = self.context.get("request")
+        actor = request.user if request and request.user.is_authenticated else None
+        stage_instance = instance.stage_instances.filter(
+            stage=instance.current_stage_id,
+        ).order_by("-attempt").first() if instance.current_stage_id else None
+
+        can_act = False
+        if actor is not None and stage_instance is not None:
+            can_act = WorkflowStageApprover.objects.filter(
+                stage_instance=stage_instance, attempt=stage_instance.attempt,
+                user=actor,
+            ).exists()
+
+        return {
+            "instance_id": str(instance.id),
+            "status": instance.status,
+            "stage_label": (
+                instance.current_stage.label if instance.current_stage_id else ""
+            ),
+            "can_act": can_act,
+            "self_raised": actor is not None and actor.pk == instance.requested_by_id,
+        }
 
     def validate(self, attrs):
         tenant = self._tenant()
@@ -1071,22 +1115,23 @@ class TenantRoleChangeRequestSerializer(
             )
         return attrs
 
-    @transaction.atomic
     def create(self, validated_data):
-        delta_items_data = validated_data.pop("delta_items", [])
+        """Delegate to the service, which owns what raising a request means.
 
+        Creating the row and starting its ladder are one act, and this is not
+        the only caller that performs it, so the definition lives in
+        :func:`~vs_rbac.services.raise_role_change_request` rather than here.
+        """
+        from vs_rbac.services import raise_role_change_request
+
+        delta_items_data = validated_data.pop("delta_items", [])
         request = self.context.get("request")
         actor = request.user if request and request.user.is_authenticated else None
 
-        validated_data["tenant"] = self._tenant()
-        validated_data["requested_by"] = actor
-        obj = TenantRoleChangeRequest.objects.create(**validated_data)
-
-        for item in delta_items_data:
-            permission_key = item.pop("permission_key")
-            perm = Permission.objects.get(key=permission_key)
-            TenantRoleChangeDeltaItem.objects.create(
-                request=obj, permission=perm, **item,
-            )
-
-        return obj
+        return raise_role_change_request(
+            tenant=self._tenant(),
+            requested_by=actor,
+            target_role=validated_data["target_role"],
+            justification=validated_data.get("justification", ""),
+            deltas=delta_items_data,
+        )

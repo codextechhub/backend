@@ -72,6 +72,35 @@ def _grant(user, keys, tenant=None):
     return role
 
 
+def _grant_role_admin(user, tenant=None):
+    """Put *user* on the role change ladder, which names School Admin by key.
+
+    Holding ``school.roles.approve`` is what the endpoint's RBAC gate asks for;
+    being an eligible approver is what the workflow stage asks for, and the
+    stage names a ROLE. The two are different questions and a test that wants
+    somebody to actually decide a request has to answer both.
+    """
+    tenant = tenant or user.tenant
+    role = TenantRoleTemplate.objects.filter(tenant=tenant, key="school_admin").first()
+    if role is None:
+        # ``is_system_role`` is not decoration here. The engine resolves ROLE
+        # stages only through provisioned roles, so that somebody holding
+        # role-create cannot name a role "School Admin" and make themselves an
+        # approver with a string. Provisioning sets it; a fixture standing in
+        # for a provisioned role has to as well, or the stage resolves nobody.
+        role = make_role(
+            tenant, name="School Admin", key="school_admin", is_system_role=True,
+        )
+    # One School Admin role per tenant, so a second caller joins the existing
+    # one rather than trying to grant it the key twice.
+    TenantRolePermission.objects.get_or_create(
+        role=role, permission=make_permission(ROLE_APPROVE_KEY),
+        defaults={"granted": True},
+    )
+    make_assignment(tenant, user, role)
+    return role
+
+
 def _token_client(user):
     client = APIClient()
     token = str(CodeXRefreshToken.for_user(user).access_token)
@@ -972,7 +1001,7 @@ class TenantRoleChangeRequestViewTests(TestCase):
         self.reviewer = make_school_admin(
             self.branch, email="rcr-reviewer@test.com",
         )
-        _grant(self.reviewer, [ROLE_APPROVE_KEY])
+        _grant_role_admin(self.reviewer)
         self.plain = make_staff_user(self.branch, email="rcr-plain@test.com")
         self.role = make_role(self.school, name="Finance Manager")
         self.perm_view = make_permission("finance.invoice.view")
@@ -1040,10 +1069,8 @@ class TenantRoleChangeRequestViewTests(TestCase):
 
     def test_approve_applies_deltas(self):
         make_role_permission(self.role, self.perm_view)
-        rcr = make_role_change_request(self.school, self.admin, self.role)
-        TenantRoleChangeDeltaItem.objects.create(
-            request=rcr, permission=self.perm_export,
-            operation=TenantRoleChangeDeltaItem.Operation.ADD,
+        rcr = make_role_change_request(
+            self.school, self.admin, self.role, deltas=[self.perm_export.key],
         )
         resp = _token_client(self.reviewer).post(
             self._decide_url(rcr.id), {"action": "APPROVE", "notes": "ok"}, format="json"
@@ -1059,7 +1086,9 @@ class TenantRoleChangeRequestViewTests(TestCase):
         )
 
     def test_deny(self):
-        rcr = make_role_change_request(self.school, self.admin, self.role)
+        rcr = make_role_change_request(
+            self.school, self.admin, self.role, deltas=[self.perm_export.key],
+        )
         resp = _token_client(self.reviewer).post(
             self._decide_url(rcr.id), {"action": "DENY", "notes": "no"}, format="json"
         )
@@ -1096,11 +1125,9 @@ class TenantRoleChangeRequestViewTests(TestCase):
         produces a request that sits pending until CodeX reaches into the tenant.
         So it is allowed, under its own audit source.
         """
-        _grant(self.admin, [ROLE_APPROVE_KEY])
-        rcr = make_role_change_request(self.school, self.admin, self.role)
-        TenantRoleChangeDeltaItem.objects.create(
-            request=rcr, permission=self.perm_view,
-            operation=TenantRoleChangeDeltaItem.Operation.ADD,
+        _grant_role_admin(self.admin)
+        rcr = make_role_change_request(
+            self.school, self.admin, self.role, deltas=[self.perm_view.key],
         )
 
         resp = _token_client(self.admin).post(
@@ -1118,41 +1145,70 @@ class TenantRoleChangeRequestViewTests(TestCase):
         self.assertEqual(log.metadata["source"], "self_approved_change_request")
         self.assertTrue(log.metadata["self_approved"])
 
-    def test_restricted_approval_enforces_reviewer_grant_ceiling(self):
+    def test_a_restricted_grant_is_decided_by_the_ladder_not_by_what_you_hold(self):
+        """The rule that replaced the grant ceiling.
+
+        Approving used to require already holding the restricted key yourself,
+        which refused the wrong people: a school whose only approver was the
+        head teacher could raise a request for a key she did not have and never
+        close it. What decides now is whether the workflow stage names you, and
+        a School Admin is named whether or not she holds the key being granted.
+        """
         restricted = make_permission(
             "payments.payout.create", is_restricted=True,
             sensitivity_level=Permission.Sensitivity.CRITICAL,
         )
-        rcr = make_role_change_request(self.school, self.admin, self.role)
-        TenantRoleChangeDeltaItem.objects.create(
-            request=rcr, permission=restricted,
-            operation=TenantRoleChangeDeltaItem.Operation.ADD,
+        rcr = make_role_change_request(
+            self.school, self.admin, self.role, deltas=[restricted.key],
+        )
+        self.assertNotIn(
+            restricted.key,
+            get_effective_permissions(self.reviewer, tenant=self.school.tenant),
         )
 
-        refused = _token_client(self.reviewer).post(
+        resp = _token_client(self.reviewer).post(
             self._decide_url(rcr.id), {"action": "APPROVE"}, format="json",
         )
-        self.assertEqual(refused.status_code, status.HTTP_403_FORBIDDEN)
-        rcr.refresh_from_db()
-        self.assertEqual(rcr.status, TenantRoleChangeRequest.Status.PENDING)
-        self.assertFalse(self.role.role_permissions.filter(permission=restricted).exists())
 
-        _grant(self.reviewer, [restricted.key])
-        approved = _token_client(self.reviewer).post(
-            self._decide_url(rcr.id), {"action": "APPROVE"}, format="json",
-        )
-        self.assertEqual(approved.status_code, status.HTTP_200_OK, approved.content)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
         self.assertTrue(self.role.role_permissions.filter(permission=restricted).exists())
 
-    def test_platform_super_admin_can_bootstrap_first_restricted_holder(self):
-        restricted = make_permission(
-            "payments.payout.create", is_restricted=True,
-            sensitivity_level=Permission.Sensitivity.CRITICAL,
+    def test_somebody_the_ladder_does_not_name_cannot_decide(self):
+        """The approve key opens the endpoint; the stage decides the request.
+
+        A deputy given ``school.roles.approve`` through a role of the school's
+        own devising passes the endpoint's RBAC gate and is still not an
+        approver of this request, because the ladder names School Admin. A
+        school that wants its deputies deciding role changes says so by editing
+        the template, which is the point of routing this through the engine.
+        """
+        deputy = make_staff_user(self.branch, email="rcr-deputy@test.com")
+        _grant(deputy, [ROLE_APPROVE_KEY])
+        rcr = make_role_change_request(
+            self.school, self.admin, self.role, deltas=[self.perm_export.key],
         )
-        rcr = make_role_change_request(self.school, self.admin, self.role)
-        TenantRoleChangeDeltaItem.objects.create(
-            request=rcr, permission=restricted,
-            operation=TenantRoleChangeDeltaItem.Operation.ADD,
+
+        resp = _token_client(deputy).post(
+            self._decide_url(rcr.id), {"action": "APPROVE"}, format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN, resp.content)
+        self.assertEqual(resp.data["error"]["code"], "NOT_ELIGIBLE_APPROVER")
+        rcr.refresh_from_db()
+        self.assertEqual(rcr.status, TenantRoleChangeRequest.Status.PENDING)
+
+    def test_a_platform_admin_is_not_an_approver_inside_a_school(self):
+        """CodeX no longer reaches into a tenant to decide its role changes.
+
+        The ceiling had an explicit bootstrap escape: a Vision super admin could
+        approve a school's request so the school could get its first holder of a
+        restricted key. The ladder needs no such escape, because the school's own
+        School Admin may decide her own request - so the escape is gone, and with
+        it the only route by which CodeX could alter a school's permissions
+        without the school acting.
+        """
+        rcr = make_role_change_request(
+            self.school, self.admin, self.role, deltas=[self.perm_export.key],
         )
         platform_reviewer = make_vision_user(
             email="rcr-platform-reviewer@test.com", super_admin=True,
@@ -1164,8 +1220,9 @@ class TenantRoleChangeRequestViewTests(TestCase):
             format="json",
         )
 
-        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
-        self.assertTrue(self.role.role_permissions.filter(permission=restricted).exists())
+        self.assertNotEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        rcr.refresh_from_db()
+        self.assertEqual(rcr.status, TenantRoleChangeRequest.Status.PENDING)
 
     def test_update_permission_cannot_decide_without_approval_permission(self):
         updater = make_staff_user(self.branch, email="rcr-updater@test.com")
@@ -1316,3 +1373,4 @@ class PermissionGroupCreationScopeTests(TestCase):
             permission.key,
             get_effective_permissions(fresh, tenant=school.tenant),
         )
+

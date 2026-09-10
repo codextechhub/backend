@@ -139,7 +139,15 @@ def record_action(instance_id, actor, action: str, comment: str = "") -> Workflo
             raise InstanceTerminalError(instance=str(instance.id), status=instance.status)
         if instance.status == WorkflowInstanceStatus.RETURNED:
             raise InvalidInstanceStateError("Instance is RETURNED. Wait for resubmission.")
-        if actor.pk == instance.requested_by_id:
+        # Separation of duties, and the one document type that is exempt.
+        #
+        # Checked here as well as at resolution, not instead of it: the eligible
+        # list is frozen when the stage activates, and a requester who was a
+        # legitimate approver at that moment must not be let through by a
+        # snapshot the engine wrote before it knew who would submit.
+        if actor.pk == instance.requested_by_id and not (
+            approvers_service.requester_may_self_approve(instance)
+        ):
             raise RequesterCannotApproveError("Requesters cannot approve their own documents.")
 
         si = _active_stage_instance(instance)
