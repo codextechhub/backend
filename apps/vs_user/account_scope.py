@@ -70,14 +70,33 @@ def administrable_users(request, queryset=None):
     own ``select_related``/``prefetch_related`` chain); omit it for the plain
     table.
 
-    A platform-kind caller is returned untouched, so the console keeps
-    byte-identical SQL and its cross-tenant reach.
+    A platform caller reaches its own tenant, and asks for more.
+
+    It used to reach everybody, so that the console's cross-tenant screens - the
+    school directories, the support tabs - needed no filter. The cost was that
+    every OTHER platform screen got that reach without asking: the approver-group
+    picker offered every teacher and bursar on the platform, and the platform
+    role assignment picker offered a school user as a candidate for a CodeX role.
+    Each was one forgotten parameter away from correct, and a default that has to
+    be remembered at every call site is a default facing the wrong way.
+
+    So the reach is opt-in, through ``?scope=school`` or ``?school_id=``, which
+    the screens that need it already pass. A screen that forgets now shows CodeX
+    its own people, which is wrong in the harmless direction.
     """
     qs = User.objects.all() if queryset is None else queryset
 
     user = getattr(request, "user", None)
     if getattr(getattr(user, "tenant", None), "kind", None) == Tenant.Kind.PLATFORM:
-        return qs
+        # The view applies ``scope`` and ``school_id`` after this, and either
+        # widens beyond the platform tenant. Handing back the platform's own
+        # rows here would AND with them and empty the result, so the caller that
+        # asked to look outside is left to the view; everyone else gets their
+        # own tenant.
+        params = getattr(request, "query_params", None) or getattr(request, "GET", {})
+        if params.get("scope") in {"school", "all"} or params.get("school_id"):
+            return qs
+        return qs.filter(tenant=getattr(user, "tenant", None))
 
     qs = qs.filter(tenant=getattr(request, "tenant", None) or getattr(user, "tenant", None))
 

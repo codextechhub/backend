@@ -449,9 +449,12 @@ class UserListScopeTests(TestCase):
         row reports."""
         from vs_user.serializers import UserListSerializer
 
+        # Both halves, since the unscoped list is now one tenant's and this is
+        # about telling the two kinds apart.
         rows = {
             row["email"]: row["tenant_kind"]
-            for row in UserListSerializer(self._queryset_for(""), many=True).data
+            for scope in ("?scope=platform", "?scope=school")
+            for row in UserListSerializer(self._queryset_for(scope), many=True).data
         }
         self.assertEqual(rows["scope-cx@codex.test"], "PLATFORM")
         self.assertEqual(rows["scope-admin@school.test"], "SCHOOL")
@@ -473,22 +476,55 @@ class UserListScopeTests(TestCase):
         self.assertQuerySetEqual(users, [self.cx_user], transform=lambda user: user)
 
     def test_the_two_scopes_partition_the_list(self):
-        """Neither half may drop a row or claim one twice."""
-        everyone = set(self._queryset_for("").values_list("pk", flat=True))
+        """Neither half may drop a row or claim one twice.
+
+        Measured against the table rather than against the unscoped list. The
+        unscoped list is no longer everybody - it is the caller's own tenant -
+        so comparing the halves to it would now be comparing one half to itself.
+        """
+        from vs_user.models import User
+
+        everyone = set(
+            User.objects.exclude(
+                status__in=[User.Status.PENDING_APPROVAL, User.Status.REJECTED],
+            ).values_list("pk", flat=True)
+        )
         school = set(self._queryset_for("?scope=school").values_list("pk", flat=True))
         platform = set(self._queryset_for("?scope=platform").values_list("pk", flat=True))
 
         self.assertEqual(school | platform, everyone)
         self.assertEqual(school & platform, set())
 
-    def test_an_unknown_scope_does_not_silently_filter(self):
-        """``?user_type=CX_STAFF`` is now ignored rather than honoured, so a
-        stale caller gets everything rather than nothing. Worth pinning: the
-        dangerous failure would be an unrecognised value quietly narrowing the
-        list and a reviewer trusting it."""
-        everyone = set(self._queryset_for("").values_list("pk", flat=True))
+    def test_asking_for_nothing_gets_the_callers_own_tenant(self):
+        """The default a picker gets when nobody remembered a parameter.
+
+        It used to be every account on the platform, which is how the console's
+        approver-group picker came to list a school's teachers and bursars, and
+        how its platform-role picker came to offer a school user a CodeX role.
+        Both were one forgotten parameter from correct.
+        """
+        rows = set(self._queryset_for("").values_list("pk", flat=True))
+        self.assertIn(self.cx_user.pk, rows)
+        self.assertNotIn(
+            self.school_user.pk, rows,
+            "an unscoped list handed the console somebody else's staff",
+        )
+
+    def test_an_unknown_scope_does_not_widen_the_default(self):
+        """A stale parameter must not be a way back to the old reach.
+
+        ``?user_type=CX_STAFF`` is ignored rather than honoured. The dangerous
+        reading would be "unrecognised, so no narrowing applies", which is how
+        an unknown value turns into cross-tenant access.
+        """
         stale = set(self._queryset_for("?user_type=CX_STAFF").values_list("pk", flat=True))
-        self.assertEqual(stale, everyone)
+        self.assertNotIn(self.school_user.pk, stale)
+
+    def test_the_console_still_reaches_schools_when_it_says_so(self):
+        """The reach is opt-in, not gone: the school directories still work."""
+        by_scope = set(self._queryset_for("?scope=school").values_list("pk", flat=True))
+        self.assertIn(self.school_user.pk, by_scope)
+        self.assertNotIn(self.cx_user.pk, by_scope)
 
     def test_school_scope_serializes_placement_and_active_role(self):
         from vs_user.serializers import UserListSerializer
