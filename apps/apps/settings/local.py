@@ -47,7 +47,15 @@ import sys
 
 DEBUG = True
 
-ALLOWED_HOSTS = []
+# Every localhost name, including the per-school subdomains the app runs on.
+#
+# DEBUG's implicit allowance covers `localhost` and the loopback addresses and
+# stops there, so a request arriving as `holy-cross.localhost` was refused. The
+# dev server forwards API calls without rewriting the Host, deliberately: Django
+# treats a request whose Origin matches its own Host as same-origin and skips
+# the trusted-origins list entirely, which is what lets a second or third dev
+# server on any port work without naming each one here.
+ALLOWED_HOSTS = ['localhost', '.localhost', '127.0.0.1', '[::1]', 'testserver']
 
 # Dev conveniences - open CORS and the browsable API (both locked down in base).
 CORS_ALLOW_ALL_ORIGINS = True
@@ -80,8 +88,13 @@ FRONTEND_BASE_URL = 'http://localhost:5173'  # Console (console-fe)
 SCHOOL_APP_BASE_URL = 'http://localhost:5174'  # school-fe
 CSRF_TRUSTED_ORIGINS = [FRONTEND_BASE_URL, SCHOOL_APP_BASE_URL, 'http://*.localhost:5174']
 AUTH_BROWSER_ALLOWED_ORIGINS = [FRONTEND_BASE_URL, SCHOOL_APP_BASE_URL]
+# Any localhost port, not just 5174. The port is not a security boundary here -
+# anything that can bind a port on this machine can bind that one - and pinning
+# it meant a second dev server, which the launch config offers for exactly this
+# reason, could not sign in at all: the login form reported "Invalid
+# credentials" for a refusal that was really about the origin.
 AUTH_BROWSER_ALLOWED_ORIGIN_REGEXES = [
-    r'^http://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.localhost:5174$',
+    r'^http://(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)?localhost:\d+$',
 ]
 
 # The refresh cookie, relaxed for a dev server that speaks plain http.
@@ -106,11 +119,11 @@ AUTH_BROWSER_ALLOWED_ORIGIN_REGEXES = [
 AUTH_REFRESH_COOKIE_SECURE = False
 AUTH_REFRESH_COOKIE_SAMESITE = 'Lax'
 
-# The CSRF cookie has the same cross-host problem, and Django's check is
-# double-submit: the header alone is refused with "CSRF cookie not set", which
-# is the 403 the session-restore card was actually reporting. A domain cookie is
-# shared by localhost and every <slug>.localhost beneath it.
-CSRF_COOKIE_DOMAIN = '.localhost'
+# Plain http in development, so the CSRF cookie cannot be Secure either. No
+# domain is set on purpose: the dev server proxies the API onto its own origin
+# (see school-fe/vite.config.ts), which makes this a first-party host-only
+# cookie. Naming a domain would be worse than useless - Safari refuses a Domain
+# attribute on a single-label host like localhost and stores nothing at all.
 CSRF_COOKIE_SECURE = False
 # This API, for the links that point at it rather than at an application - the
 # school logo in an email is the one so far. Without this a locally sent email
