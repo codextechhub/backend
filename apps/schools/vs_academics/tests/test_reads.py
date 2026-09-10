@@ -262,7 +262,20 @@ class _BudgetMixin:
             if "vs_academics_" in q["sql"]
         ]
 
+    #: One query every gated endpoint pays before it does anything: the plan
+    #: gate reading ``platform.entitlements.enforce`` to find out whether it is
+    #: enforcing. ``get_config`` does not cache, so warming the auth caches in
+    #: the call above does not remove it, and it is charged per request rather
+    #: than per process.
+    #:
+    #: Named rather than folded into each number, because it is not an academics
+    #: cost and does not belong in a budget that exists to catch this module
+    #: growing. Cache the flag read and this becomes 0, and the three budgets
+    #: below go back to what they were.
+    PLAN_GATE_FLAG_READ = 1
+
     def assert_bounded(self, client, url, params, *, expected):
+        expected += self.PLAN_GATE_FLAG_READ
         client.get(url, params)                     # warm the auth caches
         with self.assertNumQueries(expected) as small:
             client.get(url, params)

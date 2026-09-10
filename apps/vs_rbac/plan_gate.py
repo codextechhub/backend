@@ -15,14 +15,22 @@ Why the two refusals must not share a message
     So a plan refusal carries its own code, the module it concerns, and the
     depth the school would need. A role refusal is left exactly as it was.
 
-Off unless switched on
-    ``platform.entitlements.enforce`` is False until the permission-to-band
-    map is complete, because a half-mapped catalogue refuses real work for no
-    commercial reason. It is settable at platform scope only, and that is a
-    security property rather than an oversight: a school-scoped switch would
-    let a school with ``config.value.update`` turn off its own plan gate.
-    While it is off this costs one cached config read and asks the database
-    nothing, which is why the check is ordered flag-first.
+On, and switchable per school
+    ``platform.entitlements.enforce`` is registered ON. It was off while the
+    permission-to-band map was being completed, because a half-mapped catalogue
+    refuses real work for no commercial reason; the keys that remain unmapped
+    are the ones that should be - a school's own roles, branches, settings and
+    onboarding are core to every school whatever it paid.
+
+    It is settable at platform scope only, and that is a security property
+    rather than an oversight: a school-scoped switch would let a school with
+    ``config.value.update`` turn off its own plan gate.
+
+    The check is ordered flag-first, and the flag read costs one query per
+    request: ``get_config`` does not cache. That is a real cost on every gated
+    endpoint and the reason the academics query budgets carry a named
+    ``PLAN_GATE_FLAG_READ`` of 1 rather than a bumped number. Caching it removes
+    the query and those budgets go back to what they were.
 
     The flag governs the refusal, not the reading. :func:`plan_reader`, which
     the role builder shows its greyed-out boxes from, answers what the school
@@ -68,6 +76,14 @@ ENFORCEMENT_KEY = "platform.entitlements.enforce"
 
 
 def enforcement_enabled():
+    """Whether a plan refusal is issued at the door.
+
+    The catalogue registers this key ON, so every seeded environment enforces.
+    The ``False`` here answers a different question - what to do when the key is
+    not registered at all - and stays off on purpose. A database with no config
+    catalogue is a half-built install, and refusing paying schools their own
+    product because a seeder has not run yet is the worse of the two failures.
+    """
     return bool(get_config(ENFORCEMENT_KEY, default=False))
 
 

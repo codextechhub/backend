@@ -271,3 +271,41 @@ class RefusalReachesTheClientTests(_GateFixture):
         self.assertNotEqual(
             response.data.get("error", {}).get("code"), "PLAN_UPGRADE_REQUIRED",
         )
+
+
+class TheCatalogueShipsEnforcementOnTests(TestCase):
+    """What a freshly seeded environment does, rather than what a test sets up.
+
+    Every test above builds its own definition and chooses a value, so none of
+    them would notice the catalogue shipping the opposite of what staging runs.
+    This reads the catalogue itself.
+    """
+
+    def test_a_seeded_environment_enforces(self):
+        from django.core.management import call_command
+
+        from vs_config.models import ConfigurationDefinition
+
+        call_command("seed_config_catalogue", verbosity=0)
+
+        definition = ConfigurationDefinition.objects.get(
+            key="platform.entitlements.enforce",
+        )
+        self.assertTrue(
+            definition.default_value,
+            "a seeded environment must enforce, or staging behaves unlike the "
+            "environments already running it",
+        )
+
+    def test_it_stays_a_platform_decision(self):
+        """A school-scoped switch would let a school turn off its own gate."""
+        from django.core.management import call_command
+
+        from vs_config.models import ConfigurationDefinition
+
+        call_command("seed_config_catalogue", verbosity=0)
+
+        definition = ConfigurationDefinition.objects.get(
+            key="platform.entitlements.enforce",
+        )
+        self.assertEqual(definition.allowed_scopes, ["platform"])

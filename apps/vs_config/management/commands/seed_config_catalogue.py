@@ -94,10 +94,11 @@ DEFINITIONS = [
     (
         "platform.entitlements.enforce", "Enforce Plan Entitlements",
         "Whether a request is refused when the school's plan does not reach "
-        "the capability behind the permission being used. Off by default and "
-        "readable per school, so enforcement arrives one school at a time "
-        "rather than for the whole platform on a deploy.",
-        "BOOLEAN", False, {},
+        "the capability behind the permission being used. On, so an environment "
+        "built from this catalogue behaves like the ones already running it. It "
+        "stays readable per school, so a school can be excused from enforcement "
+        "without switching it off for the platform.",
+        "BOOLEAN", True, {},
     ),
     (
         "platform.onboarding.default_ownership_type", "Default School Ownership",

@@ -534,12 +534,14 @@ class PromotionScreenTests(_Base):
         params = {"tenant": self.tenant.slug}
         client.get(url, params)                         # warm the auth caches
 
-        # Fifteen: thirteen, plus one to resolve which year the screen is
-        # about - paid once per request rather than once per level - plus the
-        # RBAC registry-revision read that guards the permission memo. Both are
-        # per request and neither grows with the programme, which is what the
+        # Sixteen: thirteen, plus one to resolve which year the screen is about
+        # - paid once per request rather than once per level - plus the RBAC
+        # registry-revision read that guards the permission memo, plus the plan
+        # gate reading its own enforcement flag. ``get_config`` does not cache,
+        # so warming the auth caches above does not remove that one. All three
+        # are per request and none grows with the programme, which is what the
         # second assertion below proves.
-        with self.assertNumQueries(15) as small:
+        with self.assertNumQueries(16) as small:
             client.get(url, params)
         baseline = len(small.captured_queries)
 
