@@ -31,6 +31,7 @@ class PermissionDeniedTests(StudentsFixture):
             ("student-list", {}),
             ("student-summary", {}),
             ("student-search", {}),
+            ("guardian-search", {}),
             ("student-unplaced", {}),
             ("student-admission-policy", {}),
             ("guardian-list", {}),
@@ -238,6 +239,42 @@ class BranchIsolationTests(StudentsFixture):
         names = {row["full_name"] for row in response.data["data"]}
         self.assertIn("Tobi Okafor", names)
         self.assertNotIn("Somto Okafor", names)
+
+    def test_the_guardian_search_carries_no_contact_details(self):
+        """A dropdown on the second keystroke is the wrong place for a phone number.
+
+        The directory row carries phone, email and a photograph. This opens over
+        whatever page the reader is on, in a staffroom where somebody else can
+        see the screen, so it answers who and whose - not how to reach them.
+        """
+        response = self.get(self.admin, "guardian-search", {"q": "Okafor"})
+
+        self.assertEqual(response.status_code, 200, response.data)
+        for row in response.data["data"]:
+            self.assertEqual(set(row), {"id", "full_name", "ward_names"})
+
+    def test_the_guardian_search_names_only_wards_the_caller_may_see(self):
+        """A school-level guardian with branch-level children.
+
+        A branch-bound head sees the guardian, and beside them the children of
+        their own branches and no others - the same narrowing the directory
+        applies, because the palette must not become the way round it.
+        """
+        # One guardian at the school, a child of theirs at each branch. The
+        # guardian is school-level and carries no branch of its own, which is
+        # exactly why the narrowing has to happen on the wards.
+        parent = self.guardian(name="Mrs. Ifeoma Okafor")
+        self.link(self.lekki_child, parent)
+        self.link(self.ikeja_child, parent)
+
+        response = self.get(self.lekki_head, "guardian-search", {"q": "Okafor"})
+
+        wards = {name for row in response.data["data"] for name in row["ward_names"]}
+        self.assertIn("Tobi Okafor", wards)
+        self.assertNotIn(
+            "Somto Okafor", wards,
+            "the palette named a child at a branch this caller does not cover",
+        )
 
     def test_the_summary_counts_only_the_callers_branches(self):
         response = self.get(self.lekki_head, "student-summary")

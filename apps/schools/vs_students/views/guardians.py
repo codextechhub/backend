@@ -176,6 +176,62 @@ class StudentGuardianDetailView(StudentsViewMixin, APIView):
         return success_response(f"{guardian.full_name} unlinked.")
 
 
+class GuardianSearchView(StudentsViewMixin, APIView):
+    """GET /v1/guardians/search/?q= - the command palette's guardian hits.
+
+    The same scoping and the same matcher the directory uses, so the palette can
+    never find a guardian the directory cannot open, and never miss one it would
+    have found.
+
+    Deliberately not the directory endpoint with a page size of five. That row
+    carries a phone number, an email address and a photograph, and this is the
+    most casually visible surface in the module: a dropdown that opens on the
+    second keystroke, over whatever page the reader happens to be on, in a
+    staffroom where somebody else can see the screen. A name and which children
+    it belongs to is what identifies the right household; the rest is on the
+    record for whoever opens it.
+
+    docstring-name: Search this school's guardians
+    """
+
+    serializer_class = None
+
+    #: Below this, a search is a keystroke rather than a query, and returning
+    #: the whole school for "a" is how a dropdown becomes a directory.
+    MIN_QUERY = 2
+    LIMIT = 10
+
+    def get_permissions(self):
+        self.rbac_permission = PERM_VIEW
+        return super().get_permissions()
+
+    def get(self, request):
+        query = (request.query_params.get("q") or "").strip()
+        if len(query) < self.MIN_QUERY:
+            return success_response(data=[])
+
+        rows = guardian_service.guardian_directory(
+            self.tenant, request.user, search=query,
+        )[: self.LIMIT]
+
+        rows = list(rows)
+        # Names already, and narrowed to the branches this caller covers.
+        wards = _wards_by_guardian(
+            self.tenant, request.user, [row.pk for row in rows],
+        )
+        return success_response(data=[
+            {
+                "id": row.pk,
+                "full_name": row.full_name,
+                # Which children, because two guardians share a surname far more
+                # often than two children do, and the ward is what tells them
+                # apart at a glance.
+                "ward_names": wards.get(row.pk, []),
+            }
+            for row in rows
+        ])
+
+
 class GuardianDirectoryView(StudentsViewMixin, generics.ListAPIView):
     """GET /v1/guardians/
 

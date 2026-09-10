@@ -22,6 +22,7 @@ from .views import (
     ConfirmApplicantView,
     GuardianDetailView,
     GuardianDirectoryView,
+    GuardianSearchView,
     GuardianPhotoView,
     GuardianStudentsView,
     PromotionBatchView,
@@ -127,6 +128,8 @@ student_patterns = [
 
 guardian_patterns = [
     path("", GuardianDirectoryView.as_view(), name="guardian-list"),
+    # Before the ``<int:pk>/`` below, so "search" is not read as an id.
+    path("search/", GuardianSearchView.as_view(), name="guardian-search"),
     path("<int:pk>/", GuardianDetailView.as_view(), name="guardian-detail"),
     path(
         "<int:pk>/students/", GuardianStudentsView.as_view(),

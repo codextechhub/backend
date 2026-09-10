@@ -2,6 +2,7 @@ from .base import StudentsViewMixin
 from .guardians import (
     GuardianDetailView,
     GuardianDirectoryView,
+    GuardianSearchView,
     GuardianPhotoView,
     GuardianStudentsView,
     StudentGuardianDetailView,
