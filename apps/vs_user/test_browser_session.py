@@ -1,13 +1,33 @@
 """Regression tests for the browser-only refresh-cookie contract."""
 
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from .models import LoginSession
 from .tests import make_cx_user
 
+#: The origins these tests speak from, declared here rather than borrowed from
+#: whichever settings module happens to be loaded.
+#:
+#: They read as local development addresses because that is what a browser
+#: contract is about, but nothing here depends on running under
+#: ``apps.settings.local``. It did: the console origin was in that file's
+#: allowlist and not in the one CI inherits from ``base``, where
+#: ``CORS_ALLOWED_ORIGINS`` defaults to the production host. So eight tests
+#: asserting a 200 got a 403 in CI and passed on every developer machine, which
+#: is the worst way round for a test to be wrong.
+BROWSER_ORIGINS = ["http://localhost:5173", "http://localhost:5174"]
+BROWSER_ORIGIN_REGEXES = [
+    r"^http://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.localhost:5174$",
+]
 
+
+@override_settings(
+    AUTH_BROWSER_ALLOWED_ORIGINS=BROWSER_ORIGINS,
+    AUTH_BROWSER_ALLOWED_ORIGIN_REGEXES=BROWSER_ORIGIN_REGEXES,
+    CSRF_TRUSTED_ORIGINS=BROWSER_ORIGINS + ["http://*.localhost:5174"],
+)
 class BrowserSessionContractTests(TestCase):
     password = "Str0ng!pass123"
     origin = "http://localhost:5173"
