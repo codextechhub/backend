@@ -83,6 +83,35 @@ AUTH_BROWSER_ALLOWED_ORIGINS = [FRONTEND_BASE_URL, SCHOOL_APP_BASE_URL]
 AUTH_BROWSER_ALLOWED_ORIGIN_REGEXES = [
     r'^http://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.localhost:5174$',
 ]
+
+# The refresh cookie, relaxed for a dev server that speaks plain http.
+#
+# Both defaults are right in production and neither can work here.
+#
+# `Secure` tells the browser to withhold the cookie from an insecure origin, and
+# Safari applies that literally: over http it does not store the cookie at all,
+# so the refresh POST carries nothing and every page reload ends at "We couldn't
+# restore your session". Chrome hides the problem by treating http://localhost
+# as trustworthy and storing it anyway, which is why this only shows up in one
+# browser.
+#
+# `Strict` is the second half. The school app runs on <slug>.localhost:5174 and
+# this API on localhost:8000 - different hosts, so a Strict cookie is withheld
+# from the refresh request even once it is stored. Lax is as tight as a
+# cross-host dev setup can be.
+#
+# Neither line is inherited by staging or production: both serve https from one
+# registrable domain, where the base settings' Secure + Strict are correct and
+# stay in force.
+AUTH_REFRESH_COOKIE_SECURE = False
+AUTH_REFRESH_COOKIE_SAMESITE = 'Lax'
+
+# The CSRF cookie has the same cross-host problem, and Django's check is
+# double-submit: the header alone is refused with "CSRF cookie not set", which
+# is the 403 the session-restore card was actually reporting. A domain cookie is
+# shared by localhost and every <slug>.localhost beneath it.
+CSRF_COOKIE_DOMAIN = '.localhost'
+CSRF_COOKIE_SECURE = False
 # This API, for the links that point at it rather than at an application - the
 # school logo in an email is the one so far. Without this a locally sent email
 # would carry a production URL and quietly show no logo, or somebody else's.

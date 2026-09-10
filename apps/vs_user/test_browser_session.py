@@ -22,11 +22,26 @@ BROWSER_ORIGIN_REGEXES = [
     r"^http://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.localhost:5174$",
 ]
 
+#: The hardening the refresh cookie carries where it matters, declared for the
+#: same reason the origins above are.
+#:
+#: A dev server speaks plain http, and a `Secure` cookie is one the browser is
+#: told to withhold from an insecure origin - Safari applies that literally and
+#: does not store it at all, so `apps.settings.local` turns both off to keep
+#: local sign-in working. Reading the live setting here would make this test
+#: agree with whatever the developer's machine needs and stop asserting the
+#: contract it exists for, which is that production ships Secure and Strict.
+HARDENED_COOKIE = {
+    "AUTH_REFRESH_COOKIE_SECURE": True,
+    "AUTH_REFRESH_COOKIE_SAMESITE": "Strict",
+}
+
 
 @override_settings(
     AUTH_BROWSER_ALLOWED_ORIGINS=BROWSER_ORIGINS,
     AUTH_BROWSER_ALLOWED_ORIGIN_REGEXES=BROWSER_ORIGIN_REGEXES,
     CSRF_TRUSTED_ORIGINS=BROWSER_ORIGINS + ["http://*.localhost:5174"],
+    **HARDENED_COOKIE,
 )
 class BrowserSessionContractTests(TestCase):
     password = "Str0ng!pass123"
