@@ -335,19 +335,28 @@ class _MigrationHarness(TransactionTestCase):
 
     def tearDown(self):
         # Always leave the database at the latest state for the rest of the run.
-        #
-        # Every LEAF, not just this app's: rewinding vs_schools 0003 also
-        # unapplies the migrations that depend on it - vs_workflow 0007, which
-        # adds WorkflowTemplate.is_active, and migrations in vs_finance and
-        # vs_procurement. Migrating only this app forward left their columns
-        # missing for the rest of the run, so the serialized-rollback restore
-        # and every later test that touched those tables failed on a column
-        # that does not exist.
+        self._migrate_all_leaves()
+        super().tearDown()
+
+    def _migrate_all_leaves(self):
+        """Bring every app to its latest migration, not only this one's.
+
+        Every LEAF, because rewinding vs_schools 0003 also unapplies the
+        migrations that depend on it - vs_workflow 0007, which adds
+        WorkflowTemplate.is_active, and migrations in vs_finance and
+        vs_procurement. Migrating only this app forward left their columns
+        missing for the rest of the run, so the serialized-rollback restore and
+        every later test that touched those tables failed on a column that does
+        not exist.
+
+        A test calls it directly before writing through a LIVE model. A model
+        writes every column it declares, so the only schema it fits is the
+        latest one.
+        """
         executor = MigrationExecutor(connection)
         executor.loader.build_graph()
         executor.migrate(executor.loader.graph.leaf_nodes())
         executor.loader.build_graph()
-        super().tearDown()
 
     def _migrate(self, target):
         executor = MigrationExecutor(connection)
@@ -648,8 +657,17 @@ class BranchMoveMigrationTests(_MigrationHarness):
         # TransactionTestCase runs in autocommit, so calling it by hand raises
         # TransactionManagementError. ``save()`` opens the atomic block itself,
         # which is also the path production uses.
+        #
+        # The graph comes forward first because this write goes through the
+        # live Branch, and a live model writes exactly the columns it declares.
+        # This phase's target is not where the table is: rewinding to it brings
+        # back columns the latest schema has since dropped, and a create through
+        # the current class leaves them empty in a database that still demands
+        # them. The reads above are safe at the older state because each names
+        # the column it wants.
+        self._migrate_all_leaves()
         fresh = Branch.all_objects.create(
-            tenant_id=tenants["multi"].pk, name="Ikoyi", _type="Sub",
+            tenant_id=tenants["multi"].pk, name="Ikoyi",
         )
         self.assertEqual(fresh.code, 3)
 

@@ -329,12 +329,29 @@ class ActionTokenMigrationTests(TransactionTestCase):
         ).pk
 
         self._migrate(self.AFTER)
+        # Back to the latest schema before the assertions run. They go through
+        # the live models and services deliberately, because what is being
+        # proved is that a link issued before the migration still opens after
+        # it, and only the live path can prove that. A live model queries every
+        # column it declares, so stopping at 0010 leaves the ones added since
+        # missing and the query fails on a column that has nothing to do with
+        # tokens. Nothing applied after 0010 rewrites what 0010 wrote.
+        self._migrate_all_leaves()
 
-    def tearDown(self):
+    def _migrate_all_leaves(self):
+        """Bring every app to its latest migration, not only this one's.
+
+        Rewinding vs_user unapplies whatever depends on it too, so a graph left
+        short takes columns away from every later test in the run as well as
+        from this one.
+        """
         executor = MigrationExecutor(connection)
         executor.loader.build_graph()
         executor.migrate(executor.loader.graph.leaf_nodes())
         executor.loader.build_graph()
+
+    def tearDown(self):
+        self._migrate_all_leaves()
         super().tearDown()
 
     def test_forward_migration_preserves_only_the_invitation_credential(self):

@@ -4593,6 +4593,14 @@ class UserTypeMigrationTests(TransactionTestCase):
     ``QuerySet.update()`` where a value is illegal, because that is exactly how
     such a row would have arrived: past the choices list, past ``clean()``,
     straight into the column.
+
+    That applies to ``vs_user`` and to nothing else. Only this app is rewound,
+    so only its tables are at an older shape; every other app's tables are the
+    latest ones, and its historical models no longer describe them. The tenant
+    and the branch below therefore come from the LIVE ``vs_tenants`` models.
+    ``Branch._type`` is the proof: the column is gone from the model, so the
+    registry at this point still carries it while the table does not, and a
+    create through the historical class writes a column that is not there.
     """
 
     serialized_rollback = True
@@ -4601,18 +4609,21 @@ class UserTypeMigrationTests(TransactionTestCase):
     BEFORE = "0008_drop_admin_user_types"
 
     def setUp(self):
+        from vs_tenants.models import Branch, Tenant
+
         self._migrate(self.BEFORE)
         self.historical = self._historical_apps(self.BEFORE)
         self.User = self.historical.get_model("vs_user", "User")
-        Tenant = self.historical.get_model("vs_tenants", "Tenant")
-        Branch = self.historical.get_model("vs_tenants", "Branch")
 
         self.codex = Tenant.objects.get(slug="codex", kind="PLATFORM")
         self.school = Tenant.objects.create(
             name="Retire School", slug="retire-school", kind="SCHOOL", status="ACTIVE",
         )
-        self.lekki = Branch.objects.create(
-            tenant=self.school, name="Lekki", code=1, is_main=True, status="ACTIVE",
+        # all_objects: Branch's default manager filters on the ambient tenant,
+        # and these tests set none.
+        self.lekki = Branch.all_objects.create(
+            tenant_id=self.school.pk, name="Lekki", code=1, is_main=True,
+            status="ACTIVE",
         )
 
     def tearDown(self):
@@ -4664,11 +4675,19 @@ class UserTypeMigrationTests(TransactionTestCase):
         return import_module(f"vs_user.migrations.{name}")
 
     def _user(self, email, *, tenant=None, branch=None, user_type="STAFF", uid=None):
+        """Build one account of the shape the migration under test will meet.
+
+        The foreign keys are given as ids. The account is a historical model and
+        the tenant and branch are live ones, and a foreign key refuses an
+        instance of a class other than the one it points at, however identical
+        the row behind it.
+        """
         return self.User.objects.create(
             email=email, first_name="Test", last_name="Person", gender="",
             phone="", uid=uid, user_type=user_type, role="", status="ACTIVE",
             is_staff=False, is_active=True, is_superuser=False,
-            tenant=tenant or self.school, branch=branch,
+            tenant_id=(tenant or self.school).pk,
+            branch_id=branch.pk if branch is not None else None,
         )
 
     def _stamp(self, user, **values):
