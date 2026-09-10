@@ -2486,6 +2486,225 @@ class PayoutBatchApprovalTests(TestCase):
             set(WorkflowStageApprover.objects.values_list("pk", flat=True)), before)
         self.assertTrue(WorkflowStageApprover.objects.filter(user=first).exists())
 
+    # --- reversing an approval the provider may already have acted on ------ #
+
+    def _live_approval_of(self, instance):
+        """The recorded approving vote an administrator would reverse."""
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.models import WorkflowStageAction
+
+        return WorkflowStageAction.objects.get(
+            stage_instance__instance=instance, action=ActionEnum.APPROVED,
+            is_reversal_of__isnull=True, reversed_at__isnull=True,
+        )
+
+    def test_reversal_is_refused_once_the_batch_has_reached_the_provider(self):
+        """Money that has left cannot be recalled by editing the approval record.
+
+        The workflow would read "In progress" while the beneficiary holds the
+        funds, and the only person who could tell the difference is the one
+        looking at the provider's dashboard.
+        """
+        from vs_workflow.constants import WorkflowInstanceStatus
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.exceptions import ReversalNotAllowedError
+        from vs_workflow.services import actions as wf_actions
+
+        self._publish_template()
+        approver = self._make_approver()
+        batch = self._draft_batch(10_000, 20_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        with self.captureOnCommitCallbacks(execute=True):
+            wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+
+        action = self._live_approval_of(instance)
+        with self.assertRaises(ReversalNotAllowedError):
+            wf_actions.reverse_action(action.id, self.requester, reason="wrong batch")
+
+        action.refresh_from_db()
+        instance.refresh_from_db()
+        batch.refresh_from_db()
+        self.assertIsNone(action.reversed_at)  # The approval record stands.
+        self.assertEqual(instance.status, WorkflowInstanceStatus.APPROVED)
+        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
+        self.assertEqual((batch.metadata or {}).get("approval_status"), "APPROVED")
+
+    def test_reversal_before_dispatch_returns_the_batch_to_the_queue(self):
+        """The approval committed, the worker has not run yet: still recallable."""
+        from vs_workflow.constants import WorkflowInstanceStatus
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.services import actions as wf_actions
+
+        self._publish_template()
+        approver = self._make_approver()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+        batch.refresh_from_db()
+        self.assertEqual((batch.metadata or {}).get("approval_status"), "APPROVED")
+
+        wf_actions.reverse_action(
+            self._live_approval_of(instance).id, self.requester,
+            reason="the vendor list was wrong",
+        )
+
+        instance.refresh_from_db()
+        batch.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+        self.assertEqual((batch.metadata or {}).get("approval_status"), "PENDING_APPROVAL")
+        self.assertTrue(
+            all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
+
+    def test_the_recovery_sweep_leaves_a_reversed_approval_alone(self):
+        """The sweep re-sends approvals whose hand-off was lost. Not this one."""
+        from unittest.mock import patch
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.services import actions as wf_actions
+
+        self._publish_template()
+        approver = self._make_approver()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+        wf_actions.reverse_action(
+            self._live_approval_of(instance).id, self.requester,
+            reason="the vendor list was wrong",
+        )
+
+        with patch.object(
+            self.fake, "create_transfer", wraps=self.fake.create_transfer,
+        ) as create_transfer:
+            summary = services.sweep_undispatched_payout_batches()
+
+        create_transfer.assert_not_called()
+        self.assertEqual(summary["dispatched"], 0)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+        self.assertTrue(
+            all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
+
+    def test_a_dispatch_that_arrives_after_a_reversal_sends_nothing(self):
+        """The race the reversal has to win: approval committed, worker in flight.
+
+        The hand-off is queued on commit, so a reversal can land between the
+        approval and the worker picking the batch up. The worker re-reads the
+        approval it was sent for and finds it withdrawn.
+        """
+        from unittest.mock import patch
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.services import actions as wf_actions
+
+        self._publish_template()
+        approver = self._make_approver()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        with self.captureOnCommitCallbacks(execute=False) as pending_dispatch:
+            wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+        wf_actions.reverse_action(
+            self._live_approval_of(instance).id, self.requester,
+            reason="the vendor list was wrong",
+        )
+
+        with patch.object(
+            self.fake, "create_transfer", wraps=self.fake.create_transfer,
+        ) as create_transfer:
+            for callback in pending_dispatch:
+                callback()  # The worker runs against the reversed approval.
+
+        create_transfer.assert_not_called()
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+        self.assertTrue(
+            all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
+
+    def test_a_reversal_landing_mid_dispatch_stops_the_send_it_beat(self):
+        """The approval is re-read inside the claim, not only before the run.
+
+        A dispatch validates the approval, then claims each instruction and calls
+        the provider with no transaction held across the network. A reversal that
+        commits between those two would otherwise pay a beneficiary against an
+        approval that no longer exists.
+
+        The reversal is fired from the destination check that sits in exactly that
+        window: after the dispatch has passed its pre-claim approval check, before
+        the row is claimed. Counting the approval checks is what proves it landed
+        there - three of them means the claim re-checked, which is the whole point.
+        """
+        from unittest.mock import patch
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.services import actions as wf_actions
+
+        self._publish_template()
+        approver = self._make_approver()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+        action_id = self._live_approval_of(instance).id
+
+        real_approval_check = services._validate_approved_instance
+        real_destination_check = services._validate_instruction_snapshot
+        approval_checks = []
+        reversed_in_the_gap = []
+
+        def counted_approval_check(batch_arg, instance_arg):
+            approval_checks.append(True)
+            return real_approval_check(batch_arg, instance_arg)
+
+        def reverse_in_the_gap(payout, vendor):
+            # Two approval checks so far: the batch pre-flight and the dispatch's
+            # own. The claim has not happened yet, so this is the window.
+            if len(approval_checks) == 2 and not reversed_in_the_gap:
+                reversed_in_the_gap.append(True)
+                wf_actions.reverse_action(
+                    action_id, self.requester, reason="stopped on the way out",
+                )
+            return real_destination_check(payout, vendor)
+
+        with patch.object(services, "_validate_approved_instance",
+                          side_effect=counted_approval_check), \
+             patch.object(services, "_validate_instruction_snapshot",
+                          side_effect=reverse_in_the_gap), \
+             patch.object(self.fake, "create_transfer",
+                          wraps=self.fake.create_transfer) as create_transfer:
+            services.submit_payout_batch(batch, approved_instance=instance)
+
+        self.assertTrue(reversed_in_the_gap, "the reversal never reached the gap")
+        self.assertEqual(len(approval_checks), 3, "the claim did not re-check approval")
+        create_transfer.assert_not_called()
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+        self.assertTrue(
+            all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
+
+    def test_a_reversed_batch_can_be_approved_and_dispatched_again(self):
+        """Reversal returns the decision to the approvers, it does not strand it."""
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.services import actions as wf_actions
+
+        self._publish_template()
+        approver = self._make_approver()
+        batch = self._draft_batch(10_000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+        wf_actions.reverse_action(
+            self._live_approval_of(instance).id, self.requester,
+            reason="checked with the wrong budget holder",
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
+        self.assertEqual((batch.metadata or {}).get("approval_status"), "APPROVED")
+
     # --- 6. reject → back to draft, nothing dispatched --------------------- #
 
     def test_reject_returns_batch_to_draft(self):

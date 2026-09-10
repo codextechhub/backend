@@ -55,3 +55,45 @@ class BaseWorkflowHandler:
     def on_returned(self, instance, context: Dict) -> None: ...
     def on_withdrawn(self, instance, context: Dict) -> None: ...
     def on_cancelled(self, instance, context: Dict) -> None: ...
+
+    # Reversal is the one outcome the engine cannot decide on its own.
+    def validate_reversal(self, instance, context: Dict) -> None:
+        """Refuse an administrator's reversal that this document cannot honour.
+
+        Runs before the engine writes anything, so raising here leaves the
+        approval, its stages and its votes exactly as they were. The engine can
+        undo its own record of a decision; whether that decision has already had
+        an effect outside the engine is knowledge only the owning module holds.
+
+        A dispatched payout is the case this exists for. Once the provider holds
+        the instructions the money is gone, and an instance moved back to
+        IN_PROGRESS would describe a batch that is being paid as one still
+        waiting for a decision.
+
+        ``context`` carries ``action_id``, ``original_action``, ``stage_code``,
+        ``attempt``, ``reason``, ``actor_id``, and ``was_final_approval`` - True
+        when the instance stood fully APPROVED at the moment the reversal was
+        asked for. Raise
+        :class:`~vs_workflow.exceptions.ReversalNotAllowedError` to refuse.
+        """
+        return None
+
+    def on_action_reversed(self, instance, context: Dict) -> None:
+        """Put the document back after the engine has undone a decision.
+
+        The counterpart of :meth:`on_approved`, :meth:`on_rejected` and
+        :meth:`on_returned`: whatever those wrote about an outcome that no longer
+        holds belongs back where it was. Runs inside the reversal transaction, so
+        raising rolls the reversal back rather than leaving the document and the
+        workflow disagreeing about the same decision.
+
+        Called only when the reversal changed the workflow's outcome. A vote the
+        stage did not need is voided without reopening anything, and a document
+        the engine has not moved is not one this has to move either.
+
+        ``context`` carries the keys :meth:`validate_reversal` receives, plus
+        ``reopened_stage_code`` - the stage the instance returned to - and
+        ``unwound_stages``, the codes of the stages downstream of it that the
+        engine rolled back.
+        """
+        return None

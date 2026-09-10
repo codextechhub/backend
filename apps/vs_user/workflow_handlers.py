@@ -127,3 +127,30 @@ class UserCreationWorkflowHandler(BaseWorkflowHandler):
 
     def on_cancelled(self, instance, context: dict) -> None:
         self.on_rejected(instance, context)
+
+    def validate_reversal(self, instance, context: dict) -> None:
+        """Refuse once approval has already put the account in the person's hands.
+
+        Approval finalises the account and sends its invitation, and by the time
+        anybody looks at reversing it the person may have opened the link and set
+        a password. Undoing the approval record would leave a live account whose
+        creation reads as still awaiting a decision, and nothing about the account
+        would change. Closing it is a separate decision, taken by deactivating the
+        user, where it is recorded as what it is.
+
+        A reversal on an earlier stage, while the account is still waiting on the
+        full ladder, changes nothing outside the engine and is allowed. So is one
+        whose user row is gone: there is no account for anybody to be holding,
+        which is the same reading the callbacks above take.
+        """
+        from vs_user.models import User
+        from vs_workflow.exceptions import ReversalNotAllowedError
+
+        user = User.objects.filter(pk=instance.document_object_id).first()
+        if user is None or user.status == User.Status.PENDING_APPROVAL:
+            return None
+        raise ReversalNotAllowedError(
+            "This account has already been created and invited, so the approval "
+            "cannot be undone. Deactivate the account instead.",
+            user_status=user.status,
+        )

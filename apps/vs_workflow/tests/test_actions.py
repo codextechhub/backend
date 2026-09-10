@@ -17,11 +17,14 @@ from vs_workflow.exceptions import (
     NotAnEligibleApproverError, RequesterCannotApproveError,
     ReversalNotAllowedError,
 )
+from vs_workflow.handlers.base import BaseWorkflowHandler
 from vs_workflow.models import (
     WorkflowAuditLog, WorkflowInstance, WorkflowStage,
     WorkflowStageAction, WorkflowStageApprover, WorkflowStageInstance, WorkflowTemplate,
 )
 from vs_workflow.services import actions as svc
+from vs_workflow.services import routing as routing_service
+from vs_workflow.services.approvers import EligibleApprover
 
 
 def _platform_tenant():
@@ -306,7 +309,53 @@ class CancelTests(_Base):
 
 # ── reverse_action ────────────────────────────────────────────────────────────
 
-class ReverseActionTests(_Base):
+class _StubHandler(BaseWorkflowHandler):
+    """A document handler that records what the engine asked it, and can refuse.
+
+    The engine consults the owning module before a reversal, to ask whether the
+    decision can still be undone, and tells it afterwards when the reversal
+    changed the outcome. A stub is what lets a test see both halves without
+    standing up a real document, and its ``refuse``/``fail_after`` switches are
+    the two points at which a module can answer no.
+    """
+
+    document_type = "TEST_DOC"
+
+    def __init__(self):
+        self.validated = []
+        self.reversed_contexts = []
+        self.refuse = None  # Raised from validate_reversal when set.
+        self.fail_after = None  # Raised from on_action_reversed when set.
+
+    def validate_reversal(self, instance, context) -> None:
+        self.validated.append(dict(context))
+        if self.refuse is not None:
+            raise self.refuse
+
+    def on_action_reversed(self, instance, context) -> None:
+        self.reversed_contexts.append(dict(context))
+        if self.fail_after is not None:
+            raise self.fail_after
+
+
+class _HandlerStubbed:
+    """Mixin that puts a :class:`_StubHandler` behind every engine handler lookup."""
+
+    def _install_handler(self):
+        handler = _StubHandler()
+        for target in ("vs_workflow.services.actions.get_handler",
+                       "vs_workflow.services.routing.get_handler"):
+            patcher = patch(target, return_value=handler)
+            self.addCleanup(patcher.stop)
+            patcher.start()
+        return handler
+
+
+class ReverseActionTests(_HandlerStubbed, _Base):
+
+    def setUp(self):
+        super().setUp()
+        self.handler = self._install_handler()
 
     def _cast_action(self, user=None):
         user = user or self.approver
@@ -314,6 +363,11 @@ class ReverseActionTests(_Base):
             stage_instance=self.si, actor=user,
             action=ActionEnum.APPROVED, attempt=self.si.attempt,
         )
+
+    def _resolve_stage(self, status=WorkflowStageStatus.APPROVED):
+        self.si.status = status
+        self.si.resolved_at = timezone.now()
+        self.si.save(update_fields=["status", "resolved_at"])
 
     def test_reverse_marks_original_and_creates_reversal(self):
         original = self._cast_action()
@@ -347,14 +401,271 @@ class ReverseActionTests(_Base):
 
     def test_reverse_reactivates_approved_stage(self):
         """When the stage resolved because of this vote, it must be re-opened."""
-        self.si.status = WorkflowStageStatus.APPROVED
-        self.si.resolved_at = timezone.now()
-        self.si.save(update_fields=["status", "resolved_at"])
+        self._resolve_stage()
         original = self._cast_action()
         svc.reverse_action(original.id, self.requester, reason="wrong call")
         self.si.refresh_from_db()
         self.assertEqual(self.si.status, WorkflowStageStatus.ACTIVE)
         self.assertIsNone(self.si.resolved_at)
+
+    def test_the_approver_can_vote_again_once_their_vote_is_reversed(self):
+        """Reopening a stage is only worth anything if its approver can act again.
+
+        The uniqueness rule on a stage attempt admits one *live* row per actor,
+        so a reversed vote releases its author's slot. A rule that excluded only
+        reversal rows would leave the reversed row holding the slot, and the
+        second vote would fail on the database instead of being recorded.
+        """
+        with patch("vs_workflow.services.actions.routing_service"):
+            svc.record_action(self.instance.id, self.approver, ActionEnum.APPROVED)
+        original = WorkflowStageAction.objects.get(
+            stage_instance=self.si, actor=self.approver, is_reversal_of__isnull=True)
+        svc.reverse_action(original.id, self.requester, reason="voted in error")
+        with patch("vs_workflow.services.actions.routing_service"):
+            svc.record_action(self.instance.id, self.approver, ActionEnum.APPROVED)
+        self.assertEqual(
+            WorkflowStageAction.objects.filter(
+                stage_instance=self.si, actor=self.approver,
+                is_reversal_of__isnull=True, reversed_at__isnull=True).count(),
+            1,
+        )
+
+    def test_the_owning_module_is_asked_before_anything_is_written(self):
+        self._resolve_stage()
+        original = self._cast_action()
+        self.handler.refuse = ReversalNotAllowedError("Already sent to the provider.")
+        with self.assertRaises(ReversalNotAllowedError):
+            svc.reverse_action(original.id, self.requester, reason="too late")
+        original.refresh_from_db()
+        self.si.refresh_from_db()
+        self.assertIsNone(original.reversed_at)
+        self.assertEqual(self.si.status, WorkflowStageStatus.APPROVED)
+        self.assertFalse(
+            WorkflowStageAction.objects.filter(is_reversal_of=original).exists())
+
+    def test_a_module_that_cannot_comply_rolls_the_whole_reversal_back(self):
+        """on_action_reversed runs inside the reversal, not after it."""
+        self._resolve_stage()
+        original = self._cast_action()
+        self.handler.fail_after = ReversalNotAllowedError("Document is locked.")
+        with self.assertRaises(ReversalNotAllowedError):
+            svc.reverse_action(original.id, self.requester, reason="mistake")
+        original.refresh_from_db()
+        self.si.refresh_from_db()
+        self.assertIsNone(original.reversed_at)
+        self.assertEqual(self.si.status, WorkflowStageStatus.APPROVED)
+
+    def test_a_vote_the_stage_no_longer_needs_is_voided_without_reopening(self):
+        """Two approvals on an ANY stage: reversing one leaves the stage decided."""
+        self._resolve_stage()
+        second = _make_user("apr2@test.com")
+        _make_approver(self.si, second)
+        original = self._cast_action()
+        self._cast_action(second)
+        svc.reverse_action(original.id, self.requester, reason="voted twice over")
+        self.si.refresh_from_db()
+        self.instance.refresh_from_db()
+        self.assertEqual(self.si.status, WorkflowStageStatus.APPROVED)
+        self.assertEqual(self.instance.current_stage_id, self.stage.pk)
+        # Nothing moved, so the owning module is not asked to move anything.
+        self.assertEqual(self.handler.reversed_contexts, [])
+        self.assertEqual(len(self.handler.validated), 1)  # It was still consulted.
+
+    def test_a_vote_from_a_superseded_attempt_cannot_be_reversed(self):
+        self._resolve_stage(status=WorkflowStageStatus.RETURNED)
+        original = self._cast_action()
+        _make_stage_instance(self.instance, self.stage, attempt=2)
+        with self.assertRaises(ReversalNotAllowedError):
+            svc.reverse_action(original.id, self.requester, reason="stale")
+        original.refresh_from_db()
+        self.assertIsNone(original.reversed_at)
+
+    def test_reversing_a_return_puts_the_instance_back_under_review(self):
+        self.instance.status = WorkflowInstanceStatus.RETURNED
+        self.instance.save(update_fields=["status"])
+        self._resolve_stage(status=WorkflowStageStatus.RETURNED)
+        original = WorkflowStageAction.objects.create(
+            stage_instance=self.si, actor=self.approver,
+            action=ActionEnum.RETURNED, comment="needs work", attempt=self.si.attempt,
+        )
+        svc.reverse_action(original.id, self.requester, reason="returned in error")
+        self.si.refresh_from_db()
+        self.instance.refresh_from_db()
+        self.assertEqual(self.si.status, WorkflowStageStatus.ACTIVE)
+        self.assertEqual(self.instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+
+
+class ReverseActionUnknownHandlerTests(_Base):
+    """Reversal with nobody to ask is refused, unlike cancel and withdraw.
+
+    Those two are the escape hatches that have to work on a stuck instance.
+    Reversal declares a recorded outcome untrue, and only the module owning the
+    document knows whether that outcome has already been acted on.
+    """
+
+    def test_reverse_without_a_registered_handler_raises(self):
+        original = WorkflowStageAction.objects.create(
+            stage_instance=self.si, actor=self.approver,
+            action=ActionEnum.APPROVED, attempt=self.si.attempt,
+        )
+        with self.assertRaises(ReversalNotAllowedError):
+            svc.reverse_action(original.id, self.requester, reason="mistake")
+        original.refresh_from_db()
+        self.assertIsNone(original.reversed_at)
+
+
+class ReversalUnwindTests(_HandlerStubbed, TestCase):
+    """A reversal on a ladder that has already run past the stage it undoes.
+
+    Three approval stages, one approver each, driven through the real engine so
+    the stage rows, the approver snapshots and the votes are the ones production
+    writes. What is under test is whether the workflow can still be finished
+    after an administrator withdraws the vote the rest of it was built on.
+    """
+
+    def setUp(self):
+        self.requester = _make_user("req-unwind@test.com")
+        self.a1 = _make_user("a1-unwind@test.com")
+        self.a2 = _make_user("a2-unwind@test.com")
+        self.a3 = _make_user("a3-unwind@test.com")
+        self.admin = _make_user("admin-unwind@test.com")
+        self.template = _make_template(doc_type="TEST_DOC")
+        self.s1 = _make_stage(self.template, code="s1", order=1)
+        self.s2 = _make_stage(self.template, code="s2", order=2)
+        self.s3 = _make_stage(self.template, code="s3", order=3)
+        self.instance = _make_instance(self.template, self.requester)
+        self.handler = self._install_handler()
+
+        by_stage = {"s1": self.a1, "s2": self.a2, "s3": self.a3}
+        patcher = patch(
+            "vs_workflow.services.routing.approvers_service.resolve_approvers",
+            side_effect=lambda stage, instance: [
+                EligibleApprover(user=by_stage[stage.code], on_behalf_of=None)
+            ],
+        )
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        routing_service._activate_stage(self.instance, self.s1, 1)
+        self.instance.refresh_from_db()
+
+    def _run_the_ladder(self):
+        for approver in (self.a1, self.a2, self.a3):
+            svc.record_action(self.instance.id, approver, ActionEnum.APPROVED)
+        self.instance.refresh_from_db()
+
+    def _live_vote_of(self, actor):
+        return WorkflowStageAction.objects.get(
+            stage_instance__instance=self.instance, actor=actor,
+            is_reversal_of__isnull=True, reversed_at__isnull=True)
+
+    def _stage_row(self, stage):
+        return WorkflowStageInstance.objects.get(instance=self.instance, stage=stage)
+
+    def test_reversing_the_first_vote_rolls_the_later_stages_back(self):
+        self._run_the_ladder()
+        self.assertEqual(self.instance.status, WorkflowInstanceStatus.APPROVED)
+
+        svc.reverse_action(self._live_vote_of(self.a1).id, self.admin,
+                           reason="the wrong person was asked")
+
+        self.instance.refresh_from_db()
+        self.assertEqual(self.instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        self.assertEqual(self.instance.current_stage_id, self.s1.pk)
+        self.assertEqual(self._stage_row(self.s1).status, WorkflowStageStatus.ACTIVE)
+        for stage in (self.s2, self.s3):
+            self.assertEqual(self._stage_row(stage).status, WorkflowStageStatus.PENDING)
+        # No vote anywhere on the instance still counts.
+        self.assertFalse(
+            WorkflowStageAction.objects.filter(
+                stage_instance__instance=self.instance,
+                is_reversal_of__isnull=True, reversed_at__isnull=True).exists())
+
+    def test_the_ladder_can_be_run_to_the_end_again_after_a_reversal(self):
+        """The deadlock this unwind exists to prevent.
+
+        Leaving the later stages APPROVED with their votes live means the engine
+        re-activates a stage whose approver is then refused as a duplicate, and
+        the instance sits ACTIVE with nobody able to move it.
+        """
+        self._run_the_ladder()
+        svc.reverse_action(self._live_vote_of(self.a1).id, self.admin,
+                           reason="the wrong person was asked")
+        self._run_the_ladder()
+        self.assertEqual(self.instance.status, WorkflowInstanceStatus.APPROVED)
+
+    def test_a_reopened_stage_does_not_double_its_approver_snapshot(self):
+        self._run_the_ladder()
+        svc.reverse_action(self._live_vote_of(self.a1).id, self.admin,
+                           reason="the wrong person was asked")
+        self._run_the_ladder()
+        for stage in (self.s1, self.s2, self.s3):
+            self.assertEqual(
+                WorkflowStageApprover.objects.filter(
+                    stage_instance=self._stage_row(stage), attempt=1).count(),
+                1, f"{stage.code} snapshot was written twice",
+            )
+
+    def test_reversing_a_middle_vote_leaves_the_stage_before_it_alone(self):
+        self._run_the_ladder()
+        svc.reverse_action(self._live_vote_of(self.a2).id, self.admin,
+                           reason="second checker was out of scope")
+        self.instance.refresh_from_db()
+        self.assertEqual(self.instance.current_stage_id, self.s2.pk)
+        self.assertEqual(self._stage_row(self.s1).status, WorkflowStageStatus.APPROVED)
+        self.assertEqual(self._stage_row(self.s2).status, WorkflowStageStatus.ACTIVE)
+        self.assertEqual(self._stage_row(self.s3).status, WorkflowStageStatus.PENDING)
+        # The first stage's vote is untouched; only what followed it is undone.
+        self.assertIsNone(self._live_vote_of(self.a1).reversed_at)
+
+    def test_a_skipped_stage_is_rolled_back_with_the_ones_that_voted(self):
+        """A stage the engine walked past is still a stage it walked past.
+
+        Retiring the middle stage means the ladder runs s1 then s3, with s2
+        recorded as skipped in between. Reversing s1 has to take both of them
+        back, or s2 keeps a resolution that belongs to a run that no longer
+        happened, and the second pass reads a decision nobody made this time.
+        """
+        self.s2.retired_at = timezone.now()
+        self.s2.save(update_fields=["retired_at"])
+
+        svc.record_action(self.instance.id, self.a1, ActionEnum.APPROVED)
+        svc.record_action(self.instance.id, self.a3, ActionEnum.APPROVED)
+        self.instance.refresh_from_db()
+        self.assertEqual(self.instance.status, WorkflowInstanceStatus.APPROVED)
+        self.assertEqual(self._stage_row(self.s2).status, WorkflowStageStatus.SKIPPED)
+
+        svc.reverse_action(self._live_vote_of(self.a1).id, self.admin,
+                           reason="the wrong person was asked")
+
+        self.assertEqual(self._stage_row(self.s2).status, WorkflowStageStatus.PENDING)
+        self.assertEqual(self._stage_row(self.s3).status, WorkflowStageStatus.PENDING)
+        self.assertEqual(self.handler.reversed_contexts[-1]["unwound_stages"],
+                         ["s2", "s3"])
+
+        # And the ladder still reaches the end, skipping s2 exactly as before.
+        svc.record_action(self.instance.id, self.a1, ActionEnum.APPROVED)
+        svc.record_action(self.instance.id, self.a3, ActionEnum.APPROVED)
+        self.instance.refresh_from_db()
+        self.assertEqual(self.instance.status, WorkflowInstanceStatus.APPROVED)
+        self.assertEqual(self._stage_row(self.s2).status, WorkflowStageStatus.SKIPPED)
+
+    def test_the_owning_module_is_told_what_the_engine_undid(self):
+        self._run_the_ladder()
+        svc.reverse_action(self._live_vote_of(self.a1).id, self.admin,
+                           reason="the wrong person was asked")
+        told = self.handler.reversed_contexts[-1]
+        self.assertEqual(told["reopened_stage_code"], "s1")
+        self.assertEqual(told["unwound_stages"], ["s2", "s3"])
+        self.assertTrue(told["was_final_approval"])
+
+    def test_the_audit_log_names_the_stages_the_reversal_rolled_back(self):
+        self._run_the_ladder()
+        svc.reverse_action(self._live_vote_of(self.a1).id, self.admin,
+                           reason="the wrong person was asked")
+        entry = WorkflowAuditLog.objects.filter(
+            instance=self.instance, event_type="ACTION_REVERSED").latest("occurred_at")
+        self.assertEqual(entry.context["reopened_stage"], "s1")
+        self.assertEqual(entry.context["unwound_stages"], ["s2", "s3"])
 
 
 # ── resubmit ──────────────────────────────────────────────────────────────────

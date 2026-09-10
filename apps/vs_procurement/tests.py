@@ -7100,6 +7100,69 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(req.approval_state, ProcApprovalState.APPROVED)
         self.assertEqual(req.status, DocumentStatus.APPROVED)
 
+    def test_reversing_the_first_vote_returns_the_requisition_to_its_ladder(self):
+        """An undone approval has to be undone on the document as well.
+
+        Cedar's manager and senior both approve a requisition, so it reads
+        APPROVED and a purchase order can be raised against it. An administrator
+        reverses the manager's vote. The requisition has to stop reading APPROVED
+        at that moment, and the ladder has to be runnable again: the senior stage
+        ran only because the manager stage had completed.
+        """
+        from unittest.mock import patch
+
+        from vs_workflow.constants import (
+            WorkflowInstanceStatus, WorkflowStageAction as ActionEnum,
+        )
+        from vs_workflow.models import WorkflowStageAction
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.services.approvers import EligibleApprover
+        from vs_procurement.approvals import (
+            ensure_tenant_approval_templates, submit_for_approval,
+        )
+        from vs_procurement.constants import (
+            ProcApprovalState, WF_DEFAULT_SENIOR_THRESHOLD,
+        )
+
+        entity, _, _, _, _ = self.build_p2p()
+        ensure_tenant_approval_templates(entity.tenant)
+        req = self._make_requisition(entity, unit_price=WF_DEFAULT_SENIOR_THRESHOLD + 100)
+        actor = self._user("requester-rev@t.com")
+        manager = self._user("manager-rev@t.com")
+        admin = self._user("admin-rev@t.com")
+
+        with patch(
+            "vs_workflow.services.approvers.resolve_approvers",
+            return_value=[EligibleApprover(user=manager)],
+        ):
+            instance = submit_for_approval(req, actor_user=actor)
+            wf_actions.record_action(instance.id, manager, ActionEnum.APPROVED)
+            first_vote = WorkflowStageAction.objects.get(
+                stage_instance__instance=instance, actor=manager,
+                is_reversal_of__isnull=True, reversed_at__isnull=True)
+            wf_actions.record_action(instance.id, manager, ActionEnum.APPROVED)
+            req.refresh_from_db()
+            self.assertEqual(req.approval_state, ProcApprovalState.APPROVED)
+
+            wf_actions.reverse_action(
+                first_vote.id, admin, reason="the wrong manager was asked")
+
+            instance.refresh_from_db()
+            req.refresh_from_db()
+            self.assertEqual(instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+            self.assertEqual(req.approval_state, ProcApprovalState.PENDING)
+            self.assertEqual(req.status, DocumentStatus.PENDING_APPROVAL)
+
+            # The ladder still runs: both stages accept a fresh vote.
+            wf_actions.record_action(instance.id, manager, ActionEnum.APPROVED)
+            wf_actions.record_action(instance.id, manager, ActionEnum.APPROVED)
+
+        instance.refresh_from_db()
+        req.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.APPROVED)
+        self.assertEqual(req.approval_state, ProcApprovalState.APPROVED)
+        self.assertEqual(req.status, DocumentStatus.APPROVED)
+
     def test_rejection_cancels_the_requisition(self):
         from unittest.mock import patch
 

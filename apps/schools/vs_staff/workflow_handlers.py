@@ -104,3 +104,23 @@ class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
 
     def on_cancelled(self, instance, context: dict) -> None:
         self._settle(instance, LeaveStatus.CANCELLED)
+
+    def on_action_reversed(self, instance, context: dict) -> None:
+        """Put a decided request back to pending when its vote is reversed.
+
+        The status column is written from the instance and nowhere else, so a
+        decision the workflow has withdrawn has to be withdrawn here too, or the
+        person's profile keeps showing leave that nobody currently approves.
+
+        A cancelled request stays cancelled: they withdrew it, and reopening the
+        approval behind it does not put them back on leave.
+        """
+        from .models import LeaveRequest
+
+        row = LeaveRequest.all_objects.filter(pk=instance.document_object_id).first()
+        if row is None or row.status not in (LeaveStatus.APPROVED, LeaveStatus.REJECTED):
+            return
+        with transaction.atomic():
+            row.status = LeaveStatus.PENDING
+            row.decided_at = None
+            row.save(update_fields=["status", "decided_at", "updated_at"])
