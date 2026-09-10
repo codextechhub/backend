@@ -142,6 +142,21 @@ class FieldNotSelfEditable(StaffError):
     http_status = 422
 
 
+class CannotActOnSelf(StaffError):
+    """Ending your own employment, or closing your own login, from this module.
+
+    Both are one click from a school locking itself out, and the smaller the
+    school the likelier it is: at a school with one administrator there is
+    nobody left to undo it, and Terminated deactivates the account for good.
+    Somebody genuinely leaving is recorded by a colleague, which is also who
+    would have to do it if they had already gone.
+    """
+
+    error_code = "CANNOT_ACT_ON_SELF"
+    default_message = "You cannot do that to your own record."
+    http_status = 422
+
+
 class InvitationAlreadyAccepted(StaffError):
     """A revoke aimed at an account that is past PENDING.
 

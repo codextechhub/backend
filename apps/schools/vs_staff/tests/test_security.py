@@ -14,6 +14,8 @@ FRD M12 v2.1 section 12.1.
 """
 from __future__ import annotations
 
+from schools.vs_staff.constants import EmploymentStatus
+
 from .base import StaffFixture
 
 
@@ -284,3 +286,71 @@ class PermissionOverrideVisibilityTests(StaffFixture):
     def test_a_school_admin_holding_the_key_sees_the_block(self):
         response = self.get(self.admin, "staff-roles", pk=self.eze.pk)
         self.assertEqual(response.data["data"]["overrides"], [])
+
+
+class NobodyEndsTheirOwnEmploymentTests(StaffFixture):
+    """A school administrator is on the staff list, and cannot use it on herself.
+
+    Every move the lifecycle offers from Active either closes the login or ends
+    the job, and Terminated closes it for good: "cannot be reopened without
+    CodeX". At a school with one administrator there is nobody left to undo
+    either, so the school would be locked out of its own system by one
+    confirmation dialog. Somebody genuinely leaving is recorded by a colleague,
+    which is who would have to do it once they had gone anyway.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.head = self.make_staff(
+            "grace@brightfield.test", "Grace", "Okonkwo", branch=None,
+            job_title="IT Head", role=self.role,
+        )
+
+    def test_terminating_yourself_is_refused(self):
+        response = self.post(
+            self.head.user, "staff-status",
+            {"to_status": "TERMINATED", "reason": "Leaving",
+             "last_working_day": "2026-12-18"},
+            pk=self.head.pk,
+        )
+
+        self.assertEqual(response.status_code, 422, response.data)
+        self.assertEqual(response.data["error"]["code"], "CANNOT_ACT_ON_SELF")
+        self.head.refresh_from_db()
+        self.assertEqual(self.head.employment_status, EmploymentStatus.ACTIVE)
+
+    def test_suspending_your_own_account_is_refused(self):
+        response = self.post(
+            self.head.user, "staff-account-suspend", pk=self.head.pk,
+        )
+
+        self.assertEqual(response.status_code, 422, response.data)
+        self.assertEqual(response.data["error"]["code"], "CANNOT_ACT_ON_SELF")
+        self.head.user.refresh_from_db()
+        self.assertEqual(self.head.user.status, "ACTIVE")
+
+    def test_the_drawer_offers_no_moves_on_your_own_record(self):
+        """Read from the same rule the POST enforces.
+
+        A list of moves the API will refuse is a drawer contradicting the
+        server, and the reader finds out by pressing the button.
+        """
+        response = self.get(self.head.user, "staff-status", pk=self.head.pk)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["options"], [])
+        # And says why, because an empty list otherwise reads as a record that
+        # has been closed.
+        self.assertIn("your own", response.data["data"]["note"])
+
+    def test_the_same_person_may_still_do_it_to_a_colleague(self):
+        """The guard is about who the record belongs to, not about the key."""
+        response = self.post(
+            self.head.user, "staff-status",
+            {"to_status": "SUSPENDED", "reason": "Pending a review"},
+            pk=self.registrar.pk,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.registrar.refresh_from_db()
+        self.assertEqual(self.registrar.employment_status, EmploymentStatus.SUSPENDED)

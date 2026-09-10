@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from django.db import transaction
 
-from ..constants import EmploymentStatus
 from . import audit, employment
 
 
@@ -31,6 +30,10 @@ def create_profile(*, tenant, user, actor, staff_number="", job_title="",
     Called inside the same transaction as the account, never before it: there is
     no user-less staff record and this module must not be able to produce one.
 
+    Where the record starts is read from the account rather than fixed at
+    Invited, because this is also the call that gives a record to somebody whose
+    login is already in use. See :func:`services.employment.starting_status`.
+
     The posting is mirrored onto ``User.branch`` so the identity layer's own
     fallback narrowing keeps agreeing with the record.
     """
@@ -40,7 +43,7 @@ def create_profile(*, tenant, user, actor, staff_number="", job_title="",
         tenant=tenant, user=user, branch=branch,
         staff_number=(staff_number or "").strip(), job_title=job_title or "",
         employment_type=employment_type or "",
-        employment_status=EmploymentStatus.INVITED,
+        employment_status=employment.starting_status(user),
         hire_date=hire_date, middle_name=middle_name or "",
         date_of_birth=date_of_birth, created_by=actor,
     )

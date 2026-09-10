@@ -19,7 +19,8 @@ FRD M12 v2.1, FR-009.
 """
 from __future__ import annotations
 
-from ..exceptions import AccountNotEligible
+from ..exceptions import AccountNotEligible, CannotActOnSelf
+from .scoping import is_self
 
 
 def _call(method, user, actor, request):
@@ -44,6 +45,13 @@ def suspend(staff, *, actor, request=None):
     half of the pair the acceptance criteria assert in both directions: the
     other is that moving employment to SUSPENDED does suspend the account.
     """
+    # Suspending yourself signs you out and leaves nobody holding the school.
+    if is_self(actor, staff):
+        raise CannotActOnSelf(
+            "You cannot suspend your own account. Ask another administrator to "
+            "do it.",
+        )
+
     from vs_user.services.user import UserStatusService
 
     return _call(UserStatusService.suspend, staff.user, actor, request)

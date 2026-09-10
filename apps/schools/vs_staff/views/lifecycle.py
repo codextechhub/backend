@@ -59,6 +59,9 @@ class StaffStatusView(StaffViewMixin, APIView):
         return success_response(data={
             "employment_status": staff.employment_status,
             "account_status": staff.user.status,
+            # Null unless the empty list needs explaining, which is what stops
+            # the drawer inventing a reason of its own.
+            "note": employment.transitions_note(staff, request.user),
             "options": [
                 {
                     "value": value,
@@ -71,7 +74,7 @@ class StaffStatusView(StaffViewMixin, APIView):
                         value in employment.LAST_WORKING_DAY_REQUIRED_FOR
                     ),
                 }
-                for value in employment.allowed_transitions(staff)
+                for value in employment.allowed_transitions(staff, request.user)
             ],
             "assignments_needing_cover": employment.assignments_needing_cover(staff),
         })

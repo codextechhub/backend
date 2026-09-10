@@ -28,15 +28,18 @@ from ..constants import (
     EMPLOYMENT_TRANSITIONS,
     LAST_WORKING_DAY_REQUIRED_FOR,
     REASON_REQUIRED_FOR,
+    UNACCEPTED_ACCOUNT_STATUSES,
     EmploymentStatus,
 )
 from ..exceptions import (
     AccountNotEligible,
+    CannotActOnSelf,
     InvalidStatusTransition,
     LastWorkingDayRequired,
     ReasonRequired,
 )
 from . import audit
+from .scoping import is_self
 
 #: What the confirmation says before each move, in the words the screen shows.
 #:
@@ -63,8 +66,33 @@ ACCOUNT_EFFECT_TEXT = {
 }
 
 
-def allowed_transitions(staff) -> tuple[str, ...]:
-    """Where this person can go next, for the drawer's Move-to list."""
+#: Said when there are no moves for a reason the reader would otherwise guess at.
+#:
+#: An empty list has two meanings and only one of them is about the record: an
+#: invited person has nowhere to go until they accept, and a closed record stays
+#: closed. Being refused because it is your own record is neither, and a screen
+#: that fell back to the general sentence would tell an administrator her own
+#: record was closed.
+NO_MOVES_ON_YOUR_OWN_RECORD = (
+    "You cannot change your own employment status. Ask another administrator "
+    "to do it."
+)
+
+
+def transitions_note(staff, actor=None) -> str | None:
+    """Why there is nothing to choose from, where the reason is not the record."""
+    return NO_MOVES_ON_YOUR_OWN_RECORD if is_self(actor, staff) else None
+
+
+def allowed_transitions(staff, actor=None) -> tuple[str, ...]:
+    """Where this person can go next, for the drawer's Move-to list.
+
+    Empty when the reader is the person: :func:`change_status` refuses those
+    moves, and a list that offered them would be a drawer contradicting the API
+    it posts to.
+    """
+    if is_self(actor, staff):
+        return ()
     return EMPLOYMENT_TRANSITIONS.get(staff.employment_status, ())
 
 
@@ -129,6 +157,15 @@ def change_status(staff, *, to_status, actor, effective_date=None, reason="",
     """
     from ..models import StaffEmploymentEvent
 
+    # Nobody ends their own employment here. Every move this endpoint offers
+    # from Active either closes the login or ends the job, and the school's own
+    # administrator is now on the list like everybody else.
+    if is_self(actor, staff):
+        raise CannotActOnSelf(
+            "You cannot change your own employment status. Ask another "
+            "administrator to do it.",
+        )
+
     from_status = staff.employment_status
     if to_status not in EMPLOYMENT_TRANSITIONS.get(from_status, ()):
         raise InvalidStatusTransition(
@@ -164,6 +201,23 @@ def change_status(staff, *, to_status, actor, effective_date=None, reason="",
     _apply_account_effect(staff, to_status, actor, request)
     audit.emit_employment_status_changed(staff, event, actor=actor)
     return staff, event
+
+
+def starting_status(user) -> str:
+    """Where a new record's history starts, read off the account.
+
+    Invited is right for somebody who has just been sent a link and wrong for
+    somebody already signing in. The promotion out of Invited happens once, when
+    the invited person uses their link, so a record opened at Invited for an
+    account that activated last term stays Invited for the rest of that person's
+    employment: the head teacher given a second posting in March would read as
+    an unaccepted invitation while teaching every day.
+    """
+    return (
+        EmploymentStatus.INVITED
+        if getattr(user, "status", "") in UNACCEPTED_ACCOUNT_STATUSES
+        else EmploymentStatus.ACTIVE
+    )
 
 
 @transaction.atomic

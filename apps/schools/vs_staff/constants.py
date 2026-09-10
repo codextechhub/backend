@@ -117,6 +117,18 @@ OFF_ROLL_STATUSES = frozenset({
     EmploymentStatus.TERMINATED,
 })
 
+#: Account statuses that mean the invitation has not been accepted yet.
+#:
+#: Read once, when an employment record is first written, to decide where its
+#: history starts. Everything outside this set belongs to somebody who did
+#: accept, whatever has become of their login since: a suspension, a security
+#: lockout and a closed account are all states reached after signing in, and the
+#: employment record beside them says Active while the account says the rest.
+#: Keeping the two apart is the rule this module is built around.
+UNACCEPTED_ACCOUNT_STATUSES = frozenset({
+    "DRAFT", "PENDING_APPROVAL", "PENDING", "REJECTED",
+})
+
 #: Transitions that must say why. Suspending, resigning and terminating are the
 #: three a school is asked to account for later.
 REASON_REQUIRED_FOR = frozenset({

@@ -10,6 +10,13 @@ record inside the school/branch creation transaction. A failure rolls back the
 service savepoint and then escapes so the parent school or branch transaction
 also rolls back. A creation response must never outlive its required admin.
 
+An administrator is also a member of staff, so the same act writes the staff
+record their school reads them from. Without it they hold a login and a role and
+appear on no screen that lists the people who work there: the head teacher who
+runs a branch cannot be given a class, cannot file leave, is absent from her own
+branch roster, and cannot be found by the search box - while the checklist card
+above the empty directory reads as done, because it counts accounts.
+
 Where an account is created, the link is left QUEUED. Asking for the email and
 the email being handed to a broker are two different moments, and this is the
 earlier of them, so a status written now could only be a guess. The receiver in
@@ -38,6 +45,57 @@ def _split_name(full_name: str) -> tuple[str, str]:
     return (parts[0], parts[1]) if len(parts) == 2 else (parts[0] if parts else "", "")
 
 
+def _job_title(admin_link) -> str:
+    """What the school called this posting, in its own words.
+
+    ``school_role`` on a school's link and ``branch_role`` on a branch's, both
+    of which the creation form collects and defaults ("IT Head", "Head
+    Teacher"). It is the job title and not the role: what somebody IS differs
+    from what they may DO, and two people holding School Admin may be a
+    proprietor and an IT manager.
+    """
+    for field in ("school_role", "branch_role"):
+        value = getattr(admin_link, field, "") or ""
+        if value:
+            return value
+    return ""
+
+
+def _write_staff_record(*, user, tenant, admin_link, actor):
+    """Give this administrator the staff record their school reads them from.
+
+    Inside the caller's savepoint, so an administrator and their record are made
+    together or neither is: a school that could be created with one and not the
+    other is a school where the fault stays invisible until somebody opens the
+    staff list weeks later.
+
+    **The posting is the account's own branch**, not the branch this hat names,
+    and the two differ only for somebody who already had an account. A posting
+    is where a person is BASED and there is one of it; what they may reach comes
+    from their grants and can name two branches. So the school-wide registrar
+    made branch administrator of Lekki in March stays school-wide - and stays
+    visible to every branch, which an exclusive posting would end - while a
+    freshly minted branch administrator is based at their branch, because that
+    is the branch their account was just created with.
+
+    Silent where a record already exists, which is the ordinary case of one
+    person wearing several hats.
+    """
+    from schools.vs_staff.models import StaffProfile
+    from schools.vs_staff.services import creation
+
+    # ``all_objects``: this runs for a CodeX operator creating a school, whose
+    # ambient tenant is the platform's, so a scoped read answers "no record" for
+    # every school. The one-to-one on the account would then refuse the write
+    # and take the school creation down with it.
+    if StaffProfile.all_objects.filter(user=user).exists():
+        return None
+    return creation.create_profile(
+        tenant=tenant, user=user, actor=actor, branch=user.branch,
+        job_title=_job_title(admin_link),
+    )
+
+
 # ── public API ────────────────────────────────────────────────────────────────
 
 def provision_admin_user(
@@ -50,7 +108,7 @@ def provision_admin_user(
     actor,         # the requesting User (invited_by); may be None for system
 ):
     """
-    Create a User + UserInvitation and send the invite email for a queued admin.
+    Create a User + staff record + UserInvitation, and send the invite email.
 
     Wrapped in its own savepoint so partial user, grant and invitation writes
     are removed together. A failure is then raised to the caller so the parent
@@ -147,6 +205,12 @@ def provision_admin_user(
                         f"tenant {getattr(tenant, 'slug', tenant)}."
                     )
 
+                # Their record, if this school has never given them one.
+                _write_staff_record(
+                    user=existing, tenant=tenant, admin_link=admin_link,
+                    actor=invited_by,
+                )
+
                 admin_link.invite_status = InviteStatus.SENT
                 admin_link.invite_sent_at = timezone.now()
                 admin_link.save(update_fields=["invite_status", "invite_sent_at"])
@@ -191,6 +255,11 @@ def provision_admin_user(
                 assigned_by=invited_by,
             )
 
+            _write_staff_record(
+                user=user, tenant=tenant, admin_link=admin_link,
+                actor=invited_by,
+            )
+
             # Invitation record - expiry gate for the activation link.
             invitation, token = InvitationService.create(
                 user=user, invited_by=invited_by or user,
@@ -215,8 +284,8 @@ def provision_admin_user(
             # written from.
 
             logger.info(
-                "provision_admin_user: created User %s (role=%s, branch=%s) "
-                "and queued the invitation",
+                "provision_admin_user: created User %s (role=%s, branch=%s), "
+                "wrote the staff record and queued the invitation",
                 email,
                 role_obj.key,
                 getattr(branch, "pk", None),

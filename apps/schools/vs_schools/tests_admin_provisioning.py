@@ -922,3 +922,193 @@ class TheAdminLinkNeverClaimsAnInvitationNobodySentTests(TestCase):
         link.refresh_from_db()
         self.assertEqual(link.invite_status, InviteStatus.SENT)
         self.assertIsNotNone(link.invite_sent_at)
+
+
+class AnAdministratorIsAMemberOfStaffTests(TestCase):
+    """Provisioning writes the staff record the school reads its people from.
+
+    The directory lists the people who hold a ``StaffProfile``, and this service
+    wrote the account, the grant and the invitation without one. So a school's
+    own administrators were absent from its staff list, and stayed absent: the
+    head teacher who runs a branch could not be given a class, could not file
+    leave, was missing from her own branch roster, and could not be found by the
+    search box - while the checklist card above the empty directory read as done,
+    because it counts accounts rather than records.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="admins-are-staff@example.com", super_admin=True,
+        )
+        _seed_prebuilt_roles()
+
+    def _create(self, slug, *, school_admin=None, branches):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        payload = {
+            "name": slug.replace("-", " ").title(),
+            "slug": slug,
+            "branches": branches,
+        }
+        if school_admin:
+            payload["primary_admin_data"] = school_admin
+        with mock.patch("vs_user.tasks.send_invitation_email_task.delay"):
+            with self.captureOnCommitCallbacks(execute=True):
+                response = client.post(
+                    reverse("school-create"), payload, format="json",
+                )
+        self.assertIn(response.status_code, (200, 201), response.data)
+        return Tenant.objects.get(slug=slug)
+
+    @staticmethod
+    def _profile(user):
+        from schools.vs_staff.models import StaffProfile
+
+        return StaffProfile.all_objects.filter(user=user).first()
+
+    def test_the_school_admin_is_on_the_staff_list(self):
+        tenant = self._create(
+            "st-monicas-staffed",
+            school_admin={"full_name": "Grace Okonkwo", "email": "grace@monicas.ng"},
+            branches=[{
+                "name": "Main Branch", "state": "Lagos", "is_main": True,
+                "primary_admin_data": {
+                    "full_name": "Tunde Adeyemi", "email": "tunde@monicas.ng",
+                },
+            }],
+        )
+
+        profile = self._profile(User.objects.get(email="grace@monicas.ng", tenant=tenant))
+        self.assertIsNotNone(profile, "the school's own administrator has no record")
+        # School-wide, because that is what a null posting means and what
+        # running the whole school is.
+        self.assertIsNone(profile.branch_id)
+        # The title the creation form collected, not the role she holds.
+        self.assertEqual(profile.job_title, "IT Head")
+
+    def test_the_branch_admin_is_posted_to_their_branch(self):
+        tenant = self._create(
+            "brightfield-staffed",
+            branches=[{
+                "name": "Ikeja", "state": "Lagos", "is_main": True,
+                "primary_admin_data": {
+                    "full_name": "Tunde Adeyemi", "email": "tunde@brightfield.ng",
+                    "branch_role": "Head Teacher",
+                },
+            }],
+        )
+
+        profile = self._profile(
+            User.objects.get(email="tunde@brightfield.ng", tenant=tenant),
+        )
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile.branch.name, "Ikeja")
+        self.assertEqual(profile.job_title, "Head Teacher")
+
+    def test_the_record_starts_invited_and_says_so_in_its_history(self):
+        """Invited, because nobody has used the link yet.
+
+        The activation signal moves it to Active when they do, which is the one
+        path out of Invited. A record written Active here would tell a school
+        that somebody who has never signed in is at work.
+        """
+        from schools.vs_staff.models import StaffEmploymentEvent
+
+        tenant = self._create(
+            "new-dawn-staffed",
+            branches=[{
+                "name": "Main Branch", "state": "Lagos", "is_main": True,
+                "primary_admin_data": {
+                    "full_name": "Ada Obi", "email": "ada@new-dawn.ng",
+                },
+            }],
+        )
+
+        profile = self._profile(User.objects.get(email="ada@new-dawn.ng", tenant=tenant))
+        self.assertEqual(profile.employment_status, "INVITED")
+
+        event = StaffEmploymentEvent.all_objects.get(staff=profile)
+        self.assertEqual(event.from_status, "")
+        self.assertEqual(event.to_status, "INVITED")
+
+    def test_one_person_wearing_two_hats_gets_one_record(self):
+        """And keeps the school-wide posting the first hat gave her.
+
+        A posting is where somebody is based and there is one of it. Rewriting
+        it for the second hat would move the person who runs the whole school
+        onto whichever branch happened to be provisioned last, and take her off
+        every other branch's roster.
+        """
+        from schools.vs_staff.models import StaffProfile
+
+        tenant = self._create(
+            "small-staffed",
+            school_admin={"full_name": "Ngozi Eze", "email": "ngozi@small.ng"},
+            branches=[{
+                "name": "Main Branch", "state": "Lagos", "is_main": True,
+                "primary_admin_data": {
+                    "full_name": "Ngozi Eze", "email": "ngozi@small.ng",
+                },
+            }],
+        )
+
+        user = User.objects.get(email="ngozi@small.ng", tenant=tenant)
+        self.assertEqual(StaffProfile.all_objects.filter(user=user).count(), 1)
+        self.assertIsNone(StaffProfile.all_objects.get(user=user).branch_id)
+
+
+class AnIncumbentsRecordReadsActiveTests(TestCase):
+    """Somebody already signing in is not somebody with a pending invitation.
+
+    A record starts at Invited and leaves it once, when the invited person uses
+    their own link. Corona's head has an account and has been using it for a
+    year when Ikeja opens and names her its administrator: a record opened at
+    Invited there has no activation left to promote it, so it would read as an
+    unaccepted invitation for the rest of her employment, with a Resend button
+    beside it.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="incumbent-record@example.com", super_admin=True,
+        )
+
+    def test_the_record_written_for_an_existing_account_reads_active(self):
+        from schools.vs_staff.models import StaffProfile
+
+        from .models import BranchPrimaryAdmin, ContactInfo
+        from .services.admin_provisioning import provision_admin_user
+
+        school = make_school(slug="corona-incumbent", name="Corona Incumbent")
+        ikeja = make_branch(school, name="Ikeja")
+        role = TenantRoleTemplate.objects.create(
+            tenant=school.tenant, key=f"branch_admin-{ikeja.pk}",
+            name="Branch Admin - Ikeja", branch=ikeja, status="ACTIVE",
+        )
+        incumbent = User.objects.create_user(
+            email="head@corona-incumbent.test", password="testpass123",
+            tenant=school.tenant, status="ACTIVE",
+            first_name="Bola", last_name="Adeniyi",
+        )
+        contact = ContactInfo.objects.create(
+            full_name="Bola Adeniyi", email="head@corona-incumbent.test",
+        )
+        link = BranchPrimaryAdmin.objects.create(
+            branch=ikeja, contact=contact, branch_role="Head Teacher",
+            invite_status=InviteStatus.QUEUED,
+        )
+
+        with mock.patch("vs_user.tasks.send_invitation_email_task.delay"):
+            with self.captureOnCommitCallbacks(execute=True):
+                provision_admin_user(
+                    contact=contact, admin_link=link, school=school, branch=ikeja,
+                    role=role.key, actor=self.vision_user,
+                )
+
+        profile = StaffProfile.all_objects.get(user=incumbent)
+        self.assertEqual(profile.employment_status, "ACTIVE")
+        # Her own account's posting, which is the older fact. The branch this
+        # hat names is her reach, and that comes from the grant.
+        self.assertIsNone(profile.branch_id)
