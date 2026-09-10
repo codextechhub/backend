@@ -160,24 +160,14 @@ SETTLED_ELSEWHERE = {
         "sites by design, and assign_ticket validates the assignee.",
 }
 
-#: Flagged lookups nothing answers. Open holes, recorded so the next one fails.
+#: Flagged lookups nothing answers.
 #:
-#: Both are procurement master data, and both are waiting on the same decision
-#: rather than on somebody finding the time. Procurement's own helpers -
-#: ``_document_or_404`` and ``_branch_visible`` - read an absent branch as a
-#: scope of its own that a branch-pinned caller is not in, which is right for a
-#: purchase and wrong for a catalogue: applied here they would hide the school's
-#: central store and its school-wide vendors from every site. Narrowing these
-#: means first saying whether procurement's master data takes the catalogue
-#: reading that vs_academics and vs_calendar take.
-UNNARROWED = {
-    "vs_procurement/views/stock.py::_location::StockLocation":
-        "The resolver behind stock location read and manage, so another site's "
-        "store is readable and editable by id. Its list is not narrowed either, "
-        "so this is the whole model rather than a detail route that drifted.",
-    "vs_procurement/views/vendors.py::get::Vendor":
-        "Per-vendor spend and performance for a vendor named by id.",
-}
+#: Empty, and worth keeping rather than deleting: the two registries say
+#: different things, and a flagged lookup with nowhere honest to go should have
+#: to be put here rather than described as settled. An entry belongs here when
+#: it is a real hole somebody is not closing today, and it carries what a caller
+#: could reach so the note reads as debt rather than as a decision.
+UNNARROWED: dict[str, str] = {}
 
 
 def _rel(path: Path) -> str:

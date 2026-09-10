@@ -36,6 +36,8 @@ from ..serializers import (
 
 
 from .base import (
+    _catalogue_or_404,
+    _catalogue_visible,
     _ProcBase,
     _resolve_account,
     _resolve_tax,
@@ -478,7 +480,9 @@ class VendorListCreateView(_ProcBase):
     def get(self, request):
         """List entity vendors; serializer context controls sensitive-field exposure."""
         entity = resolve_entity(request)
-        qs = Vendor.objects.filter(entity=entity).select_related("category").annotate(
+        qs = _catalogue_visible(
+            request, Vendor.objects.filter(entity=entity),
+        ).select_related("category").annotate(
             # Only issued POs with at least one unreceived line remain open commitments.
             active_po_count=Count(
                 "purchase_orders",
@@ -580,7 +584,7 @@ class VendorSummaryView(_ProcBase):
     def get(self, request):
         """Return entity counts plus posted YTD spend in integer kobo."""
         entity = resolve_entity(request)
-        vendors = Vendor.objects.filter(entity=entity)
+        vendors = _catalogue_visible(request, Vendor.objects.filter(entity=entity))
         year_start = timezone.localdate().replace(month=1, day=1)
         spend = VendorInvoice.objects.filter(
             entity=entity, status=DocumentStatus.POSTED, invoice_date__gte=year_start,
@@ -609,20 +613,22 @@ class VendorDetailView(_ProcBase):
         return "procurement.vendor.update" if self.request.method == "PATCH" else "procurement.vendor.view"
 
     def _get(self, entity, pk, *, lock=False):
-        """Fetch an entity vendor, optionally locking only its mutable master row."""
+        """Fetch an entity vendor this caller works with, optionally locking its master row."""
         if lock:
             # Lock only the vendor row; nullable account/category joins cannot be locked by PostgreSQL.
-            vendor = Vendor.objects.select_for_update(of=("self",)).filter(entity=entity, pk=pk).first()
-            if vendor is None:
-                raise NotFound("No such vendor in this entity.")
-            return vendor
-        qs = Vendor.objects.select_related(
-            "category", "payable_account", "default_expense_account", "default_wht_tax_code",
-        ).prefetch_related("contacts").filter(entity=entity, pk=pk)
-        vendor = qs.first()
-        if vendor is None:
-            raise NotFound("No such vendor in this entity.")
-        return vendor
+            return _catalogue_or_404(
+                self.request,
+                Vendor.objects.select_for_update(of=("self",)).filter(entity=entity),
+                pk, "No such vendor in this entity.",
+            )
+        return _catalogue_or_404(
+            self.request,
+            Vendor.objects.select_related(
+                "category", "payable_account", "default_expense_account",
+                "default_wht_tax_code",
+            ).prefetch_related("contacts").filter(entity=entity),
+            pk, "No such vendor in this entity.",
+        )
 
     def get(self, request, pk):
         """Serialize one vendor; the serializer applies sensitive-field FLS."""
@@ -732,9 +738,10 @@ class VendorInsightsView(_ProcBase):
         from ..reports import spend_analysis, vendor_performance
 
         entity = resolve_entity(request)
-        vendor = Vendor.objects.filter(entity=entity, pk=pk).first()
-        if vendor is None:
-            raise NotFound("No such vendor in this entity.")
+        vendor = _catalogue_or_404(
+            request, Vendor.objects.filter(entity=entity), pk,
+            "No such vendor in this entity.",
+        )
         year_start = timezone.localdate().replace(month=1, day=1)
         # Scope both reports to this vendor so the drawer doesn't recompute the whole entity.
         spend_row = next((row for row in spend_analysis(entity, start_date=year_start, vendor=vendor).by_vendor if row.key == vendor.code), None)

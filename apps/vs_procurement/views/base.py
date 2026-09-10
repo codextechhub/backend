@@ -255,23 +255,26 @@ class _BranchScope:
         return self._grant.is_narrowed or bool(self._lookups)
 
 
-def _branch_scope(request, entity=None, params=None, *, field="branch") -> _BranchScope:
+def _branch_scope(request, entity=None, params=None, *, field="branch",
+                  include_shared=False) -> _BranchScope:
     """Resolve the caller's branch narrowing once, for a service that spans models.
 
     Resolving here rather than per queryset also means ``?branch=`` is validated once
     per request, so an unknown branch is one 400 rather than a different error depending
     on which population the service happened to filter first.
+
+    ``include_shared`` defaults to procurement's exclusive reading of a document.
+    The master-data helpers below pass ``True``; see them for why the two differ.
     """
     return _BranchScope(
-        # ``include_shared=False``: see :class:`_BranchScope` for why procurement
-        # reads an absent branch as a scope of its own rather than as shared.
-        branch_scope(request, include_shared=False),
+        branch_scope(request, include_shared=include_shared),
         _branch_filter_lookups(request, entity, params, field=field),
         field,
     )
 
 
-def _branch_q(request, entity=None, params=None, *, field="branch", prefix=""):
+def _branch_q(request, entity=None, params=None, *, field="branch", prefix="",
+              include_shared=False):
     """The branch narrowing one caller is under, as a reusable ``Q``.
 
     The single expression of "which documents is this caller looking at", so a
@@ -280,7 +283,9 @@ def _branch_q(request, entity=None, params=None, *, field="branch", prefix=""):
     relation (``purchase_order__``).  See :func:`_branch_lookups` for the rule it
     renders.
     """
-    return _branch_scope(request, entity, params, field=field).q(prefix)
+    return _branch_scope(
+        request, entity, params, field=field, include_shared=include_shared,
+    ).q(prefix)
 
 
 def _branch_scoped(request, entity, qs, params, *, field="branch"):
@@ -318,15 +323,62 @@ def _document_or_404(request, qs, pk, message, *, field="branch", prefix=""):
     return row
 
 
-def _resolve_vendor(entity, ref):
-    """Resolve a required vendor by id or code, always inside ``entity``.
+# --------------------------------------------------------------------------- #
+# Master data reads the null branch the other way round                       #
+# --------------------------------------------------------------------------- #
+#
+# Everything above answers a question about a *document*, and answers it
+# exclusively: a purchase raised for the school as a whole is a scope of its own
+# that a branch-pinned storekeeper is not in, so they neither see it nor
+# continue it.
+#
+# Vendors and stock locations are not documents. They are the catalogue the
+# documents are raised against, and the same reading applied to them empties the
+# screen: a school buys from one stationer for every site and keeps one central
+# store, both recorded with no branch because they belong to all of them.
+# Excluding those leaves a branch-pinned storekeeper with no vendors to order
+# from and nowhere to receive into, which reads as the module being broken
+# rather than as a permission working.
+#
+# So master data takes the platform's inclusive reading, the same one
+# :mod:`vs_academics` takes for a catalogue and :mod:`vs_finance` for a customer:
+# the shared rows plus this caller's own. What it withholds is the row another
+# site pinned to itself, which is the whole of what these are for.
 
-    A reference belonging to another tenant is reported exactly like a missing
-    reference so the API cannot be used to discover cross-tenant vendor ids.
+
+def _catalogue_visible(request, qs, *, field="branch", prefix=""):
+    """Narrow a master-data queryset: the shared rows plus this caller's own."""
+    return qs.filter(_branch_q(
+        request, field=field, prefix=prefix, include_shared=True,
+    ))
+
+
+def _catalogue_or_404(request, qs, pk, message, *, field="branch", prefix=""):
+    """One master-data row by pk, inside the caller's entity *and* their sites.
+
+    The choke point for master data that :func:`_document_or_404` is for
+    documents, and it refuses the same way: a row another site pinned to itself
+    is reported exactly like one that does not exist, so an id cannot be used to
+    discover that the row is there.
+    """
+    row = _catalogue_visible(request, qs, field=field, prefix=prefix).filter(pk=pk).first()
+    if row is None:
+        raise NotFound(message)
+    return row
+
+
+def _resolve_vendor(request, entity, ref):
+    """Resolve a required vendor by id or code, inside ``entity`` and this caller's sites.
+
+    Every vendor reference in a body or a query parameter comes through here, so
+    this is where a storekeeper is stopped from raising a purchase against a
+    vendor another site keeps to itself. A reference belonging to another tenant,
+    or to a site this caller does not work in, is reported exactly like a missing
+    reference, so the API cannot be used to discover either.
     """
     if ref in (None, ""):
         raise ValidationError({"vendor": "A vendor is required."})
-    qs = Vendor.objects.filter(entity=entity)
+    qs = _catalogue_visible(request, Vendor.objects.filter(entity=entity))
     vendor = (
         qs.filter(pk=int(ref)).first() if str(ref).isdigit()
         else qs.filter(code=str(ref)).first() or qs.filter(code=str(ref).upper()).first()

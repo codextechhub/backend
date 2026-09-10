@@ -190,7 +190,7 @@ class GoodsReceiptListCreateView(_ProcBase):
             raise ValidationError({
                 "purchase_order": "This entity requires an approved purchase order for every goods receipt.",
             })
-        vendor = _resolve_vendor(entity, body.get("vendor"))
+        vendor = _resolve_vendor(request, entity, body.get("vendor"))
         po = None
         if body.get("purchase_order"):
             po = PurchaseOrder.objects.filter(entity=entity, pk=body["purchase_order"]).first()
@@ -576,7 +576,7 @@ class VendorInvoiceReferenceCheckView(_ProcBase):
 
     def get(self, request):
         entity = resolve_entity(request)
-        vendor = _resolve_vendor(entity, request.query_params.get("vendor"))
+        vendor = _resolve_vendor(request, entity, request.query_params.get("vendor"))
         reference = str(request.query_params.get("reference") or "").strip()
         exclude = request.query_params.get("exclude")
         if exclude not in (None, "") and not str(exclude).isdigit():
@@ -662,7 +662,7 @@ class VendorInvoiceListCreateView(_ProcBase):
                 data=_serialize_invoice_detail(replay),
             )
         lines = _require_lines(body)
-        vendor = _resolve_vendor(entity, body.get("vendor"))
+        vendor = _resolve_vendor(request, entity, body.get("vendor"))
         po = None
         if body.get("purchase_order"):
             po = PurchaseOrder.objects.filter(entity=entity, pk=body["purchase_order"]).first()
@@ -772,7 +772,7 @@ class VendorInvoiceDetailView(_ProcBase):
         if invoice.status != "DRAFT" or invoice.approval_state not in ("NOT_SUBMITTED", "REJECTED"):
             raise ValidationError({"status": "Only an unsubmitted or rejected draft vendor invoice can be edited."})
         body = request.data
-        vendor = _resolve_vendor(entity, body.get("vendor", invoice.vendor_id))
+        vendor = _resolve_vendor(request, entity, body.get("vendor", invoice.vendor_id))
         po = invoice.purchase_order
         if "purchase_order" in body:
             po = PurchaseOrder.objects.filter(entity=entity, pk=body.get("purchase_order")).first() if body.get("purchase_order") else None

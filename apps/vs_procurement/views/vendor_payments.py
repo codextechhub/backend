@@ -200,7 +200,7 @@ class VendorPaymentListCreateView(_ProcBase):
         """Create a draft from server-resolved invoices and derived kobo totals."""
         entity = resolve_entity(request)
         body = request.data
-        vendor = _resolve_vendor(entity, body.get("vendor"))
+        vendor = _resolve_vendor(request, entity, body.get("vendor"))
         _validate_vendor_for_payment(vendor)
         bank = _resolve_bank_account(entity, body.get("bank_account"))
         plan = _allocation_plan(entity, vendor, body.get("allocations"))
@@ -245,7 +245,7 @@ class VendorPaymentEligibleInvoiceView(_ProcBase):
         # picker must not offer one either.
         qs = _branch_scoped(request, entity, qs, request.query_params)
         if vendor := request.query_params.get("vendor"):
-            resolved = _resolve_vendor(entity, vendor)
+            resolved = _resolve_vendor(request, entity, vendor)
             qs = qs.filter(vendor=resolved)
         rows = [{
             "id": invoice.id, "document_number": invoice.document_number,
@@ -290,7 +290,7 @@ class VendorPaymentDetailView(_ProcBase):
         ):
             raise ValidationError({"status": "Only an unsubmitted or rejected draft payment can be edited."})
         body = request.data
-        vendor = _resolve_vendor(entity, body.get("vendor", payment.vendor_id))
+        vendor = _resolve_vendor(request, entity, body.get("vendor", payment.vendor_id))
         _validate_vendor_for_payment(vendor)
         bank = _resolve_bank_account(entity, body.get("bank_account", getattr(getattr(payment.payment_account, "bank_account", None), "id", None)))
         plan = _allocation_plan(entity, vendor, body.get("allocations"))
