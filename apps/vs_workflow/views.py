@@ -247,7 +247,13 @@ class WorkflowTemplateViewSet(
 
         from django.contrib.auth import get_user_model
         UserModel = get_user_model()
-        requester = UserModel.objects.filter(pk=d["requester"]).first()
+        # Inside the caller's tenant: resolution runs in the requester's
+        # tenant, so any other id would answer with somebody else's approvers.
+        try:
+            requester = UserModel.objects.filter(
+                pk=d["requester"], tenant=request.tenant).first()
+        except (ValueError, TypeError):
+            requester = None
         if requester is None:
             return Response({"detail": "Requester not found."}, status=status.HTTP_404_NOT_FOUND)
 
