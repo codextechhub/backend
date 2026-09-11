@@ -123,7 +123,12 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         # email change, admin password reset, invitation resend) get it too.
         # It is what stops an Ikeja admin deactivating a Lekki-posted colleague
         # by id, and a Bright Star admin suspending a Greenfield teacher.
-        qs = administrable_users(self.request, qs)
+        # Collection reads take the listing default; one account by id takes
+        # the caller's full authority.
+        qs = administrable_users(
+            self.request, qs,
+            listing=self.action == "list" or getattr(self, "detail", None) is False,
+        )
 
         qs = qs.exclude(status__in=[User.Status.PENDING_APPROVAL, User.Status.REJECTED])
 

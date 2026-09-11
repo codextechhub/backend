@@ -437,10 +437,19 @@ class UserListScopeTests(TestCase):
         self.view_class = UserAccountViewSet
 
     def _queryset_for(self, query: str):
+        """The queryset ``GET /v1/user/users/`` would serve, with *query* on it.
+
+        ``action`` and ``detail`` are set the way the router sets them for the
+        list route. Scoping answers a collection read and a by-id read
+        differently, so a view built without them would be asking the by-id
+        question while these tests claim to be about the list.
+        """
         request = self.request_class(self.request_factory.get(f"/v1/user/users/{query}"))
         request._user = self.cx_user
         view = self.view_class()
         view.request = request
+        view.action = "list"
+        view.detail = False
         return view.get_queryset()
 
     def test_cx_and_school_rows_are_told_apart_by_tenant_kind(self):
