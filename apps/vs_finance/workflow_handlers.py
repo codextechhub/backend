@@ -32,13 +32,15 @@ from urllib.parse import urlencode
 
 from django.db import transaction
 
+from vs_workflow.conditions.fields import ConditionField
+from vs_workflow.constants import ConditionFieldType
 from vs_workflow.constants import WorkflowStageAction as StageActionEnum
 from vs_workflow.exceptions import (
     InvalidInstanceStateError, ReversalNotAllowedError,
 )
 from vs_workflow.handlers import BaseWorkflowHandler, register_handler
 
-from .constants import DocumentStatus
+from .constants import DocumentStatus, PaymentMethod
 from .money import format_naira
 
 
@@ -279,6 +281,11 @@ class JournalHandler(_FinancePostOnApprove):
 # Workflow handler for customer refund approvals.
 class RefundHandler(_FinancePostOnApprove):
     """Approval handler for a customer :class:`~vs_finance.models.Refund` (cash out)."""
+
+    condition_fields = (
+        ConditionField("document.method", "Refund method", "document",
+                       ConditionFieldType.CHOICE, tuple(PaymentMethod.choices)),
+    )
 
     @property
     # Concrete model for finance.refund instances.

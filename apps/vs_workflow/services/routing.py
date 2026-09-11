@@ -240,15 +240,31 @@ def _activate_stage(instance: WorkflowInstance, stage: WorkflowStage,
         "attempt": attempt, "eligible_count": len(eligible),
     }
     if stage.approver_source == ApproverSource.DYNAMIC_ROLE:
-        # Record which rule chose the role. Without it the snapshot says who
-        # was eligible but nothing says why, and a dynamic stage is exactly
-        # where that question gets asked.
-        rule, evaluations = approvers_service.match_dynamic_rule(stage, instance.document)
-        audit_context["dynamic_role"] = {
-            "matched_rule_id": str(rule.pk) if rule else None,
-            "matched_role_key": rule.role_key if rule else None,
-            "evaluations": evaluations,
-        }
+        # Record which rule chose the approvers. Without it the snapshot says
+        # who was eligible but nothing says why, and a dynamic stage is
+        # exactly where that question gets asked.
+        if stage.dynamic_role_id:
+            from vs_workflow.conditions.context import build_rule_context
+            from vs_workflow.services.dynamic_roles import describe_target, match_rule
+
+            dynamic_role = stage.dynamic_role
+            rule, evaluations = match_rule(
+                dynamic_role.rules.select_related("role", "user", "group"),
+                build_rule_context(instance))
+            audit_context["dynamic_role"] = {
+                "code": dynamic_role.code,
+                "is_active": dynamic_role.is_active,
+                "matched_rule_id": str(rule.pk) if rule else None,
+                "matched_target": describe_target(rule),
+                "evaluations": evaluations,
+            }
+        else:
+            rule, evaluations = approvers_service.match_dynamic_rule(stage, instance.document)
+            audit_context["dynamic_role"] = {
+                "matched_rule_id": str(rule.pk) if rule else None,
+                "matched_role_key": rule.role_key if rule else None,
+                "evaluations": evaluations,
+            }
     audit_service.write(instance, AuditEventType.STAGE_ACTIVATED,
                         stage_instance=stage_instance, context=audit_context)
     # Tell the stage's approvers their decision is awaited (bell + inbox).

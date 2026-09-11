@@ -1061,11 +1061,11 @@ class PublishDynamicRoleTests(TestCase):
                  "condition": {"op": "gte", "field": "amount", "value": 1}},
             ])
 
-    def test_central_template_keeps_dynamic_role_keys(self):
-        t = self._publish([{"role_key": "bursar", "condition": None}], tenant=None)
-        rule = t.stages.get(code="s1").dynamic_rules.get()
-        self.assertEqual(rule.role_key, "bursar")
-        self.assertIsNone(rule.role_id)
+    def test_central_template_cannot_use_dynamic_rules(self):
+        """Who approves is each school's own answer, so a shared template has
+        nobody to ask - in stage-owned rules as much as in a named Dynamic Role."""
+        with self.assertRaises(TemplateInvalidError):
+            self._publish([{"role_key": "bursar", "condition": None}], tenant=None)
 
     def test_switching_source_away_drops_stale_rules(self):
         from vs_workflow.models import WorkflowStageDynamicRule

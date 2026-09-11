@@ -16,15 +16,24 @@ from __future__ import annotations
 from django.db import transaction
 from django.utils import timezone
 
+from vs_workflow.conditions.fields import ConditionField
+from vs_workflow.constants import ConditionFieldType
 from vs_workflow.handlers.base import BaseWorkflowHandler
 from vs_workflow.handlers.registry import register_handler
 
-from .constants import LEAVE_DOCUMENT_TYPE, LEAVE_TEMPLATE_CODE, LeaveStatus
+from .constants import LEAVE_DOCUMENT_TYPE, LEAVE_TEMPLATE_CODE, LeaveStatus, LeaveType
 
 
 @register_handler(LEAVE_DOCUMENT_TYPE)
 class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
     document_type = LEAVE_DOCUMENT_TYPE
+
+    condition_fields = (
+        ConditionField("document.leave_type", "Leave type", "document",
+                       ConditionFieldType.CHOICE, tuple(LeaveType.choices)),
+        ConditionField("document.days", "Days requested", "document",
+                       ConditionFieldType.NUMBER),
+    )
 
     def resolve_default_template_code(self, document) -> str:
         return LEAVE_TEMPLATE_CODE

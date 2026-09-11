@@ -257,18 +257,36 @@ def match_dynamic_rule(stage: WorkflowStage, document):
 
 
 def _dynamic_role_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
-    """Resolve base approvers by letting the document choose the role.
+    """Resolve base approvers by letting ordered rules choose them.
 
-    Opt-in strategy (ApproverSource.DYNAMIC_ROLE): ordered rules are evaluated
-    against the document and the first match names the role, whose active
-    assignees then resolve exactly as they do for the ROLE source. No match and
-    no fallback resolves to nobody, leaving skip_if_no_approvers to decide -
-    the same outcome as a role nobody holds.
+    Opt-in strategy (ApproverSource.DYNAMIC_ROLE). A stage naming a Dynamic
+    Role runs its rules against the rule context - the document and the person
+    who raised it - and the first match sends to a role's holders, a person or
+    an approver group. A deactivated Dynamic Role resolves to nobody.
+
+    A stage without one runs its own rules against the document, and the first
+    match names a role whose holders resolve as they do for the ROLE source.
+    No match and no fallback resolves to nobody.
+
+    Either way nobody is a legitimate answer that skip_if_no_approvers then
+    decides on - the same outcome as a role nobody holds.
     """
+    branch_arg = instance.branch if stage.approver_scope == ApproverScope.BRANCH else None
+    if stage.dynamic_role_id:
+        from vs_workflow.conditions.context import build_rule_context
+        from vs_workflow.services.dynamic_roles import match_rule, rule_users
+
+        dynamic_role = stage.dynamic_role
+        if not dynamic_role.is_active:
+            return []
+        rule, _ = match_rule(
+            dynamic_role.rules.select_related("role", "user", "group"),
+            build_rule_context(instance))
+        return rule_users(rule, instance.tenant, branch_arg)
+
     rule, _ = match_dynamic_rule(stage, instance.document)
     if rule is None:
         return []
-    branch_arg = instance.branch if stage.approver_scope == ApproverScope.BRANCH else None
     return _users_for_role_key(rule.role_key, instance.tenant, branch_arg)
 
 
@@ -395,8 +413,10 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
         requesting tenant so one central template serves everybody.
       - WORKFLOW_GROUP: the resolved membership of the named approver group,
         mixing people, roles, and positions.
-      - DYNAMIC_ROLE: the role named by the first of the stage's ordered rules
-        whose condition matches the document.
+      - DYNAMIC_ROLE: whoever the first matching rule of the stage's named
+        Dynamic Role sends to - a role's holders, a person, or an approver
+        group. A stage without a named Dynamic Role uses its own rules, whose
+        first match names a role.
       - ORGANOGRAM: the holder(s) of the seat reached by climbing the CX
         organogram relative to the requester.
 

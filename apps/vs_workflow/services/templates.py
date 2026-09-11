@@ -94,6 +94,43 @@ def _resolve_group(stage_payload: dict, tenant):
     return group
 
 
+# Resolve a DYNAMIC_ROLE stage's named Dynamic Role.
+def _resolve_dynamic_role(stage_payload: dict, tenant, document_type: str):
+    """Resolve dynamic_role_code to the tenant's WorkflowDynamicRole, or None.
+
+    None also means the stage carries its own rules, which _parse_dynamic_rules
+    checks. A central template cannot use a Dynamic Role in either form: who
+    approves is each school's own answer, and a shared template has nobody to
+    ask. A Dynamic Role that does not serve this document type would test
+    fields the document does not have, so it is refused as well.
+    """
+    if stage_payload.get("approver_source") != "DYNAMIC_ROLE":
+        return None
+    label = stage_payload.get("code") or stage_payload.get("label") or "?"
+    if tenant is None:
+        raise TemplateInvalidError(
+            f"Stage '{label}': a shared template cannot use a Dynamic Role - each "
+            "school builds its own. Name a role here instead.")
+    code = stage_payload.get("dynamic_role_code") or ""
+    if not code:
+        return None
+
+    from vs_workflow.models import WorkflowDynamicRole
+
+    dynamic_role = WorkflowDynamicRole.all_objects.filter(
+        tenant=tenant, code=code, is_active=True,
+    ).first()
+    if dynamic_role is None:
+        raise TemplateInvalidError(
+            f"Stage '{label}': no active Dynamic Role with code '{code}' exists in "
+            "this tenant.")
+    if dynamic_role.document_types and document_type not in dynamic_role.document_types:
+        raise TemplateInvalidError(
+            f"Stage '{label}': the Dynamic Role '{dynamic_role.name}' is not set up "
+            "for this document type.")
+    return dynamic_role
+
+
 # Validate and resolve the rules of a DYNAMIC_ROLE stage.
 def _parse_dynamic_rules(stage_payload: dict, tenant):
     """Turn the payload's dynamic_role_rules into resolved, ordered rule specs.
@@ -104,6 +141,10 @@ def _parse_dynamic_rules(stage_payload: dict, tenant):
     fire. The list comes back in evaluation order.
     """
     if stage_payload.get("approver_source") != "DYNAMIC_ROLE":
+        return None
+
+    # A stage naming a Dynamic Role carries no rules of its own.
+    if stage_payload.get("dynamic_role_code"):
         return None
 
     label = stage_payload.get("code") or stage_payload.get("label") or "?"
@@ -172,8 +213,9 @@ def publish_template(*, tenant, branch=None, document_type: str, code: str, name
     # Parse and validate every stage's dynamic rules before writing anything.
     # publish_template is atomic, but failing up front keeps the error message
     # about the payload rather than about a half-built template.
-    dynamic_by_code = {}
+    dynamic_by_code, dynamic_role_by_code = {}, {}
     for s in (stages_payload or []):
+        dynamic_role_by_code[s["code"]] = _resolve_dynamic_role(s, tenant, document_type)
         parsed = _parse_dynamic_rules(s, tenant)
         if parsed is not None:
             dynamic_by_code[s["code"]] = parsed
@@ -226,6 +268,8 @@ def publish_template(*, tenant, branch=None, document_type: str, code: str, name
             "approver_role": _resolve_role(s, tenant),
             # Group config - only meaningful when approver_source==WORKFLOW_GROUP.
             "approver_group": _resolve_group(s, tenant),
+            # Dynamic Role config - only meaningful when approver_source==DYNAMIC_ROLE.
+            "dynamic_role": dynamic_role_by_code.get(s["code"]),
             # Organogram config - only meaningful when approver_source==ORGANOGRAM.
             "organogram_target": s.get("organogram_target", ""),
             "organogram_levels": s.get("organogram_levels", 1),
@@ -248,8 +292,8 @@ def publish_template(*, tenant, branch=None, document_type: str, code: str, name
 
         # Dynamic rules carry no instance-level references, so they are replaced
         # wholesale on every publish, exactly like routes. A stage that is no
-        # longer DYNAMIC_ROLE loses its stale rules rather than keeping them
-        # dormant and confusing the next reader.
+        # longer DYNAMIC_ROLE, or now names a Dynamic Role, loses its stale
+        # rules rather than keeping them dormant and confusing the next reader.
         stage.dynamic_rules.all().delete()
         for rule in dynamic_by_code.get(s["code"], []):
             WorkflowStageDynamicRule.objects.create(

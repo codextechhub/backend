@@ -44,6 +44,10 @@ def _stage_group_code(stage) -> Optional[str]:
     return stage.approver_group.code if stage.approver_group_id else None
 
 
+def _stage_dynamic_role_code(stage) -> Optional[str]:
+    return stage.dynamic_role.code if stage.dynamic_role_id else None
+
+
 def _rules_of(stage) -> List[Dict]:
     """A stage's dynamic rules as plain data, in evaluation order."""
     return [
@@ -99,6 +103,10 @@ def compare_templates(base: WorkflowTemplate, other: WorkflowTemplate) -> Dict:
             fields.append({"field": "approver_group_code", "label": "Approver group",
                            "base": _stage_group_code(base_stage),
                            "other": _stage_group_code(other_stage)})
+        if _stage_dynamic_role_code(base_stage) != _stage_dynamic_role_code(other_stage):
+            fields.append({"field": "dynamic_role_code", "label": "Dynamic Role",
+                           "base": _stage_dynamic_role_code(base_stage),
+                           "other": _stage_dynamic_role_code(other_stage)})
         base_rules, other_rules = _rules_of(base_stage), _rules_of(other_stage)
         if base_rules != other_rules:
             fields.append({"field": "dynamic_role_rules", "label": "Rule ladder",

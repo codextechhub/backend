@@ -81,8 +81,9 @@ class ApproverSource(models.TextChoices):
     ROLE (the default) names a role by key and resolves its active
     assignees inside the tenant that raised the request. WORKFLOW_GROUP
     points at a reusable, named approver group whose membership mixes
-    people, roles, and organogram positions. DYNAMIC_ROLE picks the role
-    from the document itself, using ordered condition rules. ORGANOGRAM
+    people, roles, and organogram positions. DYNAMIC_ROLE lets ordered
+    rules choose who approves, from the document and the person who raised
+    it. ORGANOGRAM
     climbs the CX organogram relative to the requester. The strategies are
     mutually exclusive per stage.
 
@@ -94,7 +95,7 @@ class ApproverSource(models.TextChoices):
     """
     ROLE            = "ROLE",            "Role holders (default)"
     WORKFLOW_GROUP  = "WORKFLOW_GROUP",  "Workflow approver group"
-    DYNAMIC_ROLE    = "DYNAMIC_ROLE",    "Role chosen by the document"
+    DYNAMIC_ROLE    = "DYNAMIC_ROLE",    "Dynamic Role"
     ORGANOGRAM      = "ORGANOGRAM",      "Organogram (relative to requester)"
 
 
@@ -116,6 +117,36 @@ class OrganogramTarget(models.TextChoices):
     N_LEVELS_UP      = "N_LEVELS_UP",      "N levels up the reporting chain"
     DEPARTMENT_HEAD  = "DEPARTMENT_HEAD",  "Head of requester's department"
     SPECIFIC_POSITION = "SPECIFIC_POSITION", "Holder(s) of a specific position"
+
+
+class DynamicRoleTargetKind(models.TextChoices):
+    """Who a Dynamic Role rule sends a document to when it matches.
+
+    ROLE resolves the role's holders inside the tenant that raised the
+    request, as a ROLE stage does. USER names one person. GROUP points at one
+    of the tenant's approver groups, whose membership is read live.
+    """
+    ROLE  = "ROLE",  "Role holders"
+    USER  = "USER",  "Specific person"
+    GROUP = "GROUP", "Approver group"
+
+
+class ConditionFieldType(models.TextChoices):
+    """What kind of value a Dynamic Role condition tests.
+
+    The kind fixes which operators a field may use and what its value must be
+    (see ``vs_workflow.conditions.fields``). MONEY is whole kobo, the unit
+    every money column stores; the screen enters naira and converts. ROLE,
+    BRANCH and PERSON compare keys and ids as strings, so a value the screen
+    wrote and one read from a model always agree.
+    """
+    MONEY  = "MONEY",  "Amount of money"
+    NUMBER = "NUMBER", "Number"
+    TEXT   = "TEXT",   "Text"
+    CHOICE = "CHOICE", "One of a fixed list"
+    ROLE   = "ROLE",   "Role"
+    BRANCH = "BRANCH", "Branch"
+    PERSON = "PERSON", "Person"
 
 # Permission keys (vs_rbac contract)
 # RBAC keys that protect workflow template and instance operations.

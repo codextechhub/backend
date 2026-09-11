@@ -3,6 +3,8 @@ Data models for vs_workflow.
 
 WorkflowApproverGroup       - named, reusable approver pool owned by a tenant.
 WorkflowApproverGroupMember - one member of that pool: a person, a role, or a position.
+WorkflowDynamicRole         - named, reusable rules choosing who approves, owned by a tenant.
+WorkflowDynamicRoleRule     - one of those rules: when this, then a role, a person or a group.
 WorkflowTemplate      - reusable blueprint.
 WorkflowStage         - one node (APPROVAL or BRANCH).
 WorkflowRoutePath     - directed edge between stages, optionally condition-guarded.
@@ -26,6 +28,7 @@ from vs_workflow.constants import (
     ApproverScope,
     ApproverSource,
     AuditEventType,
+    DynamicRoleTargetKind,
     GroupMemberKind,
     OrganogramTarget,
     StageAdvanceRule,
@@ -243,6 +246,136 @@ class WorkflowApproverGroupMember(models.Model):
         return f"{self.kind}:{target}"
 
 
+class WorkflowDynamicRole(models.Model):
+    """A named, reusable set of rules that decides who approves a document.
+
+    Built once on the Approvers screen and picked by name in any stage, the way
+    an approver group is. Its rules are read live at every stage activation, so
+    an edit reaches every stage that uses it from its next activation, with no
+    republish.
+
+    Always one tenant's. A central template cannot use one: who approves is a
+    question each school answers for itself, and a shared template has no
+    school to ask, so publishing refuses it.
+
+    Attributes:
+        tenant: Owning tenant.
+        code: Slug identifying it within the tenant. Templates publish against
+            it, so it cannot change once the Dynamic Role exists.
+        document_types: The document types it serves; empty means any. Which
+            fields its rules may test follows from this - see
+            ``vs_workflow.conditions.fields``.
+        is_active: A deactivated Dynamic Role resolves to nobody, so the stages
+            still using it park rather than route on rules somebody retired.
+    """
+
+    id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="workflow_dynamic_roles",
+    )
+    code = models.SlugField(max_length=100)
+    name = models.CharField(max_length=150)
+    description = models.TextField(blank=True, default="")
+    document_types = models.JSONField(default=list, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
+        constraints = [
+            models.UniqueConstraint(fields=["tenant", "code"], name="uniq_dynamic_role_code"),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "is_active"]),
+        ]
+        ordering = ["name"]
+
+    def __str__(self):
+        return f"{self.name} [{self.code}]"
+
+
+class WorkflowDynamicRoleRule(models.Model):
+    """One "when this, then them" rule in a WorkflowDynamicRole.
+
+    Rules are tried in ascending ``order`` and the first whose condition holds
+    decides who approves. The last rule has no condition - the Otherwise row -
+    so every document reaches somebody; ``services.dynamic_roles`` refuses a
+    set without one, or with one anywhere but last.
+
+    A condition here reads the rule context rather than the bare document: the
+    document's own fields under ``document.``, the person who raised it under
+    ``requester.``, and ``amount``, ``branch`` and ``document_type``, which
+    every document has. See ``vs_workflow.conditions.context``.
+
+    Exactly one target is set, and it matches ``target_kind``.
+
+    Attributes:
+        order: Evaluation order. First match wins.
+        condition: JSON condition, or null for the Otherwise row.
+        target_kind: ``ROLE``, ``USER`` or ``GROUP``.
+        role_key: The approving role, when the target is a role. Resolution
+            reads the key, as it does for a ROLE stage.
+        role: That role's row, which anchors the key against deletion.
+        user: The person who approves, when the target is a person.
+        group: The approver group that approves, when the target is a group.
+        label: An optional note shown beside the rule.
+    """
+
+    id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
+    dynamic_role = models.ForeignKey(WorkflowDynamicRole, on_delete=models.CASCADE,
+                                     related_name="rules")
+    order = models.PositiveIntegerField(default=0)
+    condition = models.JSONField(null=True, blank=True)
+    target_kind = models.CharField(max_length=20, choices=DynamicRoleTargetKind.choices)
+    role_key = models.SlugField(max_length=120, blank=True, default="")
+    # PROTECT on every target: somebody a live rule sends to must not vanish
+    # underneath it - retire the target or edit the rule first.
+    role = models.ForeignKey("vs_rbac.TenantRoleTemplate", on_delete=models.PROTECT,
+                             null=True, blank=True,
+                             related_name="workflow_dynamic_role_rules")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                             null=True, blank=True, related_name="+")
+    group = models.ForeignKey(WorkflowApproverGroup, on_delete=models.PROTECT,
+                              null=True, blank=True, related_name="dynamic_role_rules")
+    label = models.CharField(max_length=150, blank=True, default="")
+
+    class Meta:
+        ordering = ["order"]
+        constraints = [
+            models.UniqueConstraint(fields=["dynamic_role", "order"],
+                                    name="uniq_dynamic_role_rule_order"),
+            # Exactly one target, and it matches the declared kind.
+            models.CheckConstraint(
+                condition=(
+                    (Q(target_kind="ROLE", role__isnull=False, user__isnull=True,
+                       group__isnull=True) & ~Q(role_key=""))
+                    | Q(target_kind="USER", user__isnull=False, role__isnull=True,
+                        group__isnull=True, role_key="")
+                    | Q(target_kind="GROUP", group__isnull=False, role__isnull=True,
+                        user__isnull=True, role_key="")
+                ),
+                name="ck_dynamic_role_rule_target_matches_kind",
+            ),
+        ]
+        indexes = [models.Index(fields=["dynamic_role", "order"])]
+
+    def __str__(self):
+        target = self.role_key or self.user_id or self.group_id
+        return f"{self.dynamic_role_id}#{self.order} -> {self.target_kind}:{target}"
+
+    @property
+    def is_fallback(self) -> bool:
+        return self.condition in (None, {})
+
+
 class WorkflowStage(models.Model):
     """A single step within a WorkflowTemplate.
 
@@ -263,6 +396,9 @@ class WorkflowStage(models.Model):
             through the key so central templates work the same way.
         approver_group: Named approver group whose resolved membership approves this
             stage (only used when ``approver_source`` is ``WORKFLOW_GROUP``).
+        dynamic_role: The named Dynamic Role whose rules choose the approvers
+            (only used when ``approver_source`` is ``DYNAMIC_ROLE``). A stage
+            without one resolves through its own ``dynamic_rules``.
         advance_rule: ``UNANIMOUS``, ``QUORUM``, or ``ANY`` - how many approvals advance the stage.
         quorum_count: Minimum approvals required when advance_rule is ``QUORUM``.
         on_rejection: ``TERMINAL`` ends the workflow; ``RETURN_TO_REQUESTER`` sends it back.
@@ -303,6 +439,14 @@ class WorkflowStage(models.Model):
     # ── Group config (only used when approver_source == WORKFLOW_GROUP) ───────
     approver_group = models.ForeignKey(
         WorkflowApproverGroup, on_delete=models.PROTECT,
+        null=True, blank=True, related_name="workflow_stages",
+    )
+    # ── Dynamic Role config (only used when approver_source == DYNAMIC_ROLE) ──
+    # A stage naming a Dynamic Role resolves through it. One without resolves
+    # through its own dynamic_rules, so every stage keeps working whichever
+    # form it was published in.
+    dynamic_role = models.ForeignKey(
+        WorkflowDynamicRole, on_delete=models.PROTECT,
         null=True, blank=True, related_name="workflow_stages",
     )
     # ── Organogram config (only used when approver_source == ORGANOGRAM) ──────
@@ -417,7 +561,11 @@ class WorkflowStageApproverOverride(models.Model):
 
 
 class WorkflowStageDynamicRule(models.Model):
-    """One "when this, then that role" rule on a DYNAMIC_ROLE stage.
+    """One "when this, then that role" rule owned by a DYNAMIC_ROLE stage.
+
+    A stage that names a WorkflowDynamicRole resolves through that instead, and
+    a stage that does not resolves through these. Publishing a stage with a
+    named Dynamic Role clears them.
 
     Rules are evaluated in ascending ``order`` against the business document and
     the first match wins, mirroring how WorkflowRoutePath picks an edge. A rule

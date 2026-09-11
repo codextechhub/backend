@@ -1,6 +1,7 @@
 """DRF serializers for vs_workflow REST surface."""
 
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from rest_framework import serializers
 
 from vs_rbac.serializers.tenant import (
@@ -11,6 +12,7 @@ from vs_workflow.constants import (
 )
 from vs_workflow.models import (
     ApprovalDelegation, WorkflowApproverGroup, WorkflowApproverGroupMember,
+    WorkflowDynamicRole, WorkflowDynamicRoleRule,
     WorkflowStageApproverOverride, WorkflowStageDynamicRule,
     WorkflowAuditLog, WorkflowInstance,
     WorkflowRoutePath, WorkflowStage, WorkflowStageAction,
@@ -26,6 +28,39 @@ class WorkflowStageDynamicRuleReadSerializer(serializers.ModelSerializer):
         model = WorkflowStageDynamicRule
         fields = ["id", "order", "condition", "role_key", "role_name",
                   "label", "is_fallback"]
+
+
+class WorkflowDynamicRoleRuleReadSerializer(serializers.ModelSerializer):
+    """One Dynamic Role rule, with the names the screen shows for its target."""
+
+    role_name = serializers.CharField(source="role.name", read_only=True, default=None)
+    user_name = serializers.SerializerMethodField()
+    group_code = serializers.CharField(source="group.code", read_only=True, default=None)
+    group_name = serializers.CharField(source="group.name", read_only=True, default=None)
+    is_fallback = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = WorkflowDynamicRoleRule
+        fields = ["id", "order", "condition", "target_kind", "role_key", "role_name",
+                  "user", "user_name", "group", "group_code", "group_name",
+                  "label", "is_fallback"]
+        read_only_fields = fields
+
+    def get_user_name(self, obj):
+        if obj.user is None:
+            return None
+        return getattr(obj.user, "full_name", "") or obj.user.get_username()
+
+
+class WorkflowDynamicRoleSummarySerializer(serializers.ModelSerializer):
+    """A Dynamic Role as a stage shows it: its name, and the rules it runs."""
+
+    rules = WorkflowDynamicRoleRuleReadSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = WorkflowDynamicRole
+        fields = ["id", "code", "name", "is_active", "document_types", "rules"]
+        read_only_fields = fields
 
 
 class WorkflowStageReadSerializer(serializers.ModelSerializer):
@@ -44,6 +79,7 @@ class WorkflowStageReadSerializer(serializers.ModelSerializer):
     dynamic_role_rules = WorkflowStageDynamicRuleReadSerializer(
         source="dynamic_rules", many=True, read_only=True,
     )
+    dynamic_role = WorkflowDynamicRoleSummarySerializer(read_only=True)
 
     class Meta:
         model = WorkflowStage
@@ -53,7 +89,7 @@ class WorkflowStageReadSerializer(serializers.ModelSerializer):
             "approver_scope",
             "approver_role_key", "approver_role_name",
             "approver_group_code", "approver_group_name",
-            "dynamic_role_rules",
+            "dynamic_role_rules", "dynamic_role",
             "organogram_target", "organogram_levels", "organogram_position_code",
             "advance_rule", "quorum_count", "on_rejection",
             "skip_if_no_approvers", "inclusion_condition",
@@ -88,7 +124,13 @@ class WorkflowTemplateReadSerializer(serializers.ModelSerializer):
     platform_changed_since = serializers.SerializerMethodField()
 
     def get_stages(self, obj):
-        active = obj.stages.filter(retired_at__isnull=True).order_by("order")
+        active = (
+            obj.stages.filter(retired_at__isnull=True).order_by("order")
+            .select_related("approver_role", "approver_group", "organogram_position",
+                            "dynamic_role")
+            .prefetch_related("dynamic_rules__role", "dynamic_role__rules__role",
+                              "dynamic_role__rules__user", "dynamic_role__rules__group")
+        )
         return WorkflowStageReadSerializer(active, many=True).data
 
     def _counterpart(self, obj, which):
@@ -205,14 +247,14 @@ class WorkflowTemplatePublishSerializer(serializers.Serializer):
                     f"Stage '{label}': approver_group_code is required when "
                     f"approver_source is WORKFLOW_GROUP."
                 )
-            # A dynamic stage needs rules. Their roles and conditions are
-            # validated tenant-aware in the publish service.
+            # A dynamic stage names its Dynamic Role, or carries rules of its
+            # own. Both are checked tenant-aware in the publish service.
             if s.get("approver_source") == ApproverSource.DYNAMIC_ROLE.value:
                 rules = s.get("dynamic_role_rules")
-                if not rules or not isinstance(rules, list):
+                if not s.get("dynamic_role_code") and (not rules or not isinstance(rules, list)):
                     raise serializers.ValidationError(
-                        f"Stage '{label}': dynamic_role_rules must be a non-empty "
-                        f"list when approver_source is DYNAMIC_ROLE."
+                        f"Stage '{label}': name the Dynamic Role this stage uses "
+                        f"(dynamic_role_code) when approver_source is DYNAMIC_ROLE."
                     )
         return value
 
@@ -403,6 +445,10 @@ class ApproverPreviewRequestSerializer(serializers.Serializer):
     dynamic_role_rules = serializers.ListField(
         child=serializers.DictField(), required=False, default=list)
     sample_document = serializers.DictField(required=False, default=dict)
+    # Or a saved Dynamic Role, by code, tried against ``sample`` - the amount,
+    # branch and document fields a real document would carry.
+    dynamic_role_code = serializers.CharField(required=False, allow_blank=True, default="")
+    sample = serializers.DictField(required=False, default=dict)
     # Optional context for delegation matching.
     document_type = serializers.CharField(required=False, allow_blank=True, default="")
 
@@ -423,9 +469,10 @@ class ApproverPreviewRequestSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     {"approver_group_code": "Required when approver_source is WORKFLOW_GROUP."})
         elif attrs["approver_source"] == ApproverSource.DYNAMIC_ROLE:
-            if not attrs.get("dynamic_role_rules"):
-                raise serializers.ValidationError(
-                    {"dynamic_role_rules": "Required when approver_source is DYNAMIC_ROLE."})
+            if not attrs.get("dynamic_role_rules") and not attrs.get("dynamic_role_code"):
+                raise serializers.ValidationError({"dynamic_role_rules": (
+                    "Required when approver_source is DYNAMIC_ROLE, unless "
+                    "dynamic_role_code names a saved Dynamic Role.")})
         elif not attrs.get("approver_role_key"):
             raise serializers.ValidationError(
                 {"approver_role_key": "Required when approver_source is ROLE."})
@@ -632,3 +679,139 @@ class WorkflowStageApproverOverrideSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     "stage": "That stage belongs to another tenant's template."})
         return attrs
+
+
+# ── Dynamic Roles (the Approvers screen's Dynamic Role tab) ──────────────────
+
+class WorkflowDynamicRoleSerializer(serializers.ModelSerializer):
+    """A named Dynamic Role, written together with all of its rules.
+
+    ``rules`` is written as the whole ordered list and replaces what was there,
+    because order is the contract - first match wins - and a partial edit could
+    leave the Otherwise row anywhere. It is read back with each target's names.
+    ``used_by`` lists the live stages routing through it, so the screen can say
+    what an edit will reach.
+
+    Changing ``document_types`` re-checks the stored rules against the fields
+    the new types have, and is refused while a stage on a type being dropped
+    still uses the Dynamic Role.
+    """
+
+    rules = serializers.ListField(child=serializers.DictField(), write_only=True, required=False)
+    used_by = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WorkflowDynamicRole
+        fields = ["id", "code", "name", "description", "document_types", "is_active",
+                  "rules", "used_by", "created_at", "updated_at"]
+        read_only_fields = ["id", "used_by", "created_at", "updated_at"]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["rules"] = WorkflowDynamicRoleRuleReadSerializer(instance.rules.all(), many=True).data
+        return data
+
+    def get_used_by(self, obj):
+        stages = obj.workflow_stages.filter(retired_at__isnull=True).select_related("template")
+        return [
+            {"template_id": s.template_id, "template_name": s.template.name,
+             "document_type": s.template.document_type,
+             "stage_code": s.code, "stage_label": s.label}
+            for s in stages
+        ]
+
+    def validate_code(self, value):
+        """Codes are the stable handle templates publish against, so they stay
+        unique per tenant and cannot change once a Dynamic Role exists."""
+        tenant = self.context.get("tenant")
+        if self.instance is not None:
+            if value != self.instance.code:
+                raise serializers.ValidationError(
+                    "A Dynamic Role's code cannot be changed - templates reference it. "
+                    "Create a new one instead.")
+            return value
+        if tenant is not None and WorkflowDynamicRole.all_objects.filter(
+                tenant=tenant, code=value).exists():
+            raise serializers.ValidationError(
+                f"A Dynamic Role with code '{value}' already exists in this tenant.")
+        return value
+
+    def validate_document_types(self, value):
+        from vs_workflow.exceptions import UnknownDocumentTypeError
+        from vs_workflow.handlers import get_handler
+
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise serializers.ValidationError("A list of document types.")
+        types = list(dict.fromkeys(v for v in value if v))
+        for document_type in types:
+            try:
+                get_handler(document_type)
+            except UnknownDocumentTypeError:
+                raise serializers.ValidationError(
+                    f"'{document_type}' is not a document type that can be approved.")
+        return types
+
+    def validate(self, attrs):
+        from vs_workflow.exceptions import TemplateInvalidError
+        from vs_workflow.services.dynamic_roles import rules_as_payload, validate_rules
+
+        tenant = self.context["tenant"]
+        instance = self.instance
+        types = attrs.get("document_types", getattr(instance, "document_types", None) or [])
+        rules = attrs.pop("rules", None)
+        if instance is None and rules is None:
+            raise serializers.ValidationError(
+                {"rules": "A Dynamic Role needs its rules, ending with the Otherwise rule."})
+        if instance is not None and "document_types" in attrs:
+            if types:
+                for stage in (instance.workflow_stages.filter(retired_at__isnull=True)
+                              .select_related("template")):
+                    if stage.template.document_type not in types:
+                        raise serializers.ValidationError({"document_types": (
+                            f"'{stage.template.name}' ({stage.label}) still uses this "
+                            "Dynamic Role for a document type you are removing. Point "
+                            "that stage elsewhere first.")})
+            if rules is None:
+                rules = rules_as_payload(instance)
+        if rules is not None:
+            try:
+                attrs["rule_specs"] = validate_rules(
+                    tenant=tenant, document_types=types, rules=rules)
+            except TemplateInvalidError as exc:
+                raise serializers.ValidationError({"rules": exc.message})
+        return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        from vs_workflow.services.dynamic_roles import replace_rules
+
+        specs = validated_data.pop("rule_specs")
+        instance = super().create(validated_data)
+        replace_rules(instance, specs)
+        return instance
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        from vs_workflow.services.dynamic_roles import replace_rules
+
+        specs = validated_data.pop("rule_specs", None)
+        instance = super().update(instance, validated_data)
+        if specs is not None:
+            replace_rules(instance, specs)
+        return instance
+
+
+class DynamicRolePreviewSerializer(serializers.Serializer):
+    """A trial run of unsaved Dynamic Role rules, for one requester and a sample.
+
+    ``sample`` carries what a document would: ``amount`` in kobo, ``branch``,
+    ``document_type``, and ``document`` - the type's own fields. ``branch``
+    narrows role holders the way a BRANCH-scoped stage would.
+    """
+
+    requester = serializers.CharField(help_text="User id of the sample requester, in your tenant.")
+    document_types = serializers.ListField(child=serializers.CharField(), required=False,
+                                           default=list)
+    rules = serializers.ListField(child=serializers.DictField())
+    sample = serializers.DictField(required=False, default=dict)
+    branch = serializers.CharField(required=False, allow_blank=True, default="")

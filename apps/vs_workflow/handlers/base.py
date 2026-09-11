@@ -31,6 +31,13 @@ class BaseWorkflowHandler:
     #: a question the audit answers by comparing two columns.
     allows_requester_self_approval: bool = False
 
+    #: The fields of this document type a Dynamic Role condition may test,
+    #: beyond those every document has - its amount and branch, and the person
+    #: who raised it. Each is a :class:`~vs_workflow.conditions.fields.ConditionField`
+    #: whose key starts with ``document.`` and follows the model's own attribute
+    #: name, which is what the rule context walks.
+    condition_fields: tuple = ()
+
     # Choose the template code when the submitter does not provide one.
     def resolve_default_template_code(self, document: Any) -> str:
         raise NotImplementedError("Subclasses must implement resolve_default_template_code().")

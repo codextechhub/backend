@@ -29,11 +29,12 @@ from vs_workflow.constants import (
 )
 from vs_workflow.models import (
     ApprovalDelegation, WorkflowApproverGroup, WorkflowApproverGroupMember,
-    WorkflowInstance, WorkflowStage, WorkflowStageAction, WorkflowStageApproverOverride,
+    WorkflowDynamicRole, WorkflowInstance, WorkflowStage, WorkflowStageAction, WorkflowStageApproverOverride,
     WorkflowStageApprover, WorkflowStageInstance, WorkflowTemplate,
 )
 from vs_workflow.serializers import (
     ApprovalDelegationSerializer, ApproverPreviewRequestSerializer,
+    DynamicRolePreviewSerializer, WorkflowDynamicRoleSerializer,
     CancelInstanceSerializer, ReverseActionSerializer,
     StageActionWriteSerializer,
     WorkflowApproverGroupMemberWriteSerializer, WorkflowApproverGroupSerializer,
@@ -43,11 +44,12 @@ from vs_workflow.serializers import (
 )
 from vs_workflow.services import actions as actions_svc
 from vs_workflow.services import comparison as comparison_svc
+from vs_workflow.services import dynamic_roles as dynamic_roles_svc
 from vs_workflow.services import my_queue as my_queue_svc
 from vs_workflow.services import release as release_svc
 from vs_workflow.services import templates as templates_svc
 from vs_workflow.services.approvers import (
-    describe_group_members, resolve_approvers, resolve_group_users,
+    EligibleApprover, describe_group_members, resolve_approvers, resolve_group_users,
 )
 
 
@@ -305,7 +307,29 @@ class WorkflowTemplateViewSet(
         )
 
         rule_preview = None
-        if d["approver_source"] == ApproverSource.DYNAMIC_ROLE:
+        if d["approver_source"] == ApproverSource.DYNAMIC_ROLE and d.get("dynamic_role_code"):
+            # A saved Dynamic Role, tried with the same checks and matching the
+            # engine runs, against the caller's own tenant only.
+            dynamic_role = WorkflowDynamicRole.all_objects.filter(
+                tenant=request.tenant, code=d["dynamic_role_code"], is_active=True,
+            ).first()
+            if dynamic_role is None:
+                return Response(
+                    {"detail": f"No active Dynamic Role with code "
+                               f"'{d['dynamic_role_code']}' exists in this tenant."},
+                    status=status.HTTP_404_NOT_FOUND)
+            branch = instance.branch if stage.approver_scope == "BRANCH" else None
+            try:
+                users, rule_preview = dynamic_roles_svc.preview(
+                    tenant=request.tenant, requester=requester,
+                    document_types=dynamic_role.document_types,
+                    rules=dynamic_roles_svc.rules_as_payload(dynamic_role),
+                    sample=d.get("sample"), branch=branch)
+            except TemplateInvalidError as exc:
+                return Response({"detail": exc.message},
+                                status=status.HTTP_400_BAD_REQUEST)
+            eligible = [EligibleApprover(user=user) for user in users]
+        elif d["approver_source"] == ApproverSource.DYNAMIC_ROLE:
             # Dynamic rules live on stage.dynamic_rules, a reverse FK that an
             # unsaved stage cannot carry, so the preview evaluates the posted
             # rules directly instead of persisting a throwaway stage.
@@ -863,6 +887,149 @@ class WorkflowApproverGroupViewSet(TenantScopedMixin, ModelViewSet):
             raise NotFound("Member not found.")
         member.delete()
         return Response(self.get_serializer(group).data)
+
+
+# ── Dynamic Roles ─────────────────────────────────────────────────────────────
+
+class WorkflowDynamicRoleViewSet(TenantScopedMixin, ModelViewSet):
+    """Named Dynamic Roles behind the Approvers screen's Dynamic Role tab.
+
+    docstring-name: Workflow Dynamic Roles
+    """
+    serializer_class = WorkflowDynamicRoleSerializer
+
+    _WRITE_ACTIONS = {"create", "update", "partial_update", "destroy"}
+
+    def get_permissions(self):
+        # The approver-group keys: both answer "who approves" on one screen, and
+        # a template builder picking a Dynamic Role has to be able to read them.
+        # Trying rules writes nothing, so reading is enough for the preview.
+        self.rbac_permission = (
+            PERM_GROUP_MANAGE if self.action in self._WRITE_ACTIONS
+            else [PERM_GROUP_VIEW, PERM_TEMPLATE_MANAGE]
+        )
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get_serializer_context(self):
+        return super().get_serializer_context() | {"tenant": self.request.tenant}
+
+    def get_queryset(self):
+        qs = (WorkflowDynamicRole.all_objects
+              .filter(tenant=self.get_tenant())
+              .prefetch_related("rules__role", "rules__user", "rules__group"))
+        params = self.request.query_params
+        if params.get("is_active") in ("true", "false"):
+            qs = qs.filter(is_active=params["is_active"] == "true")
+        if params.get("search"):
+            term = params["search"]
+            qs = qs.filter(Q(name__icontains=term) | Q(code__icontains=term))
+        if params.get("document_type"):
+            # Serves this type, or serves any.
+            qs = qs.filter(Q(document_types__contains=[params["document_type"]])
+                           | Q(document_types=[]))
+        return qs.order_by("name")
+
+    def perform_create(self, serializer):
+        serializer.save(tenant=self.request.tenant, created_by=self.request.user)
+
+    def destroy(self, request, *args, **kwargs):
+        """Refuse to delete a Dynamic Role any stage still points at.
+
+        A stage's link is PROTECT, so the alternative is a 500. Deactivating
+        keeps those stages resolvable - to nobody, so they park - and keeps the
+        audit history readable.
+        """
+        dynamic_role = self.get_object()
+        used_by = list(dynamic_role.workflow_stages
+                       .order_by("retired_at", "template__code")
+                       .values_list("template__code", "code")[:10])
+        if used_by:
+            return Response({
+                "success": False,
+                "message": "This Dynamic Role is used by one or more workflow stages. "
+                           "Deactivate it instead, or point those stages elsewhere first.",
+                "error": {
+                    "code": "DYNAMIC_ROLE_IN_USE",
+                    "detail": {"stages": [f"{t}:{s}" for t, s in used_by]},
+                },
+            }, status=status.HTTP_409_CONFLICT)
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=False, methods=["get"])
+    def fields(self, request):
+        """What a Dynamic Role serving ``?document_type=`` may test, and who it may send to.
+
+        Several ``document_type`` values ask for one serving all of them; none
+        asks for one serving any type. ``document_types`` lists every type a
+        Dynamic Role can serve, and ``approver_roles`` the roles a rule may send
+        to - approving roles only, since the engine nominates no other.
+        """
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_workflow.conditions.fields import document_type_label, fields_for
+        from vs_workflow.handlers.registry import list_registered_handlers
+
+        registered = list_registered_handlers()
+        requested = [t for t in request.query_params.getlist("document_type") if t]
+        unknown = [t for t in requested if t not in registered]
+        if unknown:
+            return Response(
+                {"detail": f"'{unknown[0]}' is not a document type that can be approved."},
+                status=status.HTTP_400_BAD_REQUEST)
+        roles = TenantRoleTemplate.objects.filter(
+            tenant=request.tenant, status=TenantRoleTemplate.Status.ACTIVE,
+            is_system_role=True,
+        ).order_by("name")
+        return Response({
+            "fields": [field.as_dict() for field in fields_for(requested)],
+            "document_types": [
+                {"value": t, "label": document_type_label(t)} for t in sorted(registered)
+            ],
+            "approver_roles": [{"key": role.key, "name": role.name} for role in roles],
+        })
+
+    @action(detail=False, methods=["post"])
+    def preview(self, request):
+        """Who unsaved rules would choose for a requester and a sample document.
+
+        Runs the checks saving runs, so a rule that would not save answers 400
+        with the same reason. The requester is looked up inside the caller's
+        tenant, since both the facts the rules read and the approvers come from
+        it.
+        """
+        s = DynamicRolePreviewSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        d = s.validated_data
+
+        from django.contrib.auth import get_user_model
+        try:
+            requester = get_user_model().objects.filter(
+                pk=d["requester"], tenant=request.tenant).first()
+        except (ValueError, TypeError):
+            requester = None
+        if requester is None:
+            return Response({"detail": "Requester not found."}, status=status.HTTP_404_NOT_FOUND)
+        branch = None
+        if d.get("branch"):
+            from vs_tenants.references import find_branch_in_tenant
+            branch = find_branch_in_tenant(request.tenant, d["branch"])
+            if branch is None:
+                return Response({"detail": "Branch not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            users, detail = dynamic_roles_svc.preview(
+                tenant=request.tenant, requester=requester,
+                document_types=d["document_types"], rules=d["rules"],
+                sample=d["sample"], branch=branch)
+        except TemplateInvalidError as exc:
+            return Response({"detail": exc.message}, status=status.HTTP_400_BAD_REQUEST)
+        approvers = [
+            {"user": {"id": str(u.pk),
+                      "full_name": getattr(u, "full_name", "") or u.get_username(),
+                      "email": getattr(u, "email", "")}}
+            for u in users
+        ]
+        return Response({"count": len(approvers), "approvers": approvers,
+                         "dynamic_role": detail})
 
 
 # ── Stage approver overrides ──────────────────────────────────────────────────

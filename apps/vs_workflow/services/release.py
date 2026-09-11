@@ -152,6 +152,9 @@ def stage_requirement(stage) -> str:
     if source == ApproverSource.DYNAMIC_ROLE:
         # Which rule fires depends on the document, so the sentence names the
         # rule set rather than guessing at one role.
+        if stage.dynamic_role_id:
+            return (f"make sure whoever the {stage.dynamic_role.name} Dynamic Role "
+                    "chooses for this document can approve")
         return ("assign someone to the role this step's rules select for this "
                 "document")
     if source == ApproverSource.ORGANOGRAM:
