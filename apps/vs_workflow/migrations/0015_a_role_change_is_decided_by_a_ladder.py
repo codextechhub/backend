@@ -117,17 +117,27 @@ def add_the_ladders(apps, schema_editor):
 
 
 def remove_the_ladders(apps, schema_editor):
-    """Reversible, and safe to reverse.
+    """Leave the central templates in place when this migration is unapplied.
 
-    Deleting a central template leaves any instance that ran through it intact -
-    stages and votes are rows of their own - so what is lost is the routing for
-    requests raised afterwards, not the record of the ones already decided.
+    Deleting them goes through the ORM's cascade collector - template to stages
+    to the stages' own routes and conditions - and in a backward run that
+    unapplies several migrations at once, Django hands that collector related
+    fields rendered from a different migration state than the rows it collected.
+    It refuses with "Cannot query WorkflowStage object: Must be WorkflowStage
+    instance", and every test that replays the graph backwards past this point
+    fails on it. Ordering raw deletes by hand would restate the workflow cascade
+    graph inside a migration, where it goes stale the first time a model gains a
+    relation.
+
+    Staying is safe. ``add_the_ladders`` is get_or_create for both rows, so
+    reapplying finds them and writes nothing, and a template that no earlier
+    migration routes anything through is inert.
+
+    Deleting is not the harmless undo it can look like either.
+    ``WorkflowInstance`` holds its template, and ``WorkflowStageInstance`` its
+    stage, with PROTECT, so on any database where a role change has been
+    decided, a delete refuses rather than leaving that history intact.
     """
-    WorkflowTemplate = apps.get_model("vs_workflow", "WorkflowTemplate")
-    WorkflowTemplate.objects.filter(
-        branch=None, document_type=DOCUMENT_TYPE,
-        code__in=[spec["code"] for spec in TEMPLATES],
-    ).delete()
 
 
 class Migration(migrations.Migration):
