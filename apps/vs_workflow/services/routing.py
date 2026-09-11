@@ -246,7 +246,7 @@ def _activate_stage(instance: WorkflowInstance, stage: WorkflowStage,
         rule, evaluations = approvers_service.match_dynamic_rule(stage, instance.document)
         audit_context["dynamic_role"] = {
             "matched_rule_id": str(rule.pk) if rule else None,
-            "matched_role_key": rule.role.key if rule else None,
+            "matched_role_key": rule.role_key if rule else None,
             "evaluations": evaluations,
         }
     audit_service.write(instance, AuditEventType.STAGE_ACTIVATED,

@@ -962,6 +962,30 @@ class DynamicRoleResolveTests(TestCase):
         self.assertEqual([e["picked"] for e in evaluations], [False, True])
         self.assertEqual(evaluations[0]["trace"]["result"], False)
 
+    def test_activating_a_rule_without_a_role_row_records_its_key(self):
+        """A central template's rule names its role by key alone.
+
+        Every tenant holds its own copy of a role, so publishing a platform
+        template stores only ``role_key`` and leaves ``role`` empty. Activating
+        the stage must still record which role the matched rule chose, from the
+        key the rule always carries.
+        """
+        from vs_workflow.models import WorkflowAuditLog, WorkflowStageDynamicRule
+        from vs_workflow.constants import AuditEventType
+        stage = self._stage([
+            ({"op": "lt", "field": "amount", "value": 100000}, self.officer_role),
+            (None, self.bursar_role),
+        ])
+        WorkflowStageDynamicRule.objects.filter(stage=stage).update(role=None)
+        instance = self._instance_with({"amount": 250000})
+
+        routing_svc._activate_stage(instance, stage, attempt=1)
+
+        log = WorkflowAuditLog.objects.get(
+            instance=instance, event_type=AuditEventType.STAGE_ACTIVATED)
+        self.assertEqual(log.context["dynamic_role"]["matched_role_key"], self.bursar_role.key)
+        self.assertEqual(log.context["eligible_count"], 1)
+
 
 class PublishDynamicRoleTests(TestCase):
 
