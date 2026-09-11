@@ -477,9 +477,11 @@ no longer true - M13 shipped, so the build order in §5.4 is satisfied.
    Calendar" today and it grants access to nothing. This module closes the first;
    the second is worth a line.
 
-One trivial sweep: `apps/schools/vs_schools/urls.py:45` says "campuses", against
-the vocabulary rule in `CLAUDE.md`. The FRD had the same drift and v3.0.1 exists
-solely to fix it - three of its change-log rows still carry the old word.
+One trivial sweep: a comment in `apps/schools/vs_schools/urls.py` called a
+school's branches by the synonym the vocabulary rule in `CLAUDE.md` retires. It
+has been swept, and `core.test_vocabulary` keeps the word out of `apps/` and
+`docs/`. The FRD had the same drift and v3.0.1 exists solely to fix it - three of
+its change-log rows still carry the old word.
 
 ---
 

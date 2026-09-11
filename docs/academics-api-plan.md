@@ -51,21 +51,21 @@ session names no branches, because empty means everywhere. To stop covering
 Lekki it has to start naming the branches it does cover, so it becomes an
 explicit `{Ikeja}`. That is the shape the design already renders: the session
 detail screen shows `dtBranches` as chips and the drawer offers "Selected
-campuses". An "everywhere except Lekki" session would print "Applies school-wide"
+branches". An "everywhere except Lekki" session would print "Applies school-wide"
 on a screen where that is no longer true, and the drawer could not edit it -
 picking "The whole school" clears the list.
 
-**The consequence of that, stated plainly.** Automatic cover for a new campus
+**The consequence of that, stated plainly.** Automatic cover for a new branch
 survives only until a school splits its calendar.
 
-> Brightfield never splits. The 2026/2027 session names no branches. Yaba Campus
+> Brightfield never splits. The 2026/2027 session names no branches. Yaba Branch
 > opens in February and is inside the running year from the day it exists.
 >
 > Brightfield splits Lekki off in January, so 2026/2027 now names `{Ikeja}`. Yaba
 > opens in February and is in **no** active session.
 
 The second case is not a bug to paper over. Once a school is deliberately running
-two calendars, there is no right answer to guess for a new campus, and guessing
+two calendars, there is no right answer to guess for a new branch, and guessing
 either one is worse than asking. So it is surfaced rather than defaulted: a
 branch in no active session is reported on the overview, and the school picks.
 
@@ -91,7 +91,7 @@ branch in no active session is reported on the overview, and the school picks.
    keeps.
 3. **If that empties an incumbent, archive it**, with its terms, through the
    existing archive path. A session covering no branches is not a school year.
-   Brightfield has two campuses, both break away, and 2026/2027 ends.
+   Brightfield has two branches, both break away, and 2026/2027 ends.
 4. Activate the incoming session, un-archiving it and its terms if it was
    archived (§0.2).
 5. One `ACADEMIC_SESSION_ACTIVATED` audit event, plus one
@@ -109,8 +109,8 @@ several years at once.
 modal says "Only one session can be active at a time, so 2026/2027 will stop
 being active." For a breakaway that is false: 2026/2027 does not stop, it
 narrows. It needs to name what moves and what stays, the way the department
-narrowing modal already does: "Lekki Campus will move to 2027 Lekki. Ikeja
-Campus stays on 2026/2027."
+narrowing modal already does: "Lekki Branch will move to 2027 Lekki. Ikeja
+Branch stays on 2026/2027."
 
 ### 0.2  Re-activating an archived year un-archives its terms
 
@@ -145,7 +145,7 @@ back into every downstream reader of the year, where forgetting it is silent.
 | 1 | **Overview** (hero + spine + six-row list) | Active session name, range, term states, % elapsed; counts of programs, levels, classes, subjects, departments, sessions | - | `GET /v1/academics/overview/` | **Absent** |
 | 2 | **Overview - tree view** | Session -> Program -> Level -> Class -> Subject, each row with a "contains" count, a kind and a scope chip | - | `GET /v1/academics/structure/tree/` | **Absent** |
 | 3 | **Sessions & Terms** (cards + table + timeline) | name, start, end, status, terms inline (name/start/end), scope label, term count | create session (+ terms), edit, activate, archive | `GET,POST /sessions/`, `GET,PATCH /sessions/<id>/`, `POST /sessions/<id>/activate/`, `POST /sessions/<id>/archive/` | **Absent** |
-| 4 | **Session detail** | session header, scope chips, terms with state, calendar events per term | add event, delete event | terms: `GET,POST /sessions/<id>/terms/`, `PATCH,DELETE /terms/<id>/` — **events: M14, not ours** | **Absent** + **Not ours** |
+| 4 | **Session detail** | session header, scope chips, terms with state, calendar events per term | add event, delete event | terms: `GET,POST /sessions/<id>/terms/`, `PATCH,DELETE /terms/<id>/`; **events: M14, not ours** | **Absent** + **Not ours** |
 | 5 | **Departments** (cards + table) | name, code, description, scope, status, program count | create, edit, delete, narrow scope | `GET,POST /departments/`, `GET,PATCH,DELETE /departments/<id>/` | **Absent** |
 | 6 | **Programs & Levels** (accordion) | program name/code/scope/meta, its levels inline with code, scope and class count | create program, edit, delete; add level, bulk levels, edit level, delete level | `GET,POST /programs/`, `GET,PATCH,DELETE /programs/<id>/`, `GET,POST /programs/<id>/levels/`, `POST /programs/<id>/levels/bulk/`, `GET,PATCH,DELETE /levels/<id>/` | **Absent** |
 | 7 | **Classes & Arms** (cards + table) | name, code, level, arm, scope, status, subject count | create, edit, generate arms, archive, **restore** | `GET,POST /classes/`, `POST /classes/generate-arms/`, `GET,PATCH /classes/<id>/`, `POST /classes/<id>/archive/`, `POST /classes/<id>/restore/` | **Absent** |
@@ -174,7 +174,7 @@ baseline, module taxonomy and endpoint base are untouched, so it is not major).
 
 **1.1 A session applies school-wide or to a named set of branches.**
 The drawer's session form carries "Applies to: The whole school / Selected
-campuses" with a multi-select; the list carries a scope label; the session detail
+branches" with a multi-select; the list carries a scope label; the session detail
 carries scope chips; the session list is filtered by the branch pill
 (`sessionInBranch`). FRD §6 says `AcademicSession` carries no branch column and
 argues that two branches on different sessions would break the one-ACTIVE
@@ -263,14 +263,14 @@ The design renders two sentences verbatim under the field: an inline one ("This
 code is already in use in this school.") and an explanation that names the
 clashing row, what kind of thing it is, and **the branch it sits at, even when
 the signed-in user cannot see that branch** - "Mathematics is already in use by
-Yoruba at Ikeja Campus. Codes and names are unique across the whole school,
-including campuses you do not have access to, so the same code cannot exist
+Yoruba at Ikeja Branch. Codes and names are unique across the whole school,
+including branches you do not have access to, so the same code cannot exist
 twice." The platform's generic 400 `DUPLICATE` from the unique-constraint
 handler carries none of that. See §5 for the two ways to serve it, and §7 for
 the one question this raises.
 
 **1.10 Narrowing a shared row to one branch is a supported edit.**
-The design guards it with a confirmation modal ("Ikeja Campus will stop seeing
+The design guards it with a confirmation modal ("Ikeja Branch will stop seeing
 Sciences") but allows it. The FRD never says whether `branch` is patchable. It
 must be, for an unnarrowed caller.
 
@@ -324,11 +324,11 @@ control room is the whole app."* That reasoning was right for a branches screen
 and wrong for this one, because academic structure is built **before** go-live -
 the onboarding catalogue makes it a required task.
 
-Brightfield Schools signs up with a Lekki and an Ikeja campus. Mrs Okonkwo, still
+Brightfield Schools signs up with a Lekki and an Ikeja branch. Mrs Okonkwo, still
 PENDING, reaches required task 3, "Academic Structure", and adds a General
-Studies department for Ikeja only. She picks "One campus" and the dropdown is
+Studies department for Ikeja only. She picks "One branch" and the dropdown is
 empty, because `/v1/i/me/branches/` answered 403 `TENANT_NOT_LIVE`. She cannot
-scope anything to a campus until the school is live, and the school cannot go
+scope anything to a branch until the school is live, and the school cannot go
 live until she finishes the task.
 
 The detail route (`MyBranchDetailView`) does not need opening - no screen in this

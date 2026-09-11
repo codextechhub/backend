@@ -2,12 +2,13 @@
 
 The data model calls it ``Branch``, the API returns ``branch``, ``branch_name``
 and ``scope_label``, and the screens a school reads say branch. A synonym in
-code teaches the next reader the wrong word, and from there it leaks into what
-a school sees: a permission group's name, an error message, a seeded record.
+code or in the documents teaches the next reader the wrong word, and from there
+it leaks into what a school sees: a permission group's name, an error message,
+a seeded record, a screen built from a plan that used it.
 The synonym this module refuses is "campus", in any letter case.
 
 Every ``.py``, ``.html``, ``.txt``, ``.md``, ``.json``, ``.yml``, ``.yaml`` and
-``.csv`` file under ``apps/`` is read, except in these places:
+``.csv`` file under ``apps/`` and ``docs/`` is read, except in these places:
 
 - ``migrations`` directories. A migration records what the schema and the data
   were, and one that repairs rows stored under the old word has to name it to
@@ -16,19 +17,23 @@ Every ``.py``, ``.html``, ``.txt``, ``.md``, ``.json``, ``.yml``, ``.yaml`` and
 - ``STATIC_ROOT`` and ``MEDIA_ROOT``. Both resolve inside ``apps/``, and they
   hold what ``collectstatic`` copies in from installed packages and what people
   upload, so nothing in them is text this project writes.
+- ``docs/designs/``, which holds design exports. They are the designer's words:
+  a screen built from one translates the word, and the export stays as it was
+  delivered.
 - This module, which has to spell the word to search for it.
 
 ``apps/static/`` is read like any other directory. It is the project's own
 ``STATICFILES_DIRS`` source and holds only placeholder files the project
 commits, not third-party or collected assets, so whatever is added there is
-the project's own writing.
+the project's own writing. A checkout with no ``docs/`` directory, such as a
+deployed image, is read without it.
 
 One line is allowed, in the development seed: it renames branches that older
 runs of the seed stored under the old name, and it has to spell that name to
-match those rows. ``ALLOWED_LINES`` records it by path and exact content. Each
-entry excuses a single line, so a copy of it still fails, and a second test
-fails once the line is gone, so the exception cannot outlive the code it
-excuses.
+match those rows. ``ALLOWED_LINES`` records it by its path from the repository
+root and its exact content. Each entry excuses a single line, so a copy of it
+still fails, and a second test fails once the line is gone, so the exception
+cannot outlive the code it excuses.
 """
 from __future__ import annotations
 
@@ -39,6 +44,8 @@ from django.conf import settings
 from django.test import SimpleTestCase
 
 APPS_DIR = Path(__file__).resolve().parent.parent
+REPO_DIR = APPS_DIR.parent
+DOCS_DIR = REPO_DIR / "docs"
 
 FORBIDDEN_WORD = "campus"
 
@@ -48,41 +55,46 @@ TEXT_SUFFIXES = frozenset(
 
 SKIPPED_DIR_NAMES = frozenset({"migrations", "__pycache__"})
 
-# Path relative to apps/, and the line with its surrounding whitespace stripped.
+# Path from the repository root, and the line stripped of surrounding whitespace.
 ALLOWED_LINES = frozenset({
     (
-        "schools/vs_schools/dev/fixtures.py",
+        "apps/schools/vs_schools/dev/fixtures.py",
         'tenant=tenant, name=f"{name} Main Campus",',
     ),
 })
 
 
 def _skipped_roots() -> set[Path]:
-    """The configured directories whose contents this project does not write."""
-    return {
+    """The directories whose contents are not this project's own writing."""
+    roots = {
         Path(root).resolve()
         for root in (settings.STATIC_ROOT, settings.MEDIA_ROOT)
         if root
     }
+    roots.add((DOCS_DIR / "designs").resolve())
+    return roots
 
 
 def _text_files():
     """Every file the rule applies to, in a stable order."""
     this_module = Path(__file__).resolve()
     skipped_roots = _skipped_roots()
-    for dirpath, dirnames, filenames in os.walk(APPS_DIR):
-        here = Path(dirpath)
-        dirnames[:] = sorted(
-            name for name in dirnames
-            if name not in SKIPPED_DIR_NAMES
-            and (here / name).resolve() not in skipped_roots
-        )
-        for filename in sorted(filenames):
-            path = here / filename
-            if path.suffix.lower() not in TEXT_SUFFIXES:
-                continue
-            if path.resolve() != this_module:
-                yield path
+    for top in (APPS_DIR, DOCS_DIR):
+        if not top.is_dir():
+            continue
+        for dirpath, dirnames, filenames in os.walk(top):
+            here = Path(dirpath)
+            dirnames[:] = sorted(
+                name for name in dirnames
+                if name not in SKIPPED_DIR_NAMES
+                and (here / name).resolve() not in skipped_roots
+            )
+            for filename in sorted(filenames):
+                path = here / filename
+                if path.suffix.lower() not in TEXT_SUFFIXES:
+                    continue
+                if path.resolve() != this_module:
+                    yield path
 
 
 class BranchVocabularyTests(SimpleTestCase):
@@ -93,7 +105,7 @@ class BranchVocabularyTests(SimpleTestCase):
         excused = set()
         offenders = []
         for path in _text_files():
-            relative = path.relative_to(APPS_DIR).as_posix()
+            relative = path.relative_to(REPO_DIR).as_posix()
             text = path.read_text(encoding="utf-8", errors="replace")
             for number, line in enumerate(text.splitlines(), start=1):
                 if FORBIDDEN_WORD not in line.lower():
@@ -114,7 +126,7 @@ class BranchVocabularyTests(SimpleTestCase):
         """An entry whose line is gone would excuse the next one written there."""
         stale = []
         for relative, allowed in sorted(ALLOWED_LINES):
-            path = APPS_DIR / relative
+            path = REPO_DIR / relative
             lines = (
                 path.read_text(encoding="utf-8").splitlines()
                 if path.is_file() else []

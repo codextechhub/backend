@@ -212,7 +212,7 @@ Two more behaviours worth handling:
 ## 6. Stock is now held per location (the largest piece of design work)
 
 **Was:** a single pool per entity. One on-hand quantity, one value and one average cost
-per item, however many places the school actually kept the goods. A two-campus school
+per item, however many places the school actually kept the goods. A two-branch school
 could issue at the annex against stock physically standing at the main store, because
 the availability check read the entity total.
 **Now:** a stock location is a first-class record, optionally tied to a branch, and
@@ -323,7 +323,7 @@ store, falling back to the entity default where that branch has none. Worth show
 the confirmation: "Received into: Annex Store."
 
 ### 6.4 What to build
-1. **A locations admin screen.** Code, name, campus (branch, or "Entity-wide"),
+1. **A locations admin screen.** Code, name, branch (one branch, or "Entity-wide"),
    default, active. Create, edit, make default, deactivate. Low traffic; a modal form
    is fine.
 2. **A per-location breakdown on stock item detail.** Keep the headline totals as they
@@ -344,7 +344,7 @@ every item carrying quantity or value, and every historical movement stamped wit
 `MAIN`. **There is no null-location state on existing data.** New entities get a `MAIN`
 default with their books.
 
-A school **already running two campuses** will see all its stock at `MAIN`. The remedy
+A school **already running two branches** will see all its stock at `MAIN`. The remedy
 is operational, not automatic. A prompt on the locations screen would be well placed:
 "All your stock is currently at MAIN. Create your other stores, then move the opening
 balances across."

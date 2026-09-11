@@ -184,7 +184,7 @@ GET /v1/admin/tasks/?tenant=codex&for_tenant=corona&kind=import&status=failed
   "data": [
     { "id": 8814, "celery_task_id": "6f0c…", 
       "task_name": "vs_import_data.tasks.execute_import_batch_task",
-      "kind": "import", "label": "Import students - Lekki Campus",
+      "kind": "import", "label": "Import students - Lekki Branch",
       "owner": 411, "owner_name": "Ngozi Eze", "tenant": 3,
       "status": "FAILED", "progress": 62, "worker": "celery@web-1",
       "created_at": "2026-08-14T07:02:11Z", "started_at": "2026-08-14T07:02:13Z",

@@ -893,7 +893,7 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
     add_heading(doc, "2. Context and Status Model", level=1)
     add_body(
         doc,
-        "A School is the operator-facing business identity. Its one-to-one Tenant is the durable security boundary used by authentication, RBAC, configuration, workflow, finance, procurement, notifications, support, and every tenant-aware domain. Branches represent campuses or operating locations inside that School boundary.",
+        "A School is the operator-facing business identity. Its one-to-one Tenant is the durable security boundary used by authentication, RBAC, configuration, workflow, finance, procurement, notifications, support, and every tenant-aware domain. Each School operates through one or more Branches inside that boundary.",
     )
     add_heading(doc, "2.1 Status Model", level=2)
     add_status_key(doc)
@@ -1017,7 +1017,7 @@ def build_frd(reference_path: Path, output_path: Path) -> None:
         [
             ["School", "Business identity and School metadata", "Unique slug/code; protected one-to-one Tenant; only PENDING, ACTIVE, INACTIVE today"],
             ["Tenant", "Security and ownership boundary", "One School profile; status synchronized by School.save()"],
-            ["Branch", "Campus or operating location", "Belongs to School; tenant-aware manager; no database uniqueness for code/main flag"],
+            ["Branch", "A place the School operates from", "Belongs to School; tenant-aware manager; no database uniqueness for code/main flag"],
             ["SchoolBranding", "School logo container", "One-to-one School; logo only"],
             ["PackagePlan", "Subscription plan catalogue", "Unique code/name; capacity maxima; active catalogue flag"],
             ["SchoolPackageSetup", "Selected plan, capacities, expiry", "One-to-one School; protected plan relationship"],
