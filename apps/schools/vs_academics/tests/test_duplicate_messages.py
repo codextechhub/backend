@@ -79,9 +79,9 @@ class DuplicateNameTests(_Base):
             {"name": "General Studies", "code": "GS2"},
         )
         self.assertEqual(response.status_code, 409, response.data)
-        self.assertIn("Ikeja Campus", response.data["message"])
+        self.assertIn("Ikeja Branch", response.data["message"])
         self.assertEqual(
-            response.data["error"]["detail"]["scope_label"], "Ikeja Campus",
+            response.data["error"]["detail"]["scope_label"], "Ikeja Branch",
         )
 
     def test_a_branch_bound_caller_is_told_which_branch_blocked_them(self):
@@ -97,7 +97,7 @@ class DuplicateNameTests(_Base):
             {"name": "General Studies", "code": "GS2"},
         )
         self.assertEqual(response.status_code, 409, response.data)
-        self.assertIn("Ikeja Campus", response.data["message"])
+        self.assertIn("Ikeja Branch", response.data["message"])
 
     def test_a_school_wide_row_tells_a_branch_caller_not_to_copy_it(self):
         self.dept("Sciences", "SCI")

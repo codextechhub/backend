@@ -44,11 +44,11 @@ class _Base(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.multi = make_school(slug="brightfield-lekki", name="Brightfield Schools")
-        make_branch(cls.multi, name="Lekki Campus", is_main=True)
-        make_branch(cls.multi, name="Ikeja Campus", is_main=False)
+        make_branch(cls.multi, name="Lekki Branch", is_main=True)
+        make_branch(cls.multi, name="Ikeja Branch", is_main=False)
 
         cls.solo = make_school(slug="st-monicas", name="St. Monica's Academy")
-        make_branch(cls.solo, name="Main Campus", is_main=True)
+        make_branch(cls.solo, name="Main Branch", is_main=True)
 
         cls.live = make_school(slug="holy-cross", name="Holy Cross College")
         make_branch(cls.live, name="Holy Cross Main Branch", is_main=True)

@@ -1,26 +1,27 @@
 """Reversing one imported row, by the model that row actually created.
 
 An import row records two things about what it made: ``target_model``, the name
-of the model, and ``target_object_pk``, its primary key. The rollback used to
-read only the second and assume the first was always ``School``.
+of the model, and ``target_object_pk``, its primary key. The id alone does not
+say which table it belongs to.
 
-That assumption was never true. Three datasets are importable - ``schools``,
-``branches`` and ``cx_users`` - and they create ``School``, ``Branch`` and
-``User`` rows respectively. All three tables use ``BigAutoField``, so their id
-sequences run through the same small integers independently: id 12 names a
-school, a branch and a user at the same time, in three different tables.
+Three datasets are importable - ``schools``, ``branches`` and ``cx_users`` - and
+they create ``School``, ``Branch`` and ``User`` rows respectively. All three
+tables use ``BigAutoField``, so their id sequences run through the same small
+integers independently: id 12 names a school, a branch and a user at the same
+time, in three different tables.
 
-So rolling back a four-row branches import for Greenfield College, whose rows
-created Branch ids 9 to 12, ran ``School.objects.filter(pk=...).delete()`` four
-times. Greenfield's campuses stayed exactly where they were, Bright Star School
-(School id 12, imported in March) was deleted along with its package setup, and
-the job was stamped "rolled back successfully, 4 rows reverted".
+A rollback that read only the id and assumed ``School`` would undo the wrong
+thing. Rolling back a four-row branches import for Greenfield College, whose
+rows created Branch ids 9 to 12, would leave Greenfield's branches exactly where
+they were, delete Bright Star School (School id 12, imported in March) along
+with its package setup, and still stamp the job "rolled back successfully, 4
+rows reverted".
 
-The fix is this module. Reversal is dispatched on ``target_model`` through an
-explicit registry, and a model with no reverser is REFUSED rather than guessed
-at - the same fail-closed rule ``datasets.py`` applies to dataset ownership, for
-the same reason: the failure that matters is the one where a new dataset is
-added and nobody thinks about how to undo it.
+So reversal is dispatched on ``target_model`` through an explicit registry, and
+a model with no reverser is REFUSED rather than guessed at - the same
+fail-closed rule ``datasets.py`` applies to dataset ownership, for the same
+reason: the failure that matters is the one where a new dataset is added and
+nobody thinks about how to undo it.
 
 Three further rules apply to every reverser here:
 
@@ -154,7 +155,7 @@ def _sweep_orphaned_contacts(contact_ids: set[int]) -> None:
 
     ``ContactInfo`` is a stand-alone card shared by the school-admin and
     branch-admin links, and both hold it with PROTECT. Deleting a branch
-    cascades its link and leaves the card behind: Greenfield's second campus is
+    cascades its link and leaves the card behind: Greenfield's second branch is
     rolled back and 'Chidi Okonkwo, chidi@greenfield.test' stays in the table
     for ever, pointed at by nothing.
 

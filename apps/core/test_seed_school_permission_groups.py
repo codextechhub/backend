@@ -150,22 +150,15 @@ class SchoolPermissionGroupTableTests(TestCase):
         )
 
     def test_the_table_calls_a_branch_a_branch(self):
-        """Group names and descriptions are read on screen by a school's admin.
+        """The bundle that administers a branch is called Branch Administration.
 
-        The site primitive is ``vs_tenants.Branch`` and the word is *branch*.
-        A synonym drifted in far enough that this bundle was called "Campus
-        Administration" for a while, which taught the customer the wrong word
-        for the thing they were administering. Nothing else pins these
-        strings, so this does.
+        Group names and descriptions are read on screen by a school's
+        administrator, so they use the word the data model, the API and the
+        screens use for a site. Any other word for it is refused across the
+        codebase by ``core.test_vocabulary``.
         """
         names = {name for name, _reach, _description, _keys in SCHOOL_PERMISSION_GROUPS}
         self.assertIn("Branch Administration", names)
-
-        for name, _reach, description, _keys in SCHOOL_PERMISSION_GROUPS:
-            self.assertNotIn("campus", name.lower(), f"group name: {name!r}")
-            self.assertNotIn(
-                "campus", description.lower(), f"description of {name!r}",
-            )
 
 
 class SchoolPermissionGroupSeedTests(TestCase):

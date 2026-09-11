@@ -43,8 +43,8 @@ class _Base(TestCase):
     def setUpTestData(cls):
         cls.school = make_school(slug="brightfield", name="Brightfield Schools")
         cls.tenant = cls.school.tenant
-        cls.lekki = make_branch(cls.school, name="Lekki Campus", is_main=True)
-        cls.ikeja = make_branch(cls.school, name="Ikeja Campus", is_main=False)
+        cls.lekki = make_branch(cls.school, name="Lekki Branch", is_main=True)
+        cls.ikeja = make_branch(cls.school, name="Ikeja Branch", is_main=False)
 
         cls.role = make_role(cls.school, name="School Admin", key="school_admin")
         for key in KEYS:
@@ -56,7 +56,7 @@ class _Base(TestCase):
         )
         make_assignment(cls.school, cls.admin, cls.role, branch=None)
 
-        # A head of the Lekki campus, whose grant is pinned to that branch.
+        # A head of Lekki Branch, whose grant is pinned to it.
         cls.lekki_head = make_school_admin(
             None, email="head@lekki.test", tenant=cls.tenant,
         )

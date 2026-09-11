@@ -36,8 +36,8 @@ class _Base(TestCase):
     def setUpTestData(cls):
         cls.school = make_school(slug="brightfield", name="Brightfield Schools")
         cls.tenant = cls.school.tenant
-        cls.lekki = make_branch(cls.school, name="Lekki Campus", is_main=True)
-        cls.ikeja = make_branch(cls.school, name="Ikeja Campus", is_main=False)
+        cls.lekki = make_branch(cls.school, name="Lekki Branch", is_main=True)
+        cls.ikeja = make_branch(cls.school, name="Ikeja Branch", is_main=False)
 
         cls.role = make_role(cls.school, name="Branch Admin", key="branch_admin")
         make_role_permission(

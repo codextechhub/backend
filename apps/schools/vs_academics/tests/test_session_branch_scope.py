@@ -35,8 +35,8 @@ class _Base(TestCase):
     def setUpTestData(cls):
         cls.school = make_school(slug="brightfield", name="Brightfield Schools")
         cls.tenant = cls.school.tenant
-        cls.lekki = make_branch(cls.school, name="Lekki Campus", is_main=True)
-        cls.ikeja = make_branch(cls.school, name="Ikeja Campus", is_main=False)
+        cls.lekki = make_branch(cls.school, name="Lekki Branch", is_main=True)
+        cls.ikeja = make_branch(cls.school, name="Ikeja Branch", is_main=False)
 
     def session(self, name, start=D(2026, 9, 1), end=D(2027, 7, 31), branches=()):
         s = AcademicSession.all_objects.create(
@@ -64,7 +64,7 @@ class SchoolWideMeansEverywhereTests(_Base):
         """
         s = self.session("2026/2027")
         activate_session(s, self.tenant)
-        yaba = make_branch(self.school, name="Yaba Campus", is_main=False)
+        yaba = make_branch(self.school, name="Yaba Branch", is_main=False)
         self.assertIn(yaba.id, self.covered(s))
 
     def test_naming_branches_makes_it_not_school_wide(self):

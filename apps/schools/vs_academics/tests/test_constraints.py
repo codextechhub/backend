@@ -45,8 +45,8 @@ class _Base(TestCase):
             # one of them then reports.
             status=SessionStatus.DRAFT,
         )
-        cls.lekki = make_branch(cls.school, name="Lekki Campus", is_main=True)
-        cls.ikeja = make_branch(cls.school, name="Ikeja Campus", is_main=False)
+        cls.lekki = make_branch(cls.school, name="Lekki Branch", is_main=True)
+        cls.ikeja = make_branch(cls.school, name="Ikeja Branch", is_main=False)
         cls.other = make_school(slug="sunrise", name="Sunrise Academy")
 
     def session(self, name, status=SessionStatus.DRAFT, school_wide=True, tenant=None):

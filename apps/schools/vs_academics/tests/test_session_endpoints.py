@@ -37,7 +37,7 @@ KEYS = (
 
 def _school_with_admin(slug, name, email, keys=KEYS, status="ACTIVE"):
     school = make_school(slug=slug, name=name, status=status)
-    branch = make_branch(school, name="Main Campus", is_main=True)
+    branch = make_branch(school, name="Main Branch", is_main=True)
     role = make_role(school, name="School Admin", key="school_admin")
     for key in keys:
         make_role_permission(role, make_permission(key, scope=PermissionScope.TENANT))
@@ -362,7 +362,7 @@ class ListShapeTests(_Base):
             self.assertNotIn(field, row, f"{field} must be absent at one branch")
 
     def test_a_multi_branch_school_sees_the_scope(self):
-        make_branch(self.school, name="Ikeja Campus", is_main=False)
+        make_branch(self.school, name="Ikeja Branch", is_main=False)
         session = self.session(name="2026/2027")
         set_branches(session, self.tenant, [])
         response = self.client_for(self.admin).get(

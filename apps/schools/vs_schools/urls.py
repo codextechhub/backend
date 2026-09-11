@@ -50,7 +50,7 @@ urlpatterns = [
     # Readable with no session: the sign-in page needs it before anyone has one.
     path("public/schools/<str:slug>/logo/", PublicSchoolLogoView.as_view(),
          name="public-school-logo"),
-    # A school's own campuses, read-only. See views/my_branches.py for why this
+    # A school's own branches, read-only. See views/my_branches.py for why this
     # exists rather than opening the platform's branch views.
     path("me/branches/", MyBranchListView.as_view(), name="my-branch-list"),
     path(

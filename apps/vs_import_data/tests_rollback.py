@@ -88,11 +88,12 @@ class RollbackTestCase(TestCase):
 
 class BranchRollbackTests(RollbackTestCase):
     def test_branch_rollback_does_not_delete_the_school_with_the_same_id(self):
-        """The reported bug, with the ids forced to collide.
+        """Rolling back a branch leaves alone the school that shares its id.
 
-        Greenfield's fourth campus is Branch id 4242. Bright Star School, on the
-        platform since March, is School id 4242. Rolling back Greenfield's
-        branches import used to delete Bright Star.
+        The ids are forced to collide. Greenfield's fourth branch is Branch id
+        4242, and Bright Star School, on the platform since March, is School id
+        4242. Rolling back Greenfield's branches import removes that branch and
+        leaves Bright Star where it is.
         """
         from vs_tenants.models import Branch
         from schools.vs_schools.models import School
@@ -102,27 +103,27 @@ class BranchRollbackTests(RollbackTestCase):
         )
         greenfield = make_school(slug="greenfield", name="Greenfield College")
         make_branch(greenfield, name="Greenfield Main", is_main=True)
-        campus = Branch.objects.create(
+        branch = Branch.objects.create(
             pk=4242,
             tenant=greenfield.tenant,
-            name="Greenfield Second Campus",
+            name="Greenfield Second Branch",
             is_main=False,
             status="ACTIVE",
         )
-        self.assertEqual(bright_star.pk, campus.pk)
+        self.assertEqual(bright_star.pk, branch.pk)
 
         self.add_row(
             target_model="Branch",
-            target_object_pk=campus.pk,
+            target_object_pk=branch.pk,
             payload={
-                "name": "Greenfield Second Campus",
+                "name": "Greenfield Second Branch",
                 "school_slug": "greenfield",
             },
         )
 
         record = self.roll_back()
 
-        self.assertFalse(Branch.all_objects.filter(pk=campus.pk).exists())
+        self.assertFalse(Branch.all_objects.filter(pk=branch.pk).exists())
         self.assertTrue(School.objects.filter(pk=bright_star.pk).exists())
         self.assertTrue(record.was_successful)
         self.assertEqual(record.reverted_rows_count, 1)
@@ -160,20 +161,20 @@ class BranchRollbackTests(RollbackTestCase):
 
         greenfield = make_school(slug="greenfield-renamed", name="Greenfield")
         make_branch(greenfield, name="Greenfield Main", is_main=True)
-        campus = Branch.objects.create(
-            tenant=greenfield.tenant, name="Ikeja Campus", is_main=False,
+        branch = Branch.objects.create(
+            tenant=greenfield.tenant, name="Ikeja Branch", is_main=False,
             status="ACTIVE",
         )
 
         self.add_row(
             target_model="Branch",
-            target_object_pk=campus.pk,
-            payload={"name": "Lekki Campus", "school_slug": "greenfield-renamed"},
+            target_object_pk=branch.pk,
+            payload={"name": "Lekki Branch", "school_slug": "greenfield-renamed"},
         )
 
         record = self.roll_back()
 
-        self.assertTrue(Branch.all_objects.filter(pk=campus.pk).exists())
+        self.assertTrue(Branch.all_objects.filter(pk=branch.pk).exists())
         self.assertFalse(record.was_successful)
 
     def test_the_main_branch_is_never_deleted(self):
@@ -424,15 +425,15 @@ class RollbackReportingTests(RollbackTestCase):
 
         greenfield = make_school(slug="partial", name="Partial School")
         make_branch(greenfield, name="Main", is_main=True)
-        campus = Branch.objects.create(
-            tenant=greenfield.tenant, name="Reversible Campus", is_main=False,
+        branch = Branch.objects.create(
+            tenant=greenfield.tenant, name="Reversible Branch", is_main=False,
             status="ACTIVE",
         )
 
         self.add_row(
             target_model="Branch",
-            target_object_pk=campus.pk,
-            payload={"name": "Reversible Campus", "school_slug": "partial"},
+            target_object_pk=branch.pk,
+            payload={"name": "Reversible Branch", "school_slug": "partial"},
             row_number=1,
         )
         self.add_row(
@@ -461,15 +462,15 @@ class RollbackReportingTests(RollbackTestCase):
 
         greenfield = make_school(slug="retry", name="Retry School")
         make_branch(greenfield, name="Main", is_main=True)
-        campus = Branch.objects.create(
-            tenant=greenfield.tenant, name="Retry Campus", is_main=False,
+        branch = Branch.objects.create(
+            tenant=greenfield.tenant, name="Retry Branch", is_main=False,
             status="ACTIVE",
         )
 
         self.add_row(
             target_model="Branch",
-            target_object_pk=campus.pk,
-            payload={"name": "Retry Campus", "school_slug": "retry"},
+            target_object_pk=branch.pk,
+            payload={"name": "Retry Branch", "school_slug": "retry"},
             row_number=1,
         )
         self.add_row(
@@ -518,22 +519,22 @@ class UpdatedRowRollbackTests(RollbackTestCase):
 
         greenfield = make_school(slug="updated-row", name="Updated Row School")
         make_branch(greenfield, name="Main", is_main=True)
-        campus = Branch.objects.create(
-            tenant=greenfield.tenant, name="Existing Campus", is_main=False,
+        branch = Branch.objects.create(
+            tenant=greenfield.tenant, name="Existing Branch", is_main=False,
             status="ACTIVE",
         )
 
         row = self.add_row(
             target_model="Branch",
-            target_object_pk=campus.pk,
-            payload={"name": "Existing Campus", "school_slug": "updated-row"},
+            target_object_pk=branch.pk,
+            payload={"name": "Existing Branch", "school_slug": "updated-row"},
         )
         row.action = ImportRowActionChoices.UPDATE
         row.save(update_fields=["action"])
 
         record = self.roll_back()
 
-        self.assertTrue(Branch.all_objects.filter(pk=campus.pk).exists())
+        self.assertTrue(Branch.all_objects.filter(pk=branch.pk).exists())
         self.assertFalse(record.was_successful)
         self.assertIn("not a creation", record.details["rows"][0]["message"])
 
@@ -541,16 +542,16 @@ class UpdatedRowRollbackTests(RollbackTestCase):
 class OrphanedContactTests(RollbackTestCase):
     """A deleted admin link must not leave its contact card behind."""
 
-    def _campus_with_admin(self, school, *, contact):
+    def _branch_with_admin(self, school, *, contact):
         from schools.vs_schools.models import BranchPrimaryAdmin
         from vs_tenants.models import Branch
 
-        campus = Branch.objects.create(
-            tenant=school.tenant, name="Second Campus", is_main=False,
+        branch = Branch.objects.create(
+            tenant=school.tenant, name="Second Branch", is_main=False,
             status="ACTIVE",
         )
-        BranchPrimaryAdmin.objects.create(branch=campus, contact=contact)
-        return campus
+        BranchPrimaryAdmin.objects.create(branch=branch, contact=contact)
+        return branch
 
     def test_the_branch_admin_contact_card_goes_with_the_branch(self):
         from schools.vs_schools.models import ContactInfo
@@ -560,12 +561,12 @@ class OrphanedContactTests(RollbackTestCase):
         contact = ContactInfo.objects.create(
             full_name="Chidi Okonkwo", email="chidi@contact-sweep.test",
         )
-        campus = self._campus_with_admin(school, contact=contact)
+        branch = self._branch_with_admin(school, contact=contact)
 
         self.add_row(
             target_model="Branch",
-            target_object_pk=campus.pk,
-            payload={"name": "Second Campus", "school_slug": "contact-sweep"},
+            target_object_pk=branch.pk,
+            payload={"name": "Second Branch", "school_slug": "contact-sweep"},
         )
 
         record = self.roll_back()
@@ -582,12 +583,12 @@ class OrphanedContactTests(RollbackTestCase):
             full_name="Ada Okoye", email="ada@contact-shared.test",
         )
         SchoolPrimaryAdmin.objects.create(school=school, contact=contact)
-        campus = self._campus_with_admin(school, contact=contact)
+        branch = self._branch_with_admin(school, contact=contact)
 
         self.add_row(
             target_model="Branch",
-            target_object_pk=campus.pk,
-            payload={"name": "Second Campus", "school_slug": "contact-shared"},
+            target_object_pk=branch.pk,
+            payload={"name": "Second Branch", "school_slug": "contact-shared"},
         )
 
         record = self.roll_back()
@@ -640,7 +641,7 @@ class QueuedRollbackTests(RollbackTestCase):
             f"/v1/import/batches/{self.batch.pk}/jobs/{self.job.pk}/rollback/"
         )
 
-    def _campus(self, *, slug="queued", name="Queued Campus"):
+    def _second_branch(self, *, slug="queued", name="Queued Branch"):
         from vs_tenants.models import Branch
 
         school = make_school(slug=slug, name=f"{name} School")
@@ -650,11 +651,11 @@ class QueuedRollbackTests(RollbackTestCase):
         )
 
     def test_a_small_rollback_still_answers_inside_the_request(self):
-        campus = self._campus()
+        branch = self._second_branch()
         self.add_row(
             target_model="Branch",
-            target_object_pk=campus.pk,
-            payload={"name": "Queued Campus", "school_slug": "queued"},
+            target_object_pk=branch.pk,
+            payload={"name": "Queued Branch", "school_slug": "queued"},
         )
 
         response = self.client.post(self.url, {"reason": "small"}, format="json")
@@ -669,11 +670,11 @@ class QueuedRollbackTests(RollbackTestCase):
         from unittest import mock
         from vs_tenants.models import Branch
 
-        campus = self._campus(slug="over-limit", name="Over Limit Campus")
+        branch = self._second_branch(slug="over-limit", name="Over Limit Branch")
         self.add_row(
             target_model="Branch",
-            target_object_pk=campus.pk,
-            payload={"name": "Over Limit Campus", "school_slug": "over-limit"},
+            target_object_pk=branch.pk,
+            payload={"name": "Over Limit Branch", "school_slug": "over-limit"},
         )
 
         with mock.patch("vs_import_data.constants.ROLLBACK_INLINE_ROW_LIMIT", 0):
@@ -685,18 +686,18 @@ class QueuedRollbackTests(RollbackTestCase):
         self.assertEqual(data["row_count"], 1)
         # Celery runs eagerly under test settings, so the queued work has
         # already happened by the time the response is read.
-        self.assertFalse(Branch.all_objects.filter(pk=campus.pk).exists())
+        self.assertFalse(Branch.all_objects.filter(pk=branch.pk).exists())
         self.job.refresh_from_db()
         self.assertEqual(self.job.status, ImportJobStatusChoices.ROLLED_BACK)
 
     def test_a_caller_may_force_the_queued_path(self):
         from vs_tenants.models import Branch
 
-        campus = self._campus(slug="forced", name="Forced Campus")
+        branch = self._second_branch(slug="forced", name="Forced Branch")
         self.add_row(
             target_model="Branch",
-            target_object_pk=campus.pk,
-            payload={"name": "Forced Campus", "school_slug": "forced"},
+            target_object_pk=branch.pk,
+            payload={"name": "Forced Branch", "school_slug": "forced"},
         )
 
         response = self.client.post(
@@ -705,16 +706,16 @@ class QueuedRollbackTests(RollbackTestCase):
 
         self.assertEqual(response.status_code, 200, response.content)
         self.assertTrue(response.json()["data"]["queued"])
-        self.assertFalse(Branch.all_objects.filter(pk=campus.pk).exists())
+        self.assertFalse(Branch.all_objects.filter(pk=branch.pk).exists())
 
     def test_a_caller_may_force_the_inline_path(self):
         from unittest import mock
 
-        campus = self._campus(slug="forced-inline", name="Inline Campus")
+        branch = self._second_branch(slug="forced-inline", name="Inline Branch")
         self.add_row(
             target_model="Branch",
-            target_object_pk=campus.pk,
-            payload={"name": "Inline Campus", "school_slug": "forced-inline"},
+            target_object_pk=branch.pk,
+            payload={"name": "Inline Branch", "school_slug": "forced-inline"},
         )
 
         with mock.patch("vs_import_data.constants.ROLLBACK_INLINE_ROW_LIMIT", 0):
@@ -728,11 +729,11 @@ class QueuedRollbackTests(RollbackTestCase):
     def test_a_second_rollback_is_refused_while_one_is_in_flight(self):
         from django.utils import timezone
 
-        campus = self._campus(slug="in-flight", name="In Flight Campus")
+        branch = self._second_branch(slug="in-flight", name="In Flight Branch")
         self.add_row(
             target_model="Branch",
-            target_object_pk=campus.pk,
-            payload={"name": "In Flight Campus", "school_slug": "in-flight"},
+            target_object_pk=branch.pk,
+            payload={"name": "In Flight Branch", "school_slug": "in-flight"},
         )
         self.job.rollback_started_at = timezone.now()
         self.job.rollback_completed_at = None

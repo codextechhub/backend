@@ -49,8 +49,8 @@ class _Base(TestCase):
             start_date=dt.date(2099, 9, 1), end_date=dt.date(2100, 7, 31),
             status="ACTIVE",
         )
-        cls.lekki = make_branch(cls.school, name="Lekki Campus", is_main=True)
-        cls.ikeja = make_branch(cls.school, name="Ikeja Campus", is_main=False)
+        cls.lekki = make_branch(cls.school, name="Lekki Branch", is_main=True)
+        cls.ikeja = make_branch(cls.school, name="Ikeja Branch", is_main=False)
 
         cls.role = make_role(cls.school, name="School Admin", key="school_admin")
         for key in KEYS:

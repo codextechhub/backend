@@ -71,6 +71,11 @@ def build_school(
     how the "never provisioned" scenario is built, and that state has to be
     reachable because the control room must tell it apart from "you have not
     started yet".
+
+    Branches that older runs of this seed stored under a retired main-branch
+    name are renamed before the main branch is fetched. The fetch keys on the
+    name, so without the rename a re-seed would try to create a second main
+    branch beside the old row.
     """
     from django.contrib.auth import get_user_model
     from vs_rbac.models import TenantUserRoleAssignment
@@ -133,10 +138,7 @@ def build_school(
     main_address = street[0]
     annex_address = street[1]
 
-    # Renamed BEFORE the get_or_create below, not instead of it. That call keys
-    # on the name, so simply changing the string would leave every school seeded
-    # earlier with its old "Main Campus" row and create a second "Main Branch"
-    # beside it. They are branches, and the seed should say so.
+    # Rename the retired main-branch name first: get_or_create keys on name.
     Branch.all_objects.filter(
         tenant=tenant, name=f"{name} Main Campus",
     ).update(name=f"{name} Main Branch")
