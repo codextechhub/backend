@@ -17,15 +17,20 @@ from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIRequestFactory, force_authenticate
 
+from schools.vs_staff.constants import LEAVE_DOCUMENT_TYPE
 from vs_rbac.tests.helpers import (
-    make_assignment, make_branch, make_permission, make_role,
-    make_role_permission, make_school, make_school_admin,
+    codex_tenant, make_assignment, make_branch, make_permission, make_role,
+    make_role_permission, make_school, make_school_admin, make_vision_user,
 )
+from vs_tenants.models import Tenant
 from vs_workflow.conditions import context as rule_context
 from vs_workflow.constants import (
-    AuditEventType, PERM_GROUP_MANAGE, PERM_GROUP_VIEW, PERM_TEMPLATE_VIEW,
+    AuditEventType, DocumentAudience, PERM_GROUP_MANAGE, PERM_GROUP_VIEW,
+    PERM_TEMPLATE_VIEW,
 )
 from vs_workflow.exceptions import TemplateInvalidError
+from vs_workflow.handlers.base import BaseWorkflowHandler
+from vs_workflow.handlers.registry import list_registered_handlers
 from vs_workflow.models import (
     WorkflowApproverGroup, WorkflowApproverGroupMember, WorkflowAuditLog,
     WorkflowDynamicRole, WorkflowInstance, WorkflowStageDynamicRule,
@@ -51,6 +56,9 @@ factory = APIRequestFactory()
 
 REFUND = "finance.refund"
 WRITE_OFF = "finance.write_off"
+USER_CREATION = "PLATFORM_USER_CREATION"
+PAYOUT_BATCH = "payments.payout_batch"
+LEAVE = LEAVE_DOCUMENT_TYPE
 NAIRA = 100
 
 
@@ -589,3 +597,90 @@ class DynamicRolePreviewTests(_Fixture):
         self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
         self.assertEqual([a["user"]["id"] for a in _body(resp)["approvers"]],
                          [str(self.bursar.pk)])
+
+
+# ── Who raises a document type ───────────────────────────────────────────────
+
+class DocumentAudienceTests(_Fixture):
+    """A Dynamic Role serves only the document types its own tenant raises.
+
+    Bright Star never raises platform user creation or a payout batch, so rules
+    for either would never run. It is not offered them, cannot save a Dynamic
+    Role for them and cannot try one, while the platform still sees and saves
+    its own types. Leave is the reverse case: kept on a school's staff records,
+    never raised by the platform.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.platform = codex_tenant()
+        self.cx_admin = make_vision_user(email=f"dr-cx-{next(_counter)}@codex.test")
+        _grant(self.cx_admin, [PERM_GROUP_MANAGE, PERM_GROUP_VIEW])
+        self.cx_role = make_role(self.platform, name="CX approver",
+                                 key=f"dr-cx-approver-{next(_counter)}", is_system_role=True)
+
+    def _types_offered(self, user, tenant):
+        resp = _call(FIELDS, "get", user, tenant, path=BASE + "fields/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        return {t["value"] for t in _body(resp)["document_types"]}
+
+    def test_a_school_is_not_offered_a_platform_only_type(self):
+        offered = self._types_offered(self.viewer, self.tenant)
+        self.assertNotIn(USER_CREATION, offered)
+        self.assertNotIn(PAYOUT_BATCH, offered)
+        self.assertTrue({REFUND, LEAVE} <= offered)
+
+    def test_the_platform_is_offered_its_own_types_and_not_a_schools(self):
+        offered = self._types_offered(self.cx_admin, self.platform)
+        self.assertTrue({USER_CREATION, PAYOUT_BATCH, REFUND} <= offered)
+        self.assertNotIn(LEAVE, offered)
+
+    def test_a_school_asking_for_a_platform_only_types_fields_is_refused(self):
+        resp = _call(FIELDS, "get", self.viewer, self.tenant,
+                     {"document_type": [USER_CREATION]}, path=BASE + "fields/")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("never raised here", str(resp.data))
+
+    def test_a_school_cannot_save_one_for_a_platform_only_type(self):
+        resp = _call(LIST, "post", self.manager, self.tenant, {
+            "code": "dr-cx-only", "name": "Platform users", "document_types": [USER_CREATION],
+            "rules": [_otherwise(target_kind="ROLE", role_key="dr-bursar")]})
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST, resp.data)
+        self.assertIn("never raised here", str(resp.data))
+        self.assertFalse(WorkflowDynamicRole.all_objects.filter(
+            tenant=self.tenant, code="dr-cx-only").exists())
+
+    def test_a_school_cannot_try_rules_for_a_platform_only_type(self):
+        resp = _call(PREVIEW, "post", self.viewer, self.tenant, {
+            "requester": str(self.adebayo.pk), "document_types": [PAYOUT_BATCH],
+            "rules": [_otherwise(target_kind="ROLE", role_key="dr-bursar")],
+        }, path=BASE + "preview/")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("never raised here", str(resp.data))
+
+    def test_the_platform_saves_one_for_its_own_type(self):
+        resp = _call(LIST, "post", self.cx_admin, self.platform, {
+            "code": "dr-cx-users", "name": "Platform users", "document_types": [USER_CREATION],
+            "rules": [_otherwise(target_kind="ROLE", role_key=self.cx_role.key)]})
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+        self.assertEqual(_body(resp)["document_types"], [USER_CREATION])
+
+    def test_the_platform_cannot_save_one_for_a_school_only_type(self):
+        with self.assertRaises(TemplateInvalidError) as caught:
+            validate_rules(tenant=self.platform, document_types=[LEAVE],
+                           rules=[_otherwise(target_kind="ROLE", role_key=self.cx_role.key)])
+        self.assertIn("never raised here", caught.exception.message)
+
+    def test_every_handler_says_who_raises_it(self):
+        for document_type, handler in list_registered_handlers().items():
+            if type(handler).__module__.startswith("vs_workflow.tests"):
+                continue
+            declared = any("audience" in vars(klass) for klass in type(handler).__mro__
+                           if klass is not BaseWorkflowHandler)
+            self.assertTrue(declared, f"{document_type}: its handler must declare its audience")
+            self.assertIn(handler.audience, DocumentAudience.values, document_type)
+
+    def test_audiences_are_spelled_as_tenant_kinds(self):
+        # The registry compares a tenant's kind with an audience directly.
+        self.assertEqual(DocumentAudience.PLATFORM, Tenant.Kind.PLATFORM)
+        self.assertEqual(DocumentAudience.SCHOOL, Tenant.Kind.SCHOOL)

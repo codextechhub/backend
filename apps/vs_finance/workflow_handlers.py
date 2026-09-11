@@ -33,7 +33,7 @@ from urllib.parse import urlencode
 from django.db import transaction
 
 from vs_workflow.conditions.fields import ConditionField
-from vs_workflow.constants import ConditionFieldType
+from vs_workflow.constants import ConditionFieldType, DocumentAudience
 from vs_workflow.constants import WorkflowStageAction as StageActionEnum
 from vs_workflow.exceptions import (
     InvalidInstanceStateError, ReversalNotAllowedError,
@@ -64,6 +64,9 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
     :meth:`post` (the real GL posting) and :meth:`summary` (the approval-screen
     snapshot). Everything else is uniform across finance document types.
     """
+
+    # Every tenant keeps books, so every finance document is raised by all of them.
+    audience = DocumentAudience.ALL
 
     #: Template code resolved for every finance document unless overridden.
     default_template_code = "standard"  # Default workflow template code for finance documents.

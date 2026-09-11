@@ -1,5 +1,6 @@
 """Handler registry for document types."""
 from typing import Dict, Type
+from vs_workflow.constants import DocumentAudience
 from vs_workflow.exceptions import HandlerAlreadyRegisteredError, UnknownDocumentTypeError
 from vs_workflow.handlers.base import BaseWorkflowHandler
 
@@ -36,3 +37,14 @@ def get_handler(document_type: str) -> BaseWorkflowHandler:
 # Return a copy so callers cannot mutate the registry directly.
 def list_registered_handlers() -> Dict[str, BaseWorkflowHandler]:
     return dict(_REGISTRY)
+
+
+def raises(handler: BaseWorkflowHandler, tenant) -> bool:
+    """Whether *tenant* raises documents of *handler*'s type, going by the tenant's kind."""
+    audience = handler.audience
+    return audience == DocumentAudience.ALL or audience == getattr(tenant, "kind", None)
+
+
+def handlers_raised_by(tenant) -> Dict[str, BaseWorkflowHandler]:
+    """The registered document types *tenant* raises, each with its handler."""
+    return {t: handler for t, handler in _REGISTRY.items() if raises(handler, tenant)}

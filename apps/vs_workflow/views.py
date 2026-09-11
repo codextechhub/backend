@@ -960,21 +960,20 @@ class WorkflowDynamicRoleViewSet(TenantScopedMixin, ModelViewSet):
         """What a Dynamic Role serving ``?document_type=`` may test, and who it may send to.
 
         Several ``document_type`` values ask for one serving all of them; none
-        asks for one serving any type. ``document_types`` lists every type a
-        Dynamic Role can serve, and ``approver_roles`` the roles a rule may send
-        to - approving roles only, since the engine nominates no other.
+        asks for one serving any type. ``document_types`` lists the types the
+        caller's tenant raises - the only ones its Dynamic Roles can serve -
+        and ``approver_roles`` the roles a rule may send to: approving roles
+        only, since the engine nominates no other.
         """
         from vs_rbac.models import TenantRoleTemplate
         from vs_workflow.conditions.fields import document_type_label, fields_for
-        from vs_workflow.handlers.registry import list_registered_handlers
+        from vs_workflow.handlers.registry import handlers_raised_by
 
-        registered = list_registered_handlers()
-        requested = [t for t in request.query_params.getlist("document_type") if t]
-        unknown = [t for t in requested if t not in registered]
-        if unknown:
-            return Response(
-                {"detail": f"'{unknown[0]}' is not a document type that can be approved."},
-                status=status.HTTP_400_BAD_REQUEST)
+        try:
+            requested = dynamic_roles_svc.check_document_types(
+                request.tenant, request.query_params.getlist("document_type"))
+        except TemplateInvalidError as exc:
+            return Response({"detail": exc.message}, status=status.HTTP_400_BAD_REQUEST)
         roles = TenantRoleTemplate.objects.filter(
             tenant=request.tenant, status=TenantRoleTemplate.Status.ACTIVE,
             is_system_role=True,
@@ -982,7 +981,8 @@ class WorkflowDynamicRoleViewSet(TenantScopedMixin, ModelViewSet):
         return Response({
             "fields": [field.as_dict() for field in fields_for(requested)],
             "document_types": [
-                {"value": t, "label": document_type_label(t)} for t in sorted(registered)
+                {"value": t, "label": document_type_label(t)}
+                for t in sorted(handlers_raised_by(request.tenant))
             ],
             "approver_roles": [{"key": role.key, "name": role.name} for role in roles],
         })

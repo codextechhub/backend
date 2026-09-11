@@ -148,6 +148,18 @@ class ConditionFieldType(models.TextChoices):
     BRANCH = "BRANCH", "Branch"
     PERSON = "PERSON", "Person"
 
+
+class DocumentAudience(models.TextChoices):
+    """Which tenants raise documents of a type, and so may build approval rules for it.
+
+    PLATFORM and SCHOOL are spelled as ``Tenant.Kind`` spells them, so a
+    tenant's kind is compared with them directly. ALL is every kind of tenant,
+    an organization included.
+    """
+    PLATFORM = "PLATFORM", "The platform tenant"
+    SCHOOL   = "SCHOOL",   "Schools"
+    ALL      = "ALL",      "Every tenant"
+
 # Permission keys (vs_rbac contract)
 # RBAC keys that protect workflow template and instance operations.
 PERM_TEMPLATE_MANAGE = "workflow.template.manage"

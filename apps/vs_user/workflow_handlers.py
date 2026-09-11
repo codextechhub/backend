@@ -3,6 +3,7 @@
 Registered automatically via VsUserConfig.ready() so the workflow engine
 knows what to do when a user-creation instance is approved or rejected.
 """
+from vs_workflow.constants import DocumentAudience
 from vs_workflow.handlers.base import BaseWorkflowHandler
 from vs_workflow.handlers.registry import register_handler
 
@@ -10,6 +11,8 @@ from vs_workflow.handlers.registry import register_handler
 @register_handler("PLATFORM_USER_CREATION")
 class UserCreationWorkflowHandler(BaseWorkflowHandler):
     document_type = "PLATFORM_USER_CREATION"
+    # Only the platform tenant creates platform users.
+    audience = DocumentAudience.PLATFORM
 
     def resolve_default_template_code(self, document) -> str:
         return "p-user-creation"

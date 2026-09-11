@@ -17,7 +17,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from vs_workflow.conditions.fields import ConditionField
-from vs_workflow.constants import ConditionFieldType
+from vs_workflow.constants import ConditionFieldType, DocumentAudience
 from vs_workflow.handlers.base import BaseWorkflowHandler
 from vs_workflow.handlers.registry import register_handler
 
@@ -27,6 +27,8 @@ from .constants import LEAVE_DOCUMENT_TYPE, LEAVE_TEMPLATE_CODE, LeaveStatus, Le
 @register_handler(LEAVE_DOCUMENT_TYPE)
 class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
     document_type = LEAVE_DOCUMENT_TYPE
+    # Leave is kept on a school's staff records; the platform keeps none.
+    audience = DocumentAudience.SCHOOL
 
     condition_fields = (
         ConditionField("document.leave_type", "Leave type", "document",
