@@ -191,6 +191,44 @@ class WorkflowNotificationTests(TestCase):
         self.assertIn("Purchase requisition: REQ-0042", row.body)
         self.assertIn("approved by Ada Approver", row.body)
 
+    def test_a_school_that_turns_notifications_off_is_told_nothing(self):
+        """One switch for the school, whatever the template says.
+
+        The template here has opted into nothing, so it notifies for every wired
+        event; the school's answer still wins.
+        """
+        from vs_workflow.services.notification_settings import set_notifications_enabled
+
+        set_notifications_enabled(self.requester.tenant, self.requester, enabled=False)
+        instance = self._instance()
+        eligible = [SimpleNamespace(user=self.approver, on_behalf_of=None)]
+        with patch.object(routing_service.approvers_service, "resolve_approvers",
+                          return_value=eligible):
+            with self.captureOnCommitCallbacks(execute=True):
+                routing_service._activate_stage(instance, self.stage, attempt=1)
+
+        self.assertEqual(self._feed_rows(self.approver, "workflow.stage_activated").count(), 0)
+
+    def test_a_school_that_has_chosen_nothing_is_still_told(self):
+        """The default is to notify, which is what the engine did before the switch."""
+        from vs_workflow.services.notification_settings import notifications_enabled
+
+        self.assertTrue(notifications_enabled(self.requester.tenant))
+
+    def test_switching_them_back_on_notifies_again(self):
+        from vs_workflow.services.notification_settings import set_notifications_enabled
+
+        set_notifications_enabled(self.requester.tenant, self.requester, enabled=False)
+        set_notifications_enabled(self.requester.tenant, self.requester, enabled=True)
+        instance = self._instance()
+        eligible = [SimpleNamespace(user=self.approver, on_behalf_of=None)]
+        with patch.object(routing_service.approvers_service, "resolve_approvers",
+                          return_value=eligible):
+            with self.captureOnCommitCallbacks(execute=True):
+                routing_service._activate_stage(instance, self.stage, attempt=1)
+
+        self.assertEqual(self._feed_rows(self.approver, "workflow.stage_activated").count(), 1)
+
     def test_template_opt_out_suppresses_notification(self):
         """A configured notification_events dict is exact intent - missing key = off."""
         self.template.notification_events = {"workflow.rejected": True}

@@ -28,7 +28,7 @@ from vs_workflow.conditions import context as rule_context
 from vs_workflow.conditions.fields import areas_for, catalogue, unanswerable
 from vs_workflow.constants import (
     AuditEventType, DocumentAudience, PERM_GROUP_MANAGE, PERM_GROUP_VIEW,
-    PERM_TEMPLATE_VIEW,
+    PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW,
 )
 from vs_workflow.exceptions import TemplateInvalidError
 from vs_workflow.handlers.base import BaseWorkflowHandler
@@ -42,12 +42,15 @@ from vs_workflow.services import templates as templates_svc
 from vs_workflow.services.approvers import resolve_approvers
 from vs_workflow.services.dynamic_roles import replace_rules, validate_rules
 from vs_workflow.tests.test_services import _make_instance, _make_stage, _make_template
-from vs_workflow.views import WorkflowDynamicRoleViewSet, WorkflowTemplateViewSet
+from vs_workflow.views import (
+    WorkflowDynamicRoleViewSet, WorkflowNotificationSettingView, WorkflowTemplateViewSet,
+)
 
 _counter = itertools.count(1)
 
 BASE = "/v1/workflow/dynamic-roles/"
 LIST = WorkflowDynamicRoleViewSet.as_view({"get": "list", "post": "create"})
+NOTIF_SETTING = WorkflowNotificationSettingView.as_view()
 DETAIL = WorkflowDynamicRoleViewSet.as_view(
     {"get": "retrieve", "patch": "partial_update", "delete": "destroy"})
 FIELDS = WorkflowDynamicRoleViewSet.as_view({"get": "fields"})
@@ -829,3 +832,47 @@ class ConditionAreaTests(_Fixture):
         self.assertEqual(
             student_facts(SimpleNamespace(customer=SimpleNamespace(
                 source_type="vs_finance.Customer", source_id="7")), self.tenant), {})
+
+
+
+# ── Telling people what is happening ─────────────────────────────────────────
+
+class WorkflowNotificationSettingTests(_Fixture):
+    """One switch for the school, read by anyone who may see a template and set
+    by anyone who may change one."""
+
+    SETTING = BASE.replace("dynamic-roles/", "notification-settings/")
+
+    def test_a_school_that_has_chosen_nothing_is_notified(self):
+        _grant(self.viewer, [PERM_TEMPLATE_VIEW])
+        resp = _call(NOTIF_SETTING, "get", self.viewer, self.tenant, path=self.SETTING)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.assertIs(_body(resp)["enabled"], True)
+
+    def test_somebody_who_manages_templates_can_turn_them_off(self):
+        _grant(self.manager, [PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW])
+        resp = _call(NOTIF_SETTING, "patch", self.manager, self.tenant,
+                     {"enabled": False}, path=self.SETTING)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        from vs_workflow.services.notification_settings import notifications_enabled
+        self.assertFalse(notifications_enabled(self.tenant))
+
+    def test_reading_it_does_not_let_you_change_it(self):
+        _grant(self.viewer, [PERM_TEMPLATE_VIEW])
+        resp = _call(NOTIF_SETTING, "patch", self.viewer, self.tenant,
+                     {"enabled": False}, path=self.SETTING)
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_it_is_only_ever_true_or_false(self):
+        _grant(self.manager, [PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW])
+        resp = _call(NOTIF_SETTING, "patch", self.manager, self.tenant,
+                     {"enabled": "off"}, path=self.SETTING)
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_one_school_turning_them_off_leaves_another_alone(self):
+        _grant(self.manager, [PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW])
+        _call(NOTIF_SETTING, "patch", self.manager, self.tenant,
+              {"enabled": False}, path=self.SETTING)
+        from vs_workflow.services.notification_settings import notifications_enabled
+        self.assertFalse(notifications_enabled(self.tenant))
+        self.assertTrue(notifications_enabled(self.other_tenant))

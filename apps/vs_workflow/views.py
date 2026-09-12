@@ -661,6 +661,42 @@ class WorkflowInstanceViewSet(
         return Response(WorkflowInstanceDetailSerializer(instance).data)
 
 
+class WorkflowNotificationSettingView(APIView):
+    """GET, PATCH /v1/workflow/notification-settings/
+
+    One switch for the whole school: whether its approvals notify anybody.
+    Reading needs only template view, because the Workflow area shows the
+    current answer; changing it needs template manage, the same key that
+    decides who approves what.
+
+    docstring-name: Workflow notifications
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+
+    def get_permissions(self):
+        self.rbac_permission = (
+            PERM_TEMPLATE_MANAGE if self.request.method == "PATCH" else PERM_TEMPLATE_VIEW
+        )
+        return super().get_permissions()
+
+    def get(self, request):
+        from vs_workflow.services.notification_settings import notifications_enabled
+
+        return Response({"enabled": notifications_enabled(request.tenant)})
+
+    def patch(self, request):
+        from vs_workflow.services.notification_settings import set_notifications_enabled
+
+        enabled = request.data.get("enabled")
+        if not isinstance(enabled, bool):
+            return Response(
+                {"enabled": "Say true or false."}, status=status.HTTP_400_BAD_REQUEST,
+            )
+        set_notifications_enabled(request.tenant, request.user, enabled=enabled)
+        return Response({"enabled": enabled})
+
+
 class ReverseActionView(TenantScopedMixin, APIView):
     """docstring-name: Reverse an approval action"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]

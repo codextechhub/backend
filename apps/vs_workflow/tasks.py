@@ -18,6 +18,12 @@ def dispatch_notification(*, instance_id: str, event_key: str,
         instance = WorkflowInstance.objects.select_related("template").get(pk=instance_id)
     except WorkflowInstance.DoesNotExist:
         return
+    # The school's own switch comes first: off means this tenant's approvals
+    # tell nobody anything, whatever any template says.
+    from vs_workflow.services.notification_settings import notifications_enabled
+
+    if not notifications_enabled(instance.tenant):
+        return
     # Template opt-in: an untouched template ({} - never configured) notifies
     # for every wired event; once the author has configured ANY key, the dict
     # is exact intent and missing keys mean off.

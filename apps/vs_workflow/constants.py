@@ -160,6 +160,12 @@ class DocumentAudience(models.TextChoices):
     SCHOOL   = "SCHOOL",   "Schools"
     ALL      = "ALL",      "Every tenant"
 
+# The school's own answer to "should approvals tell people what is happening?".
+# Declared in the vs_config catalogue (migration 0011) and read through
+# vs_config.conf.get_config, which falls back to this module's default when the
+# catalogue has not been seeded - so a missing row never silences a school.
+CFG_NOTIFICATIONS_ENABLED = "workflow.notifications.enabled"
+
 # Permission keys (vs_rbac contract)
 # RBAC keys that protect workflow template and instance operations.
 PERM_TEMPLATE_MANAGE = "workflow.template.manage"
