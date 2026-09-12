@@ -82,6 +82,8 @@ urlpatterns = [
     path("purchase-orders/<int:pk>/", views.PurchaseOrderDetailView.as_view(), name="proc-purchase-order-detail"),
     path("purchase-orders/<int:pk>/submit/", views.PurchaseOrderSubmitApprovalView.as_view(),
          name="proc-purchase-order-submit"),
+    path("purchase-orders/<int:pk>/cancel/", views.PurchaseOrderCancelView.as_view(),
+         name="proc-purchase-order-cancel"),
     path("purchase-orders/<int:pk>/email-preview/", views.PurchaseOrderEmailPreviewView.as_view(),
          name="proc-purchase-order-email-preview"),
     path("purchase-orders/<int:pk>/email/", views.PurchaseOrderEmailView.as_view(),

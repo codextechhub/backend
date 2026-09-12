@@ -21,7 +21,9 @@ from vs_workflow.exceptions import ReversalNotAllowedError
 from vs_workflow.handlers import BaseWorkflowHandler, register_handler
 
 from . import approvals
+from .purchasing import goods_arrived
 from .constants import (
+    CLOSED_PO_STATUSES,
     WF_DEFAULT_TEMPLATE_CODE,
     WF_DOCTYPE_PURCHASE_ORDER,
     WF_DOCTYPE_REQUISITION,
@@ -152,15 +154,30 @@ class RequisitionApprovalHandler(_ProcApprovalHandler):
         return PurchaseRequisition
 
     def reversal_block_reason(self, document) -> str | None:
-        """Refuse once a purchase order has been raised from the requisition.
+        """Refuse while an order raised from this requisition stands, or took delivery.
 
-        Approval is what lets a buyer raise that order, and the order is a
-        commitment to a vendor that stands whether or not the vote behind it
-        still does. Undoing the vote would put the requisition back under review
-        with an order already placed against it, so the order is stopped by
-        cancelling it, where the vendor is told.
+        Approval is what lets a buyer raise a purchase order, so the question is
+        what those orders did, never whether one was ever raised. Goods answer
+        first and answer whatever state their order is in now: stock on the shelf
+        and the GR/IR liability that came with it are not handed back by
+        cancelling the order they arrived against, so the approval that let them
+        in cannot be withdrawn either, and saying so is more use than telling
+        somebody to cancel an order that is already cancelled. Failing that, an
+        order still live is a commitment to a vendor that holds whether or not the
+        vote behind it does, and it is stopped by cancelling the order, where the
+        vendor is told. When every order raised has been cancelled and nothing
+        arrived, this approval has released nothing that outlives it, which is the
+        case a reversal exists for.
         """
-        if document.purchase_orders.exists():
+        from .models import GoodsReceivedNote
+
+        if goods_arrived(GoodsReceivedNote.objects.filter(
+                purchase_order__requisition=document)):
+            return (
+                "Goods have already been received against a purchase order raised "
+                "from this requisition, so its approval cannot be undone."
+            )
+        if document.purchase_orders.exclude(status__in=CLOSED_PO_STATUSES).exists():
             return (
                 "A purchase order has already been raised from this requisition, "
                 "so its approval cannot be undone. Cancel the order instead."
@@ -203,7 +220,7 @@ class PurchaseOrderApprovalHandler(_ProcApprovalHandler):
                 "This purchase order has already gone to the vendor, so its "
                 "approval cannot be undone. Cancel the order instead."
             )
-        if document.goods_receipts.filter(status=DocumentStatus.POSTED).exists():
+        if goods_arrived(document.goods_receipts):
             return (
                 "Goods have already been received against this purchase order, "
                 "so its approval cannot be undone."

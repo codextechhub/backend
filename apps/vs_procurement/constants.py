@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from django.db import models
 
+from vs_finance.constants import DocumentStatus
+
 
 class VendorKycStatus(models.TextChoices):
     """Know-your-vendor verification state (compliance gate before paying)."""
@@ -193,6 +195,12 @@ PROCUREMENT_APPROVAL_TYPES = (
     WF_DOCTYPE_VENDOR_INVOICE,
     WF_DOCTYPE_VENDOR_PAYMENT,
 )
+
+#: Statuses in which a purchase order has stopped being a live commitment.
+#: A cancelled or reversed order binds no vendor and expects no delivery, so the
+#: pipeline KPIs leave it out of the orders being fulfilled and the approval
+#: behind it is treated as having released nothing that outlives the vote.
+CLOSED_PO_STATUSES = (DocumentStatus.CANCELLED, DocumentStatus.REVERSED)
 
 #: Template code the default-template provisioner publishes and submission resolves to.
 WF_DEFAULT_TEMPLATE_CODE = "standard"

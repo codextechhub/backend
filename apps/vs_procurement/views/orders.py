@@ -21,7 +21,9 @@ from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 from vs_workflow.models import WorkflowInstance
 
 from .. import po_email, purchasing, sourcing, vendor_portal
-from ..constants import ContractStatus, ProcApprovalState, QuotationStatus, RfqStatus
+from ..constants import (
+    CLOSED_PO_STATUSES, ContractStatus, ProcApprovalState, QuotationStatus, RfqStatus,
+)
 from ..models import (
     PurchaseOrder,
     PurchaseOrderVendorDelivery,
@@ -70,7 +72,6 @@ from .base import (
 # Purchase orders                                                             #
 # --------------------------------------------------------------------------- #
 
-_CLOSED_PO_STATUSES = (DocumentStatus.CANCELLED, DocumentStatus.REVERSED)
 # Not-yet-issued documents: excluded from the pipeline KPIs (they are not orders a
 # vendor is fulfilling), and never eligible for the derived PARTIAL/RECEIVED stages.
 _UNISSUED_PO_STATUSES = (DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL)
@@ -214,7 +215,7 @@ def purchase_order_summary(entity, *, as_of: datetime.date | None = None,
     rows = (
         _po_base_queryset(entity)
         .filter(branch_filter if branch_filter is not None else Q())
-        .exclude(status__in=_CLOSED_PO_STATUSES + _UNISSUED_PO_STATUSES)
+        .exclude(status__in=CLOSED_PO_STATUSES + _UNISSUED_PO_STATUSES)
         .exclude(approval_state=ProcApprovalState.PENDING)
         .values("status", "order_date", "total", "ordered_qty", "received_qty")
     )
@@ -368,6 +369,42 @@ class PurchaseOrderDetailView(_ProcBase):
         updated = _purchase_order_queryset(entity).filter(pk=po.pk).first()
         return success_response(
             "Purchase order draft updated.", data=PurchaseOrderSerializer(updated).data,
+        )
+
+
+class PurchaseOrderCancelView(_ProcBase):
+    """Cancel a commitment that will never be fulfilled.
+
+    The update verb rather than a key of its own: cancelling is a state change on
+    an order somebody already holds write access to, and inventing a key would
+    leave every existing Procurement Admin unable to do it until a school edited
+    its roles. The rules themselves live in
+    :func:`vs_procurement.purchasing.cancel_purchase_order`, so the school-facing
+    layer reaches the same refusals as this route rather than a copy of them.
+
+    docstring-name: Cancel a purchase order
+    """
+
+    rbac_permission = "procurement.purchase_order.update"
+
+    @transaction.atomic
+    def post(self, request, pk):
+        """Lock the order, apply the cancellation rules, and record the reason."""
+        entity = resolve_entity(request)
+        # The standard resolver: an order at a branch this caller does not work in
+        # answers exactly as one that does not exist, so cancelling cannot reach
+        # further than reading can.
+        po = _document_or_404(
+            request, PurchaseOrder.objects.select_for_update().filter(entity=entity),
+            pk, "No such purchase order in this entity.",
+        )
+        purchasing.cancel_purchase_order(
+            po, reason=request.data.get("reason", ""), actor_user=request.user,
+        )
+        po.refresh_from_db()
+        return success_response(
+            f"Purchase order {po.document_number or po.pk} cancelled.",
+            data=PurchaseOrderSerializer(po).data,
         )
 
 

@@ -6,9 +6,10 @@ so each procurement handler answers ``reversal_block_reason`` for its own type a
 the shared ``validate_reversal`` raises the refusal in one shape.
 
 These tests hold every type to that answer, and to the other side of it: an order
-that has reached its vendor or taken delivery, a requisition an order has been
-raised from, and a bill or a payment that has reached the ledger are all refused,
-while a document whose approval has released nothing yet is still reversible.
+that has reached its vendor or taken delivery, a requisition whose order still
+stands or took delivery, and a bill or a payment that has reached the ledger are
+all refused, while a document whose approval has released nothing that outlives it
+is still reversible.
 """
 from __future__ import annotations
 
@@ -49,7 +50,9 @@ from vs_procurement.models import (
 from vs_procurement.payables import (
     post_vendor_invoice, post_vendor_payment, price_vendor_invoice,
 )
-from vs_procurement.purchasing import create_po_from_requisition, post_grn, price_po
+from vs_procurement.purchasing import (
+    cancel_purchase_order, create_po_from_requisition, post_grn, price_po,
+)
 from vs_procurement.tests import _P2PFixtureMixin, _platform_tenant
 
 
@@ -191,6 +194,81 @@ class ProcurementApprovalReversalTests(_P2PFixtureMixin, TestCase):
 
         instance.refresh_from_db()
         requisition.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        self.assertEqual(requisition.approval_state, ProcApprovalState.PENDING)
+        self.assertEqual(requisition.status, DocumentStatus.PENDING_APPROVAL)
+
+    def test_a_requisition_whose_cancelled_order_took_delivery_is_refused(self):
+        """Goods on the shelf outlive the order that brought them.
+
+        Cancelling the order returns no stock and clears no GR/IR liability, so
+        the approval that let the goods in cannot be undone either, and the
+        refusal names the delivery rather than sending somebody to cancel an order
+        that is already cancelled.
+        """
+        requisition = self._requisition()
+        instance = self._approve(requisition)
+        order = create_po_from_requisition(
+            requisition, vendor=self.vendor, order_date=datetime.date(2026, 1, 6),
+        )
+        # Goods arrive against an approved order; the cancellation comes after.
+        order.status = DocumentStatus.APPROVED
+        order.save(update_fields=["status", "updated_at"])
+        post_grn(self.make_grn(
+            self.entity, self.vendor, order, [(order.lines.first(), 1)]))
+        order.status = DocumentStatus.CANCELLED
+        order.save(update_fields=["status", "updated_at"])
+
+        self._assert_refused(
+            instance, requisition,
+            "Goods have already been received against a purchase order raised "
+            "from this requisition",
+        )
+
+    def test_a_requisition_whose_only_order_was_cancelled_is_reversible(self):
+        """A cancelled order that took no delivery released nothing to hold on to.
+
+        The requisition stayed approved for ever on the strength of an order
+        nobody is fulfilling, and the refusal told its raiser to cancel an order
+        that was already cancelled.
+        """
+        requisition = self._requisition()
+        instance = self._approve(requisition)
+        order = create_po_from_requisition(
+            requisition, vendor=self.vendor, order_date=datetime.date(2026, 1, 6),
+        )
+        order.status = DocumentStatus.CANCELLED
+        order.save(update_fields=["status", "updated_at"])
+
+        self._reverse(instance)
+
+        instance.refresh_from_db()
+        requisition.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        self.assertEqual(requisition.approval_state, ProcApprovalState.PENDING)
+        self.assertEqual(requisition.status, DocumentStatus.PENDING_APPROVAL)
+
+    def test_cancelling_the_only_order_frees_the_requisition_to_be_reversed(self):
+        """The whole chain, which is what the cancellation route exists for.
+
+        A requisition is approved, an order is raised from it, the vendor never
+        delivers, the order is cancelled, and the approval that released it can
+        then be withdrawn so the request can be re-sourced.
+        """
+        requisition = self._requisition()
+        instance = self._approve(requisition)
+        order = create_po_from_requisition(
+            requisition, vendor=self.vendor, order_date=datetime.date(2026, 1, 6),
+        )
+        cancel_purchase_order(
+            order, reason="The vendor stopped trading", actor_user=self.admin)
+
+        self._reverse(instance)
+
+        instance.refresh_from_db()
+        requisition.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual(order.status, DocumentStatus.CANCELLED)
         self.assertEqual(instance.status, WorkflowInstanceStatus.IN_PROGRESS)
         self.assertEqual(requisition.approval_state, ProcApprovalState.PENDING)
         self.assertEqual(requisition.status, DocumentStatus.PENDING_APPROVAL)

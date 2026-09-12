@@ -524,6 +524,7 @@ class FinanceAuditAction(models.TextChoices):
     VENDOR_CONTRACT_TERMINATED = "VENDOR_CONTRACT_TERMINATED", "Vendor contract terminated"
     CONTRACT_MILESTONE_COMPLETED = "CONTRACT_MILESTONE_COMPLETED", "Contract milestone completed"
     PURCHASE_ORDER_APPROVED = "PURCHASE_ORDER_APPROVED", "Purchase order approved"
+    PURCHASE_ORDER_CANCELLED = "PURCHASE_ORDER_CANCELLED", "Purchase order cancelled"
     PURCHASE_ORDER_EMAIL_SCHEDULED = "PO_EMAIL_SCHEDULED", "Purchase order email scheduled"
     PURCHASE_ORDER_EMAIL_QUEUED = "PO_EMAIL_QUEUED", "Purchase order email queued"
     PURCHASE_ORDER_EMAIL_SENT = "PO_EMAIL_SENT", "Purchase order email sent"

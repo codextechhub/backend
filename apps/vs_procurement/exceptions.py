@@ -24,6 +24,54 @@ class RequisitionError(ProcurementError):
     default_message = "The requisition could not be processed."
 
 
+class PurchaseOrderCancellationError(ProcurementError):
+    """Base for refusals of a purchase-order cancellation.
+
+    Cancellation is refused for several different reasons and a buyer acts on each
+    of them differently, so every reason carries its own code rather than one
+    "cannot cancel". A caller that only wants to know the cancellation failed can
+    still match this base.
+    """
+    error_code = "PURCHASE_ORDER_CANCEL_REFUSED"
+    default_message = "This purchase order cannot be cancelled."
+    http_status = 409
+
+
+class PurchaseOrderCancelReasonError(PurchaseOrderCancellationError):
+    """Raised when the mandatory cancellation reason is missing or blank.
+
+    Somebody will ask in three months why an order to a supplier was withdrawn, and
+    the audit row is where that answer lives, so a cancellation without a reason is
+    refused rather than recorded as unexplained.
+    """
+    error_code = "PURCHASE_ORDER_CANCEL_REASON_REQUIRED"
+    default_message = "A written reason is required to cancel a purchase order."
+    http_status = 400
+
+
+class PurchaseOrderReceivedError(PurchaseOrderCancellationError):
+    """Raised when goods have already been received against the order."""
+    error_code = "PURCHASE_ORDER_ALREADY_RECEIVED"
+    default_message = "Goods have been received against this purchase order."
+
+
+class PurchaseOrderBilledError(PurchaseOrderCancellationError):
+    """Raised when a vendor bill stands against the order.
+
+    A billed order is unwound through the bill, by a credit note or a reversal, not
+    by cancelling the commitment underneath it and leaving the payable pointing at
+    a cancelled order.
+    """
+    error_code = "PURCHASE_ORDER_ALREADY_BILLED"
+    default_message = "A vendor bill stands against this purchase order."
+
+
+class PurchaseOrderUnderApprovalError(PurchaseOrderCancellationError):
+    """Raised when an approval for the order is still in flight."""
+    error_code = "PURCHASE_ORDER_UNDER_APPROVAL"
+    default_message = "This purchase order is waiting on an approval decision."
+
+
 class SourcingError(ProcurementError):
     """Raised for RFQ / vendor-quotation lifecycle violations (issue, submit, award)."""
     error_code = "SOURCING_ERROR"

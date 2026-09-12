@@ -18,7 +18,7 @@ from collections import defaultdict
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import F
+from django.db.models import F, Q
 
 from vs_finance.audit import record, record_rejection
 from vs_finance.constants import DocumentStatus, FinanceAuditAction, JournalSource
@@ -28,11 +28,21 @@ from vs_finance.posting import post_journal, resolve_period
 from vs_finance.receivables import compute_line_net, compute_tax
 
 from .constants import (
+    CLOSED_PO_STATUSES,
     GRIR_CLEARING_CODE,
+    ProcApprovalState,
     VendorKycStatus,
     VendorPurchaseKycRequirement,
 )
-from .exceptions import MissingControlAccountError, RequisitionError
+from .exceptions import (
+    MissingControlAccountError,
+    PurchaseOrderBilledError,
+    PurchaseOrderCancelReasonError,
+    PurchaseOrderCancellationError,
+    PurchaseOrderReceivedError,
+    PurchaseOrderUnderApprovalError,
+    RequisitionError,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -171,6 +181,107 @@ def approve_purchase_order(po, *, actor_user=None):
         entity=po.entity, action=FinanceAuditAction.PURCHASE_ORDER_APPROVED,
         actor_user=actor_user, target=po,
         message=f"Approved purchase order {po.document_number or po.pk}.",
+    )
+    return po
+
+
+def goods_arrived(receipts) -> bool:
+    """Whether anything in ``receipts`` has posted, which is what received means.
+
+    One definition of arrival for everything that asks it: a purchase order asks
+    about its own receipts, a requisition about the receipts of every order raised
+    from it, and cancellation about the order it is being asked to withdraw. A
+    goods receipt has a single status write in this application, DRAFT to POSTED,
+    and no route cancels or reverses one, so a posted receipt is a permanent fact
+    and there is no un-posted state to allow for. A receipt entered in error is
+    corrected by a further document, never by undoing what let the goods in.
+    """
+    return receipts.filter(status=DocumentStatus.POSTED).exists()
+
+
+@transaction.atomic
+def cancel_purchase_order(po, *, reason: str, actor_user=None):
+    """Withdraw a commitment nobody will fulfil, with the reason on the record.
+
+    A purchase order that will never be delivered has to be closable, or the
+    documents behind it are stuck too: the requisition it was raised from reads as
+    approved for ever because an order stands against it, and a buyer is told to
+    cancel an order with no way to do it.
+
+    What refuses, and why each one is a different answer rather than one refusal:
+
+    * Goods received. The stock is on the shelf and the GR/IR liability exists,
+      and cancelling the commitment returns neither, so the order stays as the
+      document those goods arrived against. The correction is a return, not a
+      cancellation.
+    * A vendor bill that is not itself cancelled, whether it names the order or
+      only one of its lines. A billed order is unwound through the bill with a
+      credit note or a reversal; cancelling underneath it would leave a payable
+      pointing at a withdrawn commitment. A payment reaches an order only through
+      a bill, so refusing here covers payments without a second rule that could
+      disagree with this one.
+    * An approval still in flight. The engine owns that decision while it is
+      running, and a document cancelled underneath its own workflow would leave an
+      instance deciding something that no longer exists. Withdrawing the approval
+      first returns the order to NOT_SUBMITTED, which this then cancels.
+    * An order already cancelled or reversed, which has nothing left to withdraw.
+
+    The vendor is not emailed. This application has one vendor-facing order
+    message, the order itself, and no cancellation notice, so an order that
+    already reached its supplier has to be withdrawn by a person who speaks to
+    them. What this does do is stop a message that has not gone out yet: a
+    delivery still awaiting approval is cancelled with the order. Anything already
+    queued or sent cannot be recalled, and the audit row is the record that the
+    telephone call is somebody's job.
+
+    The approval overlay is left exactly as it was. An order approved last week
+    and cancelled today was genuinely approved, and rewriting ``approval_state``
+    to hide that would lose the fact that somebody authorised the spend.
+    """
+    from .models import VendorInvoice
+
+    if not str(reason or "").strip():
+        raise PurchaseOrderCancelReasonError()
+    if po.status in CLOSED_PO_STATUSES:
+        raise PurchaseOrderCancellationError(
+            f"Purchase order {po.document_number or po.pk} is already "
+            f"'{po.get_status_display().lower()}'.",
+        )
+    if goods_arrived(po.goods_receipts):
+        raise PurchaseOrderReceivedError(
+            "Goods have already been received against this purchase order, so it "
+            "cannot be cancelled. Return the goods to the vendor instead.",
+        )
+    bill = (
+        VendorInvoice.objects
+        .filter(Q(purchase_order=po) | Q(lines__po_line__purchase_order=po))
+        .exclude(status=DocumentStatus.CANCELLED)
+        .order_by("id").first()
+    )
+    if bill is not None:
+        raise PurchaseOrderBilledError(
+            f"Vendor bill {bill.document_number or bill.pk} stands against this "
+            "purchase order, so it cannot be cancelled. Credit or reverse the bill "
+            "instead.",
+        )
+    if po.approval_state == ProcApprovalState.PENDING:
+        raise PurchaseOrderUnderApprovalError(
+            "This purchase order is waiting on an approval decision, so it cannot "
+            "be cancelled. Withdraw the approval first, then cancel the order.",
+        )
+
+    previous = po.status
+    po.status = DocumentStatus.CANCELLED
+    po.save(update_fields=["status", "updated_at"])
+    # Stop a vendor email that approval has scheduled but nothing has sent.
+    from .po_email import cancel_awaiting
+    cancel_awaiting(po, reason=f"Purchase order cancelled: {reason}", actor_user=actor_user)
+    record(
+        entity=po.entity, action=FinanceAuditAction.PURCHASE_ORDER_CANCELLED,
+        actor_user=actor_user, target=po,
+        document_number=po.document_number or str(po.pk),
+        message=f"Cancelled purchase order {po.document_number or po.pk}: {reason}",
+        before={"status": previous}, after={"status": po.status}, reason=reason,
     )
     return po
 
