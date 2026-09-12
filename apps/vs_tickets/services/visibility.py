@@ -47,6 +47,72 @@ def accepts_platform_assignment(ticket) -> bool:
     return ticket.escalated_at is not None
 
 
+# Return the active users whose roles grant any of these ticket keys.
+def users_holding_ticket_keys_qs(permission_keys):
+    """Active users whose effective roles grant any key in ``permission_keys``.
+
+    The single authority behind two questions that must never disagree: who a
+    ticket may be assigned to, and who its notifications reach. A desk agent
+    whose ``tickets.ticket.manage`` key arrives through a permission group
+    rather than directly on her role passes every permission gate and stands in
+    the assignee picker, so a recipient query reading only the keys written on
+    the role would hand her tickets and tell her about none of them. Both
+    callers narrow this same queryset instead of writing the question twice.
+
+    A grant counts whether the role carries the key itself or holds it through
+    a permission group, because both land in the effective set that
+    :func:`vs_rbac.evaluator.get_effective_permissions` returns and every
+    permission gate reads. An explicit direct deny beats either, and is checked
+    per key: a role denied one key still holds another it was granted.
+
+    Branch reach is matched with ``ANY_BRANCH`` rather than by requiring a null
+    branch, so this asks exactly the question :func:`is_support_user` asks.
+
+    Whose tenant the holder must be on is the caller's to add: the desk asks
+    for the platform tenant, a school's queue asks for its own.
+    """
+    from vs_rbac.evaluator import ANY_BRANCH, _assignment_branch_q
+
+    # Match effective tenant-level roles without pulling every role into Python.
+    active_roles = TenantUserRoleAssignment.objects.filter(
+        user_id=OuterRef("pk"),
+        tenant_id=OuterRef("tenant_id"),
+        assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+        role__status="ACTIVE",
+    ).filter(_assignment_branch_q(ANY_BRANCH))
+
+    annotations = {}
+    holds_a_key = Q()
+    for key in permission_keys:
+        suffix = str(key).replace(".", "_")
+        grants = active_roles.filter(
+            Q(
+                role__role_permissions__permission_id=key,
+                role__role_permissions__granted=True,
+            )
+            | Q(role__role_groups__group__group_permissions__permission_id=key)
+        )
+        denies = active_roles.filter(
+            role__role_permissions__permission_id=key,
+            role__role_permissions__granted=False,
+        )
+        annotations[f"_grants_{suffix}"] = Exists(grants)
+        annotations[f"_denies_{suffix}"] = Exists(denies)
+        holds_a_key |= Q(**{
+            f"_grants_{suffix}": True,
+            f"_denies_{suffix}": False,
+        })
+
+    if not annotations:
+        return User.objects.none()
+
+    return (
+        User.objects.filter(status=User.Status.ACTIVE, is_active=True)
+        .annotate(**annotations)
+        .filter(holds_a_key)
+    )
+
+
 # Return active CX users who can be assigned this ticket.
 def eligible_support_users_qs(ticket):
     """Active platform users whose effective RBAC grants ticket management.
@@ -57,10 +123,9 @@ def eligible_support_users_qs(ticket):
     something the service denies, and on an unescalated ticket the list also
     names CodeX's support staff to a school that has raised nothing with them.
 
-    Branch reach is matched with ``ANY_BRANCH`` rather than by requiring a null
-    branch, so this asks exactly the question :func:`is_support_user` asks. The
-    two must not answer differently: anybody that gate admits as a ticket
-    manager has to appear in the list of people a ticket can be assigned to.
+    Who holds the grant is :func:`users_holding_ticket_keys_qs`, shared with
+    the ticket notifications so the people a ticket can be given to and the
+    people it can reach are one list.
 
     Platform-ness is one filter, on the tenant's kind. It is the tenant that
     makes somebody support staff, so a second filter on the user would only
@@ -69,40 +134,9 @@ def eligible_support_users_qs(ticket):
     if not accepts_platform_assignment(ticket):
         return User.objects.none()
 
-    # Match effective tenant-level roles without pulling every role into Python.
-    from vs_rbac.evaluator import ANY_BRANCH, _assignment_branch_q
-
-    active_roles = TenantUserRoleAssignment.objects.filter(
-        user_id=OuterRef("pk"),
-        tenant_id=OuterRef("tenant_id"),
-        assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
-        role__status="ACTIVE",
-    ).filter(_assignment_branch_q(ANY_BRANCH))
-    grants_manage = active_roles.filter(
-        Q(
-            role__role_permissions__permission_id=TicketPermission.MANAGE,
-            role__role_permissions__granted=True,
-        )
-        | Q(
-            role__role_groups__group__group_permissions__permission_id=TicketPermission.MANAGE,
-        )
-    )
-    # Explicit direct denies win over role/group grants for assignment eligibility.
-    denies_manage = active_roles.filter(
-        role__role_permissions__permission_id=TicketPermission.MANAGE,
-        role__role_permissions__granted=False,
-    )
     return (
-        User.objects.filter(
-            tenant__kind="PLATFORM",
-            status=User.Status.ACTIVE,
-            is_active=True,
-        )
-        .annotate(
-            _grants_ticket_manage=Exists(grants_manage),
-            _denies_ticket_manage=Exists(denies_manage),
-        )
-        .filter(_grants_ticket_manage=True, _denies_ticket_manage=False)
+        users_holding_ticket_keys_qs([TicketPermission.MANAGE])
+        .filter(tenant__kind="PLATFORM")
         .order_by("first_name", "last_name", "email")
     )
 

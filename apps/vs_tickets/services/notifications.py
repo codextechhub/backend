@@ -9,7 +9,11 @@ from vs_user.models import User
 
 from ..constants import CommentVisibility, TicketPermission, TicketStatus
 from . import subscriptions as subscription_svc
-from .visibility import can_view_internal_notes, can_view_ticket
+from .visibility import (
+    can_view_internal_notes,
+    can_view_ticket,
+    users_holding_ticket_keys_qs,
+)
 
 logger = logging.getLogger("vs_tickets.notifications")
 
@@ -34,37 +38,35 @@ def _unique_recipients(users, *, exclude=None):
 
 
 def _triage_recipients_in(tenant):
-    """Active users of ``tenant`` who hold a ticket triage key through an active role.
+    """Active users of ``tenant`` who hold a ticket triage key.
 
-    Mirrors the role branch of vs_rbac.permissions.user_has_rbac_permission
-    rather than calling it per user, so a queue notification costs one query
-    instead of one per member of staff.
+    One query for the whole queue rather than a permission check per member of
+    staff, and the same query the assignee picker runs: see
+    :func:`vs_tickets.services.visibility.users_holding_ticket_keys_qs` for why
+    the two may not be written separately.
     """
     return list(
-        User.objects.filter(
-            tenant=tenant,
-            status=User.Status.ACTIVE,
-            tenant_role_assignments__assignment_status="ACTIVE",
-            tenant_role_assignments__role__role_permissions__permission_id__in=TRIAGE_PERMISSION_KEYS,
-            tenant_role_assignments__role__role_permissions__granted=True,
-        ).distinct()
+        users_holding_ticket_keys_qs(TRIAGE_PERMISSION_KEYS).filter(tenant=tenant)
     )
 
 
 # Resolve the active platform users who should see new unassigned ticket activity.
 def support_recipients():
-    """Active platform-tenant users who hold a ticket triage key through an active
-    platform role - not every platform user."""
+    """Active platform-tenant users who hold a ticket triage key - not every
+    platform user.
+
+    Resolved through the authority the assignee picker uses, so anybody a
+    ticket may be given to is somebody its notifications reach. A grant held
+    through a permission group counts exactly as a grant written on the role
+    does, because that is what the permission gate itself answers: a desk agent
+    kept out of this list would be assigned tickets and told about none of them.
+    """
     from vs_tenants.models import Tenant
 
     return list(
-        User.objects.filter(
+        users_holding_ticket_keys_qs(TRIAGE_PERMISSION_KEYS).filter(
             tenant__kind=Tenant.Kind.PLATFORM,
-            status=User.Status.ACTIVE,
-            tenant_role_assignments__assignment_status="ACTIVE",
-            tenant_role_assignments__role__role_permissions__permission_id__in=TRIAGE_PERMISSION_KEYS,
-            tenant_role_assignments__role__role_permissions__granted=True,
-        ).distinct()
+        )
     )
 
 
