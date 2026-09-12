@@ -101,8 +101,9 @@ def _resolve_dynamic_role(stage_payload: dict, tenant, document_type: str):
     None also means the stage carries its own rules, which _parse_dynamic_rules
     checks. A central template cannot use a Dynamic Role in either form: who
     approves is each school's own answer, and a shared template has nobody to
-    ask. A Dynamic Role that does not serve this document type would test
-    fields the document does not have, so it is refused as well.
+    ask. A Dynamic Role is written without naming a document type, so this is
+    where its rules meet one: a rule this document cannot answer is refused
+    here rather than resolving to nobody at every approval.
     """
     if stage_payload.get("approver_source") != "DYNAMIC_ROLE":
         return None
@@ -124,10 +125,15 @@ def _resolve_dynamic_role(stage_payload: dict, tenant, document_type: str):
         raise TemplateInvalidError(
             f"Stage '{label}': no active Dynamic Role with code '{code}' exists in "
             "this tenant.")
+    # A role written before Dynamic Roles stopped naming document types still
+    # says which it serves, and that answer stands.
     if dynamic_role.document_types and document_type not in dynamic_role.document_types:
         raise TemplateInvalidError(
             f"Stage '{label}': the Dynamic Role '{dynamic_role.name}' is not set up "
             "for this document type.")
+    from vs_workflow.services.dynamic_roles import assert_answerable
+
+    assert_answerable(dynamic_role, document_type, f"Stage '{label}'")
     return dynamic_role
 
 

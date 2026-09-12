@@ -25,6 +25,7 @@ from urllib.parse import urlencode
 
 from django.db import transaction
 
+from vs_workflow.constants import DocumentAudience
 from vs_workflow.constants import WorkflowStageAction as StageActionEnum
 from vs_workflow.exceptions import InvalidInstanceStateError, ReversalNotAllowedError
 from vs_workflow.handlers import BaseWorkflowHandler, register_handler
@@ -48,6 +49,9 @@ def _enqueue_dispatch(batch_id, instance_id, actor_id) -> None:
 @register_handler("payments.payout_batch")
 class PayoutBatchApprovalHandler(BaseWorkflowHandler):
     """Approval handler for a bulk :class:`~vs_payments.models.PayoutBatch`."""
+
+    # Only the platform assembles payout batches; nothing a school runs creates one.
+    audience = DocumentAudience.PLATFORM
 
     allows_continue_without_approval = False
 

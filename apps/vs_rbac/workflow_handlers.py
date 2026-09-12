@@ -26,6 +26,7 @@ change writes nothing at submission: the delta lives on the request, and
 inside :meth:`on_approved`. So a rejected request leaves no permissions to take
 back, and a reversal has nothing to undo unless the approval already ran.
 """
+from vs_workflow.constants import DocumentAudience
 from vs_workflow.handlers.base import BaseWorkflowHandler
 from vs_workflow.handlers.registry import register_handler
 
@@ -43,6 +44,8 @@ PLATFORM_TEMPLATE_CODE = "role-change-platform"
 @register_handler(DOCUMENT_TYPE)
 class RoleChangeWorkflowHandler(BaseWorkflowHandler):
     document_type = DOCUMENT_TYPE
+    # Schools and the platform both administer roles.
+    audience = DocumentAudience.ALL
     allows_requester_self_approval = True
     #: An unstaffed stage must not be released past. The generic release exists
     #: for documents where a stalled ladder blocks ordinary work; here the

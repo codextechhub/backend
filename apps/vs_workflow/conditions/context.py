@@ -23,8 +23,12 @@ from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 RequesterFacts = Callable[[Any, Any], Dict[str, Any]]
+#: ``resolver(document, tenant)`` returns what an area's fields read - a record
+#: or a dict of its facts - or None when this document reaches nothing.
+AreaResolver = Callable[[Any, Any], Any]
 
 _PROVIDERS: List[RequesterFacts] = []
+_AREA_RESOLVERS: Dict[str, AreaResolver] = {}
 _ENGINE_FACTS = frozenset({"id", "branch", "role_keys"})
 
 
@@ -39,6 +43,43 @@ def register_requester_facts(provider: RequesterFacts) -> RequesterFacts:
     if provider not in _PROVIDERS:
         _PROVIDERS.append(provider)
     return provider
+
+
+def register_area_resolver(area_key: str, resolver: AreaResolver) -> AreaResolver:
+    """Declare how an area is reached from a document.
+
+    The app that owns the area registers it (see
+    :func:`vs_workflow.conditions.fields.register_area`) and registers this
+    beside it. Registering the same area again, as an app reload does, replaces
+    nothing: the first resolver stands, so two imports cannot disagree.
+    """
+    _AREA_RESOLVERS.setdefault(area_key, resolver)
+    return resolver
+
+
+def area_facts(document, tenant, document_type: str) -> Dict[str, Any]:
+    """What each declared area holds for this document, by area key.
+
+    An area no document of this type reaches is left out, and a resolver that
+    fails contributes nothing rather than stopping the activation - the same
+    bargain :func:`requester_facts` makes, and for the same reason: a rule that
+    cannot be answered should fall through to the next one, not error out
+    somebody's submission. The failure is logged.
+    """
+    from vs_workflow.conditions.fields import registered_areas
+
+    facts: Dict[str, Any] = {}
+    for area in registered_areas():
+        if area.document_types and document_type not in area.document_types:
+            continue
+        resolver = _AREA_RESOLVERS.get(area.key)
+        if resolver is None:
+            continue
+        try:
+            facts[area.key] = resolver(document, tenant)
+        except Exception:  # noqa: BLE001 - a failing resolver must not stop routing
+            logger.exception("Area resolver for %r failed.", area.key)
+    return facts
 
 
 def _as_id(value) -> Optional[str]:
@@ -105,6 +146,7 @@ def build_rule_context(instance) -> Dict[str, Any]:
         "amount": document_amount(document),
         "branch": _as_id(instance.branch_id),
         "requester": requester_facts(instance.requested_by, instance.tenant),
+        **area_facts(document, instance.tenant, instance.document_type),
     }
 
 
@@ -113,16 +155,24 @@ def build_sample_context(*, requester, tenant, document_type: str = "",
     """A context for trying rules before any document exists.
 
     *sample* supplies what a document would: ``amount`` in kobo, ``branch``,
-    ``document_type``, and ``document`` - a dict of the type's own fields. The
-    requester's facts are read live, so the answer is the one the engine would
-    give if that person raised it today. Without a sample branch, the
-    requester's own branch stands in, as it does for the template preview.
+    ``document_type``, ``document`` - a dict of the type's own fields - and
+    ``areas``, a dict of facts per area for the parts of the school a real
+    document would reach. The requester's facts are read live, so the answer is
+    the one the engine would give if that person raised it today. Without a
+    sample branch, the requester's own branch stands in, as it does for the
+    template preview.
+
+    An area the sample says nothing about is absent rather than invented, so a
+    rule about a child's class is simply not true on a trial run that named no
+    child - which is what it would be for a document that reaches none.
     """
     sample = sample or {}
+    areas = sample.get("areas") or {}
     return {
         "document": sample.get("document") or {},
         "document_type": sample.get("document_type") or document_type or "",
         "amount": sample.get("amount"),
         "branch": _as_id(sample.get("branch")) or _as_id(getattr(requester, "branch_id", None)),
         "requester": requester_facts(requester, tenant),
+        **{key: value for key, value in areas.items() if isinstance(key, str)},
     }

@@ -1,6 +1,8 @@
 """BaseWorkflowHandler - subclass this in workflow_handlers.py of your app."""
 from typing import Any, Dict, Optional, Type
 
+from vs_workflow.constants import DocumentAudience
+
 # Contract each app implements to connect documents to the workflow engine.
 class BaseWorkflowHandler:
     document_type: str = ""
@@ -37,6 +39,18 @@ class BaseWorkflowHandler:
     #: whose key starts with ``document.`` and follows the model's own attribute
     #: name, which is what the rule context walks.
     condition_fields: tuple = ()
+
+    #: Which tenants raise documents of this type: the platform tenant, schools,
+    #: or every tenant (a :class:`~vs_workflow.constants.DocumentAudience`).
+    #: A Dynamic Role is offered and saved only for types its own tenant
+    #: raises, because rules for any other type never run: a school offered
+    #: platform user creation would build a Dynamic Role no document reaches.
+    #:
+    #: Every handler an app registers declares it. ALL is the default only so
+    #: that a handler a test registers need not, and
+    #: ``DocumentAudienceTests.test_every_handler_says_who_raises_it`` holds
+    #: the real ones to it.
+    audience: str = DocumentAudience.ALL
 
     # Choose the template code when the submitter does not provide one.
     def resolve_default_template_code(self, document: Any) -> str:

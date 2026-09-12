@@ -9,6 +9,7 @@ the engine activates and the rule the audit records are the same rule.
 Everything that would let a Dynamic Role reach nobody by mistake is refused
 when its rules are saved rather than found out at approval time:
 
+* a document type its tenant never raises, whose documents never arrive;
 * a field the document type does not have, which would never be true;
 * an operator the field cannot use, or a value of the wrong kind - an amount
   that is not whole kobo, a choice that is not on the list, a branch, role or
@@ -164,6 +165,72 @@ def _resolve_target(raw: dict, tenant, where: str) -> dict:
     raise TemplateInvalidError(f"{where}: send it to a role, a person or an approver group.")
 
 
+def check_document_types(tenant, document_types: Iterable[str]) -> List[str]:
+    """The document types a Dynamic Role of *tenant* may serve, without repeats.
+
+    Refuses a type no handler owns, and a type *tenant* never raises. The
+    second is the one a screen can walk into: a school offered platform user
+    creation would save careful rules that no document ever reaches. The
+    fields endpoint, the save and every trial run all come through here, so
+    what one offers the others accept.
+    """
+    from vs_workflow.conditions.fields import document_type_label
+    from vs_workflow.handlers.registry import list_registered_handlers, raises
+
+    registered = list_registered_handlers()
+    types = list(dict.fromkeys(t for t in (document_types or []) if t))
+    for document_type in types:
+        handler = registered.get(document_type)
+        if handler is None:
+            raise TemplateInvalidError(
+                f"'{document_type}' is not a document type that can be approved.")
+        if not raises(handler, tenant):
+            raise TemplateInvalidError(
+                f"{document_type_label(document_type)} is never raised here, so a "
+                "Dynamic Role for it would never be used.")
+    return types
+
+
+def _stored_leaves(condition) -> List[dict]:
+    """The comparisons in a saved condition, without refusing a shape.
+
+    :func:`_leaves` is the strict reader used when rules are written. This one
+    reads rules already stored, where the question is which fields they name
+    rather than whether they are well formed.
+    """
+    if isinstance(condition, dict):
+        if "all" in condition and isinstance(condition["all"], list):
+            return [leaf for leaf in condition["all"] if isinstance(leaf, dict)]
+        if "op" in condition:
+            return [condition]
+    return []
+
+
+def assert_answerable(dynamic_role, document_type: str, where: str) -> None:
+    """Refuse a stage whose document cannot answer the rules it would run.
+
+    A Dynamic Role names no document type: it is written once, on the Approvers
+    screen, and picked on whatever stage needs it. This is where the two meet.
+    A rule about the child a bill is for means nothing on a leave request, which
+    reaches no child, so a stage running it would resolve to nobody every time -
+    caught here, while somebody is still looking at the template.
+    """
+    from vs_workflow.conditions.fields import document_type_label, field_map, unanswerable
+
+    for rule in dynamic_role.rules.all().order_by("order"):
+        keys = [leaf.get("field") for leaf in _stored_leaves(rule.condition)]
+        refused = unanswerable([key for key in keys if key], document_type)
+        if not refused:
+            continue
+        known = field_map()
+        key = refused[0]
+        label = known[key].label if key in known else key
+        raise TemplateInvalidError(
+            f"{where}: rule {rule.order + 1} of '{dynamic_role.name}' tests "
+            f"{label}, which a {document_type_label(document_type)} does not have. "
+            "Change that rule, or pick a Dynamic Role built for this document.")
+
+
 def validate_rules(*, tenant, document_types: Iterable[str], rules) -> List[dict]:
     """Check a Dynamic Role's *rules* and resolve their targets.
 
@@ -171,6 +238,7 @@ def validate_rules(*, tenant, document_types: Iterable[str], rules) -> List[dict
     :func:`replace_rules`. Raises TemplateInvalidError naming the rule
     (counted from 1) and what is wrong with it.
     """
+    document_types = check_document_types(tenant, document_types)
     if not isinstance(rules, list) or not rules:
         raise TemplateInvalidError("A Dynamic Role needs at least its Otherwise rule.")
     fields = field_map(document_types)

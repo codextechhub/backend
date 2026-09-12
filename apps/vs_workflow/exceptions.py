@@ -142,6 +142,22 @@ class ConditionFunctionAlreadyRegisteredError(WorkflowError):
     default_message = "A condition function is already registered under this key."
 
 
+class NotificationSettingNotRegistered(WorkflowError):
+    """Saving the school's notification switch before its definition is seeded.
+
+    Said with a code of its own rather than silently storing nothing and
+    reporting success - which is what a school would otherwise see, followed by
+    every approval carrying on exactly as it did. Reading is unaffected: it
+    falls back to notifying, which is what the engine did before the switch
+    existed.
+    """
+
+    error_code = "NOTIFICATION_SETTING_NOT_REGISTERED"
+    default_message = (
+        "The workflow notification setting has not been set up on this platform yet."
+    )
+
+
 class ApprovalNotConfiguredError(WorkflowError):
     """Posting a document whose tenant has a template but no stages in it.
 

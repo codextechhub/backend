@@ -737,19 +737,16 @@ class WorkflowDynamicRoleSerializer(serializers.ModelSerializer):
         return value
 
     def validate_document_types(self, value):
-        from vs_workflow.exceptions import UnknownDocumentTypeError
-        from vs_workflow.handlers import get_handler
+        """Types the tenant raises, each once - the check the fields endpoint makes."""
+        from vs_workflow.exceptions import TemplateInvalidError
+        from vs_workflow.services.dynamic_roles import check_document_types
 
         if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
             raise serializers.ValidationError("A list of document types.")
-        types = list(dict.fromkeys(v for v in value if v))
-        for document_type in types:
-            try:
-                get_handler(document_type)
-            except UnknownDocumentTypeError:
-                raise serializers.ValidationError(
-                    f"'{document_type}' is not a document type that can be approved.")
-        return types
+        try:
+            return check_document_types(self.context.get("tenant"), value)
+        except TemplateInvalidError as exc:
+            raise serializers.ValidationError(exc.message)
 
     def validate(self, attrs):
         from vs_workflow.exceptions import TemplateInvalidError

@@ -148,6 +148,24 @@ class ConditionFieldType(models.TextChoices):
     BRANCH = "BRANCH", "Branch"
     PERSON = "PERSON", "Person"
 
+
+class DocumentAudience(models.TextChoices):
+    """Which tenants raise documents of a type, and so may build approval rules for it.
+
+    PLATFORM and SCHOOL are spelled as ``Tenant.Kind`` spells them, so a
+    tenant's kind is compared with them directly. ALL is every kind of tenant,
+    an organization included.
+    """
+    PLATFORM = "PLATFORM", "The platform tenant"
+    SCHOOL   = "SCHOOL",   "Schools"
+    ALL      = "ALL",      "Every tenant"
+
+# The school's own answer to "should approvals tell people what is happening?".
+# Declared in the vs_config catalogue (migration 0011) and read through
+# vs_config.conf.get_config, which falls back to this module's default when the
+# catalogue has not been seeded - so a missing row never silences a school.
+CFG_NOTIFICATIONS_ENABLED = "workflow.notifications.enabled"
+
 # Permission keys (vs_rbac contract)
 # RBAC keys that protect workflow template and instance operations.
 PERM_TEMPLATE_MANAGE = "workflow.template.manage"

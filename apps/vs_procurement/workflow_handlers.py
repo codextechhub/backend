@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 
 from vs_finance.constants import DocumentStatus
 from vs_finance.money import format_naira
+from vs_workflow.constants import DocumentAudience
 from vs_workflow.exceptions import ReversalNotAllowedError
 from vs_workflow.handlers import BaseWorkflowHandler, register_handler
 
@@ -62,6 +63,9 @@ class _ProcApprovalHandler(BaseWorkflowHandler):
     resolution, the approval-screen summary, and the terminal callbacks - is uniform
     because each document exposes ``workflow_amount_field`` and ``approval_state``.
     """
+
+    # Schools and the platform both buy, so every procurement document is raised by all of them.
+    audience = DocumentAudience.ALL
 
     #: Built into the summary subtitle ("Requisition", "Purchase order", …).
     noun = "Document"
