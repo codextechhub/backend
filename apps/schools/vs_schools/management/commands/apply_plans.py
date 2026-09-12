@@ -65,6 +65,7 @@ class Command(BaseCommand):
             if options["dry_run"]:
                 self.stdout.write(self.style.WARNING(f"  [DRY RUN]{line}"))
                 continue
+            unsettled = []
             with transaction.atomic():
                 rows = apply_plan_entitlements(
                     school=setup.school,
@@ -72,9 +73,16 @@ class Command(BaseCommand):
                     expires_at=setup.subscription_expires_at,
                     actor=None,
                     reason="Applying the school's existing package plan.",
+                    unsettled_roles=unsettled,
                 )
             applied += 1
             self.stdout.write(self.style.SUCCESS(f"  [{len(rows):2d} rows]{line}"))
+            for entry in unsettled:
+                self.stdout.write(self.style.WARNING(
+                    f"      role '{entry['role_name']}' kept "
+                    f"{len(entry['permission_keys'])} permission(s) beyond the "
+                    f"plan: {entry['detail']}"
+                ))
 
         self.stdout.write("")
         if options["dry_run"]:

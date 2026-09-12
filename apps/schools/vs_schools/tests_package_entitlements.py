@@ -259,14 +259,13 @@ class PlanDepthTests(_PackageFixture):
         )
 
 
-class MovingDownATierTakesTheGrantsWithItTests(_PackageFixture):
-    """What a school may do and what its roles say it may do stay one fact.
+class _RoleGrants:
+    """A role holding keys banded against the fixture's own capabilities.
 
-    Entitlements decide what the product offers; role grants are what the school
-    handed its own people, and a tier change does not rewrite those on its own.
-    Left alone, the bursar keeps every Advanced key after the school drops to
-    Core: refused at the door, invisible in the picker, and back in force the
-    moment the school moves up again for an unrelated reason.
+    Every test about revocation needs three things: a permission that answers
+    to a band, a role holding it, and a way to read back what the role still
+    has. They live here so the tests below argue about tiers rather than about
+    building permission rows.
     """
 
     def _permission_on(self, capability, key):
@@ -316,6 +315,17 @@ class MovingDownATierTakesTheGrantsWithItTests(_PackageFixture):
             TenantRolePermission.objects.filter(role=role, granted=True)
             .values_list("permission_id", flat=True)
         )
+
+
+class MovingDownATierTakesTheGrantsWithItTests(_RoleGrants, _PackageFixture):
+    """What a school may do and what its roles say it may do stay one fact.
+
+    Entitlements decide what the product offers; role grants are what the school
+    handed its own people, and a tier change does not rewrite those on its own.
+    Left alone, the bursar keeps every Advanced key after the school drops to
+    Core: refused at the door, invisible in the picker, and back in force the
+    moment the school moves up again for an unrelated reason.
+    """
 
     def test_a_downgrade_revokes_what_the_new_tier_cannot_reach(self):
         from vs_rbac.models import Permission
@@ -621,3 +631,391 @@ class ApplyPlansCommandTests(_PackageFixture):
         make_branch(school)
         self._apply()
         self.assertFalse(self._rows(school).exists())
+
+
+class EveryWayTheReachShrinksTakesTheGrantsWithItTests(_RoleGrants, _PackageFixture):
+    """A tier moving down is not the only way a school stops reaching a band.
+
+    An uplift withdrawn, an uplift that lapsed on its own date and a plan
+    re-applied over depthless grants all narrow what a school reaches, and each
+    of them left the role grants standing. The bursar kept keys the school
+    could not use: refused at the door, invisible to the administrator who
+    would have removed them, and live again the moment the school moved up.
+
+    The other direction matters just as much, and half of these tests are about
+    it. A school that lost nothing must lose no keys.
+    """
+
+    def _uplift(self, school, capability, depth=CapabilityDepth.ADVANCED, **kwargs):
+        from vs_config.services.capabilities import set_depth_grant
+
+        kwargs.setdefault("reason", "Signed on the promise of payroll.")
+        return set_depth_grant(
+            capability=capability, tenant=school.tenant, depth=depth,
+            actor=self.vision_user, **kwargs,
+        )
+
+    def _withdraw(self, school, capability, reason="The deal is over."):
+        from vs_config.services.capabilities import clear_depth_grant
+
+        return clear_depth_grant(
+            capability=capability, tenant=school.tenant,
+            actor=self.vision_user, reason=reason,
+        )
+
+    def test_withdrawing_an_uplift_takes_back_what_the_tier_cannot_reach(self):
+        """Through the endpoint, which asks for nothing of the kind.
+
+        The console withdraws a deal; taking the keys back with it is the
+        service's own doing, so every other caller of it behaves the same way.
+        """
+        self._create("Uplift School", "ent-uplift")
+        school = School.objects.get(slug="ent-uplift")
+        self._uplift(school, self.finance)
+        core_key = self._permission_on(self.finance_core, "entfin.ledger.view")
+        deep_key = self._permission_on(self.finance_advanced, "entfin.payroll.pay")
+        role = self._bursar_with(school, core_key.key, deep_key.key)
+
+        response = self._client().delete(
+            reverse(
+                "school-plan-uplift-detail",
+                kwargs={"slug": school.slug, "capability": self.finance.key},
+            )
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
+        held = self._granted(role)
+        self.assertNotIn(
+            deep_key.key, held,
+            "the Advanced key outlived the deal that paid for it",
+        )
+        self.assertIn(core_key.key, held, "the tier still reaches Core")
+
+    def test_an_uplift_that_lapsed_months_ago_is_still_taken_back(self):
+        # Nothing runs on the clock here, so the row a lapsed deal left behind
+        # is taken at the next act somebody performs on it.
+        self._create("Lapsed Uplift School", "ent-lapsed-uplift")
+        school = School.objects.get(slug="ent-lapsed-uplift")
+        self._uplift(
+            school, self.finance, ends_at=timezone.now() - timedelta(days=60),
+        )
+        deep_key = self._permission_on(self.finance_advanced, "entfin.payroll.pay")
+        role = self._bursar_with(school, deep_key.key)
+
+        self._withdraw(school, self.finance, reason="Tidying up March's deal.")
+        self.assertNotIn(deep_key.key, self._granted(role))
+
+    def test_a_school_that_never_had_an_uplift_is_left_alone(self):
+        self._create("No Uplift School", "ent-no-uplift")
+        school = School.objects.get(slug="ent-no-uplift")
+        core_key = self._permission_on(self.finance_core, "entfin.ledger.view")
+        role = self._bursar_with(school, core_key.key)
+        version = role.version
+
+        self.assertFalse(self._withdraw(school, self.finance))
+        role.refresh_from_db()
+        self.assertEqual(self._granted(role), {core_key.key})
+        self.assertEqual(
+            role.version, version,
+            "a withdrawal that withdrew nothing rewrote the role anyway",
+        )
+
+    def test_a_plan_exception_keeps_the_keys_it_still_covers(self):
+        # Basic everywhere, Advanced Finance by exception, and Students carried
+        # to Advanced by a deal. Withdrawing the deal must reach exactly one of
+        # the two.
+        PackagePlanModuleDepth.objects.create(
+            plan=self.basic, capability_key="ent-finance",
+            depth=CapabilityDepth.ADVANCED,
+        )
+        students_advanced = Capability.objects.create(
+            key="ent-students-advanced", label="Students Advanced",
+            parent=self.students, depth=CapabilityDepth.ADVANCED,
+            requires_entitlement=False,
+        )
+        self._create("Exception School", "ent-exception-uplift")
+        school = School.objects.get(slug="ent-exception-uplift")
+        self._uplift(school, self.students)
+
+        finance_key = self._permission_on(self.finance_advanced, "entfin.payroll.pay")
+        students_key = self._permission_on(
+            students_advanced, "entfin.transcript.publish",
+        )
+        role = self._bursar_with(school, finance_key.key, students_key.key)
+
+        self._withdraw(school, self.students, reason="The students trial ended.")
+
+        held = self._granted(role)
+        self.assertIn(
+            finance_key.key, held,
+            "the plan's own exception still reaches Finance at Advanced",
+        )
+        self.assertNotIn(students_key.key, held)
+
+    def test_re_applying_a_plan_takes_back_what_the_depth_no_longer_reaches(self):
+        from io import StringIO
+        from django.core.management import call_command
+
+        self._create("Depthless School", "ent-depthless")
+        school = School.objects.get(slug="ent-depthless")
+        # A grant written before depth existed reaches every band.
+        self._rows(school).update(depth=None)
+        core_key = self._permission_on(self.finance_core, "entfin.ledger.view")
+        deep_key = self._permission_on(self.finance_advanced, "entfin.payroll.pay")
+        role = self._bursar_with(school, core_key.key, deep_key.key)
+
+        call_command("apply_plans", stdout=StringIO())
+
+        held = self._granted(role)
+        self.assertNotIn(deep_key.key, held)
+        self.assertIn(core_key.key, held)
+
+    def test_a_first_application_leaves_the_roles_it_found_alone(self):
+        from schools.vs_schools.services.packages import apply_plan_entitlements
+
+        school = make_school(slug="ent-first-plan")
+        make_branch(school)
+        deep_key = self._permission_on(self.finance_advanced, "entfin.payroll.pay")
+        role = self._bursar_with(school, deep_key.key)
+        setup = SchoolPackageSetup.objects.create(
+            school=school, package_plan=self.basic,
+            subscription_expires_at=date.today() + timedelta(days=365),
+        )
+
+        apply_plan_entitlements(
+            school=school, plan=self.basic,
+            expires_at=setup.subscription_expires_at, actor=self.vision_user,
+        )
+        self.assertIn(
+            deep_key.key, self._granted(role),
+            "a school given its plan for the first time lost a key it had "
+            "never been sold out of",
+        )
+
+        apply_plan_entitlements(
+            school=school, plan=self.basic,
+            expires_at=setup.subscription_expires_at, actor=self.vision_user,
+        )
+        self.assertNotIn(deep_key.key, self._granted(role))
+
+    def test_a_lapsed_subscription_does_not_take_the_roles_apart(self):
+        self._create("Unpaid School", "ent-unpaid")
+        school = School.objects.get(slug="ent-unpaid")
+        self._uplift(school, self.finance)
+        core_key = self._permission_on(self.finance_core, "entfin.ledger.view")
+        deep_key = self._permission_on(self.finance_advanced, "entfin.payroll.pay")
+        role = self._bursar_with(school, core_key.key, deep_key.key)
+        self._rows(school).update(ends_at=timezone.now() - timedelta(days=1))
+
+        self._withdraw(school, self.finance)
+
+        self.assertEqual(
+            self._granted(role), {core_key.key, deep_key.key},
+            "a school late on one invoice had its roles emptied; paying brings "
+            "the product back and cannot bring these back",
+        )
+
+    def test_a_key_denied_on_purpose_is_still_denied_afterwards(self):
+        from vs_rbac.models import TenantRolePermission
+
+        self._create("Denying School", "ent-denying")
+        school = School.objects.get(slug="ent-denying")
+        self._uplift(school, self.finance)
+        deep_key = self._permission_on(self.finance_advanced, "entfin.payroll.pay")
+        refused_key = self._permission_on(self.finance_core, "entfin.ledger.export")
+        role = self._bursar_with(school, deep_key.key)
+        TenantRolePermission.objects.create(
+            role=role, permission=refused_key, granted=False,
+        )
+
+        self._withdraw(school, self.finance)
+
+        self.assertTrue(
+            TenantRolePermission.objects.filter(
+                role=role, permission=refused_key, granted=False,
+            ).exists(),
+            "a key the school denied on purpose came back as merely ungranted, "
+            "which any group the role carries would hand straight back",
+        )
+
+
+class ARoleThatCannotBeSettledIsReportedNotEnforcedTests(
+    _RoleGrants, _PackageFixture,
+):
+    """A billing decision is never blocked by one role's internal wiring.
+
+    Taking a key back re-saves the role, and the save checks the role's
+    permission dependencies. A key the school keeps may require one being taken
+    away: the bursar keeps a reporting key that requires the payroll key the
+    new tier no longer reaches, and that check refuses the save.
+
+    The refusal used to travel all the way out. The drop from Premium to
+    Standard failed outright, so the school stayed on Premium in the product
+    while its invoice said Standard. Now the plan moves, the role is left whole
+    rather than half written, and it is named to the operator who made the
+    change.
+
+    Nothing cascades: the kept key is inside the depth the school still pays
+    for, and it stays, which is what the two "left exactly as it was" tests
+    below are checking as much as the payroll key's survival.
+    """
+
+    def _role_with(self, school, key, name, *permission_keys):
+        from vs_rbac.models import (
+            Permission, TenantRolePermission, TenantRoleTemplate,
+        )
+
+        role = TenantRoleTemplate.objects.create(
+            tenant=school.tenant, key=key, name=name, status="ACTIVE",
+        )
+        for permission_key in permission_keys:
+            TenantRolePermission.objects.create(
+                role=role,
+                permission=Permission.objects.get(key=permission_key),
+                granted=True,
+            )
+        return role
+
+    def _tangled(self, name, slug, plan=None):
+        """A school whose bursar keeps a Core key requiring an Advanced one."""
+        from vs_rbac.models import PermissionDependency
+
+        self._create(name, slug, plan=plan or self.premium)
+        school = School.objects.get(slug=slug)
+        kept = self._permission_on(self.finance_core, "entfin.ledger.view")
+        revoked = self._permission_on(self.finance_advanced, "entfin.payroll.pay")
+        PermissionDependency.objects.create(permission=kept, depends_on=revoked)
+        role = self._role_with(school, "bursar", "Bursar", kept.key, revoked.key)
+        return school, role, kept, revoked
+
+    def _unsettled_entries(self, role):
+        from vs_rbac.models import RBACAuditLog
+        from vs_rbac.plan_grants import UNSETTLED_SOURCE
+
+        return [
+            entry
+            for entry in RBACAuditLog.objects.filter(
+                entity_type="TenantRoleTemplate", entity_id=str(role.pk),
+            )
+            if (entry.metadata or {}).get("source") == UNSETTLED_SOURCE
+        ]
+
+    def test_the_plan_change_completes(self):
+        from schools.vs_schools.services.packages import change_plan
+
+        school, _, _, _ = self._tangled("Tangled School", "ent-tangled")
+
+        change_plan(school=school, plan=self.basic, actor=self.vision_user)
+
+        setup = SchoolPackageSetup.objects.get(school=school)
+        self.assertEqual(setup.package_plan, self.basic)
+        self.assertEqual(
+            {row.depth for row in self._rows(school)}, {CapabilityDepth.CORE},
+            "the school kept the tier it stopped paying for because one role "
+            "would not save",
+        )
+
+    def test_the_role_it_could_not_settle_is_left_exactly_as_it_was(self):
+        from schools.vs_schools.services.packages import change_plan
+
+        school, role, kept, revoked = self._tangled("Whole School", "ent-whole")
+        version = role.version
+
+        change_plan(school=school, plan=self.basic, actor=self.vision_user)
+
+        role.refresh_from_db()
+        self.assertEqual(
+            self._granted(role), {kept.key, revoked.key},
+            "the role was half written instead of being left alone",
+        )
+        self.assertEqual(role.version, version)
+
+    def test_every_other_role_in_the_school_is_still_settled(self):
+        from schools.vs_schools.services.packages import change_plan
+
+        school, _, _, revoked = self._tangled("Neighbour School", "ent-neighbour-role")
+        registrar = self._role_with(
+            school, "ent-registrar", "Entitlement Registrar", revoked.key,
+        )
+
+        change_plan(school=school, plan=self.basic, actor=self.vision_user)
+
+        self.assertNotIn(
+            revoked.key, self._granted(registrar),
+            "one role that could not be saved stopped every other role in the "
+            "school being settled",
+        )
+
+    def test_the_audit_trail_names_the_role_it_could_not_settle(self):
+        from schools.vs_schools.services.packages import change_plan
+
+        school, role, _, revoked = self._tangled("Audited School", "ent-tangled-audit")
+
+        change_plan(school=school, plan=self.basic, actor=self.vision_user)
+
+        entries = self._unsettled_entries(role)
+        self.assertEqual(len(entries), 1, "the role vanished from the trail")
+        self.assertEqual(entries[0].entity_label, "Bursar")
+        self.assertEqual(entries[0].status, "FAILED")
+        self.assertEqual(entries[0].metadata["permission_keys"], [revoked.key])
+        self.assertIn(revoked.key, entries[0].metadata["detail"])
+
+    def test_the_plan_response_names_the_role_that_needs_attention(self):
+        school, _, _, revoked = self._tangled("Reported School", "ent-tangled-api")
+
+        response = self._client().patch(
+            reverse("school-plan", kwargs={"slug": school.slug}),
+            {"package_plan": self.basic.code, "reason": "Moving to Standard."},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        reported = response.data["data"]["roles_needing_attention"]
+        self.assertEqual([entry["role_name"] for entry in reported], ["Bursar"])
+        self.assertEqual(reported[0]["permission_keys"], [revoked.key])
+        self.assertIn("Bursar", response.data["message"])
+
+    def test_withdrawing_an_uplift_completes_and_names_the_role(self):
+        """The route the depth work made newly able to hit this."""
+        from vs_config.services.capabilities import set_depth_grant
+
+        school, role, kept, revoked = self._tangled(
+            "Uplifted School", "ent-tangled-uplift", plan=self.basic,
+        )
+        set_depth_grant(
+            capability=self.finance, tenant=school.tenant,
+            depth=CapabilityDepth.ADVANCED, actor=self.vision_user,
+            reason="Signed on the promise of payroll.",
+        )
+
+        response = self._client().delete(
+            reverse(
+                "school-plan-uplift-detail",
+                kwargs={"slug": school.slug, "capability": self.finance.key},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        reported = response.data["data"]["roles_needing_attention"]
+        self.assertEqual([entry["role_name"] for entry in reported], ["Bursar"])
+        self.assertEqual(self._granted(role), {kept.key, revoked.key})
+
+    def test_an_ordinary_plan_change_still_revokes_and_reports_nothing(self):
+        # The same shape without the dependency, so the report stays empty and
+        # the revocation behaves exactly as it does for every other school.
+        self._create("Ordinary School", "ent-ordinary", plan=self.premium)
+        school = School.objects.get(slug="ent-ordinary")
+        kept = self._permission_on(self.finance_core, "entfin.ledger.view")
+        revoked = self._permission_on(self.finance_advanced, "entfin.payroll.pay")
+        role = self._bursar_with(school, kept.key, revoked.key)
+
+        response = self._client().patch(
+            reverse("school-plan", kwargs={"slug": school.slug}),
+            {"package_plan": self.basic.code, "reason": "Moving to Standard."},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["roles_needing_attention"], [])
+        self.assertNotIn("attention", response.data["message"])
+        self.assertEqual(self._granted(role), {kept.key})

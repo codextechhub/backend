@@ -29,7 +29,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from vs_config.models import Capability, CapabilityEntitlement
-from vs_config.services.capabilities import set_entitlement
+from vs_config.services.capabilities import set_entitlement, tenant_is_provisioned
+from vs_rbac.plan_grants import revoke_grants_beyond_the_tenants_depth
 
 logger = logging.getLogger("vs_schools")
 
@@ -63,7 +64,9 @@ def sellable_modules():
     )
 
 
-def apply_plan_entitlements(*, school, plan, expires_at, actor, reason=""):
+def apply_plan_entitlements(
+    *, school, plan, expires_at, actor, reason="", unsettled_roles=None,
+):
     """Grant this school every module, each at the depth its plan reaches.
 
     Idempotent: it writes the same rows every time, so running it after a plan
@@ -72,10 +75,28 @@ def apply_plan_entitlements(*, school, plan, expires_at, actor, reason=""):
     where a deal lives; an uplift given on top of Basic survives the school
     moving to Standard and stops mattering once the tier passes it.
 
+    The role grants follow, once, after every row is written. Once, because a
+    revocation run between the rows reads a half-moved school: one dropping
+    from Premium to Basic would be asked about its Students keys while the
+    Students row still said Advanced, and a module written after the revocation
+    would have its keys taken on the strength of a depth it no longer has.
+
+    A school being given its plan for the first time keeps every role it
+    arrived with. It has lost nothing, and the roles it was provisioned with
+    come from the library CodeX ships rather than from anything this school was
+    sold, so narrowing them here would write today's tier into a role the plan
+    gate already narrows on its own.
+
+    ``unsettled_roles``, when given, is a list this fills with any role whose
+    grants could not be settled against the new depths. Such a role is left
+    exactly as it was and the plan is applied regardless, so a billing decision
+    is never blocked by one role's internal wiring.
+
     Returns the entitlement rows written, in catalogue order.
     """
     ends_at = subscription_ends_at(expires_at)
     reason = reason or f"Package plan {plan.name} for {school.name}"
+    had_a_plan_already = tenant_is_provisioned(school.tenant)
     rows = []
     for module in sellable_modules():
         rows.append(set_entitlement(
@@ -87,12 +108,21 @@ def apply_plan_entitlements(*, school, plan, expires_at, actor, reason=""):
             depth=plan.depth_for(module.key),
             ends_at=ends_at,
             reason=reason,
+            reconcile_roles=False,
         ))
+    if had_a_plan_already:
+        report = revoke_grants_beyond_the_tenants_depth(
+            tenant=school.tenant, actor=actor, reason=reason,
+        )
+        if unsettled_roles is not None:
+            unsettled_roles.extend(report.unsettled)
     return rows
 
 
 @transaction.atomic
-def change_plan(*, school, plan, actor, reason="", expires_at=None):
+def change_plan(
+    *, school, plan, actor, reason="", expires_at=None, unsettled_roles=None,
+):
     """Move a school onto another plan, and re-grant in the same transaction.
 
     The two halves are inseparable on purpose. Changing ``package_plan`` on its
@@ -104,6 +134,11 @@ def change_plan(*, school, plan, actor, reason="", expires_at=None):
     An uplift given to this school is deliberately left alone. It lives in its
     own table precisely so a tier change underneath it does not disturb it, and
     it stops mattering on its own once the tier passes it.
+
+    The role grants follow the move inside :func:`apply_plan_entitlements`,
+    after every entitlement row is written, so what the school may do and what
+    its roles say it may do stay one fact. A role that cannot be settled is
+    named in ``unsettled_roles`` and does not stop the move.
     """
     setup = school.package_setup
     previous = setup.package_plan
@@ -118,91 +153,10 @@ def change_plan(*, school, plan, actor, reason="", expires_at=None):
         expires_at=setup.subscription_expires_at,
         actor=actor,
         reason=reason or f"Moved from {previous.name} to {plan.name}.",
+        unsettled_roles=unsettled_roles,
     )
     _top_up_onboarding(school, actor)
-    # After the entitlements, because it asks what the school can now reach.
-    revoke_grants_the_plan_no_longer_reaches(
-        school, actor,
-        reason=f"Moved from {previous.name} to {plan.name}.",
-    )
     return setup, previous, rows
-
-
-def revoke_grants_the_plan_no_longer_reaches(school, actor, *, reason=""):
-    """Take back the role grants the school's new tier does not include.
-
-    Entitlements decide what the product offers; role grants are what a school
-    handed to its own people, and moving down a tier does not rewrite those on
-    its own. Left alone, Corona drops from Premium to Standard and its bursar
-    still holds every Advanced payroll key: the menu is gone, the picker no
-    longer lists them, and the keys are still there - refused at the door by the
-    plan gate, invisible to the administrator who would remove them, and back in
-    force the moment the school moves up again for an unrelated reason.
-
-    So the grants go with the tier. What a school may do and what its roles say
-    it may do are kept the same fact.
-
-    Runs after :func:`apply_plan_entitlements`, never before: it asks what the
-    school can now reach, and that is only true once the new entitlements are
-    written.
-
-    Through ``set_role_access`` rather than deleting rows, so each revocation
-    takes the role's lock, bumps its version and writes an audit entry naming
-    the plan change that caused it. A permission that vanished from somebody's
-    account with no record of why is the question this system exists to answer.
-    """
-    from vs_rbac.models import TenantRolePermission, TenantRoleTemplate
-    from vs_rbac.plan_gate import plan_reader
-    from vs_rbac.services import set_role_access
-
-    tenant = school.tenant
-    read_plan = plan_reader(tenant)
-    roles = TenantRoleTemplate.objects.filter(tenant=tenant)
-    revoked = {}
-
-    for role in roles:
-        granted = list(
-            TenantRolePermission.objects.filter(role=role, granted=True)
-            .select_related("permission")
-            .values_list("permission_id", flat=True)
-        )
-        if not granted:
-            continue
-        from vs_rbac.models import Permission
-
-        rows = Permission.objects.filter(key__in=granted).select_related(
-            "capability", "capability__parent",
-        )
-        keep, lost = [], []
-        for permission in rows:
-            _capability, allowed, _why = read_plan(permission)
-            (keep if allowed else lost).append(permission.key)
-        if not lost:
-            continue
-
-        set_role_access(
-            role=role,
-            actor=actor,
-            reason=(
-                reason
-                or "The school's plan no longer reaches these permissions."
-            ),
-            permission_keys=keep,
-            # Groups are left exactly as they are. A group is a named set the
-            # school composed, and emptying one because of a tier change would
-            # edit the school's own vocabulary rather than its access; the keys
-            # a group carries are filtered by the same gate when they resolve.
-            allow_restricted=True,
-            source="plan_downgrade",
-        )
-        revoked[role.key] = sorted(lost)
-
-    if revoked:
-        logger.info(
-            "Plan change revoked out-of-plan grants for %s: %s",
-            school.slug, revoked,
-        )
-    return revoked
 
 
 def _top_up_onboarding(school, actor):
@@ -234,7 +188,7 @@ def _top_up_onboarding(school, actor):
         )
 
 
-def plan_overview(school):
+def plan_overview(school, unsettled_roles=()):
     """What this school is on, module by module, and where each depth came from.
 
     The read the console opens with. A support call starts "what is this school
@@ -251,6 +205,12 @@ def plan_overview(school):
     the bands themselves with a reached flag, because "Plus" means nothing to
     the person on the phone and "fee structures, bank reconciliation, budgets"
     means everything.
+
+    ``roles_needing_attention`` names the roles a settlement just performed
+    could not save, so the operator who changed the plan reads them in the
+    same response as the change. It is empty on a plain read, which asks what
+    the school is on rather than performing anything; a role left behind by an
+    earlier change is found in the audit trail rather than rediscovered here.
     """
     from vs_config.models import Capability, CapabilityDepthGrant, CapabilityEntitlement
     from vs_config.services.depth import UNLIMITED, depth_allows, depth_label, resolved_depth
@@ -339,6 +299,7 @@ def plan_overview(school):
         # school that reaches everything needs to know which of the two it is.
         "provisioned": bool(entitlements),
         "modules": modules,
+        "roles_needing_attention": list(unsettled_roles),
     }
 
 

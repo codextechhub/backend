@@ -39,6 +39,26 @@ from ..serializers import (
 from ..services.packages import change_plan, plan_overview
 
 
+def _unsettled_note(unsettled_roles):
+    """The sentence appended when a role kept grants the new depth cannot reach.
+
+    A plan change that completes while a role is left holding keys beyond it is
+    not a plain success, and an operator who reads only the message should not
+    have to open the payload to discover that. The roles themselves travel in
+    ``roles_needing_attention``, with the keys involved and the refusal in
+    words.
+    """
+    if not unsettled_roles:
+        return ""
+    count = len(unsettled_roles)
+    names = ", ".join(entry["role_name"] for entry in unsettled_roles)
+    return (
+        f" {count} {'role' if count == 1 else 'roles'} kept permissions the new "
+        f"depth does not reach and {'needs' if count == 1 else 'need'} "
+        f"attention: {names}."
+    )
+
+
 class _PlanView(APIView):
     """Every route here is the platform's, whatever the caller's roles say."""
 
@@ -74,17 +94,20 @@ class SchoolPlanView(_PlanView):
         )
         serializer.is_valid(raise_exception=True)
 
+        unsettled = []
         setup, previous, rows = change_plan(
             school=school,
             plan=serializer.validated_data["package_plan"],
             actor=request.user,
             reason=serializer.validated_data.get("reason", ""),
             expires_at=serializer.validated_data.get("subscription_expires_at"),
+            unsettled_roles=unsettled,
         )
         return success_response(
             f"{school.name} moved from {previous.name} to {setup.package_plan.name}, "
-            f"and {len(rows)} module grants were re-applied.",
-            data=plan_overview(school),
+            f"and {len(rows)} module grants were re-applied."
+            + _unsettled_note(unsettled),
+            data=plan_overview(school, unsettled_roles=unsettled),
         )
 
 
@@ -101,6 +124,7 @@ class SchoolPlanUpliftView(_PlanView):
         serializer = SchoolPlanUpliftSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        unsettled = []
         set_depth_grant(
             capability=serializer.validated_data["capability"],
             tenant=school.tenant,
@@ -109,11 +133,12 @@ class SchoolPlanUpliftView(_PlanView):
             starts_at=serializer.validated_data.get("starts_at"),
             ends_at=serializer.validated_data.get("ends_at"),
             reason=serializer.validated_data["reason"],
+            unsettled_roles=unsettled,
         )
         return success_response(
             "Uplift recorded. It ends on its own date and returns the school "
-            "to the depth its plan pays for.",
-            data=plan_overview(school),
+            "to the depth its plan pays for." + _unsettled_note(unsettled),
+            data=plan_overview(school, unsettled_roles=unsettled),
         )
 
 
@@ -130,12 +155,17 @@ class SchoolPlanUpliftDetailView(_PlanView):
         row = get_object_or_404(
             Capability, key=capability, parent__isnull=True, is_active=True,
         )
+        unsettled = []
         cleared = clear_depth_grant(
             capability=row, tenant=school.tenant, actor=request.user,
             reason=request.data.get("reason", "") if request.data else "",
+            unsettled_roles=unsettled,
         )
         message = (
             "Uplift withdrawn. The module returns to the depth the plan pays for."
             if cleared else "No uplift was in place for that module."
         )
-        return success_response(message, data=plan_overview(school))
+        return success_response(
+            message + _unsettled_note(unsettled),
+            data=plan_overview(school, unsettled_roles=unsettled),
+        )

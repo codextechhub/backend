@@ -97,6 +97,19 @@ def depth_allows(required, held):
     return required <= held
 
 
+def depth_shrank(before, after):
+    """Whether a tenant moving from ``before`` to ``after`` reaches less.
+
+    ``UNLIMITED`` is deeper than any real band, so leaving it for a named depth
+    is the largest shrink there is, and arriving at it is never one.
+    """
+    if before is UNLIMITED:
+        return after is not UNLIMITED
+    if after is UNLIMITED:
+        return False
+    return after < before
+
+
 def depth_label(value):
     """The word a person reads, for a depth or for no limit at all."""
     if value is UNLIMITED:
