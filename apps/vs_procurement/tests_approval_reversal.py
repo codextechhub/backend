@@ -3,7 +3,7 @@
 ``vs_workflow`` can withdraw its own record of an approver's vote; it cannot
 withdraw what that vote released. What approval releases differs by document type,
 so each procurement handler answers ``reversal_block_reason`` for its own type and
-the shared ``validate_reversal`` raises the refusal in one shape.
+``BaseWorkflowHandler.validate_reversal`` raises the refusal in one shape.
 
 These tests hold every type to that answer, and to the other side of it: an order
 that has reached its vendor or taken delivery, a requisition whose order still

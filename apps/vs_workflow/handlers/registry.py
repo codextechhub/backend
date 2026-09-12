@@ -1,16 +1,40 @@
 """Handler registry for document types."""
 from typing import Dict, Type
 from vs_workflow.constants import DocumentAudience
-from vs_workflow.exceptions import HandlerAlreadyRegisteredError, UnknownDocumentTypeError
-from vs_workflow.handlers.base import BaseWorkflowHandler
+from vs_workflow.exceptions import (
+    HandlerAlreadyRegisteredError, ReversalContractNotDeclaredError,
+    UnknownDocumentTypeError,
+)
+from vs_workflow.handlers.base import BaseWorkflowHandler, declares_reversal_answer
 
 _REGISTRY: Dict[str, BaseWorkflowHandler] = {}
 
 # Register the document handler that owns a workflow document_type.
 def register_handler(document_type: str):
+    """Claim ``document_type`` for this handler, on two conditions.
+
+    It must be a handler, and it must have said what an approval of its type
+    releases. The second is checked here rather than at the moment somebody
+    reverses one, because registration happens as the apps load: a type that
+    has not answered stops the process that would serve it, instead of shipping
+    and reversing silently until the day an administrator undoes an approval
+    whose effect is still standing.
+
+    See :func:`~vs_workflow.handlers.base.declares_reversal_answer` for the
+    three ways a type answers.
+    """
     def _decorate(cls: Type[BaseWorkflowHandler]):
         if not issubclass(cls, BaseWorkflowHandler):
             raise TypeError(f"{cls.__name__} must subclass BaseWorkflowHandler")
+        if not declares_reversal_answer(cls):
+            raise ReversalContractNotDeclaredError(
+                f"{cls.__name__} has not said what approving a "
+                f"'{document_type}' releases, so it cannot be registered. "
+                f"Answer reversal_block_reason(document), or set "
+                f"approval_releases_nothing = True where withdrawing the "
+                f"engine's record of the vote is the whole of the change.",
+                document_type=document_type,
+            )
         if document_type in _REGISTRY:
             existing = type(_REGISTRY[document_type])
             if existing is cls:

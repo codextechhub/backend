@@ -9,19 +9,29 @@ from vs_workflow.exceptions import (
 from vs_workflow.handlers import BaseWorkflowHandler, get_handler, register_handler
 
 class HandlerRegistryTests(SimpleTestCase):
+    """Ownership of a document type, one handler per type.
+
+    Every handler below sets ``approval_releases_nothing`` because the registry
+    admits none that has not said what an approval of its type releases. These
+    ones approve nothing outside the engine, which is that declaration's case.
+    """
+
     def test_register_and_get(self):
         @register_handler("test.docReg")
         class H(BaseWorkflowHandler):
+            approval_releases_nothing = True
             def resolve_default_template_code(self, d): return "x"
         self.assertEqual(get_handler("test.docReg").document_type, "test.docReg")
 
     def test_duplicate_raises(self):
         @register_handler("test.docDup")
         class H1(BaseWorkflowHandler):
+            approval_releases_nothing = True
             def resolve_default_template_code(self, d): return "x"
         with self.assertRaises(HandlerAlreadyRegisteredError):
             @register_handler("test.docDup")
             class H2(BaseWorkflowHandler):
+                approval_releases_nothing = True
                 def resolve_default_template_code(self, d): return "y"
 
     def test_unknown_raises(self):

@@ -2,6 +2,7 @@
 from typing import Any, Dict, Optional, Type
 
 from vs_workflow.constants import DocumentAudience
+from vs_workflow.exceptions import ReversalNotAllowedError
 
 # Contract each app implements to connect documents to the workflow engine.
 class BaseWorkflowHandler:
@@ -52,6 +53,17 @@ class BaseWorkflowHandler:
     #: the real ones to it.
     audience: str = DocumentAudience.ALL
 
+    #: Set True by a document type whose approval releases nothing outside the
+    #: engine, so withdrawing the engine's record of a vote is the whole of the
+    #: change and a reversal can never leave an effect standing behind it.
+    #:
+    #: It is said in as many words because the alternative is silence, and
+    #: silence reads the same whether a type is genuinely always reversible or
+    #: nobody has yet asked what approving it does. ``register_handler`` refuses
+    #: a handler that neither sets this nor answers
+    #: :meth:`reversal_block_reason` or :meth:`validate_reversal`.
+    approval_releases_nothing: bool = False
+
     # Choose the template code when the submitter does not provide one.
     def resolve_default_template_code(self, document: Any) -> str:
         raise NotImplementedError("Subclasses must implement resolve_default_template_code().")
@@ -100,6 +112,35 @@ class BaseWorkflowHandler:
     def on_cancelled(self, instance, context: Dict) -> None: ...
 
     # Reversal is the one outcome the engine cannot decide on its own.
+    def reversal_block_reason(self, document: Any) -> Optional[str]:
+        """Why this document's approval can no longer be undone, or ``None``.
+
+        What an approval releases differs by document type, and only the module
+        that owns the type knows it: a requisition becomes an order, an order
+        reaches a vendor, a bill posts, an account is invited and used, a member
+        of staff is away and covered for. The engine can withdraw its own record
+        of the vote, and none of those come back with it.
+
+        **The default refuses.** A type that has not answered is a type nobody
+        has asked the question about yet, which is a different thing from a type
+        whose approval leaves nothing behind, and the two must not read the
+        same. One that is genuinely always reversible declares
+        ``approval_releases_nothing``; ``register_handler`` refuses a handler
+        that does neither, so this refusal is the second line rather than the
+        first and catches a handler that reaches the engine without passing
+        through the registry.
+
+        ``document`` is the source record the instance points at, or ``None``
+        where it has since been deleted.
+        """
+        if self.approval_releases_nothing:
+            return None
+        return (
+            "The module that owns this document type has not said whether "
+            "approving it has already taken effect, so the approval cannot be "
+            "undone."
+        )
+
     def validate_reversal(self, instance, context: Dict) -> None:
         """Refuse an administrator's reversal that this document cannot honour.
 
@@ -113,13 +154,30 @@ class BaseWorkflowHandler:
         IN_PROGRESS would describe a batch that is being paid as one still
         waiting for a decision.
 
+        Asks :meth:`reversal_block_reason` and raises its answer in one shape,
+        so every document type refuses in the same words and through the same
+        exception. A type that must hold a lock while it answers overrides this
+        instead and does both here: a payout batch reads its instructions under
+        ``select_for_update`` so a reversal and a dispatch serialise against
+        each other, and a finance document locks its own row before reading the
+        status a posting would have moved.
+
         ``context`` carries ``action_id``, ``original_action``, ``stage_code``,
         ``attempt``, ``reason``, ``actor_id``, and ``was_final_approval`` - True
         when the instance stood fully APPROVED at the moment the reversal was
         asked for. Raise
         :class:`~vs_workflow.exceptions.ReversalNotAllowedError` to refuse.
         """
-        return None
+        document = getattr(instance, "document", None)
+        reason = self.reversal_block_reason(document)
+        if reason is None:
+            return None
+        extra = {"document_type": self.document_type}
+        # Quoted back to the administrator where the document carries one.
+        reference = getattr(document, "document_number", "") or ""
+        if reference:
+            extra["document_number"] = reference
+        raise ReversalNotAllowedError(reason, **extra)
 
     def on_action_reversed(self, instance, context: Dict) -> None:
         """Put the document back after the engine has undone a decision.
@@ -140,3 +198,29 @@ class BaseWorkflowHandler:
         engine rolled back.
         """
         return None
+
+
+def declares_reversal_answer(handler_class: Type[BaseWorkflowHandler]) -> bool:
+    """Whether *handler_class* has said what an approval of its type releases.
+
+    A type declares in one of three ways: it sets
+    ``approval_releases_nothing``, it answers
+    :meth:`BaseWorkflowHandler.reversal_block_reason`, or it overrides
+    :meth:`BaseWorkflowHandler.validate_reversal` because it must hold a lock
+    while it answers.
+
+    The search walks the class's own MRO and skips
+    :class:`BaseWorkflowHandler`, whose definitions are precisely the silence
+    being asked about, so a module whose shared base answers for all of its
+    types declares once and a type that inherits nothing but the base declares
+    not at all. The flag counts only when it is True: setting it False says
+    something is released without saying what blocks a reversal, which is the
+    silence in a different spelling.
+    """
+    if getattr(handler_class, "approval_releases_nothing", False):
+        return True
+    return any(
+        name in vars(klass)
+        for klass in handler_class.__mro__ if klass is not BaseWorkflowHandler
+        for name in ("reversal_block_reason", "validate_reversal")
+    )

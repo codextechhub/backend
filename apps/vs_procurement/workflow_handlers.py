@@ -17,7 +17,6 @@ from urllib.parse import urlencode
 from vs_finance.constants import DocumentStatus
 from vs_finance.money import format_naira
 from vs_workflow.constants import DocumentAudience
-from vs_workflow.exceptions import ReversalNotAllowedError
 from vs_workflow.handlers import BaseWorkflowHandler, register_handler
 
 from . import approvals
@@ -110,33 +109,11 @@ class _ProcApprovalHandler(BaseWorkflowHandler):
         approvals.reset_pending(instance.document)
 
     # --- reversal ----------------------------------------------------------- #
-    def reversal_block_reason(self, document) -> str | None:
-        """Why this document's approval can no longer be undone, or ``None``.
-
-        Each document type answers for its own, because what approval releases
-        differs by type and only the owning type knows it: a requisition becomes
-        an order, an order reaches a vendor, a bill and a payment reach the
-        ledger. A type with nothing to say here is one whose approval has left
-        nothing behind that a reversal cannot take back.
-        """
-        return None
-
-    def validate_reversal(self, instance, context) -> None:
-        """Refuse a reversal whose decision has already had an effect in the world.
-
-        The engine can withdraw its own record of a vote; it cannot withdraw what
-        the vote released. Asking every type through
-        :meth:`reversal_block_reason` and raising the refusal here in one shape is
-        what stops one type being asked while the others reverse silently with
-        their effect still standing.
-        """
-        document = instance.document
-        reason = None if document is None else self.reversal_block_reason(document)
-        if reason is None:
-            return None
-        raise ReversalNotAllowedError(
-            reason, document_number=document.document_number or str(document.pk),
-        )
+    #: No shared answer, deliberately. Each concrete type below says for itself
+    #: what its approval released, and a type added here later inherits the
+    #: engine's refusal rather than a permission this class would have handed
+    #: it. The engine's ``BaseWorkflowHandler.validate_reversal`` asks and
+    #: raises the refusal in one shape.
 
     def on_action_reversed(self, instance, context) -> None:
         """Put the document back in the approval queue it was decided out of."""

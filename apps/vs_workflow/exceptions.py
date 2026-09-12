@@ -130,6 +130,27 @@ class CancellationNotAllowedError(WorkflowError):
     default_message = "This instance cannot be cancelled."
 
 
+class ReversalContractNotDeclaredError(WorkflowError):
+    """Registering a handler that has not said what its approval releases.
+
+    Raised while the app registry is being built, so a document type reaches a
+    running system only after its own module has answered. The engine can
+    withdraw its record of an approval and nothing else, and a type that says
+    nothing would be reversed with its effect still standing: an order already
+    with a vendor, an account already invited, a member of staff already away
+    and covered for.
+
+    A type whose approval genuinely leaves nothing behind declares that in as
+    many words, so "always reversible" and "nobody has asked yet" stop looking
+    identical from outside.
+    """
+
+    error_code = "REVERSAL_CONTRACT_NOT_DECLARED"
+    default_message = (
+        "This document type has not declared whether its approval can be undone."
+    )
+
+
 # Protects the document handler registry from ambiguous ownership.
 class HandlerAlreadyRegisteredError(WorkflowError):
     error_code = "HANDLER_ALREADY_REGISTERED"

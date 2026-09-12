@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+from django.utils import timezone
+
 from schools.vs_staff.approvals import ensure_tenant_approval_templates
 from schools.vs_staff.constants import LEAVE_APPROVER_GROUP_CODE, LeaveStatus
 from schools.vs_staff.models import LeaveRequest
@@ -165,8 +167,8 @@ class FilingTests(LeaveFixture):
 
 
 class DecisionTests(LeaveFixture):
-    def _file(self):
-        self.post(self.admin, "staff-leave", self.body(), pk=self.eze.pk)
+    def _file(self, **overrides):
+        self.post(self.admin, "staff-leave", self.body(**overrides), pk=self.eze.pk)
         return LeaveRequest.all_objects.get(staff=self.eze)
 
     def _instance(self, row):
@@ -199,14 +201,22 @@ class DecisionTests(LeaveFixture):
     def test_reversing_the_decision_puts_the_request_back_to_pending(self):
         """The status is written from the instance, so it follows the instance back.
 
-        Otherwise Mrs Eze's profile keeps showing approved leave after the
+        Otherwise Mr Eze's profile keeps showing approved leave after the
         approval behind it has been withdrawn, and the school schedules cover for
-        days nobody currently allows her to take.
+        days nobody currently allows him to take.
+
+        The dates are in the future because that is the leave a reversal is
+        allowed on at all: an absence already under way cannot be undone by
+        editing the approval behind it, which ``ReversalTests`` covers.
         """
         from vs_workflow.models import WorkflowStageAction
         from vs_workflow.services import actions
 
-        row = self._file()
+        start = timezone.localdate() + dt.timedelta(days=30)
+        row = self._file(
+            start_date=start.isoformat(),
+            end_date=(start + dt.timedelta(days=4)).isoformat(),
+        )
         instance = self._instance(row)
         actions.record_action(instance.id, self.lekki_head, "APPROVED", "Fine.")
         vote = WorkflowStageAction.objects.get(
@@ -369,4 +379,150 @@ class NobodyToApproveTests(StaffFixture):
                 staff=self.eze, status=LeaveStatus.APPROVED,
             ).exists(),
             "leave must never approve itself",
+        )
+
+
+class ReversalTests(LeaveFixture):
+    """What a leave approval releases, and when undoing it stops being honest.
+
+    Nobody is stored as On Leave. The directory derives it from an approved
+    request covering today, and a head of year reads that when they decide who
+    takes Mr Eze's JSS1 classes. So the question a reversal has to answer is
+    whether he has been away yet, and the first day of the leave is where the
+    answer changes: before it, nothing has been released and putting the request
+    back to pending says exactly where the school stands; on it and after it,
+    the absence has happened and no edit to the approval record brings him back
+    to his class.
+    """
+
+    def _file(self, start, end):
+        self.post(
+            self.admin, "staff-leave",
+            self.body(start_date=start.isoformat(), end_date=end.isoformat()),
+            pk=self.eze.pk,
+        )
+        return LeaveRequest.all_objects.get(staff=self.eze)
+
+    def _approve(self, row):
+        from vs_workflow.services import actions
+
+        instance = WorkflowInstance.all_objects.get(
+            document_type="schools.leave_request",
+            document_object_id=str(row.pk),
+        )
+        actions.record_action(instance.id, self.lekki_head, "APPROVED", "Fine.")
+        row.refresh_from_db()
+        self.assertEqual(row.status, LeaveStatus.APPROVED)
+        return instance
+
+    def _live_vote(self, instance):
+        from vs_workflow.models import WorkflowStageAction
+
+        return WorkflowStageAction.objects.get(
+            stage_instance__instance=instance,
+            is_reversal_of__isnull=True, reversed_at__isnull=True,
+        )
+
+    def _reverse(self, instance):
+        from vs_workflow.services import actions
+
+        return actions.reverse_action(
+            self._live_vote(instance).id, self.admin,
+            reason="approved by the wrong head",
+        )
+
+    def _assert_refused(self, row, instance, expected_phrase):
+        """The reversal is refused and nothing about the decision is written."""
+        from vs_workflow.exceptions import ReversalNotAllowedError
+
+        with self.assertRaises(ReversalNotAllowedError) as caught:
+            self._reverse(instance)
+        self.assertIn(expected_phrase, str(caught.exception))
+
+        row.refresh_from_db()
+        instance.refresh_from_db()
+        self.assertEqual(row.status, LeaveStatus.APPROVED)
+        self.assertIsNotNone(row.decided_at)
+        self.assertIsNone(self._live_vote(instance).reversed_at)
+
+    def test_leave_that_has_not_started_may_have_its_approval_undone(self):
+        """Nobody reads as away and no day has been taken, which is what reversal is for."""
+        start = timezone.localdate() + dt.timedelta(days=14)
+        row = self._file(start, start + dt.timedelta(days=3))
+        instance = self._approve(row)
+
+        self._reverse(instance)
+
+        row.refresh_from_db()
+        self.assertEqual(row.status, LeaveStatus.PENDING)
+        self.assertIsNone(row.decided_at)
+
+    def test_leave_running_today_refuses_the_reversal(self):
+        """Mr Eze is not in front of his class this morning, and the directory says so."""
+        today = timezone.localdate()
+        row = self._file(today - dt.timedelta(days=2), today + dt.timedelta(days=2))
+        instance = self._approve(row)
+
+        self._assert_refused(row, instance, "already running")
+
+    def test_leave_that_starts_today_refuses_the_reversal(self):
+        """The first day is where the answer changes, so the boundary is its own case."""
+        today = timezone.localdate()
+        row = self._file(today, today + dt.timedelta(days=4))
+        instance = self._approve(row)
+
+        self._assert_refused(row, instance, "already running")
+
+    def test_leave_already_taken_refuses_the_reversal(self):
+        """The days are gone and the count of days taken is built from approved rows."""
+        end = timezone.localdate() - dt.timedelta(days=7)
+        row = self._file(end - dt.timedelta(days=4), end)
+        instance = self._approve(row)
+
+        self._assert_refused(row, instance, "already been taken")
+
+    def test_a_rejected_request_released_nothing_whatever_its_dates(self):
+        """The days were worked, so there is nothing a reversal has to leave alone.
+
+        Asked of the handler directly: the engine refuses to reverse anything on
+        an instance that ended REJECTED, so the handler's own answer is the only
+        way to see that leave dates are not what decides a rejected request.
+        """
+        from schools.vs_staff.workflow_handlers import LeaveRequestWorkflowHandler
+
+        row = LeaveRequest.all_objects.create(
+            tenant=self.tenant, staff=self.eze, leave_type="ANNUAL",
+            start_date=timezone.localdate() - dt.timedelta(days=10),
+            end_date=timezone.localdate() - dt.timedelta(days=6),
+            days=5, status=LeaveStatus.REJECTED,
+        )
+        self.assertIsNone(
+            LeaveRequestWorkflowHandler().reversal_block_reason(row),
+        )
+
+    def test_a_cancelled_request_released_nothing(self):
+        """They withdrew it, so the absence never happened however the dates read."""
+        from schools.vs_staff.workflow_handlers import LeaveRequestWorkflowHandler
+
+        today = timezone.localdate()
+        row = LeaveRequest.all_objects.create(
+            tenant=self.tenant, staff=self.eze, leave_type="SICK",
+            start_date=today - dt.timedelta(days=1),
+            end_date=today + dt.timedelta(days=1),
+            days=3, status=LeaveStatus.CANCELLED,
+        )
+        self.assertIsNone(
+            LeaveRequestWorkflowHandler().reversal_block_reason(row),
+        )
+
+    def test_a_request_whose_row_is_gone_blocks_nothing(self):
+        """No row means no absence anybody arranged cover for.
+
+        The same reading the rest of this handler takes: the callbacks return
+        quietly when the request has been deleted.
+        """
+        from schools.vs_staff.workflow_handlers import LeaveRequestWorkflowHandler
+
+        self.assertIsNone(
+            LeaveRequestWorkflowHandler().reversal_block_reason(None),
         )
