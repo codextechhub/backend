@@ -191,6 +191,46 @@ def check_document_types(tenant, document_types: Iterable[str]) -> List[str]:
     return types
 
 
+def _stored_leaves(condition) -> List[dict]:
+    """The comparisons in a saved condition, without refusing a shape.
+
+    :func:`_leaves` is the strict reader used when rules are written. This one
+    reads rules already stored, where the question is which fields they name
+    rather than whether they are well formed.
+    """
+    if isinstance(condition, dict):
+        if "all" in condition and isinstance(condition["all"], list):
+            return [leaf for leaf in condition["all"] if isinstance(leaf, dict)]
+        if "op" in condition:
+            return [condition]
+    return []
+
+
+def assert_answerable(dynamic_role, document_type: str, where: str) -> None:
+    """Refuse a stage whose document cannot answer the rules it would run.
+
+    A Dynamic Role names no document type: it is written once, on the Approvers
+    screen, and picked on whatever stage needs it. This is where the two meet.
+    A rule about the child a bill is for means nothing on a leave request, which
+    reaches no child, so a stage running it would resolve to nobody every time -
+    caught here, while somebody is still looking at the template.
+    """
+    from vs_workflow.conditions.fields import document_type_label, field_map, unanswerable
+
+    for rule in dynamic_role.rules.all().order_by("order"):
+        keys = [leaf.get("field") for leaf in _stored_leaves(rule.condition)]
+        refused = unanswerable([key for key in keys if key], document_type)
+        if not refused:
+            continue
+        known = field_map()
+        key = refused[0]
+        label = known[key].label if key in known else key
+        raise TemplateInvalidError(
+            f"{where}: rule {rule.order + 1} of '{dynamic_role.name}' tests "
+            f"{label}, which a {document_type_label(document_type)} does not have. "
+            "Change that rule, or pick a Dynamic Role built for this document.")
+
+
 def validate_rules(*, tenant, document_types: Iterable[str], rules) -> List[dict]:
     """Check a Dynamic Role's *rules* and resolve their targets.
 

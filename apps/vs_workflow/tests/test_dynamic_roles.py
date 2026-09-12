@@ -23,7 +23,9 @@ from vs_rbac.tests.helpers import (
     make_role_permission, make_school, make_school_admin, make_vision_user,
 )
 from vs_tenants.models import Tenant
+from schools.vs_students.workflow_conditions import STUDENT_DOCUMENT_TYPES
 from vs_workflow.conditions import context as rule_context
+from vs_workflow.conditions.fields import areas_for, catalogue, unanswerable
 from vs_workflow.constants import (
     AuditEventType, DocumentAudience, PERM_GROUP_MANAGE, PERM_GROUP_VIEW,
     PERM_TEMPLATE_VIEW,
@@ -383,11 +385,14 @@ class DynamicRoleApiTests(_Fixture):
         self.assertEqual(fields["amount"]["type"], "MONEY")
         self.assertIn("CHEQUE", [c["value"] for c in fields["document.method"]["choices"]])
 
-    def test_fields_for_several_types_offer_the_type_instead_of_its_fields(self):
-        keys = {f["key"] for f in self._fields(REFUND, WRITE_OFF)["fields"]}
-        self.assertIn("document_type", keys)
-        self.assertIn("amount", keys)
-        self.assertNotIn("document.method", keys)
+    def test_fields_for_several_types_say_which_document_answers_each(self):
+        fields = {f["key"]: f for f in self._fields(REFUND, WRITE_OFF)["fields"]}
+        self.assertIn("document_type", fields)
+        self.assertIn("amount", fields)
+        # A field only one of the two has is offered and tagged rather than
+        # hidden: the rule is written once, and the stage running it is where
+        # a document that cannot answer it is refused.
+        self.assertEqual(fields["document.method"]["document_types"], [REFUND])
 
     def test_only_approving_roles_are_offered_as_targets(self):
         keys = [r["key"] for r in self._fields(REFUND)["approver_roles"]]
@@ -684,3 +689,143 @@ class DocumentAudienceTests(_Fixture):
         # The registry compares a tenant's kind with an audience directly.
         self.assertEqual(DocumentAudience.PLATFORM, Tenant.Kind.PLATFORM)
         self.assertEqual(DocumentAudience.SCHOOL, Tenant.Kind.SCHOOL)
+
+
+# ── Areas: what a rule may ask about ─────────────────────────────────────────
+
+class ConditionAreaTests(_Fixture):
+    """A Dynamic Role names no document type, so the catalogue holds every area
+    and the stage refuses what its own document cannot answer.
+
+    Bright Star's refunds are raised against a pupil's AR account, so a rule can
+    ask about the child: send JSS1's refunds to the principal. A leave request
+    reaches no child at all, so the same Dynamic Role is refused on a leave
+    stage while somebody is still looking at the template, rather than resolving
+    to nobody at every approval.
+    """
+
+    def _jss1_role(self):
+        return self._dynamic_role([
+            {"condition": {"op": "eq", "field": "student.class_name", "value": "JSS1 A"},
+             "target_kind": "ROLE", "role_key": "dr-principal"},
+            _otherwise(target_kind="ROLE", role_key="dr-bursar"),
+        ], types=())
+
+    def _publish(self, doc_type):
+        return templates_svc.publish_template(
+            tenant=self.tenant, document_type=doc_type,
+            code=f"dr-area-{next(_counter)}", name="T",
+            stages_payload=[{"code": "s1", "label": "Approval", "kind": "APPROVAL",
+                             "order": 1, "approver_source": "DYNAMIC_ROLE",
+                             "dynamic_role_code": "spend"}])
+
+    def test_the_engines_own_areas_come_first_and_apps_add_their_own(self):
+        keys = [area.key for area in areas_for()]
+        self.assertEqual(keys[:2], ["document", "requester"])
+        self.assertIn("student", keys)
+
+    def test_a_student_field_is_answered_only_by_documents_that_reach_one(self):
+        fields = {f.key: f for f in catalogue()}
+        self.assertEqual(fields["student.class_name"].area, "student")
+        self.assertEqual(set(fields["student.class_name"].document_types),
+                         set(STUDENT_DOCUMENT_TYPES))
+        self.assertTrue(fields["student.class_name"].answers(REFUND))
+        self.assertFalse(fields["student.class_name"].answers(LEAVE))
+
+    def test_unanswerable_names_only_the_fields_the_document_cannot_answer(self):
+        # Branch is on every document; a leave request reaches no child, and
+        # carries no amount either, so both of those are refused for it.
+        self.assertEqual(unanswerable(["student.class_name", "branch"], LEAVE),
+                         ["student.class_name"])
+        self.assertEqual(unanswerable(["amount", "branch"], LEAVE), ["amount"])
+        self.assertEqual(unanswerable(["student.class_name", "amount"], REFUND), [])
+
+    def test_the_fields_endpoint_offers_the_areas_and_their_fields(self):
+        resp = _call(FIELDS, "get", self.viewer, self.tenant, path=BASE + "fields/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        body = _body(resp)
+        areas = {a["key"]: a for a in body["areas"]}
+        self.assertIn("student", areas)
+        self.assertEqual(areas["student"]["document_types"], list(STUDENT_DOCUMENT_TYPES))
+        keys = {f["key"] for f in body["fields"]}
+        self.assertTrue({"amount", "requester.role_keys", "student.class_name"} <= keys)
+
+    def test_a_rule_about_a_student_saves_without_naming_a_document_type(self):
+        dynamic_role = self._jss1_role()
+        self.assertEqual(dynamic_role.document_types, [])
+        self.assertEqual([r.role_key for r in dynamic_role.rules.order_by("order")],
+                         ["dr-principal", "dr-bursar"])
+
+    def test_a_stage_whose_document_reaches_a_student_may_use_it(self):
+        self._jss1_role()
+        template = self._publish(REFUND)
+        self.assertEqual(template.stages.get(code="s1").dynamic_role.code, "spend")
+
+    def test_a_stage_whose_document_reaches_no_student_is_refused(self):
+        self._jss1_role()
+        with self.assertRaises(TemplateInvalidError) as caught:
+            self._publish(LEAVE)
+        self.assertIn("Their class", caught.exception.message)
+
+    # ── Reading the child a document is about ────────────────────────────────
+
+    def _child_in(self, class_name, *, tenant=None, status_=None):
+        """A pupil placed in *class_name*, with the roll rows that placement needs."""
+        from schools.vs_academics.models import AcademicSession, Level, Program, SchoolClass
+        from schools.vs_students.models import ClassEnrolment, Student
+
+        tenant = tenant or self.tenant
+        n = next(_counter)
+        session = AcademicSession.objects.create(
+            tenant=tenant, name=f"20{n % 90}/20{(n % 90) + 1}",
+            start_date="2026-09-01", end_date="2027-07-31")
+        program = Program.objects.create(tenant=tenant, name=f"Junior {n}", code=f"JNR{n}")
+        level = Level.objects.create(
+            tenant=tenant, program=program, session=session, name="JSS1",
+            code=f"JSS1-{n}", order_index=1)
+        school_class = SchoolClass.objects.create(
+            tenant=tenant, level=level, session=session, name=class_name,
+            code=f"{class_name}-{n}".replace(" ", ""))
+        student = Student.objects.create(
+            tenant=tenant, branch=self.branch if tenant == self.tenant else self.other_branch,
+            first_name="Tunde", last_name="Okeye", date_of_birth="2014-05-02",
+            gender="MALE", status=status_ or "ACTIVE")
+        ClassEnrolment.objects.create(
+            tenant=tenant, student=student, school_class=school_class, session=session)
+        return student
+
+    def _refund_for(self, student, *, tenant=None):
+        """A stand-in refund carrying the AR customer the ledger would carry.
+
+        The customer is the real shape - the loose source_type/source_id pair -
+        because that pair is the whole path from a document to a child.
+        """
+        customer = SimpleNamespace(
+            source_type="vs_students.Student", source_id=str(student.pk))
+        return SimpleNamespace(customer=customer)
+
+    def test_the_engine_reads_the_child_a_refund_is_about(self):
+        from schools.vs_students.workflow_conditions import student_facts
+
+        student = self._child_in("JSS1 A")
+        facts = student_facts(self._refund_for(student), self.tenant)
+        self.assertEqual(facts["class_name"], "JSS1 A")
+        self.assertEqual(facts["level_name"], "JSS1")
+        self.assertEqual(facts["status"], "ACTIVE")
+        self.assertEqual(facts["id"], str(student.pk))
+
+    def test_another_schools_child_is_not_read(self):
+        # source_id is a loose string, so Greenfield's pupil 41 and Bright
+        # Star's pupil 41 are the same number. The tenant decides.
+        theirs = self._child_in("JSS1 A", tenant=self.other_tenant)
+        from schools.vs_students.workflow_conditions import student_facts
+
+        self.assertEqual(student_facts(self._refund_for(theirs), self.tenant), {})
+
+    def test_a_document_that_reaches_no_child_has_no_student_facts(self):
+        from schools.vs_students.workflow_conditions import student_facts
+
+        self.assertEqual(student_facts(SimpleNamespace(), self.tenant), {})
+        self.assertEqual(
+            student_facts(SimpleNamespace(customer=SimpleNamespace(
+                source_type="vs_finance.Customer", source_id="7")), self.tenant), {})

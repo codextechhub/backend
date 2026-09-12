@@ -959,14 +959,21 @@ class WorkflowDynamicRoleViewSet(TenantScopedMixin, ModelViewSet):
     def fields(self, request):
         """What a Dynamic Role serving ``?document_type=`` may test, and who it may send to.
 
-        Several ``document_type`` values ask for one serving all of them; none
-        asks for one serving any type. ``document_types`` lists the types the
-        caller's tenant raises - the only ones its Dynamic Roles can serve -
-        and ``approver_roles`` the roles a rule may send to: approving roles
-        only, since the engine nominates no other.
+        A Dynamic Role names no document type - a stage does, when it picks the
+        role - so asking without ``document_type`` returns the whole catalogue
+        for the caller's tenant: every area, and every field in it. Each field
+        says which document types can answer it, and publishing refuses a stage
+        whose document cannot answer a rule it would run.
+
+        ``areas`` are the parts of the school a condition can ask about, in the
+        order a screen should offer them: this document, the person who raised
+        it, and whatever a domain app has declared, such as the child a bill is
+        for. ``document_types`` lists the types the tenant raises, and
+        ``approver_roles`` the roles a rule may send to - approving roles only,
+        since the engine nominates no other.
         """
         from vs_rbac.models import TenantRoleTemplate
-        from vs_workflow.conditions.fields import document_type_label, fields_for
+        from vs_workflow.conditions.fields import areas_for, catalogue, document_type_label
         from vs_workflow.handlers.registry import handlers_raised_by
 
         try:
@@ -974,12 +981,15 @@ class WorkflowDynamicRoleViewSet(TenantScopedMixin, ModelViewSet):
                 request.tenant, request.query_params.getlist("document_type"))
         except TemplateInvalidError as exc:
             return Response({"detail": exc.message}, status=status.HTTP_400_BAD_REQUEST)
+        # Narrowed to what was asked for, else everything this tenant raises.
+        scope = requested or sorted(handlers_raised_by(request.tenant))
         roles = TenantRoleTemplate.objects.filter(
             tenant=request.tenant, status=TenantRoleTemplate.Status.ACTIVE,
             is_system_role=True,
         ).order_by("name")
         return Response({
-            "fields": [field.as_dict() for field in fields_for(requested)],
+            "areas": [area.as_dict() for area in areas_for(scope)],
+            "fields": [field.as_dict() for field in catalogue(scope)],
             "document_types": [
                 {"value": t, "label": document_type_label(t)}
                 for t in sorted(handlers_raised_by(request.tenant))
