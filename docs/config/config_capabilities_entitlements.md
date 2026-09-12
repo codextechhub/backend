@@ -174,7 +174,14 @@ a DENIED state may not carry dates, an `ends_at` in the past is rejected, and
 but consumed by `resolve_request_scope` reading `request.data`
 (`services/scopes.py:61`).
 
-`DELETE /entitlements/<capability>/` reads only `reason`.
+`DELETE /entitlements/<capability>/` reads only `reason`. Its response carries
+`capability`, `cleared`, `effective`, `status`, `source` and
+`roles_needing_attention`. A tenant's own grant wins over the platform grant
+while it exists, so removing it can return the tenant to a shallower reach:
+the role grants beyond that reach are taken back, and any role whose own
+permission dependencies refuse the change is left as it was and named there.
+Removing the last layer closes the module instead of shallowing it, and takes
+no key at all.
 
 ### Serializer field sets
 
@@ -350,8 +357,18 @@ POST /v1/config/entitlements/?tenant=alpha-nt
             "tenant": "…", "state": "GRANTED", "source": "MANUAL",
             "starts_at": "2026-09-01T00:00:00Z",
             "ends_at": "2027-07-31T00:00:00Z",
-            "updated_by": 7, "created_at": "…", "updated_at": "…" } }
+            "updated_by": 7, "created_at": "…", "updated_at": "…",
+            "roles_needing_attention": [] } }
 ```
+
+`roles_needing_attention` is empty on a write that leaves the school reaching
+as much as it did before. A write that shallows a module takes back the role
+grants beyond the new depth, and a role whose own permission dependencies
+refuse that change is left exactly as it was, named here with the keys it kept
+and the refusal in words, and named again in the RBAC audit trail under
+`plan_downgrade_blocked`. The message carries the count and the role names too,
+so an operator who reads only the message is not told the grant simply saved.
+The school plan endpoints report the same event under the same key.
 
 On 20 August 2026 the grant has not started, so:
 

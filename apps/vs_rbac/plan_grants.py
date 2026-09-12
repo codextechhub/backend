@@ -59,6 +59,15 @@ A role that cannot be settled is reported, never enforced
     audit trail, and in the response the operator who made the change is
     already reading. Every other role in the tenant is settled regardless.
 
+    The report reaches that response through ``unsettled_roles``, a list the
+    caller owns and this fills. It travels beside the return value rather than
+    inside it because the writes that settle a tenant's reach answer with the
+    row they wrote, and that is their callers' contract; a role nobody could
+    settle is a second fact about the same write rather than a replacement for
+    the first. Every write that settles takes the list as an argument of the
+    settlement itself, so a new one cannot perform a settlement without saying
+    where its report goes.
+
     Nothing is taken away to force the save through. The kept key is inside
     the depth the school still pays for, and dropping it because something it
     depended on left would charge the school for a rule it never agreed to.
@@ -139,7 +148,9 @@ class GrantReconciliation:
 DEFAULT_REASON = "The plan no longer reaches these permissions."
 
 
-def revoke_grants_beyond_the_tenants_depth(*, tenant, actor, reason=""):
+def revoke_grants_beyond_the_tenants_depth(
+    *, tenant, actor, reason="", unsettled_roles=None,
+):
     """Take back every role grant the tenant's depth no longer covers.
 
     Idempotent, and safe after any write that settles what a tenant reaches:
@@ -168,6 +179,13 @@ def revoke_grants_beyond_the_tenants_depth(*, tenant, actor, reason=""):
     usable, and the settlement carries on to the next role. The module
     docstring says why the refusal stops here and what becomes of a role that
     is reported.
+
+    ``unsettled_roles``, when given, is a list this fills with those roles, so
+    a caller answering to a person can name them in the response that person is
+    reading. It is a parameter of the settlement rather than something read off
+    the return value because the callers below this all answer with the row
+    they wrote: taking the list here is what stops a write settling a tenant's
+    roles with nowhere to report the ones it left behind.
 
     Returns a :class:`GrantReconciliation`.
     """
@@ -245,7 +263,34 @@ def revoke_grants_beyond_the_tenants_depth(*, tenant, actor, reason=""):
             "permission dependencies refused the change: %s",
             tenant.slug, [entry["role_key"] for entry in unsettled],
         )
+    if unsettled_roles is not None:
+        unsettled_roles.extend(unsettled)
     return GrantReconciliation(revoked=revoked, unsettled=unsettled)
+
+
+def unsettled_roles_note(unsettled):
+    """The sentence a write appends when it left a role standing beyond the depth.
+
+    A write that completes while a role keeps grants the tenant can no longer
+    reach is not a plain success, and somebody who reads only the message
+    should not have to open the payload to discover that. The roles themselves
+    travel in ``roles_needing_attention``, with the keys involved and the
+    refusal in words.
+
+    One sentence serves every surface that settles a tenant's reach, so the
+    plan screen and the configuration screen cannot come to describe the same
+    event differently. Empty when there is nothing to report, which is what
+    lets a caller append it unconditionally.
+    """
+    if not unsettled:
+        return ""
+    count = len(unsettled)
+    names = ", ".join(entry["role_name"] for entry in unsettled)
+    return (
+        f" {count} {'role' if count == 1 else 'roles'} kept permissions the new "
+        f"depth does not reach and {'needs' if count == 1 else 'need'} "
+        f"attention: {names}."
+    )
 
 
 def _report_unsettled_role(*, role, actor, reason, lost, exc):

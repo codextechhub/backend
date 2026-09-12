@@ -111,11 +111,10 @@ def apply_plan_entitlements(
             reconcile_roles=False,
         ))
     if had_a_plan_already:
-        report = revoke_grants_beyond_the_tenants_depth(
+        revoke_grants_beyond_the_tenants_depth(
             tenant=school.tenant, actor=actor, reason=reason,
+            unsettled_roles=unsettled_roles,
         )
-        if unsettled_roles is not None:
-            unsettled_roles.extend(report.unsettled)
     return rows
 
 

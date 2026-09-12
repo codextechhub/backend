@@ -119,7 +119,7 @@ def effective_capability(capability, *, tenant=None, branch=None, _seen=None):
     return capability.default_enabled
 
 
-def _role_grants_follow_reach(tenant, actor, reason):
+def _role_grants_follow_reach(tenant, actor, reason, unsettled_roles):
     """Take back the role grants this tenant's depth no longer reaches.
 
     The one place that answers "the tenant reaches less than it did, so what
@@ -134,10 +134,15 @@ def _role_grants_follow_reach(tenant, actor, reason):
     one catalogue edit is a job rather than a side effect of a write, so those
     are left for each tenant's own next settlement.
 
-    Returns the reconciliation report, which names any role that could not be
-    saved. A caller answering to an operator should carry those names into its
-    response; one that does not may ignore them, because the same roles are
-    named in the audit trail either way.
+    ``unsettled_roles`` is the list the settlement fills with any role it could
+    not save, and it carries no default on purpose. A write that narrows a
+    tenant's reach has to say where that report goes, even when the answer is
+    ``None`` because nothing reads its response, so a surface an operator is
+    looking at cannot settle a tenant's roles and quietly drop the names of the
+    ones it left standing.
+
+    Returns the reconciliation report, which names the same roles for a caller
+    that would rather read them back than hand a list in.
     """
     from vs_rbac.plan_grants import (
         GrantReconciliation,
@@ -147,28 +152,15 @@ def _role_grants_follow_reach(tenant, actor, reason):
     if tenant is None:
         return GrantReconciliation()
     return revoke_grants_beyond_the_tenants_depth(
-        tenant=tenant, actor=actor, reason=reason,
+        tenant=tenant, actor=actor, reason=reason, unsettled_roles=unsettled_roles,
     )
-
-
-def _collect_unsettled(report, sink):
-    """Hand a reconciliation's unsettled roles to a caller that asked for them.
-
-    ``sink`` is a list the caller owns. The report travels this way rather than
-    in the return value because these services answer with the row they wrote
-    and their callers depend on that; a role nobody could settle is a second
-    fact about the same write rather than a replacement for the first.
-    """
-    if sink is not None:
-        sink.extend(report.unsettled)
-    return report
 
 
 # Update the grant that allows a tenant or platform scope to use a capability.
 @transaction.atomic
 def set_entitlement(
     *, capability, tenant, state, source, actor, starts_at=None, ends_at=None,
-    depth=UNSET, reason="", reconcile_roles=True,
+    depth=UNSET, reason="", reconcile_roles=True, unsettled_roles=None,
 ):
     """Write the grant, leaving depth alone unless the caller names one.
 
@@ -187,6 +179,11 @@ def set_entitlement(
     rather than one at a time. Reconciling between the rows of one batch reads
     a half-moved tenant and acts on it, so a batch writes with this off and
     settles the roles once, itself, when every row is in place.
+
+    ``unsettled_roles``, when given, is a list this fills with any role whose
+    grants could not be settled against the new depth, so an endpoint can name
+    them to the operator who made the change. Such a role is left exactly as it
+    was and the write still completes.
     """
     scope_key = f"tenant:{tenant.pk}" if tenant else "platform"
     # Entitlements are tenant/platform only; branch enablement is handled by overrides.
@@ -224,7 +221,7 @@ def set_entitlement(
     if reconcile_roles and current is not None and depth_shrank(
         current.depth, effective_depth,
     ):
-        _role_grants_follow_reach(tenant, actor, reason)
+        _role_grants_follow_reach(tenant, actor, reason, unsettled_roles)
     return row
 
 
@@ -366,9 +363,7 @@ def set_depth_grant(
         },
         reason=reason,
     )
-    _collect_unsettled(
-        _role_grants_follow_reach(tenant, actor, reason), unsettled_roles,
-    )
+    _role_grants_follow_reach(tenant, actor, reason, unsettled_roles)
     return row
 
 
@@ -402,15 +397,29 @@ def clear_depth_grant(*, capability, tenant, actor, reason="", unsettled_roles=N
         action="config.depth_grant.cleared", target=module, actor=actor,
         tenant=tenant, before=before, after={}, reason=reason,
     )
-    _collect_unsettled(
-        _role_grants_follow_reach(tenant, actor, reason), unsettled_roles,
-    )
+    _role_grants_follow_reach(tenant, actor, reason, unsettled_roles)
     return True
 
 
 @transaction.atomic
-def clear_entitlement(*, capability, tenant, actor, reason=""):
-    """Delete only the selected entitlement layer so its parent can take over."""
+def clear_entitlement(*, capability, tenant, actor, reason="", unsettled_roles=None):
+    """Delete only the selected entitlement layer so its parent can take over.
+
+    Taking a layer away can leave the tenant reaching less than it did, so the
+    role grants are settled afterwards like every other write that narrows a
+    reach. A tenant row carries its own depth and wins over the platform row
+    while it exists: Corona bought Finance at Advanced, the house sells it at
+    Core, and deleting Corona's own row returns it to Core with its bursar
+    still holding every Advanced payroll key.
+
+    Nothing is taken from a tenant whose last layer this was. The module is
+    then closed rather than shallow, which is a state meant to be reversed, and
+    the settlement leaves every grant behind such a wall standing.
+
+    ``unsettled_roles`` behaves as it does for :func:`set_entitlement`: a role
+    whose own permission dependencies refuse the change is named there, left
+    exactly as it was, and does not stop the reset.
+    """
     scope_key = f"tenant:{tenant.pk}" if tenant else "platform"
     row = CapabilityEntitlement.all_objects.filter(
         capability=capability, scope_key=scope_key,
@@ -428,6 +437,7 @@ def clear_entitlement(*, capability, tenant, actor, reason=""):
         action="config.entitlement.cleared", target=capability, actor=actor,
         tenant=tenant, before=before, after={}, reason=reason,
     )
+    _role_grants_follow_reach(tenant, actor, reason, unsettled_roles)
     return True
 
 

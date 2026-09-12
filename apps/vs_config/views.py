@@ -19,6 +19,7 @@ from rest_framework.views import APIView
 from core.pagination import XVSPagination
 from core.response import error_response, success_response
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+from vs_rbac.plan_grants import unsettled_roles_note
 
 from .constants import ConfigPermissions
 from .models import (
@@ -689,10 +690,21 @@ class EntitlementListSetView(ConfigAPIView):
 
     # Grant or revoke entitlement before scoped overrides can enable the feature.
     def post(self, request):
+        """Write the grant, and name any role the write left standing beyond it.
+
+        A grant that leaves the tenant reaching less than it did takes the role
+        grants beyond the new depth with it, and a role whose own permission
+        dependencies refuse that change is left exactly as it was. The write
+        still completes, so the operator who made it is told here rather than
+        only in the audit trail: ``roles_needing_attention`` carries the role,
+        the keys it kept and the refusal in words, under the same name and the
+        same sentence the plan screen uses for the same event.
+        """
         serializer = SetEntitlementSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         capability = get_object_or_404(Capability, key=serializer.validated_data["capability"])
         tenant, _ = resolve_request_scope(request)
+        unsettled = []
         row = set_entitlement(
             capability=capability, tenant=tenant,
             state=serializer.validated_data["state"],
@@ -700,9 +712,13 @@ class EntitlementListSetView(ConfigAPIView):
             starts_at=serializer.validated_data.get("starts_at"),
             ends_at=serializer.validated_data.get("ends_at"),
             reason=serializer.validated_data["reason"],
+            unsettled_roles=unsettled,
         )
+        data = dict(CapabilityEntitlementSerializer(row).data)
+        data["roles_needing_attention"] = unsettled
         return success_response(
-            "Capability entitlement saved.", CapabilityEntitlementSerializer(row).data,
+            "Capability entitlement saved." + unsettled_roles_note(unsettled),
+            data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -712,19 +728,30 @@ class EntitlementResetView(ConfigAPIView):
     permission_map = {"DELETE": ConfigPermissions.ENTITLEMENT_MANAGE}
 
     def delete(self, request, capability):
+        """Drop one entitlement layer, and name any role that leaves behind.
+
+        A tenant's own grant carries its own depth and wins over the platform
+        grant while it exists, so removing it can return the tenant to a
+        shallower reach than it had. The role grants beyond that reach go with
+        it, and a role whose own permission dependencies refuse the change is
+        left exactly as it was and reported in
+        ``roles_needing_attention``, under the same name the other screens use.
+        """
         item = get_object_or_404(Capability, key=capability)
         tenant, _ = resolve_request_scope(request)
         serializer = ClearConfigurationValueSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        unsettled = []
         cleared = clear_entitlement(
             capability=item,
             tenant=tenant,
             actor=request.user,
             reason=serializer.validated_data["reason"],
+            unsettled_roles=unsettled,
         )
         inherited, active, state = entitlement_resolution(item, tenant)
         return success_response(
-            "Capability entitlement reset.",
+            "Capability entitlement reset." + unsettled_roles_note(unsettled),
             {
                 "capability": item.key,
                 "cleared": cleared,
@@ -734,6 +761,7 @@ class EntitlementResetView(ConfigAPIView):
                     "school" if inherited and inherited.tenant_id else
                     "platform" if inherited else "none"
                 ),
+                "roles_needing_attention": unsettled,
             },
         )
 

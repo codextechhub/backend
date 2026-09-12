@@ -30,6 +30,7 @@ from vs_rbac.permissions import (
     IsAuthenticatedAndActive,
     IsVisionStaff,
 )
+from vs_rbac.plan_grants import unsettled_roles_note
 
 from ..models import School
 from ..serializers import (
@@ -37,26 +38,6 @@ from ..serializers import (
     SchoolPlanUpliftSerializer,
 )
 from ..services.packages import change_plan, plan_overview
-
-
-def _unsettled_note(unsettled_roles):
-    """The sentence appended when a role kept grants the new depth cannot reach.
-
-    A plan change that completes while a role is left holding keys beyond it is
-    not a plain success, and an operator who reads only the message should not
-    have to open the payload to discover that. The roles themselves travel in
-    ``roles_needing_attention``, with the keys involved and the refusal in
-    words.
-    """
-    if not unsettled_roles:
-        return ""
-    count = len(unsettled_roles)
-    names = ", ".join(entry["role_name"] for entry in unsettled_roles)
-    return (
-        f" {count} {'role' if count == 1 else 'roles'} kept permissions the new "
-        f"depth does not reach and {'needs' if count == 1 else 'need'} "
-        f"attention: {names}."
-    )
 
 
 class _PlanView(APIView):
@@ -106,7 +87,7 @@ class SchoolPlanView(_PlanView):
         return success_response(
             f"{school.name} moved from {previous.name} to {setup.package_plan.name}, "
             f"and {len(rows)} module grants were re-applied."
-            + _unsettled_note(unsettled),
+            + unsettled_roles_note(unsettled),
             data=plan_overview(school, unsettled_roles=unsettled),
         )
 
@@ -137,7 +118,7 @@ class SchoolPlanUpliftView(_PlanView):
         )
         return success_response(
             "Uplift recorded. It ends on its own date and returns the school "
-            "to the depth its plan pays for." + _unsettled_note(unsettled),
+            "to the depth its plan pays for." + unsettled_roles_note(unsettled),
             data=plan_overview(school, unsettled_roles=unsettled),
         )
 
@@ -166,6 +147,6 @@ class SchoolPlanUpliftDetailView(_PlanView):
             if cleared else "No uplift was in place for that module."
         )
         return success_response(
-            message + _unsettled_note(unsettled),
+            message + unsettled_roles_note(unsettled),
             data=plan_overview(school, unsettled_roles=unsettled),
         )
