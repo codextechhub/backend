@@ -16,9 +16,6 @@ from django.conf import settings
 from .constants import PERM_VIEW, PERM_MANAGE
 
 
-PROBE_BASE = getattr(settings, "HEALTH_PROBE_BASE_URL", "https://api.codexng.com")
-SSL_DOMAIN = getattr(settings, "HEALTH_SSL_DOMAIN", "api.codexng.com")
-
 SERVICES = [
     ("web", "Web Frontend", "Edge", "Tier 1", "internal", 10),
     ("api", "API · DRF", "Core", "Tier 1", "internal", 20),
@@ -94,9 +91,19 @@ def seed_services(stdout=None):
     _log(stdout, f"  services: {MonitoredService.objects.filter(is_active=True).count()}")
 
 
-# Seed uptime checks that generate future probe results.
 def seed_checks(stdout=None):
+    """Seed the uptime checks that generate future probe results.
+
+    The targets are read here rather than at import, because the deployment
+    running the seeder is the one that knows its own domain. Read at import,
+    they would freeze whatever the settings module held when this file was
+    first loaded, and a probe pointed at another deployment reports that
+    deployment's health under this one's name.
+    """
     from .models import MonitoredService, UptimeCheck, CheckType
+
+    probe_base = str(settings.HEALTH_PROBE_BASE_URL).rstrip("/")
+    ssl_domain = settings.HEALTH_SSL_DOMAIN
     svc = {s.key: s for s in MonitoredService.objects.all()}
 
     def mk(service_key, name, check_type, target="", expected=None, interval=300):
@@ -111,17 +118,17 @@ def seed_checks(stdout=None):
                       "expected": expected or {}, "interval_sec": interval},
         )
 
-    mk("web", "Web frontend", CheckType.HTTP, getattr(settings, "FRONTEND_BASE_URL", PROBE_BASE),
+    mk("web", "Web frontend", CheckType.HTTP, settings.FRONTEND_BASE_URL,
        {"status": 200, "warn_ms": 800})
     # HTTP probe warn levels align with the 800ms latency warning band in
     # services._status_for_latency: a single synthetic request on the starter
     # instance should not be held to a stricter bar than the app-wide p95.
-    mk("api", "API health", CheckType.HTTP, f"{PROBE_BASE}/v1/", {"status": 200, "warn_ms": 800})
-    mk("auth", "Auth endpoint", CheckType.HTTP, f"{PROBE_BASE}/v1/user/", {"warn_ms": 800})
+    mk("api", "API health", CheckType.HTTP, f"{probe_base}/v1/", {"status": 200, "warn_ms": 800})
+    mk("auth", "Auth endpoint", CheckType.HTTP, f"{probe_base}/v1/user/", {"warn_ms": 800})
     mk("postgres", "Postgres SELECT 1", CheckType.POSTGRES, expected={"warn_ms": 100})
     mk("redis", "Redis ping", CheckType.REDIS, expected={"warn_ms": 50})
-    mk("dns", "SSL certificate", CheckType.SSL, SSL_DOMAIN, {"warn_days": 14, "critical_days": 5}, 3600)
-    mk("payments", "Payments gateway", CheckType.HTTP, f"{PROBE_BASE}/v1/payments/", {"warn_ms": 900})
+    mk("dns", "SSL certificate", CheckType.SSL, ssl_domain, {"warn_days": 14, "critical_days": 5}, 3600)
+    mk("payments", "Payments gateway", CheckType.HTTP, f"{probe_base}/v1/payments/", {"warn_ms": 900})
     # Real TCP reachability of the configured mail relay.
     smtp_host = getattr(settings, "EMAIL_HOST", "smtp.zoho.com")
     smtp_port = getattr(settings, "EMAIL_PORT", 587)

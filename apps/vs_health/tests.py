@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import timedelta
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APITestCase
@@ -573,7 +573,7 @@ class DailyRollupTests(TestCase):
 
 
 class HealthSeedTests(TestCase):
-    @patch("vs_health.seed.SSL_DOMAIN", "api.codexng.com")
+    @override_settings(HEALTH_SSL_DOMAIN="api.codexng.com")
     def test_seed_repairs_stale_ssl_monitor_target(self):
         from vs_health.seed import seed_checks
 

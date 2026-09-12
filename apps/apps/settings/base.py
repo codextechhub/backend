@@ -102,6 +102,17 @@ the product site rather than the app, and ``pay`` is reserved in
 the synthetic probes knock, and re-pointing the probes at a canary would
 silently re-point the logo in every school's email with them.
 
+**Every default here is a local development address, never a live one.** A
+deployment names its own through the environment, and ``staging.py`` reads
+each one with :func:`deployment_url`, which refuses to start a service whose
+environment is missing it. A live host as the fallback is what makes a
+misconfigured deployment invisible: the service comes up, and every address it
+builds - a school's own app, an activation link, a password reset - points at
+the production product. Somebody testing an invitation on another box then
+lands on the live product and activates a real account there. A service that
+will not start names the variable it wants; one quietly addressing production
+names nothing.
+
 **None of these may be derived from another at import time.** An environment
 module sets its own values *after* ``from .base import *``, so an f-string
 evaluated in this file freezes the base default and keeps it for ever. Staging
@@ -141,10 +152,68 @@ from datetime import timedelta
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
+
 from decouple import config
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+
+def _required_env(name: str) -> str:
+    """The environment's value for ``name``, which must be present and non-blank.
+
+    Blank counts as missing. A variable set to "" is a configuration somebody
+    half-finished, and honouring it produces addresses with no host in them
+    rather than an error anybody can act on.
+    """
+    value = str(config(name, default="") or "").strip()
+    if not value:
+        raise ImproperlyConfigured(
+            f"{name} must be set in the environment of a deployed service. "
+            "See the base URL section of apps/settings/base.py."
+        )
+    return value
+
+
+def deployment_url(name: str) -> str:
+    """The absolute base URL this deployment serves ``name`` from.
+
+    A deployed environment reads each of its addresses through this rather than
+    inheriting a default, so a missing variable stops the service instead of
+    handing it somebody else's product. See the base URL section of the module
+    docstring for what that costs when it goes unnoticed.
+
+    The value carries a scheme and a host, and keeps no trailing slash.
+    ``vs_tenants.app_urls`` cannot place a tenant's slug in front of a bare
+    host, and answers "" rather than guess, so a scheme-less value would
+    silently remove every link built on it.
+    """
+    value = _required_env(name)
+    parts = urlsplit(value)
+    if not parts.scheme or not parts.netloc:
+        raise ImproperlyConfigured(
+            f"{name} must carry a scheme and a host, as in "
+            f"https://xvs.example.com, rather than {value!r}."
+        )
+    return value.rstrip("/")
+
+
+def deployment_host(name: str) -> str:
+    """The bare hostname this deployment answers on for ``name``.
+
+    The certificate probe asks about a host, not a URL, so a scheme or a port
+    is refused: both read as a valid hostname to ``ssl`` and resolve to a
+    certificate for nothing.
+    """
+    value = _required_env(name)
+    if "/" in value or ":" in value:
+        raise ImproperlyConfigured(
+            f"{name} must be a bare hostname, as in api.example.com, "
+            f"rather than {value!r}."
+        )
+    return value
 
 
 # SECURITY WARNING: keep the secret key used in production secret!
@@ -445,17 +514,18 @@ FINANCE_CUSTOMER_EMAIL_BCC = _addresses(
 )
 FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="http://localhost:3000")
 
-# Public targets used by the platform-health synthetic probes. Keep these
-# configurable per environment; the defaults are the production API domain.
+# Public targets the platform-health synthetic probes knock on. A deployment
+# names its own; the defaults reach the development API. See the module
+# docstring.
 HEALTH_PROBE_BASE_URL = config(
-    "HEALTH_PROBE_BASE_URL", default="https://api.codexng.com"
+    "HEALTH_PROBE_BASE_URL", default="http://localhost:8000"
 ).rstrip("/")
-HEALTH_SSL_DOMAIN = config("HEALTH_SSL_DOMAIN", default="api.codexng.com")
+HEALTH_SSL_DOMAIN = config("HEALTH_SSL_DOMAIN", default="localhost")
 
 # Where this API answers from. Its own setting, never derived; see the
 # module docstring.
 API_PUBLIC_BASE_URL = config(
-    "API_PUBLIC_BASE_URL", default="https://api.codexng.com"
+    "API_PUBLIC_BASE_URL", default="http://localhost:8000"
 ).rstrip("/")
 
 # --------------------------------------------------------------------------- #
@@ -474,7 +544,7 @@ PAYMENTS_CALLBACK_URL = config("PAYMENTS_CALLBACK_URL", default="")
 # --------------------------------------------------------------------------- #
 # The school apps, not the Console. Scheme and host only; the slug becomes a
 # subdomain at call time. See the module docstring.
-SCHOOL_APP_BASE_URL = config("SCHOOL_APP_BASE_URL", default="https://xvs.codexng.com")
+SCHOOL_APP_BASE_URL = config("SCHOOL_APP_BASE_URL", default="http://localhost:5174")
 
 # Where a payer goes when the platform's own books raised the invoice.
 # Empty means the reserved pay. subdomain. See the module docstring.
