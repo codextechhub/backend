@@ -191,7 +191,7 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
             onboarding_keys=ONBOARDING_ROLE_KEYS if self.onboarding else None,
         )
         branch = posting.resolve_posting(self.tenant, data.get("branch"))
-        role_branch = posting.resolve_posting(self.tenant, data.get("role_branch"))
+        reach = posting.resolve_reach(self.tenant, data.get("role_branch"))
 
         account = UserCreateSerializer(
             data={
@@ -219,6 +219,7 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
 
         user = UserCreationService.create_pending(
             account.validated_data, request.user, request=request,
+            role_branch=reach,
         )
         # ``create_pending`` defaults to PENDING_APPROVAL, which is the platform
         # hiring workflow's state and not a school's: a school approves nobody,
@@ -238,8 +239,6 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
         creation.attach_qualifications(
             profile, data.get("qualifications"), actor=request.user,
         )
-        if role_branch is not None:
-            self._pin_grant_to_branch(user, role, role_branch, request.user)
         self._attach_teaching(profile, data, request.user)
 
         return success_response(
@@ -249,30 +248,6 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
             ).data,
             status=status.HTTP_201_CREATED,
         )
-
-    def _pin_grant_to_branch(self, user, role, branch, actor):
-        """Move the grant the creation service made onto one branch.
-
-        The service grants school-wide, which is right for a registrar and wrong
-        for a teacher hired at one site. Rewriting the row rather than adding a
-        second one, because a whole-tenant grant dominates and a pinned one
-        beside it would confer nothing.
-        """
-        from vs_rbac.models import TenantUserRoleAssignment
-
-        grant = TenantUserRoleAssignment.objects.filter(
-            tenant=self.tenant, user=user, role=role,
-            assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
-        ).first()
-        if grant is None:
-            TenantUserRoleAssignment.objects.create(
-                tenant=self.tenant, user=user, role=role, branch=branch,
-                assigned_by=actor,
-            )
-            return
-        if grant.branch_id != branch.pk:
-            grant.branch = branch
-            grant.save(update_fields=["branch", "updated_at"])
 
     def _attach_teaching(self, profile, data, actor):
         """The form's subjects-by-classes grid, if it carried one.

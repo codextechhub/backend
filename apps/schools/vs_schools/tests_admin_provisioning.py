@@ -1112,3 +1112,134 @@ class AnIncumbentsRecordReadsActiveTests(TestCase):
         # Her own account's posting, which is the older fact. The branch this
         # hat names is her reach, and that comes from the grant.
         self.assertIsNone(profile.branch_id)
+
+
+class ARenamedBranchTakesItsRoleWithItTests(TestCase):
+    """The roles screen after a school corrects a branch's name.
+
+    Brightfield opens at Ikeja and Lekki, then renames Ikeja to Yaba through
+    the branches screen. The branch reads Yaba everywhere the product shows it
+    and the roles screen still offered "Branch Admin - Ikeja", which is a site
+    the school no longer has.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="branch-rename@example.com", super_admin=True,
+        )
+        _seed_prebuilt_roles()
+
+    def _client(self):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        return client
+
+    def test_renaming_through_the_endpoint_renames_the_branchs_own_role(self):
+        from vs_rbac.services import provision_role_from_prebuilt
+
+        school = make_school(slug="rename-endpoint", name="Rename Endpoint")
+        ikeja = make_branch(school, name="Ikeja", is_main=True, status="ACTIVE")
+        lekki = make_branch(school, name="Lekki", is_main=False, status="ACTIVE")
+        for branch in (ikeja, lekki):
+            provision_role_from_prebuilt(
+                tenant=school.tenant, branch=branch, prebuilt_key="branch_admin",
+            )
+
+        response = self._client().patch(
+            reverse(
+                "branch-update", kwargs={"slug": school.slug, "code": ikeja.code},
+            ),
+            {"name": "Yaba"}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            TenantRoleTemplate.objects.get(
+                tenant=school.tenant, key=f"branch_admin-{ikeja.pk}",
+            ).name,
+            "Branch Admin - Yaba",
+        )
+        self.assertEqual(
+            TenantRoleTemplate.objects.get(
+                tenant=school.tenant, key=f"branch_admin-{lekki.pk}",
+            ).name,
+            "Branch Admin - Lekki",
+        )
+
+
+class ASchoolIsNeverCreatedShortOfRolesTests(TestCase):
+    """What happens when the library cannot give a school one of its five roles.
+
+    School Admin and Branch Admin have been guaranteed by a migration since a
+    fresh install could not provision an administrator without them. Teacher,
+    Finance Admin and Procurement Admin were left to a seeding command, and
+    creation skipped whichever were missing without a word: an install that had
+    never run the command produced schools holding two roles where the product
+    ships five, and the shortfall surfaced weeks later as a bursar with no
+    Finance Admin to be given.
+
+    Creation refuses instead, names every missing template, and leaves nothing
+    behind.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.vision_user = make_vision_user(
+            email="short-of-roles@example.com", super_admin=True,
+        )
+
+    def _create(self, slug):
+        client = APIClient()
+        client.force_authenticate(user=self.vision_user)
+        with mock.patch("vs_user.tasks.send_invitation_email_task.delay"):
+            with self.captureOnCommitCallbacks(execute=True):
+                return client.post(
+                    reverse("school-create"),
+                    {
+                        "name": slug.replace("-", " ").title(),
+                        "slug": slug,
+                        "branches": [{
+                            "name": "Main Branch",
+                            "state": "Lagos",
+                            "is_main": True,
+                            "primary_admin_data": {
+                                "full_name": "Ada Obi",
+                                "email": f"admin@{slug}.ng",
+                            },
+                        }],
+                    },
+                    format="json",
+                )
+
+    def test_a_missing_template_refuses_the_school_and_names_what_is_missing(self):
+        PrebuiltRoleTemplate.objects.filter(
+            key__in=["teacher", "finance_admin"],
+        ).delete()
+
+        with self.assertLogs("vs_schools.admin_provisioning", level="ERROR"):
+            response = self._create("short-school")
+
+        self.assertEqual(response.status_code, 503, response.data)
+        body = str(response.data)
+        self.assertIn("teacher", body)
+        self.assertIn("finance_admin", body)
+        self.assertIn("seed_prebuilt_role_templates", body)
+        self.assertFalse(School.objects.filter(slug="short-school").exists())
+        self.assertFalse(Tenant.objects.filter(slug="short-school").exists())
+
+    def test_a_whole_library_still_creates_the_school_with_every_role(self):
+        """The control: the refusal is about a broken install, not about creation."""
+        response = self._create("whole-library-school")
+
+        self.assertIn(response.status_code, (200, 201), response.data)
+        tenant = Tenant.objects.get(slug="whole-library-school")
+        keys = set(
+            TenantRoleTemplate.objects.filter(tenant=tenant)
+            .values_list("key", flat=True)
+        )
+        self.assertTrue(
+            {"school_admin", "teacher", "finance_admin", "procurement_admin"}
+            <= keys,
+            keys,
+        )

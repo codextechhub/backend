@@ -51,6 +51,36 @@ def resolve_posting(tenant, requested):
     return branch
 
 
+#: What a caller writes to ask for a grant that reaches the whole school.
+#:
+#: The word the directory's own branch filter already uses, and it has to be
+#: written down. A field left blank is somebody who did not answer the
+#: question, and reading that as "every branch" is how a teacher hired at Ikeja
+#: ends up able to read Lekki's records.
+SCHOOL_WIDE = "school"
+
+
+def resolve_reach(tenant, requested):
+    """How far a role grant reaches: one branch, the whole school, or unstated.
+
+    Returns the branch named, ``None`` where the caller deliberately asked for
+    the whole school with :data:`SCHOOL_WIDE`, and
+    ``vs_user.services.user.REACH_UNSTATED`` where they said nothing at all,
+    which leaves the grant to follow the posting it is written beside.
+
+    The three answers are kept apart here rather than collapsed into "branch or
+    nothing", because a missing answer and "everywhere" differ by every branch
+    the school has.
+    """
+    from vs_user.services.user import REACH_UNSTATED
+
+    if requested in (UNSET, None, ""):
+        return REACH_UNSTATED
+    if str(requested).strip().lower() == SCHOOL_WIDE:
+        return None
+    return resolve_posting(tenant, requested)
+
+
 @transaction.atomic
 def set_posting(staff, branch, *, actor, reason=""):
     """Write the posting on the record and on the account, together.

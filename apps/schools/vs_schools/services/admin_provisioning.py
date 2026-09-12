@@ -39,6 +39,54 @@ logger = logging.getLogger("vs_schools.admin_provisioning")
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+#: The roles CodeX ships, which a school is not finished without.
+#:
+#: Four belong to the school as a whole and ``branch_admin`` is branch-scoped,
+#: so a school with three branches carries six role rows made from these five
+#: templates. The list is the product's, not this module's: it is the set
+#: ``SchoolCreateSerializer`` provisions.
+REQUIRED_ROLE_KEYS = (
+    "school_admin",
+    "branch_admin",
+    "teacher",
+    "finance_admin",
+    "procurement_admin",
+)
+
+
+def require_prebuilt_roles(keys=REQUIRED_ROLE_KEYS):
+    """Refuse to create a school the library cannot give its roles to.
+
+    A template missing from the library used to answer "no role" in a way that
+    read like success, so a school was created holding whichever of the five
+    the install happened to have, and nobody was told which were skipped.
+    Creating half a school quietly is worse than not creating it: the shortfall
+    surfaces weeks later as a bursar with no Finance Admin to be given, and by
+    then nobody connects it to the day the school was made.
+
+    Every missing key is named in one refusal, so an operator seeds them all in
+    one go rather than discovering them one school at a time. The refusal is
+    the same one a failed administrator raises, because it is the same failure
+    seen a moment earlier: nothing is created, and the message says what to run.
+    """
+    from vs_rbac.services import missing_prebuilt_keys
+
+    missing = missing_prebuilt_keys(keys)
+    if not missing:
+        return
+
+    logger.error(
+        "require_prebuilt_roles: the prebuilt role library is missing %s",
+        ", ".join(missing),
+    )
+    raise AdminProvisioningError(
+        "Nothing was created. This install's prebuilt role library has no "
+        f"active template for: {', '.join(missing)}, so the school would be "
+        "created without roles every school gets. Run "
+        "seed_prebuilt_role_templates and try again."
+    )
+
+
 def _split_name(full_name: str) -> tuple[str, str]:
     """Split 'First Last' → ('First', 'Last').  Handles single-word names."""
     parts = full_name.strip().split(None, 1)

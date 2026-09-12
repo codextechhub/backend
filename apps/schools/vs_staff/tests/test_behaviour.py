@@ -834,3 +834,92 @@ class DirectoryTests(StaffFixture):
         StaffProfile.all_objects.filter(tenant=self.solo.tenant).delete()
         response = self.get(self.solo_admin, "staff-list")
         self.assertEqual(response.data["data"], [])
+
+
+class AGrantFollowsThePostingTests(StaffFixture):
+    """How far the role given with a new hire reaches.
+
+    A grant carrying no branch reaches every branch the school has, and the
+    grant written beside a posting carried none unless somebody filled in a
+    second field nobody knew about. Brightfield hires Funke into Ikeja as a
+    teacher and types the form exactly as the screen asks: she signs in and
+    reads Lekki's register, Lekki's staff records, and those of every branch
+    Brightfield opens afterwards.
+
+    So the reach follows the posting, and the whole school stays sayable: a
+    registrar who genuinely works across every branch is asked for by name.
+    """
+
+    def grant(self, email, tenant=None):
+        """The one active grant the creation wrote for this person."""
+        from vs_rbac.models import TenantUserRoleAssignment
+
+        user = User.objects.get(tenant=tenant or self.tenant, email=email)
+        return TenantUserRoleAssignment.objects.get(
+            user=user,
+            assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+        )
+
+    def test_a_teacher_hired_into_one_branch_is_granted_at_that_branch(self):
+        response = self.post(
+            self.admin, "staff-list", self.invite_body(branch=self.ikeja.pk),
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(
+            self.grant("funke@brightfield.test").branch_id, self.ikeja.pk,
+        )
+
+    def test_asking_for_the_school_grants_across_the_whole_school(self):
+        """The registrar's reach, which has to stay askable.
+
+        Mrs Nwankwo is based at Ikeja and keeps the whole school's records, so
+        her Teacher grant reaches every branch on purpose. It is typed, not
+        arrived at by leaving a field empty.
+        """
+        response = self.post(
+            self.admin, "staff-list",
+            self.invite_body(branch=self.ikeja.pk, role_branch="school"),
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertIsNone(self.grant("funke@brightfield.test").branch_id)
+
+    def test_a_named_branch_pins_the_grant_there_rather_than_at_the_posting(self):
+        """Based at Lekki, covering Ikeja: the deputy who runs the other site."""
+        response = self.post(
+            self.admin, "staff-list",
+            self.invite_body(branch=self.lekki.pk, role_branch=self.ikeja.pk),
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(
+            self.grant("funke@brightfield.test").branch_id, self.ikeja.pk,
+        )
+
+    def test_somebody_with_no_posting_at_all_is_granted_across_the_school(self):
+        """A null posting means across the whole school, and the grant agrees."""
+        response = self.post(self.admin, "staff-list", self.invite_body())
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertIsNone(self.grant("funke@brightfield.test").branch_id)
+
+    def test_the_rule_holds_at_a_school_with_one_branch(self):
+        """One branch is the common case, and the row says the same thing there.
+
+        The dimension recedes on screen; what is written down does not change,
+        so the day Sunrise opens its second site nobody's reach silently widens.
+        """
+        response = self.post(
+            self.solo_admin, "staff-list",
+            self.invite_body(
+                email="ade@sunrise.test", role="school_admin",
+                branch=self.solo_branch.pk, staff_number="SUN/STF/0002",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(
+            self.grant("ade@sunrise.test", tenant=self.solo.tenant).branch_id,
+            self.solo_branch.pk,
+        )

@@ -10,6 +10,8 @@ Handles:
 """
 from __future__ import annotations
 
+import logging
+
 from django.db import transaction
 from django.utils import timezone
 from django.utils.text import slugify
@@ -29,7 +31,10 @@ from .models import (
     TenantRoleTemplate,
     TenantUserRoleAssignment,
 )
+from .exceptions import PrebuiltRoleMissing
 from .validators import validate_role_permissions
+
+logger = logging.getLogger(__name__)
 
 
 SUPER_ADMIN_ROLE_KEY = "xvs_super_admin"
@@ -296,16 +301,116 @@ def _unique_tenant_role_key(tenant, name, exclude_pk=None) -> str:
         n += 1
 
 
+def branch_role_name(library_name: str, *, branch, siblings: int) -> str:
+    """What a branch's own copy of a library role is called.
+
+    The NAME is what a person reads, and it names the branch only where the
+    branch tells them something. A school with one site reading "Branch Admin -
+    Main Branch" on its roles screen is told "Branch" twice and nothing else,
+    so where a school has one branch the dimension recedes, the same way a
+    switcher with one entry or a filter with one option does. Where it has
+    several, the name says which, because there it changes meaning.
+
+    ``siblings`` is how many branches the tenant has, counted by the caller
+    that already has to know.
+    """
+    if siblings <= 1:
+        return library_name
+    return f"{library_name} - {branch.name}"
+
+
+def missing_prebuilt_keys(keys) -> list:
+    """Which of *keys* the prebuilt library cannot provision, in the order given.
+
+    Asked before provisioning rather than discovered one role at a time, so a
+    caller refusing over an incomplete library can name every missing role at
+    once and an operator seeds them in one go.
+    """
+    live = set(
+        PrebuiltRoleTemplate.objects
+        .filter(key__in=list(keys), is_active=True)
+        .values_list("key", flat=True)
+    )
+    return [key for key in keys if key not in live]
+
+
+@transaction.atomic
+def sync_branch_role_names(branch) -> list:
+    """Bring a branch's own role copies back in step with the branch's name.
+
+    The name is stored and rewritten here rather than composed on read.
+    ``TenantRoleTemplate.name`` is unique per tenant, is what the roles screen,
+    every grant row, the approver preview and the school's own search read, and
+    is what a school renames when it wants its own wording; deriving it at read
+    time would leave the stored value wrong, its uniqueness meaningless, and
+    every reader holding a second copy of the rule. So it is written in the
+    same transaction as the rename that made it stale.
+
+    **Only a name this code composed is rewritten.** A school that renamed
+    "Branch Admin - Ikeja" to "Ikeja Head" has named its own role, and renaming
+    the branch must not take that away.
+
+    A name another role in the tenant already holds is left alone: the column
+    is unique per tenant, and two branches sharing a name is an arrangement for
+    the school to settle rather than a reason to fail its rename.
+
+    Returns the roles whose names changed.
+    """
+    from vs_tenants.models import Branch
+
+    siblings = Branch.all_objects.filter(tenant_id=branch.tenant_id).count()
+    suffix = f"-{branch.pk}"
+    renamed = []
+    for role in TenantRoleTemplate.objects.filter(
+        tenant_id=branch.tenant_id, branch_id=branch.pk, is_system_role=True,
+    ):
+        if not role.key.endswith(suffix):
+            continue
+        library = PrebuiltRoleTemplate.objects.filter(
+            key=role.key[: -len(suffix)],
+        ).first()
+        if library is None:
+            continue
+        composed_here = (
+            role.name == library.name
+            or role.name.startswith(f"{library.name} - ")
+        )
+        if not composed_here:
+            continue
+        wanted = branch_role_name(library.name, branch=branch, siblings=siblings)
+        if wanted == role.name:
+            continue
+        if TenantRoleTemplate.objects.filter(
+            tenant_id=branch.tenant_id, name=wanted,
+        ).exclude(pk=role.pk).exists():
+            logger.warning(
+                "sync_branch_role_names: tenant %s already has a role named "
+                "%r, so %r keeps its name after branch %s was renamed",
+                branch.tenant_id, wanted, role.name, branch.pk,
+            )
+            continue
+        role.name = wanted
+        role.save(update_fields=["name"])
+        renamed.append(role)
+    return renamed
+
+
 # Provision a locked tenant role from Vision's prebuilt role library.
 @transaction.atomic
-def provision_role_from_prebuilt(*, tenant, branch=None, prebuilt_key: str, created_by=None):
+def provision_role_from_prebuilt(*, tenant, branch=None, prebuilt_key: str,
+                                 created_by=None, required: bool = True):
     """
     Get or create a TenantRoleTemplate from a PrebuiltRoleTemplate, copying its
     default permissions into the new role if it is freshly created.
 
     ``tenant`` is the owning tenant (derive from ``school.tenant`` at call
-    sites). Returns the TenantRoleTemplate, or None if the prebuilt key is not
-    found.
+    sites).
+
+    A key the library cannot provision raises :class:`PrebuiltRoleMissing`. It
+    answered ``None`` instead, which reads exactly like success at any call site
+    that does not check, and that is how a school was created holding two of the
+    five roles the product ships with nobody being told. ``required=False`` is
+    for a caller that genuinely treats the role as optional and says so.
     """
     from django.contrib.auth import get_user_model
 
@@ -317,26 +422,21 @@ def provision_role_from_prebuilt(*, tenant, branch=None, prebuilt_key: str, crea
 
     prebuilt = PrebuiltRoleTemplate.objects.filter(key=prebuilt_key, is_active=True).first()
     if not prebuilt:
+        if required:
+            raise PrebuiltRoleMissing([prebuilt_key])
         return None
 
     # Branch-scoped roles get a per-branch KEY so several branches can each carry
     # their own copy without violating per-tenant uniqueness. The key is
-    # machinery and always carries the branch.
-    #
-    # The NAME is what a person reads, and it names the branch only where the
-    # branch tells them something. A school with one site had "Branch Admin -
-    # Main Branch" on its roles screen: the suffix repeats what the row above it
-    # already says, and repeats the word "Branch" while doing so. Where a school
-    # has one branch the dimension recedes, the same way a switcher with one
-    # entry or a filter with one option does; where it has several, the name
-    # says which, because there it changes meaning.
+    # machinery and always carries the branch; the name is what a person reads,
+    # and :func:`branch_role_name` settles it.
     if branch is None:
         key = prebuilt.key
         name = prebuilt.name
     else:
         key = f"{prebuilt.key}-{branch.pk}"
         siblings = Branch.all_objects.filter(tenant=tenant).count()
-        name = prebuilt.name if siblings <= 1 else f"{prebuilt.name} - {branch.name}"
+        name = branch_role_name(prebuilt.name, branch=branch, siblings=siblings)
 
     role, created = TenantRoleTemplate.objects.get_or_create(
         tenant=tenant,
@@ -360,7 +460,9 @@ def provision_role_from_prebuilt(*, tenant, branch=None, prebuilt_key: str, crea
             tenant=tenant, key__startswith=f"{prebuilt.key}-",
             name=prebuilt.name, branch__isnull=False,
         ).exclude(pk=role.pk).select_related("branch"):
-            sibling.name = f"{prebuilt.name} - {sibling.branch.name}"
+            sibling.name = branch_role_name(
+                prebuilt.name, branch=sibling.branch, siblings=siblings,
+            )
             sibling.save(update_fields=["name"])
 
     if created:

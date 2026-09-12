@@ -19,6 +19,32 @@ from vs_rbac.models import TenantUserRoleAssignment
 from vs_tenants.models import Tenant
 
 
+#: The caller did not say how far a role grant reaches, which is not the same
+#: as saying it reaches everywhere. ``None`` in its place is a deliberate
+#: whole-tenant grant; this leaves the answer to :func:`grant_reach`.
+REACH_UNSTATED = object()
+
+
+def grant_reach(*, user, role, requested=REACH_UNSTATED):
+    """The branch a role grant written alongside a new account reaches.
+
+    A grant made in the same act as a posting takes that posting, because a
+    grant carrying no branch reaches every branch there is: a teacher hired at
+    Ikeja and given Teacher without anybody naming a branch could read Lekki's
+    records, Yaba's and every branch opened afterwards. Whole-tenant reach
+    remains available and has to be asked for, by passing ``requested=None``.
+
+    A role template that belongs to one branch answers for itself and outranks
+    the posting, so the deputy based at Lekki who is made Branch Admin of Ikeja
+    administers Ikeja rather than the site she sits at.
+    """
+    if requested is not REACH_UNSTATED:
+        return requested
+    if role is not None and role.branch_id:
+        return role.branch
+    return user.branch
+
+
 class UserCreationService:
 
     @staticmethod
@@ -63,7 +89,8 @@ class UserCreationService:
     @staticmethod
     @transaction.atomic
     def create_pending(validated_data: dict, requesting_user, request=None,
-                       status: str = User.Status.PENDING_APPROVAL) -> User:
+                       status: str = User.Status.PENDING_APPROVAL,
+                       role_branch=REACH_UNSTATED) -> User:
         """Creates the User record and assigns the role.
 
         ``status`` defaults to PENDING_APPROVAL (the workflow engine drives the
@@ -71,6 +98,11 @@ class UserCreationService:
         ``User.Status.DRAFT`` to park an incomplete hire: the role becomes
         optional (no assignment is written until a role is present) and the
         caller must NOT submit it to the workflow or invite it.
+
+        ``role_branch`` says how far the grant reaches. Left alone it follows
+        the posting the account is created with, which is the reach every
+        caller wants and none of them had to ask for; pass ``None`` for a
+        deliberate whole-tenant grant. See :func:`grant_reach`.
         """
         role_instance = validated_data.pop('role_instance', None)
         position_instance = validated_data.pop('position_instance', None)
@@ -122,7 +154,9 @@ class UserCreationService:
         if role_instance is not None:
             TenantUserRoleAssignment.objects.create(
                 tenant=user.tenant,
-                branch=user.branch if role_instance.branch_id else None,
+                branch=grant_reach(
+                    user=user, role=role_instance, requested=role_branch,
+                ),
                 user=user,
                 role=role_instance,
                 assigned_by=requesting_user,
@@ -172,12 +206,18 @@ class UserCreationService:
 
     @staticmethod
     @transaction.atomic
-    def submit_draft(user: User, requesting_user, request=None, role_instance=None) -> User:
+    def submit_draft(user: User, requesting_user, request=None, role_instance=None,
+                     role_branch=REACH_UNSTATED) -> User:
         """Promote a DRAFT hire into the normal approval flow (PENDING_APPROVAL).
 
         A role must be assigned first: either the draft already carries one, or
         ``role_instance`` is supplied here to assign it now. The caller submits
         the returned user to the workflow (mirrors the single-create path).
+
+        A grant written here reaches exactly as far as one written at creation
+        does, for the same reason: the draft carries the posting already, and a
+        hire parked for a week must not come out of it with wider access than
+        the same hire entered in one sitting. See :func:`grant_reach`.
         """
         if user.status != User.Status.DRAFT:
             raise ValueError({'error_code': 'NOT_A_DRAFT',
@@ -198,7 +238,9 @@ class UserCreationService:
             )
             TenantUserRoleAssignment.objects.create(
                 tenant=user.tenant,
-                branch=user.branch if role_instance.branch_id else None,
+                branch=grant_reach(
+                    user=user, role=role_instance, requested=role_branch,
+                ),
                 user=user, role=role_instance, assigned_by=requesting_user,
             )
             user.role = role_instance.name

@@ -599,6 +599,9 @@ class StaffCreateSerializer(serializers.Serializer):
     phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
     gender = serializers.CharField(required=False, allow_blank=True, default="")
     role = serializers.CharField(max_length=120)
+    #: How far the grant reaches, where that is not the posting. A branch
+    #: reference pins it there, the word "school" asks for the whole school
+    #: deliberately, and leaving it out lets the grant follow the posting.
     role_branch = serializers.CharField(
         required=False, allow_null=True, allow_blank=True, default=None,
     )

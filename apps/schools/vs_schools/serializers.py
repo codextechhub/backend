@@ -671,7 +671,13 @@ class BranchCreateSerializer(serializers.ModelSerializer):
     def create(self, validated_data: Dict[str, Any]) -> Branch:
         primary_admin_data = validated_data.pop("primary_admin_data", None)
         school = self.context.get("school")
-        
+
+        from .services.admin_provisioning import require_prebuilt_roles
+
+        # A branch carries its own copy of Branch Admin, so a library without
+        # that template cannot give this branch anybody to run it.
+        require_prebuilt_roles(["branch_admin"])
+
         # Set default lifecycle state if you want it always created as pending
         # ``tenant`` is supplied explicitly: Branch no longer has a school to
         # derive it from, so every creation path has to name the owner.
@@ -1224,6 +1230,12 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         primary_admin_data = validated_data.pop("primary_admin_data", None)
         branches_data = validated_data.pop("branches", [])
         package_setup_data = validated_data.pop("package_setup_data", None)
+
+        from .services.admin_provisioning import require_prebuilt_roles
+
+        # Asked before anything is written, so an install that cannot give this
+        # school its roles refuses it instead of creating it short.
+        require_prebuilt_roles()
 
         # --- 1. Create the School ---
         school = School.objects.create(

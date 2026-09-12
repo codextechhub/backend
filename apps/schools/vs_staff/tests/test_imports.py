@@ -173,3 +173,61 @@ class RowRefusalTests(_ImportFixture):
         batch.template = None
         batch.save(update_fields=["template"])
         self.assertEqual(validate_rows(batch), [])
+
+
+class AnImportedGrantFollowsItsRowTests(_ImportFixture):
+    """What the branch column decides, beyond where the person is based.
+
+    A row writes the account, the invitation and the grant through the same
+    service a single add uses, so the reach of an imported grant is the reach
+    of an added one. It was not: a file of forty teachers uploaded by
+    Brightfield's Ikeja office produced forty people posted to Ikeja and
+    granted across the school, each able to read Lekki's records. Nobody filled
+    anything in wrongly; the column that says where they work said nothing
+    about what they may reach.
+    """
+
+    def create_from(self, **overrides):
+        """One person, written the way the executor writes an imported row.
+
+        Keyed by target field rather than by the file's headings: this is the
+        payload the engine hands the handler after it has translated.
+        """
+        from schools.vs_staff.imports import create_staff_from_row, resolve_row
+
+        payload = {
+            "first_name": "Ifeoma",
+            "last_name": "Anyanwu",
+            "email": "ifeoma.anyanwu@brightfield.test",
+            "role": "teacher",
+            "branch": "",
+        }
+        payload.update(overrides)
+        row = resolve_row(payload, tenant=self.tenant, multi_branch=True)
+        self.assertTrue(row.ok, row.issues)
+        return create_staff_from_row(row, tenant=self.tenant, created_by=self.admin)
+
+    def grant_of(self, profile):
+        from vs_rbac.models import TenantUserRoleAssignment
+
+        return TenantUserRoleAssignment.objects.get(
+            user=profile.user,
+            assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+        )
+
+    def test_a_row_naming_a_branch_is_granted_at_that_branch(self):
+        profile = self.create_from(branch="Ikeja")
+
+        self.assertEqual(profile.branch_id, self.ikeja.pk)
+        self.assertEqual(self.grant_of(profile).branch_id, self.ikeja.pk)
+
+    def test_a_row_leaving_the_branch_blank_is_granted_across_the_school(self):
+        """Blank is a real posting, and the grant carries the same meaning.
+
+        A registrar imported with no branch works across the whole school, which
+        is exactly what a grant with no branch confers.
+        """
+        profile = self.create_from()
+
+        self.assertIsNone(profile.branch_id)
+        self.assertIsNone(self.grant_of(profile).branch_id)

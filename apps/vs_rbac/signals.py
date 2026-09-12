@@ -2,6 +2,8 @@ from django.db.models import F, Q
 from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 
+from vs_tenants.models import Branch
+
 from .models import (
     GroupPermission,
     Permission,
@@ -61,6 +63,20 @@ def _capture_old_status(sender, instance, **kwargs):
         instance._pre_save_status = None
 
 
+# Snapshot the name before save so post_save can tell a rename from any other edit.
+def _capture_old_name(sender, instance, **kwargs):
+    """Attach the pre-save name to the instance so post_save can diff it."""
+    if not instance.pk:
+        instance._pre_save_name = None
+        return
+    try:
+        instance._pre_save_name = sender.all_objects.values_list(
+            "name", flat=True,
+        ).get(pk=instance.pk)
+    except sender.DoesNotExist:
+        instance._pre_save_name = None
+
+
 # Snapshot active state before save so deactivation audits can show the prior value.
 def _capture_old_is_active(sender, instance, **kwargs):
     """Attach the pre-save is_active flag to the instance for diff checks."""
@@ -71,6 +87,39 @@ def _capture_old_is_active(sender, instance, **kwargs):
         instance._pre_save_is_active = sender.objects.values_list("is_active", flat=True).get(pk=instance.pk)
     except sender.DoesNotExist:
         instance._pre_save_is_active = None
+
+
+# ---------------------------------------------------------------------------
+# Branch - the roles that carry its name
+# ---------------------------------------------------------------------------
+
+pre_save.connect(_capture_old_name, sender=Branch)
+
+
+@receiver(post_save, sender=Branch)
+# Keep each branch's own role copies reading the branch's current name.
+def rename_branch_roles(sender, instance, created, **kwargs):
+    """A renamed branch takes the roles named after it along.
+
+    Each branch carries its own copy of Branch Admin, and that copy's name is
+    composed from the branch's. The composition happened once, at provisioning,
+    so a school that renamed Ikeja to Yaba kept "Branch Admin - Ikeja" on its
+    roles screen and had no way to correct it.
+
+    Hung off the save rather than off the update endpoint, because the endpoint
+    is one of several writers: the console renames a branch, so do management
+    commands, imports and the shell, and a rule that lives in one of them is a
+    rule the others break.
+    """
+    if created:
+        return
+    previous = getattr(instance, "_pre_save_name", None)
+    if previous is None or previous == instance.name:
+        return
+
+    from .services import sync_branch_role_names
+
+    sync_branch_role_names(instance)
 
 
 # ---------------------------------------------------------------------------
