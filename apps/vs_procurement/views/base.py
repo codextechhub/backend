@@ -157,16 +157,26 @@ def _resolve_branch_reference(entity, ref, field="branch"):
     return _rbac_resolve_branch(entity.tenant, ref, field)
 
 
-def _raised_branch(request, entity, body, *, field="branch"):
+def _raised_branch(request, entity, body, *, field="branch",
+                   shared_when_ambiguous=False):
     """:func:`vs_rbac.scoping.raised_branch` for this entity's owning tenant.
 
-    Procurement takes the strict reading of the ambiguous case: a caller bound to
-    several branches who names none is asked which, rather than having the
-    purchase filed against the entity as a whole.  That is the shared default, so
-    it is not passed - see :func:`vs_rbac.scoping.raised_branch` for why the other
-    reading exists and which kinds of row take it.
+    Procurement is entity-scoped and the rule is tenant-scoped; supplying
+    ``entity.tenant`` is most of what this adds.
+
+    The default is the strict reading of the ambiguous case, which is the one a
+    *document* takes: a caller covering several branches who names none is asked
+    which, rather than having the purchase filed against the entity as a whole,
+    where nothing later in the chain could narrow it again.  Master data passes
+    ``shared_when_ambiguous=True`` at its own call site, because a row belonging to
+    every branch is an ordinary answer for a store or a vendor rather than an
+    accident - see :func:`vs_rbac.scoping.raised_branch` for the full account of
+    both readings.
     """
-    return _rbac_raised_branch(request, entity.tenant, body, field=field)
+    return _rbac_raised_branch(
+        request, entity.tenant, body, field=field,
+        shared_when_ambiguous=shared_when_ambiguous,
+    )
 
 
 #: The branch id a downstream document takes from the source it continues.

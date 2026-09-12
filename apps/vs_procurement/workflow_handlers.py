@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from urllib.parse import urlencode
 
+from vs_finance.constants import DocumentStatus
 from vs_finance.money import format_naira
 from vs_workflow.exceptions import ReversalNotAllowedError
 from vs_workflow.handlers import BaseWorkflowHandler, register_handler
@@ -26,6 +27,32 @@ from .constants import (
     WF_DOCTYPE_VENDOR_INVOICE,
     WF_DOCTYPE_VENDOR_PAYMENT,
 )
+
+
+#: Ledger statuses a document may still be in when its approval is undone.
+#: Approval is the permission to post, so a document outside this set has already
+#: reached the ledger. The set names what approval leaves behind rather than what
+#: posting produces, so a document type whose posting service lands somewhere
+#: unexpected fails closed instead of being reversed after its entry exists.
+UNPOSTED_STATUSES = frozenset({
+    DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL,
+})
+
+
+def _posted_block_reason(document, noun: str, remedy: str) -> str | None:
+    """Refuse the reversal of an approval a posting has already acted on.
+
+    Shared by the two payable types, whose approval is the permission to post:
+    once the journal exists the money has moved in the books, and withdrawing the
+    approval record behind it would leave that entry standing with nothing on
+    record saying it was ever authorised.
+    """
+    if document.status in UNPOSTED_STATUSES:
+        return None
+    return (
+        f"This {noun} is {document.get_status_display().lower()} and no longer "
+        f"waiting on that decision, so its approval cannot be undone. {remedy}"
+    )
 
 
 class _ProcApprovalHandler(BaseWorkflowHandler):
@@ -77,32 +104,33 @@ class _ProcApprovalHandler(BaseWorkflowHandler):
         approvals.reset_pending(instance.document)
 
     # --- reversal ----------------------------------------------------------- #
-    def validate_reversal(self, instance, context) -> None:
-        """Refuse once approval has put the document in front of the vendor.
+    def reversal_block_reason(self, document) -> str | None:
+        """Why this document's approval can no longer be undone, or ``None``.
 
-        Approving a purchase order releases its email to the supplier, and a
-        supplier who has read "your order is approved" is already acting on it.
-        Undoing the approval record afterwards changes nothing they can see, so
-        the order is stopped by cancelling it, where the vendor is told.
+        Each document type answers for its own, because what approval releases
+        differs by type and only the owning type knows it: a requisition becomes
+        an order, an order reaches a vendor, a bill and a payment reach the
+        ledger. A type with nothing to say here is one whose approval has left
+        nothing behind that a reversal cannot take back.
         """
-        from .constants import PurchaseOrderVendorDeliveryStatus
-        from .models import PurchaseOrder, PurchaseOrderVendorDelivery
-
-        document = instance.document
-        if not isinstance(document, PurchaseOrder):
-            return None
-        released = PurchaseOrderVendorDelivery.objects.filter(
-            purchase_order=document,
-            status__in=(PurchaseOrderVendorDeliveryStatus.PENDING,
-                        PurchaseOrderVendorDeliveryStatus.SENT),
-        ).exists()
-        if released:
-            raise ReversalNotAllowedError(
-                "This purchase order has already gone to the vendor, so its "
-                "approval cannot be undone. Cancel the order instead.",
-                document_number=document.document_number or str(document.pk),
-            )
         return None
+
+    def validate_reversal(self, instance, context) -> None:
+        """Refuse a reversal whose decision has already had an effect in the world.
+
+        The engine can withdraw its own record of a vote; it cannot withdraw what
+        the vote released. Asking every type through
+        :meth:`reversal_block_reason` and raising the refusal here in one shape is
+        what stops one type being asked while the others reverse silently with
+        their effect still standing.
+        """
+        document = instance.document
+        reason = None if document is None else self.reversal_block_reason(document)
+        if reason is None:
+            return None
+        raise ReversalNotAllowedError(
+            reason, document_number=document.document_number or str(document.pk),
+        )
 
     def on_action_reversed(self, instance, context) -> None:
         """Put the document back in the approval queue it was decided out of."""
@@ -119,6 +147,22 @@ class RequisitionApprovalHandler(_ProcApprovalHandler):
         from .models import PurchaseRequisition
         return PurchaseRequisition
 
+    def reversal_block_reason(self, document) -> str | None:
+        """Refuse once a purchase order has been raised from the requisition.
+
+        Approval is what lets a buyer raise that order, and the order is a
+        commitment to a vendor that stands whether or not the vote behind it
+        still does. Undoing the vote would put the requisition back under review
+        with an order already placed against it, so the order is stopped by
+        cancelling it, where the vendor is told.
+        """
+        if document.purchase_orders.exists():
+            return (
+                "A purchase order has already been raised from this requisition, "
+                "so its approval cannot be undone. Cancel the order instead."
+            )
+        return None
+
 
 @register_handler(WF_DOCTYPE_PURCHASE_ORDER)
 class PurchaseOrderApprovalHandler(_ProcApprovalHandler):
@@ -129,6 +173,38 @@ class PurchaseOrderApprovalHandler(_ProcApprovalHandler):
     def document_model(self):
         from .models import PurchaseOrder
         return PurchaseOrder
+
+    def reversal_block_reason(self, document) -> str | None:
+        """Refuse once the order has reached the vendor or its goods have arrived.
+
+        Approving a purchase order releases its email to the supplier, and a
+        supplier who has read "your order is approved" is already acting on it.
+        Undoing the approval record afterwards changes nothing they can see, so
+        the order is stopped by cancelling it, where the vendor is told.
+
+        A posted receipt is the same fact reached another way: an order whose
+        email never went out can still have been placed by telephone, and once the
+        goods are received the stock and the GR/IR liability both exist.
+        """
+        from .constants import PurchaseOrderVendorDeliveryStatus
+        from .models import PurchaseOrderVendorDelivery
+
+        released = PurchaseOrderVendorDelivery.objects.filter(
+            purchase_order=document,
+            status__in=(PurchaseOrderVendorDeliveryStatus.PENDING,
+                        PurchaseOrderVendorDeliveryStatus.SENT),
+        ).exists()
+        if released:
+            return (
+                "This purchase order has already gone to the vendor, so its "
+                "approval cannot be undone. Cancel the order instead."
+            )
+        if document.goods_receipts.filter(status=DocumentStatus.POSTED).exists():
+            return (
+                "Goods have already been received against this purchase order, "
+                "so its approval cannot be undone."
+            )
+        return None
 
 
 @register_handler(WF_DOCTYPE_VENDOR_INVOICE)
@@ -141,6 +217,14 @@ class VendorInvoiceApprovalHandler(_ProcApprovalHandler):
         from .models import VendorInvoice
         return VendorInvoice
 
+    def reversal_block_reason(self, document) -> str | None:
+        """Refuse once the bill has posted, because approval is what let it post."""
+        return _posted_block_reason(
+            document, "bill",
+            "A posted bill is corrected with a reversing entry, not by editing "
+            "the approval behind it.",
+        )
+
 
 @register_handler(WF_DOCTYPE_VENDOR_PAYMENT)
 class VendorPaymentApprovalHandler(_ProcApprovalHandler):
@@ -151,3 +235,11 @@ class VendorPaymentApprovalHandler(_ProcApprovalHandler):
     def document_model(self):
         from .models import VendorPayment
         return VendorPayment
+
+    def reversal_block_reason(self, document) -> str | None:
+        """Refuse once the payment has posted, because the money has left."""
+        return _posted_block_reason(
+            document, "payment",
+            "A posted payment is corrected by reversing the payment, not by "
+            "editing the approval behind it.",
+        )

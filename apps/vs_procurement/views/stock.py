@@ -10,7 +10,10 @@ from __future__ import annotations
 import datetime
 
 from django.db import IntegrityError, transaction
-from django.db.models import Count, F, Q, Sum
+from django.db.models import (
+    BigIntegerField, Count, DecimalField, F, OuterRef, Q, Subquery, Sum, Value,
+)
+from django.db.models.functions import Coalesce
 from rest_framework.exceptions import NotFound, ValidationError
 
 from core.response import success_response
@@ -34,6 +37,7 @@ from ..serializers import (
 
 
 from .base import (
+    _branch_scope,
     _catalogue_or_404,
     _catalogue_visible,
     _kobo,
@@ -62,12 +66,125 @@ def _strict_bool(value, field):
     return value
 
 
-def _stock_detail(entity, pk):
+def _readable_balances(request, entity, location=None):
+    """The balance rows one caller may read, narrowed to a store when they name one.
+
+    Stock sits in a location and a location names a branch, so the branch rule the
+    rest of procurement reads under reaches these rows through ``location__``. It is
+    the catalogue reading of a null branch rather than the document one: a central
+    store belongs to the whole school, so what stands in it is everybody's to see,
+    and withholding it would leave a branch storekeeper looking at an empty screen
+    instead of at their own stock.
+    """
+    qs = _catalogue_visible(
+        request, StockBalance.objects.filter(stock_item__entity=entity),
+        prefix="location__",
+    )
+    return qs if location is None else qs.filter(location=location)
+
+
+def _readable_movements(request, entity):
+    """The stock ledger one caller may read, by the store each movement happened at.
+
+    A movement carrying no location belongs to no store, so it reads as shared with
+    every branch rather than as another branch's.
+    """
+    return _catalogue_visible(
+        request, StockMovement.objects.filter(entity=entity), prefix="location__",
+    )
+
+
+def _held_balances(request, entity, location=None):
+    """The balances an item figure is summed from, or ``None`` for the entity total.
+
+    ``None`` says the read covers the whole entity: a caller entitled to every store
+    who names none is asking about the school, and the item's own roll-up already
+    carries that figure, so nothing is summed and the answer is the one they have
+    always had - which is every caller in a school nobody is pinned to a branch in.
+    Anyone else is asking about part of the entity, so the balances become the
+    population and each figure is summed from them.
+    """
+    if location is None and not _branch_scope(request).is_narrowed:
+        return None
+    return _readable_balances(request, entity, location)
+
+
+def _summed_figures(held, stock_item_ids):
+    """One pseudo-balance per item, summing what it holds across the stores in scope.
+
+    Every id asked about is answered, so an item held only where this caller cannot
+    see reports nothing rather than falling back to the entity roll-up carried on the
+    item row. These rows are never saved: they exist to carry two numbers into the
+    serializer overlay.
+    """
+    totals = {
+        row["stock_item_id"]: row
+        for row in held.filter(stock_item_id__in=stock_item_ids)
+        .values("stock_item_id")
+        .annotate(qty=Sum("on_hand_qty"), value=Sum("stock_value"))
+    }
+    return {
+        item_id: StockBalance(
+            stock_item_id=item_id,
+            on_hand_qty=(totals.get(item_id) or {}).get("qty") or 0,
+            stock_value=(totals.get(item_id) or {}).get("value") or 0,
+        )
+        for item_id in stock_item_ids
+    }
+
+
+def _below_reorder(held):
+    """Ids of the items whose stock across ``held`` is at or below the reorder level.
+
+    Measured against the total in scope rather than against each store's own row: a
+    school holding four hundred at one branch and none at another is not short of
+    them, and the reorder level is a policy per item rather than per shelf.
+    """
+    return (
+        held.values("stock_item_id", "stock_item__reorder_level")
+        .annotate(held_qty=Sum("on_hand_qty"))
+        .filter(held_qty__lte=F("stock_item__reorder_level"))
+        .values("stock_item_id")
+    )
+
+
+def _scoped_item_totals(held):
+    """Annotations carrying what each item holds across the stores in ``held``.
+
+    Correlated subqueries rather than a join, because the counts computed beside
+    them are counts of items: joining the balances in would multiply an item by the
+    number of stores holding it before anything had been counted.
+    """
+    quantity = DecimalField(max_digits=16, decimal_places=4)
+    per_item = held.filter(stock_item=OuterRef("pk")).values("stock_item")
+    return {
+        "held_qty": Coalesce(
+            Subquery(
+                per_item.annotate(total=Sum("on_hand_qty")).values("total")[:1],
+                output_field=quantity,
+            ),
+            Value(0, output_field=quantity),
+        ),
+        "held_value": Coalesce(
+            Subquery(
+                per_item.annotate(total=Sum("stock_value")).values("total")[:1],
+                output_field=BigIntegerField(),
+            ),
+            Value(0, output_field=BigIntegerField()),
+        ),
+    }
+
+
+def _stock_detail(request, entity, pk):
     """One stock item plus its newest 50 movement rows, bounded in SQL.
 
     The item is a single detail record, so one explicit limited ledger query is both
     simpler and stricter than prefetching an unbounded reverse relation then slicing in
     Python. Joined actor/item data keeps movement serialization query-flat.
+
+    The ledger is the caller's own stores', so a storekeeper opening an item reads
+    what moved where they work rather than another branch's receipts and issues
+    listed under the same item.
     """
     item = (
         StockItem.objects
@@ -77,11 +194,28 @@ def _stock_detail(entity, pk):
     )
     if item is not None:
         item._recent_movements = list(
-            StockMovement.objects.filter(stock_item=item)
+            _readable_movements(request, entity).filter(stock_item=item)
             .select_related("created_by", "stock_item")
             .order_by("-id")[:50]
         )
     return item
+
+
+def _detail_payload(request, entity, pk):
+    """The serialised detail record for one item, in the scope its reader may see.
+
+    Header and ledger are scoped together deliberately: quantity, value and unit cost
+    describing the whole school while the movements listed below them describe one
+    store is the contradiction the store filter on the list already exists to avoid.
+    """
+    item = _stock_detail(request, entity, pk)
+    if item is None:
+        raise NotFound("No such stock item in this entity.")
+    held = _held_balances(request, entity)
+    context = {} if held is None else {
+        "location_balances": _summed_figures(held, [item.pk]),
+    }
+    return StockItemDetailSerializer(item, context=context).data
 
 
 def _flag(raw, field, default=False):
@@ -116,6 +250,49 @@ def _resolve_location(request, entity, raw, field="location"):
     if location is None:
         raise ValidationError({field: "No such stock location in this entity."})
     return location
+
+
+def _implied_location(request, entity, field="location"):
+    """The store a caller who names none is moving stock in, or ``None`` for theirs.
+
+    ``None`` hands the decision to the stock service's own defaulting, which is what
+    a caller entitled to every store gets: a school with one store keeps moving stock
+    without naming it, and a school with several asks which, exactly as before.
+
+    A caller pinned to a branch is answered from the stores they work in instead,
+    because the service answers from the entity's and cannot tell the difference: a
+    school whose only book store stands at one branch would otherwise have a
+    storekeeper at another issuing from a shelf they cannot even open by id. One
+    visible store needs no naming; none is refused, and so is a choice between
+    several, without naming a store the caller may not see.
+    """
+    if not _branch_scope(request).is_narrowed:
+        return None
+    visible = list(
+        _catalogue_visible(
+            request, StockLocation.objects.filter(entity=entity, is_active=True),
+        ).order_by("-is_default", "code")[:2]
+    )
+    if not visible:
+        raise ValidationError(
+            {field: "You have no stock location here. Ask for one to be set up."})
+    if len(visible) > 1:
+        raise ValidationError(
+            {field: "You work in more than one stock location, so say which."})
+    return visible[0]
+
+
+def _movement_location(request, entity, raw, field="location"):
+    """The store a movement applies to, named by the caller or implied by their own.
+
+    The write-side counterpart of :func:`_readable_balances`: a person may only move
+    stock where they may read it, whether they say where or leave it to be worked
+    out.
+    """
+    return (
+        _resolve_location(request, entity, raw, field)
+        or _implied_location(request, entity, field)
+    )
 
 
 class StockLocationListCreateView(_ProcBase):
@@ -248,6 +425,10 @@ class StockBalanceListView(_ProcBase):
 
     The rows that add up to the item totals every other stock screen shows.
 
+    A caller pinned to a branch reads their own stores and the school's shared
+    ones. Naming no store asks about the stores they work in, never about every
+    store the entity holds.
+
     docstring-name: Stock balances by location
     """
 
@@ -255,9 +436,8 @@ class StockBalanceListView(_ProcBase):
 
     def get(self, request):
         entity = resolve_entity(request)
-        qs = StockBalance.objects.filter(
-            stock_item__entity=entity,
-        ).select_related("stock_item", "location")
+        qs = _readable_balances(request, entity).select_related(
+            "stock_item", "location")
         if (item_ref := request.query_params.get("stock_item")):
             qs = qs.filter(stock_item_id=item_ref) if str(item_ref).isdigit() \
                 else qs.filter(stock_item__code=item_ref)
@@ -294,6 +474,11 @@ class StockItemListCreateView(_ProcBase):
         ``?needs_reorder=true`` is measured against whichever scope is in force, so a
         store filter answers "what is this branch short of" rather than "what is the
         school short of, that this branch happens to stock".
+
+        A caller pinned to a branch gets that same treatment without naming a store:
+        the figures describe the stores they work in. The catalogue itself is not
+        narrowed - an item nothing of theirs holds is listed at nothing, rather than
+        hidden from the people who stock it.
         """
         entity = resolve_entity(request)
         location = _resolve_location(request, entity, request.query_params.get("location"))
@@ -304,26 +489,26 @@ class StockItemListCreateView(_ProcBase):
         if (search := request.query_params.get("q")):
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
 
-        held = None
+        held = _held_balances(request, entity, location)
+        # A named store also narrows which items are listed; a caller's own stores
+        # narrow only the figures, because the catalogue is theirs to work from.
         if location is not None:
-            held = StockBalance.objects.filter(
-                location=location, stock_item__entity=entity)
             qs = qs.filter(pk__in=held.values("stock_item_id"))
         if request.query_params.get("needs_reorder") == "true":
             if held is not None:
-                qs = qs.filter(is_active=True, pk__in=held.filter(
-                    on_hand_qty__lte=F("stock_item__reorder_level"),
-                ).values("stock_item_id"))
+                qs = qs.filter(is_active=True, pk__in=_below_reorder(held))
             else:
                 qs = qs.filter(is_active=True, on_hand_qty__lte=F("reorder_level"))
 
         # One query for the page's balances rather than one per row; the serializer
-        # overlays them so every derived figure describes the same store.
+        # overlays them so every derived figure describes the same stores.
         def page_balances(page):
             if held is None:
                 return {}
-            rows = held.filter(stock_item_id__in=[item.pk for item in page])
-            return {"location_balances": {row.stock_item_id: row for row in rows}}
+            return {
+                "location_balances": _summed_figures(
+                    held, [item.pk for item in page]),
+            }
 
         return self.paginate(
             request, qs.order_by("code"), StockItemListSerializer,
@@ -373,7 +558,7 @@ class StockItemListCreateView(_ProcBase):
             )
         return success_response(
             "Stock item created.",
-            data=StockItemDetailSerializer(_stock_detail(entity, item.pk)).data,
+            data=_detail_payload(request, entity, item.pk),
             status=201,
         )
 
@@ -393,11 +578,8 @@ class StockItemDetailView(_ProcBase):
     def get(self, request, pk):
         """Return one item with its newest-first immutable movement ledger."""
         entity = resolve_entity(request)
-        item = _stock_detail(entity, pk)
-        if item is None:
-            raise NotFound("No such stock item in this entity.")
         return success_response(
-            "Stock item retrieved.", data=StockItemDetailSerializer(item).data)
+            "Stock item retrieved.", data=_detail_payload(request, entity, pk))
 
     @transaction.atomic
     def patch(self, request, pk):
@@ -458,7 +640,7 @@ class StockItemDetailView(_ProcBase):
         item.save()
         return success_response(
             "Stock item updated.",
-            data=StockItemDetailSerializer(_stock_detail(entity, item.pk)).data)
+            data=_detail_payload(request, entity, item.pk))
 
 
 class StockIssueView(_ProcBase):
@@ -482,9 +664,9 @@ class StockIssueView(_ProcBase):
             quantity=_quantity(body.get("quantity"), "quantity"),
             movement_date=_date(body.get("movement_date"), "movement_date")
             or datetime.date.today(),
-            # Which store it left. Optional for an entity with one; required once it
-            # has more, so nobody has to guess which branch the stock came from.
-            location=_resolve_location(request, entity, body.get("location")),
+            # Which store it left. Optional for a caller with one; required once they
+            # have more, so nobody has to guess which branch the stock came from.
+            location=_movement_location(request, entity, body.get("location")),
             # An override expense account, if given, must be an active postable EXPENSE.
             expense_account=_resolve_expense_account(
                 entity, body.get("expense_account"), "expense_account"),
@@ -496,7 +678,7 @@ class StockIssueView(_ProcBase):
             "Stock issued.",
             data={
                 "movement": StockMovementSerializer(movement).data,
-                "stock_item": StockItemDetailSerializer(_stock_detail(entity, item.pk)).data,
+                "stock_item": _detail_payload(request, entity, item.pk),
             },
             status=201,
         )
@@ -525,8 +707,8 @@ class StockAdjustView(_ProcBase):
             quantity_delta=_signed_qty(body.get("quantity_delta"), "quantity_delta"),
             movement_date=_date(body.get("movement_date"), "movement_date")
             or datetime.date.today(),
-            # A count corrects one shelf; say which.
-            location=_resolve_location(request, entity, body.get("location")),
+            # A count corrects one shelf; say which, unless the caller has only one.
+            location=_movement_location(request, entity, body.get("location")),
             # Adjustment account, if given, must be active postable EXPENSE (defaults to 5150).
             adjustment_account=_resolve_expense_account(
                 entity, body.get("adjustment_account"), "adjustment_account"),
@@ -540,7 +722,7 @@ class StockAdjustView(_ProcBase):
             "Stock adjusted.",
             data={
                 "movement": StockMovementSerializer(movement).data,
-                "stock_item": StockItemDetailSerializer(_stock_detail(entity, item.pk)).data,
+                "stock_item": _detail_payload(request, entity, item.pk),
             },
             status=201,
         )
@@ -552,7 +734,8 @@ class StockItemSummaryView(_ProcBase):
     ``?location=`` scopes every figure to one store, so the strip cannot disagree
     with the list it sits above. Without that, filtering the list to a branch while
     the KPIs kept reporting the school would put two different answers to the same
-    question on one screen.
+    question on one screen. A caller pinned to a branch is scoped the same way
+    without naming anything, for the same reason.
 
     docstring-name: Stock items summary
     """
@@ -563,7 +746,8 @@ class StockItemSummaryView(_ProcBase):
         """Return stock counts and carried value in integer kobo, entity or store."""
         entity = resolve_entity(request)
         location = _resolve_location(request, entity, request.query_params.get("location"))
-        # ONE aggregate either way - conditional counts avoid loading any rows.
+        held = _held_balances(request, entity, location)
+        # ONE aggregate every way - conditional counts avoid loading any rows.
         # low_stock: active, at/below its reorder level but still holding something;
         # out_of_stock: active with nothing on hand. total_value sums the carried kobo.
         if location is not None:
@@ -581,6 +765,21 @@ class StockItemSummaryView(_ProcBase):
                 out_of_stock=Count("id", filter=Q(
                     stock_item__is_active=True, on_hand_qty__lte=0)),
                 total_value=Sum("stock_value"),
+            )
+        elif held is not None:
+            # Counted over the catalogue and valued over the stores in scope, which
+            # is what the list below it does: every item is listed, and the figures
+            # on each row describe the stores this caller works in. A school whose
+            # every store is in scope therefore reads exactly the totals below.
+            agg = StockItem.objects.filter(entity=entity).annotate(
+                **_scoped_item_totals(held),
+            ).aggregate(
+                tracked=Count("id"),
+                active=Count("id", filter=Q(is_active=True)),
+                low_stock=Count("id", filter=Q(
+                    is_active=True, held_qty__lte=F("reorder_level"), held_qty__gt=0)),
+                out_of_stock=Count("id", filter=Q(is_active=True, held_qty__lte=0)),
+                total_value=Sum("held_value"),
             )
         else:
             agg = StockItem.objects.filter(entity=entity).aggregate(
@@ -610,15 +809,19 @@ class StockItemSummaryView(_ProcBase):
 class StockMovementListView(_ProcBase):
     """GET - the stock ledger (movements), optionally filtered to one item.
 
+    The ledger covers the stores the caller works in. A storekeeper who cannot
+    open another branch's store cannot read what moved through it either, which is
+    what leaving the store filter off used to do.
+
     docstring-name: Stock movements
     """
 
     rbac_permission = "procurement.stock.view"
 
     def get(self, request):
-        """List the entity movement ledger with optional item/type filters."""
+        """List this caller's movement ledger with optional item/type filters."""
         entity = resolve_entity(request)
-        qs = StockMovement.objects.filter(entity=entity).select_related(
+        qs = _readable_movements(request, entity).select_related(
             "stock_item", "created_by", "location")
         if (item_ref := request.query_params.get("stock_item")):
             qs = qs.filter(stock_item_id=item_ref) if str(item_ref).isdigit() \
