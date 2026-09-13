@@ -31,7 +31,15 @@ class Severity(models.IntegerChoices):
 
 
 class Incident(TimeStampedModel):
-    """An operational incident with a lifecycle and a timeline."""
+    """An operational incident with a lifecycle and a timeline.
+
+    Most incidents are opened once, by an operator or by a firing alert. An
+    incident opened from a configuration fault is different: the code that
+    detects the fault runs on every request the fault affects, so it would open
+    one incident per request unless something told it the fault is already on the
+    board. ``fault_key`` is that something, and ``vs_health.faults`` is where the
+    rule using it lives.
+    """
 
     class Status(models.TextChoices):
         INVESTIGATING = "investigating", "Investigating"
@@ -68,6 +76,17 @@ class Incident(TimeStampedModel):
     summary = models.TextField(blank=True, default="")
     postmortem = models.TextField(blank=True, default="")
     affected_tenant_count = models.PositiveIntegerField(default=0)
+    fault_key = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text=(
+            "Stable identity of one recurring configuration fault, matched "
+            "exactly so a detector that runs per request opens one incident. "
+            "Blank for operator-authored and alert-driven incidents."
+        ),
+    )
 
     started_at = models.DateTimeField(default=timezone.now, db_index=True)
     resolved_at = models.DateTimeField(null=True, blank=True)

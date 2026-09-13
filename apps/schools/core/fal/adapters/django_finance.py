@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import datetime
 import functools
+import logging
 from dataclasses import replace
 from typing import Optional
 
@@ -137,6 +138,9 @@ _AGEING_EDGES = (
 # --------------------------------------------------------------------------- #
 # Envelope plumbing
 # --------------------------------------------------------------------------- #
+logger = logging.getLogger(__name__)
+
+
 def envelope(fn):
     """Turn a *connection-level* database failure into an UNAVAILABLE result.
 
@@ -147,6 +151,19 @@ def envelope(fn):
 
     ``FALError`` passes straight through: an invariant violation is not an
     outage, and the split is the whole point of the availability envelope.
+
+    ``AmbiguousPrimaryEntity`` passes through as well, and stays a 500, but it
+    does not pass unnoticed. It is the one refusal nobody on the request can act
+    on: it says a school's books are arranged so that no read can name its
+    primary entity, so every dashboard and procurement request for that school
+    raises it until an operator deactivates the spare set, and the person meeting
+    the 500 is a bursar or a parent who cannot fix it.
+
+    The report is made here rather than at either raise site because this
+    decorator is the closest shared frame to both, and because it is *outside*
+    ``provision_entity``'s ``transaction.atomic`` block. Reporting from inside
+    that block would write the incident, raise, and roll the incident back with
+    the refusal, leaving the onboarding fault silent.
     """
 
     @functools.wraps(fn)
@@ -155,6 +172,9 @@ def envelope(fn):
             return fn(*args, **kwargs)
         except (OperationalError, InterfaceError):
             return FinanceResult.unavailable(Unavailable.BACKEND_UNAVAILABLE)
+        except AmbiguousPrimaryEntity as error:
+            _report_ambiguous_primary(error)
+            raise
 
     return wrapper
 
@@ -200,13 +220,81 @@ def _candidate_entities(tenant):
     )
 
 
+#: Prefix of the health fault key this module reports under. The tenant is
+#: appended, because one misconfigured school is one fault.
+_AMBIGUOUS_PRIMARY_FAULT = "fal.ambiguous-primary-entity"
+
+
+def _ambiguous_primary(school, detail):
+    """The refusal raised when a school has two candidate sets of books.
+
+    The read path and provisioning judge the same arrangement against the same
+    queryset, so both build the error here. The attributes carry what an operator
+    needs in order to act: the message alone reaches a log, while the incident
+    opened from these reaches a person.
+
+    An ``AmbiguousPrimaryEntity`` raised without them is still a valid refusal and
+    simply opens no incident. The in-memory fake in ``schools.core.fal.testing``
+    raises exactly that, so a consumer's test proves it surfaces the fault without
+    writing health rows.
+    """
+    error = AmbiguousPrimaryEntity(detail)
+    error.tenant_ref = school.tenant_id
+    error.school_slug = school.slug
+    error.school_name = school.name
+    return error
+
+
+def _report_ambiguous_primary(error):
+    """Open one health incident for the school this refusal names.
+
+    Reporting never changes what the caller sees. The refusal is a configuration
+    fault, it stays one whatever happens here, and every failure of the reporting
+    itself is logged and swallowed: a broken reporter that turned an ambiguity
+    into an ``AttributeError`` would hide the very fault it exists to surface, and
+    would do it on every finance read the school makes.
+
+    The fault key is the school's tenant, because the arrangement being reported
+    is one tenant holding two active tenant-kind entities. Keying it on the tenant
+    is what holds a read path that raises on every request to a single incident.
+    """
+    tenant_ref = getattr(error, "tenant_ref", None)
+    if tenant_ref is None:
+        return
+    try:
+        from vs_health.faults import report_configuration_fault
+        from vs_health.models import Severity
+
+        name = getattr(error, "school_name", "") or ""
+        slug = getattr(error, "school_slug", "") or ""
+        report_configuration_fault(
+            fault_key=f"{_AMBIGUOUS_PRIMARY_FAULT}.tenant-{tenant_ref}",
+            title=f"Two sets of books for {name or slug or tenant_ref}",
+            summary=(
+                f"{error}\n\n"
+                f"School: {name} ({slug}), tenant {tenant_ref}.\n"
+                "Finance and procurement reads for this school fail until one of "
+                "its active tenant-kind ledger entities is deactivated, or until "
+                "its callers pass an explicit entity reference."
+            ),
+            severity=Severity.SEV2,
+            affected_tenant_count=1,
+        )
+    except Exception:
+        logger.exception(
+            "Could not open a health incident for the ambiguous primary entity of "
+            "tenant %s.", tenant_ref,
+        )
+
+
 def _primary_entity(school):
     rows = list(_candidate_entities(school.tenant)[:2])
     if len(rows) > 1:
-        raise AmbiguousPrimaryEntity(
+        raise _ambiguous_primary(
+            school,
             f"School {school.slug!r} has more than one active entity, so the FAL "
             f"cannot tell which set of books is its primary one. Deactivate the "
-            f"spare, or pass an explicit entity_ref."
+            f"spare, or pass an explicit entity_ref.",
         )
     if not rows:
         raise EntityNotProvisioned(
@@ -336,9 +424,10 @@ class DjangoEntityResolverAdapter(EntityResolverPort):
 
             rows = list(_candidate_entities(school.tenant)[:2])
             if len(rows) > 1:
-                raise AmbiguousPrimaryEntity(
+                raise _ambiguous_primary(
+                    school,
                     f"School {school.slug!r} already has more than one active "
-                    f"entity; provisioning will not guess which is primary."
+                    f"entity; provisioning will not guess which is primary.",
                 )
             if rows:
                 # Idempotent: a retried onboarding gets the books it already has,

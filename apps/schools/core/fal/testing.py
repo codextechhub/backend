@@ -122,6 +122,12 @@ class FakeEntityResolver(EntityResolverPort):
     ``AmbiguousPrimaryEntity`` for those school refs, so a consumer can prove it
     surfaces the two-candidate data fault instead of silently picking a set of
     books.
+
+    The refusal names no tenant, so it opens no health incident. The Django
+    adapter reports the fault it raises because it knows which tenant is
+    misconfigured; a fake holding no tenants has nothing to report, and a
+    consumer's test must not write health rows as a side effect of exercising
+    its own error handling.
     """
 
     def __init__(self, *, entities: Optional[dict] = None,
