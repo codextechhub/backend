@@ -1038,13 +1038,17 @@ class WorkflowDynamicRoleViewSet(TenantScopedMixin, ModelViewSet):
             return Response({"detail": exc.message}, status=status.HTTP_400_BAD_REQUEST)
         # Narrowed to what was asked for, else everything this tenant raises.
         scope = requested or sorted(handlers_raised_by(request.tenant))
+        # Some facts belong to one kind of tenant: a job title is read from a
+        # school's staff record, and a platform operator has no such record, so
+        # offering it here would offer a question with no answer behind it.
+        kind = getattr(request.tenant, "kind", None)
         roles = TenantRoleTemplate.objects.filter(
             tenant=request.tenant, status=TenantRoleTemplate.Status.ACTIVE,
             is_system_role=True,
         ).order_by("name")
         return Response({
-            "areas": [area.as_dict() for area in areas_for(scope)],
-            "fields": [field.as_dict() for field in catalogue(scope)],
+            "areas": [area.as_dict() for area in areas_for(scope, tenant_kind=kind)],
+            "fields": [field.as_dict() for field in catalogue(scope, tenant_kind=kind)],
             "document_types": [
                 {"value": t, "label": document_type_label(t)}
                 for t in sorted(handlers_raised_by(request.tenant))

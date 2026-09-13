@@ -6,20 +6,25 @@ contract they are on - reach it the way this app's documents do: the app
 registers them at startup, through the engine's autodiscovery of
 ``workflow_conditions`` modules.
 
-A requester with no staff record here, such as a CodeX operator, has neither
-fact, so a condition on them is simply not true for that person.
+Both are a school's facts, and they say so: a staff record of this kind exists
+only inside a school, so a platform operator has neither, and a rule testing one
+on that side could not merely be false for one person - it could never be true
+for anybody. They are declared for a SCHOOL audience so a picker on the platform
+does not offer a question with no answer behind it.
 """
 from vs_workflow.conditions.context import register_requester_facts
 from vs_workflow.conditions.fields import ConditionField, register_requester_field
-from vs_workflow.constants import ConditionFieldType
+from vs_workflow.constants import ConditionFieldType, DocumentAudience
 
 from .constants import EmploymentType
 
 register_requester_field(ConditionField(
-    "requester.job_title", "Their job title", "requester", ConditionFieldType.TEXT))
+    "requester.job_title", "Their job title", "requester", ConditionFieldType.TEXT,
+    audience=DocumentAudience.SCHOOL))
 register_requester_field(ConditionField(
     "requester.employment_type", "Their contract", "requester",
-    ConditionFieldType.CHOICE, tuple(EmploymentType.choices)))
+    ConditionFieldType.CHOICE, tuple(EmploymentType.choices),
+    audience=DocumentAudience.SCHOOL))
 
 
 @register_requester_facts

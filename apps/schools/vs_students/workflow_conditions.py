@@ -17,7 +17,7 @@ from vs_workflow.conditions.context import register_area_resolver
 from vs_workflow.conditions.fields import (
     ConditionArea, ConditionField, register_area, register_area_field,
 )
-from vs_workflow.constants import ConditionFieldType
+from vs_workflow.constants import ConditionFieldType, DocumentAudience
 
 from .constants import Gender, StudentStatus
 
@@ -28,7 +28,8 @@ from .constants import Gender, StudentStatus
 STUDENT_DOCUMENT_TYPES = ("finance.refund", "finance.credit_note", "finance.concession")
 
 AREA = register_area(ConditionArea(
-    "student", "The student it is about", STUDENT_DOCUMENT_TYPES, order=10))
+    "student", "The student it is about", STUDENT_DOCUMENT_TYPES, order=10,
+    audience=DocumentAudience.SCHOOL))
 
 register_area_field(ConditionField(
     "student.class_name", "Their class", AREA.key, ConditionFieldType.TEXT))

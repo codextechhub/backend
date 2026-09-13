@@ -50,8 +50,10 @@ def _enqueue_dispatch(batch_id, instance_id, actor_id) -> None:
 class PayoutBatchApprovalHandler(BaseWorkflowHandler):
     """Approval handler for a bulk :class:`~vs_payments.models.PayoutBatch`."""
 
-    # Only the platform assembles payout batches; nothing a school runs creates one.
-    audience = DocumentAudience.PLATFORM
+    # Both kinds of tenant disburse. A school pays its own vendors, is provisioned
+    # with an approval path for doing so, and assembles a batch against its own
+    # entity through the same endpoint the platform uses.
+    audience = DocumentAudience.ALL
 
     allows_continue_without_approval = False
 

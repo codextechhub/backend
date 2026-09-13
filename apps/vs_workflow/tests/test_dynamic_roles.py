@@ -612,11 +612,12 @@ class DynamicRolePreviewTests(_Fixture):
 class DocumentAudienceTests(_Fixture):
     """A Dynamic Role serves only the document types its own tenant raises.
 
-    Bright Star never raises platform user creation or a payout batch, so rules
-    for either would never run. It is not offered them, cannot save a Dynamic
-    Role for them and cannot try one, while the platform still sees and saves
-    its own types. Leave is the reverse case: kept on a school's staff records,
-    never raised by the platform.
+    Bright Star never raises platform user creation, so a rule for one would
+    never run: it is not offered the type, cannot save a Dynamic Role for it and
+    cannot try one, while the platform still sees and saves its own. Leave is the
+    reverse case, kept on a school's staff records and never raised by the
+    platform. A payout batch is neither - both kinds of tenant disburse - and it
+    is offered to both.
     """
 
     def setUp(self):
@@ -635,8 +636,17 @@ class DocumentAudienceTests(_Fixture):
     def test_a_school_is_not_offered_a_platform_only_type(self):
         offered = self._types_offered(self.viewer, self.tenant)
         self.assertNotIn(USER_CREATION, offered)
-        self.assertNotIn(PAYOUT_BATCH, offered)
         self.assertTrue({REFUND, LEAVE} <= offered)
+
+    def test_a_school_is_offered_the_paying_out_it_actually_does(self):
+        """A school disburses to its own vendors, so a payout batch is its type too.
+
+        Every school is provisioned with a payout-batch approval path and
+        assembles a batch against its own entity. Calling the type platform-only
+        took it out of the school's picker while leaving that approval path
+        standing - a path whose routing rule could no longer be written.
+        """
+        self.assertIn(PAYOUT_BATCH, self._types_offered(self.viewer, self.tenant))
 
     def test_the_platform_is_offered_its_own_types_and_not_a_schools(self):
         offered = self._types_offered(self.cx_admin, self.platform)
@@ -660,7 +670,7 @@ class DocumentAudienceTests(_Fixture):
 
     def test_a_school_cannot_try_rules_for_a_platform_only_type(self):
         resp = _call(PREVIEW, "post", self.viewer, self.tenant, {
-            "requester": str(self.adebayo.pk), "document_types": [PAYOUT_BATCH],
+            "requester": str(self.adebayo.pk), "document_types": [USER_CREATION],
             "rules": [_otherwise(target_kind="ROLE", role_key="dr-bursar")],
         }, path=BASE + "preview/")
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
@@ -678,6 +688,33 @@ class DocumentAudienceTests(_Fixture):
             validate_rules(tenant=self.platform, document_types=[LEAVE],
                            rules=[_otherwise(target_kind="ROLE", role_key=self.cx_role.key)])
         self.assertIn("never raised here", caught.exception.message)
+
+    def _catalogue(self, user, tenant):
+        resp = _call(FIELDS, "get", user, tenant, path=BASE + "fields/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        body = _body(resp)
+        return ({f["key"] for f in body["fields"]}, {a["key"] for a in body["areas"]})
+
+    def test_a_school_is_offered_the_facts_its_own_staff_records_hold(self):
+        fields, areas = self._catalogue(self.viewer, self.tenant)
+        self.assertIn("requester.job_title", fields)
+        self.assertIn("requester.employment_type", fields)
+        self.assertIn("student", areas)
+
+    def test_the_platform_is_not_offered_a_fact_only_a_school_can_hold(self):
+        """A job title is read from a school's staff record, which CodeX has none of.
+
+        The distinction that matters is between "false for this person" and
+        "absent for every person on this side". A rule testing a CX operator's
+        job title is the second: it reads as a reasonable rule, saves happily,
+        and never matches once. Not offering it is the only honest answer.
+        """
+        fields, areas = self._catalogue(self.cx_admin, self.platform)
+        self.assertNotIn("requester.job_title", fields)
+        self.assertNotIn("requester.employment_type", fields)
+        self.assertNotIn("student", areas)
+        # What every tenant's requester has is still offered.
+        self.assertTrue({"requester.id", "requester.role_keys", "requester.branch"} <= fields)
 
     def test_every_handler_says_who_raises_it(self):
         for document_type, handler in list_registered_handlers().items():

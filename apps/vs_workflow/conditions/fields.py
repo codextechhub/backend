@@ -36,7 +36,7 @@ from typing import Dict, Iterable, List, Tuple
 from vs_workflow.constants import (
     CONDITION_OP_CONTAINS, CONDITION_OP_EQ, CONDITION_OP_GT, CONDITION_OP_GTE,
     CONDITION_OP_IN, CONDITION_OP_LT, CONDITION_OP_LTE, CONDITION_OP_NE,
-    CONDITION_OP_NOT_IN, ConditionFieldType,
+    CONDITION_OP_NOT_IN, ConditionFieldType, DocumentAudience,
 )
 from vs_workflow.exceptions import UnknownDocumentTypeError
 
@@ -73,12 +73,20 @@ class ConditionArea:
         document_types: The types whose documents reach it. Empty means every
             document does, as the document itself and its requester do.
         order: Where it sits in the picker; the engine's own areas come first.
+        audience: The kind of tenant this area exists for. A school's pupils are
+            a school's; offering them to a platform reader offers a question
+            nothing on that side can ever answer.
     """
 
     key: str
     label: str
     document_types: Tuple[str, ...] = ()
     order: int = 100
+    audience: str = DocumentAudience.ALL
+
+    def serves(self, tenant_kind) -> bool:
+        """Whether a tenant of *tenant_kind* can ever answer this area."""
+        return self.audience == DocumentAudience.ALL or self.audience == tenant_kind
 
     def as_dict(self) -> dict:
         return {
@@ -102,6 +110,10 @@ class ConditionField:
         document_types: The types that can answer it. Empty means every type,
             and it is filled in by :func:`catalogue` for a field whose handler
             or area already says which documents reach it.
+        audience: The kind of tenant that can ever answer it. A fact read from a
+            school's staff record is a school's fact: a platform operator has no
+            such record, so the answer is not merely absent for one person, it
+            is absent for every person on that side.
     """
 
     key: str
@@ -110,6 +122,11 @@ class ConditionField:
     type: str
     choices: Tuple[Tuple[str, str], ...] = ()
     document_types: Tuple[str, ...] = ()
+    audience: str = DocumentAudience.ALL
+
+    def serves(self, tenant_kind) -> bool:
+        """Whether a tenant of *tenant_kind* can ever answer this field."""
+        return self.audience == DocumentAudience.ALL or self.audience == tenant_kind
 
     @property
     def operators(self) -> Tuple[str, ...]:
@@ -233,21 +250,34 @@ def _known_types(document_types: Iterable[str]) -> List[str]:
     return sorted(list_registered_handlers())
 
 
-def areas_for(document_types: Iterable[str] = ()) -> List[ConditionArea]:
-    """The areas worth offering for *document_types*, the engine's own first."""
+def areas_for(document_types: Iterable[str] = (), *, tenant_kind=None) -> List[ConditionArea]:
+    """The areas worth offering for *document_types*, the engine's own first.
+
+    *tenant_kind* drops the areas that kind of tenant can never reach, so a
+    picker offers nothing whose answer could only ever be missing for its
+    reader. Left out, every registered area is offered.
+    """
     types = _known_types(document_types)
     offered = [
         ConditionArea(AREA_DOCUMENT, "This document", order=0),
         ConditionArea(AREA_REQUESTER, "The person who raised it", order=1),
     ]
     for area in registered_areas():
+        if tenant_kind is not None and not area.serves(tenant_kind):
+            continue
         if not area.document_types or any(t in area.document_types for t in types):
             offered.append(area)
     return offered
 
 
-def catalogue(document_types: Iterable[str] = ()) -> List[ConditionField]:
+def catalogue(document_types: Iterable[str] = (), *, tenant_kind=None) -> List[ConditionField]:
     """Every field a condition may test, each saying which documents answer it.
+
+    *tenant_kind* drops what that kind of tenant can never answer. A job title
+    read from a school's staff record is not a question to put to a platform
+    reader, who has no such record and never will: left in, it is a rule that
+    looks reasonable when written and is silently false for everybody. Left
+    out, the whole catalogue is returned.
 
     Called without document types - which is how a Dynamic Role is written,
     since it names none - it offers the whole system: the amount and branch
@@ -282,23 +312,30 @@ def catalogue(document_types: Iterable[str] = ()) -> List[ConditionField]:
             fields.append(replace(field, document_types=(document_type,)))
 
     fields.extend(REQUESTER_FIELDS)
-    fields.extend(_REGISTERED_REQUESTER_FIELDS)
+    fields.extend(
+        field for field in _REGISTERED_REQUESTER_FIELDS
+        if tenant_kind is None or field.serves(tenant_kind)
+    )
     for area in registered_areas():
+        if tenant_kind is not None and not area.serves(tenant_kind):
+            continue
         if asked and area.document_types and not any(t in area.document_types for t in asked):
             continue
         for field in _AREA_FIELDS.get(area.key, []):
+            if tenant_kind is not None and not field.serves(tenant_kind):
+                continue
             fields.append(replace(field, document_types=area.document_types))
     return fields
 
 
-def fields_for(document_types: Iterable[str] = ()) -> List[ConditionField]:
+def fields_for(document_types: Iterable[str] = (), *, tenant_kind=None) -> List[ConditionField]:
     """:func:`catalogue`, kept under the name its callers already use."""
-    return catalogue(document_types)
+    return catalogue(document_types, tenant_kind=tenant_kind)
 
 
-def field_map(document_types: Iterable[str] = ()) -> Dict[str, ConditionField]:
+def field_map(document_types: Iterable[str] = (), *, tenant_kind=None) -> Dict[str, ConditionField]:
     """:func:`catalogue`, keyed by field path."""
-    return {field.key: field for field in catalogue(document_types)}
+    return {field.key: field for field in catalogue(document_types, tenant_kind=tenant_kind)}
 
 
 def unanswerable(field_keys: Iterable[str], document_type: str) -> List[str]:
