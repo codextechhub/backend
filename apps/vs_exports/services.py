@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import re
 import uuid
 
 from django.core.files.base import ContentFile
@@ -617,6 +618,40 @@ def _finish_cancelled(run):
     return run
 
 
+#: A name that already ends in "export" or "exports", which the notification
+#: templates supply themselves.
+_EXPORT_SUFFIX_RE = re.compile(r"\s+exports?$", re.IGNORECASE)
+
+
+# Name a run the way its owner would recognise it.
+def _notification_name(run):
+    """What to call this run in a notification.
+
+    A saved export is its definition's name. A quick export has no definition, and
+    its frozen name is the literal "Quick export" for every one of them, so three
+    quick exports in one afternoon would arrive as three identical rows in the tray.
+    The dataset is what the reader actually recognises, so an unsaved run is named
+    by what it exported: "Purchase orders", not "Quick export".
+
+    The trailing word "export" is stripped because the templates add it. Without
+    that, a definition somebody called "Vendor export" would read "Vendor export
+    export is ready".
+
+    Falls back to the run's reference when there is no definition and the frozen
+    dataset key is missing or no longer in the catalogue: a reference is always
+    unique, so the reader can still tell two runs apart.
+    """
+    name = ""
+    if run.definition_id:
+        name = (getattr(run.definition, "name", "") or "").strip()
+    if not name:
+        dataset = get_dataset((run.frozen_config or {}).get("dataset_key"))
+        name = (getattr(dataset, "name", "") or "").strip()
+    if not name:
+        return run.reference
+    return _EXPORT_SUFFIX_RE.sub("", name).strip() or run.reference
+
+
 # Tell the owner what happened.
 def _notify(run, *, failed=False, omissions=False):
     """Notify the owner on completion, failure and omissions.
@@ -624,6 +659,10 @@ def _notify(run, *, failed=False, omissions=False):
     Which channels actually fire is the event type's business, not this function's -
     both keys support in-app and email, and a tenant can switch the email channel off
     per event. Here we only decide *which* event and what it says.
+
+    The run's own ``frozen_config["name"]`` stays as it was recorded: that field is
+    the run's record of itself, and only what the notification calls the run is
+    resolved through :func:`_notification_name`.
     """
     from vs_notifications.notify import send_notification
 
@@ -642,7 +681,7 @@ def _notify(run, *, failed=False, omissions=False):
             event_key=key,
             context={
                 "label": f"Export: {label}",
-                "export_name": label,
+                "export_name": _notification_name(run),
                 "reference": run.reference,
                 "error": detail,
                 "rows": run.row_count or 0,

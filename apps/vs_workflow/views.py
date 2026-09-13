@@ -11,6 +11,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.viewsets import GenericViewSet, ModelViewSet
 
+from vs_notifications.services.acknowledge import acknowledge_record
+from vs_notifications.services.routing import RecordFamily
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 # ``include_shared=True`` spelled out at each call site below. A workflow row
 # with no branch is shared across the school - a tenant-wide template, a group
@@ -567,6 +569,23 @@ class WorkflowInstanceViewSet(
         if p.get("requested_by"):  qs = qs.filter(requested_by_id=p["requested_by"])
         if p.get("template_code"): qs = qs.filter(template__code=p["template_code"])
         return qs
+
+    def retrieve(self, request, *args, **kwargs):
+        """Return the instance, and clear the bell entries about it.
+
+        One instance reaches two audiences through two destinations, an
+        approver's queue and a submitter's own list, and reading the instance
+        clears both: whoever is asking has just seen the state the notice was
+        announcing. Only a successful read acknowledges, so a caller refused by
+        the tenant scope clears nothing.
+        """
+        response = super().retrieve(request, *args, **kwargs)
+        acknowledge_record(
+            request.user,
+            family=RecordFamily.WORKFLOW_INSTANCE,
+            value=kwargs.get("pk"),
+        )
+        return response
 
     @action(detail=True, methods=["post"])
     def withdraw(self, request, pk=None):

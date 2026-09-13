@@ -9,6 +9,7 @@ rejections), and the empty-list response shape.
 Runs on Postgres, the only engine the platform uses - so the conditional
 UniqueConstraints here are exercised the way production enforces them.
 """
+import datetime
 from types import SimpleNamespace
 from unittest import mock
 
@@ -19,11 +20,19 @@ from django.core import mail
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
 
 from schools.vs_schools.models import School
 
 from .constants import ChannelChoices, NotificationErrorCode, NotificationPermission, NotificationStatus
-from .services.routing import notification_action_url, notification_route_q
+from .services.routing import (
+    LIST_DESTINATIONS,
+    RECORD_DESTINATIONS,
+    RecordFamily,
+    destinations_for_family,
+    notification_action_url,
+    notification_route_q,
+)
 from .models import (
     Notification,
     NotificationEventType,
@@ -52,6 +61,72 @@ def _platform_tenant():
     from vs_tenants.models import Tenant
 
     return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
+
+def _unread_inapp(recipient, event_key, metadata, tenant=None):
+    """An unread in-app notification for *recipient*.
+
+    The event type is created on demand: route coverage needs keys the seeded
+    registry does not carry, and a test that only used registered keys would
+    cover whichever destinations happen to have a real event today.
+    """
+    event_type, _ = NotificationEventType.objects.get_or_create(
+        key=event_key,
+        defaults={
+            "label": event_key,
+            "source_module": "vs_notifications",
+            "supported_channels": [ChannelChoices.IN_APP],
+        },
+    )
+    return Notification.all_objects.create(
+        tenant=tenant or recipient.tenant,
+        recipient=recipient,
+        event_type=event_type,
+        channel=ChannelChoices.IN_APP,
+        body="destination test",
+        status=NotificationStatus.SENT,
+        metadata=metadata,
+    )
+
+
+def _record_destination_cases():
+    """Every (destination, event key, metadata, route) the table can produce.
+
+    Generated from ``RECORD_DESTINATIONS`` rather than written out. A hand-kept
+    list only covers the destinations somebody remembered to add to it, which
+    is how an export run came to have a link nothing could acknowledge.
+    """
+    for index, destination in enumerate(RECORD_DESTINATIONS):
+        event_key = (
+            destination.keys.keys[0]
+            if destination.keys.keys
+            else f"{destination.keys.prefix}round_trip"
+        )
+        record_id = 900 + index
+        if destination.variant_key:
+            for variant, template in destination.variant_routes.items():
+                yield (
+                    destination,
+                    event_key,
+                    {destination.id_key: record_id, destination.variant_key: variant},
+                    template.format(id=record_id),
+                )
+            continue
+        yield (
+            destination,
+            event_key,
+            {destination.id_key: record_id},
+            destination.route.format(id=record_id) if destination.route
+            else _list_route_for(event_key),
+        )
+
+
+def _list_route_for(event_key):
+    """The index a notification falls back to when it names no page of its own."""
+    for destination in LIST_DESTINATIONS:
+        if event_key.startswith(destination.prefixes):
+            return destination.route
+    return ""
 
 
 def _grant_school_permission(user, school, permission_key):
@@ -680,53 +755,133 @@ class FeedRetrieveTests(_NotifFixture):
         )
         self.assertEqual(response.status_code, 400)
 
-    def test_action_routes_and_acknowledgment_stay_aligned_across_modules(self):
+    def test_every_record_destination_round_trips(self):
+        """Each record destination links somewhere, and that somewhere clears it.
+
+        Driven by the destination table, so a record family added with a link
+        the reverse direction cannot parse fails here rather than shipping a
+        notification that stays unread however often its page is opened.
+        """
         from .serializers import NotificationListSerializer
 
-        cases = (
-            ("ticket.test_route", {"ticket_id": 81}, "/support/tickets/81"),
-            ("workflow.stage_activated", {"workflow_instance_id": 82}, "/workflow/approvals/82"),
-            ("workflow.test_route", {"workflow_instance_id": 83}, "/workflow/my-submissions/83"),
-            ("import.test_route", {}, "/data-imports/batches"),
-            ("team.test_route", {}, "/team-management"),
-            ("security.test_route", {}, "/me/security"),
-            ("finance.test_route", {}, "/finance"),
-            ("payments.test_route", {}, "/finance"),
-            ("procurement.test_route", {}, "/procurement"),
-        )
         client = self._client(self.admin_a)
 
-        for index, (event_key, metadata, route) in enumerate(cases):
-            with self.subTest(event_key=event_key):
-                event_type, _ = NotificationEventType.objects.get_or_create(
-                    key=event_key,
-                    defaults={
-                        "label": f"Route test {index}",
-                        "source_module": "vs_notifications",
-                        "supported_channels": [ChannelChoices.IN_APP],
-                    },
-                )
-                notification = Notification.objects.create(
-                    tenant=self.school_a.tenant,
-                    recipient=self.admin_a,
-                    event_type=event_type,
-                    channel=ChannelChoices.IN_APP,
-                    body="route test",
-                    status=NotificationStatus.SENT,
-                    metadata=metadata,
-                )
+        for destination, event_key, metadata, route in _record_destination_cases():
+            with self.subTest(family=destination.family, route=route or event_key):
+                notification = _unread_inapp(self.admin_a, event_key, metadata)
                 self.assertEqual(
                     NotificationListSerializer(notification).data["action_url"],
                     route,
                 )
+                if not destination.route_templates():
+                    # A family with no page of its own links to its index, and
+                    # arriving there clears nothing: only reading the record
+                    # does, which the read endpoint tests below prove. The
+                    # clear rule still has to exist.
+                    self.assertTrue(destinations_for_family(destination.family))
+                    if route:
+                        index = client.post(
+                            "/v1/notify/acknowledge-route/", {"path": route},
+                            format="json",
+                        )
+                        self.assertEqual(
+                            index.json()["data"]["updated_count"], 0,
+                        )
+                        notification.refresh_from_db()
+                        self.assertFalse(notification.is_read)
+                    continue
 
                 response = client.post(
                     "/v1/notify/acknowledge-route/", {"path": route}, format="json",
                 )
 
                 self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["data"]["updated_count"], 1)
                 notification.refresh_from_db()
                 self.assertTrue(notification.is_read)
+                self.assertIsNotNone(notification.read_at)
+
+    def test_every_named_family_is_in_the_destination_table(self):
+        """A family constant with no table entry would clear nothing, quietly."""
+        named = {
+            value for key, value in vars(RecordFamily).items()
+            if not key.startswith("_") and isinstance(value, str)
+        }
+        self.assertEqual(named, {item.family for item in RECORD_DESTINATIONS})
+
+    def test_module_index_links_but_acknowledges_nothing(self):
+        """Landing on a module list must not clear the notices listed on it.
+
+        Three unread procurement notices - a requisition awaiting approval, a
+        delivered order, a vendor quote - survive their reader opening the
+        procurement index to look up something else entirely.
+        """
+        from .serializers import NotificationListSerializer
+
+        client = self._client(self.admin_a)
+
+        for destination in LIST_DESTINATIONS:
+            for prefix in destination.prefixes:
+                with self.subTest(route=destination.route, prefix=prefix):
+                    notification = _unread_inapp(
+                        self.admin_a, f"{prefix}index_test", {},
+                    )
+                    self.assertEqual(
+                        NotificationListSerializer(notification).data["action_url"],
+                        destination.route,
+                    )
+                    self.assertIsNone(notification_route_q(destination.route))
+
+                    response = client.post(
+                        "/v1/notify/acknowledge-route/",
+                        {"path": destination.route},
+                        format="json",
+                    )
+
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json()["data"]["updated_count"], 0)
+                    notification.refresh_from_db()
+                    self.assertFalse(notification.is_read)
+
+    def test_acknowledge_route_reports_the_live_unread_count(self):
+        """The badge number comes back with the acknowledgement.
+
+        The record's own GET usually clears the row first, so a client that
+        trusted ``updated_count`` alone would leave the bell advertising a
+        notice already read until its next poll.
+        """
+        read_by_this_call = _unread_inapp(
+            self.admin_a, "ticket.created", {"ticket_id": 77},
+        )
+        untouched = _unread_inapp(
+            self.admin_a, "ticket.created", {"ticket_id": 78},
+        )
+        client = self._client(self.admin_a)
+        before = client.get("/v1/notify/unread-count/").json()["data"]["unread_count"]
+
+        first = client.post(
+            "/v1/notify/acknowledge-route/",
+            {"path": "/support/tickets/77"}, format="json",
+        ).json()["data"]
+        self.assertEqual(first["updated_count"], 1)
+        self.assertEqual(first["unread_count"], before - 1)
+        self.assertEqual(
+            first["unread_count"],
+            client.get("/v1/notify/unread-count/").json()["data"]["unread_count"],
+        )
+
+        # The same path again: nothing left to update, and the count still
+        # reports the notice that is genuinely unread.
+        second = client.post(
+            "/v1/notify/acknowledge-route/",
+            {"path": "/support/tickets/77"}, format="json",
+        ).json()["data"]
+        self.assertEqual(second["updated_count"], 0)
+        self.assertEqual(second["unread_count"], before - 1)
+        read_by_this_call.refresh_from_db()
+        untouched.refresh_from_db()
+        self.assertTrue(read_by_this_call.is_read)
+        self.assertFalse(untouched.is_read)
 
 
 # ---------------------------------------------------------------------------
@@ -2326,7 +2481,8 @@ class NotificationOwnershipTests(_NotifFixture):
     def _send_ticket_event(self, recipients, event_key="ticket.created", **context):
         """Dispatch the way vs_tickets does: the school is what it is ABOUT."""
         base = {"ticket_number": "TCK-1042", "ticket_title": "Term dates wrong",
-                "actor_name": "Ifeanyi Obi", "requester_name": "Ada Admin"}
+                "actor_name": "Ifeanyi Obi", "requester_name": "Ada Admin",
+                "ticket_priority": "MEDIUM"}
         base.update(context)
         with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
             with self.captureOnCommitCallbacks(execute=True):
@@ -2362,8 +2518,9 @@ class NotificationOwnershipTests(_NotifFixture):
         resp = self._client(self.cx).get("/v1/notify/")
 
         self.assertEqual(resp.status_code, 200, resp.content)
-        bodies = [row["body"] for row in resp.json()["data"]]
-        self.assertTrue(any("TCK-1042" in body for body in bodies), bodies)
+        # The ticket is named in the headline, and the body says who raised it.
+        subjects = [row["subject"] for row in resp.json()["data"]]
+        self.assertTrue(any("TCK-1042" in subject for subject in subjects), subjects)
 
     def test_school_admin_history_cannot_reach_a_row_sent_to_platform_staff(self):
         """The leak: an internal ticket note rendered into a school-owned row.
@@ -2616,3 +2773,330 @@ class BackgroundJobActionUrlTests(SimpleTestCase):
         self.assertIsNotNone(
             notification_route_q("/data-imports/batches/abc-123/view")
         )
+
+
+# ---------------------------------------------------------------------------
+# Reading the record clears the notification
+# ---------------------------------------------------------------------------
+# The navigation call is one client's habit. These prove the server-side half:
+# the record's own read endpoint clears the bell entries that pointed at it, so
+# a record opened in a drawer, a modal or by another client entirely is
+# acknowledged the same way a followed link is. Each class asserts the same
+# three things - the reader's own row clears, another recipient's identical row
+# does not, and a row about a different record does not.
+
+from core.test_utils import TenantAPIClient                            # noqa: E402
+from vs_exports import services as export_services                     # noqa: E402
+from vs_exports.models import ExportRun                                # noqa: E402
+from vs_exports.tests import _ExportFixture                             # noqa: E402
+from vs_tickets.services import tickets as ticket_svc                   # noqa: E402
+from vs_tickets.tests import TicketFixtureMixin                         # noqa: E402
+
+
+class ExportRunReadClearsNotificationTests(_ExportFixture, TestCase):
+    """An export notice clears when its run is read or its file taken."""
+
+    def setUp(self):
+        self.build()
+        self.definition = self.make_definition(owner=self.admin)
+        run, _ = export_services.trigger_run(
+            definition=self.definition, actor=self.admin,
+        )
+        run.refresh_from_db()
+        self.run = run
+        self.other_run = ExportRun.objects.create(
+            tenant=self.tenant, entity=self.entity, definition=self.definition,
+            frozen_config=export_services.freeze(self.definition),
+            requested_by=self.admin,
+        )
+
+    def _notice(self, recipient, run_pk, tenant=None):
+        return _unread_inapp(
+            recipient, "export.run_completed", {"export_run_id": run_pk},
+            tenant=tenant,
+        )
+
+    def test_reading_the_run_clears_only_that_reader_and_that_run(self):
+        mine = self._notice(self.admin, self.run.pk)
+        another_run = self._notice(self.admin, self.other_run.pk)
+        # The security-critical case: a second recipient of the same notice,
+        # and a holder in another tenant, keep their unread rows.
+        same_tenant_peer = self._notice(self.analyst, self.run.pk)
+        other_tenant_peer = self._notice(
+            self.outsider, self.run.pk, tenant=self.other_tenant,
+        )
+
+        response = TenantAPIClient(user=self.admin).get(
+            f"/v1/exports/runs/{self.run.pk}/",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        for notification in (mine, another_run, same_tenant_peer, other_tenant_peer):
+            notification.refresh_from_db()
+        self.assertTrue(mine.is_read)
+        self.assertIsNotNone(mine.read_at)
+        self.assertFalse(another_run.is_read)
+        self.assertFalse(same_tenant_peer.is_read)
+        self.assertFalse(other_tenant_peer.is_read)
+
+    def test_downloading_the_file_clears_the_runs_notice(self):
+        """Taking the bytes is reading the thing the notice announced."""
+        mine = self._notice(self.admin, self.run.pk)
+
+        response = TenantAPIClient(user=self.admin).get(
+            f"/v1/exports/files/{self.run.file.pk}/download/",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        mine.refresh_from_db()
+        self.assertTrue(mine.is_read)
+
+    def test_a_refused_download_clears_nothing(self):
+        mine = self._notice(self.admin, self.run.pk)
+        file = self.run.file
+        file.available_until = timezone.now() - datetime.timedelta(minutes=1)
+        file.save(update_fields=["available_until"])
+
+        response = TenantAPIClient(user=self.admin).get(
+            f"/v1/exports/files/{file.pk}/download/",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        mine.refresh_from_db()
+        self.assertFalse(mine.is_read)
+
+
+class TicketReadClearsNotificationTests(TicketFixtureMixin, TestCase):
+    """Opening a ticket thread clears the notices about that ticket."""
+
+    def setUp(self):
+        self.build_users()
+        self.ticket = ticket_svc.create_ticket(
+            actor=self.requester, title="Login fails",
+            description="I cannot log in.", category="BUG", priority="HIGH",
+        )
+        self.other_ticket = ticket_svc.create_ticket(
+            actor=self.requester, title="Slow page",
+            description="The dashboard crawls.", category="BUG", priority="LOW",
+        )
+
+    def _notice(self, recipient, ticket_pk):
+        return _unread_inapp(
+            recipient, "ticket.comment_added", {"ticket_id": ticket_pk},
+        )
+
+    def test_retrieve_clears_only_the_readers_notice_for_that_ticket(self):
+        mine = self._notice(self.requester, self.ticket.pk)
+        another_ticket = self._notice(self.requester, self.other_ticket.pk)
+        peer = self._notice(self.peer, self.ticket.pk)
+
+        response = TenantAPIClient(user=self.requester).get(
+            f"/v1/support/tickets/{self.ticket.pk}/",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        for notification in (mine, another_ticket, peer):
+            notification.refresh_from_db()
+        self.assertTrue(mine.is_read)
+        self.assertFalse(another_ticket.is_read)
+        self.assertFalse(peer.is_read)
+
+    def test_a_ticket_the_reader_cannot_see_clears_nothing(self):
+        """A 404 on someone else's thread must not clear their notice either."""
+        theirs = self._notice(self.outsider, self.ticket.pk)
+
+        response = TenantAPIClient(user=self.outsider).get(
+            f"/v1/support/tickets/{self.ticket.pk}/",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        theirs.refresh_from_db()
+        self.assertFalse(theirs.is_read)
+
+
+class WorkflowInstanceReadClearsNotificationTests(TestCase):
+    """Reading an instance clears both destinations that point at it.
+
+    An approver's queue and a submitter's own list are two pages for one row,
+    so the approval notice and the submission notice clear together: whoever
+    asked for the instance has seen the state both were announcing.
+    """
+
+    def setUp(self):
+        from django.contrib.contenttypes.models import ContentType
+        from vs_rbac.tests.helpers import (
+            make_assignment, make_branch, make_permission, make_role,
+            make_role_permission, make_school, make_school_admin,
+        )
+        from vs_workflow.constants import PERM_INSTANCE_VIEW
+        from vs_workflow.models import WorkflowInstance, WorkflowTemplate
+
+        self.school = make_school(slug="wf-ack-school", name="Workflow Ack")
+        self.branch = make_branch(self.school)
+        self.approver = make_school_admin(self.branch, email="wf-ack-approver@test.com")
+        self.peer = make_school_admin(self.branch, email="wf-ack-peer@test.com")
+        role = make_role(self.school.tenant, name="Workflow reader")
+        make_role_permission(role, make_permission(PERM_INSTANCE_VIEW))
+        make_assignment(self.school.tenant, self.approver, role)
+
+        template = WorkflowTemplate.objects.create(
+            tenant=self.school.tenant, document_type="ACK_DOC",
+            code="ack-doc", name="Ack doc",
+        )
+        self.instance = WorkflowInstance.objects.create(
+            tenant=self.school.tenant, template=template,
+            document_content_type=ContentType.objects.get_for_model(WorkflowTemplate),
+            document_object_id="doc-1", document_type="ACK_DOC",
+            status="IN_PROGRESS", requested_by=self.approver,
+            submitted_at=timezone.now(),
+        )
+        self.other_instance = WorkflowInstance.objects.create(
+            tenant=self.school.tenant, template=template,
+            document_content_type=ContentType.objects.get_for_model(WorkflowTemplate),
+            document_object_id="doc-2", document_type="ACK_DOC",
+            status="IN_PROGRESS", requested_by=self.approver,
+            submitted_at=timezone.now(),
+        )
+
+    def _notice(self, recipient, event_key, instance_id):
+        return _unread_inapp(
+            recipient, event_key, {"workflow_instance_id": instance_id},
+        )
+
+    def test_retrieve_clears_the_approval_and_submission_notices(self):
+        approval = self._notice(
+            self.approver, "workflow.stage_activated", self.instance.pk,
+        )
+        submission = self._notice(
+            self.approver, "workflow.completed", self.instance.pk,
+        )
+        another_instance = self._notice(
+            self.approver, "workflow.stage_activated", self.other_instance.pk,
+        )
+        peer = self._notice(self.peer, "workflow.stage_activated", self.instance.pk)
+
+        response = TenantAPIClient(user=self.approver).get(
+            f"/v1/workflow/instances/{self.instance.pk}/",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        for notification in (approval, submission, another_instance, peer):
+            notification.refresh_from_db()
+        self.assertTrue(approval.is_read)
+        self.assertTrue(submission.is_read)
+        self.assertFalse(another_instance.is_read)
+        self.assertFalse(peer.is_read)
+
+
+class ImportBatchReadClearsNotificationTests(TestCase):
+    """Reading a batch clears the background-job notice about it.
+
+    The job's event key names the outcome only, so the notice is tied to this
+    batch by the job's target id rather than by the key.
+    """
+
+    def setUp(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from vs_import_data.constants import ImportPermission
+        from vs_import_data.models import (
+            DatasetTypeChoices, FileFormatChoices, ImportBatch, ImportTemplate,
+        )
+        from vs_rbac.tests.helpers import (
+            make_assignment, make_branch, make_permission, make_role,
+            make_role_permission, make_school, make_school_admin,
+        )
+
+        self.school = make_school(slug="import-ack-school", name="Import Ack")
+        self.branch = make_branch(self.school)
+        self.uploader = make_school_admin(self.branch, email="import-ack@test.com")
+        self.peer = make_school_admin(self.branch, email="import-ack-peer@test.com")
+        role = make_role(self.school.tenant, name="Import reader")
+        make_role_permission(role, make_permission(ImportPermission.BATCH_VIEW))
+        make_assignment(self.school.tenant, self.uploader, role)
+
+        template = ImportTemplate.objects.create(
+            code="import-ack-template", name="Import Ack",
+            dataset_type=DatasetTypeChoices.CX_USERS,
+            default_file_format=FileFormatChoices.CSV,
+        )
+
+        def _batch(name):
+            return ImportBatch.objects.create(
+                tenant=self.school.tenant, uploaded_by=self.uploader,
+                template=template, dataset_type=DatasetTypeChoices.CX_USERS,
+                file=SimpleUploadedFile(name, b"Name\nOne\n"),
+                file_format=FileFormatChoices.CSV, original_filename=name,
+                total_rows=1, total_columns=1, uploaded_headers=["Name"],
+                preview_rows=[{"Name": "One"}],
+            )
+
+        self.batch = _batch("ack.csv")
+        self.other_batch = _batch("other.csv")
+
+    def _notice(self, recipient, batch_pk):
+        return _unread_inapp(
+            recipient, "task.completed",
+            {"job_kind": "import", "job_target_id": str(batch_pk)},
+        )
+
+    def test_reading_the_batch_clears_its_job_notice(self):
+        mine = self._notice(self.uploader, self.batch.pk)
+        another_batch = self._notice(self.uploader, self.other_batch.pk)
+        peer = self._notice(self.peer, self.batch.pk)
+
+        response = TenantAPIClient(user=self.uploader).get(
+            f"/v1/import/batches/{self.batch.pk}/",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        for notification in (mine, another_batch, peer):
+            notification.refresh_from_db()
+        self.assertTrue(mine.is_read)
+        self.assertFalse(another_batch.is_read)
+        self.assertFalse(peer.is_read)
+
+
+class IncidentReadClearsNotificationTests(TestCase):
+    """The family with no page of its own still clears when read.
+
+    Nothing in the frontend deep-links to an incident, so this read is the only
+    thing that ever clears an alert notice: without it an operator who works an
+    incident to resolution still carries its alert on the bell.
+    """
+
+    def setUp(self):
+        from vs_health.models import Incident
+
+        self.operator = User.objects.create_user(
+            tenant=_platform_tenant(), email="incident-ack@codexng.com",
+            first_name="Ope", last_name="Rator", status="ACTIVE",
+        )
+        self.peer = User.objects.create_user(
+            tenant=_platform_tenant(), email="incident-peer@codexng.com",
+            first_name="Peer", last_name="Operator", status="ACTIVE",
+        )
+        self.incident = Incident.objects.create(title="Queue backed up")
+        self.other_incident = Incident.objects.create(title="Disk nearly full")
+
+    def _notice(self, recipient, incident_id):
+        return _unread_inapp(
+            recipient, "health.alert_fired", {"incident_id": str(incident_id)},
+        )
+
+    def test_incident_has_no_link_but_reading_it_clears_the_alert(self):
+        mine = self._notice(self.operator, self.incident.pk)
+        another_incident = self._notice(self.operator, self.other_incident.pk)
+        peer = self._notice(self.peer, self.incident.pk)
+        self.assertEqual(notification_action_url(mine), "")
+
+        with mock.patch("vs_rbac.permissions.has_permission", return_value=True):
+            response = TenantAPIClient(user=self.operator).get(
+                f"/v1/health/incidents/{self.incident.pk}/",
+            )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        for notification in (mine, another_incident, peer):
+            notification.refresh_from_db()
+        self.assertTrue(mine.is_read)
+        self.assertFalse(another_incident.is_read)
+        self.assertFalse(peer.is_read)

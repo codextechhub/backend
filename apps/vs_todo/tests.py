@@ -227,7 +227,9 @@ class ReviewRequestDispatchTests(OrganogramFixtureMixin, TestCase):
         )
         in_app = notifs.get(channel=ChannelChoices.IN_APP)
         self.assertEqual(in_app.event_type.key, "todo.task_completed")
-        self.assertIn("Ship the report", in_app.body)
+        # The task's title is the headline; the body says who finished it and when.
+        self.assertIn("Ship the report", in_app.subject)
+        self.assertIn(self.member.full_name, in_app.body)
         email = notifs.get(channel=ChannelChoices.EMAIL)
         self.assertIn("Ship the report", email.subject)
         self.assertIn(self.member.full_name, email.body)
@@ -240,6 +242,50 @@ class ReviewRequestDispatchTests(OrganogramFixtureMixin, TestCase):
             kwargs={"task_id": task.pk, "completed_at": "1999-01-01T00:00:00+00:00"}
         ).get()
         self.assertEqual(result, {"skipped": "superseded-by-newer-completion"})
+
+    def test_answering_the_request_clears_it_from_the_reviewer_bell(self):
+        """A request answered stops being asked.
+
+        The reviewer acts on the task rather than reading it, so the toggle is
+        what clears the notice. Another manager's copy of the same request is
+        untouched: one person answering says nothing about whether the other
+        has seen theirs.
+        """
+        from unittest import mock
+
+        from rest_framework.test import APIClient
+        from vs_notifications.constants import ChannelChoices
+        from vs_notifications.models import Notification
+        from vs_todo.tasks import send_completion_review_request
+
+        task = self._completed_task()
+        with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
+            send_completion_review_request.apply(
+                kwargs={"task_id": task.pk,
+                        "completed_at": task.completed_at.isoformat()}
+            ).get()
+        notice = Notification.objects.get(
+            recipient=self.head, channel=ChannelChoices.IN_APP,
+        )
+        someone_else = Notification.objects.create(
+            tenant=self.md.tenant, recipient=self.md,
+            event_type=notice.event_type, channel=ChannelChoices.IN_APP,
+            body="the same request, another reviewer",
+            status=notice.status, metadata={"todo_task_id": task.pk},
+        )
+
+        client = APIClient()
+        client.force_authenticate(self.head)
+        response = client.post(
+            f"/v1/todo/tasks/{task.pk}/toggle/", {"done": True}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        notice.refresh_from_db()
+        someone_else.refresh_from_db()
+        self.assertTrue(notice.is_read)
+        self.assertIsNotNone(notice.read_at)
+        self.assertFalse(someone_else.is_read)
 
 
 class DashboardTests(OrganogramFixtureMixin, TestCase):

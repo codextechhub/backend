@@ -14,6 +14,8 @@ from rest_framework.views import APIView
 
 from core.mixins import XVSModelViewSetMixin
 from core.response import success_response
+from vs_notifications.services.acknowledge import acknowledge_record
+from vs_notifications.services.routing import RecordFamily
 from vs_user.models import User
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 
@@ -167,6 +169,20 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             # Hidden tickets are indistinguishable from missing tickets to callers.
             raise NotFound("No such ticket.")
         return ticket
+
+    def retrieve(self, request, *args, **kwargs):
+        """Return the ticket, and clear the bell entries that pointed at it.
+
+        Reading the thread is the acknowledgement, so a ticket opened in a
+        modal or a side panel clears its notifications exactly as following the
+        link from the bell does. Only a successful read acknowledges: a hidden
+        or missing ticket raises before this runs.
+        """
+        response = super().retrieve(request, *args, **kwargs)
+        acknowledge_record(
+            request.user, family=RecordFamily.TICKET, value=kwargs.get("pk"),
+        )
+        return response
 
     # File a new ticket through the service so audit and triage notifications stay coupled.
     def create(self, request, *args, **kwargs):

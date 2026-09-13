@@ -21,6 +21,8 @@ from rest_framework.views import APIView
 from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin
 from core.response import success_response, error_response
 from core.tenant_filters import requested_tenant
+from vs_notifications.services.acknowledge import acknowledge_record
+from vs_notifications.services.routing import RecordFamily
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 
 from . import services
@@ -299,13 +301,28 @@ class IncidentListCreateView(CreateModelMixin, HealthWriteMixin, generics.ListCr
 # Retrieve or update a single incident war-room record.
 class IncidentDetailView(RetrieveModelMixin, UpdateModelMixin, HealthWriteMixin,
                          generics.RetrieveUpdateAPIView):
-    """GET / PATCH a single incident (war-room view)."""
+    """GET / PATCH a single incident (war-room view).
+
+    Reading the incident clears the alert notifications about it. The family
+    has no frontend page to deep-link to, so this read is the only thing that
+    ever clears one: without it an operator who works an incident to
+    resolution still carries its alert on their bell.
+    """
     queryset = Incident.objects.prefetch_related("services", "timeline").all()
     lookup_field = "id"
 
     def get_serializer_class(self):
         return IncidentCreateUpdateSerializer if self.request.method in ("PUT", "PATCH") \
             else IncidentDetailSerializer
+
+    def retrieve(self, request, *args, **kwargs):
+        response = super().retrieve(request, *args, **kwargs)
+        acknowledge_record(
+            request.user,
+            family=RecordFamily.HEALTH_INCIDENT,
+            value=kwargs.get("id"),
+        )
+        return response
 
 
 # Append timeline entries to an existing incident.

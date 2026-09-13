@@ -26,6 +26,8 @@ from rest_framework.views import APIView
 from core.pagination import XVSPagination
 from core.response import success_response
 from vs_finance.views import resolve_entity
+from vs_notifications.services.acknowledge import acknowledge_record
+from vs_notifications.services.routing import RecordFamily
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 
 from . import analytics, audit, services
@@ -705,7 +707,12 @@ class RunListView(_ExportBase):
 
 
 class RunDetailView(_ExportBase):
-    """``GET /v1/exports/runs/<pk>/`` - outcome, frozen config and drift."""
+    """``GET /v1/exports/runs/<pk>/`` - outcome, frozen config and drift.
+
+    Reading the run is what clears the bell entry that announced it, so the
+    notification goes whether the reader followed the link, opened the run in a
+    drawer or asked for it from another client.
+    """
 
     rbac_permission = ExportPermission.RUN_VIEW
 
@@ -717,6 +724,9 @@ class RunDetailView(_ExportBase):
                 analytics.Event.FAILURE_VIEWED, tenant=self.tenant, actor=request.user,
                 properties={"reason_code": run.failure_code},
             )
+        acknowledge_record(
+            request.user, family=RecordFamily.EXPORT_RUN, value=run.pk,
+        )
         return success_response(
             "Run retrieved successfully.",
             ExportRunDetailSerializer(run, context={"request": request}).data,
@@ -781,6 +791,9 @@ class FileDownloadView(_ExportBase):
     Authorised against the *downloader* and the run's frozen entity and dataset, then
     logged either way. A refusal is recorded exactly like a success, because "who tried
     and was told no" is a question compliance actually asks.
+
+    Taking the bytes is reading the thing the notification announced, so an
+    allowed download clears the run's bell entry. A refusal clears nothing.
     """
 
     rbac_permission = ExportPermission.FILE_DOWNLOAD
@@ -804,6 +817,9 @@ class FileDownloadView(_ExportBase):
 
         services.log_download(
             file, request.user, outcome=DownloadOutcome.ALLOWED, ip=ip,
+        )
+        acknowledge_record(
+            request.user, family=RecordFamily.EXPORT_RUN, value=file.run_id,
         )
         from django.core.files.storage import default_storage
 

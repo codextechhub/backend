@@ -4238,14 +4238,17 @@ class UnbookedReceiptAlertTests(_PaymentsFixtureMixin, TestCase):
             event_type__key="payments.unbooked_receipts_digest")
         self.assertTrue(delivered.exists(), "the digest reached nobody")
         self.assertEqual({n.recipient_id for n in delivered}, {recipient.pk})
-        in_app = delivered.get(channel="in_app").body
+        in_app_row = delivered.get(channel="in_app")
+        in_app = in_app_row.body
         email = delivered.get(channel="email").body
         self.assertIn("2 gateway payment", in_app)
         self.assertIn("Payments affected: 2", email)
-        self.assertIn("₦500.00", in_app)  # 2 x 25,000 kobo
-        for body in (in_app, email):
+        # The money is the headline, because it is what decides whether this is
+        # worth stopping for; the body says how many and how old.
+        self.assertIn("₦500.00", in_app_row.subject)  # 2 x 25,000 kobo
+        for text in (in_app_row.subject, in_app, email):
             # format_naira already carries the symbol; a literal one doubles it.
-            self.assertNotIn("₦₦", body)
+            self.assertNotIn("₦₦", text)
 
 
 class PayoutOnboardingSeedTests(TestCase):

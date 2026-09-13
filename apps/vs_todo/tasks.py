@@ -88,6 +88,10 @@ def send_completion_review_request(self, task_id: int, completed_at: str = ""):
             context=context,
             recipients=[reviewer],
             school=None,
+            # Ties the notice to the task, so reviewing that task clears it
+            # instead of leaving the reviewer to dismiss a request they have
+            # already answered.
+            metadata={"todo_task_id": task.pk},
         )
     except UnknownEventTypeError:
         logger.error(

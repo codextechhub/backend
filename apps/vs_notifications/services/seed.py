@@ -418,8 +418,8 @@ def _build_default_templates() -> dict:
 
         # ── support tickets ─────────────────────────────────────────────────
         ("ticket.created", C.IN_APP): {
-            "subject": "",
-            "body": "New ticket {{ ticket_number }}: {{ ticket_title }} was created by {{ requester_name }}.",
+            "subject": "New ticket {{ ticket_number }}: {{ ticket_title }}",
+            "body": "Raised by {{ requester_name }}. Priority: {{ ticket_priority }}.",
         },
         ("ticket.created", C.EMAIL): {
             "subject": "New support ticket {{ ticket_number }} - {{ ticket_title }}",
@@ -434,8 +434,11 @@ def _build_default_templates() -> dict:
             ),
         },
         ("ticket.assigned", C.IN_APP): {
-            "subject": "",
-            "body": "Ticket {{ ticket_number }} has been assigned to you.",
+            "subject": "{{ ticket_number }} is yours: {{ ticket_title }}",
+            "body": (
+                "{% if actor_name %}{{ actor_name }} assigned it to you. {% endif %}"
+                "Raised by {{ requester_name }}. Priority: {{ ticket_priority }}."
+            ),
         },
         ("ticket.assigned", C.EMAIL): {
             "subject": "Ticket assigned to you - {{ ticket_number }}",
@@ -447,9 +450,15 @@ def _build_default_templates() -> dict:
                 "Requester: {{ requester_name }}\n"
             ),
         },
+        # The transition is stored as a code, so it reads better beneath a
+        # headline than inside one: the subject names the ticket and the body
+        # carries the move.
         ("ticket.status_changed", C.IN_APP): {
-            "subject": "",
-            "body": "Ticket {{ ticket_number }} moved from {{ old_status }} to {{ new_status }}.",
+            "subject": "{{ ticket_number }}: {{ ticket_title }}",
+            "body": (
+                "Moved from {{ old_status }} to {{ new_status }}"
+                "{% if actor_name %} by {{ actor_name }}{% endif %}."
+            ),
         },
         ("ticket.status_changed", C.EMAIL): {
             "subject": "Ticket status updated - {{ ticket_number }}",
@@ -459,10 +468,12 @@ def _build_default_templates() -> dict:
         # to: every other one is about a ticket the reader already had, and this
         # is the one that arrives from somewhere.
         ("ticket.escalated", C.IN_APP): {
-            "subject": "",
+            "subject": "{{ ticket_number }} escalated: {{ ticket_title }}",
             "body": (
-                "{{ school_name }} escalated ticket {{ ticket_number }} to "
-                "CodeX: {{ ticket_title }}"
+                "{% if school_name %}{{ school_name }} handed it to CodeX"
+                "{% else %}Handed to CodeX{% endif %}"
+                "{% if actor_name %} by {{ actor_name }}{% endif %}. "
+                "Priority: {{ ticket_priority }}."
             ),
         },
         ("ticket.escalated", C.EMAIL): {
@@ -477,8 +488,11 @@ def _build_default_templates() -> dict:
             ),
         },
         ("ticket.commented", C.IN_APP): {
-            "subject": "",
-            "body": "{{ actor_name }} commented on ticket {{ ticket_number }}: {{ comment_body }}",
+            "subject": (
+                "{% if actor_name %}{{ actor_name }} commented on {{ ticket_number }}"
+                "{% else %}New comment on {{ ticket_number }}{% endif %}"
+            ),
+            "body": "{{ comment_body }}",
         },
         ("ticket.commented", C.EMAIL): {
             "subject": "New comment on ticket {{ ticket_number }}",
@@ -489,32 +503,44 @@ def _build_default_templates() -> dict:
             ),
         },
         ("ticket.resolved", C.IN_APP): {
-            "subject": "",
-            "body": "Ticket {{ ticket_number }} has been resolved.",
+            "subject": "{{ ticket_number }} resolved: {{ ticket_title }}",
+            "body": (
+                "{% if actor_name %}Resolved by {{ actor_name }}. {% endif %}"
+                "Reopen it if the problem is still there."
+            ),
         },
         ("ticket.resolved", C.EMAIL): {
             "subject": "Ticket resolved - {{ ticket_number }}",
             "body": "Ticket {{ ticket_number }} ({{ ticket_title }}) has been resolved.",
         },
         ("ticket.closed", C.IN_APP): {
-            "subject": "",
-            "body": "Ticket {{ ticket_number }} has been closed.",
+            "subject": "{{ ticket_number }} closed: {{ ticket_title }}",
+            "body": (
+                "{% if actor_name %}Closed by {{ actor_name }}. {% endif %}"
+                "Raise a new ticket if you need more help."
+            ),
         },
         ("ticket.closed", C.EMAIL): {
             "subject": "Ticket closed - {{ ticket_number }}",
             "body": "Ticket {{ ticket_number }} ({{ ticket_title }}) has been closed.",
         },
         ("ticket.reopened", C.IN_APP): {
-            "subject": "",
-            "body": "Ticket {{ ticket_number }} has been reopened.",
+            "subject": "{{ ticket_number }} reopened: {{ ticket_title }}",
+            "body": (
+                "{% if actor_name %}Reopened by {{ actor_name }}. {% endif %}"
+                "It is back in the queue at priority {{ ticket_priority }}."
+            ),
         },
         ("ticket.reopened", C.EMAIL): {
             "subject": "Ticket reopened - {{ ticket_number }}",
             "body": "Ticket {{ ticket_number }} ({{ ticket_title }}) has been reopened.",
         },
         ("ticket.attachment_added", C.IN_APP): {
-            "subject": "",
-            "body": "{{ actor_name }} attached {{ attachment_name }} to ticket {{ ticket_number }}.",
+            "subject": "{{ attachment_name }} added to {{ ticket_number }}",
+            "body": (
+                "{% if actor_name %}{{ actor_name }} attached it{% else %}Attached"
+                "{% endif %} to {{ ticket_title }}."
+            ),
         },
         ("ticket.attachment_added", C.EMAIL): {
             "subject": "Attachment added to ticket {{ ticket_number }}",
@@ -522,12 +548,14 @@ def _build_default_templates() -> dict:
         },
 
         # ── student.enrolled ────────────────────────────────────────────────
+        # A student with no class yet is an applicant, so the class is guarded:
+        # the headline still reads when placement has not happened.
         ("student.enrolled", C.IN_APP): {
-            "subject": "",
-            "body": (
-                "New student enrolled: {{ student_first_name }} {{ student_last_name }} "
-                "({{ student_id }}) has been added to {{ class_name }}, {{ branch_name }}."
+            "subject": (
+                "{{ student_first_name }} {{ student_last_name }} "
+                "{% if class_name %}joined {{ class_name }}{% else %}was enrolled{% endif %}"
             ),
+            "body": "Student ID {{ student_id }}, {{ branch_name }}.",
         },
         ("student.enrolled", C.EMAIL): {
             "subject": "New student added to your class - {{ student_first_name }} {{ student_last_name }}",
@@ -544,11 +572,8 @@ def _build_default_templates() -> dict:
 
         # ── student.deactivated ─────────────────────────────────────────────
         ("student.deactivated", C.IN_APP): {
-            "subject": "",
-            "body": (
-                "Student deactivated: {{ student_first_name }} {{ student_last_name }} "
-                "({{ student_id }}) has been marked inactive. Reason: {{ reason_code }}."
-            ),
+            "subject": "{{ student_first_name }} {{ student_last_name }} is no longer active",
+            "body": "Student ID {{ student_id }}. Reason: {{ reason_code }}.",
         },
         ("student.deactivated", C.EMAIL): {
             "subject": "Student record deactivated - {{ student_first_name }} {{ student_last_name }}",
@@ -564,11 +589,11 @@ def _build_default_templates() -> dict:
 
         # ── student.class_transferred ───────────────────────────────────────
         ("student.class_transferred", C.IN_APP): {
-            "subject": "",
-            "body": (
-                "Class transfer: {{ student_first_name }} {{ student_last_name }} "
-                "has been moved from {{ from_class_name }} to {{ to_class_name }}."
+            "subject": (
+                "{{ student_first_name }} {{ student_last_name }} moved to "
+                "{{ to_class_name }}"
             ),
+            "body": "Previously in {{ from_class_name }}. Moved by {{ transferred_by_name }}.",
         },
         ("student.class_transferred", C.EMAIL): {
             "subject": "Student class transfer - {{ student_first_name }} {{ student_last_name }}",
@@ -585,11 +610,13 @@ def _build_default_templates() -> dict:
 
         # ── student.promoted ────────────────────────────────────────────────
         ("student.promoted", C.IN_APP): {
-            "subject": "",
+            "subject": (
+                "{{ promoted_count }} student{{ promoted_count|pluralize }} promoted "
+                "at {{ branch_name }}"
+            ),
             "body": (
-                "Promotion complete for {{ branch_name }}: {{ promoted_count }} student(s) "
-                "promoted from {{ from_session_name }} to {{ to_session_name }}. "
-                "Flagged: {{ flagged_count }}."
+                "{{ from_session_name }} to {{ to_session_name }}. "
+                "{{ flagged_count }} flagged for review."
             ),
         },
         ("student.promoted", C.EMAIL): {
@@ -608,10 +635,10 @@ def _build_default_templates() -> dict:
 
         # ── workflow.stage_activated ────────────────────────────────────────
         ("workflow.stage_activated", C.IN_APP): {
-            "subject": "",
+            "subject": "{{ document_title }} needs your approval",
             "body": (
-                "Approval required: {{ document_title }} submitted by "
-                "{{ submitter_name }} is awaiting your decision at stage '{{ stage_name }}'."
+                "Submitted by {{ submitter_name }}, awaiting your decision at "
+                "{{ stage_name }}."
             ),
         },
         ("workflow.stage_activated", C.EMAIL): {
@@ -629,10 +656,10 @@ def _build_default_templates() -> dict:
 
         # ── workflow.submitted ──────────────────────────────────────────────
         ("workflow.submitted", C.IN_APP): {
-            "subject": "",
+            "subject": "{{ document_title }} needs your review",
             "body": (
-                "Approval required: {{ document_type }} - '{{ document_title }}' "
-                "submitted by {{ submitter_name }} is awaiting your review at stage '{{ stage_name }}'."
+                "{{ document_type }} submitted by {{ submitter_name }}, waiting at "
+                "{{ stage_name }}."
             ),
         },
         ("workflow.submitted", C.EMAIL): {
@@ -650,11 +677,8 @@ def _build_default_templates() -> dict:
 
         # ── workflow.approved ───────────────────────────────────────────────
         ("workflow.approved", C.IN_APP): {
-            "subject": "",
-            "body": (
-                "Stage approved: '{{ document_title }}' was approved by {{ approved_by_name }}. "
-                "Moving to stage '{{ next_stage_name }}'."
-            ),
+            "subject": "{{ document_title }} moved to {{ next_stage_name }}",
+            "body": "Approved by {{ approved_by_name }}.",
         },
         ("workflow.approved", C.EMAIL): {
             "subject": "Approval required at next stage - {{ document_type }}",
@@ -670,11 +694,14 @@ def _build_default_templates() -> dict:
         },
 
         # ── workflow.rejected ───────────────────────────────────────────────
+        # Both the rejecter's name and the comment are optional at the call site,
+        # so each is guarded and the body always says something.
         ("workflow.rejected", C.IN_APP): {
-            "subject": "",
+            "subject": "{{ document_title }} was rejected",
             "body": (
-                "Request rejected: '{{ document_title }}' was rejected by {{ rejected_by_name }}. "
-                "Reason: {{ rejection_reason }}."
+                "{% if rejected_by_name %}Rejected by {{ rejected_by_name }}. {% endif %}"
+                "{% if rejection_reason %}Reason: {{ rejection_reason }}"
+                "{% else %}No reason was recorded{% endif %}."
             ),
         },
         ("workflow.rejected", C.EMAIL): {
@@ -692,10 +719,11 @@ def _build_default_templates() -> dict:
 
         # ── workflow.returned ───────────────────────────────────────────────
         ("workflow.returned", C.IN_APP): {
-            "subject": "",
+            "subject": "{{ document_title }} needs changes",
             "body": (
-                "Revision requested: '{{ document_title }}' has been returned by "
-                "{{ returned_by_name }} for changes."
+                "{% if returned_by_name %}Returned by {{ returned_by_name }}. {% endif %}"
+                "{% if return_comment %}{{ return_comment }}"
+                "{% else %}No comment was left. Revise it and resubmit{% endif %}."
             ),
         },
         ("workflow.returned", C.EMAIL): {
@@ -733,11 +761,8 @@ def _build_default_templates() -> dict:
 
         # ── workflow.escalated ──────────────────────────────────────────────
         ("workflow.escalated", C.IN_APP): {
-            "subject": "",
-            "body": (
-                "Escalation: '{{ document_title }}' at stage '{{ stage_name }}' "
-                "has been escalated to {{ escalated_to_name }}."
-            ),
+            "subject": "{{ document_title }} escalated to {{ escalated_to_name }}",
+            "body": "{{ stage_name }} timed out, so the decision moved on.",
         },
         ("workflow.escalated", C.EMAIL): {
             "subject": "Escalated approval required - {{ document_type }}",
@@ -757,11 +782,8 @@ def _build_default_templates() -> dict:
         # which knows a generic {{ customer_name }} (the billing party) - not a
         # structured student first/last. Keep these on customer_name.
         ("billing.invoice_issued", C.IN_APP): {
-            "subject": "",
-            "body": (
-                "New invoice: ₦{{ invoice_amount }} is due for "
-                "{{ customer_name }} by {{ due_date }}."
-            ),
+            "subject": "Invoice {{ invoice_number }} for {{ customer_name }}",
+            "body": "₦{{ invoice_amount }} due by {{ due_date }}.",
         },
         # Neutral wording on purpose. The same event now carries every invoice the
         # finance console sends - a school billing a guardian, and CodeX billing a
@@ -805,10 +827,9 @@ def _build_default_templates() -> dict:
 
         # ── billing.debit_note_issued ──────────────────────────────────────
         ("billing.debit_note_issued", C.IN_APP): {
-            "subject": "",
+            "subject": "Debit note {{ note_number }} for {{ customer_name }}",
             "body": (
-                "Debit note {{ note_number }} added ₦{{ note_amount }} to "
-                "{{ customer_name }}'s account. {{ current_balance_label }}: "
+                "₦{{ note_amount }} added. {{ current_balance_label }}: "
                 "₦{{ current_balance_amount }}."
             ),
         },
@@ -837,10 +858,9 @@ def _build_default_templates() -> dict:
 
         # ── billing.credit_note_issued ─────────────────────────────────────
         ("billing.credit_note_issued", C.IN_APP): {
-            "subject": "",
+            "subject": "Credit note {{ note_number }} for {{ customer_name }}",
             "body": (
-                "Credit note {{ note_number }} reduced {{ customer_name }}'s account "
-                "by ₦{{ note_amount }}. {{ current_balance_label }}: "
+                "₦{{ note_amount }} credited. {{ current_balance_label }}: "
                 "₦{{ current_balance_amount }}."
             ),
         },
@@ -868,11 +888,13 @@ def _build_default_templates() -> dict:
         },
 
         # ── billing.payment_received ────────────────────────────────────────
+        # A payment that was never allocated has no invoice number, so the
+        # allocation is guarded rather than printed as a dangling comma.
         ("billing.payment_received", C.IN_APP): {
-            "subject": "",
+            "subject": "₦{{ amount_paid }} received from {{ customer_name }}",
             "body": (
-                "Payment confirmed: ₦{{ amount_paid }} received for "
-                "{{ customer_name }} on {{ payment_date }}."
+                "Receipt {{ receipt_number }}, {{ payment_date }}"
+                "{% if invoice_number %}, applied to {{ invoice_number }}{% endif %}."
             ),
         },
         ("billing.payment_received", C.EMAIL): {
@@ -893,11 +915,13 @@ def _build_default_templates() -> dict:
         # Operational, not customer-facing: the reader is whoever can replay the
         # event, so the message leads with the money and names the likely cause.
         ("payments.unbooked_receipts_digest", C.IN_APP): {
-            "subject": "",
+            "subject": (
+                "{{ total_amount_naira }} has not reached the books at "
+                "{{ entity_code }}"
+            ),
             "body": (
-                "{{ count }} gateway payment(s) totalling at least "
-                "{{ total_amount_naira }} have not reached the books for "
-                "{{ entity_code }}. Oldest: {{ oldest }}. {{ reason }}"
+                "{{ count }} gateway payment{{ count|pluralize }}, oldest "
+                "{{ oldest }}.{% if reason %} {{ reason }}{% endif %}"
             ),
         },
         ("payments.unbooked_receipts_digest", C.EMAIL): {
@@ -918,10 +942,13 @@ def _build_default_templates() -> dict:
         # ── payments.unbooked_receipts_surge ────────────────────────────────
         # Several failures in one window is a systemic cause, not one bad payment.
         ("payments.unbooked_receipts_surge", C.IN_APP): {
-            "subject": "",
+            "subject": (
+                "{{ count }} gateway booking{{ count|pluralize }} failed in "
+                "{{ window_minutes }} minutes"
+            ),
             "body": (
-                "{{ count }} gateway payment(s) failed to book in the last "
-                "{{ window_minutes }} minutes. {{ reason }}"
+                "{{ total_amount_naira }} affected across {{ entities }}."
+                "{% if reason %} {{ reason }}{% endif %}"
             ),
         },
         ("payments.unbooked_receipts_surge", C.EMAIL): {
@@ -940,11 +967,14 @@ def _build_default_templates() -> dict:
 
         # ── billing.invoice_overdue ─────────────────────────────────────────
         ("billing.invoice_overdue", C.IN_APP): {
-            "subject": "",
+            "subject": (
+                "Invoice {{ invoice_number }} is {{ days_overdue }} "
+                "day{{ days_overdue|pluralize }} overdue"
+            ),
             "body": (
-                "Overdue invoice: ₦{{ amount_outstanding }} outstanding for "
-                "{{ customer_name }} - {{ days_overdue }} day(s) overdue."
-                " {{ reminder_message }}"
+                "₦{{ amount_outstanding }} outstanding for {{ customer_name }}, "
+                "due {{ due_date }}."
+                "{% if reminder_message %} {{ reminder_message }}{% endif %}"
             ),
         },
         ("billing.invoice_overdue", C.EMAIL): {
@@ -965,10 +995,10 @@ def _build_default_templates() -> dict:
 
         # ── billing.refund_processed ────────────────────────────────────────
         ("billing.refund_processed", C.IN_APP): {
-            "subject": "",
+            "subject": "₦{{ refund_amount }} refunded to {{ customer_name }}",
             "body": (
-                "Refund processed: ₦{{ refund_amount }} refunded for "
-                "{{ customer_name }}."
+                "Against invoice {{ original_invoice_number }}. "
+                "Processed by {{ processed_by_name }}."
             ),
         },
         ("billing.refund_processed", C.EMAIL): {
@@ -986,11 +1016,8 @@ def _build_default_templates() -> dict:
 
         # ── onboarding.step_completed ───────────────────────────────────────
         ("onboarding.step_completed", C.IN_APP): {
-            "subject": "",
-            "body": (
-                "Onboarding update: Step {{ step_number }}/{{ total_steps }} - "
-                "'{{ step_name }}' completed by {{ completed_by_name }}."
-            ),
+            "subject": "{{ step_name }} is done ({{ step_number }} of {{ total_steps }})",
+            "body": "{{ completed_by_name }} marked it complete for {{ school_name }}.",
         },
         ("onboarding.step_completed", C.EMAIL): {
             "subject": (
@@ -1011,10 +1038,10 @@ def _build_default_templates() -> dict:
 
         # ── onboarding.go_live_ready ────────────────────────────────────────
         ("onboarding.go_live_ready", C.IN_APP): {
-            "subject": "",
+            "subject": "{{ school_name }} is ready to request go-live",
             "body": (
-                "{{ school_name }} has completed all onboarding requirements "
-                "and is ready to go live."
+                "Every required step is complete, the last by "
+                "{{ completed_by_name }}. Confirm a date and submit the request."
             ),
         },
         ("onboarding.go_live_ready", C.EMAIL): {
@@ -1036,10 +1063,9 @@ def _build_default_templates() -> dict:
         # than it needs two separate keys, and a rejected request renders the
         # reason inline rather than sending the admin looking for it.
         ("onboarding.go_live_reviewed", C.IN_APP): {
-            "subject": "",
+            "subject": "Go-live for {{ school_name }} was {{ decision }}",
             "body": (
-                "Go-live request for {{ school_name }} was {{ decision }} by "
-                "{{ reviewed_by_name }} on {{ reviewed_at }}."
+                "Reviewed by {{ reviewed_by_name }} on {{ reviewed_at }}."
                 "{% if rejection_reason %} Reason: {{ rejection_reason }}{% endif %}"
             ),
         },
@@ -1065,9 +1091,10 @@ def _build_default_templates() -> dict:
 
         # ── onboarding.activated ────────────────────────────────────────────
         ("onboarding.activated", C.IN_APP): {
-            "subject": "",
+            "subject": "{{ school_name }} is now live",
             "body": (
-                "{{ school_name }} is now live. Every module is open to this school."
+                "Every module is open. Your team can sign in and use what their "
+                "roles allow."
             ),
         },
         ("onboarding.activated", C.EMAIL): {
@@ -1088,11 +1115,10 @@ def _build_default_templates() -> dict:
         # rather than only the count, because "14 days" in an email read a week
         # later is worse than useless.
         ("onboarding.expiry_warning", C.IN_APP): {
-            "subject": "",
+            "subject": "{{ school_name }} onboarding expires on {{ expires_on }}",
             "body": (
-                "Onboarding for {{ school_name }} expires on {{ expires_on }}, "
-                "in {{ days_remaining }} day(s). Complete your remaining steps "
-                "and request go-live before then."
+                "{{ days_remaining }} day{{ days_remaining|pluralize }} left. "
+                "Complete your remaining steps and request go-live before then."
             ),
         },
         ("onboarding.expiry_warning", C.EMAIL): {
@@ -1119,11 +1145,13 @@ def _build_default_templates() -> dict:
         # lists are pre-rendered strings: a template given a list of rows would
         # print their Python repr at the reader.
         ("onboarding.stale_report", C.IN_APP): {
-            "subject": "",
+            "subject": (
+                "{{ ageing_count }} school{{ ageing_count|pluralize }} ageing, "
+                "{{ expired_count }} suspended"
+            ),
             "body": (
-                "{{ ageing_count }} school(s) have been onboarding for more than "
-                "{{ stale_after_days }} days, and {{ expired_count }} were "
-                "suspended in the last {{ window_days }} days."
+                "Ageing means onboarding for more than {{ stale_after_days }} days. "
+                "Suspensions cover the last {{ window_days }} days."
             ),
         },
         ("onboarding.stale_report", C.EMAIL): {
@@ -1177,10 +1205,10 @@ def _build_default_templates() -> dict:
 
         # ── user.account_locked ─────────────────────────────────────────────
         ("user.account_locked", C.IN_APP): {
-            "subject": "",
+            "subject": "Your account is locked{% if locked_at %} since {{ locked_at }}{% endif %}",
             "body": (
-                "Account locked: Your account was locked on {{ locked_at }} "
-                "due to repeated failed login attempts."
+                "Repeated failed sign-in attempts caused it. An administrator "
+                "has to restore access."
             ),
         },
         ("user.account_locked", C.EMAIL): {
@@ -1204,10 +1232,13 @@ def _build_default_templates() -> dict:
 
         # ── import.completed ────────────────────────────────────────────────
         ("import.completed", C.IN_APP): {
-            "subject": "",
+            "subject": (
+                "{{ import_type }}: {{ success_count }} "
+                "record{{ success_count|pluralize }} imported"
+            ),
             "body": (
-                "Import complete: {{ import_type }} - {{ success_count }} records imported "
-                "successfully. Errors: {{ error_count }}."
+                "{{ error_count }} row{{ error_count|pluralize }} had errors. "
+                "Open the batch to review them."
             ),
         },
         ("import.completed", C.EMAIL): {
@@ -1226,10 +1257,10 @@ def _build_default_templates() -> dict:
 
         # ── import.failed ───────────────────────────────────────────────────
         ("import.failed", C.IN_APP): {
-            "subject": "",
+            "subject": "{{ import_type }} import failed",
             "body": (
-                "Import failed: {{ import_type }} could not be completed. "
-                "{{ error_summary }}"
+                "{% if error_summary %}{{ error_summary }} {% endif %}"
+                "Fix the file and upload it again."
             ),
         },
         ("import.failed", C.EMAIL): {
@@ -1281,13 +1312,16 @@ def _build_default_templates() -> dict:
         # Named plainly rather than quoted. A label in single quotes reads as
         # scare quotes in the tray - "Confirm Default Roles & RBAC" reopened -
         # and nothing else in the product does it.
+        #
+        # The job's label is all the context these two carry, so it belongs in
+        # the headline and the body is left to report the outcome.
         ("task.completed", C.IN_APP): {
-            "subject": "",
-            "body": "{{ label }} finished successfully.",
+            "subject": "{{ label }} finished successfully",
+            "body": "No errors were reported.",
         },
         ("task.failed", C.IN_APP): {
-            "subject": "",
-            "body": "{{ label }} did not finish. {{ error }}",
+            "subject": "{{ label }} did not finish",
+            "body": "{% if error %}{{ error }}{% else %}No error detail was recorded.{% endif %}",
         },
 
         # ── export.run_completed / export.run_failed (Export Centre) ─────────
@@ -1302,10 +1336,16 @@ def _build_default_templates() -> dict:
         # vs_notifications.W001 system check found it. Do not delete the email
         # template below as an oddity: without it the channel goes quiet again
         # and nothing fails.
+        # The headline names what was exported, never how the run was started:
+        # three quick exports in one afternoon are three different files, and a
+        # reader who cannot tell them apart in the tray has to open all three.
+        # vs_exports.services supplies {{ export_name }} without a trailing
+        # "export", which this template adds.
         ("export.run_completed", C.IN_APP): {
-            "subject": "",
+            "subject": "{{ export_name }} export is ready",
             "body": (
-                "{{ export_name }} is ready - {{ rows }} rows. {{ error }}"
+                "{{ rows }} row{{ rows|pluralize }}. Reference {{ reference }}."
+                "{% if error %} {{ error }}{% endif %}"
             ),
         },
         # The opening line is conditional on purpose: a run that completed with
@@ -1325,8 +1365,11 @@ def _build_default_templates() -> dict:
             ),
         },
         ("export.run_failed", C.IN_APP): {
-            "subject": "",
-            "body": "{{ export_name }} failed to run. {{ error }}",
+            "subject": "{{ export_name }} export failed",
+            "body": (
+                "{% if error %}{{ error }} {% endif %}Reference {{ reference }}. "
+                "Open the run to see the full record."
+            ),
         },
         ("export.run_failed", C.EMAIL): {
             "subject": "Export failed - {{ export_name }}",
@@ -1342,10 +1385,10 @@ def _build_default_templates() -> dict:
 
         # ── todo.task_completed (review request) ────────────────────────────
         ("todo.task_completed", C.IN_APP): {
-            "subject": "",
+            "subject": "\"{{ task_title }}\" is ready for your review",
             "body": (
-                "{{ assignee_name }} marked \"{{ task_title }}\" as done. "
-                "Kindly review it under Tasks → My Team."
+                "{{ assignee_name }} marked it done on {{ task_completed }}. "
+                "Review it under Tasks → My Team."
             ),
         },
         ("todo.task_completed", C.EMAIL): {

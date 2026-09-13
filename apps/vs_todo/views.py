@@ -14,6 +14,8 @@ from rest_framework.views import APIView
 
 from core.mixins import XVSModelViewSetMixin
 from core.response import success_response
+from vs_notifications.services.acknowledge import acknowledge_record
+from vs_notifications.services.routing import RecordFamily
 from vs_rbac.permissions import IsAuthenticatedAndActive, IsVisionStaff
 from vs_user.models import User
 
@@ -89,6 +91,25 @@ class TaskViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             raise NotFound("No such task.")  # don't reveal existence outside area
         return task
 
+    def retrieve(self, request, *args, **kwargs):
+        """Return the task, and clear the review request that pointed at it."""
+        response = super().retrieve(request, *args, **kwargs)
+        self._clear_review_request(request, kwargs.get("pk"))
+        return response
+
+    # Close the bell entry a reviewer has just answered.
+    def _clear_review_request(self, request, task_id):
+        """Mark this reviewer's notice about *task_id* read.
+
+        A review request is answered by acting on the task rather than by
+        reading it: the console lists tasks and never fetches one on its own,
+        so the toggle below is the hook that fires in practice. Reading is
+        covered too, for any client that does fetch one.
+        """
+        acknowledge_record(
+            request.user, family=RecordFamily.TODO_TASK, value=task_id,
+        )
+
     def create(self, request, *args, **kwargs):
         write = TaskWriteSerializer(data=request.data)
         write.is_valid(raise_exception=True)
@@ -139,6 +160,7 @@ class TaskViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         ser = ToggleSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         tasks_svc.set_done(task, done=ser.validated_data["done"], actor=request.user)
+        self._clear_review_request(request, pk)
         return success_response(
             message="Task updated successfully.",
             data=TaskSerializer(task).data,

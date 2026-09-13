@@ -86,6 +86,19 @@ def _feed_search_q(term: str) -> Q:
     )
 
 
+def _unread_in_app_count(user) -> int:
+    """The bell badge number for *user*.
+
+    Shared by the count endpoint and by every response that reports the badge,
+    so the two can never describe the same inbox differently.
+    """
+    return Notification.objects.filter(
+        recipient=user,
+        channel=ChannelChoices.IN_APP,
+        is_read=False,
+    ).count()
+
+
 # ---------------------------------------------------------------------------
 # 1.  Notification feed (user-facing)
 # ---------------------------------------------------------------------------
@@ -222,12 +235,10 @@ class NotificationViewSet(viewsets.GenericViewSet):
         GET /notifications/unread-count/
         Count of unread in-app notifications. Drives the bell badge.
         """
-        count = Notification.objects.filter(
-            recipient=request.user,
-            channel=ChannelChoices.IN_APP,
-            is_read=False,
-        ).count()
-        return success_response("Unread count retrieved.", data={"unread_count": count})
+        return success_response(
+            "Unread count retrieved.",
+            data={"unread_count": _unread_in_app_count(request.user)},
+        )
 
     @action(detail=False, methods=["post"], url_path="mark-read")
     def mark_read(self, request):
@@ -284,7 +295,22 @@ class NotificationViewSet(viewsets.GenericViewSet):
 
     @action(detail=False, methods=["post"], url_path="acknowledge-route")
     def acknowledge_route(self, request):
-        """Mark this user's notifications read when their destination is viewed."""
+        """Mark this user's notifications read when their destination is viewed.
+
+        POST /notifications/acknowledge-route/
+        Returns ``updated_count`` (rows this call cleared) and ``unread_count``
+        (the caller's unread total afterwards). The two routinely disagree,
+        which is why both are here: the record's own GET clears its
+        notifications as it serves them, so by the time this call lands there
+        is often nothing left to update, and ``updated_count`` alone would
+        leave the bell badge advertising a notice already read until the next
+        poll. The count lets the client correct the badge from a response it
+        already makes.
+
+        Only a route naming a record acknowledges anything. A path that names a
+        module index clears nothing and reports the count, because arriving at
+        an index is no evidence that anything on it was read.
+        """
         serializer = AcknowledgeRouteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         route_q = notification_route_q(serializer.validated_data["path"])
@@ -298,7 +324,10 @@ class NotificationViewSet(viewsets.GenericViewSet):
             ).update(is_read=True, read_at=timezone.now())
         return success_response(
             f"{updated} notification(s) acknowledged.",
-            data={"updated_count": updated},
+            data={
+                "updated_count": updated,
+                "unread_count": _unread_in_app_count(request.user),
+            },
         )
 
 

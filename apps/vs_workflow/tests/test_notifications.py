@@ -326,9 +326,10 @@ class ParkedRepairNotificationTests(TestCase):
         rows = self._feed_rows(self.approver)
         self.assertEqual(rows.count(), 1)
         # The same copy a normally-activated stage produces, because that is what
-        # it means to the recipient.
+        # it means to the recipient. The document is named in the headline and the
+        # stage in the line beneath it.
         self.assertIn("awaiting your decision", rows.first().body)
-        self.assertIn("REQ-0099", rows.first().body)
+        self.assertIn("REQ-0099", rows.first().subject)
 
     def test_a_repair_that_staffs_nobody_notifies_nobody(self):
         """Still parked means still silent - no empty or misleading message."""

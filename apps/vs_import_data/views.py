@@ -14,6 +14,8 @@ from rest_framework.views import APIView
 from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, DestroyModelMixin
 from core.response import success_response, error_response
 
+from vs_notifications.services.acknowledge import acknowledge_record
+from vs_notifications.services.routing import RecordFamily
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 # ``include_shared=True`` spelled out at each ``branch_q`` call site. A batch
 # with no branch was uploaded for the school as a whole, which is a normal shape
@@ -523,6 +525,23 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
     def get_object(self):
         self._cached_import_batch = super().get_object()
         return self._cached_import_batch
+
+    def retrieve(self, request, *args, **kwargs):
+        """Return the batch, and clear the job notifications about it.
+
+        A finished import announces itself through the generic background-job
+        bell, whose event key names the outcome and not the subject, so the
+        notice is tied to this batch by the job's target rather than by its
+        key. Reading the batch is what clears it, whichever client did the
+        reading.
+        """
+        response = super().retrieve(request, *args, **kwargs)
+        acknowledge_record(
+            request.user,
+            family=RecordFamily.IMPORT_JOB,
+            value=kwargs.get("batch_id"),
+        )
+        return response
 
     def get_serializer_class(self):
         if self.request.method in ["PATCH", "PUT"]:

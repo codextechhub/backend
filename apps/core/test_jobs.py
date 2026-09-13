@@ -71,15 +71,15 @@ class TrackedTaskTests(TestCase):
         self.assertIsNotNone(job.started_at)
         self.assertIsNotNone(job.finished_at)
 
-        # task.completed is IN_APP only; the label is carried in the body, so the
-        # notification exists and names the job even though the subject is empty.
+        # task.completed is IN_APP only; the job's label is the headline, so the
+        # tray names the job that finished rather than the category it belongs to.
         from vs_notifications.constants import ChannelChoices
         from vs_notifications.models import Notification
         note = Notification.objects.get(
             recipient=self.owner, channel=ChannelChoices.IN_APP,
         )
         self.assertEqual(note.event_type.key, "task.completed")
-        self.assertIn("Probe job", note.body)
+        self.assertIn("Probe job", note.subject)
         self.assertEqual(note.tenant_id, self.owner.tenant_id)
 
     def test_target_reaches_the_notification_that_links_back_to_it(self):
