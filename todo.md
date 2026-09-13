@@ -1,23 +1,100 @@
 ## Undone
-- NOT STARTED, PARKED 2026-09-04 (user decision: that module has not been worked on yet): A STAFF IMPORT. Four of the five datasets a school arrives with can now be uploaded - calendar events, academic structure, subjects and the student roll - and staff is the one that is not built. The onboarding checklist asks for it ("Add Staff & Invitations", TaskKey.STAFF_INVITATIONS, optional), and a secondary school arrives with forty to eighty people, which is not a form somebody fills in eighty times. THREE THINGS WERE ESTABLISHED WHILE LOOKING AT IT, and whoever builds it should not have to rediscover them. (1) IT QUALIFIES as a school dataset under vs_import_data/datasets.py's own three-count test, which matters because it CREATES ACCOUNTS AND GRANTS ROLES - the exact category `branches` and `cx_users` are withheld for. The difference from branches is that a school administrator may already do this by hand: POST /v1/i/schools/me/staff/ is gated on school.administrators.create, a school key, so an import is the bulk form of a permission the API grants rather than a way round one it refuses. It would need its own key (school.administrators.import, SENSITIVE, school_admin only) and three guards, each the file's version of one SchoolStaffListCreateView already applies: no school column so the tenant comes from the batch; the role checked against the SAME invitable_roles() queryset the staff form's dropdown is built from, which during onboarding is the administrator roles only; and the role checked against the uploader's own grant authority via missing_restricted_grant_authority, refused up front rather than only at the write. Without the second guard a spreadsheet assigns Payout Approver to a bursar, which is what that view's own comment warns about. (2) IT MUST NOT SEND INVITATIONS ON UPLOAD. UserCreationService.create_pending and finalize_invitation are separate calls, so accounts can be created without emailing anybody, and InvitationService.resend creates a first invitation when none exists - so the staff screen's existing per-row button can send it later with no screen changes. Create them PENDING, not DRAFT: _SchoolStaffBase.HIDDEN_STATUSES hides DRAFT from the staff list, so a file of eighty would create eighty records nobody could find. The reason is that emailing on upload is an outward act with no undo - a file whose email column has slipped one place puts a live login link for the school in eighty strangers' inboxes, and deleting the rows un-sends nothing. (3) A SCHOOL USER HAS NOWHERE TO PUT HR FIELDS, and this is a real gap rather than an import problem. employee_id, job_title and employment_type live on PlatformStaffProfile, which UserCreationService.create_pending builds ONLY when the target tenant is the platform. UserCreateSerializer declares all three as input fields, so the STAFF FORM accepts them and silently drops them for every school user too. Decide whether a school's staff record should carry them at all before building an import that offers the columns. Also note create_pending reads validated_data['gender'] with a bare subscript, so any caller not going through the serializer must supply it.
-- DOC DEBT, batched by decision 2026-08-27: the media documents committed in d8f1e8a describe an archive limitation that was fixed hours later in the same day's work, so five documents now overstate a gap that no longer exists AND never actually bit anyone (no file-owning model archives at all yet). Specifically: MRD v2.36 carries it as a P2 priority gap against M10/M19/M22/M23; M19 v1.5 FR-008 and M23 v1.5 FR-014 carry it as their 'Current limit'; M10 v1.1 and M22 v1.3 mention it under Needs Attention. What is now true: archiving CLOSES a file's URL at read time and destroys nothing - the bytes stay whole, because a record is archived precisely so it can be read later, and emptying its evidence would burn what the archive exists to keep. A module whose archived records should keep serving files declares serve_when_retired=True on its policy. The repo-side docs (docs/core/core_file_storage.md, error/core/core_code_issues.md) are ALREADY correct - it is only the .docx family that lags. The user chose to batch this rather than cut five versions for a one-day-old correction, so fold it into the next MRD/FRD round: MRD -> v2.37, M19 -> v1.6, M23 -> v1.6, and M10/M22 if their Needs Attention text still reads wrong at that point. Do not create these versions on their own.
-- LIVE DEFECT, found 2026-08-20 (M03 trace): A TEMPORARY LOCKOUT IS PERMANENT. `account_lock_minutes` sets `locked_until` AND sets `status = LOCKED`. Nothing restores the status when the window passes, so the lockout check then passes and the status check refuses anyway. The configured window releases nobody - only an admin or a password reset does. Whoever fixes it should decide whether the status is the right place to record a lockout at all, given `locked_until` already answers the question; two sources for one fact is why they disagree.
-- CORRECTED 2026-08-17, and the earlier framing of this item was REJECTED. It described one email, one login, many schools, with a switcher after sign-in. That is NOT what was decided. THE DECISION: a parent is an ordinary User belonging to exactly ONE school, like staff and students. A parent with children at two schools has TWO logins with no connection between them, deliberately, so the schools can learn nothing about each other. The dividing line was never staff-versus-not, it was how many tenants you belong to - and per-tenant email uniqueness (shipped in Phases 1-4: 6333844, cc5af66, 0db27e0, 6c9c187) means one real address can now be an account at both schools without joining them. Also settled: one login per school however many children; the guardian is school-level, not branch-level; credentials go to the parent's real email; and within one school ONE PERSON IS ONE ACCOUNT - a teacher whose own child attends the school she teaches at signs in once and sees both, because being a parent is having a guardian record, not a user_type. The rejected design and the reasons against it are kept at ~/Downloads/August_Sprint/PARENT_IDENTITY_DESIGN_PASS.md, marked superseded - read it before anyone proposes joining parent accounts again. THE PLATFORM WORK IS FINISHED. All five phases of the per-tenant email plan are done, and Phase 5 closed by accident rather than by design: removing user_type in a4916e9 dissolved ck_branch_required_for_branch_level_users into a tautology, so it was dropped, and User.branch is now null=True meaning "across the school". A parent account is therefore already representable - it can hold the same address as an account at another school, and it can be school-level with no branch. WHAT REMAINS IS NOT PLATFORM WORK: no Guardian model exists anywhere in the repo, so a parent cannot yet be linked to a child. That is M11 (the guardian record, its fields, one login per school, creation during enrolment) and M28 (what a parent sees), both of which have current FRDs specifying exactly this - M11 v2.3 and M28 v2.0 in ~/Downloads/August_Sprint/. TWO THINGS STILL GATE THE SIGN-IN SWITCH, neither of them backend: school-fe must send the subdomain label and console-fe the constant "codex", on BOTH login and password reset. REQUIRE_TENANT_ON_SIGN_IN in vs_user/services/sign_in_scope.py is the one-line flip, and flipping it before the frontends send it breaks every login on the platform with correct credentials. Tracked in docs/FRONTEND_CHANGES_OWED.md.
-- CONSEQUENCE for M13 and M14 (2026-08-16, found during the M14 FRD pass): a PENDING tenant is refused every surface that does not declare pending_tenant_surface, and absence means closed. M9's onboarding catalogue makes 'Set up your academic structure' a REQUIRED task (vs_onboarding/constants.py:153-158), so M13's endpoints must declare it. CORRECTED 2026-08-17 against the shipped module, because the original framing overstates today and would send someone hunting a bug that does not exist: a school is NOT stuck today. ACADEMIC_STRUCTURE has NO machine-checkable condition (it is absent from TASK_CONDITIONS on purpose, since there is no backend to check against), so the school marks it DONE on its own word and goes live without touching an M13 endpoint at all. The trap arrives WITH M13, in two ways, and both are worth building for deliberately: (1) the moment that task gains a real condition, a pending school must be able to REACH M13's endpoints to satisfy it, so they must declare pending_tenant_surface or onboarding deadlocks; (2) forgetting the declaration fails CLOSED with 403 TENANT_NOT_LIVE rather than open, which is the safe direction but reads as a permissions bug rather than a missing attribute, so the M13 builder should be told to expect it. M14's calendar endpoints are the same shape. M14 v2.0 carries it as FR-010; M13 needs it on its next revision.
-- FAL has no HTTP route. `apps/schools/core/fal/` has no `urls.py`, so `link_term`, `generate_cohort_invoices` and the nine procurement actions are callable from Python and nothing else. This is the fees backend step. One thing still to fix behind that route: payments and concessions bypass the FAL and reach /v1/finance/ directly, so a school screen has to know the AR customer id - the engine concept the FAL exists to hide. The fix is write ports (apply_payment, and something for concessions), DEFERRED ON PURPOSE to the fees backend step so the design says what a payment screen and a waiver screen need before the port is shaped. Spec 16 already parks apply_payment in v1.2.
-- AmbiguousPrimaryEntity alerting. The FAL raises it and nothing listens. Was blocked on the FAL not existing; now unblocked and small.
-- School procurement, the parts still open (2026-07-28): grant the procurement permission keys to school roles; seed approval templates at onboarding with the RULES but NO approver, so procurement stays blocked until the school names one; keep the submit-without-approval override granted to nobody by default; verify that school users resolve scope through `vs_finance.views.resolve_entity` (vs_procurement/views/requisitions.py:116), which shares the request.school middleware precondition. Design: ~/Downloads/August_Sprint/Procurement_Design_Prompt.md. The two FAL .docx exports are stale against the built ports - regenerate from the canonical markdown before circulating.
-- WANTED, NOT NOW (2026-08-30, user decision after the M11 build): TELL A GUARDIAN WHEN THEIR CHILD IS SUSPENDED. The design's suspension panel prints "Guardians are notified by email" and nobody is told: there is no guardian-facing notification event type anywhere in the platform, M11 FRD v2.5 section 8.3 records that this module emits none, and inventing one is a product decision. The backend already leaves the sentence OUT of the impact text it returns (schools/vs_students/services/status.py, IMPACT), so the API is honest today - the risk is the frontend typing the line off the mockup instead of reading it from the response. Needs: a student.suspended event type with templates, a decision on WHO receives it (the primary guardian only, or every linked guardian), and whether a school can turn it off. Note that until it exists the screen overstates what happens, and a registrar who reads it will not phone home. M11 FRD v2.5 section 14, decision 15, and section 13.
-- WANTED, NOT NOW (2026-08-30, user decision after the M11 build): STOP BILLING WHEN A STUDENT IS WITHDRAWN. The design's withdrawal panel prints "Billing stops at the effective date" and nothing stops: vs_finance is domain-neutral, has no student and no fee assignment to suspend, and M11 FRD v2.5 section 7.8 forbids this module from adding one. The seam is the FAL's StudentCustomerPort, which maps a student to an AR customer and has no fee schedule behind it. This is a Finance job and much larger than the guardian notification - it needs a fee-assignment concept first. The backend already omits the sentence from its impact text, so the API is honest; the exposure is a school that stops chasing a leaver's fees because a screen told it the system had. M11 FRD v2.5 section 14, decision 16, and section 13.
 
+Six items. Each says what is wrong, how to fix it, and what is stopping it.
+Verified against the code on 2026-09-13; four earlier items were removed because
+they were finished or no longer true, and what replaced them is noted at the end.
 
+### 1. Procurement approval templates are not seeded at onboarding (2026-07-28, re-verified 2026-09-13)
+`seed_procurement_approvals` exists only as a management command
+(vs_procurement/management/commands/); no school creation or onboarding path
+calls it. A new school therefore has no procurement ladder of its own and falls
+back to the shared platform row, which carries no live steps.
+FIX: call it at provisioning, seeding the RULES with NO approver, so procurement
+stays blocked until the school names one, and keep the
+submit-without-approval override granted to nobody by default.
+BLOCKED BY: one product decision - whether a new school's procurement starts
+blocked (safe, and somebody must act before the first purchase) or open.
 
+### 2. AmbiguousPrimaryEntity is raised and nothing listens (2026-08)
+The FAL raises it, loudly and deliberately, and no operator is told.
+FIX: decide who hears it, an operator alert or a health-check row, and wire it.
+BLOCKED BY: nothing. Was blocked on the FAL not existing; the FAL is mounted at
+/v1/school-finance/ now, so this is unblocked and small.
 
+### 3. FAL write ports for payments and concessions (deferred on purpose)
+Payments and concessions bypass the FAL and reach /v1/finance/ directly, so a
+school screen has to know the AR customer id, which is the engine concept the
+FAL exists to hide. Spec 16 parks `apply_payment` in v1.2.
+FIX: write ports - `apply_payment`, and something for concessions.
+BLOCKED BY: the fees backend step, deliberately, so that the design says what a
+payment screen and a waiver screen need before the port is shaped.
 
+### 4. A staff import (NOT STARTED, PARKED 2026-09-04 by user decision)
+Four of the five datasets a school arrives with can be uploaded; staff is the
+one that is not built, and a secondary school arrives with forty to eighty
+people. Three things were established while looking at it and should not be
+rediscovered: (1) it QUALIFIES as a school dataset, but it creates accounts and
+grants roles, so it needs its own key (school.administrators.import, SENSITIVE,
+school_admin only) and three guards - tenant from the batch, role checked
+against the same `invitable_roles()` queryset the staff form uses, and role
+checked against the uploader's own grant authority via
+`missing_restricted_grant_authority`; without the second, a spreadsheet assigns
+Payout Approver to a bursar. (2) It MUST NOT send invitations on upload: create
+accounts PENDING (not DRAFT, which `_SchoolStaffBase.HIDDEN_STATUSES` hides from
+the staff list) and let the existing per-row button invite later, because a file
+whose email column has slipped one place puts live login links in eighty
+strangers' inboxes and deleting the rows un-sends nothing.
+BLOCKED BY: your decision to unpark it, and one real prerequisite below.
 
+### 5. A school user has nowhere to put HR fields (found inside item 4)
+`employee_id`, `job_title` and `employment_type` live on
+`PlatformStaffProfile`, which `UserCreationService.create_pending` builds only
+for platform tenants, while `UserCreateSerializer` declares all three as input
+fields. So the staff form accepts them and silently drops them for every school
+user today.
+FIX: decide whether a school's staff record should carry them at all, then put
+them where that decision says.
+BLOCKED BY: nothing technical. Decide this before building item 4, not after,
+since the import would otherwise offer columns that go nowhere.
 
+### 6. Two screens promise things the backend does not do (WANTED, NOT NOW, 2026-08-30)
+Both are honest in the API and dishonest only if a screen types the sentence off
+the mockup rather than reading the response.
+(a) TELL A GUARDIAN WHEN THEIR CHILD IS SUSPENDED. The suspension panel prints
+"Guardians are notified by email" and no guardian-facing event type exists
+anywhere. FIX: a student.suspended event type with templates, plus a decision on
+who receives it (primary guardian only, or every linked guardian) and whether a
+school may turn it off. BLOCKED BY: that product decision.
+(b) STOP BILLING WHEN A STUDENT IS WITHDRAWN. The withdrawal panel prints
+"Billing stops at the effective date" and nothing stops: vs_finance is
+domain-neutral and has no fee assignment to suspend. FIX: a fee-assignment
+concept in Finance first, then the seam through the FAL's StudentCustomerPort.
+BLOCKED BY: that Finance work, which is much larger than (a).
 
-
+### Removed on 2026-09-13, with why
+- A TEMPORARY LOCKOUT IS PERMANENT: fixed in 3e4e79af. The lockout is one
+  fact now, `AccountLockout.locked_until`, which expires by itself; no status
+  is written, LOCKED is reported rather than stored, and migration 0012 frees
+  the accounts already stuck. Three further faults of the same root went with
+  it: a suspension an attacker could lift, a password reset that failed to
+  release its own victim, and a window anybody could push out for ever.
+- PARENT IDENTITY: the platform work was already finished and
+  `REQUIRE_TENANT_ON_SIGN_IN` is now True, so the "one-line flip still waiting"
+  no longer exists. What remains is M11/M28 feature work with its own FRDs.
+- FAL HAS NO HTTP ROUTE: it has one, mounted at /v1/school-finance/, serving the
+  fee due policy, term linking and cohort invoice generation. The procurement
+  actions are absent on purpose (the procurement bridge is its own work), and
+  the payments/concessions gap survives as item 4 above.
+- M13/M14 PENDING-SURFACE CONSEQUENCE: both modules shipped; a warning written
+  for builders who have since built.
+- PROCUREMENT KEYS FOR SCHOOL ROLES: done. `seed_prebuilt_role_templates` gives
+  Procurement Admin every `procurement.` key, a school permission group carries
+  the money end for Finance Admin, and school creation now refuses rather than
+  creating a school short of the roles CodeX ships.
+- MEDIA DOC DEBT (batched 2026-08-27): superseded. The documents it named are
+  dozens of revisions stale, `serve_when_retired` decides whether an archived
+  record keeps serving its files, and the residue - that `core.media.revoke` has
+  no caller outside core - is already carried as a P2 priority gap in the MRD.
 
 ## Done
 # The blank class column and the missing dry run are both fixed (2026-08-30, 182 FAL tests green). CLASS LABEL: `DebtorRow.class_label` and `FeeRow.class_label` were hardcoded to "" behind a comment saying there was no student app to ask - false since M11 landed. They now read the child's active enrolment in the newest session, via `_class_labels` + `_labelled`, applied to the built page rather than inside the row builder so a long debtor list costs ONE extra query instead of one per row (the test asserts the invariant - a class of thirty costs what a class of two costs - not a magic number). A CROSS-TENANT LEAK WAS FOUND AND CLOSED IN THAT SAME FIX, before it shipped: `Customer.source_id` is a loose string, not an FK, so a school that imported receivables before its roll can hold a reference like "7" that means nothing locally while ANOTHER school's pupil genuinely has pk 7. Unscoped, the first school's debtor list would print the second school's class against a child it has never heard of. The lookup is tenant-scoped and a test fails without it. Entity scoping upstream cannot catch this, because the leak enters through a value the ledger merely stores. DRY RUN: `generate_cohort_invoices(..., dry_run=True)` runs the REAL generation inside a transaction and rolls it back, rather than re-deriving the amounts. Deliberate: fee items are priced and taxed inside `post_invoice`, so a second implementation would quote a pre-tax figure and be wrong in exactly the case a bursar most needs it right. Running the real code also means every refusal a real run would raise is raised in the preview, so a preview cannot promise a run that then fails. `InvoiceGenerationResult` gained `dry_run` and `students_to_bill`; the preview returns no invoice pks, because they stop existing when the block exits. The in-memory fake was updated too, or a test that previewed then billed would see its own preview come back as an idempotent skip.
