@@ -402,23 +402,40 @@ class  UserStatusService:
 
     @staticmethod
     @transaction.atomic
-    def unlock(target_user, requesting_user, request=None) -> User:
-        if target_user.status != User.Status.LOCKED:
+    def unlock(target_user, requesting_user, request=None, metadata=None) -> User:
+        """Release a brute-force lockout early, and touch nothing else.
+
+        The one implementation, called by the platform endpoint, the school's
+        own account action and the lockout console alike, so "what does
+        unlocking do" has a single answer.
+
+        It reads and writes :class:`AccountLockout` and never ``User.status``.
+        That separation is the point of the two actions: unlocking ends a timed
+        security condition, and reactivating ends an administrative suspension.
+        Setting ACTIVE here would merge them, and a suspended account that had
+        also been guessed at would be reinstated by an administrator who thought
+        they were clearing a lockout.
+
+        Refused only when there is nothing to clear. A counter left standing by
+        a window that has already closed still counts as something: the holder's
+        next single mistake would otherwise reach the threshold again, and
+        clearing it is a real act rather than a no-op dressed as one.
+        """
+        from ..models import AccountLockout
+
+        lockout = (
+            AccountLockout.objects.select_for_update().filter(user=target_user).first()
+        )
+        if lockout is None or not lockout.has_state():
             raise ValueError({'error_code': 'INVALID_STATUS_TRANSITION', 'message': 'Account is not locked.'})
 
-        from ..models import AccountLockout
-        lockout = AccountLockout.objects.filter(user=target_user).first()
-        if lockout:
-            lockout.clear()
-            lockout.save(update_fields=['failure_count', 'locked_until', 'locked_reason', 'updated_at'])
-
-        target_user.status    = User.Status.ACTIVE
-        target_user.is_active = True
-        target_user.save(update_fields=['status', 'is_active', 'updated_at'])
+        lockout.clear()
+        lockout.save(update_fields=['failure_count', 'locked_until', 'locked_reason', 'updated_at'])
 
         log_auth_event(
             actor=requesting_user, subject=target_user,
             tenant=target_user.tenant,
             event=AuthEventLog.Event.ACCOUNT_UNLOCKED, request=request,
+            metadata=metadata or {},
         )
         return target_user

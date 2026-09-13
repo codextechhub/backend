@@ -58,7 +58,7 @@ class StaffStatusView(StaffViewMixin, APIView):
         staff = self.get_staff(pk)
         return success_response(data={
             "employment_status": staff.employment_status,
-            "account_status": staff.user.status,
+            "account_status": staff.user.account_state,
             # Null unless the empty list needs explaining, which is what stops
             # the drawer inventing a reason of its own.
             "note": employment.transitions_note(staff, request.user),

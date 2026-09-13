@@ -34,10 +34,12 @@ the enum without an entry - which is exactly how the three above got in.
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from unittest import mock
 
 from django.core.cache import cache
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.test import APIClient
 
@@ -110,10 +112,14 @@ class _Fixture(TestCase):
             branch=self.branch,
         )
         if status == User.Status.LOCKED:
-            # A LOCKED account without a lockout row would be refused by the
-            # status gate but never reach the lockout branch above it; the row
-            # keeps the fixture honest about which gate is doing the work.
-            AccountLockout.objects.create(user=user, failure_count=5)
+            # A row carrying the LOCKED status is a fossil - no code writes it
+            # any more, and the migration cleared the ones that existed - but
+            # the gates still refuse it, and that is what these tests check.
+            # The live lockout beside it is what such a row really looked like.
+            AccountLockout.objects.create(
+                user=user, failure_count=5,
+                locked_until=timezone.now() + timedelta(minutes=15),
+            )
         return User.objects.get(pk=user.pk)
 
     def admin(self):
@@ -203,8 +209,6 @@ class IsActiveIsDerivedTests(_Fixture):
 
     def test_is_active_is_true_only_for_active(self):
         for status in EXPECTED:
-            if status == User.Status.LOCKED:
-                continue  # deliberate exception, covered below
             with self.subTest(status=status):
                 user = self.user(status)
                 self.assertIs(user.is_active, status == User.Status.ACTIVE)
@@ -225,12 +229,24 @@ class IsActiveIsDerivedTests(_Fixture):
         user.save(update_fields=["is_active", "updated_at"])
         self.assertFalse(User.objects.get(pk=user.pk).is_active)
 
-    def test_locked_keeps_its_flag_so_unlocking_restores_the_account(self):
+    def test_a_lockout_leaves_the_account_exactly_as_it_was(self):
+        """There is nothing to restore, because nothing was taken away.
+
+        ``_sync_is_active`` used to skip LOCKED so that clearing a lockout could
+        put the account back the way it was found. A lockout is written to its
+        own row now and never to the status, so the account holds its status and
+        its flag right through the window and out the other side, and the
+        exception that preserved them is gone.
+        """
         user = self.user(User.Status.ACTIVE)
-        self.assertTrue(user.is_active)
-        user.status = User.Status.LOCKED
-        user.save(update_fields=["status", "updated_at"])
-        self.assertTrue(User.objects.get(pk=user.pk).is_active)
+        lockout, _ = AccountLockout.objects.get_or_create(user=user)
+        lockout.register_failure(lock_threshold=1, lock_minutes=15)
+        lockout.save()
+
+        fresh = User.objects.get(pk=user.pk)
+        self.assertEqual(fresh.status, User.Status.ACTIVE)
+        self.assertTrue(fresh.is_active)
+        self.assertTrue(fresh.is_locked)
 
     def test_status_change_writes_is_active_even_when_not_asked_for(self):
         user = self.user(User.Status.ACTIVE)

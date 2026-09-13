@@ -40,7 +40,7 @@ def counts(queryset, tenant):
     time is worse than one that is merely wrong, because the two figures beside
     each other look like a rounding difference rather than a defect.
     """
-    from vs_user.models import User
+    from vs_user.models import lockout_in_force
 
     countable = _countable(queryset)
     # Grouped on what each row READS as, so the bar, the chips and the facet
@@ -70,9 +70,10 @@ def counts(queryset, tenant):
         with_teaching=Count(
             "pk", filter=Q(teaching_assignments__isnull=False), distinct=True,
         ),
-        locked=Count(
-            "pk", filter=Q(user__status=User.Status.LOCKED), distinct=True,
-        ),
+        # Asked of the lockout row rather than of the account's status, because
+        # a lockout expires on its own and a status does not. Counting the
+        # column would report Mrs Okafor as locked all week.
+        locked=Count("pk", filter=lockout_in_force("user__"), distinct=True),
     )
 
     payload = {

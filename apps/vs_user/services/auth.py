@@ -257,12 +257,43 @@ class LoginService:
 
     @staticmethod
     def _handle_failed_attempt(user, tenant, email_entered, request):
-        """Increment the failure counter, lock the account if threshold is reached, and record the attempt.
+        """Count one failed sign-in, lock at the threshold, and record the attempt.
 
         The lockout update is wrapped in its own atomic block so the counter
         persists regardless of what the caller does after. record_attempt is
         called outside that block for the same reason - it must never be rolled
         back by a caller's exception handler.
+
+        The lock is written in exactly one place, ``AccountLockout.locked_until``,
+        and ``User.status`` is deliberately left where it was. Writing both is
+        what made a temporary lockout permanent: the row expires by itself when
+        the configured window passes, a status does not, so the sign-in got past
+        the lockout check and was refused by the status check instead, until an
+        administrator or a password reset moved it back. A status is what
+        somebody decided about an account; a lockout is a timed condition, and
+        it is the only thing here that has an expiry.
+
+        Leaving the status alone also stops a lockout overwriting an
+        administrator's decision. A suspended account that is then guessed at
+        five times used to come out of it reading LOCKED, and the unlock that
+        followed made it ACTIVE - a suspension lifted by an attacker's failed
+        attempts and an administrator's tidying up.
+
+        **A lockout therefore does not end a session that is already running**,
+        and that is deliberate rather than an oversight of the above. The
+        request gate reads ``may_sign_in``, which reads the status, so writing
+        the status here reached through and signed the holder out. But the
+        person guessing a password holds no session: ending one only ever
+        reaches the legitimate holder, which makes the control a denial of
+        service anybody can aim at anybody - five wrong passwords for the
+        principal's address, every quarter of an hour, and she is thrown out of
+        her own school all day. Ending a session on purpose is an
+        administrator's act and has its own routes: ``UserStatusService.suspend``
+        and the force-logout endpoint, both of which blacklist the tokens too.
+
+        The gate is also the hottest path in the application, and it must not
+        learn to ask this question: the status it reads is a column already
+        loaded with the user, while a lockout is another table.
         """
         just_locked = False
         if user:
@@ -274,6 +305,7 @@ class LoginService:
 
             with transaction.atomic():
                 lockout, _ = AccountLockout.objects.select_for_update().get_or_create(user=user)
+                was_locked = lockout.is_locked_now()
                 lockout.register_failure(
                     ip=get_client_ip(request),
                     lock_threshold=security_settings["failed_login_threshold"],
@@ -283,10 +315,9 @@ class LoginService:
                     'failure_count', 'locked_until', 'locked_reason',
                     'last_failure_at', 'last_failure_ip', 'updated_at',
                 ])
-                if lockout.is_locked_now():
-                    user.status = User.Status.LOCKED
-                    user.save(update_fields=['status', 'updated_at'])
-                    just_locked = True
+                # Audited once, when the window opens, not on every attempt made
+                # against an account that is already inside one.
+                just_locked = not was_locked and lockout.is_locked_now()
 
             if just_locked:
                 log_auth_event(

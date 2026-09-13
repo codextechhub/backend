@@ -219,19 +219,26 @@ class PasswordService:
         # valid to SimpleJWT. It stays in update_fields below because the
         # derivation still writes it.
         #
-        # This promotion is now total over the statuses that can reach
-        # here: ``_require_password_eligible`` admits exactly ACTIVE,
-        # PENDING, LOCKED and SUSPENDED. LOCKED and PENDING become ACTIVE
-        # (the reset IS the unlock, and the activation); ACTIVE is already
-        # there; SUSPENDED deliberately stays suspended, because a new
-        # password is not a reinstatement. No status may land here, keep its
-        # own value and walk away with a working credential.
+        # A completed reset ends any lockout, whatever the status says. The
+        # credential that was being guessed no longer exists, so there is
+        # nothing left to protect by holding the window open - and asking the
+        # status first is what used to leave Mrs Okafor locked out after
+        # resetting her own password, because a lockout does not move the
+        # status and so the branch that cleared it never ran.
+        lockout = AccountLockout.objects.select_for_update().filter(user=user).first()
+        if lockout is not None and lockout.has_state():
+            lockout.clear()
+            lockout.save(update_fields=["failure_count", "locked_until", "locked_reason", "updated_at"])
+
+        # This promotion is total over the statuses that can reach here:
+        # ``_require_password_eligible`` admits exactly ACTIVE, PENDING,
+        # LOCKED and SUSPENDED. PENDING becomes ACTIVE (the reset IS the
+        # activation), and so does a row still carrying the LOCKED status
+        # from before a lockout stopped being one; ACTIVE is already there;
+        # SUSPENDED deliberately stays suspended, because a new password is
+        # not a reinstatement. No status may land here, keep its own value
+        # and walk away with a working credential.
         if user.status in (User.Status.LOCKED, User.Status.PENDING):
-            if user.status == User.Status.LOCKED:
-                lockout = AccountLockout.objects.select_for_update().filter(user=user).first()
-                if lockout:
-                    lockout.clear()
-                    lockout.save(update_fields=["failure_count", "locked_until", "locked_reason", "updated_at"])
             user.status = User.Status.ACTIVE
 
         user.save(update_fields=["password", "password_changed_at", "status", "is_active", "updated_at"])

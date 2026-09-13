@@ -104,8 +104,7 @@ class TwoStatusesTests(StaffFixture):
 
     def test_a_locked_account_has_an_unchanged_employment_status(self):
         """Mrs. Okafor mistypes her password three times and is still employed."""
-        self.eze.user.status = User.Status.LOCKED
-        self.eze.user.save(update_fields=["status"])
+        self.lock_out(self.eze.user)
         response = self.get(self.admin, "staff-detail", pk=self.eze.pk)
         self.assertEqual(
             response.data["data"]["employment_status"], EmploymentStatus.ACTIVE,
@@ -776,10 +775,30 @@ class DirectoryTests(StaffFixture):
         self.assertEqual(counts["with_teaching_duties"], 1)
 
     def test_the_locked_count_is_an_account_count(self):
-        self.eze.user.status = User.Status.LOCKED
-        self.eze.user.save(update_fields=["status"])
+        self.lock_out(self.eze.user)
         counts = self.get(self.admin, "staff-list").data["counts"]
         self.assertEqual(counts["locked_accounts"], 1)
+        self.assertEqual(counts["currently_employed"], counts["total"])
+
+    def test_the_locked_count_empties_itself_when_the_window_passes(self):
+        """The header stops saying it without anybody clearing anything.
+
+        The count is read from the lockout row rather than from the account's
+        status, which is the difference between a figure that follows the
+        lockout and one that stays up until an administrator notices it. A
+        school that reads one locked account all week stops reading the number
+        at all.
+        """
+        lockout = self.lock_out(self.eze.user)
+        self.assertEqual(
+            self.get(self.admin, "staff-list").data["counts"]["locked_accounts"], 1,
+        )
+
+        lockout.locked_until -= dt.timedelta(minutes=20)
+        lockout.save(update_fields=["locked_until"])
+
+        counts = self.get(self.admin, "staff-list").data["counts"]
+        self.assertEqual(counts["locked_accounts"], 0)
         self.assertEqual(counts["currently_employed"], counts["total"])
 
     def test_the_teaching_filter_reads_assignments_and_not_a_job_title(self):
@@ -793,12 +812,22 @@ class DirectoryTests(StaffFixture):
         self.assertEqual(names, {"Adaeze Nwankwo"})
 
     def test_the_employment_and_account_filters_are_separate(self):
-        self.eze.user.status = User.Status.LOCKED
-        self.eze.user.save(update_fields=["status"])
+        self.lock_out(self.eze.user)
         by_account = self.get(
             self.admin, "staff-list", {"account_status": "LOCKED"},
         )
         self.assertEqual(len(by_account.data["data"]), 1)
+        self.assertEqual(
+            by_account.data["data"][0]["account_status"], "LOCKED",
+        )
+        # The facets stay disjoint: somebody locked out this minute is not also
+        # counted among the accounts that are simply active.
+        by_active = self.get(
+            self.admin, "staff-list", {"account_status": "ACTIVE"},
+        )
+        names = {row["full_name"] for row in by_active.data["data"]}
+        self.assertNotIn("Chukwuemeka Eze", names)
+        self.assertIn("Adaeze Nwankwo", names)
         by_employment = self.get(
             self.admin, "staff-list", {"employment_status": "ACTIVE"},
         )

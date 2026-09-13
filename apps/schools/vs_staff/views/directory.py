@@ -107,7 +107,19 @@ class StaffListCreateView(StaffViewMixin, generics.ListCreateAPIView):
         # questions and a single control would tell a school its locked-out
         # teacher had been suspended.
         if value := params.get("account_status"):
-            queryset = queryset.filter(user__status=value)
+            # Locked is not a stored status. It is a lockout that expires on its
+            # own, so both halves of this filter ask the lockout row: Locked
+            # finds whoever is locked at this moment, and every other value
+            # excludes them, so the facets stay disjoint the way the employment
+            # ones above do and the counts beside them still sum.
+            from vs_user.models import User, lockout_in_force
+
+            if value == User.Status.LOCKED:
+                queryset = queryset.filter(lockout_in_force("user__"))
+            else:
+                queryset = queryset.filter(user__status=value).exclude(
+                    lockout_in_force("user__"),
+                )
         if value := params.get("role"):
             queryset = queryset.filter(
                 user__tenant_role_assignments__role__key=value,

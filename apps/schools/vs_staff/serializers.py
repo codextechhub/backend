@@ -50,19 +50,36 @@ def _actor(user):
 class AccountStateSerializer(serializers.Serializer):
     """The account half, kept as its own object on purpose.
 
-    ``can_sign_in`` and ``can_hold_password`` are read from the model's own
-    allow-lists rather than recomputed, so a status added later cannot quietly
-    acquire a meaning here that the auth layer does not give it.
+    ``can_hold_password`` is read from the model's own allow-list rather than
+    recomputed, so a status added later cannot quietly acquire a meaning here
+    that the auth layer does not give it.
+
+    ``status`` is :attr:`User.account_state`, which is the stored status with a
+    running lockout laid over it. A lockout is not a status and is not stored as
+    one, but it is what a reader has to see, and it stops being shown the moment
+    the window passes rather than when somebody clears a column.
+
+    ``can_sign_in`` therefore asks both halves. The allow-list alone would say
+    yes for an ACTIVE account that is locked out this minute, and a screen
+    reading Locked beside "can sign in" is a screen nobody believes.
     """
 
-    status = serializers.CharField()
+    status = serializers.SerializerMethodField()
     label = serializers.SerializerMethodField()
-    can_sign_in = serializers.BooleanField(source="may_sign_in")
+    can_sign_in = serializers.SerializerMethodField()
     can_hold_password = serializers.BooleanField(source="may_hold_password")
     email = serializers.EmailField()
 
+    def get_status(self, obj) -> str:
+        return obj.account_state
+
+    def get_can_sign_in(self, obj) -> bool:
+        return obj.may_sign_in and not obj.is_locked
+
     def get_label(self, obj) -> str:
-        return obj.get_status_display()
+        from vs_user.models import User
+
+        return dict(User.Status.choices).get(obj.account_state, "")
 
 
 #: The relations :class:`StaffListSerializer` reads off every row.
@@ -75,6 +92,9 @@ class AccountStateSerializer(serializers.Serializer):
 STAFF_LIST_PREFETCH = (
     "user__tenant_role_assignments__role",
     "user__invitation",
+    # Whether a lockout is running, which the account status and the chip both
+    # read. Without it every row on the page asks for itself.
+    "user__lockout",
 )
 
 
@@ -89,7 +109,9 @@ class StaffListSerializer(serializers.ModelSerializer):
 
     full_name = serializers.SerializerMethodField()
     email = serializers.EmailField(source="user.email", read_only=True)
-    account_status = serializers.CharField(source="user.status", read_only=True)
+    #: The stored status with a running lockout laid over it, so the column, the
+    #: chip beside it and the ``?account_status=`` filter name the same people.
+    account_status = serializers.CharField(source="user.account_state", read_only=True)
     account_flag = serializers.SerializerMethodField()
     roles = serializers.SerializerMethodField()
     branch_name = serializers.SerializerMethodField()
@@ -234,7 +256,9 @@ class StaffListSerializer(serializers.ModelSerializer):
         """
         from vs_user.models import User
 
-        status = obj.user.status
+        # The lockout is read from its own row, which expires by itself. A chip
+        # drawn from the status column stayed up all week.
+        status = obj.user.account_state
         if status == User.Status.LOCKED:
             return {
                 "code": "LOCKED",

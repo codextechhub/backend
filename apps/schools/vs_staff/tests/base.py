@@ -215,6 +215,22 @@ class StaffFixture(TestCase):
             hire_date=dt.date(2021, 9, 6),
         )
 
+    @staticmethod
+    def lock_out(user, *, minutes=15):
+        """Lock an account out the way a run of failed sign-ins does.
+
+        A lockout is not a status. It is a row carrying the moment it expires,
+        so a test that set ``User.status`` to LOCKED would be asserting against
+        a state nothing writes and would keep passing after the lockout it
+        stands for had ended.
+        """
+        from vs_user.models import AccountLockout
+
+        lockout, _ = AccountLockout.objects.get_or_create(user=user)
+        lockout.register_failure(lock_threshold=1, lock_minutes=minutes)
+        lockout.save()
+        return lockout
+
     # ── HTTP helpers ───────────────────────────────────────────────────────
 
     def client_for(self, user):

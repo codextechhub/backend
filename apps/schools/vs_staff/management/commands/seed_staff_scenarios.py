@@ -339,8 +339,16 @@ class Command(BaseCommand):
         )
         if target is None:
             return
-        target.user.status = User.Status.LOCKED
-        target.user.save(update_fields=["status", "updated_at"])
+        # Written where a lockout actually lives. The account keeps the status
+        # its school gave it, and a day's window is long enough to still be
+        # running when somebody opens the seeded school to look at it.
+        from vs_user.models import AccountLockout
+
+        lockout, _ = AccountLockout.objects.get_or_create(user=target.user)
+        lockout.register_failure(
+            ip="127.0.0.1", lock_threshold=1, lock_minutes=24 * 60,
+        )
+        lockout.save()
 
     def _add_qualifications(self, profile, last, actor):
         from ...services import creation

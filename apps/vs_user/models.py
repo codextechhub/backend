@@ -171,6 +171,23 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     # ── Choices ──────────────────────────────────────────────────────────────
 
     class Status(models.TextChoices):
+        """What an administrator has decided about this account.
+
+        Every value here is an administrative state somebody chose and somebody
+        can change: a draft, an approval, an invitation, a suspension, a
+        closure.
+
+        LOCKED is the exception, and it is **never stored in the column**. A
+        brute-force lockout is a timed security condition, not a decision about
+        the account, and it lives in :class:`AccountLockout` where it expires on
+        its own. The value survives here because that is the name the condition
+        is REPORTED under - :attr:`User.account_state` returns it while a
+        lockout is running, the staff directory filters and counts on it, and
+        the sign-in refusal is worded from it. The gates below keep their
+        entries for it so that a row carrying it (a hand-written one, or a dump
+        taken before the condition moved) is still refused rather than admitted.
+        """
+
         DRAFT            = 'DRAFT',            'Draft'
         PENDING_APPROVAL = 'PENDING_APPROVAL', 'Pending Approval'
         PENDING          = 'PENDING',          'Pending Activation'
@@ -185,9 +202,16 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     #: The only statuses a sign-in may succeed from. Not a shorthand for
     #: "not obviously bad": PENDING has been invited but has not set a password,
-    #: LOCKED is mid-incident, SUSPENDED and DEACTIVATED are administratively
-    #: closed, and DRAFT / PENDING_APPROVAL / REJECTED were never granted a
-    #: login at all. Exactly one status means "this person may work today".
+    #: SUSPENDED and DEACTIVATED are administratively closed, and DRAFT /
+    #: PENDING_APPROVAL / REJECTED were never granted a login at all. Exactly
+    #: one status means "this person may work today".
+    #:
+    #: A brute-force lockout is NOT decided here. It is a separate, timed
+    #: refusal made by ``AccountLockout.is_locked_now`` at sign-in, so that an
+    #: account holds its own status throughout and the lockout releases itself
+    #: when the configured window passes. LOCKED is absent from this set for
+    #: the same reason every other non-ACTIVE status is: a row carrying it may
+    #: not sign in.
     SIGN_IN_STATUSES = frozenset({Status.ACTIVE})
 
     #: Absent, and refused: DEACTIVATED, which is terminal; and DRAFT,
@@ -616,13 +640,13 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         ``confirm_reset`` set exactly that flag, which is how a parked draft
         ended up with a working password AND a session the API accepted.
 
-        LOCKED remains the one deliberate exception. A lockout is temporary and
-        clearing it must restore the account as it was, so the flag is left
-        where the last real status put it and the refusal is made by
-        ``may_sign_in`` instead. Every other status now answers here.
+        There is no exception for a locked-out account, and none is needed. A
+        brute-force lockout does not touch ``status``, so there is no earlier
+        value to preserve and nothing to restore when the lockout clears: the
+        account keeps the status it had throughout, and the refusal comes from
+        :class:`AccountLockout` for exactly as long as the window lasts. Every
+        status answers here, the same way.
         """
-        if self.status == self.Status.LOCKED:
-            return
         self.is_active = self.status == self.Status.ACTIVE
 
     # ── Properties ────────────────────────────────────────────────────────────
@@ -655,7 +679,37 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     @property
     def is_locked(self) -> bool:
-        return self.status == self.Status.LOCKED
+        """Whether a brute-force lockout is running against this account now.
+
+        Asked of :class:`AccountLockout`, which is the only thing that knows:
+        the row carries the moment the lockout expires, so the answer stops
+        being yes without anybody editing anything. Reading it off ``status``
+        instead is what made a fifteen-minute lockout permanent - the column
+        was written when the window opened and nothing ever wrote it back.
+
+        Costs a query on an instance that has not selected the relation, so
+        callers rendering or counting many rows should ``select_related`` it
+        (or filter with :func:`lockout_in_force`) rather than ask per row.
+        """
+        lockout = getattr(self, 'lockout', None)
+        return lockout is not None and lockout.is_locked_now()
+
+    @property
+    def account_state(self) -> str:
+        """This account's state as any screen should report it.
+
+        The administrative status, with a running lockout laid over it, so the
+        directory chip, the account payload and the status filter all say
+        "LOCKED" for the same people at the same moment - and stop saying it at
+        the same moment too. The stored ``status`` stays beside it and is what
+        an administrator's own decisions read and write.
+
+        The lockout wins where both apply. Somebody suspended who then fails
+        five sign-ins is suspended, and a lockout laid over that changes nothing
+        an administrator must do; but the commonest case by far is an ACTIVE
+        account with a live lockout, which is the one a school has to see.
+        """
+        return self.Status.LOCKED if self.is_locked else self.status
 
     @property
     def is_suspended(self) -> bool:
@@ -921,14 +975,56 @@ class AccountLockout(TimeStampedModel):
     last_failure_ip = models.GenericIPAddressField(null=True, blank=True)
 
     def is_locked_now(self) -> bool:
+        """Whether the lockout window is still open.
+
+        The single answer to "is this account locked", and the only one: it is
+        a comparison against the clock, so the lockout the school configured as
+        fifteen minutes lasts fifteen minutes and then stops, with nobody
+        touching a row. Anything that asks the question elsewhere - a second
+        column, a cached flag - can disagree with this one, and did.
+        """
         return self.locked_until is not None and timezone.now() < self.locked_until
 
+    def has_state(self) -> bool:
+        """Whether there is anything here for an administrator to clear.
+
+        A running lockout, obviously; but also a counter left standing by a
+        window that has already closed, because the next single mistyped
+        password would otherwise be the fifth again. An administrator clearing
+        that is doing something real, so :meth:`clear` is offered for it rather
+        than refused as "not locked".
+        """
+        return bool(self.failure_count or self.locked_until)
+
     def register_failure(self, ip=None, lock_threshold: int = 5, lock_minutes: int = 15):
+        """Count one failed sign-in, and lock the account at the threshold.
+
+        The window is fixed when it opens, and is neither extended nor restarted
+        while it runs. A further wrong password during a lockout is counted as
+        evidence and nothing more: pushing the expiry out on every attempt would
+        hand anybody who knows an address a way to keep its owner locked out for
+        as long as they care to keep typing, which is the permanent lockout this
+        row exists to avoid.
+
+        A window that has already closed is spent, and the count it produced
+        starts again. Otherwise the counter outlives the lockout it caused: five
+        failures on Tuesday leave it standing at five, so the first typo after
+        the window passes is the fifth again, and every mistake thereafter costs
+        another full window.
+        """
         now = timezone.now()
         self.failure_count  += 1
         self.last_failure_at = now
         if ip:
             self.last_failure_ip = ip
+        # Already locked: counted, but the window keeps the expiry it was given.
+        if self.is_locked_now():
+            return
+        # A closed window is spent, so this failure starts a fresh count.
+        if self.locked_until is not None:
+            self.failure_count = 1
+            self.locked_until  = None
+            self.locked_reason = ''
         if self.failure_count >= lock_threshold:
             self.locked_until  = now + timezone.timedelta(minutes=lock_minutes)
             self.locked_reason = 'BRUTE_FORCE_THRESHOLD'
@@ -941,6 +1037,22 @@ class AccountLockout(TimeStampedModel):
     def __str__(self) -> str:
         state = 'locked' if self.is_locked_now() else 'ok'
         return f'Lockout<{self.user_id}:{state}>'
+
+
+def lockout_in_force(prefix: str = '') -> Q:
+    """The "locked right now" predicate, for a queryset rather than an instance.
+
+    The same comparison :meth:`AccountLockout.is_locked_now` makes, expressed
+    where a filter, a count or an annotation needs it. ``prefix`` is the path
+    from the model being queried to the user, so a queryset of users passes
+    nothing and a queryset of staff records passes ``'user__'``.
+
+    It exists so that every screen that says who is locked out - the directory
+    header's count, its status filter, the row's own chip - asks the one
+    question rather than each carrying its own version of it. A count that
+    disagreed with the list beside it is how a school stops believing either.
+    """
+    return Q(**{f'{prefix}lockout__locked_until__gt': timezone.now()})
 
 
 # =============================================================================

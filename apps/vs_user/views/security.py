@@ -23,7 +23,7 @@ from vs_tenants.models import Tenant
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
 from ..models import (
-    User, LoginSession, AuthAttempt, AccountLockout,
+    LoginSession, AuthAttempt, AccountLockout,
     AuthEventLog, PasswordResetRequest,
 )
 from ..serializers import (
@@ -31,6 +31,7 @@ from ..serializers import (
     UnlockAccountSerializer, PasswordResetAdminSerializer,
 )
 from ..services.password   import PasswordService
+from ..services.user       import UserStatusService
 from ..services.audit      import (
     log_auth_event, blacklist_all_user_tokens, blacklist_token_by_jti,
     blacklist_tokens_by_jti, expire_stale_login_sessions,
@@ -464,15 +465,21 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         force_reset  = ser.validated_data['force_password_reset']
         reason       = ser.validated_data.get('reason', '')
 
-        # Clear the lockout record.
-        lockout, _ = AccountLockout.objects.get_or_create(user=user)
-        lockout.clear()
-        lockout.save(update_fields=['failure_count', 'locked_until', 'locked_reason', 'updated_at'])
-
-        # Restore user status to ACTIVE if it was LOCKED.
-        if user.status == User.Status.LOCKED:
-            user.status = User.Status.ACTIVE
-            user.save(update_fields=['status', 'updated_at'])
+        # Released through the one service every unlock route calls, so this
+        # console, the platform's own endpoint and a school's account action
+        # clear the same state and write the same audit event.
+        try:
+            UserStatusService.unlock(
+                user, request.user, request=request,
+                metadata={'force_password_reset': force_reset, 'reason': reason},
+            )
+        except ValueError as error:
+            payload = error.args[0] if error.args else {}
+            return error_response(
+                message=payload.get('message', 'Unlock failed.') if isinstance(payload, dict) else str(payload),
+                error=payload,
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
 
         # Optionally trigger a 24-hour admin password reset.
         if force_reset:
@@ -482,14 +489,6 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
                 request=request,
             )
 
-        log_auth_event(
-            actor=request.user,
-            subject=user,
-            tenant=user.tenant,
-            event=AuthEventLog.Event.ACCOUNT_UNLOCKED,
-            request=request,
-            metadata={'force_password_reset': force_reset, 'reason': reason},
-        )
         return success_response(message="Account unlocked successfully.")
 
 

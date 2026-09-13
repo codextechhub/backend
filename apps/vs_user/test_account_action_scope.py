@@ -26,8 +26,11 @@ Greenfield has one, and the boundary has to hold in both directions.
 """
 from __future__ import annotations
 
+from datetime import timedelta
+
 from core.test_utils import TenantAPIClient
 from django.test import TestCase
+from django.utils import timezone
 
 from vs_rbac.tests.helpers import (
     make_assignment,
@@ -61,14 +64,20 @@ TARGET_STATUS = {
     "email": User.Status.ACTIVE,
     "suspend": User.Status.ACTIVE,
     "reactivate": User.Status.SUSPENDED,
-    "unlock": User.Status.LOCKED,
+    "unlock": User.Status.ACTIVE,
     "password_reset": User.Status.ACTIVE,
     "resend": User.Status.PENDING,
     "force_logout": User.Status.ACTIVE,
-    "lockout_unlock": User.Status.LOCKED,
+    "lockout_unlock": User.Status.ACTIVE,
 }
 
 ACTIONS = tuple(TARGET_STATUS)
+
+#: The two actions whose target needs a lockout running rather than a particular
+#: status. A lockout is not a status: it lives in its own row and expires by
+#: itself, so the fixture writes it where the application writes it, and the
+#: account keeps the status it had.
+LOCKED_OUT_ACTIONS = ("unlock", "lockout_unlock")
 
 
 def _school(name, slug):
@@ -151,8 +160,11 @@ class AccountActionTenantScopeTests(TestCase):
             email or f"{action}-{self._person + 1}@{tenant.slug}.test",
             tenant, branch=branch, status=status,
         )
-        if status == User.Status.LOCKED:
-            AccountLockout.objects.create(user=user, failure_count=5)
+        if action in LOCKED_OUT_ACTIONS:
+            AccountLockout.objects.create(
+                user=user, failure_count=5,
+                locked_until=timezone.now() + timedelta(minutes=15),
+            )
         if action == "force_logout":
             LoginSession.all_objects.create(
                 user=user, tenant=tenant, refresh_jti=f"jti-{user.pk}",
@@ -211,6 +223,11 @@ class AccountActionTenantScopeTests(TestCase):
             return LoginSession.all_objects.filter(
                 user=fresh, is_active=True,
             ).exists()
+        if action in LOCKED_OUT_ACTIONS:
+            # An unlock writes the lockout row and never the status, so the
+            # status is exactly where it would be either way.
+            lockout = AccountLockout.objects.filter(user=fresh).first()
+            return lockout is not None and lockout.has_state()
         return fresh.status == TARGET_STATUS[action]
 
     # -- the boundary -----------------------------------------------------
