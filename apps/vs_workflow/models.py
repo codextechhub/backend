@@ -682,13 +682,15 @@ class WorkflowInstance(models.Model):
     authoritative record of workflow state for a given document.
 
     Attributes:
-        school: Optional school scope, copied from the document at submission time.
+        tenant: Tenant scope copied from the document at submission time.
         branch: Optional branch scope, copied from the document at submission time.
         template: The blueprint this instance is running against.
         document_content_type: ContentType of the related business document.
         document_object_id: Primary key of the related business document.
         document: GenericForeignKey resolving to the actual business document object.
         document_type: Denormalised copy of the type string for fast filtering without a join.
+        document_summary: Short display snapshot identifying what needs a decision.
+        document_details: Versioned display layout snapshotted for an in-place review.
         status: Current lifecycle status (see WorkflowInstanceStatus).
         requested_by: The user who submitted the document for approval.
         current_stage: The stage the engine is currently waiting on. Null when terminal.
@@ -709,6 +711,7 @@ class WorkflowInstance(models.Model):
     # Denormalised for fast filtering - avoids a join through contenttypes.
     document_type = models.CharField(max_length=100, db_index=True)
     document_summary = models.JSONField(default=dict, blank=True)
+    document_details = models.JSONField(default=dict, blank=True)
     status = models.CharField(max_length=30, choices=WorkflowInstanceStatus.choices,
                               default=WorkflowInstanceStatus.DRAFT)
     requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,

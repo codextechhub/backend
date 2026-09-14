@@ -33,7 +33,7 @@ from vs_workflow.constants import (
 )
 from vs_workflow.models import (
     ApprovalDelegation, WorkflowInstance, WorkflowStage, WorkflowStageAction,
-    WorkflowStageInstance, WorkflowTemplate,
+    WorkflowStageApprover, WorkflowStageInstance, WorkflowTemplate,
 )
 from vs_workflow.views import (
     ApprovalDelegationViewSet, MySubmissionsView, ReverseActionView, TeamLoadView,
@@ -171,6 +171,66 @@ class InstanceScopingTests(_TwoTenants):
         view = WorkflowInstanceViewSet.as_view({"get": "retrieve"})
         resp = _call(view, "get", self.admin, self.mine.tenant, pk=foreign.pk)
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_a_frozen_approver_can_read_details_without_history_permission(self):
+        approver = make_school_admin(
+            self.mine_branch, email="scope-approver@test.com",
+        )
+        instance = self._instance(
+            self.mine.tenant, self.admin, self._template(self.mine.tenant, "decision"),
+        )
+        instance.document_object_id = str(instance.template_id)
+        instance.document_details = {
+            "schema_version": 1,
+            "sections": [{
+                "kind": "fields",
+                "title": "Decision details",
+                "items": [{"label": "Reason", "value": "Books"}],
+            }],
+        }
+        instance.save(update_fields=["document_object_id", "document_details"])
+        stage_instance = self._active_stage_instance(instance)
+        WorkflowStageApprover.objects.create(
+            stage_instance=stage_instance,
+            user=approver,
+            attempt=stage_instance.attempt,
+        )
+
+        view = WorkflowInstanceViewSet.as_view({"get": "retrieve"})
+        resp = _call(view, "get", approver, self.mine.tenant, pk=instance.pk)
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["document_details"], instance.document_details)
+
+    def test_a_non_participant_cannot_read_approval_details(self):
+        outsider = make_school_admin(
+            self.mine_branch, email="scope-outsider@test.com",
+        )
+        instance = self._instance(
+            self.mine.tenant, self.admin, self._template(self.mine.tenant, "private"),
+        )
+
+        view = WorkflowInstanceViewSet.as_view({"get": "retrieve"})
+        resp = _call(view, "get", outsider, self.mine.tenant, pk=instance.pk)
+
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_the_requester_can_read_their_own_details(self):
+        requester = make_school_admin(
+            self.mine_branch, email="scope-requester@test.com",
+        )
+        instance = self._instance(
+            self.mine.tenant, requester, self._template(self.mine.tenant, "own"),
+        )
+        instance.document_object_id = str(instance.template_id)
+        instance.document_summary = {"link": "/source/document"}
+        instance.save(update_fields=["document_object_id", "document_summary"])
+
+        view = WorkflowInstanceViewSet.as_view({"get": "retrieve"})
+        resp = _call(view, "get", requester, self.mine.tenant, pk=instance.pk)
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["source_document_link"], "/source/document")
 
     def test_there_is_no_generic_submit_endpoint(self):
         """The collection is read-only, and the router must keep it that way.

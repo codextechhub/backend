@@ -29,8 +29,15 @@ from vs_workflow.constants import DocumentAudience
 from vs_workflow.constants import WorkflowStageAction as StageActionEnum
 from vs_workflow.exceptions import InvalidInstanceStateError, ReversalNotAllowedError
 from vs_workflow.handlers import BaseWorkflowHandler, register_handler
+from vs_workflow.presentation import document_details, fields_section, table_section
 
 logger = logging.getLogger("vs_payments.workflow_handlers")  # Diagnostics for the dispatch hand-off.
+
+
+def _masked_account(number: str) -> str:
+    """Keep only the final four account digits in the approval snapshot."""
+    text = str(number or "")
+    return f"•••• {text[-4:]}" if text else "-"
 
 
 # Support the post-approval dispatch hand-off.
@@ -122,10 +129,41 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
             "fields": [
                 {"label": "Items", "value": str(document.item_count)},  # Number of beneficiaries.
                 {"label": "Total", "value": format_naira(document.total_amount)},  # Total disbursed.
-                {"label": "Provider", "value": document.provider},  # PSP the batch goes through.
             ],
             "link": f"/finance/payments/batches?{urlencode({'document': document.pk, 'entity': document.entity.code})}",
         }
+
+    def get_document_details(self, document) -> dict:
+        """Show each beneficiary without storing complete account numbers."""
+        from vs_finance.money import format_naira
+
+        instructions = document.instructions.order_by("id")
+        return document_details(
+            fields_section("Batch details", [
+                ("Provider", document.get_provider_display()),
+                ("Narration", document.narration),
+                ("Currency", getattr(document.currency, "code", "") or "-"),
+                ("Source account", str(document.source_account or "-")),
+            ]),
+            table_section(
+                "Beneficiaries",
+                [
+                    ("beneficiary", "Beneficiary"),
+                    ("account", "Account"),
+                    ("amount", "Amount"),
+                    ("narration", "Narration"),
+                ],
+                [
+                    {
+                        "beneficiary": row.beneficiary_name,
+                        "account": _masked_account(row.beneficiary_account_number),
+                        "amount": format_naira(row.amount),
+                        "narration": row.narration or "-",
+                    }
+                    for row in instructions
+                ],
+            ),
+        )
 
     def on_submitted(self, instance, context) -> None:
         self._set_approval_status(instance, "PENDING_APPROVAL")  # Batch stays DRAFT, awaiting approval.

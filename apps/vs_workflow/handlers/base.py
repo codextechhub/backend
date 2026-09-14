@@ -92,6 +92,24 @@ class BaseWorkflowHandler:
         """
         return {}
 
+    def get_document_details(self, document: Any) -> Dict:
+        """Return the document type's built-in decision layout.
+
+        The result is a versioned collection of semantic presentation blocks;
+        :mod:`vs_workflow.presentation` defines and validates the contract. It
+        is snapshotted at submission so an approver always inspects the same
+        facts that were filed, even if the source document later changes.
+
+        Details extend the summary rather than restating it. A handler keeps
+        request identity and headline facts in ``get_document_summary``, then
+        uses this layout for reasons, terms, breakdowns, line items, and
+        changes the reviewer still needs to inspect.
+
+        Default is empty so existing and display-light document types remain
+        compatible.
+        """
+        return {}
+
     def get_source_document_link(self, document: Any) -> Optional[str]:
         """Return the current console route for the source record, when one exists.
 

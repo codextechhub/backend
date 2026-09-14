@@ -1818,6 +1818,19 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertEqual((batch.metadata or {}).get("approval_status"), "PENDING_APPROVAL")
         self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
 
+    def test_approval_details_mask_beneficiary_account_numbers(self):
+        self._publish_template()
+        self._make_approver()
+        batch = self._draft_batch(10000)
+
+        resp = self._submit_for_approval(batch)
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        details = self._instance_for(batch).document_details
+        beneficiary = details["sections"][1]["rows"][0]
+        self.assertEqual(beneficiary["account"], "•••• 6789")
+        self.assertNotIn("0123456789", str(details))
+
     # --- 3b. another tenant cannot submit this batch ----------------------- #
 
     def test_another_tenant_cannot_submit_this_batch(self):

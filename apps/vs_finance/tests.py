@@ -8144,6 +8144,29 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
         self.assertFalse(AccountBalance.objects.filter(
             account__entity=self.entity, period=self.period).exists())
 
+    def test_journal_lines_and_narration_are_snapshotted_as_details(self):
+        self._publish_standard_template()
+        self._make_approver()
+        entry = self._make_draft()
+
+        resp = self._submit(entry)
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        instance = self._instance_for(entry)
+        self.assertNotIn("Narration", str(instance.document_summary))
+        header, lines = instance.document_details["sections"]
+        self.assertEqual(
+            [item["label"] for item in header["items"]],
+            ["Reference", "Narration", "Period"],
+        )
+        self.assertEqual(header["items"][1], {
+            "label": "Narration", "value": "approval test",
+        })
+        self.assertEqual(lines["kind"], "table")
+        self.assertEqual(len(lines["rows"]), 2)
+        self.assertEqual(lines["rows"][0]["debit"], "₦500.00")
+        self.assertEqual(lines["rows"][1]["credit"], "₦500.00")
+
     # --- 3. SoD: requester cannot approve their own journal ---------------- #
 
     # Verify requester cannot approve own journal behavior.
@@ -8546,6 +8569,11 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         refund.refresh_from_db()
         self.assertEqual(refund.status, DocumentStatus.PENDING_APPROVAL)
         self.assertIsNone(refund.journal_id)
+        details = self._instance_for(refund).document_details["sections"]
+        labels = {item["label"] for item in details[0]["items"]}
+        self.assertTrue({"Date", "Customer", "Amount"}.isdisjoint(labels))
+        self.assertIn("Method", labels)
+        self.assertIn("Payment account", labels)
         # The credit is untouched until approval.
         self.assertEqual(customer_credit_balance(self.customer), 30000)
 
@@ -8865,6 +8893,11 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         wor.refresh_from_db(); inv.refresh_from_db()
         self.assertEqual(wor.status, DocumentStatus.PENDING_APPROVAL)
         self.assertIsNone(wor.journal_id)
+        details = self._instance_for(wor).document_details["sections"]
+        labels = {item["label"] for item in details[0]["items"]}
+        self.assertTrue({"Invoice", "Amount"}.isdisjoint(labels))
+        self.assertIn("Reason", labels)
+        self.assertIn("Customer", labels)
         self.assertEqual(inv.balance_due, 100000)
 
     # --- 4. SoD: requester cannot approve own request ---------------------- #
@@ -10741,6 +10774,26 @@ class AdjustmentThresholdGateTests(TestCase):
         self.assertTrue(approval_required(large))
         instance = submit_for_approval(large, requested_by=self.requester)
         self.assertNotEqual(instance.status, WorkflowInstanceStatus.APPROVED)
+
+    def test_adjustment_details_are_built_for_both_document_types(self):
+        from vs_workflow.services.submission import submit_for_approval
+
+        documents = [
+            (self._concession(20_000), {"Type", "Customer", "Amount"}),
+            (self._credit_note(20_000), {"Type", "Customer", "Total"}),
+        ]
+
+        for document, summary_labels in documents:
+            with self.subTest(document_type=document.workflow_document_type):
+                instance = submit_for_approval(
+                    document,
+                    requested_by=self.requester,
+                )
+                sections = instance.document_details["sections"]
+                self.assertTrue(sections)
+                labels = {item["label"] for item in sections[0]["items"]}
+                self.assertTrue(summary_labels.isdisjoint(labels))
+                self.assertIn("Reason", labels)
 
     # Verify a tenant that wants every waiver approved sets the bar to zero behavior.
     def test_a_tenant_that_wants_every_waiver_approved_sets_the_bar_to_zero(self):

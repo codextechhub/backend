@@ -7008,6 +7008,40 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         self.assertNotEqual(req.status, DocumentStatus.APPROVED)
         self.assertTrue(is_document_parked(req))
 
+    def test_requisition_items_are_snapshotted_as_approval_details(self):
+        from vs_procurement.approvals import (
+            ensure_tenant_approval_templates, submit_for_approval,
+        )
+
+        entity, _, _, _, _ = self.build_p2p()
+        ensure_tenant_approval_templates(entity.tenant)
+        req = self._make_requisition(entity, unit_price=10_000, qty=2)
+        req.justification = "Replace damaged classroom copies."
+        req.save(update_fields=["justification", "updated_at"])
+        actor = self._user("details@t.com")
+
+        instance = submit_for_approval(req, actor_user=actor)
+
+        request_details, items = instance.document_details["sections"]
+        detail_labels = [item["label"] for item in request_details["items"]]
+        self.assertNotIn("Estimated total", detail_labels)
+        self.assertNotIn("Requested by", detail_labels)
+        self.assertIn(
+            {
+                "label": "Justification",
+                "value": "Replace damaged classroom copies.",
+            },
+            request_details["items"],
+        )
+        self.assertEqual(items["kind"], "table")
+        self.assertEqual(items["rows"], [{
+            "item": "thing",
+            "quantity": "2",
+            "unit": "Unit",
+            "unit_price": "₦100.00",
+            "total": "₦200.00",
+        }])
+
     def test_double_submit_is_rejected(self):
         from vs_procurement.approvals import (
             ensure_tenant_approval_templates, submit_for_approval,
@@ -8423,7 +8457,9 @@ class ParkedOverrideAcrossDocumentTypesTests(_ParkingFixtureMixin, TestCase):
         )
 
         ensure_tenant_approval_templates(requester.tenant)
-        return submit_for_approval(document, actor_user=requester)
+        instance = submit_for_approval(document, actor_user=requester)
+        self.assertTrue(instance.document_details["sections"])
+        return instance
 
     def _assert_released(self, instance, document, *, document_type, actor, amount):
         from vs_workflow.constants import WorkflowInstanceStatus, WorkflowStageStatus
@@ -8461,6 +8497,11 @@ class ParkedOverrideAcrossDocumentTypesTests(_ParkingFixtureMixin, TestCase):
         po.status = DocumentStatus.DRAFT
         po.save(update_fields=["status"])
         instance = self._park_document(po, requester)
+        labels = {
+            item["label"]
+            for item in instance.document_details["sections"][0]["items"]
+        }
+        self.assertTrue({"Vendor", "Total"}.isdisjoint(labels))
         actor = self._overrider(entity, email="po-over@t.com")
 
         response = self._release(actor, entity, instance)
@@ -8480,6 +8521,11 @@ class ParkedOverrideAcrossDocumentTypesTests(_ParkingFixtureMixin, TestCase):
         bill.save(update_fields=["approval_state"])
         bill.recompute_totals(save=True)
         instance = self._park_document(bill, requester)
+        labels = {
+            item["label"]
+            for item in instance.document_details["sections"][0]["items"]
+        }
+        self.assertTrue({"Vendor", "Total"}.isdisjoint(labels))
         actor = self._overrider(entity, email="vi-over@t.com")
 
         response = self._release(actor, entity, instance)
@@ -8501,6 +8547,11 @@ class ParkedOverrideAcrossDocumentTypesTests(_ParkingFixtureMixin, TestCase):
             gross_amount=50_000, wht_amount=0, net_amount=50_000, allocated_amount=0,
         )
         instance = self._park_document(payment, requester)
+        labels = {
+            item["label"]
+            for item in instance.document_details["sections"][0]["items"]
+        }
+        self.assertTrue({"Vendor", "Gross amount"}.isdisjoint(labels))
         actor = self._overrider(entity, email="vp-over@t.com")
 
         response = self._release(actor, entity, instance)

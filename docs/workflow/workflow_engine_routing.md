@@ -63,6 +63,7 @@ through `instance__tenant` that the caller must remember to write.
 | `document_content_type` + `document_object_id` | Generic FK; `document` resolves it |
 | `document_type` | Denormalised so filtering needs no contenttypes join |
 | `document_summary` | The handler's display snapshot, frozen at submission |
+| `document_details` | The handler's versioned fields, tables and changes, frozen at submission |
 | `status` | `WorkflowInstanceStatus`, default `DRAFT` |
 | `requested_by` | `PROTECT` |
 | `current_stage` | `PROTECT`, null when terminal |
@@ -101,14 +102,24 @@ newest first, indexed on `(instance, occurred_at)` and `(instance, event_type)`.
 4. `code = template_code or handler.resolve_default_template_code(document)`;
 5. `document_scope(document, default_tenant=requested_by.tenant)`;
 6. `resolve_template(...)`, or `TemplateNotFoundError`;
-7. `handler.get_document_summary(document)`, wrapped in a bare `except` because
-   a display snapshot must never fail an approval (55-61);
-8. inside one transaction: create the instance, write
+7. `handler.get_document_summary(document)`, treated as best-effort display
+   metadata so a summary failure does not fail an approval;
+8. `handler.get_document_details(document)`, validated as a versioned set of
+   semantic display blocks;
+9. inside one transaction: create the instance with both snapshots, write
    `INSTANCE_SUBMITTED`, call `handler.on_submitted`, and
    `advance_instance(instance, current_attempt=1)`.
 
-Everything from step 8 commits together: if the first stage's activation raises,
-no instance exists.
+Everything from step 9 commits together. If first-stage activation fails, no
+instance is kept.
+
+The details contract has three block types: `fields` for labelled facts,
+`table` for all line items, and `changes` for added or removed items with a
+restricted marker. Each handler owns its built-in layout and safe display
+values. The frontend owns the shared visual treatment. Raw serializers,
+metadata dictionaries, HTML, and model attribute paths are outside the
+contract. The detail response also exposes `source_document_link` separately
+for optional navigation to the source record.
 
 ## 4. Lifecycle / state machine
 
@@ -458,5 +469,5 @@ What the suite does not cover:
 5. **The `MAX_HOPS` cycle guard**, in any of its three copies.
 6. **`inclusion_condition` on a live stage** - conditions are tested in isolation
    and through dynamic rules, but no test routes a document past a stage on one.
-7. **`document_summary`** - neither the handler call nor the bare-except fallback
-   when it raises.
+7. **Approval presentation** - summary fallback, detail validation, participant
+   access, and built-in handler layouts have direct regression coverage.

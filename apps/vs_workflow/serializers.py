@@ -320,11 +320,14 @@ class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
     stage_instances = WorkflowStageInstanceReadSerializer(many=True, read_only=True)
     audit_logs      = WorkflowAuditLogReadSerializer(many=True, read_only=True)
     document_summary = serializers.SerializerMethodField()
+    document_details = serializers.JSONField(read_only=True)
+    source_document_link = serializers.SerializerMethodField()
     next_stage      = serializers.SerializerMethodField()
 
     class Meta(WorkflowInstanceListSerializer.Meta):
         fields = WorkflowInstanceListSerializer.Meta.fields + [
-            "document_summary", "next_stage", "stage_instances", "audit_logs",
+            "document_summary", "document_details", "source_document_link",
+            "next_stage", "stage_instances", "audit_logs",
         ]
 
     def get_next_stage(self, obj):
@@ -332,20 +335,34 @@ class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
         return preview_next_approval_stage(obj)
 
     def get_document_summary(self, obj):
+        return self._document_summary(obj)
+
+    def _document_summary(self, obj):
         from vs_workflow.exceptions import UnknownDocumentTypeError
         from vs_workflow.handlers import get_handler
 
+        cached = getattr(self, "_document_summary_cache", None)
+        if cached is not None and cached[0] == obj.pk:
+            return cached[1]
         summary = dict(obj.document_summary or {})
         document = obj.document
         if document is None:
+            self._document_summary_cache = (obj.pk, summary)
             return summary
         try:
             link = get_handler(obj.document_type).get_source_document_link(document)
         except UnknownDocumentTypeError:
+            self._document_summary_cache = (obj.pk, summary)
             return summary
         if link:
             summary["link"] = link
+        self._document_summary_cache = (obj.pk, summary)
         return summary
+
+    def get_source_document_link(self, obj):
+        summary = self._document_summary(obj)
+        link = summary.get("link") if isinstance(summary, dict) else None
+        return link if isinstance(link, str) and link else None
 
 
 class StageActionWriteSerializer(serializers.Serializer):

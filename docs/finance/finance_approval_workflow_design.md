@@ -235,7 +235,10 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
         self.preflight(document)          # run the posting guards early (no write)
 
     def get_document_summary(self, document):
-        return self.summary(document)     # {title, subtitle, fields:[...], link}
+        return self.summary(document)     # short identity, no line-item dump
+
+    def get_document_details(self, document):
+        return self.details(document)     # built-in fields and tables
 
     def on_submitted(self, instance, context):
         self._set_status(instance, DocumentStatus.PENDING_APPROVAL)
@@ -360,8 +363,9 @@ covered in the next doc; they will call `NotificationService.send` with
   (replacing "Post" where a template exists) and show the new
   `PENDING_APPROVAL`/`APPROVED` status pills on journal/refund/credit-note/etc.
   lists and drawers.
-- The document drawer links to its `WorkflowInstance` detail (stage history + audit)
-  via `get_document_summary(...).link`.
+- The document drawer links to its `WorkflowInstance` detail, which presents the
+  summary, built-in document details, stage history, and audit in one place.
+  `source_document_link` remains an optional smaller route to the source record.
 - Gate the Submit button on `finance.<doc>.submit`; the Approve/Reject actions are
   already gated by the workflow endpoints. FE gating stays advisory - the backend
   engine is the real gate.

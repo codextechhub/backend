@@ -154,6 +154,16 @@ class ExpenseClaimWorkflowTests(TestCase):
             ExpenseClaim.objects.get(pk=claim_id),
         ).get()
         self.assertEqual(
+            [section["kind"] for section in instance.document_details["sections"]],
+            ["fields", "table"],
+        )
+        detail_labels = {
+            item["label"]
+            for item in instance.document_details["sections"][0]["items"]
+        }
+        self.assertTrue({"Date", "Claimant", "Total"}.isdisjoint(detail_labels))
+        self.assertIn("Purpose", detail_labels)
+        self.assertEqual(
             [str(user_id) for user_id in WorkflowStageApprover.objects.filter(
                 stage_instance__instance=instance,
             ).values_list("user_id", flat=True)],

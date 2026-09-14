@@ -20,6 +20,7 @@ from vs_workflow.conditions.fields import ConditionField
 from vs_workflow.constants import ConditionFieldType, DocumentAudience
 from vs_workflow.handlers.base import BaseWorkflowHandler
 from vs_workflow.handlers.registry import register_handler
+from vs_workflow.presentation import document_details, fields_section
 
 from .constants import LEAVE_DOCUMENT_TYPE, LEAVE_TEMPLATE_CODE, LeaveStatus, LeaveType
 
@@ -58,17 +59,24 @@ class LeaveRequestWorkflowHandler(BaseWorkflowHandler):
             name = " ".join(
                 part for part in (user.first_name, user.last_name) if part
             ).strip()
-        days = getattr(document, "days", 0)
         return {
             "title": name or "Leave request",
             "subtitle": f"{document.get_leave_type_display()} leave",
             "fields": [
-                {"label": "From", "value": str(document.start_date)},
-                {"label": "To", "value": str(document.end_date)},
-                {"label": "Days", "value": str(days)},
-                {"label": "Job title", "value": getattr(staff, "job_title", "") or "-"},
+                {
+                    "label": "Dates",
+                    "value": f"{document.start_date} to {document.end_date}",
+                },
             ],
         }
+
+    def get_document_details(self, document) -> dict:
+        staff = getattr(document, "staff", None)
+        return document_details(fields_section("Leave details", [
+            ("Days", getattr(document, "days", 0)),
+            ("Job title", getattr(staff, "job_title", "") or "-"),
+            ("Reason", getattr(document, "note", "")),
+        ]))
 
     def validate_document(self, document, requested_by) -> None:
         """Only a pending request may be submitted.

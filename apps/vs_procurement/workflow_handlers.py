@@ -18,6 +18,7 @@ from vs_finance.constants import DocumentStatus
 from vs_finance.money import format_naira
 from vs_workflow.constants import DocumentAudience
 from vs_workflow.handlers import BaseWorkflowHandler, register_handler
+from vs_workflow.presentation import document_details, fields_section, table_section
 
 from . import approvals
 from .purchasing import goods_arrived
@@ -39,6 +40,12 @@ from .constants import (
 UNPOSTED_STATUSES = frozenset({
     DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL,
 })
+
+
+def _quantity(value) -> str:
+    """Format a decimal quantity without database-scale trailing zeroes."""
+    text = format(value, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 def _posted_block_reason(document, noun: str, remedy: str) -> str | None:
@@ -92,6 +99,12 @@ class _ProcApprovalHandler(BaseWorkflowHandler):
             "link": self.get_source_document_link(document),
         }
 
+    def get_document_details(self, document) -> dict:
+        return self.details(document)
+
+    def details(self, document) -> dict:
+        raise NotImplementedError
+
     # --- terminal callbacks ------------------------------------------------- #
     def on_approved(self, instance, context) -> None:
         approvals.apply_approved(instance.document, actor_user=instance.requested_by)
@@ -129,6 +142,36 @@ class RequisitionApprovalHandler(_ProcApprovalHandler):
     def document_model(self):
         from .models import PurchaseRequisition
         return PurchaseRequisition
+
+    def details(self, document) -> dict:
+        lines = document.lines.select_related("expense_account", "tax_code")
+        return document_details(
+            fields_section("Request details", [
+                ("Title", document.title or "-"),
+                ("Request date", document.request_date),
+                ("Needed by", document.needed_by or "-"),
+                ("Cost center", str(document.cost_center or "-")),
+                ("Justification", document.justification),
+            ]),
+            table_section(
+                "Requested items",
+                [
+                    ("item", "Item"), ("quantity", "Quantity"),
+                    ("unit", "Unit"), ("unit_price", "Estimated unit price"),
+                    ("total", "Estimated total"),
+                ],
+                [
+                    {
+                        "item": line.description,
+                        "quantity": _quantity(line.quantity),
+                        "unit": line.unit or "-",
+                        "unit_price": format_naira(line.estimated_unit_price),
+                        "total": format_naira(line.estimated_line_total),
+                    }
+                    for line in lines
+                ],
+            ),
+        )
 
     def reversal_block_reason(self, document) -> str | None:
         """Refuse while an order raised from this requisition stands, or took delivery.
@@ -171,6 +214,39 @@ class PurchaseOrderApprovalHandler(_ProcApprovalHandler):
     def document_model(self):
         from .models import PurchaseOrder
         return PurchaseOrder
+
+    def details(self, document) -> dict:
+        lines = document.lines.select_related("expense_account", "tax_code")
+        return document_details(
+            fields_section("Order details", [
+                ("Order date", document.order_date),
+                ("Expected date", document.expected_date or "-"),
+                ("Delivery address", document.delivery_address or "-"),
+                ("Payment terms", document.payment_terms or "-"),
+                ("Reference", document.reference or "-"),
+                ("Narration", document.narration),
+                ("Subtotal", format_naira(document.subtotal)),
+                ("Tax", format_naira(document.tax_total)),
+            ]),
+            table_section(
+                "Order items",
+                [
+                    ("item", "Item"), ("quantity", "Quantity"),
+                    ("unit_price", "Unit price"), ("tax", "Tax"),
+                    ("total", "Total"),
+                ],
+                [
+                    {
+                        "item": line.description,
+                        "quantity": _quantity(line.quantity),
+                        "unit_price": format_naira(line.unit_price),
+                        "tax": format_naira(line.tax_amount),
+                        "total": format_naira(line.net_amount + line.tax_amount),
+                    }
+                    for line in lines
+                ],
+            ),
+        )
 
     def reversal_block_reason(self, document) -> str | None:
         """Refuse once the order has reached the vendor or its goods have arrived.
@@ -215,6 +291,40 @@ class VendorInvoiceApprovalHandler(_ProcApprovalHandler):
         from .models import VendorInvoice
         return VendorInvoice
 
+    def details(self, document) -> dict:
+        lines = document.lines.select_related("expense_account", "tax_code")
+        po = document.purchase_order
+        return document_details(
+            fields_section("Invoice details", [
+                ("Invoice date", document.invoice_date),
+                ("Due date", document.due_date or "-"),
+                ("Vendor reference", document.vendor_reference or "-"),
+                ("Purchase order", (po.document_number or str(po.pk)) if po else "-"),
+                ("Match status", document.get_match_status_display()),
+                ("Narration", document.narration),
+                ("Subtotal", format_naira(document.subtotal)),
+                ("Tax", format_naira(document.tax_total)),
+            ]),
+            table_section(
+                "Invoice items",
+                [
+                    ("item", "Item"), ("quantity", "Quantity"),
+                    ("unit_price", "Unit price"), ("tax", "Tax"),
+                    ("total", "Total"),
+                ],
+                [
+                    {
+                        "item": line.description or str(line.expense_account),
+                        "quantity": _quantity(line.quantity),
+                        "unit_price": format_naira(line.unit_price),
+                        "tax": format_naira(line.tax_amount),
+                        "total": format_naira(line.line_total),
+                    }
+                    for line in lines
+                ],
+            ),
+        )
+
     def reversal_block_reason(self, document) -> str | None:
         """Refuse once the bill has posted, because approval is what let it post."""
         return _posted_block_reason(
@@ -233,6 +343,33 @@ class VendorPaymentApprovalHandler(_ProcApprovalHandler):
     def document_model(self):
         from .models import VendorPayment
         return VendorPayment
+
+    def details(self, document) -> dict:
+        allocations = document.allocations.select_related("vendor_invoice")
+        return document_details(
+            fields_section("Payment details", [
+                ("Payment date", document.payment_date),
+                ("Method", document.get_method_display()),
+                ("Reference", document.reference or "-"),
+                ("Narration", document.narration),
+                ("Withholding tax", format_naira(document.wht_amount)),
+                ("Net payment", format_naira(document.net_amount)),
+            ]),
+            table_section(
+                "Invoice allocations",
+                [("invoice", "Invoice"), ("amount", "Amount")],
+                [
+                    {
+                        "invoice": (
+                            row.vendor_invoice.document_number
+                            or str(row.vendor_invoice_id)
+                        ),
+                        "amount": format_naira(row.amount),
+                    }
+                    for row in allocations
+                ],
+            ),
+        )
 
     def reversal_block_reason(self, document) -> str | None:
         """Refuse once the payment has posted, because the money has left."""

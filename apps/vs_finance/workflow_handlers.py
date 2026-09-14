@@ -39,6 +39,7 @@ from vs_workflow.exceptions import (
     InvalidInstanceStateError, ReversalNotAllowedError,
 )
 from vs_workflow.handlers import BaseWorkflowHandler, register_handler
+from vs_workflow.presentation import document_details, fields_section, table_section
 
 from .constants import DocumentStatus, PaymentMethod
 from .money import format_naira
@@ -53,6 +54,12 @@ def _console_document_link(path: str, document) -> str:
 def _console_document_id_link(path: str, document) -> str:
     """Return a console detail route scoped to the document's ledger entity."""
     return f"{path}?{urlencode({'document': document.pk, 'entity': document.entity.code})}"
+
+
+def _quantity(value) -> str:
+    """Format a decimal quantity without database-scale trailing zeroes."""
+    text = format(value, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 # Shared handler for finance docs that post after approval.
@@ -122,6 +129,9 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
     # Build approval-screen snapshot.
     def get_document_summary(self, document) -> dict:
         return self.summary(document)  # Delegate to document-specific summary.
+
+    def get_document_details(self, document) -> dict:
+        return self.details(document)
 
     # Move document into pending approval state.
     def on_submitted(self, instance, context) -> None:
@@ -221,6 +231,9 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
     def summary(self, document) -> dict:
         raise NotImplementedError
 
+    def details(self, document) -> dict:
+        raise NotImplementedError
+
 
 @register_handler("finance.journal")
 # Workflow handler for manual journal approvals.
@@ -273,11 +286,38 @@ class JournalHandler(_FinancePostOnApprove):
             "subtitle": "Journal entry",  # Document type label.
             "fields": [  # Key facts shown to approvers.
                 {"label": "Date", "value": document.date.isoformat()},  # Journal date.
-                {"label": "Narration", "value": document.narration or "-"},  # Journal narration.
                 {"label": "Total", "value": format_naira(document.total_debit_kobo)},  # Journal total.
             ],
             "link": _console_document_link("/finance/ledger", document),
         }
+
+    def details(self, document) -> dict:
+        lines = document.lines.select_related("account", "cost_center")
+        return document_details(
+            fields_section("Journal details", [
+                ("Reference", document.reference or "-"),
+                ("Narration", document.narration),
+                ("Period", str(document.period)),
+            ]),
+            table_section(
+                "Journal lines",
+                [
+                    ("account", "Account"), ("description", "Description"),
+                    ("debit", "Debit"), ("credit", "Credit"),
+                    ("cost_center", "Cost center"),
+                ],
+                [
+                    {
+                        "account": f"{line.account.code} · {line.account.name}",
+                        "description": line.description or "-",
+                        "debit": format_naira(line.debit) if line.debit else "-",
+                        "credit": format_naira(line.credit) if line.credit else "-",
+                        "cost_center": str(line.cost_center or "-"),
+                    }
+                    for line in lines
+                ],
+            ),
+        )
 
 
 @register_handler("finance.refund")
@@ -363,6 +403,17 @@ class RefundHandler(_FinancePostOnApprove):
             "link": _console_document_link("/finance/receivables/refunds", document),
         }
 
+    def details(self, document) -> dict:
+        source = document.deposit_account or (
+            document.bank_account.gl_account if document.bank_account_id else None
+        )
+        return document_details(fields_section("Refund details", [
+            ("Method", document.get_method_display()),
+            ("Reference", document.reference or "-"),
+            ("Narration", document.narration),
+            ("Payment account", str(source or "-")),
+        ]))
+
 
 @register_handler("finance.write_off")
 # Workflow handler for bad-debt write-off approvals.
@@ -442,12 +493,20 @@ class WriteOffHandler(_FinancePostOnApprove):
             "subtitle": "Bad-debt write-off",  # Document type label.
             "fields": [  # Key facts shown to approvers.
                 {"label": "Invoice", "value": invoice.document_number or str(invoice.pk)},  # Target invoice.
-                {"label": "Customer", "value": invoice.customer.code},  # Customer code.
                 {"label": "Amount", "value": format_naira(amount)},  # Write-off amount.
-                {"label": "Reason", "value": document.reason or "-"},  # Request reason.
             ],
             "link": _console_document_link("/finance/receivables/refunds", document),
         }
+
+    def details(self, document) -> dict:
+        invoice = document.invoice
+        return document_details(fields_section("Write-off details", [
+            ("Customer", invoice.customer.code),
+            ("Date", document.write_off_date or invoice.invoice_date),
+            ("Reason", document.reason),
+            ("Narration", document.narration),
+            ("Write-off account", str(document.write_off_account or "Default")),
+        ]))
 
 
 @register_handler("finance.concession")
@@ -540,14 +599,19 @@ class ConcessionHandler(_FinancePostOnApprove):
             "title": document.document_number or str(document.pk),  # Document number or id.
             "subtitle": f"Concession ({document.get_kind_display()})",  # Discount, waiver, scholarship.
             "fields": [  # Key facts shown to approvers.
-                {"label": "Date", "value": document.concession_date.isoformat()},  # Effective date.
                 {"label": "Customer", "value": document.customer.code},  # Customer code.
-                {"label": "Invoice", "value": document.invoice.document_number or ""},  # Target invoice.
                 {"label": "Amount", "value": format_naira(document.amount)},  # Amount forgiven.
-                {"label": "Reason", "value": document.reason or "-"},  # Stated grounds.
             ],
             "link": _console_document_link("/finance/receivables/concessions", document),
         }
+
+    def details(self, document) -> dict:
+        return document_details(fields_section("Concession details", [
+            ("Date", document.concession_date),
+            ("Invoice", document.invoice.document_number or str(document.invoice_id)),
+            ("Reason", document.reason),
+            ("Allowance account", str(document.allowance_account or "Default")),
+        ]))
 
 
 @register_handler("finance.credit_note")
@@ -609,13 +673,40 @@ class CreditNoteHandler(_FinancePostOnApprove):
             "title": document.document_number or str(document.pk),  # Document number or id.
             "subtitle": f"{document.get_kind_display()} note",  # Credit or debit.
             "fields": [  # Key facts shown to approvers.
-                {"label": "Date", "value": document.note_date.isoformat()},  # Note date.
                 {"label": "Customer", "value": document.customer.code},  # Customer code.
                 {"label": "Total", "value": format_naira(document.total)},  # Note total.
-                {"label": "Reason", "value": getattr(document, "reason", "") or "-"},  # Grounds.
             ],
             "link": _console_document_link("/finance/receivables/credit-notes", document),
         }
+
+    def details(self, document) -> dict:
+        lines = document.lines.select_related("revenue_account", "tax_code")
+        return document_details(
+            fields_section("Note details", [
+                ("Date", document.note_date),
+                ("Reason", getattr(document, "reason", "")),
+                ("Subtotal", format_naira(document.subtotal)),
+                ("Tax", format_naira(document.tax_total)),
+            ]),
+            table_section(
+                "Note lines",
+                [
+                    ("item", "Item"), ("quantity", "Quantity"),
+                    ("unit_price", "Unit price"), ("tax", "Tax"),
+                    ("total", "Total"),
+                ],
+                [
+                    {
+                        "item": line.description or str(line.revenue_account),
+                        "quantity": _quantity(line.quantity),
+                        "unit_price": format_naira(line.unit_price),
+                        "tax": format_naira(line.tax_amount),
+                        "total": format_naira(line.line_total),
+                    }
+                    for line in lines
+                ],
+            ),
+        )
 
 
 @register_handler("finance.expense_claim")
@@ -677,8 +768,36 @@ class ExpenseClaimHandler(_FinancePostOnApprove):
             "fields": [
                 {"label": "Date", "value": document.claim_date.isoformat()},
                 {"label": "Claimant", "value": document.claimant_name or "-"},
-                {"label": "Purpose", "value": document.title or "-"},
                 {"label": "Total", "value": format_naira(document.total)},
             ],
             "link": _console_document_id_link("/finance/expenses/claims", document),
         }
+
+    def details(self, document) -> dict:
+        lines = document.lines.select_related("expense_account", "tax_code")
+        return document_details(
+            fields_section("Claim details", [
+                ("Purpose", document.title),
+                ("Narration", document.narration),
+                ("Subtotal", format_naira(document.subtotal)),
+                ("Tax", format_naira(document.tax_total)),
+            ]),
+            table_section(
+                "Claim items",
+                [
+                    ("item", "Item"), ("quantity", "Quantity"),
+                    ("unit_price", "Unit price"), ("tax", "Tax"),
+                    ("total", "Total"),
+                ],
+                [
+                    {
+                        "item": line.description or str(line.expense_account),
+                        "quantity": _quantity(line.quantity),
+                        "unit_price": format_naira(line.unit_price),
+                        "tax": format_naira(line.tax_amount),
+                        "total": format_naira(line.line_total),
+                    }
+                    for line in lines
+                ],
+            ),
+        )

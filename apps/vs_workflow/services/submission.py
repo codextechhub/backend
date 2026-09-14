@@ -1,5 +1,6 @@
 """Submit a document for workflow approval."""
 
+import logging
 from typing import Optional
 
 from django.contrib.contenttypes.models import ContentType
@@ -12,9 +13,13 @@ from vs_workflow.exceptions import (
 )
 from vs_workflow.handlers import get_handler
 from vs_workflow.models import WorkflowInstance
+from vs_workflow.presentation import validate_document_details
 from vs_workflow.services import audit as audit_service
 from vs_workflow.services import routing as routing_service
 from vs_workflow.services.resolution import document_scope, resolve_template
+
+
+logger = logging.getLogger("vs_workflow.submission")
 
 
 # Create an approval instance and activate its first approvable stage.
@@ -102,7 +107,12 @@ def submit_for_approval(document, requested_by, *,
         if not isinstance(document_summary, dict):
             document_summary = {}
     except Exception:
+        logger.exception("Could not build workflow summary for %s.", document_type)
         document_summary = {}
+
+    document_details = validate_document_details(
+        handler.get_document_details(document) or {}
+    )
 
     with transaction.atomic():
         # Instance creation, audit, document callback, and first routing commit together.
@@ -112,7 +122,7 @@ def submit_for_approval(document, requested_by, *,
             document_content_type=ct, document_object_id=str(document.pk),
             document_type=document_type, status=WorkflowInstanceStatus.SUBMITTED,
             requested_by=requested_by, submitted_at=timezone.now(),
-            document_summary=document_summary,
+            document_summary=document_summary, document_details=document_details,
         )
         audit_service.write(instance, AuditEventType.INSTANCE_SUBMITTED, actor=requested_by,
                             context={"template": template.code})

@@ -90,6 +90,68 @@ class RoleChangeLadderTests(TestCase):
         self.assertEqual(instance.current_stage.approver_role_key, "school_admin")
         self.assertEqual(request.status, TenantRoleChangeRequest.Status.PENDING)
 
+    def test_twenty_permission_changes_live_in_details_not_the_summary(self):
+        permissions = [
+            make_permission(
+                f"finance.approval_detail_{index}.view",
+                description=f"Review approval detail {index}",
+                is_restricted=index < 3,
+            )
+            for index in range(20)
+        ]
+        request = raise_role_change_request(
+            tenant=self.school.tenant,
+            requested_by=self.head,
+            target_role=self.target,
+            justification="Ada is covering fees while Ngozi is on leave.",
+            deltas=[
+                {
+                    "permission_key": permission.key,
+                    "operation": "ADD" if index < 12 else "REMOVE",
+                }
+                for index, permission in enumerate(permissions)
+            ],
+        )
+
+        instance = self._instance(request)
+        self.assertEqual(instance.document_summary["title"], "Bursar")
+        self.assertEqual(
+            instance.document_summary["fields"],
+            [{"label": "Raised by", "value": "School Admin"}],
+        )
+        self.assertNotIn("20", str(instance.document_summary))
+        self.assertNotIn("covering fees", str(instance.document_summary).lower())
+
+        request_fields, changes = instance.document_details["sections"]
+        self.assertEqual(request_fields["kind"], "fields")
+        self.assertEqual(
+            request_fields["items"],
+            [{
+                "label": "Reason",
+                "value": "Ada is covering fees while Ngozi is on leave.",
+            }],
+        )
+        self.assertEqual(changes["kind"], "changes")
+        self.assertEqual(len(changes["items"]), 20)
+        self.assertEqual(
+            sum(item["restricted"] for item in changes["items"]),
+            3,
+        )
+
+    def test_details_remain_the_submission_snapshot(self):
+        request = self._raise()
+        instance = self._instance(request)
+
+        request.justification = "Changed after submission."
+        request.save(update_fields=["justification", "updated_at"])
+        instance.refresh_from_db()
+
+        reason = instance.document_details["sections"][0]["items"][0]
+        self.assertEqual(
+            reason["value"],
+            "Ada is covering fees while Ngozi is on leave.",
+        )
+
     def test_nothing_is_granted_before_the_ladder_finishes(self):
         """A request in flight has changed nobody's access."""
         self._raise()
@@ -227,4 +289,3 @@ class RoleChangeLadderTests(TestCase):
                 stage_instance__instance=self._instance(request), user=outsider,
             ).exists()
         )
-

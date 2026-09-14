@@ -6,6 +6,7 @@ knows what to do when a user-creation instance is approved or rejected.
 from vs_workflow.constants import DocumentAudience
 from vs_workflow.handlers.base import BaseWorkflowHandler
 from vs_workflow.handlers.registry import register_handler
+from vs_workflow.presentation import document_details, fields_section
 
 
 @register_handler("PLATFORM_USER_CREATION")
@@ -18,27 +19,21 @@ class UserCreationWorkflowHandler(BaseWorkflowHandler):
         return "p-user-creation"
 
     def get_document_summary(self, document) -> dict:
-        def display(field):
-            getter = getattr(document, f"get_{field}_display", None)
-            return getter() if callable(getter) else (getattr(document, field, "") or "")
-
         full_name = (getattr(document, "full_name", "") or "").strip()
         email = getattr(document, "email", "") or ""
         return {
             "title": full_name or email or "New platform user",
             "subtitle": "Platform user creation",
             "fields": [
-                {"label": "Email", "value": email or "-"},
-                # The "User type" row is gone with the column. It said "CX
-                # Staff" on every card this handler ever rendered - the handler
-                # only accepts platform users - so it told an approver nothing
-                # the title did not. Role is what distinguishes one card here
-                # from the next, and it is already the line below.
                 {"label": "Role", "value": getattr(document, "role", "") or "-"},
-                {"label": "Status", "value": display("status") or "-"},
-                {"label": "Phone", "value": getattr(document, "phone", "") or "-"},
             ],
         }
+
+    def get_document_details(self, document) -> dict:
+        return document_details(fields_section("User details", [
+            ("Email", getattr(document, "email", "") or "-"),
+            ("Phone", getattr(document, "phone", "") or "-"),
+        ]))
 
     def validate_document(self, document, requested_by) -> None:
         from vs_user.models import User

@@ -29,6 +29,7 @@ back, and a reversal has nothing to undo unless the approval already ran.
 from vs_workflow.constants import DocumentAudience
 from vs_workflow.handlers.base import BaseWorkflowHandler
 from vs_workflow.handlers.registry import register_handler
+from vs_workflow.presentation import changes_section, document_details, fields_section
 
 #: The document type, and the two central templates that route it.
 #:
@@ -73,40 +74,39 @@ class RoleChangeWorkflowHandler(BaseWorkflowHandler):
             )
 
     def get_document_summary(self, document) -> dict:
-        """What the approver reads before deciding.
-
-        **Permissions are described, not keyed.** ``finance.payout.approve`` is
-        not a sentence a head teacher can weigh, and weighing it is exactly what
-        the approver is being asked to do. The catalogue's own description is
-        what the delta item carries, for this reason.
-
-        **The restricted ones are marked in place rather than listed twice.** A
-        separate "needs approval because" line repeated the change itself
-        whenever there was only one, which is the common case: the reader saw the
-        same sentence under two headings and had to work out that they were the
-        same fact. The marker rides on the line it describes instead.
-        """
-        items = list(document.delta_items.select_related("permission").all())
-
-        def describe(item):
-            permission = item.permission
-            wording = permission.description or permission.key
-            verb = "Add" if item.operation == "ADD" else "Remove"
-            # Only an addition needs approving. Taking a restricted permission
-            # away is not the act the restriction guards.
-            restricted = item.operation == "ADD" and permission.is_restricted
-            return f"{verb} {wording}" + (" (needs approval)" if restricted else "")
-
+        """Identify the role change without flattening its permission list."""
         return {
-            "title": f"{document.target_role.name}: {len(items)} permission change(s)",
+            "title": document.target_role.name,
             "subtitle": "Role permission change",
             "fields": [
-                {"label": "Role", "value": document.target_role.name},
                 {"label": "Raised by", "value": _display_name(document.requested_by)},
-                {"label": "Reason", "value": document.justification or "-"},
-                *({"label": "Change", "value": describe(item)} for item in items),
             ],
         }
+
+    def get_document_details(self, document) -> dict:
+        """Describe the request and every permission delta in decision order.
+
+        Permission descriptions are used instead of internal keys wherever the
+        catalogue provides them. Restricted additions retain an explicit marker
+        because granting them is the action this approval safety boundary exists
+        to control. Removing a restricted permission is not marked as risky.
+        """
+        items = list(document.delta_items.select_related("permission").all())
+        return document_details(
+            fields_section("Request details", [
+                ("Reason", document.justification),
+            ]),
+            changes_section("Permission changes", [
+                {
+                    "operation": item.operation,
+                    "label": item.permission.description or item.permission.key,
+                    "restricted": (
+                        item.operation == "ADD" and item.permission.is_restricted
+                    ),
+                }
+                for item in items
+            ]),
+        )
 
     def on_approved(self, instance, context: dict) -> None:
         """Apply the delta. This is the only place a request's grants are written."""

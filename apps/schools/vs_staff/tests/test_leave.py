@@ -70,6 +70,32 @@ class FilingTests(LeaveFixture):
             "an absence is never both filed and allowed by one act",
         )
 
+    def test_leave_reason_and_day_count_are_in_details_not_the_summary(self):
+        response = self.post(
+            self.admin, "staff-leave",
+            self.body(days=8, note="Travelling for a family ceremony."),
+            pk=self.eze.pk,
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        row = LeaveRequest.all_objects.get(staff=self.eze)
+        instance = WorkflowInstance.all_objects.get(
+            document_type="schools.leave_request",
+            document_object_id=str(row.pk),
+        )
+
+        self.assertNotIn("Reason", str(instance.document_summary))
+        self.assertNotIn("Days", str(instance.document_summary))
+        items = instance.document_details["sections"][0]["items"]
+        self.assertEqual(
+            [item["label"] for item in items],
+            ["Days", "Job title", "Reason"],
+        )
+        self.assertIn({"label": "Days", "value": "8"}, items)
+        self.assertIn({
+            "label": "Reason",
+            "value": "Travelling for a family ceremony.",
+        }, items)
+
     def test_days_defaults_to_the_inclusive_calendar_span(self):
         self.post(self.admin, "staff-leave", self.body(), pk=self.eze.pk)
         row = LeaveRequest.all_objects.get(staff=self.eze)

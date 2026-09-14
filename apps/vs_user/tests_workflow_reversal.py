@@ -54,6 +54,21 @@ class UserCreationReversalTests(TestCase):
         user = self._user(self.User.Status.PENDING_APPROVAL)
         self.assertIsNone(self.handler.validate_reversal(_Instance(user.pk), _context()))
 
+    def test_details_add_contact_information_without_repeating_summary_fields(self):
+        user = self._user(self.User.Status.PENDING_APPROVAL)
+
+        summary = self.handler.get_document_summary(user)
+        details = self.handler.get_document_details(user)
+
+        self.assertEqual(
+            [item["label"] for item in summary["fields"]],
+            ["Role"],
+        )
+        self.assertEqual(
+            [item["label"] for item in details["sections"][0]["items"]],
+            ["Email", "Phone"],
+        )
+
     def test_an_invited_account_refuses_the_reversal(self):
         """PENDING is the status finalisation writes: the invitation has gone out."""
         user = self._user(self.User.Status.PENDING)

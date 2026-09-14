@@ -13,7 +13,9 @@ from rest_framework.viewsets import GenericViewSet, ModelViewSet
 
 from vs_notifications.services.acknowledge import acknowledge_record
 from vs_notifications.services.routing import RecordFamily
-from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
+from vs_rbac.permissions import (
+    HasRBACPermission, IsAuthenticatedAndActive, is_vision_super_admin,
+)
 # ``include_shared=True`` spelled out at each call site below. A workflow row
 # with no branch is shared across the school - a tenant-wide template, a group
 # that approves for every site - and hiding those from a branch approver would
@@ -544,8 +546,13 @@ class WorkflowInstanceViewSet(
     def get_permissions(self):
         if self.action == "cancel":
             self.rbac_permission = PERM_INSTANCE_CANCEL
-        elif self.action in ("list", "retrieve"):
+        elif self.action == "list":
             self.rbac_permission = PERM_INSTANCE_VIEW
+        elif self.action == "retrieve":
+            # Object-level access below also admits the requester and the frozen
+            # approver snapshot. Those people need the decision surface without
+            # being granted the tenant-wide approval-history permission.
+            return [IsAuthenticatedAndActive()]
         else:
             # Actor-level actions are guarded by ownership/eligibility in the service layer.
             return [IsAuthenticatedAndActive()]
@@ -579,13 +586,35 @@ class WorkflowInstanceViewSet(
         announcing. Only a successful read acknowledges, so a caller refused by
         the tenant scope clears nothing.
         """
-        response = super().retrieve(request, *args, **kwargs)
+        instance = self.get_object()
+        if not self._may_read_instance(request, instance):
+            raise NotFound("Workflow instance not found.")
+        response = Response(self.get_serializer(instance).data)
         acknowledge_record(
             request.user,
             family=RecordFamily.WORKFLOW_INSTANCE,
             value=kwargs.get("pk"),
         )
         return response
+
+    @staticmethod
+    def _may_read_instance(request, instance) -> bool:
+        """Admit a participant or a tenant-wide workflow-history viewer.
+
+        The eligible-approver rows are the frozen authority the action service
+        checks, including delegated approvals. Reading that same snapshot here
+        keeps the evidence and the decision available to the same people. A 404
+        hides instance existence from authenticated non-participants.
+        """
+        user = request.user
+        if instance.requested_by_id == user.pk or is_vision_super_admin(user):
+            return True
+        if user_has_rbac_permission(user, PERM_INSTANCE_VIEW, tenant=instance.tenant):
+            return True
+        return WorkflowStageApprover.objects.filter(
+            stage_instance__instance=instance,
+            user=user,
+        ).exists()
 
     @action(detail=True, methods=["post"])
     def withdraw(self, request, pk=None):

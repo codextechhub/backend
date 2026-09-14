@@ -725,6 +725,21 @@ class DocumentAudienceTests(_Fixture):
             self.assertTrue(declared, f"{document_type}: its handler must declare its audience")
             self.assertIn(handler.audience, DocumentAudience.values, document_type)
 
+    def test_every_product_handler_owns_a_detail_layout(self):
+        """A new approvable type must not silently fall back to summary-only."""
+        for document_type, handler in list_registered_handlers().items():
+            if type(handler).__module__.startswith("vs_workflow.tests"):
+                continue
+            owner = next(
+                klass for klass in type(handler).__mro__
+                if "get_document_details" in vars(klass)
+            )
+            self.assertIsNot(
+                owner,
+                BaseWorkflowHandler,
+                f"{document_type}: its handler must define approval details",
+            )
+
     def test_audiences_are_spelled_as_tenant_kinds(self):
         # The registry compares a tenant's kind with an audience directly.
         self.assertEqual(DocumentAudience.PLATFORM, Tenant.Kind.PLATFORM)
