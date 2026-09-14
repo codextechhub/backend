@@ -137,9 +137,13 @@ class Command(BaseCommand):
         a key added there by any route - a prefix sweep, or somebody attaching
         one by hand - reaches the tenants on the next run.
 
-        Platform-scoped keys cannot be template defaults in the first place, so
-        nothing needs filtering here; ``PrebuiltRolePermission`` already refused
-        them when the library was seeded.
+        Nothing is filtered by scope here. ``PrebuiltRolePermission`` refuses a
+        platform key outright, so the only way one reaches the library is a
+        reclassification that changed a seeded key's scope underneath it and
+        skipped the withdrawal - and then the grant guard refuses this run by
+        name, which is the right outcome for an operator command. Find them
+        with ``audit_permission_scope`` and take them back with
+        :func:`vs_rbac.scope_withdrawal.withdraw_from_tenants`.
         """
         template = PrebuiltRoleTemplate.objects.filter(
             key=prebuilt_key, is_active=True,

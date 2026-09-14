@@ -18,6 +18,13 @@ asked mechanically, so the next one is found on the next run instead:
     2. Is the table behind it global - no route to a tenant at all?
     3. Is there a platform guard in front of it?
 
+It also asks the question that comes *after* a reclassification: does any
+tenant still hold a key that is now platform-only? Flipping the scope and
+withdrawing the grants are two acts, and the second has been skipped often
+enough that one leftover row in the prebuilt role library stopped every new
+school being created. That half of the run reads the database rather than the
+routes, so it is exact.
+
 **Read the limits before trusting a clean run.** This walks resolved routes and
 reads class source, so it cannot see everything:
 
@@ -79,12 +86,15 @@ MODEL_PATTERN = re.compile(r"\b([A-Z]\w+)\.(?:objects|all_objects)\b")
 
 
 class Command(BaseCommand):
-    help = "Report tenant-holdable permissions that write a globally shared table."
+    help = (
+        "Report tenant-holdable permissions that write a globally shared table, "
+        "and platform-only keys still granted inside a tenant."
+    )
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--strict", action="store_true",
-            help="Exit non-zero when a global-table write is found (for CI).",
+            help="Exit non-zero on a global-table write or a leftover grant (CI).",
         )
         parser.add_argument(
             "--show-unreached", action="store_true",
@@ -124,13 +134,70 @@ class Command(BaseCommand):
                 else:
                     findings.append((key, row))
 
+        leftovers = self._leftover_grants()
+
         self._report(
             findings, unresolved, reviewed,
-            sorted(tenant_keys - set(seen)), options,
+            sorted(tenant_keys - set(seen)), leftovers, options,
         )
 
-        if options["strict"] and findings:
+        if options["strict"] and (findings or leftovers):
             raise SystemExit(1)
+
+    # ── grants a past reclassification left standing ─────────────────────────
+
+    def _leftover_grants(self):
+        """Name the keys still granted inside a tenant that no tenant may hold.
+
+        Reclassifying a key is two acts and the second one is easy to skip, so
+        this asks the database whether it was done. A leftover row grants
+        nothing - the evaluator filters it out - but it refuses the next write
+        through the surface it sits on, which is how a single row in the
+        prebuilt library stopped every new school being created.
+
+        Returns ``{surface: [key, ...]}``, empty when the registry and the
+        grants already agree.
+        """
+        from vs_rbac.models import (
+            GroupPermission,
+            Permission,
+            PrebuiltRolePermission,
+            TenantRolePermission,
+            UserPermissionOverride,
+        )
+        from vs_rbac.scope_withdrawal import (
+            ALLOW, PLATFORM_KIND, PLATFORM_SCOPE, TENANT_SCOPE,
+        )
+
+        keys = set(
+            Permission.objects.exclude(scope=TENANT_SCOPE)
+            .values_list("key", flat=True)
+        )
+        if not keys:
+            return {}
+
+        surfaces = {
+            "tenant role": TenantRolePermission.objects
+            .filter(permission_id__in=keys)
+            .exclude(role__tenant__kind=PLATFORM_KIND),
+            "prebuilt library": PrebuiltRolePermission.objects
+            .filter(permission_id__in=keys),
+            "tenant permission group": GroupPermission.objects
+            .filter(permission_id__in=keys)
+            .exclude(group__scope=PLATFORM_SCOPE),
+            "user override": UserPermissionOverride.objects
+            .filter(permission_id__in=keys, mode=ALLOW)
+            .exclude(tenant__kind=PLATFORM_KIND),
+        }
+
+        found = {}
+        for surface, queryset in surfaces.items():
+            rows = sorted(
+                queryset.values_list("permission_id", flat=True).distinct()
+            )
+            if rows:
+                found[surface] = rows
+        return found
 
     # ── the walk ─────────────────────────────────────────────────────────────
 
@@ -282,7 +349,8 @@ class Command(BaseCommand):
 
     # ── output ───────────────────────────────────────────────────────────────
 
-    def _report(self, findings, unresolved, reviewed, unreached, options):
+    def _report(self, findings, unresolved, reviewed, unreached, leftovers,
+                options):
         if findings:
             self.stdout.write(self.style.ERROR(
                 f"\n  {len(findings)} tenant-holdable key(s) write a globally "
@@ -300,6 +368,20 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(
                 "\n  No tenant-holdable key writes a globally shared table.\n"
             ))
+
+        if leftovers:
+            self.stdout.write(self.style.ERROR(
+                "\n  Platform-only key(s) still granted inside a tenant. These "
+                "grant nothing\n  and refuse the next write through the surface "
+                "holding them:\n"
+            ))
+            for surface, rows in leftovers.items():
+                for key in rows:
+                    self.stdout.write(f"    {surface:24} {key}")
+            self.stdout.write(
+                "\n  Withdraw them in a migration: "
+                "vs_rbac.scope_withdrawal.withdraw_from_tenants.\n"
+            )
 
         for key in reviewed:
             self.stdout.write(

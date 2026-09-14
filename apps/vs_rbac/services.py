@@ -22,6 +22,7 @@ from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
 from .models import (
     Permission,
+    platform_only_keys,
     PrebuiltRolePermission,
     PrebuiltRoleTemplate,
     TenantRoleChangeDeltaItem,
@@ -30,6 +31,7 @@ from .models import (
     TenantRolePermission,
     TenantRoleTemplate,
     TenantUserRoleAssignment,
+    tenant_is_platform,
 )
 from .exceptions import PrebuiltRoleMissing
 from .validators import validate_role_permissions
@@ -411,6 +413,15 @@ def provision_role_from_prebuilt(*, tenant, branch=None, prebuilt_key: str,
     that does not check, and that is how a school was created holding two of the
     five roles the product ships with nobody being told. ``required=False`` is
     for a caller that genuinely treats the role as optional and says so.
+
+    A library default the target tenant may not hold is **dropped, not
+    refused**, and logged. The caller here never chose these keys - creating a
+    school asks for Finance Admin, not for a list of permissions - so refusing
+    the copy takes the whole school down over a key that would confer nothing
+    anyway: the evaluator filters a non-tenant key out of every effective set
+    outside the platform. That is not a licence to leave the library wrong;
+    ``audit_permission_scope`` reports any such row, and
+    :func:`vs_rbac.scope_withdrawal.withdraw_from_tenants` takes it back.
     """
     from django.contrib.auth import get_user_model
 
@@ -469,6 +480,15 @@ def provision_role_from_prebuilt(*, tenant, branch=None, prebuilt_key: str,
         permission_keys = list(PrebuiltRolePermission.objects.filter(
             prebuilt_role=prebuilt
         ).values_list("permission_id", flat=True))
+        if not tenant_is_platform(tenant):
+            refused = platform_only_keys(permission_keys)
+            if refused:
+                logger.warning(
+                    "Prebuilt role '%s' carries %s, which %s may not hold. "
+                    "Provisioned without them; withdraw them from the library.",
+                    prebuilt.key, ", ".join(sorted(refused)), tenant,
+                )
+                permission_keys = [k for k in permission_keys if k not in refused]
         role = set_role_access(
             role=role,
             actor=created_by,

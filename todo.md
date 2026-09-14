@@ -1,8 +1,93 @@
+## Documents owed (shared queue - append here, do not write the documents)
+
+Every session that commits a behaviour change adds an entry here instead of
+revising the MRD and FRDs itself. One agent then does the whole queue in a single
+pass, because the documents are cross-referenced and a version written in
+isolation goes stale before it is rendered.
+
+HOW TO ADD AN ENTRY. One block per commit: the hash and date, the modules it
+touches, and what the revision must say. Do NOT write the new version numbers.
+The base moves while entries wait, so the agent derives the next version from
+whatever is latest on the day it runs.
+
+TWO TRAPS, BOTH ALREADY MET HERE:
+- `ls | tail` sorts lexically, so it calls v1.9 newer than v1.13, and v2.9.1
+  newer than v2.81. Pick the latest by comparing the version parts as numbers.
+- Ignore Office lock files (`~$*.docx`). Never commit rendered PDFs, page images
+  or any other render artifact.
+
+LATEST BASES ON 2026-09-14, several of them uncommitted and still moving, so
+recheck on the day rather than trusting this line: MRD v2.81, M03 v1.13,
+M12 v2.6, M19 v1.10, M30 v1.1.
+
+### D1. A lockout is not a status (3e4e79af, 2026-09-13)
+MODULES: M03 identity, M12 staff management, MRD.
+A temporary lockout was written into `User.status`, so it outlived its own window
+and locked the account for ever. The lockout is now one fact,
+`AccountLockout.locked_until`, which expires by itself; LOCKED is reported by
+`User.account_state` rather than stored; migration 0012 frees the accounts
+already stuck, sorting them into ACTIVE, PENDING or SUSPENDED by evidence.
+Three faults of the same root went with it: a suspension an attacker could lift
+by failing more sign-ins, a completed password reset that left its own victim
+locked, and a window any further attempt pushed further out.
+MUST SAY: the account-status model (stored status against reported state), the
+single unlock path, that a completed reset clears a lockout, the staff directory
+facet and `?account_status=` filter now reading the lockout row and staying
+disjoint, and the sign-in status allowlist. Remove the Needs Attention item.
+
+### D2. Two sets of books reaches an operator (fa23e06d, 2026-09-14)
+MODULES: M30 system health, M19 finance and accounting, MRD. Check M22 and M23
+too, but only if they document the FAL's procurement read port.
+`AmbiguousPrimaryEntity` was raised on every finance and procurement read a
+misconfigured school made, and nothing listened: it became a logged 500 and the
+only person who saw it could not act on it. It now opens exactly one vs_health
+incident, from the `envelope` decorator both raise sites share, which is also the
+first frame outside the provisioning transaction so the incident survives that
+rollback.
+MUST SAY: for M30, the new configuration-fault concept, `Incident.fault_key` and
+its deduplication rule (one unresolved incident per fault, no timeline entry on a
+repeat, resolving is how the next occurrence reopens), and that such an incident
+has no alert or rule behind it. For M19, that the one-primary-entity rule is a
+FAL-boundary convention with no database constraint behind it, and that a breach
+is now reported as well as refused. Note the residual limit: no notification is
+sent, the incident is console-only, because the event key needs vs_notifications
+work; and the incident does not auto-resolve when the school is fixed, unlike an
+alert-driven one.
+
+### D3. A reclassified key left its grants behind (not yet committed, 2026-09-14)
+MODULES: M04 roles and permissions, MRD. Check M01 school and branch management
+(school creation now survives a stale library) and M10 bulk data import (two
+import permission groups changed contents), but only if they document those.
+Creating a school failed outright: migration 0018 made `finance.entity.create`
+PLATFORM and deleted the schools' grants of it, but not the copy in the prebuilt
+role library, and creation provisions Finance Admin by copying that library row
+into the new school's role, where the scope guard refused it and rolled the whole
+school back. The fix is the class, not the case: the new
+`withdraw_from_tenants` in `vs_rbac/scope_withdrawal.py` takes a key back from
+all four surfaces that can hold a tenant grant (the tenant's own role, the
+prebuilt library, tenant permission groups, ALLOW overrides), sparing the
+platform tenant, platform groups and DENY rows; migration 0021 runs it from `Permission.scope` rather than a list, so it
+cleans up whatever any past reclassification left. It found two: the library's
+`finance.entity.create`, and `import.templates.create` inside the tenant groups
+"Data Import - all" and "Import Template - all", left by 0008. Provisioning from
+the library now drops a key the tenant may not hold and logs it instead of
+refusing the copy, because the caller never chose that key and it confers nothing
+inside a tenant anyway; writing one directly is still refused.
+`audit_permission_scope` now reports leftover grants and `--strict` fails on them.
+MUST SAY: for M04, remove the school-creation Needs Attention item (implemented,
+tested and observed fixed), correct FR-002's note that 0018 did not sweep the
+prebuilt defaults, replace the FR-021 limit about the unfiltered provisioning
+copy, and record that a sweep now covers organization tenants and not only
+schools (every earlier sweep filtered on `kind="SCHOOL"`, so VIGIL tenants were
+missed). Also record the audit command's second question. Verified by vs_rbac,
+559 tests OK, and schools.vs_schools, 358 tests OK on the full run.
+
 ## Undone
 
-Six items. Each says what is wrong, how to fix it, and what is stopping it.
-Verified against the code on 2026-09-13; four earlier items were removed because
-they were finished or no longer true, and what replaced them is noted at the end.
+Five items. Each says what is wrong, how to fix it, and what is stopping it.
+Verified against the code on 2026-09-13, re-checked 2026-09-14; five earlier
+items were removed because they were finished or no longer true, and what
+replaced them is noted at the end.
 
 ### 1. Procurement approval templates are not seeded at onboarding (2026-07-28, re-verified 2026-09-13)
 `seed_procurement_approvals` exists only as a management command
@@ -15,13 +100,7 @@ submit-without-approval override granted to nobody by default.
 BLOCKED BY: one product decision - whether a new school's procurement starts
 blocked (safe, and somebody must act before the first purchase) or open.
 
-### 2. AmbiguousPrimaryEntity is raised and nothing listens (2026-08)
-The FAL raises it, loudly and deliberately, and no operator is told.
-FIX: decide who hears it, an operator alert or a health-check row, and wire it.
-BLOCKED BY: nothing. Was blocked on the FAL not existing; the FAL is mounted at
-/v1/school-finance/ now, so this is unblocked and small.
-
-### 3. FAL write ports for payments and concessions (deferred on purpose)
+### 2. FAL write ports for payments and concessions (deferred on purpose)
 Payments and concessions bypass the FAL and reach /v1/finance/ directly, so a
 school screen has to know the AR customer id, which is the engine concept the
 FAL exists to hide. Spec 16 parks `apply_payment` in v1.2.
@@ -29,7 +108,7 @@ FIX: write ports - `apply_payment`, and something for concessions.
 BLOCKED BY: the fees backend step, deliberately, so that the design says what a
 payment screen and a waiver screen need before the port is shaped.
 
-### 4. A staff import (NOT STARTED, PARKED 2026-09-04 by user decision)
+### 3. A staff import (NOT STARTED, PARKED 2026-09-04 by user decision)
 Four of the five datasets a school arrives with can be uploaded; staff is the
 one that is not built, and a secondary school arrives with forty to eighty
 people. Three things were established while looking at it and should not be
@@ -46,18 +125,30 @@ whose email column has slipped one place puts live login links in eighty
 strangers' inboxes and deleting the rows un-sends nothing.
 BLOCKED BY: your decision to unpark it, and one real prerequisite below.
 
-### 5. A school user has nowhere to put HR fields (found inside item 4)
-`employee_id`, `job_title` and `employment_type` live on
-`PlatformStaffProfile`, which `UserCreationService.create_pending` builds only
-for platform tenants, while `UserCreateSerializer` declares all three as input
-fields. So the staff form accepts them and silently drops them for every school
-user today.
-FIX: decide whether a school's staff record should carry them at all, then put
-them where that decision says.
-BLOCKED BY: nothing technical. Decide this before building item 4, not after,
-since the import would otherwise offer columns that go nowhere.
+### 4. Two staff records, and the platform one is the only one the form can fill (found inside item 3, restated 2026-09-14)
+RESTATED, because the original entry was wrong twice and both errors made the
+item look bigger than it is. It said the fields are silently dropped: they are
+not. `UserCreateSerializer` refuses them, "Staff profile fields can only be set
+for platform (CX) staff" (vs_user/serializers.py ~483), so a school admin filling
+job title gets an error rather than a quiet loss. It also said a school user has
+nowhere to put them: there IS somewhere. `schools.vs_staff.models.StaffProfile`
+is one row per member of school staff and already carries `job_title`,
+`employment_type`, `staff_number` (the school's own format, deliberately not an
+imposed one), `hire_date`, `employment_status` and a branch posting.
+What is actually true: there are two staff records, `PlatformStaffProfile` for CX
+hires and `StaffProfile` for a school's, and the account-creation serializer
+knows only the first. So the HR fields on that form are platform-only by
+construction, and a school's staff data is written through the vs_staff surface
+instead.
+FIX: decide whether the account-creation form should write a school
+`StaffProfile` when the tenant is a school (routing the same three fields to the
+other model), or whether it should keep refusing and the school staff surface
+stays the only way in. Then make the API say which, rather than leaving a school
+admin to discover it from a validation error.
+BLOCKED BY: nothing technical, and it is smaller than it looks. Decide before
+building item 3, since the import must know which record it is filling.
 
-### 6. Two screens promise things the backend does not do (WANTED, NOT NOW, 2026-08-30)
+### 5. Two screens promise things the backend does not do (WANTED, NOT NOW, 2026-08-30)
 Both are honest in the API and dishonest only if a screen types the sentence off
 the mockup rather than reading the response.
 (a) TELL A GUARDIAN WHEN THEIR CHILD IS SUSPENDED. The suspension panel prints
@@ -70,6 +161,18 @@ school may turn it off. BLOCKED BY: that product decision.
 domain-neutral and has no fee assignment to suspend. FIX: a fee-assignment
 concept in Finance first, then the seam through the FAL's StudentCustomerPort.
 BLOCKED BY: that Finance work, which is much larger than (a).
+
+### Removed on 2026-09-14, with why
+- AMBIGUOUSPRIMARYENTITY IS RAISED AND NOTHING LISTENS: fixed in fa23e06d. A
+  school holding two active tenant-kind entities now opens exactly one health
+  incident naming the school and what to do, deduplicated on
+  `Incident.fault_key` so a read path behind every dashboard cannot flood the
+  console. Reported from the `envelope` decorator both raise sites share, which
+  is also the first frame outside the provisioning transaction, so the incident
+  survives the rollback that carries the refusal out. The caller still gets a
+  500, which is the correct answer to a fault they cannot fix. Two residual
+  limits are carried in D2 above rather than here: no notification is sent, and
+  the incident does not resolve itself when the school is put right.
 
 ### Removed on 2026-09-13, with why
 - A TEMPORARY LOCKOUT IS PERMANENT: fixed in 3e4e79af. The lockout is one
@@ -84,7 +187,7 @@ BLOCKED BY: that Finance work, which is much larger than (a).
 - FAL HAS NO HTTP ROUTE: it has one, mounted at /v1/school-finance/, serving the
   fee due policy, term linking and cohort invoice generation. The procurement
   actions are absent on purpose (the procurement bridge is its own work), and
-  the payments/concessions gap survives as item 4 above.
+  the payments/concessions gap survives as item 2 above.
 - M13/M14 PENDING-SURFACE CONSEQUENCE: both modules shipped; a warning written
   for builders who have since built.
 - PROCUREMENT KEYS FOR SCHOOL ROLES: done. `seed_prebuilt_role_templates` gives
