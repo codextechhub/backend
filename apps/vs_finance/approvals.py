@@ -291,6 +291,7 @@ def _stages_payload(*, amount_field, threshold, gated, approver_group_code,
 def ensure_tenant_approval_templates(
     tenant,
     *,
+    with_default_stages: bool = True,
     threshold: int | None = None,
     approver_group_code: str | None = None,
     senior_group_code: str | None = None,
@@ -298,18 +299,47 @@ def ensure_tenant_approval_templates(
 ) -> list:
     """Give one tenant its own adjustment-approval rules. Returns ``[(template, created)]``.
 
-    Publishes one ladder per adjustment document type. **Non-destructive**: a document
-    type that already has a tenant-scoped template is reported with ``created=False``
-    and left exactly as an administrator configured it, so this is safe to re-run and
-    safe to call again for a second entity in the same tenant.
+    Publishes one route per adjustment document type, scoped to the tenant
+    (``tenant=<tenant>, branch=None``) so nothing outside this tenant can reach it.
 
-    **Seeded blocked, not seeded open.** The approving roles are created with nobody
-    appointed, so the first adjustment submitted parks and says which role to fill
-    rather than approving itself.
+    Two properties are deliberate and tested:
 
-    Until this existed, finance published no ladders at all. Refunds and write-offs
-    carried a submit endpoint and a handler, but with no template ``approval_required``
-    answered False and both posted directly - the gate was built and never switched on.
+    * **Idempotent, and never destructive.** A document type whose tenant-scoped
+      template carries a live step is left exactly as an administrator configured it
+      and reported with ``created=False``, so this is safe to re-run and safe to call
+      again for a second entity in the same tenant. A route holding no live step is
+      the exception, and only when the default stages are being asked for: it is the
+      placeholder published with the books, it carries nothing anybody chose, and the
+      steps are written into it rather than the tenant being told it already has rules
+      it cannot see.
+    * **Seeded blocked, not seeded open.** Where stages are published they arrive with
+      nobody appointed: each resolves its approvers through a named group the tenant
+      has put nobody in, so the first adjustment submitted parks and names the group to
+      fill rather than approving itself.
+
+    ``with_default_stages`` chooses between the two things a tenant-scoped row is for:
+
+    * **True** publishes the ladders and the approver groups their stages name. This is
+      for a tenant that has *asked* for the default rules, which is what the seed
+      command is.
+    * **False** publishes the same rows carrying no stages, and creates no groups. This
+      is for a tenant that has asked for nothing yet, where a ladder would be a guess at
+      who approves its adjustments and at the amounts, and a group would be structure on
+      its screens that nobody requested.
+
+    The empty row is not the same as no row, and for adjustments that difference is the
+    whole gate. With no row at all, ``approval_required`` answers False and a refund or
+    a write-off posts straight to the ledger with nobody told. With the empty row, the
+    post is approval-undecided rather than approval-free: it is refused until somebody
+    confirms it in as many words, and the confirmation is recorded against them (see
+    :func:`guard_direct_post`). The row also keeps the tenant off any shared platform
+    route, so a change to a shared row can never begin governing this tenant's
+    adjustments.
+
+    The switch is a parameter rather than a sibling function because the two differ only
+    in what each published row carries. The steps around that, resolving which document
+    types exist already and leaving each of those untouched, are the non-destructive
+    promise above, and a sibling would restate them and be free to drift from them.
     """
     from vs_workflow.models import WorkflowTemplate
     from vs_workflow.services.groups import ensure_approver_group
@@ -341,21 +371,35 @@ def ensure_tenant_approval_templates(
             document_type__in=document_types,
         )
     }
+    # An empty route is a placeholder, not a decision, so asking for the default
+    # stages fills it in. Skipping it instead would make this a no-op for every
+    # tenant whose books published the placeholder, and the tenant would be told it
+    # already had rules while no adjustment could ever route through them. Retired
+    # steps are history rather than configuration, so a route holding only those is
+    # empty for this purpose exactly as the engine treats it as empty for routing.
+    if with_default_stages:
+        existing = {
+            document_type: template
+            for document_type, template in existing.items()
+            if template.stages.filter(retired_at__isnull=True).exists()
+        }
 
     # A tenant-scoped WORKFLOW_GROUP stage will not publish against a group the
     # tenant does not have. Created empty: a group nobody is in resolves to
-    # nobody, so the ladder parks its first document rather than approving it.
-    ensure_approver_group(
-        tenant, approver_group_code,
-        description="Approves receivable adjustments. Empty until the tenant "
-                    "adds people, roles or positions to it, so adjustments park "
-                    "until then.",
-    )
-    ensure_approver_group(
-        tenant, senior_group_code,
-        description="Approves high-value concessions and credit notes. Empty "
-                    "until the tenant puts somebody in it.",
-    )
+    # nobody, so the ladder parks its first document rather than approving it. A
+    # route published with no stages names no group, so it needs none.
+    if with_default_stages:
+        ensure_approver_group(
+            tenant, approver_group_code,
+            description="Approves receivable adjustments. Empty until the tenant "
+                        "adds people, roles or positions to it, so adjustments park "
+                        "until then.",
+        )
+        ensure_approver_group(
+            tenant, senior_group_code,
+            description="Approves high-value concessions and credit notes. Empty "
+                        "until the tenant puts somebody in it.",
+        )
 
     results = []
     for document_type, (label, name, gated) in _ADJUSTMENT_TEMPLATES.items():
@@ -366,35 +410,54 @@ def ensure_tenant_approval_templates(
             publish_template(
                 tenant=tenant, branch=None, document_type=document_type,
                 code=WF_DEFAULT_TEMPLATE_CODE, name=name,
-                description=f"Approval rule for a {label}.",
+                description=(
+                    f"Approval rule for a {label}."
+                    if with_default_stages else
+                    f"Approval route for a {label}, held by this tenant so its "
+                    "adjustments are never governed by shared platform rules. The "
+                    "steps are the tenant's own to add."
+                ),
                 created_by=created_by,
                 stages_payload=_stages_payload(
                     amount_field=models[document_type].workflow_amount_field,
                     threshold=threshold, gated=gated,
                     approver_group_code=approver_group_code,
                     senior_group_code=senior_group_code,
-                ),
+                ) if with_default_stages else [],
             ),
             True,
         ))
-    # The gate is now on for this tenant, so the key that lets somebody through it
-    # must exist. See the function's docstring for why this lives here.
-    ensure_adjustment_submit_permissions()
+    # The gate is on for this tenant only where steps were published, so the key
+    # that lets somebody through it is registered only there too. See the
+    # function's docstring for why this lives here.
+    if with_default_stages:
+        ensure_adjustment_submit_permissions()
     return results
 
 
 def ensure_tenant_expense_claim_template(
     tenant,
     *,
+    with_default_stages: bool = True,
     approver_group_code: str | None = None,
     created_by=None,
 ):
-    """Publish the tenant's expense-claim approval route if none exists.
+    """Publish the tenant's expense-claim approval route. Returns ``(template, created)``.
 
-    The route deliberately resolves a named tenant role. It arrives without a
-    holder, so a claim parks visibly until an administrator appoints the people who
-    approve staff reimbursements. Once holders exist, normal workflow stage
-    activation creates their approval notices.
+    ``with_default_stages`` chooses what the route carries, exactly as it does in
+    :func:`ensure_tenant_approval_templates`:
+
+    * **True** publishes the approving step and the group it names. The group arrives
+      empty, so a claim parks visibly until an administrator puts somebody in it, and
+      normal stage activation then creates their approval notices.
+    * **False** publishes the route carrying no step, and creates no group. Who approves
+      a staff reimbursement is the tenant's own answer, read from the organogram it
+      builds, so nothing is invented at provisioning time.
+
+    A route holding a live step is never republished over, from either direction: it is
+    somebody's decision. A route holding none is the placeholder published with the
+    books, so asking for the default step fills it in rather than reporting that rules
+    already exist which no claim could route through.
     """
     from vs_workflow.models import WorkflowTemplate
     from vs_workflow.services.groups import ensure_approver_group
@@ -416,21 +479,31 @@ def ensure_tenant_expense_claim_template(
         code=WF_DEFAULT_TEMPLATE_CODE,
     ).first()
     if existing is not None:
-        return existing, False
+        # A live step is a decision and stays put. An empty route is the
+        # placeholder the books published, so a deliberate ask fills it in.
+        if existing.stages.filter(retired_at__isnull=True).exists() or not with_default_stages:
+            return existing, False
 
-    ensure_approver_group(
-        tenant,
-        approver_group_code,
-        description="Approves staff expense claims. Empty until the tenant puts "
-                    "somebody in it, so claims park until then.",
-    )
+    if with_default_stages:
+        ensure_approver_group(
+            tenant,
+            approver_group_code,
+            description="Approves staff expense claims. Empty until the tenant puts "
+                        "somebody in it, so claims park until then.",
+        )
     template = publish_template(
         tenant=tenant,
         branch=None,
         document_type="finance.expense_claim",
         code=WF_DEFAULT_TEMPLATE_CODE,
         name="Expense claim approval",
-        description="Approval rule for a staff expense claim before it reaches the ledger.",
+        description=(
+            "Approval rule for a staff expense claim before it reaches the ledger."
+            if with_default_stages else
+            "Approval route for a staff expense claim, held by this tenant so its "
+            "claims are never governed by shared platform rules. The steps are the "
+            "tenant's own to add."
+        ),
         created_by=created_by,
         stages_payload=[{
             "code": "finance-approval",
@@ -443,7 +516,7 @@ def ensure_tenant_expense_claim_template(
             "advance_rule": "ANY",
             "on_rejection": "RETURN_TO_REQUESTER",
             "skip_if_no_approvers": False,
-        }],
+        }] if with_default_stages else [],
     )
     return template, True
 

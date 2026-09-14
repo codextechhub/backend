@@ -199,12 +199,13 @@ def ensure_default_approval_templates(*, created_by=None):
 def ensure_tenant_approval_templates(
     tenant,
     *,
+    with_default_stages: bool = True,
     approve_group_code: str = WF_DEFAULT_APPROVE_GROUP,
     high_value_group_code: str = WF_DEFAULT_HIGH_VALUE_GROUP,
     high_value_threshold: int = WF_DEFAULT_HIGH_VALUE_THRESHOLD,
     created_by=None,
 ):
-    """Give one tenant its **own** payout-approval ladder. Returns ``(template, created)``.
+    """Give one tenant its **own** payout-approval route. Returns ``(template, created)``.
 
     This is where a tenant's payout steps come from. The platform row carries none
     (see :func:`ensure_default_approval_templates`), because a shared row cannot name
@@ -212,16 +213,35 @@ def ensure_tenant_approval_templates(
     (``tenant=<tenant>, branch=None``) wins over it through the engine's own cascade,
     and nothing outside this tenant can reach it.
 
-    **Non-destructive.** A tenant that already has its own ladder is left exactly as it
-    is and reported with ``created=False``: re-running after an administrator repointed
-    a stage must not quietly restore the defaults. (Contrast
-    :func:`ensure_default_approval_templates`, which upserts, because the platform row
-    is provisioning's to own.)
+    **Non-destructive.** A route carrying a live step is left exactly as it is and
+    reported with ``created=False``: re-running after an administrator repointed a
+    stage must not quietly restore the defaults. A route holding no live step is the
+    exception, and only when the default stages are being asked for: it is the
+    placeholder published with the books, it carries nothing anybody chose, and the
+    steps are written into it rather than the tenant being told it already has rules it
+    cannot see. (Contrast :func:`ensure_default_approval_templates`, which upserts,
+    because the platform row is provisioning's to own.)
 
-    **Seeded blocked, not seeded open.** Each step names an approver group that is
-    created empty, so the first batch submitted parks and says so instead of paying
-    itself out. Safe for onboarding to call on every tenant creation, and for an
-    administrator to call again.
+    **Seeded blocked, not seeded open.** Where a step is published it names an approver
+    group created empty, so the first batch submitted parks and says so instead of
+    paying itself out.
+
+    ``with_default_stages`` chooses between the two things a tenant-scoped row is for:
+
+    * **True** publishes the two-stage ladder and the approver groups its stages name.
+      This is for a tenant that has *asked* for the default rules, which is what the
+      seed command is.
+    * **False** publishes the same row carrying no stages, and creates no groups. This
+      is for a tenant that has asked for nothing yet, where a ladder would be a guess at
+      who signs off on money leaving and at the amount that needs a second pair of eyes,
+      and a group would be structure on the tenant's screens that nobody requested. The
+      row still earns its place: it keeps the tenant off the shared platform route, so a
+      change to that shared row can never begin governing this tenant's cash-out. A
+      batch submitted against it is refused as unconfigured rather than paid unseen, and
+      goes out only when somebody confirms it in as many words, recorded against them.
+
+    Safe for onboarding to call on every tenant creation, and for an administrator to
+    call again later.
     """
     from vs_workflow.models import WorkflowTemplate
     from vs_workflow.services.groups import ensure_approver_group
@@ -238,29 +258,43 @@ def ensure_tenant_approval_templates(
         code=WF_DEFAULT_TEMPLATE_CODE,
     ).first()
     if existing is not None:
-        return existing, False
+        # Retired steps are history rather than configuration, so a route holding
+        # only those is empty here exactly as the engine treats it as empty for
+        # routing. A live step is somebody's decision and stays put; an empty route
+        # is the placeholder the books published, so a deliberate ask fills it in.
+        has_live_stage = existing.stages.filter(retired_at__isnull=True).exists()
+        if has_live_stage or not with_default_stages:
+            return existing, False
 
     # A stage will not publish against a group the tenant does not have, and a
     # brand-new tenant has none. Create them empty, so seeding works on a fresh
-    # tenant without inventing approval authority.
-    for group_code, label in (
-        (approve_group_code, "payout batches"),
-        (high_value_group_code, "high-value payout batches"),
-    ):
-        ensure_approver_group(
-            tenant, group_code,
-            description=f"Approves {label}. Empty until the tenant puts "
-                        "somebody in it, so batches park until then.",
-        )
+    # tenant without inventing approval authority. A row published with no stages
+    # names no group, so it needs none.
+    if with_default_stages:
+        for group_code, label in (
+            (approve_group_code, "payout batches"),
+            (high_value_group_code, "high-value payout batches"),
+        ):
+            ensure_approver_group(
+                tenant, group_code,
+                description=f"Approves {label}. Empty until the tenant puts "
+                            "somebody in it, so batches park until then.",
+            )
 
     return publish_template(
         tenant=tenant, branch=None, document_type=DOCUMENT_TYPE,
         code=WF_DEFAULT_TEMPLATE_CODE, name=TEMPLATE_NAME,
-        description=f"Approval rule for a {TEMPLATE_LABEL}.",
+        description=(
+            f"Approval rule for a {TEMPLATE_LABEL}."
+            if with_default_stages else
+            f"Approval route for a {TEMPLATE_LABEL}, held by this tenant so its "
+            "cash-out is never governed by the shared platform rules. The steps "
+            "are the tenant's own to add."
+        ),
         created_by=created_by,
         stages_payload=_default_stages_payload(
             approve_group_code=approve_group_code,
             high_value_group_code=high_value_group_code,
             high_value_threshold=high_value_threshold,
-        ),
+        ) if with_default_stages else [],
     ), True

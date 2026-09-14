@@ -175,6 +175,7 @@ def ensure_default_approval_templates(*, created_by=None) -> list:
 def ensure_tenant_approval_templates(
     tenant,
     *,
+    with_default_stages: bool = True,
     threshold: int = WF_DEFAULT_SENIOR_THRESHOLD,
     manager_group_code: str = WF_DEFAULT_MANAGER_GROUP,
     senior_group_code: str = WF_DEFAULT_SENIOR_GROUP,
@@ -190,15 +191,19 @@ def ensure_tenant_approval_templates(
 
     Two properties are deliberate and tested:
 
-    * **Idempotent, and never destructive.** A document type that already has a
-      tenant-scoped template is left exactly as it is and reported with
+    * **Idempotent, and never destructive.** A document type whose tenant-scoped
+      template carries a live step is left exactly as it is and reported with
       ``created=False`` - re-running after an administrator has customised the ladder
-      must not quietly restore the defaults. (Contrast
+      must not quietly restore the defaults. A route holding no live step is the
+      exception, and only when the default stages are being asked for: it is the
+      placeholder published with the books, it carries nothing anybody chose, and the
+      steps are written into it rather than the tenant being told it already has
+      rules it cannot see. (Contrast
       :func:`ensure_default_approval_templates`, which upserts, because the platform
       row is provisioning's to own.)
-    * **Seeded blocked, not seeded open.** The rules arrive with no approver attached:
-      the stages resolve approvers through a named role, and a new tenant has
-      assigned that role to nobody, so the first submitted document parks and says
+    * **Seeded blocked, not seeded open.** Where stages are published they arrive with
+      no approver attached: each resolves its approvers through a named group, and a
+      new tenant has put nobody in it, so the first submitted document parks and says
       so instead of approving itself. Procurement stays deliberately blocked until the
       tenant appoints someone, which is the secure-by-default order of operations.
 
@@ -206,6 +211,27 @@ def ensure_tenant_approval_templates(
     approvers over one tenant ladder (see :func:`_default_stages_payload`). Publishing a
     branch-specific template stays available for a site whose *rules* genuinely differ,
     and still wins over this one.
+
+    ``with_default_stages`` chooses between the two things a tenant-scoped row is for:
+
+    * **True** publishes the two-stage ladder and the approver groups its stages name.
+      This is for a tenant that has *asked* for the default rules, which is what the
+      setup endpoint and the seed command each are.
+    * **False** publishes the same row carrying no stages, and creates no groups. This
+      is for a tenant that has asked for nothing yet, where a ladder would be a guess
+      at who approves its spend and a group would be structure on its screens that
+      nobody requested. The row still earns its place: it is what keeps the tenant off
+      the shared platform route, so a change to that shared row can never start
+      governing this tenant's spend. A document submitted against it is refused as
+      unconfigured and goes out only when somebody confirms it deliberately, which is
+      recorded against their name.
+
+    The switch is a parameter rather than a sibling function because the two differ
+    only in what each published row carries. The steps around that, resolving which
+    document types exist already and leaving each of those untouched, are the
+    non-destructive promise below, and a sibling would restate them and be free to
+    drift from them (the precedent is
+    :meth:`vs_user.services.user.UserCreationService.finalize_invitation`).
 
     Safe for onboarding to call on every tenant creation, and for an administrator to
     call again later.
@@ -219,14 +245,16 @@ def ensure_tenant_approval_templates(
 
     # A stage will not publish against a group the tenant does not have, and a
     # brand-new tenant has none. Create them empty, so seeding works on a fresh
-    # tenant without inventing approval authority.
-    for group_code, what in ((manager_group_code, "ordinary spend"),
-                             (senior_group_code, "high-value spend")):
-        ensure_approver_group(
-            tenant, group_code,
-            description=f"Approves {what}. Empty until the tenant puts "
-                        "somebody in it, so documents park until then.",
-        )
+    # tenant without inventing approval authority. A row published with no stages
+    # names no group, so it needs none.
+    if with_default_stages:
+        for group_code, what in ((manager_group_code, "ordinary spend"),
+                                 (senior_group_code, "high-value spend")):
+            ensure_approver_group(
+                tenant, group_code,
+                description=f"Approves {what}. Empty until the tenant puts "
+                            "somebody in it, so documents park until then.",
+            )
 
     document_types = [model.workflow_document_type for model in _doc_models()]
     # One query for the whole set: which of this tenant's ladders already exist.
@@ -240,6 +268,18 @@ def ensure_tenant_approval_templates(
             document_type__in=document_types,
         )
     }
+    # An empty route is a placeholder, not a decision, so asking for the default
+    # stages fills it in. Skipping it instead would make this a no-op for every
+    # tenant whose books published the placeholder, and the tenant would be told it
+    # already had rules while no document could ever route through them. Retired
+    # steps are history rather than configuration, so a route holding only those is
+    # empty for this purpose exactly as the engine treats it as empty for routing.
+    if with_default_stages:
+        existing = {
+            document_type: template
+            for document_type, template in existing.items()
+            if template.stages.filter(retired_at__isnull=True).exists()
+        }
 
     results = []
     for model in _doc_models():
@@ -252,13 +292,19 @@ def ensure_tenant_approval_templates(
             publish_template(
                 tenant=tenant, branch=None, document_type=document_type,
                 code=WF_DEFAULT_TEMPLATE_CODE, name=name,
-                description=f"Threshold-gated approval ladder for a {label}.",
+                description=(
+                    f"Threshold-gated approval ladder for a {label}."
+                    if with_default_stages else
+                    f"Approval route for a {label}, held by this tenant so its "
+                    "spend is never governed by the shared platform rules. The "
+                    "steps are the tenant's own to add."
+                ),
                 created_by=created_by,
                 stages_payload=_default_stages_payload(
                     model.workflow_amount_field, threshold=threshold,
                     manager_group_code=manager_group_code,
                     senior_group_code=senior_group_code,
-                ),
+                ) if with_default_stages else [],
             ),
             True,
         ))
@@ -290,7 +336,9 @@ def _no_template_message(document) -> str:
 
 
 @transaction.atomic
-def submit_for_approval(document, *, actor_user, template_code: str | None = None):
+def submit_for_approval(document, *, actor_user, template_code: str | None = None,
+                        confirm_without_approval: bool = False,
+                        confirmation_reason: str = ""):
     """Hand ``document`` to ``vs_workflow`` for approval and mark it PENDING.
 
     Flips ``approval_state`` to PENDING (and, for a requisition, the ledger ``status``
@@ -307,11 +355,20 @@ def submit_for_approval(document, *, actor_user, template_code: str | None = Non
       :class:`ApprovalTemplateMissingError`. Because it is raised inside this atomic
       block *after* the document write, the PENDING flip rolls back: a refused submit
       creates nothing.
-    * **A template with no steps** - the tenant has not built its ladder and resolved
-      to the shared platform row, which carries none. The engine refuses with
+    * **A template with no steps** - the tenant has not built its ladder, so either its
+      own stageless route or the shared platform row answers, and neither carries a
+      step. The engine refuses with
       :class:`~vs_workflow.exceptions.ApprovalNotConfiguredError` rather than treating
-      an empty ladder as approval. The caller may retry with an explicit confirmation,
-      which is recorded against whoever gives it.
+      an empty ladder as approval. ``confirm_without_approval`` is how the caller
+      retries and says the document goes out unreviewed; ``confirmation_reason``
+      carries why, and :func:`~vs_workflow.services.resolution.record_unapproved_post`
+      writes both against whoever gave them. The refusal names that remedy, so the
+      parameters have to reach the engine from every submit endpoint, or a bursar is
+      told to confirm something no request can express.
+
+      Confirming is not a way past a ladder that exists: the engine consults the flag
+      only once it has already found no live stage, so a staffed or parked ladder
+      routes exactly as it would have.
     * **A template whose steps nobody can currently satisfy** - not an error.
       The document is submitted and parks on its unstaffed stage at IN_PROGRESS until
       somebody joins the approver group the stage names (see
@@ -344,7 +401,11 @@ def submit_for_approval(document, *, actor_user, template_code: str | None = Non
 
     document.save(update_fields=update_fields)
     try:
-        return wf_submit(document, actor_user, template_code=template_code)
+        return wf_submit(
+            document, actor_user, template_code=template_code,
+            confirm_without_approval=confirm_without_approval,
+            confirmation_reason=confirmation_reason,
+        )
     except TemplateNotFoundError as exc:
         raise ApprovalTemplateMissingError(_no_template_message(document)) from exc
 

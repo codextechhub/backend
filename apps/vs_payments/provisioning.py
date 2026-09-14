@@ -13,18 +13,29 @@ from __future__ import annotations
 
 
 def provision_payout_approval(entity):
-    """Publish this tenant's payout-approval ladder. Idempotent per tenant.
+    """Publish this tenant's own payout-approval route, carrying no steps. Idempotent.
 
-    Non-destructive: a tenant that already has a ladder keeps whatever an administrator
-    configured, so the second entity in a tenant finds the earlier work and leaves it
-    alone.
+    Empty is the point: who signs off on money leaving a tenant is the tenant's own
+    answer, read from the organogram it builds, and a ladder invented at creation would
+    be a guess at the people and at the amount that needs a second pair of eyes.
+    Nothing is invented here, so no approver group is created either: a group exists to
+    be named by a step, and there are no steps.
 
-    Seeded blocked, not seeded open: the single stage never auto-skips and the approving
-    role is created with nobody appointed, so the first batch submitted parks and says
-    which role to fill rather than paying itself out.
+    The empty row is not the same as no row. It stands in front of the shared platform
+    route, so a change to that shared row can never begin governing this tenant's
+    cash-out. A batch submitted against it is refused as unconfigured rather than paid
+    unseen, and goes out only when somebody confirms it in as many words, recorded
+    against them.
+
+    A tenant that wants the default checker and high-value ladder asks for it, through
+    the seeding command, and that publishes the steps and the groups they name.
+
+    Non-destructive by contract: a tenant that already has a route keeps exactly what is
+    configured, steps included, which is what makes this safe to run again for the
+    second entity in the same tenant.
     """
     from .approvals import ensure_tenant_approval_templates
 
     if entity.tenant_id is None:  # Platform-level books have no tenant to seed for.
         return
-    ensure_tenant_approval_templates(entity.tenant)
+    ensure_tenant_approval_templates(entity.tenant, with_default_stages=False)

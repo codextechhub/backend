@@ -4302,8 +4302,18 @@ class PayoutOnboardingSeedTests(TestCase):
         self.assertTrue(WorkflowTemplate.all_objects.filter(
             tenant=tenant, document_type="payments.payout_batch").exists())
 
-    def test_the_seeded_stage_never_auto_skips(self):
-        """An unstaffed stage must park the batch, not pay it out."""
+    def test_the_route_arrives_with_no_steps_in_it(self):
+        """The route is published empty, so nothing decides a payout by default.
+
+        A step invented while the books were being created would be a guess at who
+        signs off on money leaving, and at the amount that needs a second pair of
+        eyes. Both are the tenant's own answer, read from the organogram it builds.
+
+        Empty is not the same as absent. The row stands in front of the shared
+        platform route, so a change to that shared row can never begin governing this
+        tenant's cash-out, and a batch submitted against it is refused as
+        unconfigured rather than paid unseen.
+        """
         from vs_finance.provisioning import provision_entity
         from vs_workflow.models import WorkflowTemplate
 
@@ -4312,29 +4322,32 @@ class PayoutOnboardingSeedTests(TestCase):
 
         template = WorkflowTemplate.all_objects.get(
             tenant=tenant, document_type="payments.payout_batch")
-        stages = template.stages.filter(retired_at__isnull=True)
-        self.assertTrue(stages.exists())
-        for stage in stages:
-            self.assertFalse(stage.skip_if_no_approvers, stage.code)
+        # Nothing live and nothing retired: no step was ever published here.
+        self.assertEqual(template.stages.count(), 0)
 
-    def test_the_approving_group_exists_and_nobody_is_in_it(self):
-        """Provisioning creates the group the ladder names, and appoints nobody.
+    def test_provisioning_creates_no_approver_group_and_no_role(self):
+        """Provisioning invents no approval authority of any kind.
 
-        It creates no role either: a tenant that has just been provisioned should not
-        find a role on its roles screen that it never asked for and cannot delete.
+        A group exists to be named by a step, and there are no steps, so no group is
+        created and no role is created alongside one. A tenant that has just been
+        provisioned should find neither on its screens: both would be structure it
+        never asked for, describing a workflow it has not read.
         """
         from vs_rbac.models import TenantRoleTemplate
         from vs_finance.provisioning import provision_entity
         from vs_workflow.models import WorkflowApproverGroup
 
-        from vs_payments.constants import WF_DEFAULT_APPROVE_GROUP
+        from vs_payments.constants import (
+            WF_DEFAULT_APPROVE_GROUP, WF_DEFAULT_HIGH_VALUE_GROUP,
+        )
 
         tenant = self._tenant(slug="fir-onboard", code="FIRON")
         provision_entity(self._entity(tenant, "FIRBK"))
 
-        group = WorkflowApproverGroup.all_objects.get(
-            tenant=tenant, code=WF_DEFAULT_APPROVE_GROUP)
-        self.assertFalse(group.members.exists())
+        self.assertFalse(WorkflowApproverGroup.all_objects.filter(
+            tenant=tenant,
+            code__in=(WF_DEFAULT_APPROVE_GROUP, WF_DEFAULT_HIGH_VALUE_GROUP),
+        ).exists())
         self.assertFalse(TenantRoleTemplate.objects.filter(
             tenant=tenant, key=WF_DEFAULT_APPROVE_GROUP).exists())
 

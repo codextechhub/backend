@@ -12948,11 +12948,18 @@ class ProcurementOnboardingSeedTests(TestCase):
         for document_type in PROCUREMENT_APPROVAL_TYPES:
             self.assertIn(document_type, published)
 
-    def test_the_seeded_ladder_has_nobody_in_it(self):
-        """Seeded blocked, not seeded open: the group exists, empty.
+    def test_provisioning_creates_no_approver_group_and_no_role(self):
+        """Provisioning invents no approval authority of any kind.
 
-        And no role is created alongside it. A school that has just been provisioned
-        should not find a role on its roles screen that it never asked for.
+        A route published with no steps names no group, so no group is created, and
+        no role is created alongside one. A school that has just been provisioned
+        should find neither on its screens: both would be structure it never asked
+        for, describing a workflow it has not read.
+
+        Who approves a school's spend is the school's own answer, and it comes from
+        the organogram the school builds rather than from a guess made the day its
+        books were created. The route still exists, empty, because it is what keeps
+        the school off the shared platform row.
         """
         from vs_rbac.models import TenantRoleTemplate
         from vs_finance.models import LedgerEntity
@@ -12960,7 +12967,9 @@ class ProcurementOnboardingSeedTests(TestCase):
         from vs_workflow.models import WorkflowApproverGroup
         from schools.vs_schools.models import School
 
-        from vs_procurement.constants import WF_DEFAULT_MANAGER_GROUP
+        from vs_procurement.constants import (
+            WF_DEFAULT_MANAGER_GROUP, WF_DEFAULT_SENIOR_GROUP,
+        )
 
         school = School.objects.create(
             name="Ash", slug="ash-onboard", code="ASHON", status="ACTIVE")
@@ -12970,9 +12979,10 @@ class ProcurementOnboardingSeedTests(TestCase):
         )
         provision_entity(entity)
 
-        group = WorkflowApproverGroup.all_objects.get(
-            tenant=school.tenant, code=WF_DEFAULT_MANAGER_GROUP)
-        self.assertFalse(group.members.exists())
+        self.assertFalse(WorkflowApproverGroup.all_objects.filter(
+            tenant=school.tenant,
+            code__in=(WF_DEFAULT_MANAGER_GROUP, WF_DEFAULT_SENIOR_GROUP),
+        ).exists())
         self.assertFalse(TenantRoleTemplate.objects.filter(
             tenant=school.tenant, key=WF_DEFAULT_MANAGER_GROUP).exists())
 

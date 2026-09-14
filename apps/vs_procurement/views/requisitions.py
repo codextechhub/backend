@@ -387,7 +387,11 @@ class RequisitionSubmitView(_ProcBase):
             request, PurchaseRequisition.objects.filter(entity=entity),
             pk, "No such requisition in this entity.",
         )
-        instance = approvals.submit_for_approval(req, actor_user=request.user)
+        instance = approvals.submit_for_approval(
+            req, actor_user=request.user,
+            confirm_without_approval=bool((request.data or {}).get("confirm_without_approval")),
+            confirmation_reason=str((request.data or {}).get("reason") or "").strip(),
+        )
         return _approval_response("Requisition submitted for approval.",
                                   req, instance, RequisitionSerializer)
 
@@ -447,7 +451,11 @@ class PurchaseOrderSubmitApprovalView(_ProcBase):
                 )
             except PurchaseOrderEmailError as exc:
                 raise ValidationError({"auto_email_vendor": str(exc)}) from exc
-        instance = approvals.submit_for_approval(po, actor_user=request.user)
+        instance = approvals.submit_for_approval(
+            po, actor_user=request.user,
+            confirm_without_approval=bool((request.data or {}).get("confirm_without_approval")),
+            confirmation_reason=str((request.data or {}).get("reason") or "").strip(),
+        )
         if delivery is not None:
             delivery.workflow_instance_id = str(instance.id)
             delivery.save(update_fields=["workflow_instance_id", "updated_at"])
@@ -473,7 +481,11 @@ class VendorInvoiceSubmitApprovalView(_ProcBase):
         from .. import payables
         payables.price_vendor_invoice(inv)
         payables.match_vendor_invoice(inv, save=True)
-        instance = approvals.submit_for_approval(inv, actor_user=request.user)
+        instance = approvals.submit_for_approval(
+            inv, actor_user=request.user,
+            confirm_without_approval=bool((request.data or {}).get("confirm_without_approval")),
+            confirmation_reason=str((request.data or {}).get("reason") or "").strip(),
+        )
         return _approval_response("Vendor invoice submitted for approval.",
                                   inv, instance, VendorInvoiceSerializer)
 

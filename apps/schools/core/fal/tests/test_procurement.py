@@ -37,6 +37,23 @@ class _ProcFixture(FALFixture):
     def setUp(self):
         super().setUp()
         self.port = DjangoProcurementActionAdapter()
+        # Both schools: the single-branch one raises and submits here too.
+        self.publish_default_ladders(self.corona, self.greenfield)
+
+    @staticmethod
+    def publish_default_ladders(*schools):
+        """Give each school the default spend ladder, the way a school asks for one.
+
+        Books arrive holding a route per document type with no steps in it, because
+        who approves a school's spend is read from the organogram that school builds
+        rather than guessed while its books are created. A school that wants the
+        default threshold-gated ladder asks for it, and what these tests are about is
+        what that ladder then does, so they ask for it here.
+        """
+        from vs_procurement.approvals import ensure_tenant_approval_templates
+
+        for school in schools:
+            ensure_tenant_approval_templates(school.tenant)
 
     def raise_one(self, *, books=None, raiser=None, branch_ref=None, lines=LINES):
         books = books or self.corona_books

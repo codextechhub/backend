@@ -23,9 +23,22 @@ class ProcurementChainTests(FALFixture):
     def setUp(self):
         super().setUp()
         self.port = DjangoProcurementActionAdapter()
+        self._publish_default_ladder()
         self.approver = self.user_for(self.corona, "approver@corona.test")
         self._staff_the_approver_role()
         self.vendor = self._vendor(self.corona_books, "Ojo Stationers")
+
+    def _publish_default_ladder(self):
+        """Give Corona the default spend ladder, the way a school asks for one.
+
+        Books arrive holding a route per document type with no steps in it, because
+        who approves a school's spend is read from the organogram that school builds
+        rather than guessed while its books are created. This chain is about what the
+        ladder does once a school has one, so the school asks for it here.
+        """
+        from vs_procurement.approvals import ensure_tenant_approval_templates
+
+        ensure_tenant_approval_templates(self.corona.tenant)
 
     def _staff_the_approver_role(self):
         """Make the approver eligible for the seeded ladder, the way a school does.

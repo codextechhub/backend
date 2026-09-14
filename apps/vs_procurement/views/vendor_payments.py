@@ -328,7 +328,11 @@ class VendorPaymentSubmitView(_ProcBase):
         )
         if payment.status != DocumentStatus.DRAFT or not payment.allocations.exists():
             raise ValidationError({"status": "Only a draft with invoice allocations can be submitted."})
-        instance = approvals.submit_for_approval(payment, actor_user=request.user)
+        instance = approvals.submit_for_approval(
+            payment, actor_user=request.user,
+            confirm_without_approval=bool((request.data or {}).get("confirm_without_approval")),
+            confirmation_reason=str((request.data or {}).get("reason") or "").strip(),
+        )
         from vs_workflow.services import release as release_svc
 
         payment.refresh_from_db()

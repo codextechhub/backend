@@ -110,25 +110,52 @@ there.
 Verified: schools.vs_staff 250 OK, vs_import_data 81 OK, vs_user 406 OK,
 vs_rbac 559 OK, core 161 OK.
 
+### D5. A school's books stop inventing who approves its money (not yet committed, 2026-09-14)
+MODULES: M22 procurement, M09 school onboarding, M19 finance, M18 payments, MRD.
+Check M23 too, but only if it documents the vendor invoice or vendor payment
+submit contract.
+Provisioning a tenant's books published a full approval ladder per document type
+and minted the approver groups those steps named. A school that had said nothing
+about who signs off on anything ended up holding seven empty groups and a
+threshold that was a guess at its scale. Books now arrive holding one route per
+approvable document type, published EMPTY, and no groups at all. Who approves is
+read from the organogram the school builds.
+The empty route is not the same as no route, and the reason differs by module:
+for procurement and payments it stands in front of the shared platform row so a
+change there can never begin governing a school's spend; for FINANCE there is no
+platform fallback row at all, so the empty route IS the gate. Without it,
+`approval_required` answers False and a refund posts straight to the ledger with
+nobody told.
+Three data migrations remove what the old behaviour left behind: seven groups and
+seventeen steps, each app deleting only its own names. They skip a group with
+members, a group whose steps have run, and a group something is waiting on.
+Separately, procurement could not previously confirm past an unconfigured ladder:
+the engine supported it and finance and payments used it, but no procurement view
+passed the flag, so the refusal told a bursar to confirm and no request could.
+That is threaded through all four submit endpoints now.
+MUST SAY: for M22, the stageless route, the confirmation parameters on all four
+submits, and that confirming never bypasses a ladder that has live steps. For
+M09, what a newly created school now receives. For M19 and M18, the same
+stageless change and the finance gate reasoning above. Remove any Needs Attention
+item claiming procurement ladders are not seeded at onboarding: they were, since
+2026-08-14, through the entity-provisioner registry.
+TWO RESIDUAL LIMITS to record rather than fix: finance and payments have no
+self-service setup surface (procurement has `ApprovalTemplateSetupView`, they have
+only management commands), so a school cannot ask for default finance or payout
+rules itself; and the FAL's procurement port still cannot pass the confirmation,
+which is harmless only because its procurement actions are not HTTP-exposed.
+Verified: vs_procurement 581 (1 pre-existing failure belonging to another
+session), vs_workflow 419 OK, vs_finance 761 OK then 771 OK, vs_payments 206 OK,
+schools.core.fal 219 OK, schools.vs_schools 358 OK on the full run.
+
 ## Undone
 
-Three items. Each says what is wrong, how to fix it, and what is stopping it.
-Verified against the code on 2026-09-13, re-checked 2026-09-14; seven earlier
+Two items. Each says what is wrong, how to fix it, and what is stopping it.
+Verified against the code on 2026-09-13, re-checked 2026-09-14; eight earlier
 items were removed because they were finished or no longer true, and what
 replaced them is noted at the end.
 
-### 1. Procurement approval templates are not seeded at onboarding (2026-07-28, re-verified 2026-09-13)
-`seed_procurement_approvals` exists only as a management command
-(vs_procurement/management/commands/); no school creation or onboarding path
-calls it. A new school therefore has no procurement ladder of its own and falls
-back to the shared platform row, which carries no live steps.
-FIX: call it at provisioning, seeding the RULES with NO approver, so procurement
-stays blocked until the school names one, and keep the
-submit-without-approval override granted to nobody by default.
-BLOCKED BY: one product decision - whether a new school's procurement starts
-blocked (safe, and somebody must act before the first purchase) or open.
-
-### 2. FAL write ports for payments and concessions (deferred on purpose)
+### 1. FAL write ports for payments and concessions (deferred on purpose)
 Payments and concessions bypass the FAL and reach /v1/finance/ directly, so a
 school screen has to know the AR customer id, which is the engine concept the
 FAL exists to hide. Spec 16 parks `apply_payment` in v1.2.
@@ -136,7 +163,7 @@ FIX: write ports - `apply_payment`, and something for concessions.
 BLOCKED BY: the fees backend step, deliberately, so that the design says what a
 payment screen and a waiver screen need before the port is shaped.
 
-### 3. Two screens promise things the backend does not do (WANTED, NOT NOW, 2026-08-30)
+### 2. Two screens promise things the backend does not do (WANTED, NOT NOW, 2026-08-30)
 Both are honest in the API and dishonest only if a screen types the sentence off
 the mockup rather than reading the response.
 (a) TELL A GUARDIAN WHEN THEIR CHILD IS SUSPENDED. The suspension panel prints
@@ -151,6 +178,29 @@ concept in Finance first, then the seam through the FAL's StudentCustomerPort.
 BLOCKED BY: that Finance work, which is much larger than (a).
 
 ### Removed on 2026-09-14, with why
+- PROCUREMENT APPROVAL TEMPLATES ARE NOT SEEDED AT ONBOARDING: the item was wrong
+  on its central claim and the work it asked for is done in a different shape.
+  A school creation path HAS called the seeder since 2026-08-14: `vs_procurement`
+  registers `provision_approval_ladders` against finance's entity-provisioner
+  registry from its `AppConfig.ready`, finance runs every provisioner inside
+  `provision_books`, and school creation reaches it through
+  `schools/vs_schools/services/books.py`. The entry was written from a search for
+  `call_command` and never found the registration seam. The evidence was on disk:
+  fifteen school tenants created before 2026-09-05 hold bare template rows, and
+  the one created after it holds a full ladder with two empty groups.
+  THE USER DECIDED the opposite of what the item proposed. It asked for the RULES
+  to be seeded with no approver. The user chose, on 2026-09-14 and in these terms,
+  "leave the template stages empty for the school. We shouldn't automatically
+  create approve groups for them. We will build organogram soon so that can be the
+  default on day one." So the fix was a REMOVAL, not an addition, and it was
+  applied to finance and payments as well after the user extended the decision.
+  Existing rows were then swept too, on the user's instruction "Delete the seven,
+  and the stages that name them", which reversed their earlier "leave tenant 19
+  alone". Carried as D5 above.
+  One thing the item was right about and which turned out to matter more than the
+  seeding: an unconfigured ladder was a dead end in procurement. The refusal named
+  a confirmation that no procurement request could express, because the flag the
+  engine accepts was never passed. Fixed with the same change.
 - A STAFF IMPORT (was "NOT STARTED"): it was already built. `vs_staff/imports.py`
   carries the column template, a two-pass resolver and `create_staff_from_row`,
   the engine wires both passes (`validation_service.py` and `import_executor.py`),
@@ -207,7 +257,7 @@ BLOCKED BY: that Finance work, which is much larger than (a).
 - FAL HAS NO HTTP ROUTE: it has one, mounted at /v1/school-finance/, serving the
   fee due policy, term linking and cohort invoice generation. The procurement
   actions are absent on purpose (the procurement bridge is its own work), and
-  the payments/concessions gap survives as item 2 above.
+  the payments/concessions gap survives as item 1 above.
 - M13/M14 PENDING-SURFACE CONSEQUENCE: both modules shipped; a warning written
   for builders who have since built.
 - PROCUREMENT KEYS FOR SCHOOL ROLES: done. `seed_prebuilt_role_templates` gives
