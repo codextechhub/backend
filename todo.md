@@ -54,7 +54,7 @@ sent, the incident is console-only, because the event key needs vs_notifications
 work; and the incident does not auto-resolve when the school is fixed, unlike an
 alert-driven one.
 
-### D3. A reclassified key left its grants behind (not yet committed, 2026-09-14)
+### D3. A reclassified key left its grants behind (9030348e, 2026-09-14)
 MODULES: M04 roles and permissions, MRD. Check M01 school and branch management
 (school creation now survives a stale library) and M10 bulk data import (two
 import permission groups changed contents), but only if they document those.
