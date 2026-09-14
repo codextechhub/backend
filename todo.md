@@ -82,7 +82,7 @@ schools (every earlier sweep filtered on `kind="SCHOOL"`, so VIGIL tenants were
 missed). Also record the audit command's second question. Verified by vs_rbac,
 559 tests OK, and schools.vs_schools, 358 tests OK on the full run.
 
-### D4. A staff file no longer emails everybody in it (not yet committed, 2026-09-14)
+### D4. A staff file no longer emails everybody in it (3189e0cb, 2026-09-14)
 MODULES: M12 staff management, M10 bulk data import, M04 roles and permissions,
 MRD.
 The staff import invited every row unconditionally, so a file of eighty people
