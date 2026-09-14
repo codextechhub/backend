@@ -110,7 +110,7 @@ there.
 Verified: schools.vs_staff 250 OK, vs_import_data 81 OK, vs_user 406 OK,
 vs_rbac 559 OK, core 161 OK.
 
-### D5. A school's books stop inventing who approves its money (not yet committed, 2026-09-14)
+### D5. A school's books stop inventing who approves its money (3aab9000, 2026-09-14)
 MODULES: M22 procurement, M09 school onboarding, M19 finance, M18 payments, MRD.
 Check M23 too, but only if it documents the vendor invoice or vendor payment
 submit contract.
