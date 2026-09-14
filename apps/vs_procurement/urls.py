@@ -127,8 +127,6 @@ urlpatterns = [
          views.VendorPaymentAttachmentView.as_view(), name="proc-vendor-payment-attachment-detail"),
 
     # Spend approvals (vs_workflow)
-    path("approvals/default-templates/", views.ApprovalTemplateSetupView.as_view(),
-         name="proc-approval-default-templates"),
     path("approvals/coverage/", views.ProcurementApprovalCoverageView.as_view(),
          name="proc-approval-coverage"),
     path("approvals/", views.ProcurementApprovalListView.as_view(),

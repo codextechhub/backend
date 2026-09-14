@@ -139,11 +139,30 @@ M09, what a newly created school now receives. For M19 and M18, the same
 stageless change and the finance gate reasoning above. Remove any Needs Attention
 item claiming procurement ladders are not seeded at onboarding: they were, since
 2026-08-14, through the entity-provisioner registry.
-TWO RESIDUAL LIMITS to record rather than fix: finance and payments have no
-self-service setup surface (procurement has `ApprovalTemplateSetupView`, they have
-only management commands), so a school cannot ask for default finance or payout
-rules itself; and the FAL's procurement port still cannot pass the confirmation,
-which is harmless only because its procurement actions are not HTTP-exposed.
+ALSO REMOVED: `ApprovalTemplateSetupView` and its route
+`POST /v1/procurement/approvals/default-templates/`. No frontend ever called it
+(school-fe has no reference at all; console-fe's single mention is a row in a
+markdown build-notes table), and after this change it was the last thing in the
+platform that installed a ladder and minted approver groups on demand. A school
+publishes its own steps through `POST /workflow/templates/publish/`, which both
+consoles already wire. `procurement.approval.manage` stays: it still guards the
+approval-rules coverage report, which names who can approve at each branch and
+where nobody can. Any document describing that endpoint should drop it.
+ONE RESIDUAL LIMIT to record rather than fix: the FAL's procurement port still
+cannot pass the confirmation, which is harmless only because its procurement
+actions are not HTTP-exposed.
+A CLAIM MADE AND WITHDRAWN, recorded so the docs pass does not inherit it: this
+entry previously said finance and payments lacked a self-service way to set up
+approval rules, and that procurement had one. That was wrong. A school admin
+holds `workflow.template.manage`, `workflow.template.view`, `workflow.group.manage`
+and `workflow.group.view` (granted by vs_rbac migration 0012), and both consoles
+already wire `POST /workflow/templates/publish/` and the approver-group screens.
+So a school builds its own stages for ANY document type through the generic
+workflow surface, and needs no module key to do it. Procurement's
+`procurement.approval.manage` gates only the approval-rules coverage report and
+the one-click default-ladder shortcut, and the rest of the procurement approval
+page is guarded by stage eligibility rather than by any key. The shortcut was
+then deleted (see below), so the three modules are alike.
 Verified: vs_procurement 581 (1 pre-existing failure belonging to another
 session), vs_workflow 419 OK, vs_finance 761 OK then 771 OK, vs_payments 206 OK,
 schools.core.fal 219 OK, schools.vs_schools 358 OK on the full run.

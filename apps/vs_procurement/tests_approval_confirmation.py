@@ -143,40 +143,6 @@ class ProvisionedBooksCarryNoLadderTests(TestCase):
         self.assertEqual(_live_stage_codes(template), {"manager", "senior"})
         self.assertFalse(template.stages.filter(retired_at__isnull=False).exists())
 
-    def test_the_setup_endpoint_still_publishes_the_full_ladder(self):
-        """A school asking for the default rules gets them, empty route or not.
-
-        The route provisioning published is a placeholder holding nothing anybody
-        chose. Treating it as "this school already has rules" would make the endpoint
-        a no-op for every school, and the school would be told it had a ladder that no
-        document could ever route through.
-        """
-        school, entity = self._provisioned("birch-confirm", "BRCCF")
-        user = get_user_model().objects.create_user(
-            email="setup@birch-confirm.test", tenant=school.tenant,
-            status="ACTIVE", first_name="Set", last_name="Up",
-        )
-        from core.test_utils import TenantAPIClient
-
-        with patch("vs_rbac.permissions.HasRBACPermission.has_permission",
-                   return_value=True):
-            response = TenantAPIClient(user=user).post(
-                f"/v1/procurement/approvals/default-templates/?entity={entity.code}",
-                {}, format="json",
-            )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["created_count"], 4)
-        self.assertEqual(
-            _live_stage_codes(self._tenant_template(school.tenant)),
-            {"manager", "senior"},
-        )
-        for code in (WF_DEFAULT_MANAGER_GROUP, WF_DEFAULT_SENIOR_GROUP):
-            self.assertTrue(
-                WorkflowApproverGroup.all_objects.filter(
-                    tenant=school.tenant, code=code).exists(), code,
-            )
-
     def test_the_seeding_command_still_publishes_the_full_ladder(self):
         """An operator running it by hand is as deliberate as a school asking."""
         import io

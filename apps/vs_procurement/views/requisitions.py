@@ -490,59 +490,12 @@ class VendorInvoiceSubmitApprovalView(_ProcBase):
                                   inv, instance, VendorInvoiceSerializer)
 
 
-class ApprovalTemplateSetupView(_ProcBase):
-    """Provision **this tenant's own** threshold-gated approval rules.
-
-    The rules are created for the selected entity's owning tenant, never for the
-    platform: the platform-wide row is the shared route every tenant without its own
-    rules reads, it carries no steps, and one tenant's administrator must not be able
-    to rewrite what all the others resolve to.
-
-    This is where a tenant's approval steps come from. Until it is called, submitting
-    a document resolves to the stageless shared row and is refused as unconfigured,
-    which the submitter is told and can confirm past deliberately.
-
-    Seeded blocked on purpose: each step names an approver group created empty, so the
-    first document submitted parks and asks for somebody to be added to the group
-    rather than approving itself.
-
-    Idempotent and non-destructive: a document type whose ladder already exists is
-    reported and left untouched, so re-running can never restore the defaults over a
-    tenant's customised rules.
-
-    POST body (all optional, applied only to newly created ladders): ``threshold``
-    (kobo), ``manager_group_code``, ``senior_group_code``.
-
-    docstring-name: Set up approval templates
-    """
-    rbac_permission = "procurement.approval.manage"
-
-    def post(self, request):
-        """Create this tenant's missing approval ladders from validated settings."""
-        entity = resolve_entity(request)
-        body = request.data or {}
-        kwargs = {}
-        if "threshold" in body:
-            kwargs["threshold"] = _money(body.get("threshold"), "threshold")
-        if body.get("manager_group_code"):
-            kwargs["manager_group_code"] = str(body["manager_group_code"])
-        if body.get("senior_group_code"):
-            kwargs["senior_group_code"] = str(body["senior_group_code"])
-        results = approvals.ensure_tenant_approval_templates(
-            entity.tenant, created_by=request.user, **kwargs,
-        )
-        created = sum(1 for _, was_created in results if was_created)
-        return success_response(
-            "Approval rules are in place for this tenant."
-            if created else "This tenant already has its own approval rules.",
-            data={
-                "created_count": created,
-                "templates": [
-                    {
-                        "id": t.id, "document_type": t.document_type, "code": t.code,
-                        "name": t.name, "created": was_created,
-                    }
-                    for t, was_created in results
-                ],
-            },
-        )
+# A school builds its approval steps through the workflow surface it already
+# holds keys for: ``POST /workflow/templates/publish/`` under
+# ``workflow.template.manage``, and the approver-group screens under
+# ``workflow.group.manage``. Both are granted to school_admin, and both consoles
+# wire them. There is deliberately no procurement-specific shortcut that installs
+# a ready-made ladder: a suggested ladder is a guess at who approves a school's
+# spend and at the amount that needs a second pair of eyes, and both are answers
+# the school gives from its own organogram. An operator who genuinely needs the
+# old defaults still has ``manage.py seed_procurement_approvals``.

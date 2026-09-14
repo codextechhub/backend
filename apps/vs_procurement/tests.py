@@ -11358,37 +11358,28 @@ class ProcurementTenantApprovalRulesTests(_BranchTenantsFixture, TestCase):
                 req.refresh_from_db()
                 self.assertEqual(req.approval_state, ProcApprovalState.NOT_SUBMITTED)
 
-    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
-    def test_setup_endpoint_seeds_the_callers_tenant_and_not_the_platform(self, _permission):
-        client = self.client_for(self.multi_tenant, "r3-setup@t.com")
-        response = client.post(
-            f"/v1/procurement/approvals/default-templates/?entity={self.multi.entity.code}",
-            {}, format="json",
-        )
-        self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(response.json()["data"]["created_count"], 4)
+    def test_seeding_one_tenant_reaches_that_tenant_and_nothing_else(self):
+        """Rules are the tenant's own, and are never published for anybody else.
+
+        The shared platform row is what every tenant without its own rules resolves
+        to, so publishing it is the platform's act and never a side effect of
+        giving one tenant its ladder. A second tenant is checked too: seeding is
+        addressed to the tenant it names and reaches no other.
+        """
+        from vs_procurement.approvals import ensure_tenant_approval_templates
+
+        results = ensure_tenant_approval_templates(self.multi_tenant)
+
+        self.assertEqual(sum(1 for _t, created in results if created), 4)
         self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
-        # The shared platform row is not one tenant administrator's to publish.
         self.assertEqual(self.platform_templates().count(), 0)
-        # No other tenant gained rules from this call.
         self.assertEqual(self.tenant_templates(self.foreign_tenant).count(), 0)
 
-        again = client.post(
-            f"/v1/procurement/approvals/default-templates/?entity={self.multi.entity.code}",
-            {}, format="json",
-        )
-        self.assertEqual(again.status_code, 200)
-        self.assertEqual(again.json()["data"]["created_count"], 0)
-        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
+        again = ensure_tenant_approval_templates(self.multi_tenant)
 
-    def test_setup_endpoint_requires_permission(self):
-        client = self.client_for(self.multi_tenant, "r3-setup-403@t.com")
-        response = client.post(
-            f"/v1/procurement/approvals/default-templates/?entity={self.multi.entity.code}",
-            {}, format="json",
-        )
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 0)
+        # Non-destructive: a second call reports nothing created and changes nothing.
+        self.assertEqual(sum(1 for _t, created in again if created), 0)
+        self.assertEqual(self.tenant_templates(self.multi_tenant).count(), 4)
 
     def test_seeding_command_is_idempotent_and_reports_what_it_did(self):
         from io import StringIO
