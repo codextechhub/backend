@@ -42,6 +42,7 @@ COLUMNS = (
     "hire_date",
     "branch",
     "role",
+    "send_invitation",
 )
 
 REQUIRED_COLUMNS = ("first_name", "last_name", "email", "role")
@@ -55,6 +56,23 @@ _EMPLOYMENT_TYPES.update({
     "part time": EmploymentType.PART_TIME,
     "parttime": EmploymentType.PART_TIME,
 })
+
+#: The words a school types in the Send Invitation column.
+#:
+#: Yes and No are what the template asks for; the rest are what people write
+#: instead. A blank cell is not here because it never reaches this lookup: an
+#: empty column means the school has not thought about the question, and the
+#: answer to that is today's behaviour rather than a refusal.
+_SEND_INVITATION = {
+    "yes": True,
+    "y": True,
+    "true": True,
+    "1": True,
+    "no": False,
+    "n": False,
+    "false": False,
+    "0": False,
+}
 
 
 @dataclass
@@ -80,6 +98,13 @@ class ResolvedRow:
     hire_date: dt.date | None = None
     branch: object | None = None
     role: object | None = None
+    #: Whether the activation email goes out as part of writing this person.
+    #:
+    #: True by default, which is what a blank column means: a school that has
+    #: never seen the column gets the behaviour it already had. False parks the
+    #: invitation instead, leaving a real unsent one for the school to send
+    #: when it is ready.
+    send_invitation: bool = True
     issues: list = dc_field(default_factory=list)
 
     @property
@@ -184,6 +209,22 @@ def resolve_row(payload: dict, *, tenant, batch_branch=None, multi_branch=False)
         else:
             row.employment_type = code
 
+    raw_send = _text(payload, "send_invitation")
+    if raw_send:
+        decided = _SEND_INVITATION.get(raw_send.lower())
+        if decided is None:
+            row.issues.append(RowIssue(
+                code="unknown_send_invitation", field="send_invitation",
+                value=raw_send, severity="warning",
+                message=(
+                    f"'{raw_send}' is not Yes or No, so this person is "
+                    f"invited. Write No to create the account without "
+                    f"emailing them yet."
+                ),
+            ))
+        else:
+            row.send_invitation = decided
+
     raw_hire = _text(payload, "hire_date")
     if raw_hire:
         parsed = _date(raw_hire)
@@ -258,6 +299,11 @@ def create_staff_from_row(row: ResolvedRow, *, tenant, created_by, request=None)
     Not a bespoke create: the account, the invitation and the grant come from
     ``UserCreationService`` exactly as FR-001's endpoint gets them, and the
     profile comes from the same service the endpoint calls afterwards.
+
+    ``row.send_invitation`` decides only whether the email goes out. A parked
+    row still reaches PENDING and still gets a real invitation, so the school
+    can send it later from the same resend path that chases anybody else; the
+    difference is visible on the staff list as the invitation's email status.
     """
     from vs_user.serializers import UserCreateSerializer
     from vs_user.services.user import UserCreationService
@@ -289,7 +335,9 @@ def create_staff_from_row(row: ResolvedRow, *, tenant, created_by, request=None)
     )
     # Same reason the single add does it: PENDING_APPROVAL is the platform
     # hiring workflow's state, and a school approves nobody.
-    UserCreationService.finalize_invitation(user=user, requested_by=created_by)
+    UserCreationService.finalize_invitation(
+        user=user, requested_by=created_by, send_email=row.send_invitation,
+    )
     return creation.create_profile(
         tenant=tenant, user=user, actor=created_by,
         staff_number=row.staff_number, job_title=row.job_title,

@@ -232,6 +232,58 @@ class ImportBatchModuleKeyBranchScopeTests(_BranchScopeFixture):
         )
 
 
+class ImportBatchStaffKeyBranchScopeTests(_BranchScopeFixture):
+    """The staff module's own import key, standing in on a staff batch.
+
+    A school administrator loading their people from a spreadsheet holds
+    ``school.staff.import`` and has no reason to hold broad ``import.*``
+    access. The key reaches only the dataset it belongs to, and only the
+    branches its holder works in, so it is neither a way into another module's
+    file nor a way across sites.
+    """
+
+    permission_key = "school.staff.import"
+    dataset_type = DatasetTypeChoices.STAFF
+
+    def test_the_staff_key_opens_her_own_sites_file(self):
+        response = self.download(self.ikeja_batch.pk)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"ikeja-roll.csv", self.downloaded_bytes(response))
+
+    def test_the_staff_key_does_not_open_another_site(self):
+        response = self.download(self.lekki_batch.pk)
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_the_refusal_matches_a_batch_that_does_not_exist(self):
+        self.assertEqual(
+            self.download(self.lekki_batch.pk).status_code,
+            self.download(UNKNOWN_BATCH_ID).status_code,
+        )
+
+    def test_the_generic_import_key_still_admits_its_own_holder(self):
+        """The module key is an addition, never a replacement.
+
+        Whoever held the generic key before reaches exactly what they reached
+        before: the fallback only runs once the declared key has already said
+        no.
+        """
+        obi = make_school_admin(
+            None, email="obi.eze@bright-star.test", tenant=self.school.tenant,
+        )
+        role = make_role(self.school.tenant, name="School-wide import viewer")
+        make_role_permission(role, make_permission(ImportPermission.BATCH_VIEW))
+        make_assignment(self.school.tenant, obi, role)
+
+        response = self.download(
+            self.lekki_batch.pk, client=TenantAPIClient(user=obi),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"lekki-roll.csv", self.downloaded_bytes(response))
+
+
 class ImportBatchUploadBranchTests(TestCase):
     """The branch a new batch is filed under, and who it is visible to next.
 

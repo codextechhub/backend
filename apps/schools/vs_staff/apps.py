@@ -20,3 +20,13 @@ class VsStaffConfig(AppConfig):
         from . import media_policies
 
         media_policies.register()
+
+        # The engine's permission bridge is keyed by dataset, and a module that
+        # registers none is refused the wizard however its key is granted. Same
+        # direction as the registrations above: the domain app tells the
+        # engine, and the engine imports nothing.
+        from vs_import_data.permissions import register_dataset_import_key
+
+        from .constants import PERM_IMPORT
+
+        register_dataset_import_key("staff", PERM_IMPORT)

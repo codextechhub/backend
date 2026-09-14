@@ -410,13 +410,21 @@ SCHOOL_PERMISSION_GROUPS: list[tuple[str, str, str, tuple[str, ...]]] = [
     (
         "Staff Records",
         BRANCH_SCOPABLE,
-        "Add, edit and manage the school's people, and give them teaching duties.",
+        "Add, edit and manage the school's people, load them in bulk from a "
+        "spreadsheet, and give them teaching duties.",
         (
             "school.teachers.view",
             "school.teachers.create",
             "school.teachers.update",
             "school.teachers.manage",
             "school.teachers.assign",
+            # Here rather than in a bulk bundle of its own, which is where the
+            # student roll's import sits. The two are not the same act: a staff
+            # file adds people to the branch whoever uploads it already staffs
+            # one at a time, and it narrows to a branch exactly as the keys
+            # beside it do, while a roll import rewrites records belonging to
+            # children across the whole school.
+            "school.staff.import",
         ),
     ),
     (

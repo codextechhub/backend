@@ -21,6 +21,18 @@ PERM_UPDATE = "school.teachers.update"
 PERM_MANAGE = "school.teachers.manage"
 PERM_ASSIGN = "school.teachers.assign"
 
+#: Loading a school's existing staff from a spreadsheet.
+#:
+#: Its own key, and SENSITIVE, exactly as ``school.students.import`` is: one
+#: upload creates accounts, role grants and invitations for everybody in the
+#: file, which is not the same act as adding one person through the form.
+#:
+#: The resource is ``staff`` where the register keys above say ``teachers``.
+#: Those stay as they are because ``Permission.key`` is a primary key that four
+#: tables point at and that school-fe checks by name; a key minted new is free
+#: to say what it means.
+PERM_IMPORT = "school.staff.import"
+
 #: Qualifications, certificates and documents. Separate from the register keys
 #: because reading a staff directory and reading somebody's certificates are
 #: sold at different depths, and one key cannot answer for both.

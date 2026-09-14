@@ -1118,8 +1118,11 @@ TEMPLATES: list[dict] = [
             ),
             "instructions": (
                 "One person per row. Everybody arrives as Invited with an "
-                "account in Pending Activation, and an invitation goes out by "
-                "email and in-app. "
+                "account in Pending Activation. "
+                "Send Invitation decides whether the activation email goes out "
+                "as the row is imported: Yes sends it, No creates the account "
+                "and holds the invitation so you can send it later from the "
+                "invitations screen. A blank cell counts as Yes. "
                 "Email must be unique within this school; the same address may "
                 "be an account at another school, which is fine. "
                 "Role must already exist in this school's role catalogue - a "
@@ -1151,6 +1154,7 @@ TEMPLATES: list[dict] = [
                 "Hire Date": "2021-09-06",
                 "Branch": "",
                 "Role": "teacher",
+                "Send Invitation": "Yes",
             },
             "validation_rules": {
                 "min_rows": 1,
@@ -1310,6 +1314,24 @@ TEMPLATES: list[dict] = [
                 "max_length": 120,
                 "sample_value": "teacher",
                 "column_order": 12,
+            },
+            {
+                "column_name": "Send Invitation",
+                "target_field": "send_invitation",
+                "display_name": "Send Invitation",
+                "help_text": (
+                    "Yes emails them their activation link as the row is "
+                    "imported. No creates the account and holds the "
+                    "invitation, so you can send it later from the "
+                    "invitations screen. Leave it blank and it counts as Yes."
+                ),
+                "data_type": TemplateColumnDataTypeChoices.BOOLEAN,
+                "is_required": False,
+                "is_unique": False,
+                "allowed_values": ["Yes", "No"],
+                "sample_value": "Yes",
+                "default_value": "Yes",
+                "column_order": 13,
             },
         ],
     },

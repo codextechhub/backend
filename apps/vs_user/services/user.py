@@ -256,11 +256,25 @@ class UserCreationService:
 
     @staticmethod
     @transaction.atomic
-    def finalize_invitation(user: User, requested_by) -> None:
-        """Sends the invitation after workflow approval.
+    def finalize_invitation(user: User, requested_by, send_email: bool = True) -> None:
+        """Makes the account invitable, and by default writes to the invitee.
 
-        Transitions status from PENDING_APPROVAL → PENDING and dispatches
-        the invitation email. Safe to call only once per user.
+        Transitions status from PENDING_APPROVAL to PENDING and creates the
+        ``UserInvitation`` row. Safe to call only once per user.
+
+        ``send_email=False`` parks the invitation instead of dispatching it: the
+        account still reaches PENDING and still gets a real invitation row,
+        which sits at ``EmailStatus.PENDING`` until somebody asks for it to go
+        out. That is what the existing resend path already acts on, so a parked
+        person is chased later through the same service that chases anybody
+        else, rather than through a second notion of "not yet invited".
+
+        The switch is a parameter rather than a sibling function because only
+        the last of the three steps differs. A sibling would restate the status
+        transition and the invitation create, which would make two places
+        answerable for what "invited" means, and the two would drift the first
+        time either changed. The default sends, so every caller that does not
+        mention it behaves as it always has.
         """
         from .invitation import InvitationService
         from ..tasks import queue_invitation_email
@@ -271,6 +285,8 @@ class UserCreationService:
         invitation, token = InvitationService.create(
             user=user, invited_by=requested_by,
         )
+        if not send_email:
+            return
         # Queued for after this transaction commits: the worker is given the
         # invitation's id, and it must not be able to look for it before the
         # commit publishes the row. See ``queue_invitation_email``.

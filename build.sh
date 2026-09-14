@@ -35,7 +35,14 @@ python manage.py migrate
 
 # Run seeding commands AFTER migrate succeeds (all idempotent - safe every deploy)
 python manage.py seed_all_permissions
-# python manage.py seed_import
+# Import templates and their columns. Upserts a template by `code` and a column
+# by (template, column_name), and deletes a column the definition has dropped,
+# so a template that gains a column gains it here rather than only where somebody
+# remembered to run this by hand. It does NOT retire a template whose `code` was
+# renamed: that leaves the old row answering alongside the new one, and the
+# command warns instead of deleting, because two templates for one dataset can
+# be legitimate. Read its output when a code changes.
+python manage.py seed_import
 python manage.py seed_notification_event_types
 python manage.py seed_notification_templates
 python manage.py seed_notification_settings

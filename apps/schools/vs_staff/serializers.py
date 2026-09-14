@@ -148,6 +148,14 @@ class StaffListSerializer(serializers.ModelSerializer):
     #: to offer the control rather than offering one that 422s.
     can_resend = serializers.SerializerMethodField()
     invited_at = serializers.SerializerMethodField()
+    #: Whether the invitation email actually went out, which ``invited_at``
+    #: cannot say on its own.
+    #:
+    #: A person imported with Send Invitation set to No has a real invitation
+    #: sitting unsent, and reads identically to an invited one on every other
+    #: field here. This is what the screen that offers to invite people later
+    #: reads to find them.
+    invitation_email_status = serializers.SerializerMethodField()
 
     class Meta:
         model = StaffProfile
@@ -163,7 +171,7 @@ class StaffListSerializer(serializers.ModelSerializer):
             "account_status", "account_flag", "roles", "branch_id",
             "branch_name", "posted_school_wide", "teaching_load",
             "on_leave_today", "on_leave_until", "hire_date", "can_resend",
-            "invited_at",
+            "invited_at", "invitation_email_status",
         ]
 
     def get_full_name(self, obj) -> str:
@@ -247,6 +255,20 @@ class StaffListSerializer(serializers.ModelSerializer):
     def get_invited_at(self, obj):
         invitation = getattr(obj.user, "invitation", None)
         return getattr(invitation, "created_at", None) or obj.created_at
+
+    def get_invitation_email_status(self, obj):
+        """Read off the prefetched invitation, so a page costs no extra query.
+
+        ``STAFF_LIST_PREFETCH`` already carries ``user__invitation`` for the
+        resend flag beside this one. Null means there is no invitation row at
+        all, which is a DRAFT rather than an unsent invitation.
+
+        The platform user list has the same field gated behind
+        ``platform.team.view``. That gate is not reused: no school role holds a
+        platform key, and a school reading its own staff should not need one.
+        """
+        invitation = getattr(obj.user, "invitation", None)
+        return getattr(invitation, "email_status", None)
 
     def get_account_flag(self, obj):
         """A chip only where the account disagrees with the employment record.

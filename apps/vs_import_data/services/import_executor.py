@@ -143,6 +143,7 @@ def import_staff_row(import_batch, payload: dict, queued_by) -> ImportExecutionR
         hire_date        optional - YYYY-MM-DD
         branch           optional - blank means across the whole school
         role             required - a TenantRoleTemplate key at THIS school
+        send_invitation  optional - Yes or No, blank means Yes
     """
     from schools.vs_staff.imports import create_staff_from_row, resolve_row
     from schools.vs_staff.services.scoping import branch_dimension_applies
@@ -163,11 +164,19 @@ def import_staff_row(import_batch, payload: dict, queued_by) -> ImportExecutionR
         )
 
     profile = create_staff_from_row(row, tenant=tenant, created_by=queued_by)
+    # The row decides whether anybody was written to, so the result says which
+    # happened. One message for both would tell a school it had emailed people
+    # it deliberately held back.
+    name = f"{row.first_name} {row.last_name}"
     return ImportExecutionResult(
         action=ImportRowActionChoices.CREATE,
         instance=profile,
         target_model="StaffProfile",
-        message=f"{row.first_name} {row.last_name} invited.",
+        message=(
+            f"{name} invited." if row.send_invitation
+            else f"{name} added. No invitation email was sent, so they can be "
+                 f"invited later."
+        ),
     )
 
 

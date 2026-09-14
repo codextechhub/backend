@@ -93,6 +93,9 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         no new action was invented - a key whose action is not in the canonical
         list cannot be created at all.
 
+        78 = 77, plus ``school.staff.import``, which loads a school's existing
+        staff from a spreadsheet.
+
         77 = 69, plus the eight that came with splitting four keys that each
         gated two depths: five for ``academics.exam``, two for
         ``school.staff_records``, and ``school.students.promote``.
@@ -105,16 +108,17 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         ``academics.structure.import``, which was seeded with the structure
         importer and never counted here.
 
-        No new resource was invented for staff records. ``school.teachers`` is
+        The staff register keys stay on ``school.teachers``. That resource is
         already seeded, already granted to all three prebuilt roles and already
-        mirrored in school-fe; registering ``school.staff.*`` beside it would
-        leave live keys governing nothing and tell the frontend that two
-        resources own one screen. The resource DESCRIPTION changed instead.
+        mirrored in school-fe, so renaming it would leave live keys governing
+        nothing; its DESCRIPTION carries the correction instead.
+        ``school.staff`` exists for the import key alone, which governs an
+        upload rather than the directory screen, so the two do not overlap.
         """
         _run_school_seed()
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            77,
+            78,
         )
 
     def test_impersonation_keys_are_critical_and_restricted(self):
@@ -181,8 +185,10 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         62 plus M11's two: school.students.import and .export. The 62 was 57
         plus M14's five: academics.timetable view, create, update, manage and
         publish.
+
+        78 = 77, plus school.staff.import.
         """
-        self.assertEqual(len(self._defaults("school_admin")), 77)
+        self.assertEqual(len(self._defaults("school_admin")), 78)
 
     def test_only_school_admin_gets_impersonation_by_default(self):
         # The most powerful school keys must never be a branch_admin/teacher
@@ -239,6 +245,13 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         .manage stay with the school admin, and so does subject.manage, which
         deletes.
 
+        43 = 42, plus school.staff.import, which the student import's reasoning
+        does not reach. A branch admin already adds staff one at a time through
+        school.teachers.create, and a branch opening with forty teachers is
+        that same act at the scale a spreadsheet exists for. A roll import is
+        the other case: it rewrites records belonging to children across the
+        school, which is why school.students.import stops at the school admin.
+
         42 = 36, plus six of the eight split keys: a branch admin sets exam
         schedules (view, create, update, publish) and reads and maintains staff
         records, but does not delete an exam or promote the roll.
@@ -249,7 +262,9 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         stays with the school admin, because terminating somebody is not.
         """
         branch_admin = self._defaults("branch_admin")
-        self.assertEqual(len(branch_admin), 42)
+        self.assertEqual(len(branch_admin), 43)
+        self.assertIn("school.staff.import", branch_admin)
+        self.assertNotIn("school.students.import", branch_admin)
         self.assertIn("school.teachers.assign", branch_admin)
         self.assertIn("school.leave.manage", branch_admin)
         self.assertNotIn("school.teachers.manage", branch_admin)
@@ -337,8 +352,8 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        # school_admin defaults are all 77 keys.
-        self.assertEqual(len(keys), 77)
+        # school_admin defaults are all 78 keys: 77, plus school.staff.import.
+        self.assertEqual(len(keys), 78)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
         self.assertIn("school.roles.approve", keys)

@@ -84,6 +84,23 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     # holds it because staffing a branch's classes is a branch decision.
     ("school", "teachers", "assign",           _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
 
+    # Loading the staff list from a spreadsheet. Its own key, and SENSITIVE,
+    # exactly as school.students.import is: one upload creates accounts, role
+    # grants and invitations for everybody in the file, so it is not the same
+    # act as adding one person through the form.
+    #
+    # branch_admin holds it, where the student import stops at school_admin.
+    # The difference is what the two uploads touch: a staff file adds people to
+    # the branch the uploader already staffs one at a time through
+    # school.teachers.create, while a roll import rewrites records belonging to
+    # children across the school. A branch opening with forty teachers is the
+    # create key at the scale a spreadsheet exists for.
+    #
+    # The resource is ``staff`` rather than another verb on ``teachers``. The
+    # register keys keep their name because school-fe and four tables point at
+    # it; this one is minted here and says what it governs.
+    ("school", "staff", "import",              _SENSITIVE, (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN)),
+
     # A member of staff's qualifications, certificates and documents. Split
     # from the register because reading a directory and reading somebody's
     # certificates are sold at different depths, and one key served both.
@@ -227,6 +244,7 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     # Permission.key is a primary key that four tables point at and school-fe
     # checks by name; the description is a sentence.
     ("school", "teachers"):       "Staff records",
+    ("school", "staff"):          "Loading the staff list in bulk from a spreadsheet",
     ("school", "staff_records"):  "Staff qualifications, certificates and documents",
     ("school", "leave"):          "Staff leave requests",
     ("school", "administrators"): "School administrator accounts",

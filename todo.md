@@ -82,10 +82,38 @@ schools (every earlier sweep filtered on `kind="SCHOOL"`, so VIGIL tenants were
 missed). Also record the audit command's second question. Verified by vs_rbac,
 559 tests OK, and schools.vs_schools, 358 tests OK on the full run.
 
+### D4. A staff file no longer emails everybody in it (not yet committed, 2026-09-14)
+MODULES: M12 staff management, M10 bulk data import, M04 roles and permissions,
+MRD.
+The staff import invited every row unconditionally, so a file of eighty people
+put eighty live activation links in eighty inboxes with no way to hold one back.
+The template now carries a **Send Invitation** column taking Yes or No: Yes
+invites as before, No creates the account and the staff record and parks a real
+unsent invitation, and a blank cell counts as Yes so a school that has never seen
+the column gets the behaviour it already had. The existing resend path sends a
+parked one later and needed no change. `school.staff.import` now exists, is
+SENSITIVE, is held by school_admin and branch_admin, and is registered with the
+import engine so it stands in for the generic `import.batches.*` keys on the
+staff dataset only.
+MUST SAY: for M12, the new column and what each answer does, that a parked
+person is PENDING with an unsent invitation rather than a separate state, and
+that the staff list now reports the invitation's email status so the invitations
+screen can find them. For M10, the new template column and that the staff
+dataset carries its own permission key. For M04, the new key, its band and its
+default holders. Correct anything that still says a staff import does not exist:
+it did exist before this change, wired through both validation and execution, and
+only the key and the invitation choice were missing.
+DEPLOYMENT NOTE the documents should carry: the template lives in
+`seed_import.py`, which `build.sh` does not run (line 38 is commented out), so
+the Send Invitation column reaches an environment only when that command is run
+there.
+Verified: schools.vs_staff 250 OK, vs_import_data 81 OK, vs_user 406 OK,
+vs_rbac 559 OK, core 161 OK.
+
 ## Undone
 
-Five items. Each says what is wrong, how to fix it, and what is stopping it.
-Verified against the code on 2026-09-13, re-checked 2026-09-14; five earlier
+Three items. Each says what is wrong, how to fix it, and what is stopping it.
+Verified against the code on 2026-09-13, re-checked 2026-09-14; seven earlier
 items were removed because they were finished or no longer true, and what
 replaced them is noted at the end.
 
@@ -108,47 +136,7 @@ FIX: write ports - `apply_payment`, and something for concessions.
 BLOCKED BY: the fees backend step, deliberately, so that the design says what a
 payment screen and a waiver screen need before the port is shaped.
 
-### 3. A staff import (NOT STARTED, PARKED 2026-09-04 by user decision)
-Four of the five datasets a school arrives with can be uploaded; staff is the
-one that is not built, and a secondary school arrives with forty to eighty
-people. Three things were established while looking at it and should not be
-rediscovered: (1) it QUALIFIES as a school dataset, but it creates accounts and
-grants roles, so it needs its own key (school.administrators.import, SENSITIVE,
-school_admin only) and three guards - tenant from the batch, role checked
-against the same `invitable_roles()` queryset the staff form uses, and role
-checked against the uploader's own grant authority via
-`missing_restricted_grant_authority`; without the second, a spreadsheet assigns
-Payout Approver to a bursar. (2) It MUST NOT send invitations on upload: create
-accounts PENDING (not DRAFT, which `_SchoolStaffBase.HIDDEN_STATUSES` hides from
-the staff list) and let the existing per-row button invite later, because a file
-whose email column has slipped one place puts live login links in eighty
-strangers' inboxes and deleting the rows un-sends nothing.
-BLOCKED BY: your decision to unpark it, and one real prerequisite below.
-
-### 4. Two staff records, and the platform one is the only one the form can fill (found inside item 3, restated 2026-09-14)
-RESTATED, because the original entry was wrong twice and both errors made the
-item look bigger than it is. It said the fields are silently dropped: they are
-not. `UserCreateSerializer` refuses them, "Staff profile fields can only be set
-for platform (CX) staff" (vs_user/serializers.py ~483), so a school admin filling
-job title gets an error rather than a quiet loss. It also said a school user has
-nowhere to put them: there IS somewhere. `schools.vs_staff.models.StaffProfile`
-is one row per member of school staff and already carries `job_title`,
-`employment_type`, `staff_number` (the school's own format, deliberately not an
-imposed one), `hire_date`, `employment_status` and a branch posting.
-What is actually true: there are two staff records, `PlatformStaffProfile` for CX
-hires and `StaffProfile` for a school's, and the account-creation serializer
-knows only the first. So the HR fields on that form are platform-only by
-construction, and a school's staff data is written through the vs_staff surface
-instead.
-FIX: decide whether the account-creation form should write a school
-`StaffProfile` when the tenant is a school (routing the same three fields to the
-other model), or whether it should keep refusing and the school staff surface
-stays the only way in. Then make the API say which, rather than leaving a school
-admin to discover it from a validation error.
-BLOCKED BY: nothing technical, and it is smaller than it looks. Decide before
-building item 3, since the import must know which record it is filling.
-
-### 5. Two screens promise things the backend does not do (WANTED, NOT NOW, 2026-08-30)
+### 3. Two screens promise things the backend does not do (WANTED, NOT NOW, 2026-08-30)
 Both are honest in the API and dishonest only if a screen types the sentence off
 the mockup rather than reading the response.
 (a) TELL A GUARDIAN WHEN THEIR CHILD IS SUSPENDED. The suspension panel prints
@@ -163,6 +151,38 @@ concept in Finance first, then the seam through the FAL's StudentCustomerPort.
 BLOCKED BY: that Finance work, which is much larger than (a).
 
 ### Removed on 2026-09-14, with why
+- A STAFF IMPORT (was "NOT STARTED"): it was already built. `vs_staff/imports.py`
+  carries the column template, a two-pass resolver and `create_staff_from_row`,
+  the engine wires both passes (`validation_service.py` and `import_executor.py`),
+  the dataset is classified as a school one in `vs_import_data/datasets.py`, and
+  the template is seeded and active. The entry was written from the belief that
+  none of that existed. What was genuinely missing was a permission key and a
+  choice about invitations, and both are now done and carried as D4 above.
+  Of the three guards the entry specified, the grant-authority one ALREADY
+  EXISTED and fires twice, in `UserCreateSerializer.validate` and again in
+  `UserCreationService.create_pending`, so a spreadsheet cannot hand out a
+  restricted role beyond the uploader's own ceiling.
+  THE USER OVERTURNED the entry's "MUST NOT send invitations on upload" rule on
+  2026-09-14, deliberately and in those terms. A blanket refusal to invite was
+  replaced by a per-row choice: a Send Invitation column taking Yes or No, blank
+  counting as Yes, with No parking a real unsent invitation for the school to
+  send later from the invitations screen. Do not reinstate the blanket rule.
+  The key is `school.staff.import`, not the `school.administrators.import` the
+  entry proposed, and it is held by school_admin AND branch_admin rather than
+  school_admin alone, because a branch opening with forty teachers is the
+  create key at the scale a spreadsheet exists for.
+- TWO STAFF RECORDS, AND THE PLATFORM ONE IS THE ONLY ONE THE FORM CAN FILL:
+  withdrawn, because the premise was false in both the original wording and the
+  restatement. The school staff form does not send the HR fields to
+  `UserCreateSerializer` at all: `StaffCreateSerializer` declares its own staff
+  half, and the view hands the account serializer seven fields only (names,
+  email, phone, gender, role, branch). The platform-only refusal is therefore
+  unreachable from a school, and `services/creation.py` writes job title,
+  employment type, staff number, hire date and the rest onto the school's own
+  `StaffProfile` in the same transaction as the account. The two records are
+  correctly separated and each surface writes its own. There was never a
+  decision to make here.
+
 - AMBIGUOUSPRIMARYENTITY IS RAISED AND NOTHING LISTENS: fixed in fa23e06d. A
   school holding two active tenant-kind entities now opens exactly one health
   incident naming the school and what to do, deduplicated on
