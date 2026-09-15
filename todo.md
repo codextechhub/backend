@@ -252,7 +252,7 @@ those writes without `procurement.vendor.view_sensitive`.
 VERIFIED: see D6, same commit and same runs. The write-path test was proven by
 negative control: removing the enrolment guard fails it on each medical field.
 
-### D8. A role decides who reads and writes each field (hash pending, 2026-09-15)
+### D8. A role decides who reads and writes each field (a2634100, 2026-09-15)
 MODULES: M04 roles and permissions, MRD. Check M01 school and branch management
 (school creation now copies prebuilt field defaults, of which none are seeded yet)
 and M09 onboarding (the switches are reachable before go-live), but only to
@@ -300,7 +300,10 @@ unknown one); the new audit action types in FR-019; the four keys in section 3
 and in the school group count in FR-020; 8.1 (cross-tenant, self-exception,
 audit-rollback and query-cost tests). MRD Module 4 gains one capability entry.
 Backend evidence only: no frontend uses these routes yet.
-VERIFIED: filled in with the commit.
+VERIFIED (main session, one app at a time, no --keepdb): vs_rbac 717, core 163,
+schools.vs_schools 350 (fast form; the full 358 with slow classes passed before
+the seed-only restriction change), schools.vs_onboarding 178 OK.
+makemigrations --check clean.
 
 ## Undone
 
