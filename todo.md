@@ -167,7 +167,7 @@ Verified: vs_procurement 581 (1 pre-existing failure belonging to another
 session), vs_workflow 419 OK, vs_finance 761 OK then 771 OK, vs_payments 206 OK,
 schools.core.fal 219 OK, schools.vs_schools 358 OK on the full run.
 
-### D6. Permissions and restrictable fields as one Module, Resource tree (hash pending, 2026-09-14)
+### D6. Permissions and restrictable fields as one Module, Resource tree (9557ad6e, 2026-09-15)
 MODULES: M04 roles and permissions, MRD. Check M10 bulk import, M11 students,
 M12 staff, M18 payments, M19 finance, M21 vendors and M26 exports, but only to
 confirm none needs a version: their fields were registered, and nothing they do changed.
@@ -206,10 +206,14 @@ FR-022's limit narrows: whether a guarded field is declared is now checked by
 test, not left to each module. MRD Module 4 gains one capability entry and a
 sentence in its description. Backend evidence only: no frontend uses either
 route yet.
-VERIFIED: vs_rbac 604 OK in the main session. The rest of the full runs are
-filled in with the commit.
+COMMITTED TOGETHER WITH D7 in 9557ad6e: the two changes share two files, and
+the combined state is the one the full suites ran on.
+VERIFIED (main session, one app at a time): vs_rbac 605, schools.vs_students 291,
+vs_import_data 81, core 161, vs_exports 180, vs_finance 771, vs_payments 206,
+vs_user 406 OK; vs_procurement 584 with 1 error in the workflow approval-detail
+serializer, which this change does not touch. makemigrations --check clean.
 
-### D7. Enrolling a pupil no longer writes medical fields without medical access (hash pending, 2026-09-15)
+### D7. Enrolling a pupil no longer writes medical fields without medical access (9557ad6e, 2026-09-15)
 MODULES: M11 student management, M04 roles and permissions. MRD only if M11's
 entry describes enrolment write rules. Check M10 bulk import to confirm it needs
 nothing: the student import's behaviour ends unchanged.
@@ -245,7 +249,8 @@ residual limit, handled by Field Access stage 3 rather than here: a finance bank
 account number and payroll amounts can be written by a role that cannot read
 them. Vendor bank details are not in that list: `views/vendors.py` already refuses
 those writes without `procurement.vendor.view_sensitive`.
-VERIFIED: filled in with the commit.
+VERIFIED: see D6, same commit and same runs. The write-path test was proven by
+negative control: removing the enrolment guard fails it on each medical field.
 
 ## Undone
 
